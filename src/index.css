@@ -4,16 +4,16 @@
 
 /* ── Ink (dark) theme — default ──────────────────── */
 :root {
-  --nv-bg:       #09090b;
-  --nv-surface:  #111113;
-  --nv-surface2: #1a1a1f;
-  --nv-border:   #303035;
-  --nv-text:     #f0f0f2;
+  --nv-bg:       #0a0a0a;
+  --nv-surface:  #141414;
+  --nv-surface2: #1e1e1e;
+  --nv-border:   #2a2a2a;
+  --nv-text:     #f2f2f2;
   --nv-muted:    #a1a1aa;
-  --nv-faint:    #71717a;
+  --nv-faint:    #6b6b6b;
   --nv-red:      239 68 68;   /* space-separated for Tailwind opacity */
-  --scrollbar:   #52525b;
-  --scrollbar-h: #71717a;
+  --scrollbar:   #333333;
+  --scrollbar-h: #555555;
   /* status colors — bright in dark mode */
   --nv-ok:       #34d399;
   --nv-warn:     #fbbf24;
@@ -23,19 +23,19 @@
 
 /* ── Paper (light) theme ─────────────────────────── */
 :root.paper {
-  --nv-bg:       #f5f0e8;
-  --nv-surface:  #ece7db;
-  --nv-surface2: #dfd9cc;
-  --nv-border:   #c9c3b5;
-  --nv-text:     #18181b;
-  --nv-muted:    #52525b;
-  --nv-faint:    #a8a29e;
+  --nv-bg:       #ffffff;
+  --nv-surface:  #f4f4f5;
+  --nv-surface2: #e4e4e7;
+  --nv-border:   #d4d4d8;
+  --nv-text:     #09090b;
+  --nv-muted:    #3f3f46;
+  --nv-faint:    #a1a1aa;
   --nv-red:      220 38 38;
-  --scrollbar:   #c9c3b5;
-  --scrollbar-h: #a8a29e;
-  /* status — darker in light mode so they're readable on warm background */
-  --nv-ok:       #059669;
-  --nv-warn:     #b45309;
+  --scrollbar:   #d4d4d8;
+  --scrollbar-h: #a1a1aa;
+  /* status — strong contrast on white */
+  --nv-ok:       #16a34a;
+  --nv-warn:     #ca8a04;
   --nv-bad:      #dc2626;
   --nv-info:     #2563eb;
 }
