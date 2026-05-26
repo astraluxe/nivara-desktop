@@ -46,7 +46,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk0OUNCRDUwQ0ZCQTI1QUUKUldTdUpiclBVTDJjbEp1VFh5VGtnOGNMR2tjQWRlRnJmNmJtblVPSkJIZG5vVGJxTzZpc1NhdFYK",
       "endpoints": [
-        "https://github.com/RKMAmogh/nivara-desktop/releases/latest/download/latest.json"
+        "https://github.com/astraluxe/nivara-desktop/releases/latest/download/latest.json"
       ],
       "dialog": true,
       "windows": {
