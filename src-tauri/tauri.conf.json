@@ -1,0 +1,59 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Nivara",
+  "version": "1.0.0",
+  "identifier": "tech.nivara.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Nivara",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 1000,
+        "minHeight": 680,
+        "decorations": false,
+        "resizable": true,
+        "center": true,
+        "visible": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "nsis": {
+      "installerIcon": "icons/icon.ico",
+      "headerImage": "icons/128x128.png",
+      "sidebarImage": "icons/128x128.png",
+      "installMode": "perMachine"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk0OUNCRDUwQ0ZCQTI1QUUKUldTdUpiclBVTDJjbEp1VFh5VGtnOGNMR2tjQWRlRnJmNmJtblVPSkJIZG5vVGJxTzZpc1NhdFYK",
+      "endpoints": [
+        "https://github.com/RKMAmogh/nivara-desktop/releases/latest/download/latest.json"
+      ],
+      "dialog": true,
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

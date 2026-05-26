@@ -1,0 +1,116 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Ink (dark) theme — default ──────────────────── */
+:root {
+  --nv-bg:       #09090b;
+  --nv-surface:  #111113;
+  --nv-surface2: #1a1a1f;
+  --nv-border:   #303035;
+  --nv-text:     #f0f0f2;
+  --nv-muted:    #a1a1aa;
+  --nv-faint:    #71717a;
+  --nv-red:      239 68 68;   /* space-separated for Tailwind opacity */
+  --scrollbar:   #52525b;
+  --scrollbar-h: #71717a;
+  /* status colors — bright in dark mode */
+  --nv-ok:       #34d399;
+  --nv-warn:     #fbbf24;
+  --nv-bad:      #f87171;
+  --nv-info:     #60a5fa;
+}
+
+/* ── Paper (light) theme ─────────────────────────── */
+:root.paper {
+  --nv-bg:       #f5f0e8;
+  --nv-surface:  #ece7db;
+  --nv-surface2: #dfd9cc;
+  --nv-border:   #c9c3b5;
+  --nv-text:     #18181b;
+  --nv-muted:    #52525b;
+  --nv-faint:    #a8a29e;
+  --nv-red:      220 38 38;
+  --scrollbar:   #c9c3b5;
+  --scrollbar-h: #a8a29e;
+  /* status — darker in light mode so they're readable on warm background */
+  --nv-ok:       #059669;
+  --nv-warn:     #b45309;
+  --nv-bad:      #dc2626;
+  --nv-info:     #2563eb;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--nv-bg);
+  color: var(--nv-text);
+  font-family: 'Space Grotesk', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input, textarea, [data-selectable] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+[data-tauri-drag-region] {
+  cursor: default;
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+[data-tauri-drag-region] button,
+[data-tauri-drag-region] a {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+::-webkit-scrollbar { width: 3px; height: 3px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-h); }
+
+:focus-visible {
+  outline: 1px solid #7C5CFF;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.transition-fast { transition: all 0.12s ease; }
+
+/* ── Background animation keyframes ── */
+@keyframes nv-orbit-cw  { to { transform: rotate(360deg);  } }
+@keyframes nv-orbit-ccw { to { transform: rotate(-360deg); } }
+@keyframes nv-node-pulse {
+  0%   { transform: scale(1);   opacity: 0.9; }
+  100% { transform: scale(2.8); opacity: 0;   }
+}
+@keyframes nv-hex-pulse {
+  0%, 100% { opacity: 0.35; }
+  50%       { opacity: 0.07; }
+}
+@keyframes nv-ping-fade {
+  0%   { opacity: 0.7; }
+  50%  { opacity: 0.15; }
+  100% { opacity: 0.7; }
+}
+@keyframes nv-radar-sweep { to { transform: rotate(360deg); } }
+@keyframes nv-pulse-ring {
+  0%   { transform: scale(0.85); opacity: 0.7; }
+  70%  { transform: scale(1.5);  opacity: 0; }
+  100% { transform: scale(0.85); opacity: 0; }
+}
+@keyframes nv-breathe {
+  0%, 100% { opacity: 0.85; }
+  50%       { opacity: 0.4;  }
+}
