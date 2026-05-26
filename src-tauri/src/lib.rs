@@ -543,8 +543,37 @@ async fn ai_stream(
         }
 
         "nivara" => {
-            let _token = session_token.unwrap_or_default();
-            emit_error("Nivara plan streaming not yet implemented — use Local or Own Key.".to_string());
+            let token = session_token.unwrap_or_default();
+            if token.is_empty() {
+                emit_error("Sign in to Nivara to use Nivara Cloud mode.".to_string());
+                return Ok(());
+            }
+            let fn_url = "https://xkkqcqsacgdrfwbwdqsp.supabase.co/functions/v1/krew-stream";
+            let mut all_msgs: Vec<serde_json::Value> = Vec::new();
+            for m in &messages { all_msgs.push(serde_json::json!({"role": m.role, "content": m.content})); }
+            let body = serde_json::json!({ "messages": all_msgs });
+            let resp = reqwest::Client::new()
+                .post(fn_url)
+                .header("Authorization", format!("Bearer {}", token))
+                .header(header::CONTENT_TYPE, "application/json")
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| { let s = e.to_string(); emit_error(s.clone()); s })?;
+            let mut stream = resp.bytes_stream();
+            while let Some(chunk) = stream.next().await {
+                for line in String::from_utf8_lossy(&chunk.map_err(|e| e.to_string())?).lines() {
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        if data.trim() == "[DONE]" { emit_done(); return Ok(()); }
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+                            if let Some(t) = v["choices"][0]["delta"]["content"].as_str() {
+                                if !t.is_empty() { emit_chunk(t.to_string()); }
+                            }
+                        }
+                    }
+                }
+            }
+            emit_done();
         }
 
         _ => emit_error(format!("Unknown mode: {}", mode)),
@@ -985,7 +1014,7 @@ async fn track_token_usage(
         .header("Authorization", format!("Bearer {}", session_token))
         .header("Content-Type", "application/json")
         .header("Prefer", "return=minimal")
-        .json(&serde_json::json!({ "user_id": user_id, "module": module, "tokens_used": tokens_used }))
+        .json(&serde_json::json!({ "user_id": user_id, "task_type": module, "tokens_consumed": tokens_used }))
         .send()
         .await;
     Ok(())
@@ -1002,7 +1031,7 @@ async fn get_token_usage_this_month(
     let now = chrono_month_start();
     let client = reqwest::Client::new();
     let resp = client
-        .get(format!("{}/rest/v1/token_usage?select=tokens_used&user_id=eq.{}&created_at=gte.{}", supabase_url, user_id, now))
+        .get(format!("{}/rest/v1/token_usage?select=tokens_consumed&user_id=eq.{}&created_at=gte.{}", supabase_url, user_id, now))
         .header("apikey", &supabase_anon_key)
         .header("Authorization", format!("Bearer {}", session_token))
         .send()
@@ -1010,7 +1039,7 @@ async fn get_token_usage_this_month(
         .map_err(|e| e.to_string())?;
     let rows: Vec<serde_json::Value> = resp.json().await.unwrap_or_default();
     let sum: i64 = rows.iter()
-        .filter_map(|r| r["tokens_used"].as_i64())
+        .filter_map(|r| r["tokens_consumed"].as_i64())
         .sum();
     Ok(sum)
 }
@@ -1280,7 +1309,9 @@ fn db_krew_delete_memory(
         .map(|_| ()).map_err(|e| e.to_string())
 }
 
-// ─── Credential storage ───────────────────────────────────────────────────────
+// ─── Credential storage (OS keychain with SQLite fallback) ───────────────────
+
+const KEYRING_SERVICE: &str = "tech.nivara.desktop";
 
 #[tauri::command]
 fn store_credential(
@@ -1288,10 +1319,16 @@ fn store_credential(
     service: String,
     data: String,
 ) -> Result<(), String> {
-    db.0.lock().unwrap().execute(
+    // Primary: OS keychain (Windows Credential Manager)
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &service) {
+        let _ = entry.set_password(&data);
+    }
+    // Mirror in SQLite so list_credentials works and as warm fallback
+    let _ = db.0.lock().unwrap().execute(
         "INSERT OR REPLACE INTO credentials (service,data) VALUES (?1,?2)",
         params![service, data],
-    ).map(|_| ()).map_err(|e| e.to_string())
+    );
+    Ok(())
 }
 
 #[tauri::command]
@@ -1299,6 +1336,13 @@ fn get_credential(
     db: tauri::State<KrewDbConn>,
     service: String,
 ) -> Result<Option<String>, String> {
+    // Try keychain first
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &service) {
+        if let Ok(data) = entry.get_password() {
+            return Ok(Some(data));
+        }
+    }
+    // Fallback: SQLite (pre-v1.0 credentials) — auto-migrate to keychain
     let conn = db.0.lock().unwrap();
     let result = conn.query_row(
         "SELECT data FROM credentials WHERE service=?1",
@@ -1306,7 +1350,12 @@ fn get_credential(
         |row| row.get::<_, String>(0),
     );
     match result {
-        Ok(d)  => Ok(Some(d)),
+        Ok(d) => {
+            if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &service) {
+                let _ = entry.set_password(&d);
+            }
+            Ok(Some(d))
+        }
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.to_string()),
     }
@@ -1314,6 +1363,9 @@ fn get_credential(
 
 #[tauri::command]
 fn delete_credential(db: tauri::State<KrewDbConn>, service: String) -> Result<(), String> {
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &service) {
+        let _ = entry.delete_credential();
+    }
     db.0.lock().unwrap()
         .execute("DELETE FROM credentials WHERE service=?1", params![service])
         .map(|_| ()).map_err(|e| e.to_string())
