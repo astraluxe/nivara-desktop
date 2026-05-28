@@ -21,6 +21,8 @@ interface RegistryModel {
   mesh_required?: boolean;
   benchmark_mmlu?: number;
   benchmark_humaneval?: number;
+  hf_repo?: string;
+  hf_filename?: string;
 }
 
 interface InstalledModel {
@@ -137,7 +139,7 @@ const DESKTOP_MODELS: RegistryModel[] = [
   { id:'qwen25-3b-q4', name:'Qwen 2.5 3B', creator:'Alibaba', params:'3B', quantization:'Q4_K_M', size_gb:2.0, ram_min_gb:4, ram_recommended_gb:4, context_length:32768, best_for:['coding','chat'], license:'Apache 2.0', gated:false, description:'Qwen 2.5 at 3B — solid coding model for low-RAM devices.' },
   { id:'gemma2-2b-q4', name:'Gemma 2 2B', creator:'Google', params:'2B', quantization:'Q4_K_M', size_gb:1.5, ram_min_gb:2, ram_recommended_gb:3, context_length:8192, best_for:['quick','chat'], license:'Gemma', gated:true, description:'Tiny but capable. Good for simple tasks on low-end hardware.' },
   { id:'qwen25-1b-q4', name:'Qwen 2.5 1.5B', creator:'Alibaba', params:'1.5B', quantization:'Q4_K_M', size_gb:1.0, ram_min_gb:2, ram_recommended_gb:2, context_length:32768, best_for:['quick'], license:'Apache 2.0', gated:false, description:'Runs on 2 GB RAM. For the most basic on-device tasks.' },
-  { id:'smollm2-1b-q4', name:'SmolLM2 1.7B', creator:'Nivara Labs', params:'1.7B', quantization:'Q4_K_M', size_gb:1.1, ram_min_gb:2, ram_recommended_gb:2, context_length:8192, best_for:['quick'], license:'Apache 2.0', gated:false, description:'Built for on-device use. Tiny, fast, and surprisingly capable.' },
+  { id:'smollm2-1b-q4', name:'SmolLM2 1.7B', creator:'HuggingFace', params:'1.7B', quantization:'Q4_K_M', size_gb:1.1, ram_min_gb:2, ram_recommended_gb:2, context_length:8192, best_for:['quick'], license:'Apache 2.0', gated:false, description:'Built for on-device use. Tiny, fast, and surprisingly capable.' },
   { id:'llama32-1b-q4', name:'Llama 3.2 1B', creator:'Meta', params:'1B', quantization:'Q4_K_M', size_gb:0.8, ram_min_gb:2, ram_recommended_gb:2, context_length:131072, best_for:['quick'], license:'Llama 3.2', gated:true, description:'Meta ultra-tiny model. For extremely low-RAM or edge devices.' },
   { id:'tinyllama-1b-q4', name:'TinyLlama 1.1B', creator:'TinyLlama', params:'1.1B', quantization:'Q4_K_M', size_gb:0.7, ram_min_gb:2, ram_recommended_gb:2, context_length:2048, best_for:['quick','chat'], license:'Apache 2.0', gated:false, description:'Ultra-tiny. Runs on any device. Great for quick offline tasks.' },
 ];
@@ -183,26 +185,6 @@ interface CompareSlot {
   token_count: number;
   done: boolean;
   error?: string;
-}
-
-// ─── GPU parsing ─────────────────────────────────────────────────────────────
-
-function parseGpuOutput(raw: string): GpuInfo {
-  if (!raw) return { name: 'Unknown', vram_gb: 0 };
-  const lines = raw.split('\n').filter(l => l.trim() && !l.toLowerCase().includes('adapterram'));
-  for (const line of lines) {
-    const parts = line.split(',');
-    if (parts.length < 3) continue;
-    const vramBytes = parseInt(parts[1]?.trim() || '0', 10);
-    const name = parts[2]?.trim() || '';
-    if (name && !name.toLowerCase().includes('microsoft')) {
-      return {
-        name,
-        vram_gb: vramBytes > 0 ? Math.round(vramBytes / 1_073_741_824 * 10) / 10 : 0,
-      };
-    }
-  }
-  return { name: 'Integrated GPU', vram_gb: 0 };
 }
 
 // ─── Compare tab ─────────────────────────────────────────────────────────────
@@ -578,7 +560,7 @@ function ModelCard({
         {isInstalled ? (
           <>
             <button
-              onClick={() => onRun(model.hf_filename)}
+              onClick={() => onRun(model.hf_filename ?? '')}
               className="flex-1 text-[11px] py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-medium"
             >
               ▶ Run in Coder
@@ -670,7 +652,8 @@ export default function ModelsModule() {
   const [ollamaOk, setOllamaOk] = useState<boolean | null>(null);
   const [gatedModal, setGatedModal] = useState<PullResponse | null>(null);
   const [pendingModel, setPendingModel] = useState<RegistryModel | null>(null);
-  const [showSpecsBar, setShowSpecsBar] = useState(false);
+  const [_showSpecsBar, _setShowSpecsBar]           = useState(false);
+  const [showHardwareReport, setShowHardwareReport] = useState(false);
   // Import model flow
   const [showImport, setShowImport] = useState(false);
   const [importPath, setImportPath] = useState('');
@@ -726,6 +709,24 @@ export default function ModelsModule() {
 
   function modelFitsPC(m: RegistryModel): boolean {
     return sysRam > 0 && m.ram_min_gb <= sysRam;
+  }
+
+  function getHardwareRecommendations(): { category: string; models: RegistryModel[] }[] {
+    const ram = sysRam;
+    if (ram === 0) return [];
+    const fits = DESKTOP_MODELS.filter(m => m.ram_min_gb <= ram && !m.mesh_required);
+    const pick = (tag: string) => {
+      const tagged = fits.filter(m => m.best_for.includes(tag));
+      tagged.sort((a, b) => b.ram_min_gb - a.ram_min_gb);
+      return tagged.slice(0, 3);
+    };
+    return [
+      { category: 'Best overall for your RAM', models: (() => { const s = [...fits]; s.sort((a, b) => b.ram_min_gb - a.ram_min_gb); return s.slice(0, 3); })() },
+      { category: 'Coding',   models: pick('coding') },
+      { category: 'Chat',     models: pick('chat') },
+      { category: 'Reasoning', models: pick('reasoning') },
+      { category: 'Writing',  models: pick('writing') },
+    ].filter(c => c.models.length > 0);
   }
 
   // ─── Filtered model list ──────────────────────────────────────────────────
@@ -902,7 +903,7 @@ export default function ModelsModule() {
       {/* Your machine specs bar */}
       <div
         className="flex items-center gap-3 px-5 py-2 border-b border-nv-border bg-nv-surface/50 shrink-0 relative z-10 cursor-pointer select-none"
-        onClick={() => setShowSpecsBar(p => !p)}
+        onClick={() => _setShowSpecsBar((p: boolean) => !p)}
       >
         <div className="flex items-center gap-1.5 text-[10px] text-nv-faint font-mono">
           <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><rect x="1" y="1" width="8" height="8" rx="1" stroke="currentColor" strokeWidth="1"/><path d="M3 5h4M5 3v4" stroke="currentColor" strokeWidth="1" strokeLinecap="round"/></svg>
@@ -914,6 +915,16 @@ export default function ModelsModule() {
         <span className="text-nv-border">·</span>
         <span className="text-[10px] font-mono text-nv-muted">{gpuInfo.name}{gpuInfo.vram_gb > 0 ? ` · ${gpuInfo.vram_gb} GB VRAM` : ''}</span>
         <div className="flex-1" />
+        <button
+          onClick={e => { e.stopPropagation(); setShowHardwareReport(r => !r); }}
+          className={`text-[10px] px-2.5 py-1 rounded-lg border transition-fast font-mono shrink-0 ${
+            showHardwareReport
+              ? 'bg-accent/15 text-accent border-accent/40'
+              : 'border-nv-border text-nv-faint hover:border-nv-faint'
+          }`}
+        >
+          {showHardwareReport ? 'Hide report' : 'Check what runs on my laptop'}
+        </button>
         {tab === 'hub' && (
           <button
             onClick={e => { e.stopPropagation(); setFilter(filterByPC ? 'all' : '__pc__'); }}
@@ -923,10 +934,56 @@ export default function ModelsModule() {
                 : 'border-nv-border text-nv-faint hover:border-nv-faint'
             }`}
           >
-            {filterByPC ? '✓ Showing: fits my PC' : 'Show what runs on my PC'}
+            {filterByPC ? '✓ Showing: fits my PC' : 'Filter by my PC'}
           </button>
         )}
       </div>
+
+      {/* ── HARDWARE REPORT PANEL ──────────────────────────────────────────── */}
+      {showHardwareReport && (
+        <div className="shrink-0 border-b border-nv-border bg-nv-bg px-5 py-4 overflow-y-auto" style={{ maxHeight: 340 }}>
+          <div className="flex items-start justify-between mb-3">
+            <div>
+              <p className="text-[12px] font-semibold text-nv-text">Hardware compatibility report</p>
+              <p className="text-[10px] text-nv-muted font-mono mt-0.5">
+                {sysRam > 0 ? `${sysRam.toFixed(1)} GB RAM · ${sysInfo?.cpu_count ?? '?'} cores · ${gpuInfo.name}${gpuInfo.vram_gb > 0 ? ` · ${gpuInfo.vram_gb} GB VRAM` : ''}` : 'Scanning hardware…'}
+              </p>
+            </div>
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full text-emerald-400 border border-emerald-500/30 bg-emerald-500/10 shrink-0">
+              {DESKTOP_MODELS.filter(m => (sysRam > 0 ? m.ram_min_gb <= sysRam : false) && !m.mesh_required).length} models compatible
+            </span>
+          </div>
+          {sysRam === 0 ? (
+            <p className="text-[11px] text-nv-faint font-mono">Detecting your hardware…</p>
+          ) : (
+            <div className="space-y-3">
+              {getHardwareRecommendations().map(cat => (
+                <div key={cat.category}>
+                  <p className="text-[9px] font-mono uppercase tracking-widest text-accent/70 mb-1.5">{cat.category}</p>
+                  <div className="grid grid-cols-3 gap-2">
+                    {cat.models.map((m, i) => (
+                      <div key={m.id} className={`rounded-lg border px-3 py-2 ${i === 0 ? 'border-accent/30 bg-accent/5' : 'border-nv-border bg-nv-surface'}`}>
+                        <div className="flex items-center gap-1.5 mb-0.5">
+                          {i === 0 && <span className="text-[8px] font-mono text-accent">TOP</span>}
+                          <span className="text-[11px] font-semibold text-nv-text truncate">{m.name}</span>
+                        </div>
+                        <span className="text-[9px] font-mono text-nv-muted">{m.params} · {m.ram_min_gb} GB min</span>
+                        <p className="text-[9px] text-nv-faint mt-0.5 leading-tight truncate">{m.description.split('.')[0]}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {sysRam < 4 && (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-yellow-500/10 border border-yellow-500/30">
+                  <span className="text-yellow-400 text-[11px]">⚠</span>
+                  <p className="text-[10px] text-yellow-400">Your RAM is very low. Only tiny models (1–2 GB) will run smoothly.</p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── HUB TAB ────────────────────────────────────────────────────────── */}
       {tab === 'hub' && (
@@ -1243,8 +1300,8 @@ export default function ModelsModule() {
           onCancel={() => { setGatedModal(null); setPendingModel(null); }}
           onConfirm={async token => {
             setGatedModal(null);
-            const url = `https://huggingface.co/${pendingModel.hf_repo}/resolve/main/${pendingModel.hf_filename}?token=${token}`;
-            await startDownload(pendingModel, url, pendingModel.hf_filename, pendingModel.size_gb, token);
+            const url = `https://huggingface.co/${pendingModel.hf_repo ?? ''}/resolve/main/${pendingModel.hf_filename ?? ''}?token=${token}`;
+            await startDownload(pendingModel, url, pendingModel.hf_filename ?? '', pendingModel.size_gb, token);
             setPendingModel(null);
           }}
         />

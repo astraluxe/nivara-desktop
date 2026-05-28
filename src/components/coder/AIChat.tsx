@@ -1,4 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { useAuth } from '../../contexts/AuthContext';
+import { getPlanConfig } from '../../lib/planConfig';
+import UpgradeModal from '../UpgradeModal';
 import { streamAI, type ConnectionMode, type Provider, type AiMessage } from '../../lib/ai';
 import { chatDb, type ChatSession, type ChatMessage } from '../../lib/chatDb';
 import { trackTokenUsage } from '../../lib/tokenTracker';
@@ -60,6 +64,21 @@ function CodeBlock({ code, lang, onRun, onInsert }: {
   );
 }
 
+function CopyBtn({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={() => navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1800); })}
+      className="text-[10px] text-nv-faint hover:text-nv-muted transition-fast font-mono flex items-center gap-1 mt-1"
+    >
+      {copied
+        ? <><span className="text-emerald-400">✓</span> copied</>
+        : <><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> copy</>
+      }
+    </button>
+  );
+}
+
 function MessageBubble({ msg, onRun, onInsert }: {
   msg: DisplayMessage;
   onRun: (c: string) => void;
@@ -69,7 +88,7 @@ function MessageBubble({ msg, onRun, onInsert }: {
   const parts = msg.content.split(/(```[\s\S]*?```)/g);
 
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-2`}>
+    <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} mb-2`}>
       <div className={`max-w-[85%] ${isUser
         ? 'bg-accent/15 border border-accent/30 rounded-2xl rounded-tr-sm px-3 py-2'
         : 'text-nv-text'}`}>
@@ -94,6 +113,7 @@ function MessageBubble({ msg, onRun, onInsert }: {
           </div>
         )}
       </div>
+      {!msg.streaming && msg.content.length > 0 && <CopyBtn text={msg.content} />}
     </div>
   );
 }
@@ -118,9 +138,63 @@ export default function AIChat({
   const bottomRef  = useRef<HTMLDivElement>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
 
+  // Plan / voice gate
+  const { profile }  = useAuth();
+  const planCfg      = getPlanConfig(profile?.plan ?? 'explore');
+  const [showVoiceUpgrade, setShowVoiceUpgrade] = useState(false);
+
+  // Voice state
+  type VoiceStatus = 'idle' | 'recording' | 'transcribing' | 'error';
+  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>('idle');
+  const [voiceErr, setVoiceErr]       = useState<string | null>(null);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Ctrl+Shift+V shortcut to toggle recording
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.ctrlKey && e.shiftKey && e.key === 'V') {
+        e.preventDefault();
+        handleMicClick();
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voiceStatus]);
+
+  async function handleMicClick() {
+    setVoiceErr(null);
+
+    if (!planCfg.voiceToCode) {
+      setShowVoiceUpgrade(true);
+      return;
+    }
+
+    if (voiceStatus === 'recording') {
+      setVoiceStatus('transcribing');
+      try {
+        const text = await invoke<string>('voice_stop_and_transcribe');
+        if (text) setInput(prev => prev ? `${prev} ${text}` : text);
+      } catch (e) {
+        setVoiceErr(`${e}`);
+      }
+      setVoiceStatus('idle');
+      return;
+    }
+
+    if (voiceStatus === 'idle') {
+      try {
+        await invoke('voice_start_recording');
+        setVoiceStatus('recording');
+      } catch (e) {
+        setVoiceErr(`Microphone error: ${e}`);
+        setVoiceStatus('error');
+      }
+    }
+  }
 
   function buildContext(): string {
     const parts: string[] = [];
@@ -284,6 +358,7 @@ export default function AIChat({
   }
 
   return (
+    <>
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="flex items-center justify-between px-3 h-10 border-b border-nv-border shrink-0">
@@ -355,14 +430,55 @@ export default function AIChat({
 
       {/* Input */}
       <div className="p-3 border-t border-nv-border shrink-0">
+        {voiceErr && (
+          <p className="text-[10px] text-nv-red mb-1.5 px-0.5">{voiceErr}
+            <button className="ml-1.5 underline opacity-60" onClick={() => { setVoiceErr(null); setVoiceStatus('idle'); }}>dismiss</button>
+          </p>
+        )}
         <div className="flex gap-2">
+          {/* Mic button */}
+          <button
+            title={
+              voiceStatus === 'recording' ? 'Stop recording · Ctrl+Shift+V' :
+              voiceStatus === 'transcribing' ? 'Transcribing…' :
+              'Start voice input · Ctrl+Shift+V'
+            }
+            onClick={handleMicClick}
+            disabled={voiceStatus === 'transcribing'}
+            className={`self-end p-1.5 rounded-lg border transition-fast shrink-0 ${
+              voiceStatus === 'recording'
+                ? 'border-red-500/60 bg-red-500/10 text-red-400 animate-pulse'
+                : voiceStatus === 'transcribing'
+                ? 'border-nv-border opacity-50 text-nv-faint cursor-not-allowed'
+                : 'border-nv-border text-nv-muted hover:border-accent hover:text-accent'
+            }`}
+          >
+            {voiceStatus === 'recording' ? (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="6" width="12" height="12" rx="2"/>
+              </svg>
+            ) : voiceStatus === 'transcribing' ? (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="10" opacity=".3"/>
+                <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" className="animate-spin origin-center"/>
+              </svg>
+            ) : (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                <line x1="12" y1="19" x2="12" y2="23"/>
+                <line x1="8" y1="23" x2="16" y2="23"/>
+              </svg>
+            )}
+          </button>
+
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
             }}
-            placeholder="Ask about your code… (Shift+Enter for newline)"
+            placeholder={voiceStatus === 'recording' ? 'Listening… click mic or Ctrl+Shift+V to stop' : 'Ask about your code… (Shift+Enter for newline)'}
             rows={2}
             className="flex-1 bg-nv-bg border border-nv-border rounded-lg px-2.5 py-1.5
               text-[11px] text-nv-text outline-none focus:border-accent transition-fast
@@ -385,5 +501,14 @@ export default function AIChat({
         </div>
       </div>
     </div>
+    {showVoiceUpgrade && (
+      <UpgradeModal
+        onClose={() => setShowVoiceUpgrade(false)}
+        currentPlan={profile?.plan ?? 'explore'}
+        highlightPlan="builder"
+        reason="Voice to Code requires Builder plan or higher."
+      />
+    )}
+    </>
   );
 }

@@ -21,3 +21,8 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Bundled resource binaries — downloaded/built by CI, not committed to git
+src-tauri/resources/voice/*.exe
+src-tauri/resources/voice/*.bin
+src-tauri/resources/mesh/*.exe

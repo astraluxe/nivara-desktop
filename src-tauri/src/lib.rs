@@ -50,7 +50,7 @@ h2{font-size:1rem;font-weight:500}
     access_token:q.get('access_token')||h.get('access_token')||null,
     refresh_token:q.get('refresh_token')||h.get('refresh_token')||null
   });
-  fetch('http://127.0.0.1:54321/code',{method:'POST',headers:{'Content-Type':'application/json'},body:payload})
+  fetch('http://localhost:54321/code',{method:'POST',headers:{'Content-Type':'application/json'},body:payload})
     .then(function(){
       document.getElementById('m').textContent='Signed in to Nivara.';
       document.getElementById('s').textContent='You can close this tab and return to the app.';
@@ -94,7 +94,10 @@ fn start_oauth_server(app: tauri::AppHandle) -> Result<(), String> {
             let method = method_path.get(0).copied().unwrap_or("");
             let path   = method_path.get(1).copied().unwrap_or("");
 
-            if method == "POST" && path.starts_with("/code") {
+            const CORS: &str = "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: POST, GET, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n";
+            if method == "OPTIONS" {
+                let _ = stream.write_all(format!("HTTP/1.1 204 No Content\r\n{}Content-Length: 0\r\nConnection: close\r\n\r\n", CORS).as_bytes());
+            } else if method == "POST" && path.starts_with("/code") {
                 if let Some(sep) = req.find("\r\n\r\n") {
                     let body = req[sep + 4..].trim().to_string();
                     if !body.is_empty() {
@@ -102,17 +105,17 @@ fn start_oauth_server(app: tauri::AppHandle) -> Result<(), String> {
                         let _ = app_handle.emit("oauth_complete", body);
                     }
                 }
-                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\n{}Content-Length: 0\r\nConnection: close\r\n\r\n", CORS).as_bytes());
                 break;
             } else if path.starts_with("/callback") || path == "/" {
                 let _ = stream.write_all(
                     format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        CALLBACK_HTML.len(), CALLBACK_HTML
+                        "HTTP/1.1 200 OK\r\n{}Content-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        CORS, CALLBACK_HTML.len(), CALLBACK_HTML
                     ).as_bytes()
                 );
             } else {
-                let _ = stream.write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n");
+                let _ = stream.write_all(format!("HTTP/1.1 204 No Content\r\n{}Content-Length: 0\r\nConnection: close\r\n\r\n", CORS).as_bytes());
             }
         }
     });
@@ -1927,6 +1930,81 @@ async fn linkedin_exchange_code(
     resp.text().await.map_err(|e| e.to_string())
 }
 
+// ─── Notion OAuth (port 54324) ────────────────────────────────────────────────
+
+static NOTION_AUTH_CODE: Mutex<Option<String>> = Mutex::new(None);
+
+#[tauri::command]
+fn start_notion_oauth_server() -> Result<(), String> {
+    *NOTION_AUTH_CODE.lock().unwrap() = None;
+    std::thread::spawn(|| {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = match TcpListener::bind("127.0.0.1:54324") {
+            Ok(l) => l,
+            Err(e) => { *NOTION_AUTH_CODE.lock().unwrap() = Some(format!("{{\"error\":\"{}\"}}", e)); return; }
+        };
+        listener.set_nonblocking(false).ok();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+        loop {
+            if std::time::Instant::now() > deadline { break; }
+            let Ok((mut stream, _)) = listener.accept() else { continue };
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let first = req.lines().next().unwrap_or("").to_string();
+            let parts: Vec<&str> = first.splitn(3, ' ').collect();
+            let path = parts.get(1).copied().unwrap_or("");
+            if path.starts_with("/callback") {
+                if let Some(qs) = path.split('?').nth(1) {
+                    for param in qs.split('&') {
+                        if let Some(code) = param.strip_prefix("code=") {
+                            *NOTION_AUTH_CODE.lock().unwrap() = Some(format!("{{\"code\":\"{}\"}}", code));
+                            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 72\r\n\r\n<html><body><p>Connected to Nivara. You can close this tab.</p></body></html>");
+                            return;
+                        }
+                    }
+                }
+                let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
+            } else {
+                let _ = stream.write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n");
+            }
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn poll_notion_auth_code() -> Option<String> {
+    NOTION_AUTH_CODE.lock().unwrap().take()
+}
+
+#[tauri::command]
+async fn notion_exchange_code(
+    client_id: String,
+    client_secret: String,
+    code: String,
+) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let creds = format!("{}:{}", client_id, client_secret);
+    use base64::{Engine as _, engine::general_purpose};
+    let encoded = general_purpose::STANDARD.encode(creds.as_bytes());
+    let resp = client
+        .post("https://api.notion.com/v1/oauth/token")
+        .header("Authorization", format!("Basic {}", encoded))
+        .header("Content-Type", "application/json")
+        .header("Notion-Version", "2022-06-28")
+        .json(&serde_json::json!({
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "http://127.0.0.1:54324/callback"
+        }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    resp.text().await.map_err(|e| e.to_string())
+}
+
 // ─── Extended ai_stream with system_prompt support ────────────────────────────
 
 #[tauri::command]
@@ -2798,6 +2876,461 @@ fn automation_get_logs(
     Ok(rows)
 }
 
+// ─── Mesh ─────────────────────────────────────────────────────────────────────
+
+struct MeshExoProcess(Mutex<Option<std::process::Child>>);
+
+#[derive(serde::Serialize)]
+struct MeshMachineInfo {
+    hostname: String,
+    ram_gb:   f32,
+    os:       String,
+}
+
+#[tauri::command]
+fn mesh_check_extension(app: tauri::AppHandle) -> bool {
+    if let Ok(res) = app.path().resource_dir() {
+        if res.join("mesh").join("exo-node.exe").exists() { return true; }
+    }
+    false
+}
+
+#[tauri::command]
+fn mesh_get_machine_info() -> MeshMachineInfo {
+    use sysinfo::System;
+    let mut sys = System::new();
+    sys.refresh_memory();
+    let ram_gb = sys.total_memory() as f32 / 1_073_741_824.0;
+    let hostname = std::process::Command::new("hostname")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "Unknown".to_string());
+    MeshMachineInfo { hostname, ram_gb, os: System::name().unwrap_or_else(|| "Windows".to_string()) }
+}
+
+#[tauri::command]
+fn mesh_start_exo(
+    app:        tauri::AppHandle,
+    state:      tauri::State<'_, MeshExoProcess>,
+    node_count: u32,
+) -> Result<(), String> {
+    let mut lock = state.0.lock().unwrap();
+    if lock.is_some() { return Ok(()); }
+
+    let exo_path = app.path().resource_dir()
+        .ok()
+        .map(|r| r.join("mesh").join("exo-node.exe"))
+        .filter(|p| p.exists())
+        .ok_or_else(|| "Mesh engine not found. Please reinstall Nivara.".to_string())?;
+
+    let child = std::process::Command::new(&exo_path)
+        .args(["--node-count", &node_count.to_string()])
+        .spawn()
+        .map_err(|e| format!("Failed to start mesh engine: {e}"))?;
+
+    *lock = Some(child);
+    Ok(())
+}
+
+#[tauri::command]
+fn mesh_stop_exo(state: tauri::State<'_, MeshExoProcess>) -> Result<(), String> {
+    let mut lock = state.0.lock().unwrap();
+    if let Some(mut child) = lock.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn mesh_exo_running(state: tauri::State<'_, MeshExoProcess>) -> bool {
+    let mut lock = state.0.lock().unwrap();
+    if let Some(ref mut child) = *lock {
+        match child.try_wait() {
+            Ok(None) => return true,
+            _ => { *lock = None; }
+        }
+    }
+    false
+}
+
+// ─── Voice-to-Code ────────────────────────────────────────────────────────────
+
+struct VoiceState {
+    recording: Arc<std::sync::atomic::AtomicBool>,
+    samples:   Arc<Mutex<Vec<f32>>>,
+    rate:      Arc<Mutex<u32>>,
+}
+
+impl VoiceState {
+    fn new() -> Self {
+        Self {
+            recording: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            samples:   Arc::new(Mutex::new(Vec::new())),
+            rate:      Arc::new(Mutex::new(16000)),
+        }
+    }
+}
+
+fn voice_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
+    // In the shipped installer, whisper-cli.exe and ggml-base.en.bin are bundled
+    // inside the app's resource directory under voice/.
+    if let Ok(res) = app.path().resource_dir() {
+        let bundled = res.join("voice");
+        if bundled.join("ggml-base.en.bin").exists() { return bundled; }
+    }
+    // Dev / manual setup fallback: downloaded via voice_download_setup command
+    let dir = app.path().app_data_dir().unwrap_or_default().join("nivara-voice");
+    std::fs::create_dir_all(&dir).ok();
+    dir
+}
+
+#[tauri::command]
+fn voice_check_setup(app: tauri::AppHandle) -> serde_json::Value {
+    let dir = voice_dir(&app);
+    let has_binary = dir.join("whisper-cli.exe").exists() || dir.join("whisper-main.exe").exists();
+    let has_model  = dir.join("ggml-base.en.bin").exists();
+    serde_json::json!({
+        "ready":      has_binary && has_model,
+        "has_binary": has_binary,
+        "has_model":  has_model,
+    })
+}
+
+fn find_whisper_exe(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let candidates = ["whisper-cli.exe", "main.exe", "whisper.exe"];
+    // Check dir itself
+    for name in &candidates {
+        let p = dir.join(name);
+        if p.exists() { return Some(p); }
+    }
+    // Walk one level deep (for nested zip structure)
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if entry.path().is_dir() {
+                for name in &candidates {
+                    let p = entry.path().join(name);
+                    if p.exists() { return Some(p); }
+                }
+            }
+        }
+    }
+    None
+}
+
+#[tauri::command]
+async fn voice_download_setup(app: tauri::AppHandle) -> Result<(), String> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    let dir = voice_dir(&app);
+    let client = reqwest::Client::builder()
+        .user_agent("NivaraDesktop/1.0")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    macro_rules! progress {
+        ($step:expr, $pct:expr) => {
+            let _ = app.emit("voice_setup_progress", serde_json::json!({ "step": $step, "pct": $pct }));
+        };
+    }
+
+    // Step 1: fetch latest release info from GitHub
+    progress!("Fetching Nivara voice engine…", 5u32);
+    let release: serde_json::Value = client
+        .get("https://api.github.com/repos/ggerganov/whisper.cpp/releases/latest")
+        .send().await.map_err(|e| format!("Could not reach release server: {e}"))?
+        .json().await.map_err(|e| e.to_string())?;
+
+    let asset_url = release["assets"]
+        .as_array()
+        .and_then(|assets| {
+            assets.iter().find(|a| {
+                let name = a["name"].as_str().unwrap_or("").to_lowercase();
+                (name.contains("win64") || name.contains("windows") || name.contains("win-x64"))
+                    && name.ends_with(".zip")
+            })
+        })
+        .and_then(|a| a["browser_download_url"].as_str())
+        .map(|s| s.to_string())
+        .ok_or("No Windows binary found in latest release")?;
+
+    // Step 2: download the zip (~30 MB)
+    progress!("Downloading Nivara voice engine…", 10u32);
+    let zip_path = dir.join("whisper-win.zip");
+    let resp = client.get(&asset_url).send().await.map_err(|e| e.to_string())?;
+    let total = resp.content_length().unwrap_or(1).max(1);
+    let mut downloaded = 0u64;
+    let mut file = tokio::fs::File::create(&zip_path).await.map_err(|e| e.to_string())?;
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+        downloaded += chunk.len() as u64;
+        let pct = 10 + (downloaded as f64 / total as f64 * 50.0) as u32;
+        let _ = app.emit("voice_setup_progress", serde_json::json!({
+            "step": format!("Downloading voice engine… {:.1} MB", downloaded as f64 / 1_048_576.0),
+            "pct": pct.min(60),
+        }));
+    }
+    file.flush().await.map_err(|e| e.to_string())?;
+
+    // Step 3: extract using PowerShell Expand-Archive (built into Windows 10/11)
+    progress!("Installing voice engine…", 62u32);
+    let extract_dir = dir.join("whisper-bin");
+    let _ = std::fs::remove_dir_all(&extract_dir);
+    let ps_cmd = format!(
+        "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+        zip_path.display(), extract_dir.display()
+    );
+    let out = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &ps_cmd])
+        .output()
+        .map_err(|e| format!("Extraction failed to start: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("Extraction error: {}", err.chars().take(200).collect::<String>()));
+    }
+
+    let binary = find_whisper_exe(&extract_dir)
+        .ok_or("Could not find whisper executable in archive — please try again")?;
+    let dest_bin = dir.join("whisper-cli.exe");
+    std::fs::copy(&binary, &dest_bin)
+        .map_err(|e| format!("Could not install binary: {e}"))?;
+
+    let _ = std::fs::remove_file(&zip_path);
+    let _ = std::fs::remove_dir_all(&extract_dir);
+
+    // Step 4: download voice model (~148 MB) — shown as "Nivara voice model"
+    // HuggingFace URL never exposed to the frontend
+    progress!("Downloading Nivara voice model (148 MB)…", 65u32);
+    let model_path = dir.join("ggml-base.en.bin");
+    let model_resp = client
+        .get("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin")
+        .send().await
+        .map_err(|e| format!("Could not download voice model: {e}"))?;
+    let model_total = model_resp.content_length().unwrap_or(1).max(1);
+    let mut model_downloaded = 0u64;
+    let mut model_file = tokio::fs::File::create(&model_path).await.map_err(|e| e.to_string())?;
+    let mut model_stream = model_resp.bytes_stream();
+    while let Some(chunk) = model_stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        model_file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+        model_downloaded += chunk.len() as u64;
+        let pct = 65 + (model_downloaded as f64 / model_total as f64 * 30.0) as u32;
+        let _ = app.emit("voice_setup_progress", serde_json::json!({
+            "step": format!("Downloading Nivara voice model… {:.0} MB / 148 MB", model_downloaded as f64 / 1_048_576.0),
+            "pct": pct.min(95),
+        }));
+    }
+    model_file.flush().await.map_err(|e| e.to_string())?;
+
+    progress!("Voice setup complete!", 100u32);
+    Ok(())
+}
+
+#[tauri::command]
+fn voice_is_recording(state: tauri::State<'_, VoiceState>) -> bool {
+    state.recording.load(Ordering::Relaxed)
+}
+
+#[tauri::command]
+fn voice_start_recording(state: tauri::State<'_, VoiceState>) -> Result<(), String> {
+    if state.recording.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+    *state.samples.lock().unwrap() = Vec::new();
+    state.recording.store(true, Ordering::Relaxed);
+
+    let recording = state.recording.clone();
+    let samples   = state.samples.clone();
+    let rate_out  = state.rate.clone();
+
+    std::thread::spawn(move || {
+        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
+        let host   = cpal::default_host();
+        let device = match host.default_input_device() {
+            Some(d) => d,
+            None    => { recording.store(false, Ordering::Relaxed); return; }
+        };
+        let config = match device.default_input_config() {
+            Ok(c)  => c,
+            Err(_) => { recording.store(false, Ordering::Relaxed); return; }
+        };
+
+        *rate_out.lock().unwrap() = config.sample_rate().0;
+        let channels = config.channels() as usize;
+        let sfmt     = config.sample_format();
+
+        let err_fn = |_: cpal::StreamError| {};
+
+        let build_stream_f32 = || {
+            let rec = recording.clone();
+            let buf = samples.clone();
+            let ch  = channels;
+            device.build_input_stream(
+                &config.clone().into(),
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    if !rec.load(Ordering::Relaxed) { return; }
+                    let mut lock = buf.lock().unwrap();
+                    for frame in data.chunks(ch.max(1)) {
+                        let s: f32 = frame.iter().copied().sum::<f32>() / ch as f32;
+                        lock.push(s);
+                    }
+                },
+                err_fn, None,
+            )
+        };
+
+        let build_stream_i16 = || {
+            let rec = recording.clone();
+            let buf = samples.clone();
+            let ch  = channels;
+            device.build_input_stream(
+                &config.clone().into(),
+                move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                    if !rec.load(Ordering::Relaxed) { return; }
+                    let mut lock = buf.lock().unwrap();
+                    for frame in data.chunks(ch.max(1)) {
+                        let s: f32 = frame.iter().map(|&x| x as f32 / 32768.0).sum::<f32>() / ch as f32;
+                        lock.push(s);
+                    }
+                },
+                err_fn, None,
+            )
+        };
+
+        let build_stream_u16 = || {
+            let rec = recording.clone();
+            let buf = samples.clone();
+            let ch  = channels;
+            device.build_input_stream(
+                &config.clone().into(),
+                move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                    if !rec.load(Ordering::Relaxed) { return; }
+                    let mut lock = buf.lock().unwrap();
+                    for frame in data.chunks(ch.max(1)) {
+                        let s: f32 = frame.iter().map(|&x| (x as f32 / 32768.0) - 1.0).sum::<f32>() / ch as f32;
+                        lock.push(s);
+                    }
+                },
+                err_fn, None,
+            )
+        };
+
+        use cpal::SampleFormat;
+        let stream_result = match sfmt {
+            SampleFormat::F32 => build_stream_f32(),
+            SampleFormat::I16 => build_stream_i16(),
+            SampleFormat::U16 => build_stream_u16(),
+            _                 => { recording.store(false, Ordering::Relaxed); return; }
+        };
+
+        match stream_result {
+            Ok(stream) => {
+                if stream.play().is_err() {
+                    recording.store(false, Ordering::Relaxed);
+                    return;
+                }
+                while recording.load(Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                // stream drops → recording stops automatically
+            }
+            Err(_) => { recording.store(false, Ordering::Relaxed); }
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn voice_stop_and_transcribe(
+    app:   tauri::AppHandle,
+    state: tauri::State<'_, VoiceState>,
+) -> Result<String, String> {
+    state.recording.store(false, Ordering::Relaxed);
+    // Give the recording thread ~150 ms to drain its final callback
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let samples: Vec<f32> = state.samples.lock().unwrap().clone();
+    let src_rate = *state.rate.lock().unwrap();
+
+    if samples.is_empty() {
+        return Err("No audio recorded. Check your microphone is connected.".to_string());
+    }
+
+    let dir        = voice_dir(&app);
+    let bin_path   = if dir.join("whisper-cli.exe").exists() { dir.join("whisper-cli.exe") }
+                     else { dir.join("whisper-main.exe") };
+    let model_path = dir.join("ggml-base.en.bin");
+
+    if !bin_path.exists() || !model_path.exists() {
+        return Err("Voice setup not complete. Use the mic button to set up voice first.".to_string());
+    }
+
+    let wav_path = dir.join("_voice_input.wav");
+
+    // Downsample to 16 kHz (whisper requirement) via linear interpolation
+    let target = 16_000u32;
+    let resampled: Vec<f32> = if src_rate == target {
+        samples
+    } else {
+        let ratio = src_rate as f64 / target as f64;
+        let n = (samples.len() as f64 / ratio) as usize;
+        (0..n).map(|i| {
+            let pos = i as f64 * ratio;
+            let lo  = pos.floor() as usize;
+            let hi  = (lo + 1).min(samples.len().saturating_sub(1));
+            let t   = (pos - lo as f64) as f32;
+            samples[lo] * (1.0 - t) + samples[hi] * t
+        }).collect()
+    };
+
+    // Write 16 kHz mono f32 WAV
+    {
+        use hound::{SampleFormat as HoundFmt, WavSpec, WavWriter};
+        let spec = WavSpec { channels: 1, sample_rate: 16_000, bits_per_sample: 32, sample_format: HoundFmt::Float };
+        let mut writer = WavWriter::create(&wav_path, spec)
+            .map_err(|e| format!("WAV write error: {e}"))?;
+        for s in &resampled {
+            writer.write_sample(*s).map_err(|e| format!("WAV write error: {e}"))?;
+        }
+        writer.finalize().map_err(|e| format!("WAV finalize error: {e}"))?;
+    }
+
+    // Run whisper-cli subprocess — stderr goes to null, stdout has the text
+    let output = tokio::process::Command::new(&bin_path)
+        .args([
+            "-m", &model_path.to_string_lossy(),
+            "-f", &wav_path.to_string_lossy(),
+            "-nt",          // no timestamps
+            "--no-prints",  // suppress init/timing noise (whisper.cpp ≥ 1.5)
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run voice engine: {e}"))?;
+
+    let _ = tokio::fs::remove_file(&wav_path).await;
+
+    let text = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('['))  // strip any stray [timestamps]
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string();
+
+    if text.is_empty() {
+        return Err("No speech detected. Try speaking clearly and try again.".to_string());
+    }
+
+    Ok(text)
+}
+
 // ─── Vault ────────────────────────────────────────────────────────────────────
 
 struct VaultState {
@@ -3318,6 +3851,8 @@ pub fn run() {
             app.manage(GuardDbConn(Mutex::new(guard_conn)));
             app.manage(TriggerState(Mutex::new(HashMap::new())));
             app.manage(VaultState::new());
+            app.manage(MeshExoProcess(Mutex::new(None)));
+            app.manage(VoiceState::new());
             setup_tray(app)?;
 
             // Start background triggers for all currently-enabled automations
@@ -3413,6 +3948,10 @@ pub fn run() {
             start_linkedin_oauth_server,
             poll_linkedin_auth_code,
             linkedin_exchange_code,
+            // OAuth — Notion
+            start_notion_oauth_server,
+            poll_notion_auth_code,
+            notion_exchange_code,
             // PTY
             pty_spawn,
             pty_write,
@@ -3495,6 +4034,18 @@ pub fn run() {
             vault_relaunch_elevated,
             vault_check_setup,
             vault_do_setup,
+            // Mesh
+            mesh_check_extension,
+            mesh_get_machine_info,
+            mesh_start_exo,
+            mesh_stop_exo,
+            mesh_exo_running,
+            // Voice-to-Code
+            voice_check_setup,
+            voice_download_setup,
+            voice_is_recording,
+            voice_start_recording,
+            voice_stop_and_transcribe,
             // Guard
             guard_log_event,
             guard_get_events,

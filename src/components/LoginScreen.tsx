@@ -32,7 +32,7 @@ export default function LoginScreen() {
         provider: "google",
         options: {
           skipBrowserRedirect: true,
-          redirectTo: "http://127.0.0.1:54321/callback",
+          redirectTo: "http://localhost:54321/callback",
         },
       });
 
@@ -84,7 +84,7 @@ export default function LoginScreen() {
               setGoogleLoading(false);
             }
           } else {
-            setError("No auth token received. Check Supabase redirect URL settings.");
+            setError("Sign-in incomplete. Please try again.");
             setGoogleLoading(false);
           }
         } catch {
@@ -95,7 +95,7 @@ export default function LoginScreen() {
 
       timeoutId = setTimeout(() => {
         unlisten();
-        setError("Sign-in timed out. Please try again.");
+        setError("Google sign-in timed out. If the browser showed 'couldn't sign in', please use email/password to log in instead.");
         setGoogleLoading(false);
       }, 180_000);
 

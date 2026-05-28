@@ -1,7 +1,8 @@
 import {
   useCallback, useEffect, useRef, useState,
-  forwardRef, useImperativeHandle,
+  forwardRef, useImperativeHandle, Component,
 } from 'react';
+import type { ReactNode, ErrorInfo } from 'react';
 import {
   ReactFlow,
   Background,
@@ -1264,10 +1265,33 @@ function NodeConfig({
   );
 }
 
+// ─── Error Boundary — prevents render crashes from white-screening the app ──
+class FlowErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null };
+  static getDerivedStateFromError(e: Error) { return { error: e }; }
+  componentDidCatch(_e: Error, _info: ErrorInfo) { /* errors are shown in UI */ }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-8">
+          <p className="text-nv-red text-sm font-semibold">Canvas error</p>
+          <p className="text-nv-muted text-xs font-mono">{(this.state.error as Error).message}</p>
+          <button
+            onClick={() => this.setState({ error: null })}
+            className="text-[11px] px-3 py-1.5 rounded-lg bg-nv-surface border border-nv-border text-nv-muted hover:text-nv-text transition-fast"
+          >Reset canvas</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // ─── Public API ────────────────────────────────────────────────────────────
 export interface FlowCanvasHandle {
   applyFlow: (nodes: Node[], edges: Edge[]) => void;
   getFlow: () => { nodes: Node[]; edges: Edge[] };
+  fitView: () => void;
 }
 
 interface FlowCanvasProps {
@@ -1277,7 +1301,7 @@ interface FlowCanvasProps {
 
 // ─── Inner (needs ReactFlowProvider) ──────────────────────────────────────
 function FlowCanvasInner({
-  nodes, edges, setNodes, setEdges, onNodesChange, onEdgesChange, onSave, connectedServices,
+  nodes, edges, setNodes, setEdges, onNodesChange, onEdgesChange, onSave, connectedServices, fitViewSignal,
 }: {
   nodes: Node[]; edges: Edge[];
   setNodes: (n: Node[] | ((prev: Node[]) => Node[])) => void;
@@ -1286,6 +1310,7 @@ function FlowCanvasInner({
   onEdgesChange: (c: any) => void;
   onSave?: (nodes: Node[], edges: Edge[]) => void;
   connectedServices?: string[];
+  fitViewSignal: number;
 }) {
   // Sync connected services to module-level variable so node components can read it
   useEffect(() => {
@@ -1293,6 +1318,14 @@ function FlowCanvasInner({
   }, [connectedServices]);
   const instance = useReactFlow();
   const colorMode = useColorMode();
+
+  // When outer FlowCanvas increments fitViewSignal (via applyFlow or fitView()),
+  // call instance.fitView() after a short delay so ReactFlow has rendered the new nodes.
+  useEffect(() => {
+    if (fitViewSignal === 0) return;
+    const t = setTimeout(() => instance.fitView({ padding: 0.3 }), 100);
+    return () => clearTimeout(t);
+  }, [fitViewSignal, instance]);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const nodeCounter = useRef(10);
 
@@ -1398,22 +1431,32 @@ function FlowCanvasInner({
 const FlowCanvas = forwardRef<FlowCanvasHandle, FlowCanvasProps>(function FlowCanvas({ onSave, connectedServices }, ref) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const [fitViewSignal, setFitViewSignal] = useState(0);
 
   useImperativeHandle(ref, () => ({
-    applyFlow(newNodes, newEdges) { setNodes(newNodes); setEdges(newEdges); },
+    applyFlow(newNodes, newEdges) {
+      setNodes(newNodes);
+      setEdges(newEdges);
+      // Signal FlowCanvasInner to fitView after ReactFlow has rendered the new nodes
+      setFitViewSignal(v => v + 1);
+    },
     getFlow() { return { nodes, edges }; },
+    fitView() { setFitViewSignal(v => v + 1); },
   }), [nodes, edges]);
 
   return (
-    <ReactFlowProvider>
-      <FlowCanvasInner
-        nodes={nodes} edges={edges}
-        setNodes={setNodes} setEdges={setEdges}
-        onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
-        onSave={onSave}
-        connectedServices={connectedServices}
-      />
-    </ReactFlowProvider>
+    <FlowErrorBoundary>
+      <ReactFlowProvider>
+        <FlowCanvasInner
+          nodes={nodes} edges={edges}
+          setNodes={setNodes} setEdges={setEdges}
+          onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
+          onSave={onSave}
+          connectedServices={connectedServices}
+          fitViewSignal={fitViewSignal}
+        />
+      </ReactFlowProvider>
+    </FlowErrorBoundary>
   );
 });
 

@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import { krewMemoryDb } from './krewDb';
 
 // ─── Tool definition schema (sent to LLM in system prompt) ───────────────────
@@ -14,6 +15,31 @@ export interface ToolDef {
   description: string;
   parameters: Record<string, ToolParam>;
 }
+
+// ─── Automation tools (always available — bound to user's automation DB) ─────
+
+export const AUTOMATION_TOOLS: ToolDef[] = [
+  {
+    name: 'list_automations',
+    description: 'List all saved automations with their name, trigger type, enabled status, run count, and last run time.',
+    parameters: {},
+  },
+  {
+    name: 'run_automation_now',
+    description: 'Immediately run a specific automation by its ID. Use list_automations first to get IDs.',
+    parameters: {
+      automation_id: { type: 'string', description: 'The ID of the automation to run.', required: true },
+    },
+  },
+  {
+    name: 'toggle_automation',
+    description: 'Enable or disable an automation by its ID.',
+    parameters: {
+      automation_id: { type: 'string', description: 'The automation ID.', required: true },
+      enabled:       { type: 'boolean', description: 'true to enable, false to disable.', required: true },
+    },
+  },
+];
 
 // ─── System tools (always available) ─────────────────────────────────────────
 
@@ -68,7 +94,7 @@ export const SYSTEM_TOOLS: ToolDef[] = [
 export const BOSS_TOOLS: ToolDef[] = [
   {
     name: 'delegate_to_agent',
-    description: 'Delegate a subtask to a specialist agent. ALWAYS use this for content, marketing, sales, and code tasks — do NOT handle these yourself. Valid agent_key values:\n- caption_writer → social media captions (LinkedIn, Instagram, Twitter)\n- email_marketer → email campaigns, drip sequences, subject lines\n- cold_outreach → cold email/DM templates for sales prospecting\n- blog_writer → blog posts and articles\n- content_planner → content calendars and content strategy\n- seo_agent → SEO copy, keywords, meta descriptions\n- ad_copywriter → ad copy (Facebook, Google, LinkedIn ads)\n- social_scheduler → posting schedules and platform strategy\n- researcher → market research, competitor analysis, data gathering\n- product_describer → product descriptions and landing page copy\n- coder → code writing, scripts, technical implementation\n- bug_hunter → debugging and error fixing\n- docs_writer → documentation and READMEs\n- data_analyst → data analysis and insights\n- proposal_writer → business proposals and pitches\n- rate_advisor → pricing strategy\n- translator → language translation',
+    description: 'Delegate a subtask to a specialist agent. ALWAYS use this for content, marketing, sales, code, and automation tasks — do NOT handle these yourself. Valid agent_key values:\n- caption_writer → social media captions (LinkedIn, Instagram, Twitter)\n- email_marketer → email campaigns, drip sequences, subject lines\n- cold_outreach → cold email/DM templates for sales prospecting\n- blog_writer → blog posts and articles\n- content_planner → content calendars and content strategy\n- seo_agent → SEO copy, keywords, meta descriptions\n- ad_copywriter → ad copy (Facebook, Google, LinkedIn ads)\n- social_scheduler → posting schedules and platform strategy\n- researcher → market research, competitor analysis, data gathering\n- product_describer → product descriptions and landing page copy\n- coder → code writing, scripts, technical implementation\n- bug_hunter → debugging and error fixing\n- docs_writer → documentation and READMEs\n- data_analyst → data analysis and insights\n- proposal_writer → business proposals and pitches\n- rate_advisor → pricing strategy\n- translator → language translation\n- ops_agent → automation setup, listing automations, running/pausing automations, workflow management\n- automation_strategist → designing complex multi-step automation workflows',
     parameters: {
       agent_key: { type: 'string', description: 'Exact agent key from the list above (e.g. "cold_outreach", "caption_writer").', required: true },
       task:      { type: 'string', description: 'A clear, self-contained task description with all context the specialist needs.', required: true },
@@ -541,6 +567,7 @@ export async function executeTool(
   creds: Creds,
   onTerminalApprovalNeeded: (command: string) => Promise<boolean>,
   agentKey: string = 'boss',
+  userId = '',
 ): Promise<string> {
   const str = (v: unknown) => String(v ?? '');
   const num = (v: unknown, def: number) => typeof v === 'number' ? v : def;
@@ -1033,6 +1060,49 @@ export async function executeTool(
       headers: liHeaders,
       body:    JSON.stringify({ actor: personUrn }),
     });
+  }
+
+  // ── Automation management ─────────────────────────────────────────────────
+  if (toolName === 'list_automations') {
+    try {
+      const rows = await invoke<{
+        id: string; name: string; trigger_type: string; enabled: boolean;
+        run_count: number; last_run_at: number | null;
+      }[]>('automation_list', { userId });
+      if (!rows.length) return 'No automations found. The user has not created any yet.';
+      const summary = rows.map((a, i) => {
+        const lastRun = a.last_run_at
+          ? new Date(a.last_run_at * 1000).toLocaleString()
+          : 'Never';
+        const status = a.enabled ? '● enabled' : '○ disabled';
+        return `${i + 1}. [${a.id.slice(0, 8)}] "${a.name}" — trigger: ${a.trigger_type} — ${status} — runs: ${a.run_count} — last: ${lastRun}`;
+      }).join('\n');
+      return `Automations (${rows.length} total):\n${summary}`;
+    } catch (e) {
+      return `Failed to list automations: ${String(e)}`;
+    }
+  }
+
+  if (toolName === 'run_automation_now') {
+    try {
+      const rows = await invoke<{ id: string; name: string; trigger_type: string }[]>('automation_list', { userId });
+      const target = rows.find(a => a.id === str(args.automation_id) || a.name.toLowerCase().includes(str(args.automation_id).toLowerCase()));
+      if (!target) return `Automation not found: "${str(args.automation_id)}". Use list_automations to get valid IDs.`;
+      await emit('krew_run_automation', { id: target.id });
+      return `Running automation "${target.name}" now. The output will be delivered to its configured destination.`;
+    } catch (e) {
+      return `Failed to run automation: ${String(e)}`;
+    }
+  }
+
+  if (toolName === 'toggle_automation') {
+    try {
+      const enabled = args.enabled === true || args.enabled === 'true';
+      await invoke('automation_toggle', { id: str(args.automation_id), enabled });
+      return `Automation ${str(args.automation_id).slice(0, 8)}… ${enabled ? 'enabled' : 'disabled'} successfully.`;
+    } catch (e) {
+      return `Failed to toggle automation: ${String(e)}`;
+    }
   }
 
   return `Unknown tool: ${toolName}`;

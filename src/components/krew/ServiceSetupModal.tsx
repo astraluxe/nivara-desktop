@@ -73,10 +73,25 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
     title: 'Connect Notion',
     icon:  'N',
     steps: [
-      { title: 'Create a Notion integration', body: 'Go to notion.so/my-integrations and click "+ New integration". Paste the name below, select your workspace, and click Submit.', link: 'https://www.notion.so/my-integrations', copyItems: [{ label: 'Integration name', text: 'Nivara' }] },
-      { title: 'Copy the Integration Secret', body: 'After creating the integration, click "Show" next to "Internal Integration Secret" and copy the token (starts with "secret_").' },
-      { title: 'Share pages with the integration', body: 'For each Notion page or database you want Krew to access: open the page, click "Share" in the top right, search for "Nivara", and click Invite.' },
-      { title: 'Paste the token', body: '', field: 'token', fieldLabel: 'Integration Secret', fieldPlaceholder: 'secret_...', secret: true },
+      {
+        title: 'Create a Notion integration',
+        body: 'Click the link below. Then:\n\n1. Click "+ New integration"\n2. Set the name (copy from below)\n3. "Authentication method" → choose Access token  ← important\n   (NOT OAuth — that one needs redirect URLs and is for public apps)\n4. Click Submit',
+        link: 'https://www.notion.so/my-integrations',
+        copyItems: [{ label: 'Integration name', text: 'Nivara' }],
+      },
+      {
+        title: 'Copy your token',
+        body: 'On the next page you\'ll see your integration token.\n\nClick "Show" next to "Internal Integration Secret" and copy the value. It starts with "secret_".\n\nPaste it below.',
+        field: 'token',
+        fieldLabel: 'Integration Token',
+        fieldPlaceholder: 'secret_...',
+        secret: true,
+      },
+      {
+        title: 'Give Nivara access to a page',
+        body: 'Create a page in Notion for Nivara to store automation results, then grant access:\n\n1. In Notion, click "+ New page" in the left sidebar and name it (copy from below)\n2. In Notion, go to Settings → Connections → All Connections\n3. Find "Nivara (Internal)" → click the ··· next to it\n4. Click "Manage Connection" → in the popup click "Go to Manage Page Access"\n5. Select the page you just created → click Save\n\nNivara will automatically create databases inside that page — you never need to touch it again.',
+        copyItems: [{ label: 'Page name', text: 'Nivara' }],
+      },
     ],
   },
   slack: {
@@ -592,6 +607,7 @@ export default function ServiceSetupModal({ service, onDone, onClose }: Props) {
               </p>
             </div>
           )}
+
         </div>
 
         {/* Footer */}

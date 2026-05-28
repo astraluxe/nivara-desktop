@@ -22,11 +22,40 @@ import type { Node, Edge } from "@xyflow/react";
 import { executeAutomation, type AutomationRow } from "./lib/automationRunner";
 import { supabase } from "./lib/supabase";
 
+const LAST_OPEN_KEY = "nv-last-open";
+
+interface MissedRun {
+  id: string;
+  automation_id: string;
+  triggered_at: number;
+  status: string;
+  output_summary: string | null;
+}
+
+function OfflineBanner({ runs, onDismiss, onView }: { runs: MissedRun[]; onDismiss: () => void; onView: () => void }) {
+  const ok = runs.filter(r => r.status === "success").length;
+  const fail = runs.filter(r => r.status === "failed").length;
+  return (
+    <div className="flex items-center gap-3 px-4 py-2 bg-nv-surface border-b border-nv-border text-xs shrink-0">
+      <span className="w-1.5 h-1.5 rounded-full bg-nv-info shrink-0" />
+      <span className="text-nv-text flex-1">
+        <span className="font-semibold">{runs.length} automation{runs.length !== 1 ? "s" : ""} ran while you were away</span>
+        {ok > 0 && <span className="text-nv-ok ml-2">{ok} succeeded</span>}
+        {fail > 0 && <span className="text-nv-bad ml-2">{fail} failed</span>}
+      </span>
+      <button onClick={onView} className="text-accent hover:underline font-medium">View</button>
+      <button onClick={onDismiss} className="text-nv-faint hover:text-nv-text ml-1">✕</button>
+    </div>
+  );
+}
+
 function AppShell() {
   const { session, loading } = useAuth();
   const [activeModule, setActiveModule] = useState<Module>("home");
   const [showTour, setShowTour] = useState(false);
   const [canvasFlow, setCanvasFlow] = useState<{ nodes: Node[]; edges: Edge[] } | null>(null);
+  const [missedRuns, setMissedRuns] = useState<MissedRun[]>([]);
+  const [meshActive, setMeshActive] = useState(false);
 
   function handleViewOnCanvas(nodes: Node[], edges: Edge[]) {
     setCanvasFlow({ nodes, edges });
@@ -37,6 +66,20 @@ function AppShell() {
     if (session && !isTourDone()) {
       setShowTour(true);
     }
+  }, [session]);
+
+  // Offline automation notification — check for runs since last open
+  useEffect(() => {
+    if (!session) return;
+    const prevTs = parseInt(localStorage.getItem(LAST_OPEN_KEY) ?? "0", 10);
+    localStorage.setItem(LAST_OPEN_KEY, Math.floor(Date.now() / 1000).toString());
+    if (prevTs === 0) return; // first ever open, nothing to compare
+    invoke<MissedRun[]>("automation_get_logs", { automationId: null, limit: 50 })
+      .then(logs => {
+        const missed = logs.filter(r => r.triggered_at > prevTs);
+        if (missed.length > 0) setMissedRuns(missed);
+      })
+      .catch(() => {/* silent */});
   }, [session]);
 
   // Desktop heartbeat — lets Supabase cloud runner know the PC is on and skip duplicate execution
@@ -72,6 +115,24 @@ function AppShell() {
     return () => { unlisten?.(); };
   }, [session]);
 
+  // Krew agent explicit run — bypasses automationAutoRun gate
+  useEffect(() => {
+    if (!session) return;
+    const userId = session.user.id;
+    let unlisten: (() => void) | null = null;
+
+    listen<{ id: string }>("krew_run_automation", async (event) => {
+      try {
+        const automations = await invoke<AutomationRow[]>("automation_list", { userId });
+        const automation = automations.find(a => a.id === event.payload.id);
+        if (!automation) return;
+        await executeAutomation(automation, userId);
+      } catch { /* silent */ }
+    }).then(fn => { unlisten = fn; });
+
+    return () => { unlisten?.(); };
+  }, [session]);
+
   if (loading) return <AppSkeleton />;
 
   if (!session) {
@@ -81,18 +142,25 @@ function AppShell() {
   return (
     <div className="flex flex-col h-full">
       <TitleBar activeModule={activeModule} />
+      {missedRuns.length > 0 && (
+        <OfflineBanner
+          runs={missedRuns}
+          onDismiss={() => setMissedRuns([])}
+          onView={() => { setActiveModule("automation"); setMissedRuns([]); }}
+        />
+      )}
       <div className="flex flex-1 overflow-hidden">
-        <Sidebar activeModule={activeModule} onModuleChange={setActiveModule} />
+        <Sidebar activeModule={activeModule} onModuleChange={setActiveModule} meshSessionActive={meshActive} />
         <main className="flex-1 overflow-hidden">
           {activeModule === "home"       && <HomeModule onNavigate={setActiveModule} onStartTour={() => setShowTour(true)} />}
           {activeModule === "automation" && <AutomationModule canvasFlow={canvasFlow} onCanvasFlowConsumed={() => setCanvasFlow(null)} />}
           {activeModule === "coder"      && <CoderModule />}
-          {activeModule === "krew"    && <KrewModule onViewOnCanvas={handleViewOnCanvas} />}
+          {activeModule === "krew"    && <KrewModule onViewOnCanvas={handleViewOnCanvas} onOpenAutomations={() => setActiveModule('automation')} />}
           {activeModule === "connect" && <ConnectApps />}
           {activeModule === "models"  && <ModelsModule />}
           {activeModule === "vault"   && <VaultModule />}
           {activeModule === "guard"   && <GuardModule />}
-          {activeModule === "mesh"    && <MeshModule />}
+          {activeModule === "mesh"    && <MeshModule onSessionChange={setMeshActive} />}
           {activeModule === "account"  && <AccountPanel />}
           {activeModule === "settings" && <SettingsModule />}
         </main>

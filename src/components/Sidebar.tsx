@@ -6,6 +6,7 @@ export type Module = "home" | "automation" | "coder" | "krew" | "connect" | "mod
 interface Props {
   activeModule: Module;
   onModuleChange: (m: Module) => void;
+  meshSessionActive?: boolean;
 }
 
 // ── Theme toggle ──────────────────────────────────────────────────────────────
@@ -82,7 +83,7 @@ const MODULES: { id: Module; label: string; icon: React.ReactNode; status: "acti
   {
     id: "models",
     label: "Models · open hub",
-    status: "idle",
+    status: "active",
     icon: (
       <svg viewBox="0 0 28 28" fill="none" className="w-5 h-5">
         <path d="M14 2 26 8 14 14 2 8 14 2Z" fill="currentColor" />
@@ -93,8 +94,8 @@ const MODULES: { id: Module; label: string; icon: React.ReactNode; status: "acti
   },
   {
     id: "vault",
-    label: "Vault · VPN",
-    status: "off",
+    label: "Vault · DNS protection",
+    status: "active",
     icon: (
       <svg viewBox="0 0 28 28" fill="none" className="w-5 h-5">
         <path d="M14 2 4 6v8c0 6.5 4.3 11.5 10 12 5.7-.5 10-5.5 10-12V6L14 2Z" fill="currentColor" />
@@ -105,7 +106,7 @@ const MODULES: { id: Module; label: string; icon: React.ReactNode; status: "acti
   {
     id: "guard",
     label: "Guard · security",
-    status: "off",
+    status: "active",
     icon: (
       <svg viewBox="0 0 28 28" fill="none" className="w-5 h-5">
         <path d="M14 2 3 6v10c0 5 4.5 9.5 11 10 6.5-.5 11-5 11-10V6L14 2Z" fill="currentColor" />
@@ -117,7 +118,7 @@ const MODULES: { id: Module; label: string; icon: React.ReactNode; status: "acti
   {
     id: "mesh",
     label: "Mesh · RAM pooling",
-    status: "idle",
+    status: "off",
     icon: (
       <svg viewBox="0 0 28 28" fill="none" className="w-5 h-5">
         <circle cx="4"  cy="14" r="2.5" fill="currentColor" />
@@ -163,7 +164,7 @@ const SHORT_LABEL: Record<string, string> = {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function Sidebar({ activeModule, onModuleChange }: Props) {
+export default function Sidebar({ activeModule, onModuleChange, meshSessionActive }: Props) {
   const { profile, user } = useAuth();
   const { paper, toggle } = useTheme();
   const [expanded, setExpanded] = useState(false);
@@ -269,6 +270,7 @@ export default function Sidebar({ activeModule, onModuleChange }: Props) {
 
         {MODULES.map((m) => {
           const isActive = m.id === activeModule;
+          const effectiveStatus = (m.id === "mesh" && meshSessionActive) ? "active" as const : m.status;
           return (
             <button
               key={m.id}
@@ -314,9 +316,9 @@ export default function Sidebar({ activeModule, onModuleChange }: Props) {
                 className="flex items-center gap-1 shrink-0"
                 style={expanded ? {} : { position: "absolute", bottom: 5, right: 5 }}
               >
-                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_COLOR[m.status]}`} title={`${STATUS_LABEL[m.status]} — ${m.label}`} />
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_COLOR[effectiveStatus]}`} title={`${STATUS_LABEL[effectiveStatus]} — ${m.label}`} />
                 <span
-                  className={`text-[8px] font-mono ${STATUS_TEXT[m.status]}`}
+                  className={`text-[8px] font-mono ${STATUS_TEXT[effectiveStatus]}`}
                   style={{
                     opacity: expanded ? 1 : 0,
                     maxWidth: expanded ? "50px" : 0,
@@ -325,7 +327,7 @@ export default function Sidebar({ activeModule, onModuleChange }: Props) {
                     whiteSpace: "nowrap",
                   }}
                 >
-                  {STATUS_LABEL[m.status]}
+                  {STATUS_LABEL[effectiveStatus]}
                 </span>
               </span>
             </button>

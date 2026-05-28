@@ -43,8 +43,8 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     cloudAutomations:0,
   },
   solo: {
-    monthlyTokens:   500_000,
-    label:           '500K / month',
+    monthlyTokens:   2_000_000,
+    label:           '2M / month',
     mcpConnections:  5,
     canCreateMesh:   false,
     canJoinMesh:     false,

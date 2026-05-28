@@ -33,6 +33,44 @@ jobs:
         with:
           workspaces: './src-tauri -> target'
 
+      - name: Set up Python for exo bundling
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Bundle voice engine (whisper-cli + Nivara voice model)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/resources/voice | Out-Null
+          # Fetch latest whisper.cpp Windows release
+          $rel   = Invoke-RestMethod "https://api.github.com/repos/ggerganov/whisper.cpp/releases/latest"
+          $asset = $rel.assets | Where-Object { $_.name -match "win-x64" -and $_.name -match "\.zip$" } | Select-Object -First 1
+          if (-not $asset) { $asset = $rel.assets | Where-Object { $_.name -match "windows" -and $_.name -match "\.zip$" } | Select-Object -First 1 }
+          Write-Host "Downloading $($asset.name)…"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile whisper.zip -UseBasicParsing
+          Expand-Archive -Path whisper.zip -DestinationPath whisper-out -Force
+          $exe = Get-ChildItem -Recurse whisper-out -Filter "whisper-cli.exe" | Select-Object -First 1
+          Copy-Item $exe.FullName src-tauri/resources/voice/whisper-cli.exe
+          # Download Nivara voice model (ggml-base.en.bin from HuggingFace — internal, not shown to users)
+          Write-Host "Downloading Nivara voice model…"
+          Invoke-WebRequest -Uri "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin" -OutFile src-tauri/resources/voice/ggml-base.en.bin -UseBasicParsing
+          Write-Host "Voice engine ready."
+
+      - name: Bundle mesh engine (exo via PyInstaller)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/resources/mesh | Out-Null
+          pip install exo-compute pyinstaller --quiet
+          # Write launcher script
+          @'
+from exo.main import main
+if __name__ == "__main__":
+    main()
+'@ | Out-File -FilePath exo_run.py -Encoding utf8
+          python -m PyInstaller --onefile --name exo-node --collect-all exo exo_run.py --distpath dist-exo --workpath build-exo --specpath spec-exo
+          Copy-Item dist-exo/exo-node.exe src-tauri/resources/mesh/exo-node.exe
+          Write-Host "Mesh engine bundled."
+
       - name: Build Tauri app and publish GitHub Release
         uses: tauri-apps/tauri-action@v0
         env:

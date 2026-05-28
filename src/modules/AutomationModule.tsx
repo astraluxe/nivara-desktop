@@ -6,6 +6,7 @@ import FlowCanvas, { type FlowCanvasHandle } from '../components/automation/Flow
 import { executeAutomation, callAutomationAI, type AutomationRow } from '../lib/automationRunner';
 import { credentialStore } from '../lib/krewDb';
 import { supabase } from '../lib/supabase';
+import { useResize } from '../hooks/useResize';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -129,6 +130,24 @@ function nth(n: number): string {
   return ['th', 'st', 'nd', 'rd', 'th'][Math.min(n % 10, 4)];
 }
 
+function Divider({ direction, onPointerDown }: {
+  direction: 'horizontal' | 'vertical';
+  onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => void;
+}) {
+  const isH = direction === 'horizontal';
+  return (
+    <div
+      onPointerDown={onPointerDown}
+      className={`group shrink-0 relative flex items-center justify-center ${isH ? 'w-[5px] cursor-col-resize' : 'h-[5px] cursor-row-resize'} bg-nv-border/30 hover:bg-accent/40 transition-colors select-none z-10`}
+      style={isH ? { minWidth: 5 } : { minHeight: 5 }}
+    >
+      <div className={`flex gap-[3px] opacity-0 group-hover:opacity-100 transition-opacity ${isH ? 'flex-col' : 'flex-row'}`}>
+        {[0,1,2].map(i => <span key={i} className="w-[3px] h-[3px] rounded-full bg-accent/70" />)}
+      </div>
+    </div>
+  );
+}
+
 function cronToHuman(cron: string): string {
   if (!cron) return 'Not configured';
   const parts = cron.trim().split(/\s+/);
@@ -239,7 +258,7 @@ function buildFlow(
       position: { x: 80 + (i + 1) * X, y: 200 },
       data: { label: ACTION_LABELS[step.action] ?? step.action, action: step.action, prompt: step.prompt },
     });
-    edges.push({ id: `e${i}`, source: i === 0 ? 'n0' : `n${i}`, target: id, type: 'dot', data: { srcType: i === 0 ? 'trigger' : 'ai_action' } });
+    edges.push({ id: `e${i}`, source: i === 0 ? 'n0' : `n${i}`, target: id, type: 'line', data: { srcType: i === 0 ? 'trigger' : 'ai_action' } });
   });
 
   if (steps.length > 0) {
@@ -256,33 +275,109 @@ function buildFlow(
       position: { x: 80 + (steps.length + 1) * X, y: 200 },
       data: { label: outLabels[lastStep.output] ?? lastStep.output, outputType: lastStep.output, subtitle: '' },
     });
-    edges.push({ id: 'eout', source: `n${steps.length}`, target: 'nout', type: 'dot', data: { srcType: 'ai_action' } });
+    edges.push({ id: 'eout', source: `n${steps.length}`, target: 'nout', type: 'line', data: { srcType: 'ai_action' } });
   }
 
   return { nodes, edges };
 }
 
 function automationToFlow(automation: Automation) {
-  if (automation.trigger_type === 'canvas_flow') {
-    try {
+  try {
+    if (automation.trigger_type === 'canvas_flow') {
       return JSON.parse(automation.trigger_config) as { nodes: Node[]; edges: Edge[] };
-    } catch {
-      return { nodes: [], edges: [] };
     }
+    return buildFlow(
+      automation.trigger_type,
+      JSON.parse(automation.trigger_config) as TriggerConfig,
+      JSON.parse(automation.steps) as Step[],
+    );
+  } catch {
+    return { nodes: [], edges: [] };
   }
-  return buildFlow(
-    automation.trigger_type,
-    JSON.parse(automation.trigger_config) as TriggerConfig,
-    JSON.parse(automation.steps) as Step[],
-  );
 }
 
 function templateToFlow(t: Template) {
   return buildFlow(t.trigger_type, t.trigger_config, t.steps);
 }
 
-const FLOW_SYSTEM_PROMPT = `You are a workflow automation builder. The user will describe an automation.
-Return ONLY valid JSON (no markdown, no explanation, no code fences) with this exact shape:
+const AUTOMATION_CAPABILITY_CONTEXT = `
+## Nivara Automation — Full Capability Reference
+
+TRIGGERS — ONLY these exist, nothing else:
+- schedule: Cron schedule (every hour, daily at 9am, weekdays only, monthly, custom cron)
+- email: Gmail inbox — fires when email arrives matching from/subject/keyword filters
+- file_watch: Watches a local folder for new/changed files (filter by type)
+- webhook: HTTP endpoint — any external service can POST to trigger it
+- twitter_mention: X (Twitter) @mentions of the connected account — optional keyword filter on the mention text. IMPORTANT: only catches posts where someone @mentions the user. Cannot search all of X for arbitrary keywords or monitor other people's timelines.
+- rss: Polls any RSS/Atom feed URL for new items
+- github: GitHub repo events — pull_request, issue, push, release
+- stripe: Stripe payment events (payment_intent.succeeded, charge.failed, etc.)
+- google_calendar: Upcoming calendar events — lookahead window in minutes
+
+AI ACTIONS — ONLY these exist:
+- summarise: Condense content into key points
+- reply: Draft a reply/response to the content
+- extract: Pull structured data (names, emails, numbers, dates) as JSON
+- classify: Categorise or label content (urgency, topic, sentiment, intent)
+- report: Generate a formatted report or log entry
+- translate: Translate content to another language
+
+OUTPUTS — ONLY these exist:
+- notification: Desktop notification (title + body)
+- file: Write/append to a local file (txt, md, json, csv)
+- email_reply: Send email reply via Gmail
+- notion: Add a page to a Notion database
+- slack: Post to a Slack channel
+- twitter_post: Post a new tweet on the connected X account
+- twitter_reply: Reply to the tweet that triggered the automation
+- linkedin_post: Publish a new post on the user's own LinkedIn profile (OUTPUT only — cannot read or monitor LinkedIn)
+- reddit_post: Submit to a subreddit
+- discord: Send to a Discord webhook
+- google_sheets: Append a row to Google Sheets
+- twilio_sms: Send SMS via Twilio
+- telegram: Send a Telegram message
+- hubspot: Create/update a HubSpot CRM contact or note
+
+STRUCTURAL RULES:
+- ONE trigger per automation. A single automation cannot combine multiple triggers. Tell the user to create separate automations for different triggers.
+- Canvas flows support condition/loop/approval/subagent nodes for branching and parallel logic within a single trigger's flow.
+- Multi-step chaining: output of step N feeds into step N+1.
+
+CANVAS FLOWS vs FORM AUTOMATIONS — critical distinction:
+- Canvas flows (built via drag-and-drop or the AI builder) are VISUAL DESIGN ONLY. They do not execute automatically. They are for planning and visualising a flow.
+- Form-based automations (created via the workflow builder form) are the ones that ACTUALLY RUN on a schedule or trigger, execute AI steps, and send outputs.
+- If a user wants something to actually run and do work automatically, they need a form-based automation, not a canvas flow.
+- When discussing an automation the user wants to actually run, make this clear.
+
+CONTEXT INJECTION — built-in features that run BEFORE each automation execution (these are NOT separate triggers, they are part of a single automation):
+These fields are set on the trigger config and are injected automatically into the AI's context before any step runs:
+
+1. pitch_file_path: Path to a local file (e.g. C:\Users\you\PRODUCT-DETAILS.MD). The runner reads this file at runtime and injects its contents as "Product/Pitch Context" into every AI step. The step prompt does NOT need to reference the file — it is already injected automatically. Prompt should say "using the product details above", not "{file_path}".
+
+2. knowledge_context (labelled "Paste product info" in the UI): Paste text directly (product description, FAQs, talking points). Injected as "Company Knowledge Base" into every AI step. Same rule — injected automatically, prompt should reference "the product details above".
+
+3. notion_crm_db: Optional Notion database URL. The runner fetches the last 30 records from this database before each run and injects them as context so the AI knows what was done before. If left blank AND Notion is connected, the runner automatically discovers the "Nivara Automations" database (auto-created when any notion output runs). THIS IS HOW YOU GIVE THE AI MEMORY OF PAST ACTIONS — no manual URL needed if Notion is already connected.
+   - "Check what posts were already made before writing a new one" → notion output saves each post → next run auto-reads those posts → AI sees them and picks a fresh angle.
+   - "Check CRM contacts before drafting outreach" → same mechanism.
+   IMPORTANT: This is NOT a second trigger. It is context injection within a single automation. Never say this requires multiple automations.
+
+IMPORTANT: For ANY automation that generates marketing content, social posts, outreach, or product-specific text — always tell the user to set pitch_file_path or knowledge_context, otherwise the AI produces useless generic output.
+
+HARD LIMITS — these do NOT exist, never suggest them:
+- NO LinkedIn monitoring trigger — LinkedIn's API blocks watching other people's posts. linkedin_post is output-only.
+- NO LinkedIn commenting on other people's posts — impossible via LinkedIn's API.
+- NO keyword search across all of X/Twitter — twitter_mention only catches @mentions to the user's own account.
+- NO web search or browse internet AI action — AI actions cannot look up URLs, search Google, or scrape sites.
+- NO browser automation or clicking through websites.
+- NO reading DMs or private messages on any platform.
+- NO "monitor competitor posts" or "watch someone else's feed" on social platforms.
+- NO sending LinkedIn DMs programmatically.
+`;
+
+const FLOW_SYSTEM_PROMPT = `You are a workflow automation builder. You have complete knowledge of Nivara's automation system:
+${AUTOMATION_CAPABILITY_CONTEXT}
+
+The user will describe an automation. Return ONLY valid JSON (no markdown, no explanation, no code fences) with this exact shape:
 {"nodes":[{"id":"n1","type":"trigger","position":{"x":100,"y":200},"data":{"label":"Schedule","subtitle":"Every Monday at 09:00","triggerType":"schedule"}}],"edges":[]}
 
 Node types:
@@ -301,7 +396,91 @@ Edge shape: {"id":"e1","source":"n1","target":"n2","type":"line","data":{"srcTyp
 For condition/loop/approval edges, add "sourceHandle":"yes" or "sourceHandle":"no" or "sourceHandle":"each" etc. to the edge.
 srcType in edge data matches the source node's type.
 
+AI ACTION PROMPT QUALITY — critical for content-generation automations:
+When writing the "prompt" field for an ai_action node that generates marketing content, social posts, outreach, or product-specific text:
+- NEVER write a vague prompt like "Write a LinkedIn post about Nivara" — the AI running the automation has zero product knowledge.
+- ALWAYS embed the key product facts directly inside the prompt field. Example: "You are a founder marketing Nivara — an all-in-one AI desktop app (~10MB installer) that replaces 5 separate tools (AI coding, personal AI team, automations, local model manager, privacy shield). It runs locally with no cloud lock-in. Write a LinkedIn post targeting founders who are tired of paying for multiple AI SaaS subscriptions. Pose a relatable question about tool sprawl. Keep it under 200 words, conversational, no buzzwords."
+- If the user's input includes product details, extract and embed them verbatim in the prompt.
+- If the user hasn't provided product details, write the prompt with a [PASTE YOUR PRODUCT DETAILS HERE] placeholder and note it in a comment in the subtitle field.
+
 CRITICAL: Return ONLY the raw JSON object. Nothing else.`;
+
+const SOCIAL_SAFETY_ADDENDUM = `
+SOCIAL POSTING GUIDELINES (apply when output is twitter_post or linkedin_post):
+X (Twitter) rules: max 280 chars per tweet, no spam-like repetition, no identical posts within 24h, hashtags max 2-3 (more = spam filter), no aggressive promotional language, vary sentence structure, avoid ALL CAPS, add a personal observation or question to feel human-written, no identical threads.
+LinkedIn rules: professional tone but conversational, no keyword-stuffed sentences, start with a hook (question or bold statement), 3-5 paragraphs max, add line breaks every 1-2 sentences for mobile readability, 3-5 relevant hashtags at end, avoid "I am excited to announce" clichés, personal insight required, no pure promotional copy.
+General anti-ban: never use templated-sounding text, vary post timing (not same time every day), mix content types (questions, insights, stories, tips), always read as written by a human who has opinions.
+When writing social post prompts for the AI step: instruct the AI to write as a knowledgeable human who has personal experience with the topic, not as a marketing tool.`;
+
+function buildDiscussionPrompt(savedAutomations: Automation[], selectedAutomation: Automation | null, connectedServices: string[] = []): string {
+  const savedSummary = savedAutomations.length > 0
+    ? `\n## User's Saved Automations (${savedAutomations.length} total)\n` + savedAutomations.map((a, i) => {
+        let cfg: TriggerConfig = {} as TriggerConfig;
+        let steps: Step[] = [];
+        if (a.trigger_type !== 'canvas_flow') {
+          try { cfg = JSON.parse(a.trigger_config) as TriggerConfig; } catch {}
+          try { steps = JSON.parse(a.steps) as Step[]; } catch {}
+        }
+        const outputs = steps.map((s: Step) => s.output).join(' → ');
+        const schedule = cfg.cron ? ` (${cronToHuman(cfg.cron)})` : '';
+        return `${i + 1}. "${a.name}" — trigger: ${a.trigger_type}${schedule}, outputs: ${outputs || 'canvas flow'}, enabled: ${a.enabled}, runs: ${a.run_count}`;
+      }).join('\n')
+    : '\n## User has no saved automations yet.\n';
+
+  const selectedCtx = selectedAutomation
+    ? `\n## Currently Discussing: "${selectedAutomation.name}"\nFull config:\nTrigger: ${selectedAutomation.trigger_type}\nTrigger config: ${selectedAutomation.trigger_config}\nSteps: ${selectedAutomation.steps}\nEnabled: ${selectedAutomation.enabled}\nRuns: ${selectedAutomation.run_count}\nLast run: ${selectedAutomation.last_run_at ? new Date(selectedAutomation.last_run_at * 1000).toLocaleString() : 'never'}\n\nThe user wants to discuss or modify this specific automation. Read it carefully and respond accordingly.\n`
+    : '';
+
+  const connectedCtx = connectedServices.length > 0
+    ? `\n## User's Connected Services\n${connectedServices.join(', ')}\nUse these automatically — never ask the user which service to use, never ask for API keys, these are already set up.\n`
+    : '\n## Connected Services: none yet\n';
+
+  return `You are Nivara's automation assistant — honest, decisive, and action-oriented. Your job is to tell the user exactly what is and isn't possible, then build what CAN be done immediately.
+${AUTOMATION_CAPABILITY_CONTEXT}
+${savedSummary}
+${connectedCtx}
+${selectedCtx}
+## CRITICAL RULES — follow all of these exactly:
+
+**0. HONESTY FIRST — before anything else**
+- If the user asks for something in the HARD LIMITS list, say so immediately and clearly. Do NOT plan around it, do NOT suggest a workaround that doesn't exist, do NOT give false hope.
+- Examples of what to say: "LinkedIn doesn't allow monitoring other people's posts via API — that part isn't possible." / "There's no web search action — AI can't look things up on the internet." / "One automation = one trigger, so this needs to be two separate automations."
+- After stating what's impossible, pivot to what IS possible and offer to build that instead.
+- If a user's request mixes possible and impossible parts, clearly split your response: "✓ What we can build:" and "✗ What's not possible:"
+
+**1. PRODUCT CONTEXT — always remind for content-generation automations**
+- If the automation generates marketing posts, outreach replies, product descriptions, or any content about a specific product/company: immediately tell the user the AI needs real data to work with.
+- Say: "The AI running this automation has no knowledge of your product. In the form's **Trigger step → Product context section**, either set the **Pitch File Path** (e.g. PRODUCT-DETAILS.MD) or paste your product info into **Paste product info**. Without this it will only produce generic text."
+- Note: these fields only work on form-based automations that actually run — canvas flows are visual-only and don't execute.
+- Never write a step prompt that just says "write a post about [Product Name]" — that produces useless output with no real details.
+- The file/text is injected automatically before the AI step runs — the step prompt should say "using the product details above" NOT "{file_path}" or any literal placeholder.
+
+**2. MAKE SMART ASSUMPTIONS FOR THE POSSIBLE PARTS**
+- Use connected services automatically — never ask which service to use.
+- Default to daily 9am for schedules. Default to notification output if none specified.
+- For classification: define your own criteria (Lead = pain point / pricing interest, Affiliate = marketer / collaboration, Spam = promotional / irrelevant).
+- For missing values (URLs, paths, sheet IDs): use [PLACEHOLDER] and tell the user to swap it later.
+
+**2. ONE TRIGGER PER AUTOMATION — always enforce this**
+- If the user's request needs multiple triggers, say: "This needs [N] separate automations — one per trigger."
+- Then describe each one separately and offer to build them one at a time.
+
+**3. GO STRAIGHT TO BUILDING THE POSSIBLE PARTS**
+- After being honest about limits, immediately pivot to what can be built.
+- Ask at most ONE question only if something is truly impossible to default.
+- Never ask what's already known from connected services or context.
+
+**4. FORMAT**
+- Lead with any hard-limit warnings (rule 0). Then describe what you'll build. Then signal ready.
+- Use **bold** for key terms, bullet lists for steps. Under 200 words total before ---READY TO BUILD---.
+- Be direct. Don't soften impossible things — state them plainly.
+
+**5. SIGNAL WHEN READY**
+End with:
+---READY TO BUILD---
+Build an automation that [full description of only the possible parts, with smart defaults and placeholders filled in]`;
+}
+
 
 // ─── Templates ────────────────────────────────────────────────────────────────
 
@@ -660,11 +839,12 @@ function RequiredBadge() {
 // ─── Workflow Builder (modal) ─────────────────────────────────────────────────
 
 function WorkflowBuilder({
-  initial, onSave, onCancel,
+  initial, onSave, onCancel, connectedServices = [],
 }: {
   initial?: Automation;
   onSave: (name: string, tt: TriggerType, tc: TriggerConfig, steps: Step[]) => void;
   onCancel: () => void;
+  connectedServices?: string[];
 }) {
   const [step, setStep]           = useState(0);
   const [showErr, setShowErr]     = useState(false);
@@ -706,7 +886,7 @@ function WorkflowBuilder({
       const e: string[] = [];
       aiSteps.forEach((st, i) => {
         if (st.output === 'file'   && !st.output_config?.file_path?.trim())    e.push(`step_${i}_file`);
-        if (st.output === 'notion' && !st.output_config?.notion_db_url?.trim()) e.push(`step_${i}_notion`);
+        if (st.output === 'notion' && !st.output_config?.notion_db_url?.trim() && !connectedServices.includes('notion')) e.push(`step_${i}_notion`);
         if (st.output === 'slack'  && !st.output_config?.slack_channel?.trim()) e.push(`step_${i}_slack`);
       });
       return e;
@@ -954,29 +1134,35 @@ function WorkflowBuilder({
               </div>
             )}
 
-            {/* ── Advanced context (for all trigger types) ─────────────────── */}
-            <details className="group">
-              <summary className="flex items-center gap-2 cursor-pointer text-[10px] font-mono text-nv-muted uppercase tracking-widest select-none list-none py-1">
-                <svg viewBox="0 0 10 10" fill="currentColor" className="w-2 h-2 group-open:rotate-90 transition-fast text-nv-faint"><path d="M3 1l4 4-4 4"/></svg>
-                Advanced context
-              </summary>
-              <div className="pt-3 space-y-3">
-                <div className="space-y-1.5">
-                  <label className={lCls}>Pitch / product file <span className="normal-case font-normal text-nv-faint">(optional)</span></label>
-                  <input value={triggerConfig.pitch_file_path ?? ''} onChange={e => patchTC({ pitch_file_path: e.target.value })}
-                    placeholder="C:\Users\you\PRODUCT-DETAILS.MD"
-                    className={`${iCls(false)} font-mono`} />
-                  <p className="text-[10px] text-nv-muted">File is read at run time and injected into every AI step as product context. Great for outreach and pitch automations.</p>
-                </div>
-                <div className="space-y-1.5">
-                  <label className={lCls}>Notion CRM database <span className="normal-case font-normal text-nv-faint">(optional)</span></label>
-                  <input value={triggerConfig.notion_crm_db ?? ''} onChange={e => patchTC({ notion_crm_db: e.target.value })}
-                    placeholder="https://notion.so/your-crm-database-id"
-                    className={iCls(false)} />
-                  <p className="text-[10px] text-nv-muted">Your contact/CRM database in Notion. Records are fetched before each run so AI steps know your conversation history with each person.</p>
-                </div>
+            {/* ── Product context (always visible) ──────────────────────────── */}
+            <div className="rounded-xl border border-nv-border bg-nv-surface p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <svg viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3 text-accent/70 shrink-0"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm-.75 4a.75.75 0 011.5 0v3.25l2 1.15a.75.75 0 11-.75 1.3L7.5 9.1A.75.75 0 017.25 8.5V5z" opacity=".4"/><path d="M8 1a7 7 0 100 14A7 7 0 008 1zM6.5 5.75a.75.75 0 011.5 0v2.5l1.75 1a.75.75 0 01-.75 1.3l-2-1.15A.75.75 0 016.5 8.75v-3z"/></svg>
+                <span className="text-[10px] font-mono font-semibold text-nv-muted uppercase tracking-widest">Product context</span>
+                <span className="text-[9px] text-nv-faint font-mono normal-case">(injected before every AI step)</span>
               </div>
-            </details>
+              <div className="space-y-1.5">
+                <label className={lCls}>Pitch / product file <span className="normal-case font-normal text-nv-faint">(optional)</span></label>
+                <input value={triggerConfig.pitch_file_path ?? ''} onChange={e => patchTC({ pitch_file_path: e.target.value })}
+                  placeholder="C:\Users\you\PRODUCT-DETAILS.MD"
+                  className={`${iCls(false)} font-mono text-xs`} />
+                <p className="text-[10px] text-nv-muted">Full path to a local file. Its contents are automatically read and injected before each AI step — no need to mention it in your prompt.</p>
+              </div>
+              <div className="space-y-1.5">
+                <label className={lCls}>Paste product info <span className="normal-case font-normal text-nv-faint">(alternative to file)</span></label>
+                <textarea value={triggerConfig.knowledge_context ?? ''} onChange={e => patchTC({ knowledge_context: e.target.value })} rows={2}
+                  placeholder="Paste your product description, key features, tagline, or talking points here…"
+                  className="w-full px-3 py-2 rounded-lg bg-nv-bg border border-nv-border text-nv-text text-xs placeholder:text-nv-faint focus:outline-none focus:border-accent transition-fast resize-none" />
+                <p className="text-[10px] text-nv-muted">Paste text directly if you don't have a file. Also injected before every AI step.</p>
+              </div>
+              <div className="space-y-1.5">
+                <label className={lCls}>Notion history database <span className="normal-case font-normal text-nv-faint">(optional)</span></label>
+                <input value={triggerConfig.notion_crm_db ?? ''} onChange={e => patchTC({ notion_crm_db: e.target.value })}
+                  placeholder="Leave blank — auto-discovers 'Nivara Automations' if Notion is connected"
+                  className={`${iCls(false)} text-xs`} />
+                <p className="text-[10px] text-nv-muted">Fetches the last 30 records before each run so the AI knows what was already posted/sent — prevents duplicate content.</p>
+              </div>
+            </div>
           </>}
 
           {/* ══ Step 1 — Conditions ═══════════════════════════════════════ */}
@@ -1007,6 +1193,22 @@ function WorkflowBuilder({
           {step === 2 && (
             <div className="space-y-3">
               <p className="text-xs text-nv-muted">What should the AI do? Add multiple steps — each one runs in order.</p>
+              {(triggerConfig.pitch_file_path || triggerConfig.knowledge_context) && (
+                <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-accent/5 border border-accent/20">
+                  <svg viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3 text-accent mt-0.5 shrink-0"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm.75 4.5v3.25l1.75 1a.75.75 0 01-.75 1.3l-2-1.15A.75.75 0 017.25 9.25V5.5a.75.75 0 011.5 0z"/></svg>
+                  <p className="text-[10px] text-accent/80 leading-relaxed">
+                    <span className="font-semibold">Product context is active.</span> Your {triggerConfig.pitch_file_path ? 'pitch file' : 'product info'} will be automatically injected before each step runs. Write your prompt as if the product details are already there — for example: <em>"Write a LinkedIn post using the product details above."</em> Do NOT write <em>"{'{file_path}'}"</em> or any placeholder — the content is already injected.
+                  </p>
+                </div>
+              )}
+              {!triggerConfig.pitch_file_path && !triggerConfig.knowledge_context && (
+                <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-nv-surface border border-nv-border">
+                  <svg viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3 text-nv-yellow mt-0.5 shrink-0"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm-.75 4.5a.75.75 0 011.5 0v3.5a.75.75 0 01-1.5 0V5.5zM8 11a1 1 0 110 2 1 1 0 010-2z"/></svg>
+                  <p className="text-[10px] text-nv-muted leading-relaxed">
+                    <span className="font-semibold text-nv-text">No product context set.</span> For automations that write marketing posts or outreach, go back to <span className="text-accent font-semibold">Trigger → Product context</span> and add your pitch file or paste product info. Without it, the AI only produces generic text.
+                  </p>
+                </div>
+              )}
               {aiSteps.map((s, i) => {
                 const aOpt = ACTION_OPTIONS.find(a => a.action === s.action);
                 const promptErr = e2.includes(`step_${i}_prompt`);
@@ -1188,14 +1390,26 @@ function WorkflowBuilder({
                     {/* Notion */}
                     {s.output === 'notion' && (
                       <div className="space-y-1.5">
-                        <div className="flex items-center">
-                          <label className={lCls}>Notion database URL</label>
-                          {e3.includes(`step_${i}_notion`) && <RequiredBadge />}
-                        </div>
-                        <input value={s.output_config?.notion_db_url ?? ''} onChange={e => patchOC(s.id, { notion_db_url: e.target.value })}
-                          placeholder="https://notion.so/your-database-id"
-                          className={iCls(e3.includes(`step_${i}_notion`))} />
-                        <p className="text-[10px] text-nv-muted">In Notion: right-click the database → Copy link → paste here. Also connect Notion in Connect Apps.</p>
+                        {connectedServices.includes('notion') ? (
+                          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                            <div>
+                              <p className="text-[11px] text-emerald-400 font-medium">Notion connected · auto-provisioned</p>
+                              <p className="text-[10px] text-nv-faint mt-0.5">We'll create a "Nivara Automations" database automatically on first run.</p>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="flex items-center">
+                              <label className={lCls}>Notion database URL</label>
+                              {e3.includes(`step_${i}_notion`) && <RequiredBadge />}
+                            </div>
+                            <input value={s.output_config?.notion_db_url ?? ''} onChange={e => patchOC(s.id, { notion_db_url: e.target.value })}
+                              placeholder="https://notion.so/your-database-id"
+                              className={iCls(e3.includes(`step_${i}_notion`))} />
+                            <p className="text-[10px] text-nv-muted">Connect Notion in Connect Apps — we'll auto-create the database. Or paste a database URL here.</p>
+                          </>
+                        )}
                       </div>
                     )}
 
@@ -1304,11 +1518,23 @@ function WorkflowBuilder({
                     {s.output === 'google_sheets' && (
                       <div className="space-y-2">
                         <div className="space-y-1.5">
-                          <label className={lCls}>Spreadsheet ID</label>
-                          <input value={s.output_config?.sheet_id ?? ''} onChange={e => patchOC(s.id, { sheet_id: e.target.value })}
-                            placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms"
-                            className={`${iCls(false)} font-mono`} />
-                          <p className="text-[10px] text-nv-muted">From the spreadsheet URL: docs.google.com/spreadsheets/d/<strong>ID</strong>/edit</p>
+                          {connectedServices.includes('google_drive') || connectedServices.includes('google') ? (
+                            <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                              <div>
+                                <p className="text-[11px] text-emerald-400 font-medium">Google Sheets connected · auto-provisioned</p>
+                                <p className="text-[10px] text-nv-faint mt-0.5">We'll create a "Nivara Automations" spreadsheet automatically on first run.</p>
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <label className={lCls}>Spreadsheet ID</label>
+                              <input value={s.output_config?.sheet_id ?? ''} onChange={e => patchOC(s.id, { sheet_id: e.target.value })}
+                                placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms"
+                                className={`${iCls(false)} font-mono`} />
+                              <p className="text-[10px] text-nv-muted">Connect Google Drive in Connect Apps — we'll auto-create the sheet. Or paste a spreadsheet ID here.</p>
+                            </>
+                          )}
                         </div>
                         <div className="space-y-1.5">
                           <label className={lCls}>Sheet tab name</label>
@@ -1390,13 +1616,17 @@ function WorkflowBuilder({
 
 // ─── Automation Card ──────────────────────────────────────────────────────────
 
-function AutomationCard({ automation, onToggle, onCloudToggle, onEdit, onDelete, onRunNow, running }: {
+function AutomationCard({ automation, onToggle, onCloudToggle, onEdit, onDelete, onRunNow, onDiscuss, running }: {
   automation: Automation; onToggle: () => void; onCloudToggle: () => void; onEdit: () => void;
-  onDelete: () => void; onRunNow: () => void; running: boolean;
+  onDelete: () => void; onRunNow: () => void; onDiscuss: () => void; running: boolean;
 }) {
   const isCanvas = automation.trigger_type === 'canvas_flow';
-  const cfg = isCanvas ? {} as TriggerConfig : JSON.parse(automation.trigger_config) as TriggerConfig;
-  const steps = isCanvas ? [] : JSON.parse(automation.steps) as Step[];
+  let cfg: TriggerConfig = {} as TriggerConfig;
+  let steps: Step[] = [];
+  if (!isCanvas) {
+    try { cfg = JSON.parse(automation.trigger_config) as TriggerConfig; } catch {}
+    try { steps = JSON.parse(automation.steps) as Step[]; } catch {}
+  }
   const triggerLabel = (TRIGGER_LABELS as Record<string, string>)[automation.trigger_type] ?? 'Canvas Flow';
   return (
     <div className={`rounded-lg border bg-nv-surface p-4 transition-fast ${automation.enabled ? 'border-nv-border' : 'border-nv-border/50 opacity-60'}`}>
@@ -1446,6 +1676,11 @@ function AutomationCard({ automation, onToggle, onCloudToggle, onEdit, onDelete,
             ☁
           </button>
         )}
+        <button onClick={onDiscuss}
+          className="flex items-center gap-1 px-2.5 py-1 rounded-md text-nv-faint hover:text-accent hover:bg-accent/10 text-xs font-mono transition-fast">
+          <svg viewBox="0 0 12 12" fill="none" className="w-3 h-3"><path d="M1 8V3a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H7L4 11V9H2a1 1 0 0 1-1-1z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/></svg>
+          Discuss
+        </button>
         <button onClick={onDelete} className="px-2.5 py-1 rounded-md text-nv-faint hover:text-nv-red hover:bg-nv-red/10 text-xs font-mono transition-fast ml-auto">Delete</button>
       </div>
     </div>
@@ -1485,30 +1720,112 @@ function LogEntry({ run, automationName }: { run: AutomationRun; automationName:
 
 // ─── AI Chat Bar (for Canvas tab) ────────────────────────────────────────────
 
-type AIMode = 'auto' | 'local';
+function DiscussCopyBtn({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={() => navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1800); })}
+      className="text-[10px] text-nv-faint hover:text-nv-muted transition-fast font-mono flex items-center gap-1 mt-1.5"
+    >
+      {copied
+        ? <><span className="text-emerald-400">✓</span> copied</>
+        : <><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> copy</>
+      }
+    </button>
+  );
+}
 
-function AIChatBar({ canvasRef }: { canvasRef: React.RefObject<FlowCanvasHandle | null> }) {
+function renderMd(text: string): React.ReactNode[] {
+  const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/g);
+  return parts.map((p, i) => {
+    if (p.startsWith('**') && p.endsWith('**')) return <strong key={i} className="font-semibold text-nv-text">{p.slice(2, -2)}</strong>;
+    if (p.startsWith('*') && p.endsWith('*')) return <em key={i}>{p.slice(1, -1)}</em>;
+    return p ? <span key={i}>{p}</span> : null;
+  }).filter(Boolean) as React.ReactNode[];
+}
+
+type AIMode = 'auto' | 'local';
+type BarMode = 'build' | 'discuss';
+
+interface DiscussMsg { role: 'user' | 'assistant'; content: string; }
+
+function AIChatBar({ canvasRef, automations = [], selectedAutomation: initialSelected = null, onSelectAutomation, connectedServices = [] }: {
+  canvasRef: React.RefObject<FlowCanvasHandle | null>;
+  automations?: Automation[];
+  selectedAutomation?: Automation | null;
+  onSelectAutomation?: (a: Automation | null) => void;
+  connectedServices?: string[];
+}) {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [hint, setHint] = useState('');
+  const [statusMsg, setStatusMsg] = useState('');
   const [aiMode, setAiMode] = useState<AIMode>('auto');
   const [showModeMenu, setShowModeMenu] = useState(false);
+  const [barMode, setBarMode] = useState<BarMode>('build');
+  const [discussMsgs, setDiscussMsgs] = useState<DiscussMsg[]>([]);
+  const [readyPrompt, setReadyPrompt] = useState<string | null>(null);
+  const [selectedAutomation, setSelectedAutomation] = useState<Automation | null>(initialSelected);
+  const discussEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setSelectedAutomation(initialSelected);
+    if (initialSelected) { setBarMode('discuss'); setDiscussMsgs([]); setReadyPrompt(null); }
+  }, [initialSelected]);
+
+  async function handleDiscuss() {
+    const msg = input.trim();
+    if (!msg || loading) return;
+    setInput('');
+    const newMsgs: DiscussMsg[] = [...discussMsgs, { role: 'user', content: msg }];
+    setDiscussMsgs(newMsgs);
+    setLoading(true);
+    setError('');
+    setStatusMsg('Nivara AI is thinking…');
+    try {
+      const history = newMsgs.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n');
+      const systemPrompt = buildDiscussionPrompt(automations, selectedAutomation, connectedServices);
+      const reply = await callAI(history, systemPrompt, aiMode === 'local');
+      setDiscussMsgs(prev => [...prev, { role: 'assistant', content: reply }]);
+      // Check if AI signals ready to build
+      const match = reply.match(/---READY TO BUILD---\s*([\s\S]*)/);
+      if (match) setReadyPrompt(match[1].trim());
+      setTimeout(() => discussEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+    } catch (e) {
+      setError(`${e}`);
+    } finally {
+      setLoading(false);
+      setStatusMsg('');
+    }
+  }
+
+  async function buildFromDiscussion() {
+    if (!readyPrompt) return;
+    setBarMode('build');
+    setDiscussMsgs([]);
+    setReadyPrompt(null);
+    setSelectedAutomation(null);
+    onSelectAutomation?.(null);
+    setInput(readyPrompt);
+  }
 
   async function handleSend() {
     const msg = input.trim();
     if (!msg || loading) return;
     setLoading(true);
     setError('');
+    setStatusMsg('Connecting to AI…');
 
-    // Check for an existing flow on canvas — if so, edit it instead of replacing
     const existing = canvasRef.current?.getFlow();
     const hasExisting = (existing?.nodes.length ?? 0) > 0;
+    const hasSocial = /twitter|linkedin|x\.com|tweet|post/i.test(msg);
 
-    let systemPrompt = FLOW_SYSTEM_PROMPT;
+    let systemPrompt = hasSocial ? FLOW_SYSTEM_PROMPT + SOCIAL_SAFETY_ADDENDUM : FLOW_SYSTEM_PROMPT;
     if (hasExisting) {
       setHint('Editing your existing flow…');
-      systemPrompt = `${FLOW_SYSTEM_PROMPT}
+      const editSuffix = hasSocial ? SOCIAL_SAFETY_ADDENDUM : '';
+      systemPrompt = `${FLOW_SYSTEM_PROMPT}${editSuffix}
 
 IMPORTANT — EDIT MODE: The canvas already has this flow:
 ${JSON.stringify(existing, null, 2)}
@@ -1516,33 +1833,75 @@ ${JSON.stringify(existing, null, 2)}
 The user wants to modify it. Apply their change to the existing flow and return the complete updated flow JSON.
 Keep all existing nodes and edges that the user has not asked to change.`;
     } else {
-      setHint('Building your flow…');
+      setStatusMsg('Building your flow…');
     }
 
     try {
+      setStatusMsg(hasExisting ? 'Updating existing flow with AI…' : 'Designing your automation flow…');
       const raw = await callAI(msg, systemPrompt, aiMode === 'local');
-      // Strip code fences, then extract the outermost JSON object (handles prose wrapping)
-      const stripped = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '');
-      const jsonMatch = stripped.match(/\{[\s\S]*\}/);
-      const cleaned = jsonMatch ? jsonMatch[0] : stripped.trim();
-      const flow = JSON.parse(cleaned) as { nodes: Node[]; edges: Edge[] };
 
-      if (!Array.isArray(flow.nodes)) throw new Error('Invalid flow structure');
+      if (!raw.trim()) throw new Error('AI returned an empty response — please try again.');
 
-      canvasRef.current?.applyFlow(flow.nodes, flow.edges);
+      setStatusMsg('Placing nodes on canvas…');
+
+      // Robust JSON extraction: strip code fences, then use brace-counting to
+      // find the outermost JSON object (regex would break on text like "{service}")
+      const text = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+      const objStart = text.indexOf('{');
+      if (objStart === -1) throw new Error('AI response had no JSON — try describing the automation differently.');
+      let depth = 0, inStr = false, esc = false, objEnd = -1;
+      for (let i = objStart; i < text.length; i++) {
+        const ch = text[i];
+        if (esc) { esc = false; continue; }
+        if (ch === '\\' && inStr) { esc = true; continue; }
+        if (ch === '"') { inStr = !inStr; continue; }
+        if (inStr) continue;
+        if (ch === '{') depth++;
+        else if (ch === '}' && --depth === 0) { objEnd = i; break; }
+      }
+      if (objEnd === -1) throw new Error('AI response had malformed JSON — please try again.');
+
+      const flow = JSON.parse(text.slice(objStart, objEnd + 1)) as { nodes: Node[]; edges: Edge[] };
+      if (!Array.isArray(flow.nodes) || flow.nodes.length === 0)
+        throw new Error('AI built an empty flow — try a more specific description.');
+
+      // Sanitize: ensure every node has a valid position and all edges use registered types
+      const safeNodes = flow.nodes.map((n, i) => ({
+        ...n,
+        position: (n.position && typeof n.position.x === 'number' && typeof n.position.y === 'number')
+          ? n.position
+          : { x: 100 + i * 280, y: 200 },
+      }));
+      const safeEdges = (flow.edges ?? []).map(e => ({
+        ...e,
+        type: 'line', // always use registered edge type
+      }));
+
+      canvasRef.current?.applyFlow(safeNodes, safeEdges);
+      // applyFlow increments fitViewSignal → FlowCanvasInner fitView fires 100ms later
       setInput('');
       setHint(hasExisting ? `Flow updated — ${flow.nodes.length} nodes.` : `Built ${flow.nodes.length} nodes. Refine it on the canvas.`);
-      setTimeout(() => setHint(''), 4000);
+      setStatusMsg('');
+      setTimeout(() => setHint(''), 5000);
     } catch (e: unknown) {
-      const errMsg = e instanceof Error ? e.message : String(e);
-      if (errMsg.includes('No AI') || errMsg.includes('connect') || errMsg.includes('local') || errMsg.includes('Ollama')) {
-        setError('No AI connected. Go to Connect Apps to add your Gemini or OpenAI key.');
-      } else if (errMsg.includes('401') || errMsg.includes('403') || errMsg.includes('invalid') || errMsg.includes('API key')) {
-        setError('API key error. Check your key in Connect Apps.');
+      setStatusMsg('');
+      const raw = e instanceof Error ? e.message : String(e);
+      let display: string;
+      if (/no ai|ollama/i.test(raw)) {
+        display = 'No AI connected — add a Gemini or OpenAI key in Connect Apps.';
+      } else if (/401|403|api key|invalid.*key|key.*invalid/i.test(raw)) {
+        display = 'API key error — check your key in Connect Apps.';
+      } else if (/safety|blocked by/i.test(raw)) {
+        display = 'Request blocked by AI safety filter — try rephrasing.';
+      } else if (/gemini error/i.test(raw)) {
+        display = raw.slice(0, 160); // show the actual Gemini error
+      } else if (/empty response|no JSON|malformed|empty flow/i.test(raw)) {
+        display = raw; // our specific errors are already user-readable
       } else {
-        setError('Could not build flow — try describing it differently, e.g. "Email me a summary every Monday at 9am".');
+        display = `Build failed: ${raw.slice(0, 120)}`;
       }
-      setTimeout(() => setError(''), 6000);
+      setError(display);
+      setTimeout(() => setError(''), 12000);
     } finally {
       setLoading(false);
     }
@@ -1553,11 +1912,109 @@ Keep all existing nodes and edges that the user has not asked to change.`;
   }
 
   return (
-    <div className="shrink-0 border-t border-nv-border bg-nv-bg px-4 py-3">
+    <div className="h-full flex flex-col overflow-hidden border-t border-nv-border bg-nv-bg">
+      {/* ── Activity status bar — shows above everything when working ── */}
+      {(statusMsg || loading) && (
+        <div className="flex items-center gap-2.5 px-4 py-2 bg-accent/5 border-b border-accent/20">
+          <span className="flex gap-0.5 shrink-0">
+            {[0,1,2].map(i => (
+              <span key={i} className="w-1.5 h-1.5 rounded-full bg-accent"
+                style={{ animation: `pulse 1.1s ease-in-out ${i * 0.18}s infinite` }} />
+            ))}
+          </span>
+          <span className="text-[11px] text-accent font-mono truncate">{statusMsg || 'Working…'}</span>
+        </div>
+      )}
+
+      {/* Mode tabs */}
+      <div className="flex items-center gap-0 px-4 pt-2 border-b border-nv-border/50">
+        <button
+          onClick={() => setBarMode('build')}
+          className={`text-[10px] font-mono px-3 py-1.5 border-b-2 transition-fast ${barMode === 'build' ? 'border-accent text-accent' : 'border-transparent text-nv-faint hover:text-nv-muted'}`}
+        >Build</button>
+        <button
+          onClick={() => setBarMode('discuss')}
+          className={`text-[10px] font-mono px-3 py-1.5 border-b-2 transition-fast ${barMode === 'discuss' ? 'border-accent text-accent' : 'border-transparent text-nv-faint hover:text-nv-muted'}`}
+        >Discuss with AI</button>
+        {selectedAutomation && (
+          <span className="ml-auto flex items-center gap-1.5 text-[10px] font-mono text-accent bg-accent/10 px-2 py-1 rounded-md">
+            <span className="w-1.5 h-1.5 rounded-full bg-accent" />
+            Discussing: {selectedAutomation.name}
+            <button onClick={() => { setSelectedAutomation(null); onSelectAutomation?.(null); }} className="ml-1 text-nv-faint hover:text-nv-text">✕</button>
+          </span>
+        )}
+      </div>
+
+      {/* Discussion mode */}
+      {barMode === 'discuss' && (
+        <div className="flex flex-col flex-1 min-h-0 px-4 py-3">
+          {discussMsgs.length === 0 && !loading && (
+            <p className="text-[11px] text-nv-faint mb-2">Describe what you want to automate. The AI will figure out the details and build it — no lengthy Q&amp;A needed.</p>
+          )}
+          {discussMsgs.length > 0 && (
+            <div className="flex-1 space-y-2 mb-3 overflow-y-auto pr-1">
+              {discussMsgs.map((m, i) => {
+                const cleanText = m.content.replace(/---READY TO BUILD---[\s\S]*/, '').trim();
+                return (
+                  <div key={i} className={`text-[11px] leading-relaxed rounded-lg px-3 py-2 ${m.role === 'user' ? 'bg-accent/10 text-nv-text ml-8' : 'bg-nv-surface text-nv-muted mr-8'}`}>
+                    <div className="space-y-0.5">
+                      {cleanText.split('\n').map((line, li) => {
+                        const isBullet = line.trimStart().startsWith('- ');
+                        const lineContent = isBullet ? line.trimStart().slice(2) : line;
+                        return (
+                          <p key={li} className={isBullet ? 'flex items-start gap-1.5' : ''}>
+                            {isBullet && <span className="text-accent mt-0.5 shrink-0">·</span>}
+                            <span>{renderMd(lineContent)}</span>
+                          </p>
+                        );
+                      })}
+                    </div>
+                    <DiscussCopyBtn text={cleanText} />
+                    {m.role === 'assistant' && readyPrompt && i === discussMsgs.length - 1 && (
+                      <div className="mt-2 pt-2 border-t border-nv-border">
+                        <p className="text-[10px] text-emerald-400 font-mono mb-1.5">Plan ready:</p>
+                        <p className="text-[10px] text-nv-text italic mb-2">{readyPrompt}</p>
+                        <button
+                          onClick={buildFromDiscussion}
+                          className="text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white font-semibold hover:opacity-90 transition-fast"
+                        >Build this automation →</button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {loading && <div className="text-[10px] text-nv-faint font-mono px-3 py-1 animate-pulse">Thinking…</div>}
+              <div ref={discussEndRef} />
+            </div>
+          )}
+          {error && <p className="text-[10px] text-red-400 font-mono mb-2 px-1">{error}</p>}
+          <div className="flex items-end gap-2">
+            <textarea
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleDiscuss(); } }}
+              placeholder={discussMsgs.length === 0 ? 'Describe your automation idea… (Shift+Enter for new line)' : 'Reply… (Shift+Enter for new line)'}
+              disabled={loading}
+              rows={2}
+              className="flex-1 bg-nv-surface border border-nv-border rounded-xl px-3 py-2 text-nv-text text-[12px] focus:outline-none placeholder:text-nv-faint disabled:opacity-50 resize-none"
+            />
+            <button
+              onClick={handleDiscuss}
+              disabled={!input.trim() || loading}
+              className="px-3 py-2 rounded-xl bg-accent hover:bg-accent-dim disabled:opacity-40 text-white text-[12px] font-semibold shrink-0 transition-fast mb-0.5"
+            >Send</button>
+          </div>
+        </div>
+      )}
+
+      {/* Build mode */}
+      {barMode === 'build' && (
+      <div className="px-4 py-3">
       {(error || hint) && (
-        <p className={`text-[11px] font-mono mb-2 px-1 ${error ? 'text-red-400' : 'text-nv-green'}`}>
-          {error || hint}
-        </p>
+        <div className={`flex items-start gap-1.5 text-[11px] font-mono mb-2 px-1 ${error ? 'text-red-400' : 'text-nv-green'}`}>
+          <span className="flex-1">{error || hint}</span>
+          {error && <button onClick={() => setError('')} className="shrink-0 opacity-60 hover:opacity-100 transition-fast">✕</button>}
+        </div>
       )}
       <div className="flex items-center gap-2">
         {/* AI mode selector */}
@@ -1621,6 +2078,8 @@ Keep all existing nodes and edges that the user has not asked to change.`;
       <p className="text-[9px] font-mono text-nv-faint mt-1.5 px-1">
         AI builds the canvas · click any node to edit · connect multiple nodes to one box freely
       </p>
+      </div>
+      )}
     </div>
   );
 }
@@ -1635,6 +2094,7 @@ interface AutomationModuleProps {
 export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: AutomationModuleProps = {}) {
   const { user } = useAuth();
   const [tab, setTab] = useState<'canvas' | 'automations' | 'templates' | 'logs'>('canvas');
+  const chatH = useResize({ initial: 220, min: 120, max: 560, direction: 'vertical', invert: true, storageKey: 'nv-auto-chat-h' });
   const [automations, setAutomations] = useState<Automation[]>([]);
   const [runs, setRuns] = useState<AutomationRun[]>([]);
   const [showBuilder, setShowBuilder] = useState(false);
@@ -1645,6 +2105,7 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
   const canvasRef = useRef<FlowCanvasHandle | null>(null);
   const [canvasPending, setCanvasPending] = useState<{ nodes: Node[]; edges: Edge[] } | null>(null);
   const [canvasName, setCanvasName] = useState('');
+  const [discussTarget, setDiscussTarget] = useState<Automation | null>(null);
 
   const userId = user?.id ?? '';
 
@@ -1655,7 +2116,6 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
   useEffect(() => {
     if (canvasFlow) {
       canvasRef.current?.applyFlow(canvasFlow.nodes, canvasFlow.edges);
-      setTab('canvas');
       onCanvasFlowConsumed?.();
     }
   }, [canvasFlow]);
@@ -1860,15 +2320,13 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
   }
 
   function useTemplate(t: Template) {
-    const flow = templateToFlow(t);
-    canvasRef.current?.applyFlow(flow.nodes, flow.edges);
     setTab('canvas');
+    const flow = templateToFlow(t);
+    setTimeout(() => canvasRef.current?.applyFlow(flow.nodes, flow.edges), 120);
   }
 
   const allTags = ['All', ...Array.from(new Set(TEMPLATES.flatMap(t => t.tags)))];
   const filteredTemplates = templateFilter === 'All' ? TEMPLATES : TEMPLATES.filter(t => t.tags.includes(templateFilter));
-
-  const TAB_LABELS: Record<typeof tab, string> = { canvas: 'Canvas', automations: 'My Flows', templates: 'Templates', logs: 'Logs' };
 
   return (
     <div className="flex flex-col h-full bg-nv-bg overflow-hidden">
@@ -1878,7 +2336,7 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
           <h1 className="text-sm font-semibold text-nv-text">Automation</h1>
           <p className="text-xs text-nv-muted">Visual workflow builder · runs on your machine</p>
         </div>
-        <button onClick={() => { setEditTarget(null); setShowBuilder(true); }}
+        <button onClick={() => { canvasRef.current?.applyFlow([], []); setTab('canvas'); }}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent hover:bg-accent-dim text-white text-xs font-semibold transition-fast">
           <svg viewBox="0 0 12 12" fill="none" className="w-3 h-3"><path d="M6 1v10M1 6h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>
           New flow
@@ -1888,9 +2346,9 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
       {/* Tabs */}
       <div className="flex border-b border-nv-border shrink-0 px-6">
         {(['canvas', 'automations', 'templates', 'logs'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)}
+          <button key={t} onClick={() => { setTab(t as typeof tab); if (t === 'logs') loadLogs(); }}
             className={`py-2.5 px-1 mr-5 text-xs font-medium border-b-2 transition-fast ${tab === t ? 'border-accent text-accent' : 'border-transparent text-nv-faint hover:text-nv-muted'}`}>
-            {TAB_LABELS[t]}
+            {t === 'canvas' ? 'Canvas' : t === 'automations' ? 'My Flows' : t === 'templates' ? 'Templates' : 'Logs'}
             {t === 'automations' && automations.length > 0 && (
               <span className="ml-1.5 bg-nv-surface2 text-nv-muted text-[10px] font-mono px-1.5 py-0.5 rounded-full">{automations.length}</span>
             )}
@@ -1898,10 +2356,17 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
         ))}
       </div>
 
-      {/* Canvas — always mounted so canvasRef is never null when switching from other tabs */}
+      {/* Canvas — always mounted so canvasRef is never null when switching tabs */}
       <div className={`flex-1 flex flex-col min-h-0 overflow-hidden ${tab !== 'canvas' ? 'hidden' : ''}`}>
-        <FlowCanvas ref={canvasRef} connectedServices={connectedServices} onSave={handleCanvasSave} />
-        <AIChatBar canvasRef={canvasRef} />
+        <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+          <FlowCanvas ref={canvasRef} connectedServices={connectedServices} onSave={handleCanvasSave} />
+        </div>
+        {/* Drag handle between canvas and chat */}
+        <Divider direction="vertical" onPointerDown={chatH.onPointerDown} />
+        {/* AI chat (resizable height) */}
+        <div style={{ height: chatH.size }} className="shrink-0 overflow-hidden">
+          <AIChatBar canvasRef={canvasRef} automations={automations} selectedAutomation={discussTarget} onSelectAutomation={setDiscussTarget} connectedServices={connectedServices} />
+        </div>
       </div>
 
       {/* My Flows tab */}
@@ -1921,10 +2386,13 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
                   <AutomationCard key={a.id} automation={a} onToggle={() => handleToggle(a)}
                     onCloudToggle={() => handleCloudToggle(a)}
                     onEdit={() => {
-                      const flow = automationToFlow(a);
-                      canvasRef.current?.applyFlow(flow.nodes, flow.edges);
                       setTab('canvas');
+                      const flow = automationToFlow(a);
+                      // Wait for canvas to become visible, then applyFlow.
+                      // applyFlow increments fitViewSignal → FlowCanvasInner fitView fires 100ms later.
+                      setTimeout(() => canvasRef.current?.applyFlow(flow.nodes, flow.edges), 120);
                     }}
+                    onDiscuss={() => { setDiscussTarget(a); setTab('canvas'); }}
                     onDelete={() => handleDelete(a.id)} onRunNow={() => handleRunNow(a)} running={runningId === a.id} />
                 ))}
               </div>
@@ -1986,7 +2454,7 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
       )}
 
       {showBuilder && (
-        <WorkflowBuilder initial={editTarget ?? undefined} onSave={handleSave} onCancel={() => { setShowBuilder(false); setEditTarget(null); }} />
+        <WorkflowBuilder initial={editTarget ?? undefined} onSave={handleSave} onCancel={() => { setShowBuilder(false); setEditTarget(null); }} connectedServices={connectedServices} />
       )}
 
       {canvasPending && (

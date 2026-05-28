@@ -131,6 +131,122 @@ export async function callAutomationAI(userMessage: string, systemPrompt: string
   });
 }
 
+// ─── Auto-provision Notion database ──────────────────────────────────────────
+
+async function ensureNotionDatabase(token: string, automationName: string, isOAuth = false): Promise<string> {
+  const headers = { 'Authorization': `Bearer ${token}`, 'Notion-Version': '2022-06-28', 'Content-Type': 'application/json' };
+
+  const dbProps = {
+    Name:    { title: {} },
+    Content: { rich_text: {} },
+    Date:    { date: {} },
+    Source:  { select: { options: [{ name: automationName, color: 'purple' }] } },
+    Status:  { select: { options: [{ name: 'New', color: 'green' }, { name: 'Reviewed', color: 'gray' }] } },
+  };
+
+  // Search for existing Nivara Automations DB first
+  const searchRaw = await invoke<string>('krew_http_call', {
+    method: 'POST', url: 'https://api.notion.com/v1/search',
+    headers, body: JSON.stringify({ query: 'Nivara Automations', filter: { value: 'database', property: 'object' } }),
+  }).catch(() => '{}');
+  const searchData = JSON.parse(searchRaw) as { results?: { id?: string; title?: { plain_text?: string }[] }[] };
+  const existing = searchData.results?.find(r => r.title?.[0]?.plain_text === 'Nivara Automations');
+  if (existing?.id) return existing.id.replace(/-/g, '');
+
+  // With OAuth token, create a top-level "Nivara" page then the DB under it
+  if (isOAuth) {
+    // Try to find existing Nivara root page
+    const pageSearchRaw = await invoke<string>('krew_http_call', {
+      method: 'POST', url: 'https://api.notion.com/v1/search',
+      headers, body: JSON.stringify({ query: 'Nivara', filter: { value: 'page', property: 'object' }, page_size: 5 }),
+    }).catch(() => '{}');
+    const pageSearch = JSON.parse(pageSearchRaw) as { results?: { id?: string; properties?: { title?: { title?: { plain_text?: string }[] } } }[] };
+    let rootPageId = pageSearch.results?.find(r => {
+      const t = r.properties?.title?.title?.[0]?.plain_text ?? '';
+      return t === 'Nivara';
+    })?.id ?? '';
+
+    // Create root page if not found
+    if (!rootPageId) {
+      const rootRaw = await invoke<string>('krew_http_call', {
+        method: 'POST', url: 'https://api.notion.com/v1/pages',
+        headers,
+        body: JSON.stringify({
+          parent: { workspace: true },
+          properties: { title: { title: [{ text: { content: 'Nivara' } }] } },
+        }),
+      }).catch(() => '{}');
+      const rootPage = JSON.parse(rootRaw) as { id?: string };
+      rootPageId = rootPage.id ?? '';
+    }
+    if (!rootPageId) return '';
+
+    const createRaw = await invoke<string>('krew_http_call', {
+      method: 'POST', url: 'https://api.notion.com/v1/databases',
+      headers,
+      body: JSON.stringify({
+        parent: { type: 'page_id', page_id: rootPageId },
+        title: [{ type: 'text', text: { content: 'Nivara Automations' } }],
+        properties: dbProps,
+      }),
+    }).catch(() => '{}');
+    const createData = JSON.parse(createRaw) as { id?: string };
+    return (createData.id ?? '').replace(/-/g, '');
+  }
+
+  // Internal token: find any accessible page as parent
+  const pagesRaw = await invoke<string>('krew_http_call', {
+    method: 'POST', url: 'https://api.notion.com/v1/search',
+    headers, body: JSON.stringify({ filter: { value: 'page', property: 'object' }, page_size: 1 }),
+  }).catch(() => '{}');
+  const pagesData = JSON.parse(pagesRaw) as { results?: { id?: string }[] };
+  const parentPageId = pagesData.results?.[0]?.id ?? '';
+  if (!parentPageId) return '';
+
+  const createRaw = await invoke<string>('krew_http_call', {
+    method: 'POST', url: 'https://api.notion.com/v1/databases',
+    headers,
+    body: JSON.stringify({
+      parent: { type: 'page_id', page_id: parentPageId },
+      title: [{ type: 'text', text: { content: 'Nivara Automations' } }],
+      properties: dbProps,
+    }),
+  }).catch(() => '{}');
+  const createData = JSON.parse(createRaw) as { id?: string };
+  return (createData.id ?? '').replace(/-/g, '');
+}
+
+// ─── Auto-provision Google Sheet ──────────────────────────────────────────────
+
+async function ensureGoogleSheet(accessToken: string, automationName: string): Promise<string> {
+  const headers = { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' };
+
+  // Search Drive for existing Nivara sheet
+  const searchRaw = await invoke<string>('krew_http_call', {
+    method: 'GET',
+    url: `https://www.googleapis.com/drive/v3/files?q=name%3D'Nivara+Automations'+and+mimeType%3D'application%2Fvnd.google-apps.spreadsheet'&fields=files(id,name)`,
+    headers, body: null,
+  }).catch(() => '{}');
+  const searchData = JSON.parse(searchRaw) as { files?: { id?: string }[] };
+  if (searchData.files?.length) return searchData.files[0].id ?? '';
+
+  // Create spreadsheet
+  const createRaw = await invoke<string>('krew_http_call', {
+    method: 'POST', url: 'https://sheets.googleapis.com/v4/spreadsheets',
+    headers,
+    body: JSON.stringify({
+      properties: { title: 'Nivara Automations' },
+      sheets: [{ properties: { title: automationName.slice(0, 100) }, data: [{ rowData: [{ values: [
+        { userEnteredValue: { stringValue: 'Date' } },
+        { userEnteredValue: { stringValue: 'Automation' } },
+        { userEnteredValue: { stringValue: 'Content' } },
+      ] }] }] }],
+    }),
+  }).catch(() => '{}');
+  const createData = JSON.parse(createRaw) as { spreadsheetId?: string };
+  return createData.spreadsheetId ?? '';
+}
+
 // ─── Retry with exponential backoff ──────────────────────────────────────────
 
 async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 3, baseDelayMs = 1000): Promise<T> {
@@ -344,20 +460,37 @@ export async function executeAutomation(
       } catch { /* Calendar fetch failed */ }
     }
 
-    // ── Notion CRM pre-fetch (inject conversation history as context) ─────────
+    // ── Notion CRM pre-fetch (inject records as context before AI runs) ─────────
     let crmContext = '';
-    if (!overrideContext && cfg.notion_crm_db) {
+    if (!overrideContext) {
       try {
         const notionCred = await credentialStore.get('notion').catch(() => null);
         if (notionCred?.token) {
-          const dbIdMatch = cfg.notion_crm_db.match(/([a-f0-9]{32})/i);
-          const dbId = dbIdMatch ? dbIdMatch[1] : '';
+          const headers = { 'Authorization': `Bearer ${notionCred.token}`, 'Notion-Version': '2022-06-28', 'Content-Type': 'application/json' };
+
+          // Resolve the database ID: prefer explicit URL, fall back to auto-discover "Nivara Automations"
+          let dbId = '';
+          if (cfg.notion_crm_db) {
+            const urlMatch = cfg.notion_crm_db.match(/([a-f0-9]{32})/i);
+            dbId = urlMatch ? urlMatch[1] : '';
+          }
+          if (!dbId) {
+            // Auto-discover the "Nivara Automations" database created by the notion output step
+            const searchRaw = await invoke<string>('krew_http_call', {
+              method: 'POST', url: 'https://api.notion.com/v1/search',
+              headers, body: JSON.stringify({ query: 'Nivara Automations', filter: { value: 'database', property: 'object' } }),
+            }).catch(() => '{}');
+            const searchData = JSON.parse(searchRaw) as { results?: { id?: string }[] };
+            const found = searchData.results?.[0]?.id;
+            if (found) dbId = found.replace(/-/g, '');
+          }
+
           if (dbId) {
             const crmRaw = await invoke<string>('krew_http_call', {
-              method:  'POST',
-              url:     `https://api.notion.com/v1/databases/${dbId}/query`,
-              headers: { 'Authorization': `Bearer ${notionCred.token}`, 'Notion-Version': '2022-06-28', 'Content-Type': 'application/json' },
-              body:    JSON.stringify({ page_size: 30, sorts: [{ timestamp: 'last_edited_time', direction: 'descending' }] }),
+              method: 'POST',
+              url:    `https://api.notion.com/v1/databases/${dbId}/query`,
+              headers,
+              body:   JSON.stringify({ page_size: 30, sorts: [{ timestamp: 'last_edited_time', direction: 'descending' }] }),
             }).catch(() => '{}');
             const crmData = JSON.parse(crmRaw) as { results?: { properties?: Record<string, unknown> }[] };
             if (crmData.results?.length) {
@@ -377,16 +510,14 @@ export async function executeAutomation(
                   if (!v || typeof v !== 'object') return '0';
                   return String((v as Record<string, unknown>).number ?? 0);
                 };
-                const entries = Object.entries(props).map(([k, v]) => `${k}: ${getTitle(v) || getRich(v) || getNum(v)}`).join(' | ');
+                const entries = Object.entries(props).map(([k, v]) => `${k}: ${getTitle(v) || getRich(v) || getNum(v)}`).filter(Boolean).join(' | ');
                 return `${i + 1}. ${entries}`;
               }).join('\n');
-              crmContext = `\n\n## CRM Records (Notion — ${crmData.results.length} contacts)\n${rows}`;
-            } else {
-              crmContext = '\n\n## CRM Records (Notion)\nNo existing contacts found. This is likely a new contact — treat as interaction #1.';
+              crmContext = `\n\n## Previous Automation Records (Notion — ${crmData.results.length} entries)\n${rows}\n\nDo NOT repeat topics, angles, or content already listed above.`;
             }
           }
         }
-      } catch { /* Notion not connected */ }
+      } catch { /* Notion not connected or search failed */ }
     }
 
     // Chain steps: output of step N → input of step N+1
@@ -510,17 +641,22 @@ export async function executeAutomation(
       }).catch(() => {});
     }
 
-    if (lastStep?.output === 'google_sheets' && oc.sheet_id && finalOutput) {
+    if (lastStep?.output === 'google_sheets' && finalOutput) {
       try {
         const gsCred = await credentialStore.get('google_drive').catch(() => null);
         if (gsCred?.access_token) {
-          const sheetName = oc.sheet_name ?? 'Sheet1';
-          await invoke('krew_http_call', {
-            method: 'POST',
-            url: `https://sheets.googleapis.com/v4/spreadsheets/${oc.sheet_id}/values/${encodeURIComponent(sheetName)}!A1:append?valueInputOption=USER_ENTERED`,
-            headers: { 'Authorization': `Bearer ${gsCred.access_token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ values: [[new Date().toLocaleString(), finalOutput.slice(0, 500)]] }),
-          }).catch(() => {});
+          // Auto-provision spreadsheet if no sheet_id provided
+          let sheetId = oc.sheet_id ?? '';
+          if (!sheetId) sheetId = await ensureGoogleSheet(gsCred.access_token, automation.name).catch(() => '');
+          if (sheetId) {
+            const sheetName = oc.sheet_name ?? automation.name.slice(0, 100);
+            await invoke('krew_http_call', {
+              method: 'POST',
+              url: `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(sheetName)}!A1:append?valueInputOption=USER_ENTERED`,
+              headers: { 'Authorization': `Bearer ${gsCred.access_token}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ values: [[new Date().toLocaleString(), automation.name, finalOutput.slice(0, 500)]] }),
+            }).catch(() => {});
+          }
         }
       } catch { /* Google Sheets not connected */ }
     }
@@ -586,12 +722,16 @@ export async function executeAutomation(
       } catch { /* HubSpot not connected */ }
     }
 
-    if (lastStep?.output === 'notion' && oc.notion_db_url && finalOutput) {
+    if (lastStep?.output === 'notion' && finalOutput) {
       try {
         const no = await credentialStore.get('notion').catch(() => null);
-        if (no?.token) {
-          const notionHeaders = { 'Authorization': `Bearer ${no.token}`, 'Notion-Version': '2022-06-28', 'Content-Type': 'application/json' };
-          const dbId = oc.notion_db_url.match(/([a-f0-9]{32})/i)?.[1] ?? '';
+        const notionToken = no?.access_token ?? no?.token ?? '';
+        if (notionToken) {
+          const isOAuth = no?.token_type === 'oauth';
+          const notionHeaders = { 'Authorization': `Bearer ${notionToken}`, 'Notion-Version': '2022-06-28', 'Content-Type': 'application/json' };
+          // Auto-provision DB if no URL provided
+          let dbId = oc.notion_db_url?.match(/([a-f0-9]{32})/i)?.[1] ?? '';
+          if (!dbId) dbId = await ensureNotionDatabase(notionToken, automation.name, isOAuth).catch(() => '');
           if (dbId) {
             await invoke('krew_http_call', {
               method:  'POST',
@@ -599,7 +739,12 @@ export async function executeAutomation(
               headers: notionHeaders,
               body:    JSON.stringify({
                 parent: { database_id: dbId },
-                properties: { Name: { title: [{ text: { content: automation.name + ' — ' + new Date().toLocaleDateString() } }] } },
+                properties: {
+                  Name:    { title: [{ text: { content: automation.name + ' — ' + new Date().toLocaleDateString() } }] },
+                  Source:  { select: { name: automation.name } },
+                  Date:    { date: { start: new Date().toISOString().slice(0, 10) } },
+                  Status:  { select: { name: 'New' } },
+                },
                 children: [{ object: 'block', type: 'paragraph', paragraph: { rich_text: [{ type: 'text', text: { content: finalOutput.slice(0, 2000) } }] } }],
               }),
             }).catch(() => {});

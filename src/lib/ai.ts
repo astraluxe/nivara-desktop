@@ -22,7 +22,7 @@ export const PROVIDERS: Record<Provider, ProviderMeta> = {
   together:   { label: 'Together.ai',  defaultModel: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',      keyPlaceholder: 'API key…',  endpoint: 'https://api.together.xyz/v1/chat/completions' },
   deepseek:   { label: 'DeepSeek',     defaultModel: 'deepseek-chat',                                keyPlaceholder: 'sk-…',      endpoint: 'https://api.deepseek.com/v1/chat/completions' },
   claude:     { label: 'Claude',       defaultModel: 'claude-3-5-haiku-20241022',                    keyPlaceholder: 'sk-ant-…',  endpoint: null },
-  gemini:     { label: 'Gemini',       defaultModel: 'gemini-2.0-flash-lite',                        keyPlaceholder: 'AIzaSy…',   endpoint: null },
+  gemini:     { label: 'Gemini',       defaultModel: 'gemini-2.5-flash-lite',                        keyPlaceholder: 'AIzaSy…',   endpoint: null },
   custom:     { label: 'Custom (OpenAI-compatible)', defaultModel: '',                                keyPlaceholder: 'API key…',  endpoint: null },
 };
 

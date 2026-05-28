@@ -3,10 +3,12 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import type { Node, Edge } from '@xyflow/react';
 import { krewDb, credentialStore, krewMemoryDb, type KrewMemory } from '../../lib/krewDb';
-import { SYSTEM_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, buildKrewSystemPrompt, executeTool, needsCompression, type ToolDef } from '../../lib/krewTools';
+import { SYSTEM_TOOLS, AUTOMATION_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, buildKrewSystemPrompt, executeTool, needsCompression, type ToolDef } from '../../lib/krewTools';
 import { trackTokenUsage } from '../../lib/tokenTracker';
 import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, type KrewAgent } from '../../lib/krewAgents';
 import { useAuth } from '../../contexts/AuthContext';
+import { getPlanConfig } from '../../lib/planConfig';
+import UpgradeModal from '../UpgradeModal';
 import { type AutomationProposal } from './AutomationProposalModal';
 import AgentStatus from './AgentStatus';
 import { type ConnectionMode, type Provider } from '../../lib/ai';
@@ -477,12 +479,15 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
         </span>
       )}
       {streaming && content && <span className="inline-block w-1.5 h-3.5 bg-accent animate-pulse ml-0.5 rounded-sm" />}
-      {!streaming && content.length > 60 && (
+      {!streaming && content.length > 0 && (
         <button
           onClick={copyAll}
-          className="mt-1 text-[10px] text-nv-faint hover:text-nv-muted transition-fast opacity-0 group-hover:opacity-100 font-mono"
+          className="mt-1.5 text-[10px] text-nv-faint hover:text-nv-muted transition-fast font-mono flex items-center gap-1"
         >
-          {copied ? '✓ copied' : 'copy'}
+          {copied
+            ? <><span className="text-emerald-400">✓</span> copied</>
+            : <><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> copy</>
+          }
         </button>
       )}
     </div>
@@ -566,6 +571,21 @@ function ChoicePicker({ choiceSet, onSelect, disabled, storageKey }: { choiceSet
   );
 }
 
+function CopyBtn({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={() => navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1800); })}
+      className="text-[10px] text-nv-faint hover:text-nv-muted transition-fast font-mono flex items-center gap-1 mt-1"
+    >
+      {copied
+        ? <><span className="text-emerald-400">✓</span> copied</>
+        : <><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> copy</>
+      }
+    </button>
+  );
+}
+
 function MessageRow({ msg, agent }: { msg: DisplayMsg; agent: KrewAgent }) {
   if (msg.role === 'tool_call') return <ToolCallBubble name={msg.toolName ?? 'tool'} args={msg.content} />;
   if (msg.role === 'tool_result' && msg.toolName === 'web_search') return <SearchResultBubble content={msg.content} />;
@@ -573,10 +593,11 @@ function MessageRow({ msg, agent }: { msg: DisplayMsg; agent: KrewAgent }) {
   if (msg.role === 'delegation') return <DelegationBubble agentKey={msg.toolName ?? ''} content={msg.content} streaming={msg.streaming} />;
   if (msg.role === 'user') {
     return (
-      <div className="flex justify-end my-2">
+      <div className="flex flex-col items-end my-2">
         <div className="max-w-[80%] bg-accent/15 border border-accent/30 rounded-2xl rounded-tr-sm px-3 py-2">
           <p className="text-[12px] text-nv-text">{msg.content}</p>
         </div>
+        <CopyBtn text={msg.content} />
       </div>
     );
   }
@@ -679,7 +700,36 @@ function getStarterPrompts(agent: KrewAgent): string[] {
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenConnectApps, onBrowseAgents, onViewOnCanvas }: Props) {
-  const { user, session } = useAuth();
+  const { user, session, profile } = useAuth();
+  const planCfg = getPlanConfig(profile?.plan ?? 'explore');
+  type VoiceStatus = 'idle' | 'recording' | 'transcribing' | 'error';
+  const [voiceStatus,       setVoiceStatus]       = useState<VoiceStatus>('idle');
+  const [voiceErr,          setVoiceErr]           = useState<string | null>(null);
+  const [showVoiceUpgrade,  setShowVoiceUpgrade]   = useState(false);
+
+  async function handleMicClick() {
+    setVoiceErr(null);
+    if (!planCfg.voiceToCode) { setShowVoiceUpgrade(true); return; }
+    if (voiceStatus === 'recording') {
+      setVoiceStatus('transcribing');
+      try {
+        const text = await invoke<string>('voice_stop_and_transcribe');
+        if (text) setInput((prev: string) => prev ? `${prev} ${text}` : text);
+      } catch (e) { setVoiceErr(`${e}`); }
+      setVoiceStatus('idle');
+      return;
+    }
+    if (voiceStatus === 'idle') {
+      try {
+        await invoke('voice_start_recording');
+        setVoiceStatus('recording');
+      } catch (e) {
+        setVoiceErr(`Microphone error: ${e}`);
+        setVoiceStatus('error');
+      }
+    }
+  }
+
   const [mode,       setMode]       = useState<ConnectionMode>('own_key');
   const [apiKey,     setApiKey]     = useState('');
   const [provider,   setProvider]   = useState<Provider>('openai');
@@ -717,7 +767,7 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
     setMessages([]);
     if (!sessionId) return;
     krewDb.getMessages(sessionId).then((rows) => {
-      const msgs: DisplayMsg[] = rows.map((r) => {
+      const rawMsgs: (DisplayMsg | null)[] = rows.map((r): DisplayMsg | null => {
         // Choices cards are stored as tool_result with tool_name '__choices__'
         if (r.tool_name === '__choices__') {
           try {
@@ -730,7 +780,8 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
           content:  r.content,
           toolName: r.tool_name ?? undefined,
         };
-      }).filter((m): m is DisplayMsg => m !== null);
+      });
+      const msgs: DisplayMsg[] = rawMsgs.filter((m): m is DisplayMsg => m !== null);
       // Restore any pending (not yet accepted/declined) proposal
       const stored = sessionStorage.getItem(`krew-proposal-${sessionId}`);
       if (stored) {
@@ -765,8 +816,9 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
       if (SERVICE_TOOLS[service]) tools.push(...SERVICE_TOOLS[service]);
     }
     if (agent.key === 'boss') tools.push(...BOSS_TOOLS);
+    if (agent.category === 'Ops') tools.push(...AUTOMATION_TOOLS);
     return tools;
-  }, [creds, agent.key]);
+  }, [creds, agent.key, agent.category]);
 
   // Stream one AI turn — returns full response text
   async function streamTurn(
@@ -1033,7 +1085,7 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
               }
             }
           } else {
-            toolResult = await executeTool(tool, args, creds, requestTerminalApproval, agent.key);
+            toolResult = await executeTool(tool, args, creds, requestTerminalApproval, agent.key, user?.id ?? '');
             // Refresh memories if they changed
             if (tool === 'save_memory' || tool === 'forget_memory') {
               krewMemoryDb.getAll(agent.key).then(setAgentMemories).catch(() => {});
@@ -1280,7 +1332,35 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
 
         {/* Input */}
         <div className="p-3 border-t border-nv-border shrink-0">
+          {voiceErr && (
+            <p className="text-[10px] text-red-400 mb-1.5 px-0.5">{voiceErr}
+              <button className="ml-1.5 underline opacity-60" onClick={() => { setVoiceErr(null); setVoiceStatus('idle'); }}>dismiss</button>
+            </p>
+          )}
           <div className="flex gap-2 items-end">
+            {/* Mic button */}
+            <button
+              title={voiceStatus === 'recording' ? 'Stop recording' : voiceStatus === 'transcribing' ? 'Transcribing…' : 'Voice input · Builder+ plan'}
+              onClick={handleMicClick}
+              disabled={voiceStatus === 'transcribing'}
+              className={`w-7 h-7 flex items-center justify-center rounded-lg border transition-fast shrink-0 mb-0.5 ${
+                voiceStatus === 'recording'
+                  ? 'border-red-500/60 bg-red-500/10 text-red-400 animate-pulse'
+                  : voiceStatus === 'transcribing'
+                  ? 'border-nv-border opacity-50 text-nv-faint cursor-not-allowed'
+                  : 'border-nv-border text-nv-faint hover:text-accent hover:border-accent'
+              }`}
+            >
+              {voiceStatus === 'recording' ? (
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+              ) : voiceStatus === 'transcribing' ? (
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" opacity=".3"/><path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" className="animate-spin origin-center"/></svg>
+              ) : (
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
+                </svg>
+              )}
+            </button>
             {/* File attach */}
             <input
               type="file"
@@ -1338,6 +1418,14 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
           </div>
         </div>
       </div>
+      {showVoiceUpgrade && (
+        <UpgradeModal
+          onClose={() => setShowVoiceUpgrade(false)}
+          currentPlan={profile?.plan ?? 'explore'}
+          highlightPlan="builder"
+          reason="Voice input in Krew requires Builder plan or higher."
+        />
+      )}
     </>
   );
 }
