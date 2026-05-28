@@ -47,7 +47,7 @@ jobs:
             $rel   = Invoke-RestMethod "https://api.github.com/repos/ggerganov/whisper.cpp/releases/latest"
             $asset = $rel.assets | Where-Object { $_.name -match "win-x64" -and $_.name -match "\.zip$" } | Select-Object -First 1
             if (-not $asset) { $asset = $rel.assets | Where-Object { $_.name -match "windows" -and $_.name -match "\.zip$" } | Select-Object -First 1 }
-            Write-Host "Downloading $($asset.name)…"
+            Write-Host "Downloading $($asset.name)..."
             Invoke-WebRequest -Uri $asset.browser_download_url -OutFile whisper.zip -UseBasicParsing
             Expand-Archive -Path whisper.zip -DestinationPath whisper-out -Force
             $exe = Get-ChildItem -Recurse whisper-out -Filter "whisper-cli.exe" | Select-Object -First 1
@@ -63,21 +63,19 @@ jobs:
           New-Item -ItemType Directory -Force -Path src-tauri/resources/mesh | Out-Null
           try {
             pip install exo-compute pyinstaller --quiet
-            @'
-from exo.main import main
-if __name__ == "__main__":
-    main()
-'@ | Out-File -FilePath exo_run.py -Encoding utf8
+            $script = "from exo.main import main`nif __name__ == '__main__':`n    main()"
+            Set-Content -Path exo_run.py -Value $script -Encoding utf8
             python -m PyInstaller --onefile --name exo-node --collect-all exo exo_run.py --distpath dist-exo --workpath build-exo --specpath spec-exo
             if (Test-Path dist-exo/exo-node.exe) { Copy-Item dist-exo/exo-node.exe src-tauri/resources/mesh/exo-node.exe }
             Write-Host "Mesh engine bundled."
           } catch { Write-Host "Mesh bundle skipped: $_" }
 
       - name: Build Tauri app and publish GitHub Release
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v0.5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Nivara ${{ github.ref_name }}'
