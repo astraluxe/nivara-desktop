@@ -420,8 +420,71 @@ function splitEmailSections(text: string): Array<{ type: 'email' | 'prose'; cont
   return out;
 }
 
+// ─── Studio asset bubble (renders <!DOCTYPE html> responses as live previews) ──
+
+function StudioAssetBubble({ html }: { html: string }) {
+  const [copied, setCopied] = useState(false);
+  const [saved,  setSaved]  = useState(false);
+
+  function download() {
+    const blob = new Blob([html], { type: 'text/html' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = 'asset.html';
+    a.click();
+    URL.revokeObjectURL(url);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1800);
+  }
+
+  return (
+    <div className="my-3 rounded-xl border border-accent/30 bg-nv-surface overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-nv-border/60 bg-nv-bg">
+        <div className="flex items-center gap-2">
+          <svg viewBox="0 0 16 16" fill="none" className="w-3.5 h-3.5 text-accent shrink-0">
+            <rect x="1" y="2" width="14" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.3"/>
+            <circle cx="8" cy="7" r="2" fill="currentColor" opacity=".6"/>
+            <path d="M2 12h12" stroke="currentColor" strokeWidth="1.1"/>
+            <path d="M6.5 14h3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+          </svg>
+          <span className="text-[11px] font-semibold text-nv-text">Visual asset</span>
+          <span className="text-[9px] text-nv-faint font-mono">HTML · open in any browser</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => { navigator.clipboard.writeText(html); setCopied(true); setTimeout(() => setCopied(false), 1800); }}
+            className="text-[10px] text-nv-faint hover:text-nv-text font-mono transition-fast"
+          >{copied ? '✓ Copied' : 'Copy HTML'}</button>
+          <button
+            onClick={download}
+            className="text-[10px] px-2.5 py-1 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-mono"
+          >{saved ? '✓ Saved' : 'Save .html'}</button>
+        </div>
+      </div>
+      <div className="p-3 bg-nv-bg flex justify-center items-center">
+        <iframe
+          srcDoc={html}
+          sandbox="allow-scripts"
+          className="rounded-lg border border-nv-border/40"
+          style={{ width: 500, height: 280, transform: 'scale(1)', transformOrigin: 'top left', pointerEvents: 'none' }}
+          title="Visual asset preview"
+        />
+      </div>
+      <p className="px-3 pb-2 text-[9px] text-nv-faint font-mono">Save the .html file to open at full resolution in your browser</p>
+    </div>
+  );
+}
+
 function AssistantBubble({ content, streaming }: { content: string; streaming?: boolean }) {
   const [copied, setCopied] = useState(false);
+
+  // If the content is HTML (visual asset from visual_creator), render preview
+  const trimmed = content.trimStart();
+  if (!streaming && (trimmed.startsWith('<!DOCTYPE') || trimmed.startsWith('<html'))) {
+    return <StudioAssetBubble html={content} />;
+  }
+
   const parts = content.split(/(```[\s\S]*?```)/g);
 
   function copyAll() {

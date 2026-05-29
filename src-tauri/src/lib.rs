@@ -925,6 +925,30 @@ async fn models_pick_file(app: tauri::AppHandle) -> Result<Option<String>, Strin
 }
 
 #[tauri::command]
+async fn studio_save_file(
+    app: tauri::AppHandle,
+    default_name: String,
+    content: String,
+) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+    use tokio::sync::oneshot;
+    let (tx, rx) = oneshot::channel::<Option<tauri_plugin_dialog::FilePath>>();
+    app.dialog()
+        .file()
+        .set_file_name(&default_name)
+        .add_filter("HTML file", &["html"])
+        .save_file(move |path| { let _ = tx.send(path); });
+    let path = rx.await.ok().flatten();
+    if let Some(p) = path {
+        let full = p.to_string();
+        std::fs::write(&full, content.as_bytes()).map_err(|e| e.to_string())?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+#[tauri::command]
 async fn models_import(
     app:            tauri::AppHandle,
     source_path:    String,
@@ -4026,6 +4050,7 @@ pub fn run() {
             models_run,
             models_pick_file,
             models_import,
+            studio_save_file,
             // Vault
             vault_enable,
             vault_disable,

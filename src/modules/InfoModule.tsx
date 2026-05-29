@@ -216,6 +216,32 @@ const MODULES: ModuleInfo[] = [
     tip: 'Guard\'s contract scanner uses AI — not a lawyer. Always have a qualified legal professional review before signing.',
   },
   {
+    id: 'studio',
+    name: 'Studio',
+    tagline: 'AI visual creator — banners, videos, graphics',
+    status: 'active',
+    icon: (
+      <svg viewBox="0 0 28 28" fill="none" className="w-5 h-5">
+        <rect x="3" y="6" width="22" height="14" rx="2" stroke="currentColor" strokeWidth="2"/>
+        <circle cx="14" cy="13" r="3.5" fill="currentColor" opacity=".6"/>
+        <path d="M3 20h22" stroke="currentColor" strokeWidth="1.5"/>
+        <path d="M11 24h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+      </svg>
+    ),
+    desc: 'Generate social media banners, animated videos, YouTube thumbnails, and promotional graphics — powered by AI. Describe what you want, pick a format, and get a finished, editable HTML asset in seconds.',
+    features: [
+      'AI-powered generation from a plain English brief',
+      '4 output types: Social Banner, Animated Video, Screen/Slide, Infographic',
+      '5 format presets: Instagram Square, Facebook/LinkedIn, Twitter Header, YouTube Thumbnail, 16:9 Widescreen',
+      'Connected mode: auto-uses your Gemini, OpenAI, or Claude key from Connect Apps',
+      'Refinement loop — iterate in natural language ("make it darker", "add a CTA")',
+      'Code view — inspect and edit the raw HTML/CSS directly',
+      'Save anywhere: OS file dialog to save as a .html file you can open in any browser',
+      'Krew integration: Boss can delegate visual asset creation to Pixel.Design',
+    ],
+    tip: 'Connect your Gemini key in Connect Apps for the best results. Studio also works with OpenAI and Claude keys. The output is pure HTML/CSS — no proprietary format, no lock-in.',
+  },
+  {
     id: 'mesh',
     name: 'Mesh',
     tagline: 'Distributed RAM pooling (experimental)',
@@ -318,7 +344,7 @@ export default function InfoModule() {
           <div>
             <h1 className="text-[15px] font-semibold text-nv-text tracking-tight">What's Inside Nivara</h1>
             <p className="text-[10px] text-nv-faint font-mono mt-0.5">
-              {MODULES.length} modules · click any card to expand
+              {MODULES.length} modules · tap any card to expand
             </p>
           </div>
           <div className="relative">

@@ -103,6 +103,27 @@ const MODULE_CARDS: ModuleCard[] = [
     ),
   },
   {
+    id: 'studio', label: 'Studio', sub: 'Banners · Video · Graphics',
+    desc: 'Generate social media banners, animated videos, thumbnails, and promo graphics from a plain English brief — using your own API key.',
+    guide: [
+      'Pick an output type: Social Banner, Animated Video, Screen/Slide, or Infographic.',
+      'Choose a format preset: Instagram Square, Facebook/LinkedIn, Twitter Header, YouTube Thumbnail, or 16:9.',
+      'Write a brief in plain English — describe what you want, brand colours, text to include, and mood.',
+      'Click Generate. Studio calls your connected AI (Gemini, OpenAI, or Claude) and renders a live preview.',
+      'Use "Refine" to iterate: type changes like "make the background darker" or "add a tagline".',
+      'Click "Save" to export the asset as an HTML file you can open in any browser.',
+    ],
+    icon: (
+      <svg viewBox="0 0 28 28" fill="none" className="w-7 h-7">
+        <rect x="2" y="5" width="24" height="15" rx="2.5" stroke="currentColor" strokeWidth="2.2"/>
+        <circle cx="14" cy="12.5" r="3.5" fill="currentColor" opacity=".55"/>
+        <path d="M7 10.5l2.5 2.5-2.5 2.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+        <path d="M9 24h10" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+        <path d="M14 20v4" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+      </svg>
+    ),
+  },
+  {
     id: 'coder', label: 'Coder', sub: 'Terminal · Editor · AI',
     desc: 'Real terminal, Monaco editor, and AI chat. Connect any model or your own API key.',
     guide: [
@@ -324,7 +345,7 @@ export default function HomeModule({ onNavigate, onStartTour }: Props) {
         {/* CENTRE — Module grid (2×3) */}
         <div className="p-4 overflow-hidden">
           <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-3">Modules</p>
-          <div className="grid grid-cols-3 gap-3 h-[calc(100%-28px)]">
+          <div className="grid grid-cols-3 gap-3 overflow-y-auto content-start" style={{ maxHeight: 'calc(100% - 28px)' }}>
             {MODULE_CARDS.map((card) => (
               <div
                 key={card.id}
