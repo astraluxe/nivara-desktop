@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useAuth } from "../contexts/AuthContext";
 
-export type Module = "home" | "automation" | "coder" | "krew" | "connect" | "models" | "vault" | "guard" | "mesh" | "account" | "settings";
+export type Module = "home" | "automation" | "coder" | "krew" | "connect" | "models" | "vault" | "guard" | "mesh" | "info" | "account" | "settings";
 
 interface Props {
   activeModule: Module;
@@ -131,6 +131,18 @@ const MODULES: { id: Module; label: string; icon: React.ReactNode; status: "acti
       </svg>
     ),
   },
+  {
+    id: "info",
+    label: "Info · module guide",
+    status: "active",
+    icon: (
+      <svg viewBox="0 0 28 28" fill="none" className="w-5 h-5">
+        <rect x="5" y="3" width="14" height="18" rx="2" stroke="currentColor" strokeWidth="1.8" fill="currentColor" fillOpacity=".1"/>
+        <path d="M9 8h8M9 12h8M9 16h5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+        <path d="M21 6v18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" opacity=".3"/>
+      </svg>
+    ),
+  },
 ];
 
 const STATUS_COLOR: Record<string, string> = {
@@ -160,6 +172,7 @@ const SHORT_LABEL: Record<string, string> = {
   vault:      "Vault",
   guard:      "Guard",
   mesh:       "Mesh",
+  info:       "Info",
 };
 
 // ── Component ─────────────────────────────────────────────────────────────────

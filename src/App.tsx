@@ -16,6 +16,7 @@ import GuardModule from "./modules/GuardModule";
 import MeshModule from "./modules/MeshModule";
 import AccountPanel from "./modules/AccountPanel";
 import SettingsModule, { loadSettings } from "./modules/SettingsModule";
+import InfoModule from "./modules/InfoModule";
 import { AppSkeleton } from "./components/Skeleton";
 import TourOverlay, { isTourDone } from "./components/TourOverlay";
 import type { Node, Edge } from "@xyflow/react";
@@ -161,6 +162,7 @@ function AppShell() {
           {activeModule === "vault"   && <VaultModule />}
           {activeModule === "guard"   && <GuardModule />}
           {activeModule === "mesh"    && <MeshModule onSessionChange={setMeshActive} />}
+          {activeModule === "info"     && <InfoModule />}
           {activeModule === "account"  && <AccountPanel />}
           {activeModule === "settings" && <SettingsModule />}
         </main>
