@@ -96,6 +96,21 @@ function ScoreArc({ score, overall }: { score: number; overall: ComplianceResult
   );
 }
 
+function copyResult(result: ComplianceResult, fileName: string, bizType: string) {
+  const lines: string[] = [
+    `Compliance Report — ${bizType}`,
+    `File: ${fileName || 'pasted content'}`,
+    `Overall: ${result.overall.replace('_', ' ').toUpperCase()} · Score: ${result.score}/100`,
+    '',
+    '── Requirements ──',
+    ...result.rows.map(r => `[${r.status.toUpperCase()}] ${r.standard} · ${r.requirement}\n  ${r.note}`),
+    '',
+    '── Action Items ──',
+    ...result.action_items.map((a, i) => `${i + 1}. ${a}`),
+  ];
+  navigator.clipboard.writeText(lines.join('\n'));
+}
+
 export default function ComplianceChecker() {
   const [bizType,  setBizType]  = useState(BUSINESS_TYPES[0]);
   const [dataType, setDataType] = useState(DATA_TYPES[1]);
@@ -108,9 +123,11 @@ export default function ComplianceChecker() {
   const [dragOver,      setDragOver]      = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const [checking, setChecking] = useState(false);
-  const [result,   setResult]   = useState<ComplianceResult | null>(null);
-  const [error,    setError]    = useState('');
+  const [checking,   setChecking]   = useState(false);
+  const [result,     setResult]     = useState<ComplianceResult | null>(null);
+  const [error,      setError]      = useState('');
+  const [copied,     setCopied]     = useState(false);
+  const [lastLogId,  setLastLogId]  = useState<string | null>(null);
 
   async function readFile(file: File) {
     setFileName(file.name);
@@ -183,9 +200,10 @@ export default function ComplianceChecker() {
       if (!jsonMatch) throw new Error('No JSON in response — try again');
       const parsed: ComplianceResult = JSON.parse(jsonMatch[0]);
       const sev = parsed.overall === 'non_compliant' ? 'high' : parsed.overall === 'partial' ? 'med' : 'low';
-      await guardDb.log('compliance_check', sev,
+      const logId = await guardDb.log('compliance_check', sev,
         `Compliance · ${bizType} · score ${parsed.score}/100 · ${fileName || 'pasted'}`,
         { overall: parsed.overall, score: parsed.score, file: fileName });
+      setLastLogId(logId ?? null);
       setResult(parsed);
     } catch (e) {
       const msg = String(e);
@@ -310,8 +328,35 @@ export default function ComplianceChecker() {
                 </div>
               )}
 
+              {/* Copy + Delete log entry buttons */}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    copyResult(result, fileName, bizType);
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 1800);
+                  }}
+                  className="flex items-center gap-1.5 text-[10px] font-mono px-3 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:text-accent hover:border-accent/30 transition-fast"
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                  {copied ? '✓ Copied' : 'Copy report'}
+                </button>
+                {lastLogId && (
+                  <button
+                    onClick={async () => {
+                      await guardDb.deleteEvent(lastLogId).catch(() => {});
+                      setLastLogId(null);
+                    }}
+                    className="text-[10px] font-mono px-3 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:text-nv-bad hover:border-red-500/30 transition-fast"
+                    title="Remove this scan from the audit log"
+                  >
+                    Delete from log
+                  </button>
+                )}
+              </div>
+
               <button
-                onClick={() => { setResult(null); setFileContent(''); setFileName(''); setFolderStats(''); }}
+                onClick={() => { setResult(null); setFileContent(''); setFileName(''); setFolderStats(''); setLastLogId(null); }}
                 className="text-[10px] font-mono text-nv-faint hover:text-accent transition-fast self-start"
               >
                 ← Scan another file

@@ -29,12 +29,21 @@ const TYPE_LABEL: Record<string, string> = {
   malicious_domain:  'Malicious domain',
 };
 
-function EventRow({ ev }: { ev: GuardEvent }) {
-  const s = SEV[ev.severity] ?? SEV.low;
-  const ts = new Date(ev.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+function EventRow({ ev, onDelete }: { ev: GuardEvent; onDelete: (id: string) => void }) {
+  const s    = SEV[ev.severity] ?? SEV.low;
+  const ts   = new Date(ev.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const date = new Date(ev.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' });
+  const [copied, setCopied] = useState(false);
+
+  function copyText() {
+    const txt = `[${ev.severity.toUpperCase()}] ${TYPE_LABEL[ev.event_type] ?? ev.event_type}\n${ev.description}\n${date} ${ts}`;
+    navigator.clipboard.writeText(txt);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }
+
   return (
-    <div className={`flex items-start gap-3 p-3 border-b border-nv-border/50 last:border-0 hover:bg-nv-surface2 transition-fast`}>
+    <div className="group flex items-start gap-3 p-3 border-b border-nv-border/50 last:border-0 hover:bg-nv-surface2 transition-fast">
       <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 text-sm ${s.bg} border ${s.border}`}>
         {TYPE_ICON[ev.event_type] ?? '•'}
       </div>
@@ -47,6 +56,23 @@ function EventRow({ ev }: { ev: GuardEvent }) {
           <span className="text-[9px] text-nv-faint opacity-40">·</span>
           <span className="text-[9px] font-mono text-nv-faint">{date} {ts}</span>
         </div>
+      </div>
+      {/* Row actions — visible on hover */}
+      <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-fast">
+        <button
+          onClick={copyText}
+          title="Copy"
+          className="text-[9px] font-mono px-1.5 py-0.5 rounded border border-nv-border text-nv-faint hover:text-accent hover:border-accent/30 transition-fast"
+        >
+          {copied ? '✓' : 'Copy'}
+        </button>
+        <button
+          onClick={() => onDelete(ev.id)}
+          title="Delete"
+          className="text-[9px] font-mono px-1.5 py-0.5 rounded border border-nv-border text-nv-faint hover:text-nv-bad hover:border-red-500/30 transition-fast"
+        >
+          ✕
+        </button>
       </div>
       <span className={`text-[9px] font-mono font-semibold px-2 py-0.5 rounded-full border shrink-0 ${s.text} ${s.bg} ${s.border}`}>
         {ev.severity.toUpperCase()}
@@ -106,11 +132,12 @@ function StatCard({ value, label, color, icon }: { value: number; label: string;
 }
 
 export default function ThreatDashboard() {
-  const [stats, setStats]       = useState<GuardStats | null>(null);
-  const [events, setEvents]     = useState<GuardEvent[]>([]);
-  const [scanning, setScanning] = useState(false);
-  const [scanMsg, setScanMsg]   = useState('');
-  const [scanErr, setScanErr]   = useState('');
+  const [stats,      setStats]      = useState<GuardStats | null>(null);
+  const [events,     setEvents]     = useState<GuardEvent[]>([]);
+  const [scanning,   setScanning]   = useState(false);
+  const [scanMsg,    setScanMsg]    = useState('');
+  const [scanErr,    setScanErr]    = useState('');
+  const [clearing,   setClearing]   = useState(false);
 
   const reload = useCallback(async () => {
     const [s, e] = await Promise.all([guardDb.stats(), guardDb.events(60)]);
@@ -119,6 +146,21 @@ export default function ThreatDashboard() {
   }, []);
 
   useEffect(() => { reload(); }, [reload]);
+
+  async function deleteEvent(id: string) {
+    await guardDb.deleteEvent(id).catch(() => {});
+    setEvents(prev => prev.filter(e => e.id !== id));
+    const s = await guardDb.stats().catch(() => null);
+    if (s) setStats(s);
+  }
+
+  async function clearAll() {
+    if (!window.confirm('Delete all Guard audit log entries? This cannot be undone.')) return;
+    setClearing(true);
+    await guardDb.clearAll().catch(() => {});
+    setClearing(false);
+    await reload();
+  }
 
   const riskScore = stats
     ? Math.min(100, (stats.threats * 12) + (stats.phishing_detected * 8) + (stats.cve_found * 6))
@@ -200,10 +242,16 @@ export default function ThreatDashboard() {
 
           <ThreatOrb score={riskScore} />
 
+          {/* Source note */}
+          <p className="text-[9px] font-mono text-nv-faint text-center leading-relaxed px-1">
+            Score reflects your Guard activity log — compliance scans, phishing checks, CVE searches.
+            <br/>Not a live system scan.
+          </p>
+
           {/* Severity bar */}
           {events.length > 0 && (
-            <div className="flex gap-1.5 items-center justify-center">
-              {high > 0 && <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-red-500/15 text-nv-bad border border-red-500/25">{high} critical</span>}
+            <div className="flex gap-1.5 items-center justify-center flex-wrap">
+              {high > 0 && <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-red-500/15 text-nv-bad border border-red-500/25">{high} high severity</span>}
               {med > 0  && <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-400/15 text-nv-warn border border-amber-400/25">{med} warning</span>}
             </div>
           )}
@@ -255,9 +303,9 @@ export default function ThreatDashboard() {
           <div className="flex items-center justify-between px-4 py-2.5 border-b border-nv-border shrink-0 bg-nv-surface">
             <div className="flex items-center gap-2.5">
               <span className="w-1.5 h-1.5 rounded-full bg-nv-ok" style={{ animation: 'nv-breathe 2.5s ease-in-out infinite' }} />
-              <span className="text-[10px] font-mono text-nv-faint tracking-widest">AUDIT LOG · REAL-TIME</span>
+              <span className="text-[10px] font-mono text-nv-faint tracking-widest">GUARD ACTIVITY LOG</span>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
               <span className="text-[10px] font-mono text-nv-faint">{events.length} records</span>
               <button
                 onClick={reload}
@@ -266,6 +314,15 @@ export default function ThreatDashboard() {
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.41"/></svg>
                 Refresh
               </button>
+              {events.length > 0 && (
+                <button
+                  onClick={clearAll}
+                  disabled={clearing}
+                  className="text-[10px] font-mono text-nv-faint hover:text-nv-bad transition-fast disabled:opacity-40"
+                >
+                  Clear all
+                </button>
+              )}
             </div>
           </div>
 
@@ -299,7 +356,7 @@ export default function ThreatDashboard() {
             </div>
           ) : (
             <div className="flex-1 overflow-y-auto">
-              {events.map(ev => <EventRow key={ev.id} ev={ev} />)}
+              {events.map(ev => <EventRow key={ev.id} ev={ev} onDelete={deleteEvent} />)}
             </div>
           )}
         </div>

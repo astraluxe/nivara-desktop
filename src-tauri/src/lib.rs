@@ -2637,6 +2637,27 @@ fn guard_get_stats(db: tauri::State<'_, GuardDbConn>) -> Result<serde_json::Valu
     }))
 }
 
+#[tauri::command]
+fn guard_delete_event(
+    db: tauri::State<'_, GuardDbConn>,
+    id: String,
+) -> Result<(), String> {
+    let conn = db.0.lock().unwrap();
+    conn.execute("DELETE FROM guard_events WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn guard_clear_events(
+    db: tauri::State<'_, GuardDbConn>,
+) -> Result<(), String> {
+    let conn = db.0.lock().unwrap();
+    conn.execute("DELETE FROM guard_events", [])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ─── Automation SQLite DB ─────────────────────────────────────────────────────
 
 struct AutomationDbConn(Mutex<Connection>);
@@ -4075,6 +4096,8 @@ pub fn run() {
             guard_log_event,
             guard_get_events,
             guard_get_stats,
+            guard_delete_event,
+            guard_clear_events,
             // Updater
             check_for_update,
             install_update,

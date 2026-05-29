@@ -27,6 +27,8 @@ export const guardDb = {
       description,
       metadata: metadata ? JSON.stringify(metadata) : null,
     }),
-  events: (limit = 50) => invoke<GuardEvent[]>('guard_get_events', { limit }),
-  stats: ()           => invoke<GuardStats>('guard_get_stats'),
+  events:      (limit = 50) => invoke<GuardEvent[]>('guard_get_events', { limit }),
+  stats:       ()           => invoke<GuardStats>('guard_get_stats'),
+  deleteEvent: (id: string) => invoke<void>('guard_delete_event', { id }),
+  clearAll:    ()           => invoke<void>('guard_clear_events'),
 };
