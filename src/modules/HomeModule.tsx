@@ -142,7 +142,7 @@ const MODULE_CARDS: ModuleCard[] = [
     ),
   },
   {
-    id: 'models', label: 'Models', sub: 'Download · Run local', coming: true,
+    id: 'models', label: 'Models', sub: 'Download · Run local',
     desc: 'Browse and download open-source models. Run Mistral, Qwen, Phi, and more locally.',
     guide: [
       'Browse the Models library to find open-source models sorted by size, speed, and capability.',
@@ -150,7 +150,7 @@ const MODULE_CARDS: ModuleCard[] = [
       'Smaller models (1–4B parameters) run on most laptops. Larger models need 8GB+ RAM.',
       'Once downloaded, models are available in Krew and Coder as local AI options.',
       'Models are stored in your Nivara data folder and never sent to any server.',
-      'Coming in Phase 7: Mesh lets you pool RAM with other devices to run much larger models.',
+      'Mesh integration lets you pool RAM with other devices on your network to run much larger models.',
     ],
     icon: (
       <svg viewBox="0 0 28 28" fill="none" className="w-7 h-7">
@@ -160,7 +160,7 @@ const MODULE_CARDS: ModuleCard[] = [
     ),
   },
   {
-    id: 'vault', label: 'Vault', sub: 'DNS · Ad blocking', coming: true,
+    id: 'vault', label: 'Vault', sub: 'DNS · Ad blocking',
     desc: 'System-wide ad and tracker blocking. Encrypted DNS so your ISP sees nothing.',
     guide: [
       'Vault routes your DNS queries through encrypted servers so your ISP cannot log your browsing.',
@@ -168,7 +168,7 @@ const MODULE_CARDS: ModuleCard[] = [
       'The Block mode removes ads and trackers from every app on your device — not just the browser.',
       'DNS provider names are never shown — all modes use Nivara-branded names for simplicity.',
       'Vault works at the system level and requires no browser extension.',
-      'Coming in Phase 8 — Vault will integrate with Guard for a full privacy + security stack.',
+      'Vault integrates with Guard for a full privacy + security stack — enable both for maximum protection.',
     ],
     icon: (
       <svg viewBox="0 0 28 28" fill="none" className="w-7 h-7">
@@ -178,7 +178,7 @@ const MODULE_CARDS: ModuleCard[] = [
     ),
   },
   {
-    id: 'guard', label: 'Guard', sub: 'Security · Monitoring', coming: true,
+    id: 'guard', label: 'Guard', sub: 'Security · Monitoring',
     desc: 'Threat monitoring, contract scanning via AI, and SOC2-ready audit trails.',
     guide: [
       'Guard monitors your system for threats: unusual processes, suspicious network connections, and file changes.',
@@ -186,7 +186,7 @@ const MODULE_CARDS: ModuleCard[] = [
       'All audit events are stored in a local SQLite database with tamper-evident logs — ready for SOC2 review.',
       'Export audit reports as PDF for compliance or team review.',
       'Guard requires Builder plan or above for contract scanning.',
-      'Coming in Phase 8 — currently in design. Guard will be deeply integrated with Vault.',
+      'Guard works alongside Vault for a full privacy and security stack — enable Vault to add DNS-level blocking.',
     ],
     icon: (
       <svg viewBox="0 0 28 28" fill="none" className="w-7 h-7">
