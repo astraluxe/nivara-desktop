@@ -33,84 +33,22 @@ jobs:
         with:
           workspaces: './src-tauri -> target'
 
-      - name: Set up Python for exo bundling
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Bundle voice engine (whisper-cli + Nivara voice model)
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path src-tauri/resources/voice | Out-Null
-          try {
-            $rel   = Invoke-RestMethod "https://api.github.com/repos/ggerganov/whisper.cpp/releases/latest"
-            $asset = $rel.assets | Where-Object { $_.name -match "win-x64" -and $_.name -match "\.zip$" } | Select-Object -First 1
-            if (-not $asset) { $asset = $rel.assets | Where-Object { $_.name -match "windows" -and $_.name -match "\.zip$" } | Select-Object -First 1 }
-            Write-Host "Downloading $($asset.name)..."
-            Invoke-WebRequest -Uri $asset.browser_download_url -OutFile whisper.zip -UseBasicParsing
-            Expand-Archive -Path whisper.zip -DestinationPath whisper-out -Force
-            $exe = Get-ChildItem -Recurse whisper-out -Filter "whisper-cli.exe" | Select-Object -First 1
-            if ($exe) { Copy-Item $exe.FullName src-tauri/resources/voice/whisper-cli.exe }
-            Invoke-WebRequest -Uri "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin" -OutFile src-tauri/resources/voice/ggml-base.en.bin -UseBasicParsing
-            Write-Host "Voice engine ready."
-          } catch { Write-Host "Voice bundle skipped: $_" }
-
-      - name: Bundle mesh engine (exo via PyInstaller)
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path src-tauri/resources/mesh | Out-Null
-          try {
-            pip install exo-compute pyinstaller --quiet
-            $script = "from exo.main import main`nif __name__ == '__main__':`n    main()"
-            Set-Content -Path exo_run.py -Value $script -Encoding utf8
-            python -m PyInstaller --onefile --name exo-node --collect-all exo exo_run.py --distpath dist-exo --workpath build-exo --specpath spec-exo
-            if (Test-Path dist-exo/exo-node.exe) { Copy-Item dist-exo/exo-node.exe src-tauri/resources/mesh/exo-node.exe }
-            Write-Host "Mesh engine bundled."
-          } catch { Write-Host "Mesh bundle skipped: $_" }
-
-      - name: Build frontend
-        run: npm run build
-
-      - name: Rust release build
-        shell: pwsh
+      - name: Build Tauri app and publish GitHub Release
+        uses: tauri-apps/tauri-action@v0
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          cd src-tauri
-          cargo build --release
-
-      - name: Bundle installer (tauri bundle)
-        shell: pwsh
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npx @tauri-apps/cli bundle --release
-
-      - name: List release artifacts
-        shell: pwsh
-        run: Get-ChildItem -Recurse src-tauri/target/release/bundle | Select-Object FullName
-
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: 'Nivara ${{ github.ref_name }}'
-          body: |
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Nivara ${{ github.ref_name }}'
+          releaseBody: |
             ## What's new
             See the full changelog in the repo.
 
             ## Install
             Download **Nivara_${{ github.ref_name }}_x64-setup.exe** below and run it.
             Windows may show a SmartScreen warning on first install — click **More info → Run anyway**.
-          draft: true
+          releaseDraft: true
           prerelease: false
-          files: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/nsis/*.nsis.zip
-            src-tauri/target/release/bundle/nsis/*.exe.sig
-            src-tauri/target/release/bundle/nsis/*.nsis.zip.sig
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          includeUpdaterJson: true
