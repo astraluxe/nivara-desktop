@@ -5,46 +5,60 @@ import { useAuth } from '../../contexts/AuthContext';
 import { credentialStore } from '../../lib/krewDb';
 import type { Provider } from '../../lib/ai';
 
-// ─── Constants ─────────────────────────────────────────────────────────────────
-
-const WEBSITE_PATH = "C:\\Users\\amogh\\OneDrive\\Desktop\\NIVARA\\NIVARA.html";
-const WEBSITE_REPO  = "C:\\Users\\amogh\\OneDrive\\Desktop\\NIVARA";
-
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
-type Stage = 'idle' | 'searching' | 'analyzing' | 'done' | 'error';
-type WsStage = 'idle' | 'reading' | 'updating' | 'pushing' | 'done' | 'error';
+type Stage = 'idle' | 'planning' | 'searching' | 'analyzing' | 'done' | 'error';
 
 interface SearchResult {
   query: string;
-  data: string;
-  done: boolean;
+  data:  string;
+  done:  boolean;
 }
 
 const FOCUS_OPTIONS = [
-  { id: 'funding',     label: 'Funding & Valuation' },
-  { id: 'competitors', label: 'Competitors' },
-  { id: 'leadership',  label: 'Leadership & Team' },
-  { id: 'products',    label: 'Products & Services' },
-  { id: 'news',        label: 'Latest News' },
+  { id: 'funding',     label: 'Funding & Investors' },
+  { id: 'pricing',     label: 'Pricing Strategy' },
+  { id: 'india',       label: 'India-specific' },
+  { id: 'products',    label: 'Feature Comparison' },
+  { id: 'news',        label: 'Recent News' },
 ];
 
-// ─── Markdown renderer (minimal inline) ────────────────────────────────────────
+// ─── Minimal markdown renderer ──────────────────────────────────────────────────
 
 function renderLine(line: string, i: number): React.ReactNode {
-  if (/^## /.test(line)) return <h2 key={i} className="text-[13px] font-semibold text-nv-text mt-5 mb-1.5">{line.slice(3)}</h2>;
-  if (/^### /.test(line)) return <h3 key={i} className="text-[12px] font-semibold text-nv-text mt-3 mb-1">{line.slice(4)}</h3>;
-  if (/^- /.test(line) || /^\* /.test(line)) return <li key={i} className="text-[12px] text-nv-muted ml-4 list-disc leading-relaxed">{line.slice(2)}</li>;
-  if (/^\d+\. /.test(line)) return <li key={i} className="text-[12px] text-nv-muted ml-4 list-decimal leading-relaxed">{line.replace(/^\d+\. /, '')}</li>;
-  if (line.startsWith('**') && line.endsWith('**')) return <p key={i} className="text-[12px] font-semibold text-nv-text mt-2">{line.slice(2, -2)}</p>;
+  if (/^## /.test(line))  return <h2 key={i} className="text-[14px] font-bold text-nv-text mt-6 mb-2">{line.slice(3)}</h2>;
+  if (/^### /.test(line)) return <h3 key={i} className="text-[12px] font-semibold text-nv-text mt-4 mb-1">{line.slice(4)}</h3>;
+  if (/^- /.test(line) || /^\* /.test(line)) {
+    const text = line.slice(2);
+    const parts = text.split(/(\*\*[^*]+\*\*)/g);
+    return (
+      <li key={i} className="text-[12px] text-nv-muted ml-4 list-disc leading-relaxed">
+        {parts.map((p, j) => p.startsWith('**') && p.endsWith('**')
+          ? <strong key={j} className="text-nv-text font-semibold">{p.slice(2, -2)}</strong>
+          : p
+        )}
+      </li>
+    );
+  }
+  if (/^\d+\. /.test(line)) {
+    const text = line.replace(/^\d+\. /, '');
+    const parts = text.split(/(\*\*[^*]+\*\*)/g);
+    return (
+      <li key={i} className="text-[12px] text-nv-muted ml-4 list-decimal leading-relaxed">
+        {parts.map((p, j) => p.startsWith('**') && p.endsWith('**')
+          ? <strong key={j} className="text-nv-text font-semibold">{p.slice(2, -2)}</strong>
+          : p
+        )}
+      </li>
+    );
+  }
   if (!line.trim()) return <div key={i} className="h-2" />;
   const parts = line.split(/(\*\*[^*]+\*\*)/g);
   return (
     <p key={i} className="text-[12px] text-nv-muted leading-relaxed">
-      {parts.map((p, j) =>
-        p.startsWith('**') && p.endsWith('**')
-          ? <strong key={j} className="text-nv-text font-semibold">{p.slice(2, -2)}</strong>
-          : p
+      {parts.map((p, j) => p.startsWith('**') && p.endsWith('**')
+        ? <strong key={j} className="text-nv-text font-semibold">{p.slice(2, -2)}</strong>
+        : p
       )}
     </p>
   );
@@ -55,7 +69,7 @@ function ReportView({ text, streaming }: { text: string; streaming: boolean }) {
   const lines = text.split('\n');
   return (
     <div className="relative">
-      {text && (
+      {text && !streaming && (
         <button
           onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1800); }}
           className="absolute top-0 right-0 text-[10px] text-nv-faint hover:text-nv-text font-mono transition-fast"
@@ -63,12 +77,12 @@ function ReportView({ text, streaming }: { text: string; streaming: boolean }) {
           {copied ? '✓ copied' : 'copy report'}
         </button>
       )}
-      <div className="pr-16">
+      <div className="pr-20">
         {lines.map((line, i) => renderLine(line, i))}
         {streaming && (
-          <span className="inline-flex items-center gap-1 ml-1 mt-1">
-            {[0,1,2].map(j => (
-              <span key={j} className="w-1 h-1 rounded-full bg-accent/70"
+          <span className="inline-flex items-center gap-1 ml-1 mt-2">
+            {[0, 1, 2].map(j => (
+              <span key={j} className="w-1.5 h-1.5 rounded-full bg-accent/70"
                 style={{ animation: `pulse 1.2s ease-in-out ${j * 0.2}s infinite` }} />
             ))}
           </span>
@@ -84,20 +98,18 @@ export default function ResearchScreen() {
   const { session } = useAuth();
   const callIdRef = useRef(0);
 
-  const [company,  setCompany]  = useState('');
-  const [focus,    setFocus]    = useState<string[]>([]);
-  const [stage,    setStage]    = useState<Stage>('idle');
-  const [searches, setSearches] = useState<SearchResult[]>([]);
-  const [report,   setReport]   = useState('');
-  const [error,    setError]    = useState<string | null>(null);
-  const [searchOpen, setSearchOpen] = useState(false);
-
-  const [wsStage, setWsStage] = useState<WsStage>('idle');
-  const [wsLog,   setWsLog]   = useState('');
-  const [wsError, setWsError] = useState<string | null>(null);
+  const [businessName, setBusinessName] = useState('');
+  const [description,  setDescription]  = useState('');
+  const [geo,          setGeo]          = useState<'india' | 'global'>('india');
+  const [focus,        setFocus]        = useState<string[]>([]);
+  const [stage,        setStage]        = useState<Stage>('idle');
+  const [searches,     setSearches]     = useState<SearchResult[]>([]);
+  const [report,       setReport]       = useState('');
+  const [error,        setError]        = useState<string | null>(null);
+  const [planStatus,   setPlanStatus]   = useState('');
 
   function toggleFocus(id: string) {
-    setFocus((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+    setFocus(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   }
 
   async function loadAllCreds(): Promise<Record<string, Record<string, string>>> {
@@ -134,9 +146,9 @@ export default function ResearchScreen() {
       const parts: string[] = [];
       if (data.Answer)       parts.push(`Answer: ${data.Answer}`);
       if (data.AbstractText) parts.push(`Summary: ${data.AbstractText}${data.AbstractURL ? ` (${data.AbstractURL})` : ''}`);
-      const topics = (data.RelatedTopics ?? []).filter((t) => t.Text).slice(0, 5);
-      if (topics.length) parts.push('Related:\n' + topics.map((t) => `- ${t.Text}`).join('\n'));
-      return parts.join('\n\n') || '[No results found — AI will use training knowledge]';
+      const topics = (data.RelatedTopics ?? []).filter(t => t.Text).slice(0, 6);
+      if (topics.length) parts.push('Related:\n' + topics.map(t => `- ${t.Text}`).join('\n'));
+      return parts.join('\n\n') || '[No results — AI will use training knowledge]';
     } catch {
       return '[Search unavailable — AI will use training knowledge]';
     }
@@ -166,16 +178,16 @@ export default function ResearchScreen() {
     }
 
     return new Promise<string>(async (resolve, reject) => {
-      const u1 = await listen<{ id: string; text: string }>('krew-chunk', (e) => {
+      const u1 = await listen<{ id: string; text: string }>('krew-chunk', e => {
         if (e.payload.id !== callId) return;
         fullText += e.payload.text;
         onChunk(e.payload.text);
       });
-      const u2 = await listen<{ id: string }>('krew-done', (e) => {
+      const u2 = await listen<{ id: string }>('krew-done', e => {
         if (e.payload.id !== callId) return;
         done.cleanup(); resolve(fullText);
       });
-      const u3 = await listen<{ id: string; error: string }>('krew-error', (e) => {
+      const u3 = await listen<{ id: string; error: string }>('krew-error', e => {
         if (e.payload.id !== callId) return;
         done.cleanup(); reject(new Error(e.payload.error));
       });
@@ -183,8 +195,8 @@ export default function ResearchScreen() {
 
       invoke('krew_ai_stream', {
         callId, mode, systemPrompt, messages,
-        apiKey:       apiKey,
-        provider:     provider,
+        apiKey,
+        provider,
         localModel:   null,
         modelName:    null,
         baseUrl:      null,
@@ -193,25 +205,70 @@ export default function ResearchScreen() {
     });
   }
 
+  // Step 1: AI-planned research queries
+  async function planQueries(desc: string, name: string, geography: string): Promise<string[]> {
+    const planSys = `You are a market research planner. Given a business description, output exactly 6 targeted Google-style search queries to gather competitive intelligence.
+
+Return ONLY a valid JSON array of 6 strings. No markdown, no explanation. Just the array.
+
+Make the queries specific and actionable — include company/category names, geography, and year where relevant.
+Cover these angles:
+1. Direct competitors in this space (${geography})
+2. Market size, growth rate, trends
+3. Top competitor's features, pricing, reviews
+4. Customer pain points and complaints in this category
+5. Recent startup funding or launches in this space
+6. ${name ? `Information about "${name}" itself` : 'Best practices or success strategies in this space'}`;
+
+    const nameHint = name ? `Business name: ${name}\n` : '';
+    let json = '';
+    await streamAI(planSys, [{ role: 'user', content: `${nameHint}Business description: ${desc}\nGeography: ${geography}` }], chunk => { json += chunk; });
+
+    const match = json.match(/\[[\s\S]*?\]/);
+    if (!match) {
+      // Fallback: generate basic queries from description
+      const cat = desc.slice(0, 60);
+      const geo = geography === 'India' ? 'India' : '';
+      return [
+        `${cat} competitors ${geo} 2025`,
+        `${cat} market size growth ${geo}`,
+        `top ${cat} companies review comparison`,
+        `${cat} customer problems pain points`,
+        `${cat} startup funding 2024 2025`,
+        name ? `${name} company ${geo}` : `${cat} best practices success`,
+      ];
+    }
+    return JSON.parse(match[0]) as string[];
+  }
+
   async function handleResearch() {
-    if (!company.trim()) return;
-    setStage('searching');
+    if (!description.trim()) return;
+    setStage('planning');
     setSearches([]);
     setReport('');
     setError(null);
+    setPlanStatus('Planning research strategy…');
 
-    const queries: string[] = [
-      `${company} company overview business model products services`,
-      `${company} latest news 2025 funding valuation growth`,
-      `${company} competitors market position industry analysis`,
-    ];
+    const geography = geo === 'india' ? 'India' : 'Global';
+    let queries: string[];
 
-    if (focus.includes('leadership'))  queries.push(`${company} CEO founder leadership team executives`);
-    if (focus.includes('funding'))     queries.push(`${company} funding rounds investors valuation 2024 2025`);
-    if (focus.includes('competitors')) queries.push(`${company} vs competitors alternative comparison`);
+    try {
+      queries = await planQueries(description.trim(), businessName.trim(), geography);
+    } catch {
+      // Graceful fallback
+      const cat = description.trim().slice(0, 50);
+      queries = [
+        `${cat} competitors ${geography} 2025`,
+        `${cat} market size trends`,
+        `${cat} top companies comparison`,
+        `${cat} customer pain points problems`,
+        `${cat} startup news funding 2025`,
+        `${cat} differentiation strategy`,
+      ];
+    }
 
-    const initialSearches = queries.map((q) => ({ query: q, data: '', done: false }));
-    setSearches(initialSearches);
+    setStage('searching');
+    setSearches(queries.map(q => ({ query: q, data: '', done: false })));
 
     const results: string[] = [];
 
@@ -219,46 +276,60 @@ export default function ResearchScreen() {
       try {
         const data = await doSearch(queries[i]);
         results.push(data);
-        setSearches((prev) => prev.map((s, j) => j === i ? { ...s, data, done: true } : s));
+        setSearches(prev => prev.map((s, j) => j === i ? { ...s, data, done: true } : s));
       } catch {
         results.push('[Search failed]');
-        setSearches((prev) => prev.map((s, j) => j === i ? { ...s, data: '[failed]', done: true } : s));
+        setSearches(prev => prev.map((s, j) => j === i ? { ...s, data: '[failed]', done: true } : s));
       }
     }
 
     setStage('analyzing');
 
     const focusNote = focus.length
-      ? `\nUser requested extra focus on: ${focus.map((f) => FOCUS_OPTIONS.find((o) => o.id === f)?.label ?? f).join(', ')}.`
+      ? `\nExtra focus areas requested: ${focus.map(f => FOCUS_OPTIONS.find(o => o.id === f)?.label ?? f).join(', ')}.`
       : '';
 
-    const systemPrompt = `You are a senior business research analyst. Synthesize the provided web search data into a comprehensive, structured company research report.
+    const nameContext = businessName.trim() ? `Business name: ${businessName.trim()}\n` : '';
 
-Write clearly and concisely. Use headers and bullet points. Cite data from the search results where available. Note when information is limited or may be outdated.
+    const systemPrompt = `You are a senior market intelligence analyst advising a startup founder on their competitive landscape.
 
-Report structure:
-## Company Overview
-## Products & Services
-## Market Position & Competitors
-## Financial Highlights
-## Leadership & Team
-## Recent Developments
-## Key Takeaways
+The user has described THEIR OWN business. Your job is NOT to research some other company — it is to map the competitive landscape for THIS founder and give them actionable intelligence about who they're competing against and how to win.
 
-Be specific — avoid vague statements. If data is missing for a section, note it briefly and move on.`;
+Write in markdown. Be specific — name real companies, real features, real numbers when available. Do not give generic advice. Every sentence should be directly useful to this specific founder.
 
-    const searchContext = queries.map((q, i) => `### Search: "${q}"\n${results[i] || '[no data]'}`).join('\n\n');
-    const userMsg = `Research the company: **${company}**${focusNote}
+Report structure (use these exact headers):
+## Market at a Glance
+(Size, growth, key dynamics, why this space is interesting or difficult right now)
 
-Here is the gathered web data:
+## Who You're Up Against
+(Name the main competitors. For each: 1-2 lines on what they do, their pricing if known, their biggest strength, their main weakness)
+
+## What's Working for Your Competitors
+(What strategies, features, messaging, or distribution is driving success for the leaders in this space)
+
+## Gaps & Opportunities
+(What are customers complaining about? What's missing? What problems are unsolved? Where can this founder win?)
+
+## How to Position Against Them
+(Concrete positioning advice for THIS business — not generic "differentiate yourself" — but specific angles against specific competitors)
+
+## 5 Key Takeaways
+(Five actionable bullets. Things the founder can act on this week or this month.)`;
+
+    const searchContext = queries.map((q, i) => `### Query: "${q}"\n${results[i] || '[no data]'}`).join('\n\n');
+
+    const userMsg = `${nameContext}My business: ${description.trim()}
+Geography: ${geography}${focusNote}
+
+Here is the gathered market data:
 
 ${searchContext}
 
-Produce the full research report now.`;
+Write the competitive intelligence report now.`;
 
     try {
-      await streamAI(systemPrompt, [{ role: 'user', content: userMsg }], (chunk) => {
-        setReport((prev) => prev + chunk);
+      await streamAI(systemPrompt, [{ role: 'user', content: userMsg }], chunk => {
+        setReport(prev => prev + chunk);
       });
       setStage('done');
     } catch (err) {
@@ -267,98 +338,28 @@ Produce the full research report now.`;
     }
   }
 
-  async function handleWebsiteSync() {
-    setWsStage('reading');
-    setWsLog('Reading NIVARA.html…');
-    setWsError(null);
-    try {
-      const currentHtml = await invoke<string>('krew_read_file', { path: WEBSITE_PATH });
-
-      setWsStage('updating');
-      setWsLog('Analyzing and generating content updates…');
-
-      const sysPr = `You are a web content editor. Given a company research report and an HTML file, propose minimal targeted text replacements to update the website copy.
-
-Return ONLY a valid JSON object — no markdown, no explanation:
-{"changes": [{"find": "exact string to find", "replace": "replacement string"}]}
-
-Rules:
-- Only change visible text (headlines, taglines, body copy) — never change class names, IDs, or code
-- Maximum 5 targeted changes
-- "find" must be an EXACT substring present in the provided HTML
-- Keep the existing tone and style
-- If nothing needs updating, return {"changes": []}`;
-
-      const userMsg = `Website HTML (excerpt):\n${currentHtml.slice(0, 8000)}\n\nResearch report about ${company}:\n${report.slice(0, 3000)}\n\nGenerate targeted content updates to reflect the research.`;
-
-      let changesJson = '';
-      await streamAI(sysPr, [{ role: 'user', content: userMsg }], (chunk) => {
-        changesJson += chunk;
-      });
-
-      // Extract JSON if wrapped in fences
-      const jsonMatch = changesJson.match(/\{[\s\S]*\}/);
-      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : changesJson) as { changes: { find: string; replace: string }[] };
-
-      let updatedHtml = currentHtml;
-      let appliedCount = 0;
-      for (const { find, replace } of parsed.changes) {
-        if (find && updatedHtml.includes(find)) {
-          updatedHtml = updatedHtml.split(find).join(replace);
-          appliedCount++;
-        }
-      }
-
-      if (appliedCount === 0) {
-        setWsLog('No changes needed — website content is already accurate.');
-        setWsStage('done');
-        return;
-      }
-
-      setWsLog(`Applied ${appliedCount} update${appliedCount !== 1 ? 's' : ''}. Writing file…`);
-      await invoke('write_file', { path: WEBSITE_PATH, content: updatedHtml });
-
-      setWsStage('pushing');
-      setWsLog('Committing and pushing to GitHub → Vercel…');
-
-      await invoke('krew_execute_command', {
-        command: `cd "${WEBSITE_REPO}" && git add -A && git commit -m "website: update content from ${company} research" && git push origin master`,
-      });
-
-      setWsLog(`${appliedCount} change${appliedCount !== 1 ? 's' : ''} pushed — live on Vercel in ~30s.`);
-      setWsStage('done');
-    } catch (err) {
-      setWsError(String(err));
-      setWsStage('error');
-    }
-  }
-
   function reset() {
     setStage('idle');
     setSearches([]);
     setReport('');
     setError(null);
-    setCompany('');
-    setFocus([]);
-    setWsStage('idle');
-    setWsLog('');
-    setWsError(null);
+    setPlanStatus('');
   }
 
-  const isRunning = stage === 'searching' || stage === 'analyzing';
+  const isRunning = stage === 'planning' || stage === 'searching' || stage === 'analyzing';
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-nv-bg">
       {/* Header */}
       <div className="flex items-center gap-3 px-5 py-3 border-b border-nv-border shrink-0">
-        <div className="flex-1">
-          <h2 className="text-[13px] font-semibold text-nv-text">Company Research</h2>
-          <p className="text-[10px] text-nv-faint font-mono">Multi-source business intelligence</p>
+        <div className="flex-1 min-w-0">
+          <h2 className="text-[13px] font-semibold text-nv-text">Business Research</h2>
+          <p className="text-[10px] text-nv-faint font-mono">Understand your market · find your competitors · know where to win</p>
         </div>
-        {stage !== 'idle' && (
+        {stage !== 'idle' && !isRunning && (
           <button
             onClick={reset}
-            className="text-[11px] text-nv-faint hover:text-nv-text font-mono px-2.5 py-1 rounded border border-nv-border hover:border-nv-muted transition-fast"
+            className="shrink-0 text-[11px] text-nv-faint hover:text-nv-text font-mono px-2.5 py-1 rounded border border-nv-border hover:border-nv-muted transition-fast"
           >
             New research
           </button>
@@ -367,81 +368,115 @@ Rules:
 
       <div className="flex-1 overflow-y-auto px-5 py-4">
 
-        {/* Form — show when idle */}
+        {/* ── Idle form ── */}
         {stage === 'idle' && (
           <div className="max-w-xl">
+
             <p className="text-[12px] text-nv-muted mb-5 leading-relaxed">
-              Enter a company name to get a structured research report — overview, products, competitors, financials, news, and key takeaways — generated from live web searches.
+              Describe your business below. We'll plan targeted searches, find your competitors, and generate a report that tells you exactly where you stand and how to win.
             </p>
 
-            <label className="text-[10px] text-nv-faint uppercase tracking-widest font-mono block mb-1.5">Company name</label>
-            <input
-              value={company}
-              onChange={(e) => setCompany(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && company.trim()) handleResearch(); }}
-              placeholder="e.g. Razorpay, Stripe, Zepto…"
-              autoFocus
-              className="w-full bg-nv-surface border border-nv-border rounded-xl px-4 py-3 text-[13px] text-nv-text placeholder-nv-faint outline-none focus:border-accent transition-fast mb-4"
-            />
+            {/* Business name — optional */}
+            <div className="mb-3">
+              <label className="text-[10px] text-nv-faint uppercase tracking-widest font-mono block mb-1.5">
+                Your business name <span className="normal-case text-nv-faint/60">(optional)</span>
+              </label>
+              <input
+                value={businessName}
+                onChange={e => setBusinessName(e.target.value)}
+                placeholder="e.g. Nivara, Meesho, Cred…"
+                className="w-full bg-nv-surface border border-nv-border rounded-xl px-4 py-2.5 text-[13px] text-nv-text placeholder-nv-faint outline-none focus:border-accent transition-fast"
+              />
+            </div>
+
+            {/* Description — main input */}
+            <div className="mb-4">
+              <label className="text-[10px] text-nv-faint uppercase tracking-widest font-mono block mb-1.5">
+                Describe your business <span className="text-red-400/70">*</span>
+              </label>
+              <textarea
+                value={description}
+                onChange={e => setDescription(e.target.value)}
+                placeholder={`What does your business do? Who's your customer? What problem do you solve?\n\ne.g. "We're building an AI productivity app for Indian SMBs — helps with workflow automation, AI agents for marketing tasks, and running AI models locally. Target: 10–200 person companies in India who want AI but can't afford enterprise tools."`}
+                rows={5}
+                autoFocus
+                className="w-full bg-nv-surface border border-nv-border rounded-xl px-4 py-3 text-[13px] text-nv-text placeholder-nv-faint outline-none focus:border-accent transition-fast resize-none leading-relaxed"
+              />
+              <p className="text-[10px] text-nv-faint mt-1.5 font-mono">
+                More detail = better competitor analysis. Include your target customer, problem you solve, and key features.
+              </p>
+            </div>
+
+            {/* Geography */}
+            <div className="mb-4">
+              <label className="text-[10px] text-nv-faint uppercase tracking-widest font-mono block mb-1.5">Geography focus</label>
+              <div className="flex gap-2">
+                {(['india', 'global'] as const).map(g => (
+                  <button
+                    key={g}
+                    onClick={() => setGeo(g)}
+                    className={`text-[11px] px-4 py-2 rounded-lg border font-mono transition-fast capitalize ${
+                      geo === g
+                        ? 'border-accent bg-accent/10 text-accent'
+                        : 'border-nv-border text-nv-faint hover:border-nv-muted hover:text-nv-muted'
+                    }`}
+                  >
+                    {g === 'india' ? '🇮🇳 India' : '🌍 Global'}
+                  </button>
+                ))}
+              </div>
+            </div>
 
             {/* Focus areas */}
-            <div className="mb-5">
-              <button
-                onClick={() => setSearchOpen((o) => !o)}
-                className="flex items-center gap-1.5 text-[10px] text-nv-faint hover:text-nv-muted font-mono uppercase tracking-widest mb-2 transition-fast"
-              >
-                <svg viewBox="0 0 12 12" fill="none" className={`w-3 h-3 transition-transform ${searchOpen ? 'rotate-90' : ''}`}>
-                  <path d="M4 2l4 4-4 4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-                Focus areas (optional)
-                {focus.length > 0 && <span className="ml-1 px-1.5 py-0.5 bg-accent/20 text-accent rounded text-[9px]">{focus.length}</span>}
-              </button>
-              {searchOpen && (
-                <div className="flex flex-wrap gap-2">
-                  {FOCUS_OPTIONS.map((opt) => {
-                    const active = focus.includes(opt.id);
-                    return (
-                      <button
-                        key={opt.id}
-                        onClick={() => toggleFocus(opt.id)}
-                        className={`text-[11px] px-3 py-1.5 rounded-lg border transition-fast font-mono ${
-                          active
-                            ? 'border-accent/50 bg-accent/10 text-accent'
-                            : 'border-nv-border text-nv-faint hover:border-nv-muted hover:text-nv-muted'
-                        }`}
-                      >
-                        {active && <span className="mr-1">✓</span>}{opt.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+            <div className="mb-6">
+              <p className="text-[10px] text-nv-faint uppercase tracking-widest font-mono mb-2">
+                Extra focus areas <span className="normal-case text-nv-faint/60">(optional)</span>
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {FOCUS_OPTIONS.map(opt => {
+                  const active = focus.includes(opt.id);
+                  return (
+                    <button
+                      key={opt.id}
+                      onClick={() => toggleFocus(opt.id)}
+                      className={`text-[11px] px-3 py-1.5 rounded-lg border transition-fast font-mono ${
+                        active
+                          ? 'border-accent/50 bg-accent/10 text-accent'
+                          : 'border-nv-border text-nv-faint hover:border-nv-muted hover:text-nv-muted'
+                      }`}
+                    >
+                      {active && <span className="mr-1">✓</span>}{opt.label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             <button
               onClick={handleResearch}
-              disabled={!company.trim()}
+              disabled={!description.trim()}
               className="flex items-center gap-2 px-5 py-2.5 bg-accent text-white text-[12px] font-semibold rounded-xl hover:bg-accent-dim transition-fast disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <svg viewBox="0 0 16 16" fill="none" className="w-3.5 h-3.5">
                 <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.6"/>
                 <path d="M11 11l3 3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
               </svg>
-              Research
+              Research my market
             </button>
           </div>
         )}
 
-        {/* Pipeline progress */}
-        {(stage === 'searching' || stage === 'analyzing' || stage === 'done' || stage === 'error') && (
+        {/* ── Pipeline progress + results ── */}
+        {stage !== 'idle' && (
           <div className="max-w-2xl space-y-4">
-            {/* Step 1: Searches */}
+
+            {/* Step 0: Planning */}
             <div>
-              <div className="flex items-center gap-2 mb-2">
+              <div className="flex items-center gap-2 mb-1">
                 <div className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 ${
-                  stage === 'searching' ? 'bg-accent/20' : 'bg-nv-green/20'
+                  stage === 'planning' ? 'bg-accent/20' : 'bg-nv-green/20'
                 }`}>
-                  {stage === 'searching' ? (
+                  {stage === 'planning' ? (
                     <span className="w-2 h-2 rounded-full bg-accent" style={{ animation: 'pulse 1s ease-in-out infinite' }} />
                   ) : (
                     <svg viewBox="0 0 12 12" fill="none" className="w-2.5 h-2.5">
@@ -450,23 +485,45 @@ Rules:
                   )}
                 </div>
                 <span className="text-[11px] font-semibold text-nv-text font-mono">
-                  {stage === 'searching' ? 'Searching…' : 'Search complete'}
+                  {stage === 'planning' ? planStatus || 'Planning research strategy…' : 'Research plan ready'}
                 </span>
               </div>
-              <div className="ml-6 space-y-1.5">
-                {searches.map((s, i) => (
-                  <div key={i} className="flex items-start gap-2">
-                    <div className={`mt-1 w-1.5 h-1.5 rounded-full shrink-0 ${s.done ? 'bg-nv-green' : 'bg-nv-faint'}`} />
-                    <span className="text-[11px] text-nv-muted font-mono truncate">{s.query}</span>
-                  </div>
-                ))}
-              </div>
             </div>
+
+            {/* Step 1: Searches */}
+            {(stage === 'searching' || stage === 'analyzing' || stage === 'done' || stage === 'error') && (
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <div className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 ${
+                    stage === 'searching' ? 'bg-accent/20' : 'bg-nv-green/20'
+                  }`}>
+                    {stage === 'searching' ? (
+                      <span className="w-2 h-2 rounded-full bg-accent" style={{ animation: 'pulse 1s ease-in-out infinite' }} />
+                    ) : (
+                      <svg viewBox="0 0 12 12" fill="none" className="w-2.5 h-2.5">
+                        <path d="M2 6l3 3 5-5" stroke="#22c55e" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    )}
+                  </div>
+                  <span className="text-[11px] font-semibold text-nv-text font-mono">
+                    {stage === 'searching' ? 'Gathering market data…' : 'Data gathered'}
+                  </span>
+                </div>
+                <div className="ml-6 space-y-1">
+                  {searches.map((s, i) => (
+                    <div key={i} className="flex items-start gap-2">
+                      <div className={`mt-1 w-1.5 h-1.5 rounded-full shrink-0 ${s.done ? 'bg-nv-green' : 'bg-nv-faint'}`} />
+                      <span className="text-[11px] text-nv-muted font-mono">{s.query}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Step 2: Analysis */}
             {(stage === 'analyzing' || stage === 'done' || stage === 'error') && (
               <div>
-                <div className="flex items-center gap-2 mb-2">
+                <div className="flex items-center gap-2 mb-1">
                   <div className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 ${
                     stage === 'analyzing' ? 'bg-accent/20' : stage === 'done' ? 'bg-nv-green/20' : 'bg-red-500/20'
                   }`}>
@@ -481,7 +538,7 @@ Rules:
                     )}
                   </div>
                   <span className="text-[11px] font-semibold text-nv-text font-mono">
-                    {stage === 'analyzing' ? 'Analyzing & writing report…' : stage === 'done' ? 'Report ready' : 'Error'}
+                    {stage === 'analyzing' ? 'Writing competitive intelligence report…' : stage === 'done' ? 'Report ready' : 'Error'}
                   </span>
                 </div>
               </div>
@@ -489,7 +546,17 @@ Rules:
 
             {/* Report */}
             {(report || stage === 'analyzing') && (
-              <div className="bg-nv-surface border border-nv-border rounded-xl p-5 mt-2">
+              <div className="bg-nv-surface border border-nv-border rounded-xl p-5 mt-1">
+                {businessName.trim() && (
+                  <div className="flex items-center gap-2 mb-4 pb-3 border-b border-nv-border/60">
+                    <svg viewBox="0 0 16 16" fill="none" className="w-3.5 h-3.5 text-accent shrink-0">
+                      <rect x="2" y="4" width="12" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.3"/>
+                      <path d="M5 4V3a1 1 0 011-1h4a1 1 0 011 1v1" stroke="currentColor" strokeWidth="1.3"/>
+                    </svg>
+                    <span className="text-[11px] font-semibold text-nv-text">{businessName.trim()}</span>
+                    <span className="text-[10px] text-nv-faint font-mono">· competitive intelligence report</span>
+                  </div>
+                )}
                 <ReportView text={report} streaming={stage === 'analyzing'} />
               </div>
             )}
@@ -499,77 +566,26 @@ Rules:
               <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4">
                 <p className="text-[12px] text-red-400 font-mono">{error}</p>
                 <p className="text-[11px] text-nv-faint mt-1">
-                  Make sure you have a valid plan or connect an API key (Gemini/OpenAI) in Connect Apps.
+                  Make sure you have a valid plan or connect an API key (Gemini/OpenAI/Claude) in Connect Apps.
                 </p>
-              </div>
-            )}
-
-            {/* Website Sync — shown after report is complete */}
-            {stage === 'done' && (
-              <div className="mt-4 border border-nv-border rounded-xl p-4 bg-nv-surface">
-                <div className="flex items-start justify-between gap-3 mb-3">
-                  <div>
-                    <p className="text-[12px] font-semibold text-nv-text flex items-center gap-1.5">
-                      <svg viewBox="0 0 14 14" fill="none" className="w-3.5 h-3.5 text-accent">
-                        <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.3"/>
-                        <path d="M4.5 7l1.8 1.8L9.5 5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
-                      </svg>
-                      Sync to Website
-                    </p>
-                    <p className="text-[10px] text-nv-faint font-mono mt-0.5">Update NIVARA.html with research insights → push to Vercel</p>
-                  </div>
-                  {wsStage === 'idle' && (
-                    <button
-                      onClick={handleWebsiteSync}
-                      className="shrink-0 flex items-center gap-1.5 text-[11px] px-3 py-1.5 bg-accent text-white rounded-lg hover:bg-accent-dim transition-fast font-mono"
-                    >
-                      <svg viewBox="0 0 12 12" fill="none" className="w-3 h-3">
-                        <path d="M6 1v7M3.5 5.5L6 8l2.5-2.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-                        <path d="M1.5 9.5h9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                      </svg>
-                      Push live
-                    </button>
-                  )}
-                </div>
-
-                {wsStage !== 'idle' && (
-                  <div className={`flex items-center gap-2 text-[11px] font-mono px-3 py-2.5 rounded-lg border ${
-                    wsStage === 'done'  ? 'bg-nv-green/10 border-nv-green/20 text-nv-green' :
-                    wsStage === 'error' ? 'bg-red-500/10 border-red-500/20 text-red-400' :
-                                         'bg-accent/5 border-accent/20 text-nv-muted'
-                  }`}>
-                    {(wsStage === 'reading' || wsStage === 'updating' || wsStage === 'pushing') && (
-                      <span className="w-3 h-3 rounded-full border border-accent/30 border-t-accent animate-spin shrink-0" />
-                    )}
-                    {wsStage === 'done' && (
-                      <svg viewBox="0 0 12 12" fill="none" className="w-3 h-3 shrink-0">
-                        <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
-                      </svg>
-                    )}
-                    {wsStage === 'error' && <span className="shrink-0 text-[10px]">✕</span>}
-                    <span>{wsError || wsLog}</span>
-                    {wsStage === 'error' && (
-                      <button
-                        onClick={() => { setWsStage('idle'); setWsError(null); setWsLog(''); }}
-                        className="ml-auto text-nv-faint hover:text-nv-text transition-fast"
-                      >
-                        Retry
-                      </button>
-                    )}
-                  </div>
-                )}
+                <button
+                  onClick={reset}
+                  className="mt-2 text-[11px] text-accent hover:underline font-mono"
+                >Try again</button>
               </div>
             )}
           </div>
         )}
       </div>
 
-      {/* Running indicator */}
+      {/* Running footer */}
       {isRunning && (
         <div className="shrink-0 px-5 py-2 border-t border-nv-border flex items-center gap-2">
           <span className="w-1.5 h-1.5 rounded-full bg-accent" style={{ animation: 'pulse 1s ease-in-out infinite' }} />
           <span className="text-[11px] text-nv-faint font-mono">
-            {stage === 'searching' ? `Gathering data about ${company}…` : `Writing research report…`}
+            {stage === 'planning'  && 'Planning tailored research queries…'}
+            {stage === 'searching' && `Searching ${searches.filter(s => s.done).length} / ${searches.length} queries…`}
+            {stage === 'analyzing' && 'Synthesizing competitive intelligence…'}
           </span>
         </div>
       )}
