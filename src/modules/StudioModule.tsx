@@ -139,7 +139,14 @@ function buildVideoHtml(sceneCode: string, fmt: Format, duration: number): strin
 // ── NV Animation Runtime ──
 ${runtime}
 // ── Scene ─────────────────
+(function(){try{
 ${sceneCode}
+}catch(err){
+  var d=document.createElement('div');
+  d.style.cssText='position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#f87171;font:13px/1.5 monospace;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:8px;padding:18px 22px;max-width:80%;text-align:center;';
+  d.innerHTML='<strong>Scene error</strong><br>'+err.message;
+  document.getElementById("stage").appendChild(d);
+}})();
 </script>
 </body>
 </html>`;
@@ -482,6 +489,19 @@ export default function StudioModule() {
     return raw.trim();
   }
 
+  // For video: strip fences + discard any prose before the first NV. call
+  function stripVideoScene(raw: string): string {
+    const fenced = raw.match(/```(?:javascript|js|jsx?|tsx?)?\n?([\s\S]*?)```/i);
+    if (fenced) return fenced[1].trim();
+    // AI returned full HTML despite instructions → extract <script> body
+    const script = raw.match(/<script[^>]*>([\s\S]*?)<\/script>/i);
+    if (script) return script[1].trim();
+    // AI returned prose + code — find first NV. and discard everything before it
+    const nvIdx = raw.indexOf('NV.');
+    if (nvIdx > 0) return raw.slice(nvIdx).trim();
+    return raw.trim();
+  }
+
   async function handleGenerate() {
     if (!prompt.trim() || generating) return;
     setGenerating(true);
@@ -503,7 +523,7 @@ export default function StudioModule() {
           raw += chunk;
           setStreamLog(raw.slice(-400));
         });
-        const sceneCode = stripFences(raw);
+        const sceneCode = stripVideoScene(raw);
         const finalHtml = buildVideoHtml(sceneCode, format, duration);
         setHtml(finalHtml);
         setEditedHtml(finalHtml);
@@ -549,7 +569,7 @@ export default function StudioModule() {
         setStreamLog(raw.slice(-400));
       });
       const updated = type === 'video'
-        ? buildVideoHtml(stripFences(raw), format, duration)
+        ? buildVideoHtml(stripVideoScene(raw), format, duration)
         : buildStaticHtml(stripFences(raw));
       setHtml(updated);
       setEditedHtml(updated);
@@ -856,62 +876,10 @@ export default function StudioModule() {
 
       {/* ── RIGHT PANEL ──────────────────────────────────────────────────────── */}
       <div className="w-64 shrink-0 flex flex-col border-l border-nv-border">
-        {/* Prompt section */}
-        <div className="px-3 py-2.5 border-b border-nv-border shrink-0">
-          <div className="flex items-center justify-between mb-0.5">
-            <p className="text-[11px] font-semibold text-nv-text">Prompt</p>
-            {/* File attach */}
-            <div className="flex items-center gap-1.5">
-              {contextFile ? (
-                <div className="flex items-center gap-1 bg-accent/10 border border-accent/25 rounded px-1.5 py-0.5">
-                  <svg viewBox="0 0 10 10" fill="none" className="w-2.5 h-2.5 text-accent shrink-0">
-                    <path d="M2 1h4.5L9 3.5V9H2V1z" stroke="currentColor" strokeWidth="1.1"/>
-                  </svg>
-                  <span className="text-[9px] text-accent font-mono truncate max-w-[70px]">{contextFile.name}</span>
-                  <button
-                    onClick={() => setContextFile(null)}
-                    className="text-[10px] text-accent/60 hover:text-accent leading-none ml-0.5"
-                  >×</button>
-                </div>
-              ) : (
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="flex items-center gap-1 text-[9px] text-nv-faint hover:text-accent font-mono transition-fast px-1.5 py-0.5 rounded border border-nv-border hover:border-accent/30"
-                  title="Attach a .md, .txt, or .json context file"
-                >
-                  <svg viewBox="0 0 10 10" fill="none" className="w-2.5 h-2.5">
-                    <path d="M5 1v6M2 5l3 2 3-2" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round"/>
-                    <path d="M1 9h8" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/>
-                  </svg>
-                  Attach
-                </button>
-              )}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".md,.txt,.json,.csv"
-                className="hidden"
-                onChange={handleFileAttach}
-              />
-            </div>
-          </div>
-          <p className="text-[9px] text-nv-faint font-mono">
-            {contextFile ? `Using "${contextFile.name}" as context` : 'Describe what to create · attach a brand/product file'}
-          </p>
-          {/* Context preview toggle */}
-          {contextFile && (
-            <button
-              onClick={() => setShowContext(v => !v)}
-              className="text-[9px] text-nv-faint hover:text-accent font-mono mt-1 transition-fast"
-            >
-              {showContext ? 'Hide context ▲' : 'Preview context ▼'}
-            </button>
-          )}
-          {contextFile && showContext && (
-            <pre className="mt-1.5 text-[9px] text-nv-faint font-mono bg-nv-bg border border-nv-border rounded p-2 max-h-24 overflow-y-auto whitespace-pre-wrap">
-              {contextFile.content.slice(0, 600)}{contextFile.content.length > 600 ? '…' : ''}
-            </pre>
-          )}
+        {/* Prompt section header */}
+        <div className="px-3 py-2 border-b border-nv-border shrink-0">
+          <p className="text-[11px] font-semibold text-nv-text">Prompt</p>
+          <p className="text-[9px] text-nv-faint font-mono mt-0.5">Describe what to create</p>
         </div>
 
         {/* Examples */}
@@ -943,6 +911,50 @@ export default function StudioModule() {
             rows={5}
             className="w-full bg-nv-surface border border-nv-border rounded-xl px-3 py-2.5 text-[12px] text-nv-text placeholder-nv-faint/60 outline-none focus:border-accent transition-fast resize-none leading-relaxed"
           />
+
+          {/* File attach — near the prompt */}
+          <div className="flex items-center gap-1.5">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".md,.txt,.json,.csv"
+              className="hidden"
+              onChange={handleFileAttach}
+            />
+            {contextFile ? (
+              <div className="flex items-center gap-1.5 bg-accent/10 border border-accent/25 rounded-lg px-2 py-1 flex-1 min-w-0">
+                <svg viewBox="0 0 10 10" fill="none" className="w-2.5 h-2.5 text-accent shrink-0">
+                  <path d="M2 1h4.5L9 3.5V9H2V1z" stroke="currentColor" strokeWidth="1.1"/>
+                </svg>
+                <span className="text-[9px] text-accent font-mono truncate flex-1">{contextFile.name}</span>
+                <button
+                  onClick={() => setShowContext(v => !v)}
+                  className="text-[9px] text-accent/60 hover:text-accent font-mono transition-fast shrink-0"
+                >{showContext ? '▲' : '▼'}</button>
+                <button
+                  onClick={() => { setContextFile(null); setShowContext(false); }}
+                  className="text-[10px] text-accent/50 hover:text-accent leading-none shrink-0"
+                >×</button>
+              </div>
+            ) : (
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="flex items-center gap-1.5 text-[10px] text-nv-faint hover:text-accent font-mono transition-fast px-2 py-1 rounded-lg border border-nv-border hover:border-accent/30 w-full"
+                title="Attach a brand doc, product brief, or any .md/.txt/.json file"
+              >
+                <svg viewBox="0 0 12 12" fill="none" className="w-3 h-3 shrink-0">
+                  <path d="M2 3.5A1.5 1.5 0 013.5 2h4L10 5v5a1 1 0 01-1 1H3.5A1.5 1.5 0 012 9.5V3.5z" stroke="currentColor" strokeWidth="1.1"/>
+                  <path d="M6.5 2v3h3" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/>
+                </svg>
+                Attach context file (.md · .txt · .json)
+              </button>
+            )}
+          </div>
+          {contextFile && showContext && (
+            <pre className="text-[9px] text-nv-faint font-mono bg-nv-bg border border-nv-border rounded-lg p-2 max-h-20 overflow-y-auto whitespace-pre-wrap">
+              {contextFile.content.slice(0, 500)}{contextFile.content.length > 500 ? '…' : ''}
+            </pre>
+          )}
 
           <button
             onClick={handleGenerate}
