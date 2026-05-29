@@ -764,10 +764,10 @@ export default function StudioModule() {
         <div
           className="flex-1 overflow-hidden flex items-center justify-center relative"
           style={{ background:
-            isVideo              ? '#0c0b14'           :
-            showCode             ? 'var(--nv-surface)' :
-            html && !generating  ? 'var(--nv-surface2)':
-                                   'var(--nv-bg)'
+            showCode                    ? 'var(--nv-surface)' :
+            html && !generating && isVideo ? '#0c0b14'        :
+            html && !generating         ? 'var(--nv-surface2)':
+                                          'var(--nv-bg)'
           }}
         >
           {/* Generating overlay — inherits parent background, no hardcoded dark */}
