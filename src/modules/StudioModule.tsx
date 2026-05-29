@@ -602,7 +602,7 @@ export default function StudioModule() {
     setTimeout(() => setCopied(false), 1800);
   }
 
-  const previewBg = type === 'video' ? '#0c0b14' : '#ffffff';
+  const isVideo = type === 'video';
   const previewScale = html && format
     ? Math.min(1, 580 / format.w, 440 / format.h)
     : 1;
@@ -764,19 +764,19 @@ export default function StudioModule() {
         <div
           className="flex-1 overflow-hidden flex items-center justify-center relative"
           style={{ background:
-            generating          ? '#0c0b14'          :
-            !html               ? (type === 'video' ? '#0c0b14' : 'var(--nv-bg)') :
-            showCode            ? 'var(--nv-surface)' :
-                                  previewBg
+            isVideo              ? '#0c0b14'           :
+            showCode             ? 'var(--nv-surface)' :
+            html && !generating  ? 'var(--nv-surface2)':
+                                   'var(--nv-bg)'
           }}
         >
-          {/* Generating overlay */}
+          {/* Generating overlay — inherits parent background, no hardcoded dark */}
           {generating && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 z-10 bg-[#080808]">
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 z-10">
               <div className="w-8 h-8 rounded-full border-2 border-nv-border border-t-accent animate-spin" />
-              <p className="text-[11px] text-nv-faint font-mono">Generating {type}…</p>
+              <p className="text-[11px] text-nv-muted font-mono">Generating {type}…</p>
               {streamLog && (
-                <pre className="text-[9px] text-nv-faint/40 font-mono max-w-sm text-center overflow-hidden line-clamp-3">
+                <pre className="text-[9px] text-nv-faint/60 font-mono max-w-sm text-center overflow-hidden line-clamp-3">
                   {streamLog}
                 </pre>
               )}
