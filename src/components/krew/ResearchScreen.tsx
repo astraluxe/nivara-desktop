@@ -5,9 +5,15 @@ import { useAuth } from '../../contexts/AuthContext';
 import { credentialStore } from '../../lib/krewDb';
 import type { Provider } from '../../lib/ai';
 
+// ─── Constants ─────────────────────────────────────────────────────────────────
+
+const WEBSITE_PATH = "C:\\Users\\amogh\\OneDrive\\Desktop\\NIVARA\\NIVARA.html";
+const WEBSITE_REPO  = "C:\\Users\\amogh\\OneDrive\\Desktop\\NIVARA";
+
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
 type Stage = 'idle' | 'searching' | 'analyzing' | 'done' | 'error';
+type WsStage = 'idle' | 'reading' | 'updating' | 'pushing' | 'done' | 'error';
 
 interface SearchResult {
   query: string;
@@ -85,6 +91,10 @@ export default function ResearchScreen() {
   const [report,   setReport]   = useState('');
   const [error,    setError]    = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+
+  const [wsStage, setWsStage] = useState<WsStage>('idle');
+  const [wsLog,   setWsLog]   = useState('');
+  const [wsError, setWsError] = useState<string | null>(null);
 
   function toggleFocus(id: string) {
     setFocus((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
@@ -257,6 +267,72 @@ Produce the full research report now.`;
     }
   }
 
+  async function handleWebsiteSync() {
+    setWsStage('reading');
+    setWsLog('Reading NIVARA.html…');
+    setWsError(null);
+    try {
+      const currentHtml = await invoke<string>('krew_read_file', { path: WEBSITE_PATH });
+
+      setWsStage('updating');
+      setWsLog('Analyzing and generating content updates…');
+
+      const sysPr = `You are a web content editor. Given a company research report and an HTML file, propose minimal targeted text replacements to update the website copy.
+
+Return ONLY a valid JSON object — no markdown, no explanation:
+{"changes": [{"find": "exact string to find", "replace": "replacement string"}]}
+
+Rules:
+- Only change visible text (headlines, taglines, body copy) — never change class names, IDs, or code
+- Maximum 5 targeted changes
+- "find" must be an EXACT substring present in the provided HTML
+- Keep the existing tone and style
+- If nothing needs updating, return {"changes": []}`;
+
+      const userMsg = `Website HTML (excerpt):\n${currentHtml.slice(0, 8000)}\n\nResearch report about ${company}:\n${report.slice(0, 3000)}\n\nGenerate targeted content updates to reflect the research.`;
+
+      let changesJson = '';
+      await streamAI(sysPr, [{ role: 'user', content: userMsg }], (chunk) => {
+        changesJson += chunk;
+      });
+
+      // Extract JSON if wrapped in fences
+      const jsonMatch = changesJson.match(/\{[\s\S]*\}/);
+      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : changesJson) as { changes: { find: string; replace: string }[] };
+
+      let updatedHtml = currentHtml;
+      let appliedCount = 0;
+      for (const { find, replace } of parsed.changes) {
+        if (find && updatedHtml.includes(find)) {
+          updatedHtml = updatedHtml.split(find).join(replace);
+          appliedCount++;
+        }
+      }
+
+      if (appliedCount === 0) {
+        setWsLog('No changes needed — website content is already accurate.');
+        setWsStage('done');
+        return;
+      }
+
+      setWsLog(`Applied ${appliedCount} update${appliedCount !== 1 ? 's' : ''}. Writing file…`);
+      await invoke('write_file', { path: WEBSITE_PATH, content: updatedHtml });
+
+      setWsStage('pushing');
+      setWsLog('Committing and pushing to GitHub → Vercel…');
+
+      await invoke('krew_execute_command', {
+        command: `cd "${WEBSITE_REPO}" && git add -A && git commit -m "website: update content from ${company} research" && git push origin master`,
+      });
+
+      setWsLog(`${appliedCount} change${appliedCount !== 1 ? 's' : ''} pushed — live on Vercel in ~30s.`);
+      setWsStage('done');
+    } catch (err) {
+      setWsError(String(err));
+      setWsStage('error');
+    }
+  }
+
   function reset() {
     setStage('idle');
     setSearches([]);
@@ -264,6 +340,9 @@ Produce the full research report now.`;
     setError(null);
     setCompany('');
     setFocus([]);
+    setWsStage('idle');
+    setWsLog('');
+    setWsError(null);
   }
 
   const isRunning = stage === 'searching' || stage === 'analyzing';
@@ -422,6 +501,63 @@ Produce the full research report now.`;
                 <p className="text-[11px] text-nv-faint mt-1">
                   Make sure you have a valid plan or connect an API key (Gemini/OpenAI) in Connect Apps.
                 </p>
+              </div>
+            )}
+
+            {/* Website Sync — shown after report is complete */}
+            {stage === 'done' && (
+              <div className="mt-4 border border-nv-border rounded-xl p-4 bg-nv-surface">
+                <div className="flex items-start justify-between gap-3 mb-3">
+                  <div>
+                    <p className="text-[12px] font-semibold text-nv-text flex items-center gap-1.5">
+                      <svg viewBox="0 0 14 14" fill="none" className="w-3.5 h-3.5 text-accent">
+                        <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.3"/>
+                        <path d="M4.5 7l1.8 1.8L9.5 5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                      Sync to Website
+                    </p>
+                    <p className="text-[10px] text-nv-faint font-mono mt-0.5">Update NIVARA.html with research insights → push to Vercel</p>
+                  </div>
+                  {wsStage === 'idle' && (
+                    <button
+                      onClick={handleWebsiteSync}
+                      className="shrink-0 flex items-center gap-1.5 text-[11px] px-3 py-1.5 bg-accent text-white rounded-lg hover:bg-accent-dim transition-fast font-mono"
+                    >
+                      <svg viewBox="0 0 12 12" fill="none" className="w-3 h-3">
+                        <path d="M6 1v7M3.5 5.5L6 8l2.5-2.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                        <path d="M1.5 9.5h9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                      </svg>
+                      Push live
+                    </button>
+                  )}
+                </div>
+
+                {wsStage !== 'idle' && (
+                  <div className={`flex items-center gap-2 text-[11px] font-mono px-3 py-2.5 rounded-lg border ${
+                    wsStage === 'done'  ? 'bg-nv-green/10 border-nv-green/20 text-nv-green' :
+                    wsStage === 'error' ? 'bg-red-500/10 border-red-500/20 text-red-400' :
+                                         'bg-accent/5 border-accent/20 text-nv-muted'
+                  }`}>
+                    {(wsStage === 'reading' || wsStage === 'updating' || wsStage === 'pushing') && (
+                      <span className="w-3 h-3 rounded-full border border-accent/30 border-t-accent animate-spin shrink-0" />
+                    )}
+                    {wsStage === 'done' && (
+                      <svg viewBox="0 0 12 12" fill="none" className="w-3 h-3 shrink-0">
+                        <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    )}
+                    {wsStage === 'error' && <span className="shrink-0 text-[10px]">✕</span>}
+                    <span>{wsError || wsLog}</span>
+                    {wsStage === 'error' && (
+                      <button
+                        onClick={() => { setWsStage('idle'); setWsError(null); setWsLog(''); }}
+                        className="ml-auto text-nv-faint hover:text-nv-text transition-fast"
+                      >
+                        Retry
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>

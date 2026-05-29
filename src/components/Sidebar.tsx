@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useAuth } from "../contexts/AuthContext";
 
-export type Module = "home" | "automation" | "coder" | "krew" | "connect" | "models" | "vault" | "guard" | "mesh" | "info" | "account" | "settings";
+export type Module = "home" | "automation" | "coder" | "krew" | "connect" | "models" | "vault" | "guard" | "mesh" | "studio" | "info" | "account" | "settings";
 
 interface Props {
   activeModule: Module;
@@ -132,6 +132,18 @@ const MODULES: { id: Module; label: string; icon: React.ReactNode; status: "acti
     ),
   },
   {
+    id: "studio",
+    label: "Studio · design & video",
+    status: "active",
+    icon: (
+      <svg viewBox="0 0 28 28" fill="none" className="w-5 h-5">
+        <rect x="3" y="5" width="16" height="14" rx="2" stroke="currentColor" strokeWidth="1.8" fill="currentColor" fillOpacity=".08"/>
+        <path d="M19 9.5l5-2.5v13l-5-2.5V9.5z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round"/>
+        <circle cx="9" cy="12" r="2.5" fill="currentColor" opacity=".5"/>
+      </svg>
+    ),
+  },
+  {
     id: "info",
     label: "Info · module guide",
     status: "active",
@@ -172,6 +184,7 @@ const SHORT_LABEL: Record<string, string> = {
   vault:      "Vault",
   guard:      "Guard",
   mesh:       "Mesh",
+  studio:     "Studio",
   info:       "Info",
 };
 
