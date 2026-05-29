@@ -206,19 +206,44 @@ export default function ResearchScreen() {
   }
 
   // Step 1: AI-planned research queries
-  async function planQueries(desc: string, name: string, geography: string): Promise<string[]> {
+  async function planQueries(desc: string, name: string, geography: string, focusAreas: string[]): Promise<string[]> {
+    const focusLabels = focusAreas.map(f => FOCUS_OPTIONS.find(o => o.id === f)?.label ?? f);
+    const geoTag = geography === 'India' ? 'India' : 'global market';
+
+    const focusInstruction = focusLabels.length > 0
+      ? `\nThe user specifically wants depth on: ${focusLabels.join(', ')}. At least 2 of the 6 queries MUST directly address these areas.`
+      : '';
+
+    const q5 = focusLabels.includes('Funding & Investors')
+      ? `Startup funding rounds and investors in this space 2024–2025 (${geoTag})`
+      : focusLabels.includes('Recent News')
+        ? `Recent news, product launches, and announcements in this category 2024–2025 (${geoTag})`
+        : `Recent trends and market opportunities in this space (${geoTag}) 2025`;
+
+    const q6 = focusLabels.includes('Pricing Strategy')
+      ? `Pricing models, price points, and monetization strategies for competitors in this space (${geoTag})`
+      : focusLabels.includes('Feature Comparison')
+        ? `Feature comparison between top products in this category (${geoTag})`
+        : name
+          ? `"${name}" company market position, traction, and differentiation (${geoTag})`
+          : `Best go-to-market strategies for this type of product in ${geoTag}`;
+
     const planSys = `You are a market research planner. Given a business description, output exactly 6 targeted Google-style search queries to gather competitive intelligence.
 
 Return ONLY a valid JSON array of 6 strings. No markdown, no explanation. Just the array.
 
-Make the queries specific and actionable — include company/category names, geography, and year where relevant.
-Cover these angles:
-1. Direct competitors in this space (${geography})
-2. Market size, growth rate, trends
-3. Top competitor's features, pricing, reviews
-4. Customer pain points and complaints in this category
-5. Recent startup funding or launches in this space
-6. ${name ? `Information about "${name}" itself` : 'Best practices or success strategies in this space'}`;
+CRITICAL RULES:
+- Every single query MUST include "${geoTag}" explicitly — geographic context is mandatory in ALL queries
+- Include year (2024 or 2025) in queries where relevant
+- Queries must be specific enough to return useful results on Google${focusInstruction}
+
+Cover these 6 angles (use these as the basis for your queries):
+1. Direct competitors in this category (${geoTag})
+2. Market size, growth rate, key trends (${geoTag}) 2024–2025
+3. Top competitor pricing, features, and customer reviews (${geoTag})
+4. Customer pain points and complaints in this space — Reddit, G2, Capterra (${geoTag})
+5. ${q5}
+6. ${q6}`;
 
     const nameHint = name ? `Business name: ${name}\n` : '';
     let json = '';
@@ -226,16 +251,14 @@ Cover these angles:
 
     const match = json.match(/\[[\s\S]*?\]/);
     if (!match) {
-      // Fallback: generate basic queries from description
       const cat = desc.slice(0, 60);
-      const geo = geography === 'India' ? 'India' : '';
       return [
-        `${cat} competitors ${geo} 2025`,
-        `${cat} market size growth ${geo}`,
-        `top ${cat} companies review comparison`,
-        `${cat} customer problems pain points`,
-        `${cat} startup funding 2024 2025`,
-        name ? `${name} company ${geo}` : `${cat} best practices success`,
+        `${cat} competitors ${geoTag} 2025`,
+        `${cat} market size growth ${geoTag} 2024`,
+        `top ${cat} companies pricing reviews ${geoTag}`,
+        `${cat} customer complaints pain points ${geoTag}`,
+        focusLabels.includes('Funding & Investors') ? `${cat} startup funding investors 2024 2025 ${geoTag}` : `${cat} market trends opportunities ${geoTag} 2025`,
+        focusLabels.includes('Pricing Strategy') ? `${cat} pricing strategy monetization ${geoTag}` : name ? `"${name}" company traction ${geoTag}` : `${cat} go-to-market strategy ${geoTag}`,
       ];
     }
     return JSON.parse(match[0]) as string[];
@@ -253,7 +276,7 @@ Cover these angles:
     let queries: string[];
 
     try {
-      queries = await planQueries(description.trim(), businessName.trim(), geography);
+      queries = await planQueries(description.trim(), businessName.trim(), geography, focus);
     } catch {
       // Graceful fallback
       const cat = description.trim().slice(0, 50);

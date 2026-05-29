@@ -43,12 +43,12 @@ const FORMATS: Record<ProjectType, Format[]> = {
 const DURATIONS = [5, 10, 15, 20, 30, 45, 60];
 
 const STYLES = [
-  { id: 'brand',     label: 'Nivara Brand',  desc: 'Purple #6d4cff, dark ink, Inter Tight — Nivara identity' },
-  { id: 'minimal',   label: 'Minimal',       desc: 'Clean white, generous space, sharp type' },
-  { id: 'bold',      label: 'Bold',          desc: 'High contrast, dominant typography' },
-  { id: 'dark',      label: 'Dark Glass',    desc: 'Deep background, glassmorphism, glowing accents' },
-  { id: 'vibrant',   label: 'Vibrant',       desc: 'Colorful gradients, energetic, social-first' },
-  { id: 'corporate', label: 'Corporate',     desc: 'Professional, blue/navy, trustworthy' },
+  { id: 'minimal',   label: 'Minimal',    desc: 'Clean white background, generous whitespace, sharp modern typography' },
+  { id: 'bold',      label: 'Bold',       desc: 'High contrast black/white, dominant oversized typography, strong shapes' },
+  { id: 'dark',      label: 'Dark',       desc: 'Deep dark background (#0c0b14), glassmorphism panels, glowing purple accents' },
+  { id: 'vibrant',   label: 'Vibrant',    desc: 'Colorful purple-to-violet gradients, energetic, high-impact social-first' },
+  { id: 'corporate', label: 'Corporate',  desc: 'Professional navy/blue, trustworthy, clean layout, suitable for LinkedIn' },
+  { id: 'editorial', label: 'Editorial',  desc: 'Magazine-style, large type, strong grid, editorial photography-like feel' },
 ];
 
 // ─── Built-in NV animation runtime (embedded — no external file needed) ──────
@@ -231,20 +231,99 @@ Output ONLY the complete HTML document starting with <!DOCTYPE html>.`;
 }
 
 function buildBannerPrompt(fmt: Format, desc: string, styleName: string, context: string): string {
-  return `You are an expert graphic designer specialising in social media visuals. Create a ${fmt.label} (${fmt.w}×${fmt.h}px) graphic.
-${context ? `\nBrand/product context (use for copy and brand colors):\n${context}\n` : ''}
-Requirements:
-- Complete self-contained HTML with all CSS in <style> — no external dependencies except Google Fonts
-- Fixed canvas: <body> and root div exactly ${fmt.w}×${fmt.h}px, overflow:hidden, no margin/padding
-- All elements must be positioned within the ${fmt.w}×${fmt.h}px bounds using absolute positioning
-- CSS entrance animations (opacity/transform) for a polished feel — auto-play, no JS needed
-- Bold typography, strong visual hierarchy, high contrast
-- Style: ${styleName}
-- Every text element must be meaningful — no filler, use real product/brand copy from the context
+  const W = fmt.w;
+  const H = fmt.h;
+  const cx = Math.round(W / 2);
+  const sidePad   = Math.round(W * 0.08);
+  const topPad    = Math.round(H * 0.08);
 
-Design intent: ${desc}
+  type StyleKey = 'minimal' | 'bold' | 'dark' | 'vibrant' | 'corporate' | 'editorial';
+  const styleId = (styleName.split(' — ')[0].trim().toLowerCase()) as StyleKey;
+  const styleVars: Record<StyleKey, string> = {
+    minimal:   '--bg:#ffffff;--bg2:#f0eeff;--text:#111111;--muted:#666666;--accent:#6d4cff;--accent2:#a78bfa;--surface:#f5f4ff;--card:rgba(109,76,255,0.06)',
+    bold:      '--bg:#0a0a0a;--bg2:#111111;--text:#ffffff;--muted:#999999;--accent:#ffffff;--accent2:#e0e0e0;--surface:#1c1c1c;--card:rgba(255,255,255,0.05)',
+    dark:      '--bg:#0c0b14;--bg2:#130f2a;--text:#ffffff;--muted:#a78bfa;--accent:#6d4cff;--accent2:#a78bfa;--surface:rgba(255,255,255,0.06);--card:rgba(109,76,255,0.15)',
+    vibrant:   '--bg:#5b21b6;--bg2:#6d28d9;--text:#ffffff;--muted:#ddd6fe;--accent:#fbbf24;--accent2:#fb923c;--surface:rgba(255,255,255,0.12);--card:rgba(255,255,255,0.08)',
+    corporate: '--bg:#0f2744;--bg2:#1a3a5c;--text:#ffffff;--muted:#93c5fd;--accent:#3b82f6;--accent2:#60a5fa;--surface:rgba(255,255,255,0.06);--card:rgba(59,130,246,0.15)',
+    editorial: '--bg:#f7f5f1;--bg2:#eeece8;--text:#0f0f0f;--muted:#555555;--accent:#dc2626;--accent2:#1a1a1a;--surface:#e8e6e2;--card:rgba(0,0,0,0.04)',
+  };
+  const vars = styleVars[styleId] ?? styleVars.dark;
 
-Output ONLY the complete HTML starting with <!DOCTYPE html>.`;
+  const headlineSz = Math.round(Math.min(H, W) * 0.10);
+  const tagSz      = Math.round(Math.min(H, W) * 0.033);
+  const bodySz     = Math.round(Math.min(H, W) * 0.046);
+  const ctaSz      = Math.round(Math.min(H, W) * 0.040);
+
+  return `You are an elite creative director and front-end engineer at a world-class design studio. Create a ${fmt.label} graphic (${W}×${H}px) — scroll-stopping, publication-quality, social-media-ready.
+
+${context ? `━━━ BRAND BRIEF ━━━\n${context}\n━━━━━━━━━━━━━━━━━\n` : ''}VISUAL INTENT: ${desc}
+STYLE: ${styleName}
+CANVAS: ${W}×${H}px — every element MUST stay inside this boundary.
+
+━━━ LAYOUT GRID (absolute pixel positions) ━━━
+Top accent area:   y ≈ ${topPad}–${Math.round(H * 0.20)}px   (logo mark, badge, eyebrow label)
+Headline zone:     y ≈ ${Math.round(H * 0.28)}–${Math.round(H * 0.55)}px   (DOMINANT text — largest element on canvas)
+Supporting zone:   y ≈ ${Math.round(H * 0.58)}–${Math.round(H * 0.72)}px   (subtitle, features, social proof)
+CTA zone:          y ≈ ${Math.round(H * 0.77)}–${Math.round(H - topPad)}px   (button, price, handle)
+Horizontal center: x = ${cx}px  |  Left edge safe: x = ${sidePad}px  |  Right edge safe: x = ${W - sidePad}px
+
+━━━ TYPOGRAPHY SCALE ━━━
+Headline:  font-size ${headlineSz}px, font-weight 800–900, line-height 1.05
+Sub-label: font-size ${tagSz}px, font-weight 600, text-transform uppercase, letter-spacing 0.15em
+Body:      font-size ${bodySz}px, font-weight 400–500
+CTA:       font-size ${ctaSz}px, font-weight 700
+
+━━━ CSS DESIGN SYSTEM ━━━
+:root { ${vars} }
+Use var(--bg) for background, var(--text) for main copy, var(--accent) for the hero element, var(--muted) for secondary copy.
+
+━━━ MANDATORY TEMPLATE — complete this ━━━
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;600;700;800;900&family=Space+Grotesk:wght@400;500;700&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{width:${W}px;height:${H}px;overflow:hidden;font-family:'Inter Tight',system-ui,sans-serif}
+:root{${vars}}
+.canvas{position:relative;width:${W}px;height:${H}px;background:var(--bg);overflow:hidden}
+
+/* ── ADD YOUR CSS BELOW ── */
+
+@keyframes fadeUp{from{opacity:0;transform:translateY(28px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes slideRight{from{opacity:0;transform:translateX(-36px)}to{opacity:1;transform:translateX(0)}}
+@keyframes scaleIn{from{opacity:0;transform:scale(0.88)}to{opacity:1;transform:scale(1)}}
+/* Usage: animation: fadeUp 0.55s cubic-bezier(.22,1,.36,1) both 0s; — stagger each element by +0.15s */
+</style>
+</head>
+<body>
+<div class="canvas">
+
+  <!-- LAYER 1 — Background: gradient, geometric shapes, mesh, texture — MUST be rich, never flat color alone -->
+
+  <!-- LAYER 2 — Top zone: logo, brand name, or eyebrow badge -->
+
+  <!-- LAYER 3 — Headline zone: the dominant message — huge, bold, immediate -->
+
+  <!-- LAYER 4 — Supporting zone: subtitle, benefits, social proof -->
+
+  <!-- LAYER 5 — CTA zone: button, price callout, or action label -->
+
+</div>
+</body>
+</html>
+
+━━━ NON-NEGOTIABLE DESIGN RULES ━━━
+1. BACKGROUND MUST BE RICH — use radial/linear gradients + at least one geometric shape (circle, diagonal band, grid lines, blob). A bare flat color fails.
+2. HEADLINE IS DOMINANT — it must be huge (${headlineSz}px+), bold (800+), and immediately readable even as a thumbnail.
+3. STAGGER ALL ANIMATIONS — every element gets animation: fadeUp/fadeIn 0.55s both Xs; where X increases by 0.15s per layer (0s, 0.15s, 0.30s, 0.45s, 0.60s).
+4. REAL COPY ONLY — derive every word from the brief + context above. Zero placeholder text.
+5. USE CSS VARIABLES — apply var(--accent) on CTA button background and var(--text) on headline. No hardcoded colors unless for gradients.
+6. PROFESSIONAL QUALITY — bold typographic choices, strong grid, clear visual hierarchy. Studio-level output.
+
+Output ONLY the filled, complete HTML — start with <!DOCTYPE html>. No markdown fences, no explanation.`;
 }
 
 function buildComponentPrompt(fmt: Format, desc: string, styleName: string, context: string): string {
@@ -684,7 +763,12 @@ export default function StudioModule() {
         {/* Preview / Code area */}
         <div
           className="flex-1 overflow-hidden flex items-center justify-center relative"
-          style={{ background: generating || !html ? '#0c0b14' : (showCode ? 'var(--nv-surface)' : previewBg) }}
+          style={{ background:
+            generating          ? '#0c0b14'          :
+            !html               ? (type === 'video' ? '#0c0b14' : 'var(--nv-bg)') :
+            showCode            ? 'var(--nv-surface)' :
+                                  previewBg
+          }}
         >
           {/* Generating overlay */}
           {generating && (
@@ -701,13 +785,13 @@ export default function StudioModule() {
 
           {/* Empty state */}
           {!generating && !html && !error && (
-            <div className="flex flex-col items-center gap-3 text-white/10 pointer-events-none select-none">
+            <div className="flex flex-col items-center gap-3 text-nv-faint/30 pointer-events-none select-none">
               <svg viewBox="0 0 64 64" fill="none" className="w-16 h-16">
                 <rect x="8" y="8" width="48" height="48" rx="8" stroke="currentColor" strokeWidth="1.5"/>
                 <path d="M8 40l14-14 10 10 10-10 14 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
                 <circle cx="22" cy="22" r="5" stroke="currentColor" strokeWidth="1.5"/>
               </svg>
-              <p className="text-[13px] font-medium">Describe → Generate</p>
+              <p className="text-[13px] font-medium text-nv-faint/50">Describe → Generate</p>
             </div>
           )}
 
