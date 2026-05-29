@@ -164,81 +164,100 @@ async function loadAllCreds(): Promise<Record<string, Record<string, string>>> {
 
 // ─── Prompts ─────────────────────────────────────────────────────────────────
 
-function buildVideoPrompt(fmt: Format, duration: number, desc: string): string {
+function buildVideoPrompt(fmt: Format, duration: number, desc: string, context: string): string {
+  const cx = Math.round(fmt.w / 2);
+  const cy = Math.round(fmt.h / 2);
+  const margin = 80;
   return `You are an expert motion graphics engineer. Generate an animated video using the built-in NV runtime.
 
-AVAILABLE API (window.NV, already loaded before your code runs):
+CANVAS: ${fmt.w}×${fmt.h}px  |  Duration: ${duration}s
+${context ? `\nBRAND/PRODUCT CONTEXT (use this for copy, colors, and messaging):\n${context}\n` : ''}
+COORDINATE REFERENCE — use EXACT pixel values (never guess):
+  Center point:    (${cx}, ${cy})
+  Left third:      x=${Math.round(fmt.w * 0.33)}   Center third: x=${cx}   Right third: x=${Math.round(fmt.w * 0.67)}
+  Top area:        y=${Math.round(fmt.h * 0.25)}   Mid-upper: y=${Math.round(fmt.h * 0.38)}   Center: y=${cy}   Mid-lower: y=${Math.round(fmt.h * 0.62)}   Bottom: y=${Math.round(fmt.h * 0.75)}
+  Safe zone:       ${margin}px from all edges
+  Typical layout:  Logo/icon at y=${Math.round(fmt.h * 0.25)}, Headline at y=${Math.round(fmt.h * 0.42)}, Subtext at y=${Math.round(fmt.h * 0.53)}, CTA at y=${Math.round(fmt.h * 0.70)}
 
-NV.stage       — the root <div id="stage"> element
-NV.el(tag, cssObj, parent?)  — create+append DOM element (always position:absolute)
-NV.text(text, cx, cy, opts) — centered text at (cx,cy). opts: {color,size(px),weight,font,align,css:{}}
-NV.rect(cx, cy, w, h, opts) — rectangle at (cx,cy). opts: {bg,r(radius),css:{}}
-NV.animate(elem, fromCSS, toCSS, startT, endT, easeFn?) — keyframe tween. startT/endT are 0–1 fractions of total duration
-NV.onFrame(fn(t,secs))     — per-frame callback. t=0→1 normalized, secs=elapsed
-NV.ease.out / ease.in / ease.inOut / ease.back / ease.elastic / ease.linear
-NV.lerp(a,b,t)  NV.clamp(v,min,max)  NV.loop() → loops the animation
-NV.start()  — MUST call last to begin playback
+NV API (already loaded — do not redeclare):
+  NV.stage                         — root container
+  NV.el(tag, cssObj, parent?)      — create element at absolute position
+  NV.text(text, x, y, opts)        — centered text. opts: {color,size(px),weight,font,css:{}}
+  NV.rect(x, y, w, h, opts)        — rectangle. opts: {bg,r(radius px),css:{}}
+  NV.animate(elem, from, to, s, e, easeFn?)  — tween. s/e are 0–1 fractions of total duration
+  NV.onFrame(fn(t, secs))          — per-frame hook
+  NV.ease.out / .in / .inOut / .back / .elastic / .linear
+  NV.lerp(a,b,t)  NV.clamp(v,min,max)  NV.loop()
+  NV.start()  ← MUST be the last line
 
-Canvas: ${fmt.w}×${fmt.h}px  |  Center: (${Math.round(fmt.w / 2)}, ${Math.round(fmt.h / 2)})  |  Duration: ${duration}s
-
-BRAND PALETTE:  PURPLE=#6d4cff  DARK=#0c0b14  PAPER=#f7f5f1  ACCENT2=#a78bfa  GREEN=#22c55e
+CONCRETE EXAMPLE (for a 1080×1920 story):
+  NV.stage.style.background='#0c0b14';
+  const logo=NV.text('ACME',540,300,{color:'#6d4cff',size:52,weight:800});
+  const title=NV.text('Headline Here',540,520,{color:'#fff',size:72,weight:700});
+  NV.animate(logo,{opacity:'0',transform:'scale(0.7)'},{opacity:'1',transform:'scale(1)'},0,0.18,NV.ease.back);
+  NV.animate(title,{opacity:'0',transform:'translateY(40px)'},{opacity:'1',transform:'translateY(0px)'},0.12,0.32,NV.ease.out);
+  NV.start();
 
 RULES:
-1. Output ONLY valid JavaScript — no import/export, no HTML, no markdown fences, no comments
-2. Set NV.stage.style.background at the very start
-3. All elements start with opacity:'0' — use NV.animate() to reveal them
-4. Pattern for entrance: NV.animate(elem, {opacity:'0',transform:'translateY(30px)'}, {opacity:'1',transform:'translateY(0px)'}, 0.0, 0.15, NV.ease.back)
-5. Pattern for exit: NV.animate(elem, {opacity:'1'}, {opacity:'0'}, 0.85, 1.0, NV.ease.in)
-6. Use fractions of 1.0 for timing. e.g. a 15s video: title at 0→0.2, content at 0.15→0.7, CTA at 0.6→0.9
-7. MUST end with exactly: NV.start();
+1. Output ONLY valid JavaScript — no HTML, no markdown fences, no import/export
+2. Set NV.stage.style.background first
+3. Every element starts opacity:'0' — animate each in using NV.animate()
+4. Entrance: NV.animate(e,{opacity:'0',transform:'translateY(30px)'},{opacity:'1',transform:'translateY(0px)'},0.0,0.15,NV.ease.back)
+5. Exit: NV.animate(e,{opacity:'1'},{opacity:'0'},0.85,1.0,NV.ease.in)
+6. All positions use EXACT coordinates from the reference above — never guess or use vague values
+7. Last line MUST be exactly: NV.start();
+
+BRAND PALETTE: PURPLE=#6d4cff  DARK=#0c0b14  PAPER=#f7f5f1  ACCENT=#a78bfa  GREEN=#22c55e
 
 Content to animate: ${desc}`;
 }
 
-function buildScreenPrompt(fmt: Format, desc: string, styleName: string): string {
+function buildScreenPrompt(fmt: Format, desc: string, styleName: string, context: string): string {
   return `You are an expert UI designer. Create a pixel-perfect ${fmt.label} UI mockup (${fmt.w}×${fmt.h}px).
-
+${context ? `\nBrand/product context (use for copy, colors, and data):\n${context}\n` : ''}
 Requirements:
 - Complete, self-contained HTML document with all CSS in <style> tags
 - Canvas exactly ${fmt.w}×${fmt.h}px (set on a root wrapper div with overflow:hidden)
-- Import fonts via Google Fonts @import inside <style>
+- Import fonts via Google Fonts @import inside <style> (Sora or Inter)
 - Hover states, micro-interactions, subtle CSS transitions
 - Style direction: ${styleName}
 - NO JavaScript unless essential for the UI interaction
 - Publication-ready quality — no placeholder text like "Lorem ipsum"
+- All elements must stay within the ${fmt.w}×${fmt.h}px canvas bounds
 
 Purpose: ${desc}
 
 Output ONLY the complete HTML document starting with <!DOCTYPE html>.`;
 }
 
-function buildBannerPrompt(fmt: Format, desc: string, styleName: string): string {
+function buildBannerPrompt(fmt: Format, desc: string, styleName: string, context: string): string {
   return `You are an expert graphic designer specialising in social media visuals. Create a ${fmt.label} (${fmt.w}×${fmt.h}px) graphic.
-
+${context ? `\nBrand/product context (use for copy and brand colors):\n${context}\n` : ''}
 Requirements:
 - Complete self-contained HTML with all CSS in <style> — no external dependencies except Google Fonts
-- Fixed canvas: body/root div exactly ${fmt.w}×${fmt.h}px, overflow:hidden
+- Fixed canvas: <body> and root div exactly ${fmt.w}×${fmt.h}px, overflow:hidden, no margin/padding
+- All elements must be positioned within the ${fmt.w}×${fmt.h}px bounds using absolute positioning
 - CSS entrance animations (opacity/transform) for a polished feel — auto-play, no JS needed
-- Bold typography, strong visual hierarchy
+- Bold typography, strong visual hierarchy, high contrast
 - Style: ${styleName}
-- Every text element must be meaningful — no filler text
+- Every text element must be meaningful — no filler, use real product/brand copy from the context
 
 Design intent: ${desc}
 
 Output ONLY the complete HTML starting with <!DOCTYPE html>.`;
 }
 
-function buildComponentPrompt(fmt: Format, desc: string, styleName: string): string {
+function buildComponentPrompt(fmt: Format, desc: string, styleName: string, context: string): string {
   return `You are a senior UI engineer. Build a polished, production-ready interactive UI component.
-
+${context ? `\nProduct context (use for real copy, data, and brand colors):\n${context}\n` : ''}
 Requirements:
 - Complete self-contained HTML with CSS in <style> and JS in <script>
-- Component is centered and displayed within a ${fmt.w}×${fmt.h}px viewport
+- Component centered within a ${fmt.w}×${fmt.h}px viewport
 - Fully functional: all buttons work, toggles toggle, inputs accept input
 - CSS custom properties for theming
 - Smooth transitions and micro-animations
 - Style: ${styleName}
-- No Lorem ipsum — use realistic content
+- No Lorem ipsum — use realistic content from the context if provided
 
 Component: ${desc}
 
@@ -301,23 +320,26 @@ const EXAMPLES: Record<ProjectType, string[]> = {
 
 export default function StudioModule() {
   const { session } = useAuth();
-  const callIdRef = useRef(0);
+  const callIdRef  = useRef(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [type,       setType]       = useState<ProjectType>('video');
-  const [format,     setFormat]     = useState<Format>(FORMATS.video[0]);
-  const [duration,   setDuration]   = useState(15);
-  const [style,      setStyle]      = useState(STYLES[0].id);
-  const [prompt,     setPrompt]     = useState('');
-  const [refine,     setRefine]     = useState('');
-  const [generating, setGenerating] = useState(false);
-  const [html,       setHtml]       = useState<string | null>(null);
-  const [error,      setError]      = useState<string | null>(null);
-  const [history,    setHistory]    = useState<HistoryEntry[]>([]);
-  const [copied,     setCopied]     = useState(false);
-  const [streamLog,  setStreamLog]  = useState('');
-  const [showCode,   setShowCode]   = useState(false);
-  const [editedHtml, setEditedHtml] = useState('');
-  const [connMode,   setConnMode]   = useState<string>('');
+  const [type,           setType]           = useState<ProjectType>('video');
+  const [format,         setFormat]         = useState<Format>(FORMATS.video[0]);
+  const [duration,       setDuration]       = useState(15);
+  const [style,          setStyle]          = useState(STYLES[0].id);
+  const [prompt,         setPrompt]         = useState('');
+  const [refine,         setRefine]         = useState('');
+  const [generating,     setGenerating]     = useState(false);
+  const [html,           setHtml]           = useState<string | null>(null);
+  const [error,          setError]          = useState<string | null>(null);
+  const [history,        setHistory]        = useState<HistoryEntry[]>([]);
+  const [copied,         setCopied]         = useState(false);
+  const [streamLog,      setStreamLog]      = useState('');
+  const [showCode,       setShowCode]       = useState(false);
+  const [editedHtml,     setEditedHtml]     = useState('');
+  const [connMode,       setConnMode]       = useState<string>('');
+  const [contextFile,    setContextFile]    = useState<{ name: string; content: string } | null>(null);
+  const [showContext,    setShowContext]     = useState(false);
 
   function handleTypeChange(t: ProjectType) {
     setType(t);
@@ -389,12 +411,16 @@ export default function StudioModule() {
     setShowCode(false);
 
     const selectedStyle = STYLES.find((s) => s.id === style)!;
+    const ctx = contextFile?.content ?? '';
     let raw = '';
 
     try {
       if (type === 'video') {
-        const sysPrompt = buildVideoPrompt(format, duration, prompt);
-        await streamAI(sysPrompt, `Create this animation now:\n${prompt}`, (chunk) => {
+        const sysPrompt = buildVideoPrompt(format, duration, prompt, ctx);
+        const userMsg = ctx
+          ? `Brand/product context:\n${ctx}\n\nCreate this animation:\n${prompt}`
+          : `Create this animation:\n${prompt}`;
+        await streamAI(sysPrompt, userMsg, (chunk) => {
           raw += chunk;
           setStreamLog(raw.slice(-400));
         });
@@ -406,10 +432,11 @@ export default function StudioModule() {
       } else {
         const styleDesc = `${selectedStyle.label} — ${selectedStyle.desc}`;
         const sysPrompt =
-          type === 'screen'    ? buildScreenPrompt(format, prompt, styleDesc) :
-          type === 'banner'    ? buildBannerPrompt(format, prompt, styleDesc) :
-                                 buildComponentPrompt(format, prompt, styleDesc);
-        await streamAI(sysPrompt, prompt, (chunk) => {
+          type === 'screen'    ? buildScreenPrompt(format, prompt, styleDesc, ctx) :
+          type === 'banner'    ? buildBannerPrompt(format, prompt, styleDesc, ctx) :
+                                 buildComponentPrompt(format, prompt, styleDesc, ctx);
+        const userMsg = ctx ? `Brand/product context:\n${ctx}\n\n${prompt}` : prompt;
+        await streamAI(sysPrompt, userMsg, (chunk) => {
           raw += chunk;
           setStreamLog(raw.slice(-400));
         });
@@ -434,7 +461,7 @@ export default function StudioModule() {
 
     let raw = '';
     const sysPrompt = type === 'video'
-      ? buildVideoPrompt(format, duration, refine)
+      ? buildVideoPrompt(format, duration, refine, contextFile?.content ?? '')
       : `You are a web design expert. Modify the provided HTML as instructed. Return the complete updated file.`;
 
     try {
@@ -455,6 +482,18 @@ export default function StudioModule() {
       setGenerating(false);
       setStreamLog('');
     }
+  }
+
+  function handleFileAttach(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const content = (ev.target?.result as string) ?? '';
+      setContextFile({ name: file.name, content: content.slice(0, 8000) });
+    };
+    reader.readAsText(file);
+    e.target.value = '';
   }
 
   function applyCodeEdit() {
@@ -735,8 +774,60 @@ export default function StudioModule() {
       <div className="w-64 shrink-0 flex flex-col border-l border-nv-border">
         {/* Prompt section */}
         <div className="px-3 py-2.5 border-b border-nv-border shrink-0">
-          <p className="text-[11px] font-semibold text-nv-text">Prompt</p>
-          <p className="text-[9px] text-nv-faint font-mono mt-0.5">Describe what to create</p>
+          <div className="flex items-center justify-between mb-0.5">
+            <p className="text-[11px] font-semibold text-nv-text">Prompt</p>
+            {/* File attach */}
+            <div className="flex items-center gap-1.5">
+              {contextFile ? (
+                <div className="flex items-center gap-1 bg-accent/10 border border-accent/25 rounded px-1.5 py-0.5">
+                  <svg viewBox="0 0 10 10" fill="none" className="w-2.5 h-2.5 text-accent shrink-0">
+                    <path d="M2 1h4.5L9 3.5V9H2V1z" stroke="currentColor" strokeWidth="1.1"/>
+                  </svg>
+                  <span className="text-[9px] text-accent font-mono truncate max-w-[70px]">{contextFile.name}</span>
+                  <button
+                    onClick={() => setContextFile(null)}
+                    className="text-[10px] text-accent/60 hover:text-accent leading-none ml-0.5"
+                  >×</button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex items-center gap-1 text-[9px] text-nv-faint hover:text-accent font-mono transition-fast px-1.5 py-0.5 rounded border border-nv-border hover:border-accent/30"
+                  title="Attach a .md, .txt, or .json context file"
+                >
+                  <svg viewBox="0 0 10 10" fill="none" className="w-2.5 h-2.5">
+                    <path d="M5 1v6M2 5l3 2 3-2" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round"/>
+                    <path d="M1 9h8" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/>
+                  </svg>
+                  Attach
+                </button>
+              )}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".md,.txt,.json,.csv"
+                className="hidden"
+                onChange={handleFileAttach}
+              />
+            </div>
+          </div>
+          <p className="text-[9px] text-nv-faint font-mono">
+            {contextFile ? `Using "${contextFile.name}" as context` : 'Describe what to create · attach a brand/product file'}
+          </p>
+          {/* Context preview toggle */}
+          {contextFile && (
+            <button
+              onClick={() => setShowContext(v => !v)}
+              className="text-[9px] text-nv-faint hover:text-accent font-mono mt-1 transition-fast"
+            >
+              {showContext ? 'Hide context ▲' : 'Preview context ▼'}
+            </button>
+          )}
+          {contextFile && showContext && (
+            <pre className="mt-1.5 text-[9px] text-nv-faint font-mono bg-nv-bg border border-nv-border rounded p-2 max-h-24 overflow-y-auto whitespace-pre-wrap">
+              {contextFile.content.slice(0, 600)}{contextFile.content.length > 600 ? '…' : ''}
+            </pre>
+          )}
         </div>
 
         {/* Examples */}
