@@ -292,330 +292,176 @@ function buildVideoPrompt(fmt: Format, duration: number, agentBias?: string): st
   const W = fmt.w;
   const H = fmt.h;
 
-  // How many scenes fit this duration
-  const sceneCount =
-    duration <= 12 ? 2 :
-    duration <= 22 ? 3 :
-    duration <= 38 ? 4 :
-    duration <= 52 ? 5 : 6;
+  const sceneCount = duration <= 12 ? 2 : duration <= 22 ? 3 : duration <= 38 ? 4 : duration <= 52 ? 5 : 6;
 
-  const subSide   = Math.round(W * 0.074);
-  const subBottom = Math.round(H * 0.08);
-  const subFont   = Math.round(W * 0.038);
-  const subLH     = Math.round(subFont * 1.45);
+  const fsHero = Math.round(H * 0.09);
+  const fsSub  = Math.round(H * 0.04);
+  const fsStat = Math.round(H * 0.13);
+  const fsBody = Math.round(H * 0.028);
+  const fsCta  = Math.round(H * 0.038);
 
-  // Font size scale — proportional to canvas width
-  const fsHero   = Math.round(W * 0.088);
-  const fsSub    = Math.round(W * 0.052);
-  const fsStat   = Math.round(W * 0.13);
-  const fsBody   = Math.round(W * 0.036);
-  const fsCta    = Math.round(W * 0.038);
-
-  // Canvas-based runtime — renders to <canvas id="c">, enables video recording
-  const runtime =
-`window.onerror=function(msg,src,ln){var c=document.getElementById('c');if(!c)return;var x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.font='bold 13px monospace';x.fillStyle='rgba(160,0,0,.9)';x.textAlign='center';x.textBaseline='middle';x.fillText(String(msg).slice(0,90),c.width/2,c.height/2-14);x.fillText('line '+ln,c.width/2,c.height/2+14);};
-var canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
-var W=${W},H=${H},DUR=${duration};
-var _T=0,_L=null;
-var C=function(v,a,b){return v<a?a:v>b?b:v;};
-var E={
-  o3:function(t){t--;return t*t*t+1;},
-  i3:function(t){return t*t*t;},
-  io:function(t){return t<.5?4*t*t*t:(t-1)*(2*t-2)*(2*t-2)+1;},
-  bk:function(t){var c=1.70158;return 1+(c+1)*Math.pow(t-1,3)+c*Math.pow(t-1,2);},
-  el:function(t){return t<=0?0:t>=1?1:Math.pow(2,-10*t)*Math.sin((t*10-.75)*2.094)+1;},
-  si:function(t){return Math.sin(t*Math.PI/2);}
-};
-// sp(s,e): returns {lt,op,ty,p} during time window or null
-function sp(s,e){
-  if(_T<s||_T>e)return null;
-  var lt=_T-s,dur=e-s,eD=0.45,xD=0.35,xS=dur-xD,op=1,ty=0;
-  if(lt<eD){var p=E.o3(C(lt/eD,0,1));op=p;ty=(1-p)*32;}
-  else if(lt>xS){var p2=E.i3(C((lt-xS)/xD,0,1));op=1-p2;ty=-p2*20;}
-  return {lt:lt,op:op,ty:ty,p:C(lt/dur,0,1)};
-}
-function lp(a,b,s,e,ef){ef=ef||E.o3;return a+(b-a)*ef(C((_T-s)/(e-s),0,1));}
-function cu(n,s,d,ef){ef=ef||E.o3;return Math.round(n*ef(C((_T-s)/d,0,1)));}
-// tx(text,x,y,fs,clr,weight,align,base): draw text on canvas
-function tx(t,x,y,fs,clr,w,al,ba){ctx.font=(w||600)+' '+(fs||36)+'px "Inter Tight",system-ui';ctx.fillStyle=clr||'#0c0b14';ctx.textAlign=al||'center';ctx.textBaseline=ba||'middle';ctx.fillText(t,x,y);}
-// txm(text,x,y,fs,clr): monospace text (JetBrains Mono) for numbers/stats
-function txm(t,x,y,fs,clr){ctx.font='700 '+(fs||48)+'px "JetBrains Mono",monospace';ctx.fillStyle=clr||'#6d4cff';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(t,x,y);}
-// txWrap(lines[],x,yCtr,fs,clr,wt,lineH): draw multi-line text centered at yCtr
-function txWrap(lines,x,yc,fs,clr,wt,lhh){var n=lines.length,ly=yc-(n-1)*(lhh||fs*1.25)/2;for(var i=0;i<n;i++)tx(lines[i],x,ly+i*(lhh||fs*1.25),fs,clr,wt);}
-// rr(x,y,w,h,r,fill,shadowColor,shadowBlur): draw rounded rectangle
-function rr(x,y,w,h,r,fill,sc,sb){
-  ctx.save();
-  if(sc){ctx.shadowColor=sc;ctx.shadowBlur=sb||20;}
-  ctx.fillStyle=fill||'#fff';r=Math.min(r||20,w/2,h/2);
-  ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);
-  ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
-  ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);
-  ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();ctx.fill();
-  ctx.restore();
-}
-// sub(text,op,color): centered word-wrapped subtitle at bottom with frosted bg
-function sub(text,op,color){
-  if(!op||op<=0)return;
-  ctx.save();ctx.globalAlpha=op;
-  ctx.font='600 ${subFont}px "Inter Tight",system-ui';
-  ctx.textAlign='center';ctx.textBaseline='alphabetic';
-  var mw=W-${subSide * 2},words=text.split(' '),lines=[],cur='';
-  for(var i=0;i<words.length;i++){var tl=cur?(cur+' '+words[i]):words[i];if(ctx.measureText(tl).width>mw&&cur){lines.push(cur);cur=words[i];}else cur=tl;}
-  lines.push(cur);
-  var lh=${subLH},bH=lines.length*lh+12,bY=H-${subBottom}-lines.length*lh-10;
-  rr(${subSide},bY,W-${subSide * 2},bH,10,'rgba(255,255,255,0.88)');
-  ctx.fillStyle=color||'#0c0b14';
-  for(var j=0;j<lines.length;j++)ctx.fillText(lines[j].trim(),W/2,H-${subBottom}-(lines.length-1-j)*lh);
-  ctx.restore();
-}
-// subHL(before,hl,after,op): two-color subtitle — hl part in accent purple, frosted bg
-function subHL(a,hl,b,op){
-  if(!op||op<=0)return;
-  ctx.save();ctx.globalAlpha=op;ctx.font='600 ${subFont}px "Inter Tight",system-ui';ctx.textBaseline='alphabetic';ctx.textAlign='left';
-  var wa=ctx.measureText(a).width,wh=ctx.measureText(hl).width,wb=ctx.measureText(b).width;
-  var tot=wa+wh+wb,x=W/2-tot/2,y=H-${subBottom};
-  rr(x-16,y-${subFont}-6,tot+32,${subFont}+18,10,'rgba(255,255,255,0.88)');
-  ctx.fillStyle='#0c0b14';ctx.fillText(a,x,y);
-  ctx.fillStyle='#6d4cff';ctx.fillText(hl,x+wa,y);
-  ctx.fillStyle='#0c0b14';ctx.fillText(b,x+wa+wh,y);
-  ctx.restore();
-}
-// ripple(cx,cy,startT,count): expanding purple rings for brand reveals
-function ripple(cx,cy,st,n){
-  n=n||3;
-  for(var i=0;i<n;i++){
-    var p=C((_T-st-i*0.3)/1.8,0,1);if(p<=0||p>=1)continue;
-    ctx.save();ctx.globalAlpha=(1-p)*0.5;ctx.strokeStyle='#6d4cff';ctx.lineWidth=3;
-    ctx.shadowColor='rgba(109,76,255,.4)';ctx.shadowBlur=8;
-    ctx.beginPath();ctx.arc(cx,cy,p*Math.min(W,H)*0.4,0,Math.PI*2);ctx.stroke();
-    ctx.restore();
-  }
-}
-// circle(cx,cy,r,fill,stroke,sw): filled/stroked circle
-function circle(cx,cy,r,fill,stroke,sw){ctx.save();ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);if(fill){ctx.fillStyle=fill;ctx.fill();}if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=sw||2;ctx.stroke();}ctx.restore();}
-// ring(cx,cy,r,t,col,p): arc progress ring, p=0–1
-function ring(cx,cy,r,t,col,p){ctx.save();ctx.beginPath();ctx.arc(cx,cy,r,-Math.PI/2,-Math.PI/2+(p||1)*Math.PI*2);ctx.strokeStyle=col||'#6d4cff';ctx.lineWidth=t||8;ctx.lineCap='round';ctx.stroke();ctx.restore();}
-// glow(cx,cy,r,col): radial soft glow
-function glow(cx,cy,r,col){var g=ctx.createRadialGradient(cx,cy,0,cx,cy,r);g.addColorStop(0,col);g.addColorStop(1,'rgba(0,0,0,0)');ctx.save();ctx.fillStyle=g;ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fill();ctx.restore();}
-// arrow(x1,y1,x2,y2,col,lw): directional line with arrowhead
-function arrow(x1,y1,x2,y2,col,lw){var a=Math.atan2(y2-y1,x2-x1),as=12;ctx.save();ctx.strokeStyle=col||'#6d4cff';ctx.fillStyle=col||'#6d4cff';ctx.lineWidth=lw||2;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2-Math.cos(a)*as*0.4,y2-Math.sin(a)*as*0.4);ctx.stroke();ctx.beginPath();ctx.moveTo(x2,y2);ctx.lineTo(x2-as*Math.cos(a-0.4),y2-as*Math.sin(a-0.4));ctx.lineTo(x2-as*Math.cos(a+0.4),y2-as*Math.sin(a+0.4));ctx.closePath();ctx.fill();ctx.restore();}
-// dashed(x1,y1,x2,y2,col,lw,d,g): dashed separator line
-function dashed(x1,y1,x2,y2,col,lw,d,g){ctx.save();ctx.strokeStyle=col||'rgba(255,255,255,0.25)';ctx.lineWidth=lw||1.5;ctx.setLineDash([d||6,g||4]);ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();ctx.setLineDash([]);ctx.restore();}
-// dotGrid(x,y,cols,rows,gap,r,col): decorative dot matrix background
-function dotGrid(x,y,cols,rows,gap,r,col){ctx.save();ctx.fillStyle=col||'rgba(255,255,255,0.1)';for(var c=0;c<cols;c++)for(var row=0;row<rows;row++){ctx.beginPath();ctx.arc(x+c*gap,y+row*gap,r||2,0,Math.PI*2);ctx.fill();}ctx.restore();}
-// wave(x,y,w,amp,freq,col,lw,phase): animated sine wave line
-function wave(x,y,w,amp,freq,col,lw,phase){ctx.save();ctx.strokeStyle=col||'#6d4cff';ctx.lineWidth=lw||2;ctx.beginPath();for(var i=0;i<=w;i+=3){var wy=y+Math.sin((i/w)*Math.PI*2*(freq||1)+(phase||0))*amp;if(i===0)ctx.moveTo(x+i,wy);else ctx.lineTo(x+i,wy);}ctx.stroke();ctx.restore();}
-// gradRect(x,y,w,h,c1,c2,vert): gradient-filled rectangle (vert=top-to-bottom)
-function gradRect(x,y,w,h,c1,c2,vert){var g=vert?ctx.createLinearGradient(x,y,x,y+h):ctx.createLinearGradient(x,y,x+w,y);g.addColorStop(0,c1);g.addColorStop(1,c2);ctx.save();ctx.fillStyle=g;ctx.fillRect(x,y,w,h);ctx.restore();}
-// floatCard(x,y,w,h,r,bg): rounded card with drop shadow
-function floatCard(x,y,w,h,r,bg){ctx.save();ctx.shadowColor='rgba(0,0,0,0.2)';ctx.shadowBlur=20;ctx.shadowOffsetY=6;rr(x,y,w,h,r||12,bg||'rgba(255,255,255,0.08)');ctx.restore();}
-// laptop(cx,cy,bW,fn): laptop device frame; fn(sx,sy,sw,sh) paints inside the screen
-function laptop(cx,cy,bW,fn){var bH=bW*0.58,sW=bW*0.83,sH=bH*0.67,sx=cx-sW/2,sy=cy-bH/2+bH*0.07;rr(cx-bW/2,cy-bH/2,bW,bH*0.82,8,'#1a1a2e');rr(sx,sy,sW,sH,4,'#080812');if(fn){ctx.save();ctx.beginPath();ctx.moveTo(sx+4,sy);ctx.lineTo(sx+sW-4,sy);ctx.quadraticCurveTo(sx+sW,sy,sx+sW,sy+4);ctx.lineTo(sx+sW,sy+sH-4);ctx.quadraticCurveTo(sx+sW,sy+sH,sx+sW-4,sy+sH);ctx.lineTo(sx+4,sy+sH);ctx.quadraticCurveTo(sx,sy+sH,sx,sy+sH-4);ctx.lineTo(sx,sy+4);ctx.quadraticCurveTo(sx,sy,sx+4,sy);ctx.closePath();ctx.clip();fn(sx,sy,sW,sH);ctx.restore();}circle(cx,cy-bH/2+bH*0.033,3,'#222238');rr(cx-bW*0.52,cy+bH*0.365,bW*1.04,bH*0.1,4,'#141428');rr(cx-bW*0.13,cy+bH*0.39,bW*0.26,bH*0.055,4,'#1e1e30');}
-// phone(cx,cy,h,fn): phone device frame; fn(sx,sy,sw,sh) paints inside the screen
-function phone(cx,cy,h,fn){var w=h*0.46,sW=w*0.86,sH=h*0.88,sx=cx-sW/2,sy=cy-sH/2;rr(cx-w/2,cy-h/2,w,h,22,'#1c1c2e');rr(sx,sy,sW,sH,16,'#080812');if(fn){ctx.save();ctx.beginPath();ctx.moveTo(sx+16,sy);ctx.lineTo(sx+sW-16,sy);ctx.quadraticCurveTo(sx+sW,sy,sx+sW,sy+16);ctx.lineTo(sx+sW,sy+sH-16);ctx.quadraticCurveTo(sx+sW,sy+sH,sx+sW-16,sy+sH);ctx.lineTo(sx+16,sy+sH);ctx.quadraticCurveTo(sx,sy+sH,sx,sy+sH-16);ctx.lineTo(sx,sy+16);ctx.quadraticCurveTo(sx,sy,sx+16,sy);ctx.closePath();ctx.clip();fn(sx,sy,sW,sH);ctx.restore();}rr(cx-w*0.15,cy-h/2-1,w*0.3,13,7,'#1c1c2e');rr(cx-w*0.2,cy+h/2-11,w*0.4,5,3,'#2a2a3e');}
-// check(cx,cy,r,col,lw): checkmark drawn inside a circle
-function check(cx,cy,r,col,lw){circle(cx,cy,r,null,col||'#22c55e',lw||2);ctx.save();ctx.strokeStyle=col||'#22c55e';ctx.lineWidth=lw||2;ctx.lineCap='round';ctx.lineJoin='round';ctx.beginPath();ctx.moveTo(cx-r*0.35,cy);ctx.lineTo(cx-r*0.05,cy+r*0.32);ctx.lineTo(cx+r*0.38,cy-r*0.3);ctx.stroke();ctx.restore();}
-// bar(x,y,w,maxH,val,fill,anim): animated vertical bar; anim=0–1 entrance progress
-function bar(x,y,w,maxH,val,fill,anim){var h=val*(anim!==undefined?anim:1);rr(x,y+maxH-h,w,h,4,fill||'#6d4cff');}
-// txReveal(words[],x,yCtr,fs,clr,wt,startT,gapT): reveal each word left-to-right with fade+slide; gapT=delay between words (default 0.18s)
-function txReveal(words,x,yc,fs,clr,wt,s,gap){ctx.font=(wt||700)+' '+(fs||48)+'px "Inter Tight",system-ui';var tw=[],tot=0;for(var i=0;i<words.length;i++){tw[i]=ctx.measureText(words[i]+' ').width;tot+=tw[i];}var cx=x-tot/2;for(var i=0;i<words.length;i++){var p=C((_T-s-i*(gap||0.18))/.35,0,1);if(p<=0)break;ctx.save();ctx.globalAlpha=E.o3(p);ctx.fillStyle=clr||'#0c0b14';ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText(words[i],cx+(1-E.o3(p))*14,yc);ctx.restore();cx+=tw[i];}}
-// txType(text,x,y,fs,clr,wt,startT,dur): typewriter effect with blinking cursor
-function txType(text,x,y,fs,clr,wt,s,dur){var p=C((_T-s)/(dur||1.2),0,1),ch=Math.floor(text.length*p),vis=text.slice(0,ch);tx(vis,x,y,fs,clr,wt);if(p<1&&Math.sin(_T*8)>0){ctx.save();ctx.font=(wt||700)+' '+(fs||48)+'px "Inter Tight",system-ui';ctx.textAlign='center';ctx.textBaseline='middle';var vw=ctx.measureText(vis).width;ctx.fillStyle=clr||'#0c0b14';ctx.fillRect(x+vw/2+2,y-fs*.5,2,fs);ctx.restore();}}
-// hexagon(cx,cy,r,fill,stroke,sw): regular hexagon shape — use for network/AI/tech visuals
-function hexagon(cx,cy,r,fill,stroke,sw){ctx.save();ctx.beginPath();for(var i=0;i<6;i++){var a=Math.PI/3*i-Math.PI/6;if(i===0)ctx.moveTo(cx+r*Math.cos(a),cy+r*Math.sin(a));else ctx.lineTo(cx+r*Math.cos(a),cy+r*Math.sin(a));}ctx.closePath();if(fill){ctx.fillStyle=fill;ctx.fill();}if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=sw||2;ctx.stroke();}ctx.restore();}
-// triangle(cx,cy,r,fill,angle): equilateral triangle — use for direction, growth, energy; angle in radians
-function triangle(cx,cy,r,fill,angle){ctx.save();ctx.translate(cx,cy);if(angle)ctx.rotate(angle);ctx.beginPath();for(var i=0;i<3;i++){var a=Math.PI*2/3*i-Math.PI/2;if(i===0)ctx.moveTo(r*Math.cos(a),r*Math.sin(a));else ctx.lineTo(r*Math.cos(a),r*Math.sin(a));}ctx.closePath();ctx.fillStyle=fill||'rgba(109,76,255,0.15)';ctx.fill();ctx.restore();}
-// Color override listener — allows parent window to change accent/bg/fg in real-time via postMessage({__nv_acc:'#hex'})
-window.addEventListener('message',function(e){if(!e.data)return;if(e.data.__nv_acc)window.__NV_ACC=e.data.__nv_acc;if(e.data.__nv_bg)window.__NV_BG=e.data.__nv_bg;if(e.data.__nv_fg)window.__NV_FG=e.data.__nv_fg;});
-var _PAUSED=false;
-function render(){}
-(function(){
-  function _loop(ts){
-    if(_L==null){_L=ts;requestAnimationFrame(_loop);return;}
-    if(!_PAUSED){var dt=Math.min((ts-_L)/1000,0.1);_T=(_T+dt)%DUR;}
-    _L=ts;
-    ctx.fillStyle='#ffffff';ctx.fillRect(0,0,W,H);
-    ctx.save();ctx.beginPath();ctx.rect(0,0,W,H);ctx.clip();
-    try{render();}catch(e){
-      ctx.font='bold 13px monospace';ctx.fillStyle='rgba(160,0,0,.9)';
-      ctx.textAlign='center';ctx.textBaseline='middle';
-      ctx.fillText('Render error: '+e.message,W/2,H/2);
+  // Playback JS block — included verbatim in the HTML shell
+  const playbackJs = `(function(){
+  var DUR=${duration},start=performance.now(),_paused=false,_pausedAt=0;
+  window._PAUSED=false;
+  function rawT(){return(performance.now()-start)/1000;}
+  function curT(){return _paused?_pausedAt:rawT()%DUR;}
+  Object.defineProperty(window,'_T',{get:curT,set:function(v){start=performance.now()-v*1000;_pausedAt=v;}});
+  Object.defineProperty(window,'_L',{get:function(){return null;},set:function(v){if(v===null){var t=curT();start=performance.now()-t*1000;document.getAnimations&&document.getAnimations().forEach(function(a){try{a.currentTime=t*1000;}catch(e){}});}}});
+  setInterval(function(){
+    var anims=document.getAnimations?document.getAnimations():[];
+    if(window._PAUSED!==_paused){
+      _paused=window._PAUSED;
+      if(_paused){_pausedAt=rawT()%DUR;anims.forEach(function(a){try{a.pause();}catch(e){}});}
+      else{start=performance.now()-_pausedAt*1000;anims.forEach(function(a){try{a.play();}catch(e){}});}
     }
-    ctx.restore();
-    ctx.save();ctx.fillStyle='rgba(109,76,255,.12)';ctx.fillRect(0,H-6,W,6);
-    ctx.fillStyle='#6d4cff';ctx.shadowColor='rgba(109,76,255,.5)';ctx.shadowBlur=10;
-    ctx.fillRect(0,H-6,W*C(_T/DUR,0,1),6);ctx.restore();
-    requestAnimationFrame(_loop);
-  }
-  requestAnimationFrame(_loop);
-})();`;
+  },60);
+  window.addEventListener('message',function(e){
+    if(!e||!e.data)return;
+    var r=document.documentElement;
+    if(e.data.__nv_acc)r.style.setProperty('--acc',e.data.__nv_acc);
+    if(e.data.__nv_bg)r.style.setProperty('--bg',e.data.__nv_bg);
+    if(e.data.__nv_fg)r.style.setProperty('--fg',e.data.__nv_fg);
+    if(e.data.__nv_restart){start=performance.now();_paused=false;window._PAUSED=false;_pausedAt=0;document.getAnimations&&document.getAnimations().forEach(function(a){try{a.cancel();a.play();}catch(e){}});}
+  });
+})()`;
 
-  return `You are a professional canvas animation coder. Create a self-contained animated HTML document rendered on <canvas>. ZERO external scripts — Google Fonts @import only.
+  return `You are a professional motion designer and frontend developer. Create a stunning, polished animated marketing video as a single self-contained HTML file.
 ${agentBias ? `\nDIRECTION: ${agentBias}\n` : ''}
-CANVAS: ${W}×${H}px  ·  ${duration}s loop  ·  Fonts: Inter Tight (display) + JetBrains Mono (numbers)
+VIEWPORT: ${W}×${H}px fixed · ${duration}s loop · Fonts: Inter Tight + JetBrains Mono (Google Fonts)
 
 ━━━ STEP 1: ANALYZE THE CONTENT ━━━
-Read ALL of the user message — every word. Extract: subject, key message, tone, specific names/numbers/features/facts.
-Then plan before writing any code:
+Read EVERYTHING in the user message — extract: subject, key message, tone, specific names/numbers/features/facts.
+Plan:
+A) What TYPE of video? Product launch · Brand story · Data reveal · Tutorial · Announcement · Portfolio
+B) How many scenes? ${sceneCount} scenes. Vary durations — short hook, longer content, punchy CTA.
+C) What visual style fits: dark glassmorphism? clean minimal? bold gradient? editorial?
+D) What 3 colors? BG · FG · ACC — derived from the brand/content emotion.
 
-A) What narrative TYPE fits this content?
-   Product/app launch  → Hook · Problem · Solution · Proof · CTA
-   Brand story         → Vision · Values · Journey · Promise · CTA
-   Data reveal         → Big number hook · Insight · Insight · CTA
-   Tutorial/how-to     → End result first · Step 1 · Step 2 · Step 3 · CTA
-   Announcement/event  → Reveal · Details · Who/When/Where · CTA
-   Portfolio/showcase  → Best work · Style · Style · Contact
-   ... or invent your own structure — the content dictates it.
+━━━ STEP 2: BUILD WITH HTML + CSS ANIMATIONS ━━━
+Use HTML elements + CSS @keyframes. No canvas. No complex math. Pure CSS motion.
 
-B) What OBJECTS or VISUALS does the content need?
-   Think like a motion designer: a glowing server rack? bar charts? a phone with UI?
-   Abstract geometry? A network of nodes? A city skyline? A product diagram?
-   These must come FROM the content — not from a template.
+SCENE TIMING — each scene is an absolutely-positioned div, hidden by default, shown via @keyframes:
+Every keyframe percentage maps to: percentage = time / ${duration} * 100
 
-C) ${sceneCount} scenes for ${duration}s — vary lengths, do NOT split equally.
-
-━━━ STEP 2: DESIGN YOUR VISUALS ━━━
-For each visual object the content needs, define a drawing function using raw canvas primitives:
-ctx.beginPath(), moveTo(), lineTo(), bezierCurveTo(), arc(), rect(), roundRect(), fillRect(), strokeRect()
-
-Write custom drawing functions ABOVE render(). Match the object to the content:
-
-  // Tech product — server rack
-  function drawServer(x,y,w,h,lit){
-    ctx.fillStyle='#1a1a2e'; ctx.fillRect(x,y,w,h);
-    ctx.strokeStyle='#333'; ctx.lineWidth=1; ctx.strokeRect(x,y,w,h);
-    for(var i=0;i<4;i++){
-      ctx.fillStyle='#0f0e24'; ctx.fillRect(x+4,y+i*(h/4.2)+4,w-8,h/5);
-      ctx.fillStyle=lit?'#22c55e':'#ef4444';
-      ctx.beginPath(); ctx.arc(x+w-10,y+i*(h/4.2)+h/10,4,0,Math.PI*2); ctx.fill();
-    }
+Example for a ${duration}s video with ${sceneCount} scenes:
+  /* Scene 1: 0s → ${Math.round(duration/sceneCount)}s */
+  .s1 { position:absolute; inset:0; animation: s1 ${duration}s infinite; }
+  @keyframes s1 {
+    0%   { opacity:0; }
+    2%   { opacity:1; }          /* 0.6s — fade in */
+    ${Math.round(duration/sceneCount/duration*100-4)}% { opacity:1; }   /* hold */
+    ${Math.round(duration/sceneCount/duration*100)}%   { opacity:0; }   /* fade out */
+    100% { opacity:0; }
   }
-  // Analytics — animated line chart
-  function drawLineChart(cx,cy,w,h,points,col,anim){
-    ctx.save(); ctx.strokeStyle=col; ctx.lineWidth=3; ctx.lineCap='round'; ctx.lineJoin='round';
-    ctx.beginPath();
-    points.forEach(function(v,i){
-      if(i>Math.floor(points.length*anim))return;
-      var px=cx-w/2+i*(w/(points.length-1)), py=cy+h/2-v*h;
-      if(i===0)ctx.moveTo(px,py); else ctx.lineTo(px,py);
-    });
-    ctx.stroke(); ctx.restore();
-  }
-  // AI/network — glowing node
-  function drawNode(cx,cy,r,col,label,fs){
-    ctx.save(); ctx.shadowColor=col; ctx.shadowBlur=20;
-    ctx.fillStyle=col; ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.fill();
-    ctx.restore();
-    if(label) tx(label,cx,cy+r+14,fs||12,col,600);
+  /* Scene 2: ${Math.round(duration/sceneCount)}s → ${Math.round(duration/sceneCount*2)}s */
+  .s2 { position:absolute; inset:0; animation: s2 ${duration}s infinite; }
+  @keyframes s2 {
+    0%,${Math.round(duration/sceneCount/duration*100)}% { opacity:0; }
+    ${Math.round(duration/sceneCount/duration*100)+2}% { opacity:1; }
+    ${Math.round(duration/sceneCount*2/duration*100-4)}% { opacity:1; }
+    ${Math.round(duration/sceneCount*2/duration*100)}% { opacity:0; }
+    100% { opacity:0; }
   }
 
-Anything the content needs: a basketball, DNA helix, award medal, city skyline, rocket — CODE IT with canvas.
-These drawing functions are what makes each video unique to its content.
+ELEMENT ANIMATIONS — apply to children inside each scene div using animation-delay:
+  .fade-up   { animation: fadeUp 0.7s cubic-bezier(0.16,1,0.3,1) both; }
+  @keyframes fadeUp { from{opacity:0;transform:translateY(40px)} to{opacity:1;transform:translateY(0)} }
 
-━━━ STEP 3: EXTRACT COLORS ━━━
-Derive 3 colors from the content brand/mood — do NOT default to purple every time:
-  BG:  dominant background matching tone (dark/light/neutral)
-  FG:  main text color — high contrast on BG (min 4.5:1)
-  ACC: accent — pick what fits emotionally:
-       violet #6d4cff · orange #f97316 · emerald #10b981 · sky #0ea5e9
-       rose #f43f5e · amber #f59e0b · pink #ec4899 · lime #84cc16
+  .scale-in  { animation: scaleIn 0.5s cubic-bezier(0.34,1.56,0.64,1) both; }
+  @keyframes scaleIn { from{opacity:0;transform:scale(0.75)} to{opacity:1;transform:scale(1)} }
 
-Define FIRST inside render() — enables the live color picker to override:
-  var CLR_BG = window.__NV_BG || '#<your derived color>';
-  var CLR_FG = window.__NV_FG || '#<your derived color>';
-  var CLR_ACC = window.__NV_ACC || '#<your derived color>';
-Use CLR_BG/CLR_FG/CLR_ACC everywhere. NEVER hardcode a hex value inside scene blocks.
+  .slide-in  { animation: slideIn 0.6s cubic-bezier(0.16,1,0.3,1) both; }
+  @keyframes slideIn { from{opacity:0;transform:translateX(-50px)} to{opacity:1;transform:translateX(0)} }
 
-━━━ STEP 4: CODE YOUR SCENES ━━━
-Each scene: var r=sp(start,end); if(r){ ctx.save(); ctx.globalAlpha=r.op; ...draw... ctx.restore(); sub('voice-over text',r.op); }
-Scenes can overlap 0.5-1s for smooth cross-fade. Do NOT use equal time splits.
-sp() returns: r.lt (time-in-scene), r.op (fade envelope 0→1→0), r.ty (entrance offset), r.p (progress 0→1)
+  .blur-in   { animation: blurIn 0.8s ease both; }
+  @keyframes blurIn  { from{opacity:0;filter:blur(16px)} to{opacity:1;filter:blur(0)} }
 
-DRAW ORDER — violating this hides text (the #1 bug in canvas animations):
-  1. Background: gradRect() or ctx.fillRect() — FIRST, always
-  2. Mid layer: your custom objects, shapes, charts — SECOND
-  3. Text: tx(), txm(), txWrap(), txReveal(), txType() — ALWAYS LAST
+Stagger children: .child:nth-child(2){animation-delay:0.15s} .child:nth-child(3){animation-delay:0.3s}
 
-Pacing — contrast in speed makes videos feel professional:
-  Hook:       fast — easing <=0.3s, urgent energy
-  Content:    medium — 0.35-0.5s per element stagger
-  Stats/data: slow — cu() count-up over 1.5-2.5s, let numbers land
-  CTA:        steady pulse — ctx.scale(1+Math.sin(_T*3)*0.025, 1+Math.sin(_T*3)*0.025)
+VISUAL DEPTH — every scene must have layered depth:
+  Background layer: full-size gradient, mesh, or noise texture
+  Mid layer: cards, shapes, image placeholders, UI mockups
+  Top layer: headline + subtext
 
-Text animations — use these, not flat text:
-  Word-by-word: txReveal(['Word','by','Word'],W/2,y,${fsHero},CLR_FG,900,sceneStart,0.22)
-  Typewriter:   txType('tagline here',W/2,y,${fsSub},CLR_FG,700,sceneStart,1.5)
+━━━ STEP 3: COLORS + TYPOGRAPHY ━━━
+Override :root in <style> with your derived colors:
+  :root { --bg: #<derived>; --fg: #<derived>; --acc: #<derived>; }
+Do NOT default to purple. Pick from: violet #6d4cff · orange #f97316 · emerald #10b981 · sky #0ea5e9 · rose #f43f5e · amber #f59e0b · pink #ec4899 · lime #84cc16
+Use var(--bg)/var(--fg)/var(--acc) everywhere — never hardcode hex in element styles.
 
-Suggested font scale (${W}px canvas): headline ${fsHero}px · subhead ${fsSub}px · stat ${fsStat}px · body ${fsBody}px · CTA ${fsCta}px
-Subtitle zone (y>${Math.round(H*0.85)}) is RESERVED for sub()/subHL() — place nothing else there.
-Subtitles: sub(text,op) at the end of EVERY scene block — these are the voice-over captions.
-Two-color subtitle: subHL('before ','KEY WORD',' after',op)
+Headline (hero): font-size:${fsHero}px; font-weight:900; letter-spacing:-0.04em; line-height:0.9; color:var(--fg);
+Subhead: font-size:${fsSub}px; font-weight:600; color:var(--fg); opacity:0.8;
+Stats: font-family:'JetBrains Mono',monospace; font-size:${fsStat}px; font-weight:700; color:var(--acc);
+Body: font-size:${fsBody}px; font-weight:400; color:var(--fg); opacity:0.7;
+CTA: font-size:${fsCta}px; font-weight:700; background:var(--acc); color:#fff; border-radius:100px; padding:18px 48px;
 
-━━━ RUNTIME HELPERS ━━━
-All available in scope — do not redefine:
-  sp(s,e)→{lt,op,ty,p}  lp(a,b,s,e,ef)  cu(n,s,dur)  C(v,a,b)  E.{o3,i3,io,bk,el,si}  _T DUR W H ctx
-  tx(t,x,y,fs,clr,wt,al,ba)  txm(t,x,y,fs,clr)  txWrap(lines[],x,yc,fs,clr,wt,lh)
-  txReveal(words[],x,y,fs,clr,wt,start,gap)  txType(text,x,y,fs,clr,wt,start,dur)
-  rr(x,y,w,h,r,fill,shadowCol,shadowBlur)  sub(text,op)  subHL(before,hl,after,op)
-  glow(cx,cy,r,col)  ripple(cx,cy,start,n)  circle(cx,cy,r,fill,stroke,sw)  ring(cx,cy,r,t,col,p)
-  gradRect(x,y,w,h,c1,c2,vert)  floatCard(x,y,w,h,r,bg)  wave(x,y,w,amp,freq,col,lw,phase)
-  dotGrid(x,y,cols,rows,gap,r,col)  arrow(x1,y1,x2,y2,col,lw)  dashed(x1,y1,x2,y2,col,lw,d,g)
-  hexagon(cx,cy,r,fill,stroke,sw)  triangle(cx,cy,r,fill,angle)  bar(x,y,w,maxH,val,fill,anim)
-  check(cx,cy,r,col,lw)  laptop(cx,cy,bW,fn)  phone(cx,cy,h,fn)
+━━━ STEP 4: QUALITY TECHNIQUES ━━━
+Dark/atmospheric:
+  background: radial-gradient(ellipse at 30% 20%, color-mix(in srgb, var(--acc) 25%, transparent), transparent 60%), var(--bg);
+  Glowing card: background:rgba(255,255,255,0.06); backdrop-filter:blur(16px); border:1px solid rgba(255,255,255,0.12); border-radius:24px; box-shadow:0 0 60px color-mix(in srgb,var(--acc) 20%,transparent);
 
-━━━ MANDATORY HTML SHELL ━━━
+Light/minimal:
+  background:linear-gradient(135deg,#f8fafc 0%,#f1f5f9 100%);
+  Cards: background:#fff; border-radius:20px; box-shadow:0 4px 32px rgba(0,0,0,0.08);
+
+Number count-up (CSS only): Use JS to animate a counter:
+  function countUp(el,from,to,dur){var s=Date.now();function t(){var p=Math.min((Date.now()-s)/dur,1);el.textContent=Math.round(from+(to-from)*p);if(p<1)requestAnimationFrame(t);}requestAnimationFrame(t);}
+
+Progress/loading bars:
+  .bar { height:6px; background:rgba(255,255,255,0.15); border-radius:3px; }
+  .bar-fill { height:100%; background:var(--acc); border-radius:3px; animation:fillBar 2s ease both; }
+  @keyframes fillBar { from{width:0} to{width:80%} }
+
+CTA button pulse:
+  .cta-btn { animation: pulse 2s ease infinite; }
+  @keyframes pulse { 0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--acc) 60%,transparent)} 50%{box-shadow:0 0 0 20px transparent} }
+
+Floating elements:
+  .float { animation: float 3s ease-in-out infinite; }
+  @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-12px)} }
+
+SUBTITLES (mandatory at bottom of every scene):
+  <div class="sub">Caption text here</div>
+  .sub { position:absolute; bottom:0; left:0; right:0; padding:${Math.round(H*0.015)}px ${Math.round(W*0.05)}px; background:linear-gradient(transparent,rgba(0,0,0,0.7)); font-size:${Math.round(H*0.025)}px; color:#fff; text-align:center; font-weight:500; }
+
+━━━ MANDATORY OUTPUT FORMAT ━━━
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:ital,wght@0,300;0,400;0,600;0,700;0,800;0,900;1,700&family=JetBrains+Mono:wght@400;600&display=swap');
-*{box-sizing:border-box;margin:0;padding:0}
-html,body{width:100%;height:100%;overflow:hidden;background:#ffffff}
-canvas{display:block;width:100%;height:100%;object-fit:contain}
+@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;700&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{width:${W}px;height:${H}px;overflow:hidden;font-family:'Inter Tight',system-ui,sans-serif;}
+:root{--bg:#0c0b14;--fg:#f8fafc;--acc:#6d4cff;} /* OVERRIDE THESE */
+body{background:var(--bg);color:var(--fg);}
+/* YOUR STYLES AND KEYFRAMES */
 </style>
 </head>
 <body>
-<canvas id="c" width="${W}" height="${H}"></canvas>
+
+<!-- YOUR SCENE DIVS -->
+
 <script>
-// ── RUNTIME (verbatim — do NOT modify) ──────────────────────────────────────
-${runtime}
-
-// ── YOUR SCENE CODE ─────────────────────────────────────────────────────────
-// Step 2 custom drawing functions go HERE (between this comment and render):
-// function drawMyObject(x, y, w, h) { ctx.fillRect(x,y,w,h); }
-
-render = function() {
-  // COLOR VARS — always first (enables live color picker):
-  var CLR_BG = window.__NV_BG || '#<derived-bg>';
-  var CLR_FG = window.__NV_FG || '#<derived-fg>';
-  var CLR_ACC = window.__NV_ACC || '#<derived-acc>';
-
-  // SCENES — pattern: background -> objects -> text LAST -> subtitle
-  // var r1 = sp(0, 8); if(r1) {
-  //   ctx.save(); ctx.globalAlpha = r1.op;
-  //   gradRect(0,0,W,H,CLR_BG,CLR_BG,true);   // 1. background
-  //   drawMyObject(W*.3,H*.4,W*.4,H*.2);        // 2. objects
-  //   txReveal(['Title'],W/2,H*.35,${fsHero},CLR_FG,900,0,0.22); // 3. text LAST
-  //   ctx.restore(); sub('voice-over caption', r1.op);
-  // }
-};
-
+// ── PLAYBACK (copy verbatim, do NOT modify) ──────────────────────────────
+${playbackJs}
+// ─────────────────────────────────────────────────────────────────────────
+// YOUR JS (count-up counters, interactive effects, etc.)
 </script>
 </body>
 </html>
 
 ━━━ NON-NEGOTIABLE RULES ━━━
-1. Output ONLY the HTML — start with <!DOCTYPE html>. No markdown fences, no explanations.
-2. Copy the runtime block VERBATIM — do not change a single character.
-3. Custom drawing functions go BETWEEN the "// ── YOUR SCENE CODE" comment and "render = function()".
-4. ctx.save()/ctx.restore() around every block that changes globalAlpha or shadowBlur.
-5. Every scene uses sp(s,e). Every scene ends with sub() or subHL().
-6. Real copy only — derive every word from the content. Zero placeholder text.
-7. CLR_BG/CLR_FG/CLR_ACC defined at top of render(). Never hardcode hex in scene blocks.
-8. No emojis in any canvas text string — they render as broken boxes on Windows.
-9. ALL elements must fit within [0,0,${W},${H}]. Canvas has an active clip rect — overflow is invisible.
-10. DRAW ORDER always: background first, objects second, text ALWAYS last.`;
+1. Output ONLY the HTML — start with <!DOCTYPE html>. No markdown, no explanations.
+2. Copy the PLAYBACK script block VERBATIM between the markers.
+3. Override :root{--bg,--fg,--acc} with content-derived colors.
+4. Use var(--bg)/var(--fg)/var(--acc) — never hardcode hex in element CSS.
+5. Every scene MUST have a .sub subtitle with real voice-over copy from the content.
+6. Text from content only — no placeholder copy, no Lorem ipsum.
+7. Fixed size: html,body{width:${W}px;height:${H}px;overflow:hidden}
+8. No emojis.
+9. Animation must loop seamlessly: last scene fades out just as scene 1 fades back in.`;
 }
 
 function buildScreenPrompt(fmt: Format, desc: string, styleName: string, context: string): string {
@@ -801,22 +647,9 @@ function extractSceneSection(html: string): string {
   return end === -1 ? html.slice(start).trim() : html.slice(start, end).trim();
 }
 
-// Replace just the scene section, keeping the runtime intact
-function injectSceneSection(html: string, newSection: string): string {
-  const marker = '// ── YOUR SCENE CODE';
-  const start = html.indexOf(marker);
-  if (start === -1) return html;
-  const end = html.lastIndexOf('</script>');
-  if (end === -1) return html;
-  return html.slice(0, start) + newSection.trim() + '\n' + html.slice(end);
-}
 
-function buildRefinePrompt(currentHtml: string, instruction: string, isVideo = false): string {
-  if (isVideo) {
-    const scene = extractSceneSection(currentHtml);
-    return `Current scene code:\n\`\`\`js\n${scene.slice(0, 14000)}\n\`\`\`\n\nInstruction: "${instruction}"\n\nReturn ONLY the scene section — start with the exact line "// ── YOUR SCENE CODE ─" then the render = function(){...}; block. No HTML, no runtime, no </script> tag.`;
-  }
-  return `Current code:\n\`\`\`html\n${currentHtml.slice(0, 18000)}\n\`\`\`\n\nInstruction: "${instruction}"\n\nReturn the COMPLETE updated HTML starting with <!DOCTYPE html>. Keep everything not mentioned unchanged.`;
+function buildRefinePrompt(currentHtml: string, instruction: string, _isVideo = false): string {
+  return `Current HTML:\n\`\`\`html\n${currentHtml.slice(0, 20000)}\n\`\`\`\n\nInstruction: "${instruction}"\n\nReturn the COMPLETE updated HTML starting with <!DOCTYPE html>. Keep everything not mentioned unchanged.`;
 }
 
 // ─── History ─────────────────────────────────────────────────────────────────
@@ -1227,25 +1060,17 @@ The prompt must be specific enough for a motion designer to execute without ques
     let raw = '';
     const isVideo = type === 'video';
     const sysPrompt = isVideo
-      ? `You are refining a canvas-animated video's scene code.
-Return ONLY the scene section — start with "// ── YOUR SCENE CODE ─────..." then render = function(){ ... }; Nothing else.
-
-Runtime helpers available (already in scope — do not redefine):
-  sp(s,e), lp(), cu(), E.{o3,i3,io,bk,el,si}, C(), _T, DUR, W, H, ctx
-  tx(), txm(), txWrap(), txReveal(), txType(), rr(), sub(), subHL()
-  glow(), ripple(), circle(), ring(), gradRect(), floatCard(), wave(), dotGrid()
-  arrow(), dashed(), hexagon(), triangle(), bar(), check(), laptop(), phone()
-
-You may also define custom drawing functions (ABOVE render =) using raw canvas primitives:
-  ctx.beginPath(), moveTo(), lineTo(), bezierCurveTo(), arc(), rect(), roundRect()
+      ? `You are refining a CSS-animated marketing video HTML file.
+Return the COMPLETE updated HTML starting with <!DOCTYPE html>. Keep the PLAYBACK script block and structure intact.
 
 Rules:
-1. No emojis in canvas text — they render as broken boxes on Windows
-2. Draw order: background FIRST, objects SECOND, text ALWAYS LAST
-3. Canvas bounds [0,0,W,H] — clip is active, overflow invisible
-4. Every scene ends with sub() or subHL()
-5. CLR_BG/CLR_FG/CLR_ACC must be defined at top of render() — never hardcode hex in scene blocks
-6. Apply ONLY the requested changes — keep unchanged scenes intact`
+1. Keep the // ── PLAYBACK block VERBATIM — never modify it
+2. Keep :root { --bg, --fg, --acc } — use CSS variables, never hardcode hex in element styles
+3. Keep all scene @keyframes timing — only change what is requested
+4. Every scene must keep its .sub subtitle div
+5. No emojis in visible text
+6. html,body must stay width/height fixed with overflow:hidden
+7. Apply ONLY the requested changes — keep everything else unchanged`
       : `You are an expert HTML/CSS designer. Modify the design as instructed. Return the COMPLETE updated HTML starting with <!DOCTYPE html>. Keep everything not mentioned unchanged.`;
 
     try {
@@ -1255,19 +1080,11 @@ Rules:
       });
       const stripped = stripFences(raw);
       let updated: string;
-      if (isVideo) {
-        const hasMarker = stripped.includes('// ── YOUR SCENE CODE');
-        const hasRender = /render\s*=\s*function/.test(stripped);
-        if (hasMarker) {
-          updated = injectSceneSection(html, stripped);
-        } else if (hasRender) {
-          // AI returned render code without the marker — add it and inject
-          updated = injectSceneSection(html, `// ── YOUR SCENE CODE ─────────────────────────────────────────────────────────\n${stripped}`);
-        } else {
-          // Try to extract scene section from a full HTML response
-          const extracted = extractSceneSection(stripped);
-          updated = extracted ? injectSceneSection(html, extracted) : buildVideoHtml(format, duration, stripped);
-        }
+      // For both video and static: if AI returned full HTML, use it; otherwise wrap
+      if (/^<!DOCTYPE/i.test(stripped.trimStart()) || /^<html/i.test(stripped.trimStart())) {
+        updated = stripped;
+      } else if (isVideo) {
+        updated = buildVideoHtml(format, duration, stripped);
       } else {
         updated = buildStaticHtml(stripped);
       }
