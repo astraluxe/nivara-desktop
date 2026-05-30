@@ -246,7 +246,7 @@ export default function Sidebar({ activeModule, onModuleChange, meshSessionActiv
             pointerEvents: "none",
           }}
         >
-          Nivara
+          adris.tech
         </span>
       </div>
 

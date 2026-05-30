@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useAuth } from '../contexts/AuthContext';
@@ -51,106 +51,117 @@ const STYLES = [
   { id: 'editorial', label: 'Editorial',  desc: 'Magazine-style, large type, strong grid, editorial photography-like feel' },
 ];
 
-// ─── Built-in NV animation runtime (embedded — no external file needed) ──────
+// ─── Marketing agents ─────────────────────────────────────────────────────────
 
-const NV_RUNTIME = `
-const NV=(()=>{
-  const stage=document.getElementById('stage');
-  let t0=null,dur=__DUR__*1000,cbs=[],looping=false;
-  const ease={
-    out:(t)=>1-Math.pow(1-t,3),
-    in:(t)=>t*t*t,
-    inOut:(t)=>t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2,
-    back:(t)=>{const c=1.70158+1;return 1+c*Math.pow(t-1,3)+1.70158*Math.pow(t-1,2)},
-    elastic:(t)=>{if(t===0||t===1)return t;return Math.pow(2,-10*t)*Math.sin((t*10-0.75)*(2*Math.PI)/3)+1},
-    linear:(t)=>t,
-  };
-  function lerp(a,b,t){return a+(b-a)*t}
-  function clamp(v,a,b){return Math.min(b,Math.max(a,v))}
-  function el(tag,css,parent){
-    const e=document.createElement(tag||'div');
-    Object.assign(e.style,{position:'absolute',...(css||{})});
-    (parent||stage).appendChild(e);return e;
-  }
-  function text(txt,x,y,opts){
-    opts=opts||{};
-    const d=el('div',{left:x+'px',top:y+'px',transform:'translate(-50%,-50%)',
-      color:opts.color||'#fff',fontSize:(opts.size||48)+'px',fontWeight:opts.weight||700,
-      fontFamily:opts.font||"'Inter Tight',system-ui,sans-serif",textAlign:opts.align||'center',
-      whiteSpace:'nowrap',lineHeight:1.1,opacity:'0',...(opts.css||{})});
-    d.textContent=txt;return d;
-  }
-  function rect(x,y,w,h,opts){
-    opts=opts||{};
-    return el('div',{left:x+'px',top:y+'px',width:w+'px',height:h+'px',
-      background:opts.bg||'#6d4cff',borderRadius:(opts.r||0)+'px',opacity:'0',...(opts.css||{})});
-  }
-  function animate(elem,from,to,s,e,easeFn){
-    easeFn=easeFn||ease.out;
-    cbs.push(t=>{
-      const lo=clamp((t-(s||0))/((e||1)-(s||0)),0,1),eased=easeFn(lo);
-      const merged={};
-      for(const k in to){
-        const fv=parseFloat(from[k]),tv=parseFloat(to[k]);
-        if(!isNaN(fv)&&!isNaN(tv)){
-          const unit=(to[k]+'').replace(/[\d. -]/g,'');
-          merged[k]=lerp(fv,tv,eased)+unit;
-        }else merged[k]=eased>.5?to[k]:from[k];
-      }
-      Object.assign(elem.style,merged);
-      if(t<(s||0))Object.assign(elem.style,from);
-    });
-    return elem;
-  }
-  function onFrame(fn){cbs.push(fn)}
-  function start(){
-    requestAnimationFrame(function tick(ts){
-      if(!t0)t0=ts;
-      const t=clamp((ts-t0)/dur,0,1);
-      cbs.forEach(fn=>fn(t,(ts-t0)/1000));
-      if(t<1||(looping&&(t0=ts)))requestAnimationFrame(tick);
-    });
-  }
-  return{stage,el,text,rect,animate,onFrame,start,lerp,clamp,ease,
-    loop:()=>{looping=true;return NV;}
-  };
-})();
-`.trim();
-
-// ─── HTML builders ───────────────────────────────────────────────────────────
-
-function buildVideoHtml(sceneCode: string, fmt: Format, duration: number): string {
-  const runtime = NV_RUNTIME.replace('__DUR__', String(duration));
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<style>
-  html,body{margin:0;padding:0;background:#0c0b14;overflow:hidden;font-family:'Inter Tight',system-ui,sans-serif}
-  #stage{position:relative;width:${fmt.w}px;height:${fmt.h}px;overflow:hidden}
-</style>
-</head>
-<body>
-<div id="stage"></div>
-<script>
-// ── NV Animation Runtime ──
-${runtime}
-// ── Scene ─────────────────
-(function(){try{
-${sceneCode}
-}catch(err){
-  var d=document.createElement('div');
-  d.style.cssText='position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#f87171;font:13px/1.5 monospace;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:8px;padding:18px 22px;max-width:80%;text-align:center;';
-  d.innerHTML='<strong>Scene error</strong><br>'+err.message;
-  document.getElementById("stage").appendChild(d);
-}})();
-</script>
-</body>
-</html>`;
+interface StudioAgent {
+  id: string;
+  name: string;
+  role: string;
+  emoji: string;
+  defaultFormatId: string;
+  defaultDuration: number;
+  bias: string;
 }
+
+// ─── Review agents (marketing department) ────────────────────────────────────
+
+interface ReviewResult {
+  score: number;
+  verdict: 'approved' | 'needs_work' | 'rejected';
+  issues: string[];
+  fixes: string[];
+}
+
+interface ReviewAgent {
+  id: string;
+  name: string;
+  role: string;
+  emoji: string;
+  prompt: string;
+}
+
+const REVIEW_AGENTS: ReviewAgent[] = [
+  {
+    id: 'creative',
+    name: 'Riya',
+    role: 'Creative Director',
+    emoji: '🎨',
+    prompt: `You are a Creative Director reviewing a marketing video's HTML/CSS code. Evaluate visual quality with brutal honesty.
+Assess: typography hierarchy (is the hero headline dominant?), color palette execution, spacing and breathing room, animation polish and timing, background depth, overall aesthetic grade.
+Return ONLY valid JSON (no markdown): {"score":<1-10>,"verdict":"approved"|"needs_work"|"rejected","issues":["specific issue 1","specific issue 2"],"fixes":["exact refinement instruction 1","exact refinement instruction 2"]}
+Fixes must be actionable prompts (e.g. "Make the hero headline font-size 20% larger and add letter-spacing:-0.04em"). Max 3 issues.`,
+  },
+  {
+    id: 'social',
+    name: 'Zara',
+    role: 'Social Media Expert',
+    emoji: '📱',
+    prompt: `You are a Social Media Expert specializing in Instagram Reels and TikTok performance. Review this video HTML for scroll-stopping impact.
+Assess: hook strength in first 0.5s (is the first animated element attention-grabbing?), CTA button visibility and copy urgency, animation speed (slow stagger delays lose mobile viewers), text size for mobile viewing, shareability factor.
+Return ONLY valid JSON (no markdown): {"score":<1-10>,"verdict":"approved"|"needs_work"|"rejected","issues":["specific issue"],"fixes":["exact fix instruction"]}
+Fixes must be specific prompts. Max 3 issues.`,
+  },
+  {
+    id: 'brand',
+    name: 'Arjun',
+    role: 'Brand Strategist',
+    emoji: '🎯',
+    prompt: `You are a Brand Strategist reviewing this video for messaging clarity and brand effectiveness.
+Assess: does the value proposition land in the first scene?, is the headline specific or generic?, is the feature copy benefit-driven not feature-driven?, is brand hierarchy correct (name → tagline → proof → CTA)?, would a cold viewer understand the offer in 5 seconds?
+Return ONLY valid JSON (no markdown): {"score":<1-10>,"verdict":"approved"|"needs_work"|"rejected","issues":["specific issue"],"fixes":["exact fix instruction"]}
+Max 3 issues.`,
+  },
+  {
+    id: 'conversion',
+    name: 'Kiran',
+    role: 'Conversion Expert',
+    emoji: '📊',
+    prompt: `You are a Conversion Rate Optimization expert. Review this video's HTML for its ability to drive action.
+Assess: CTA button size, color contrast, and copy (is it action-oriented?), value prop → CTA visual flow, presence of urgency/scarcity signals, number of competing visual elements distracting from CTA, social proof or numbers present.
+Return ONLY valid JSON (no markdown): {"score":<1-10>,"verdict":"approved"|"needs_work"|"rejected","issues":["specific issue"],"fixes":["exact fix instruction"]}
+Max 3 issues.`,
+  },
+];
+
+const STUDIO_AGENTS: StudioAgent[] = [
+  {
+    id: 'director',
+    name: 'Riya',
+    role: 'Brand Director',
+    emoji: '🎯',
+    defaultFormatId: 'wide',
+    defaultDuration: 30,
+    bias: 'You are a premium brand director. Create a timeless, cinematic video that feels like a high-budget ad. Prioritize brand identity — extract the exact brand voice, color palette, and positioning from the context. Use elegant typography, rich dark backgrounds, layered depth. Every frame should feel intentional and luxury-grade.',
+  },
+  {
+    id: 'social',
+    name: 'Zara',
+    role: 'Social Expert',
+    emoji: '📱',
+    defaultFormatId: 'story',
+    defaultDuration: 15,
+    bias: 'You are a viral social media expert designing for Instagram Reels and TikTok. Hook viewers in the first 0.5 seconds. Use bold typography, fast stagger (0.2s between elements), energetic vibrant colors (purple gradients), and make the CTA impossible to ignore. Optimize for mobile portrait viewing — stack elements vertically, high-contrast minimal shapes, NO emojis (they render badly on canvas).',
+  },
+  {
+    id: 'launch',
+    name: 'Arjun',
+    role: 'Launch Strategist',
+    emoji: '🚀',
+    defaultFormatId: 'wide',
+    defaultDuration: 45,
+    bias: 'You are a product launch strategist. Structure the video as a conversion narrative: Scene 1 — attention-grabbing brand moment, Scene 2 — 3 key features with proof points, Scene 3 — social proof stats (animate numbers counting up), Scene 4 — urgent CTA with offer. Every scene has a single job. Drive action.',
+  },
+  {
+    id: 'data',
+    name: 'Kiran',
+    role: 'Data Storyteller',
+    emoji: '📊',
+    defaultFormatId: 'wide',
+    defaultDuration: 30,
+    bias: 'You are a data storyteller. Lead with numbers — animate 3–4 key metrics using countUp animation (e.g., "10×", "99%", "2M+ users"). Use a professional corporate palette, clean grid layouts, and credibility-first copy. Investors and decision-makers are the audience. Every claim needs a number behind it.',
+  },
+];
+
 
 function buildStaticHtml(code: string): string {
   if (/^<!DOCTYPE/i.test(code.trimStart()) || /^<html/i.test(code.trimStart())) return code;
@@ -171,78 +182,492 @@ async function loadAllCreds(): Promise<Record<string, Record<string, string>>> {
 
 // ─── Prompts ─────────────────────────────────────────────────────────────────
 
-function buildVideoPrompt(fmt: Format, duration: number, desc: string, context: string): string {
-  const cx = Math.round(fmt.w / 2);
-  const cy = Math.round(fmt.h / 2);
-  const margin = 80;
-  return `You are an expert motion graphics engineer. Generate an animated video using the built-in NV runtime.
+function extractDurationFromPrompt(text: string): number | null {
+  const m = text.match(/\b(\d+)\s*(?:sec(?:ond)?s?)\b/i);
+  if (!m) return null;
+  const n = parseInt(m[1]);
+  return DURATIONS.includes(n) ? n : null;
+}
 
-CANVAS: ${fmt.w}×${fmt.h}px  |  Duration: ${duration}s
-${context ? `\nBRAND/PRODUCT CONTEXT (use this for copy, colors, and messaging):\n${context}\n` : ''}
-COORDINATE REFERENCE — use EXACT pixel values (never guess):
-  Center point:    (${cx}, ${cy})
-  Left third:      x=${Math.round(fmt.w * 0.33)}   Center third: x=${cx}   Right third: x=${Math.round(fmt.w * 0.67)}
-  Top area:        y=${Math.round(fmt.h * 0.25)}   Mid-upper: y=${Math.round(fmt.h * 0.38)}   Center: y=${cy}   Mid-lower: y=${Math.round(fmt.h * 0.62)}   Bottom: y=${Math.round(fmt.h * 0.75)}
-  Safe zone:       ${margin}px from all edges
-  Typical layout:  Logo/icon at y=${Math.round(fmt.h * 0.25)}, Headline at y=${Math.round(fmt.h * 0.42)}, Subtext at y=${Math.round(fmt.h * 0.53)}, CTA at y=${Math.round(fmt.h * 0.70)}
+// Builds the canonical JS runtime for a given canvas size — the single source of truth
+function buildVideoRuntime(W: number, H: number, duration: number): string {
+  const subSide   = Math.round(W * 0.074);
+  const subBottom = Math.round(H * 0.08);
+  const subFont   = Math.round(W * 0.038);
+  const subLH     = Math.round(subFont * 1.45);
+  return `window.onerror=function(msg,src,ln){var c=document.getElementById('c')||document.querySelector('canvas');if(!c)return;var x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.font='bold 13px monospace';x.fillStyle='rgba(160,0,0,.9)';x.textAlign='center';x.textBaseline='middle';x.fillText(String(msg).slice(0,90),c.width/2,c.height/2-14);x.fillText('line '+ln,c.width/2,c.height/2+14);};
+var canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+var W=${W},H=${H},DUR=${duration};
+var _T=0,_L=null;
+var C=function(v,a,b){return v<a?a:v>b?b:v;};
+var E={o3:function(t){t--;return t*t*t+1;},i3:function(t){return t*t*t;},io:function(t){return t<.5?4*t*t*t:(t-1)*(2*t-2)*(2*t-2)+1;},bk:function(t){var c=1.70158;return 1+(c+1)*Math.pow(t-1,3)+c*Math.pow(t-1,2);},el:function(t){return t<=0?0:t>=1?1:Math.pow(2,-10*t)*Math.sin((t*10-.75)*2.094)+1;},si:function(t){return Math.sin(t*Math.PI/2);}};
+function sp(s,e){if(_T<s||_T>e)return null;var lt=_T-s,dur=e-s,eD=0.45,xD=0.35,xS=dur-xD,op=1,ty=0;if(lt<eD){var p=E.o3(C(lt/eD,0,1));op=p;ty=(1-p)*32;}else if(lt>xS){var p2=E.i3(C((lt-xS)/xD,0,1));op=1-p2;ty=-p2*20;}return{lt:lt,op:op,ty:ty,p:C(lt/dur,0,1)};}
+function lp(a,b,s,e,ef){ef=ef||E.o3;return a+(b-a)*ef(C((_T-s)/(e-s),0,1));}
+function cu(n,s,d,ef){ef=ef||E.o3;return Math.round(n*ef(C((_T-s)/d,0,1)));}
+function tx(t,x,y,fs,clr,w,al,ba){ctx.font=(w||600)+' '+(fs||36)+'px "Inter Tight",system-ui';ctx.fillStyle=clr||'#0c0b14';ctx.textAlign=al||'center';ctx.textBaseline=ba||'middle';ctx.fillText(t,x,y);}
+function txm(t,x,y,fs,clr){ctx.font='700 '+(fs||48)+'px "JetBrains Mono",monospace';ctx.fillStyle=clr||'#6d4cff';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(t,x,y);}
+function txWrap(lines,x,yc,fs,clr,wt,lhh){var n=lines.length,ly=yc-(n-1)*(lhh||fs*1.25)/2;for(var i=0;i<n;i++)tx(lines[i],x,ly+i*(lhh||fs*1.25),fs,clr,wt);}
+function rr(x,y,w,h,r,fill,sc,sb){ctx.save();if(sc){ctx.shadowColor=sc;ctx.shadowBlur=sb||20;}ctx.fillStyle=fill||'#fff';r=Math.min(r||20,w/2,h/2);ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();ctx.fill();ctx.restore();}
+function sub(text,op,color){if(!op||op<=0)return;ctx.save();ctx.globalAlpha=op;ctx.font='600 ${subFont}px "Inter Tight",system-ui';ctx.textAlign='center';ctx.textBaseline='alphabetic';var mw=W-${subSide*2},words=text.split(' '),lines=[],cur='';for(var i=0;i<words.length;i++){var tl=cur?(cur+' '+words[i]):words[i];if(ctx.measureText(tl).width>mw&&cur){lines.push(cur);cur=words[i];}else cur=tl;}lines.push(cur);var lh=${subLH},bH=lines.length*lh+12,bY=H-${subBottom}-lines.length*lh-10;rr(${subSide},bY,W-${subSide*2},bH,10,'rgba(255,255,255,0.88)');ctx.fillStyle=color||'#0c0b14';for(var j=0;j<lines.length;j++)ctx.fillText(lines[j].trim(),W/2,H-${subBottom}-(lines.length-1-j)*lh);ctx.restore();}
+function subHL(a,hl,b,op){if(!op||op<=0)return;ctx.save();ctx.globalAlpha=op;ctx.font='600 ${subFont}px "Inter Tight",system-ui';ctx.textBaseline='alphabetic';ctx.textAlign='left';var wa=ctx.measureText(a).width,wh=ctx.measureText(hl).width,wb=ctx.measureText(b).width;var tot=wa+wh+wb,x=W/2-tot/2,y=H-${subBottom};rr(x-16,y-${subFont}-6,tot+32,${subFont}+18,10,'rgba(255,255,255,0.88)');ctx.fillStyle='#0c0b14';ctx.fillText(a,x,y);ctx.fillStyle='#6d4cff';ctx.fillText(hl,x+wa,y);ctx.fillStyle='#0c0b14';ctx.fillText(b,x+wa+wh,y);ctx.restore();}
+function ripple(cx,cy,st,n){n=n||3;for(var i=0;i<n;i++){var p=C((_T-st-i*0.3)/1.8,0,1);if(p<=0||p>=1)continue;ctx.save();ctx.globalAlpha=(1-p)*0.5;ctx.strokeStyle='#6d4cff';ctx.lineWidth=3;ctx.shadowColor='rgba(109,76,255,.4)';ctx.shadowBlur=8;ctx.beginPath();ctx.arc(cx,cy,p*Math.min(W,H)*0.4,0,Math.PI*2);ctx.stroke();ctx.restore();}}
+function circle(cx,cy,r,fill,stroke,sw){ctx.save();ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);if(fill){ctx.fillStyle=fill;ctx.fill();}if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=sw||2;ctx.stroke();}ctx.restore();}
+function ring(cx,cy,r,t,col,p){ctx.save();ctx.beginPath();ctx.arc(cx,cy,r,-Math.PI/2,-Math.PI/2+(p||1)*Math.PI*2);ctx.strokeStyle=col||'#6d4cff';ctx.lineWidth=t||8;ctx.lineCap='round';ctx.stroke();ctx.restore();}
+function glow(cx,cy,r,col){var g=ctx.createRadialGradient(cx,cy,0,cx,cy,r);g.addColorStop(0,col);g.addColorStop(1,'rgba(0,0,0,0)');ctx.save();ctx.fillStyle=g;ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fill();ctx.restore();}
+function arrow(x1,y1,x2,y2,col,lw){var a=Math.atan2(y2-y1,x2-x1),as=12;ctx.save();ctx.strokeStyle=col||'#6d4cff';ctx.fillStyle=col||'#6d4cff';ctx.lineWidth=lw||2;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2-Math.cos(a)*as*0.4,y2-Math.sin(a)*as*0.4);ctx.stroke();ctx.beginPath();ctx.moveTo(x2,y2);ctx.lineTo(x2-as*Math.cos(a-0.4),y2-as*Math.sin(a-0.4));ctx.lineTo(x2-as*Math.cos(a+0.4),y2-as*Math.sin(a+0.4));ctx.closePath();ctx.fill();ctx.restore();}
+function dashed(x1,y1,x2,y2,col,lw,d,g){ctx.save();ctx.strokeStyle=col||'rgba(255,255,255,0.25)';ctx.lineWidth=lw||1.5;ctx.setLineDash([d||6,g||4]);ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();ctx.setLineDash([]);ctx.restore();}
+function dotGrid(x,y,cols,rows,gap,r,col){ctx.save();ctx.fillStyle=col||'rgba(255,255,255,0.1)';for(var c=0;c<cols;c++)for(var row=0;row<rows;row++){ctx.beginPath();ctx.arc(x+c*gap,y+row*gap,r||2,0,Math.PI*2);ctx.fill();}ctx.restore();}
+function wave(x,y,w,amp,freq,col,lw,phase){ctx.save();ctx.strokeStyle=col||'#6d4cff';ctx.lineWidth=lw||2;ctx.beginPath();for(var i=0;i<=w;i+=3){var wy=y+Math.sin((i/w)*Math.PI*2*(freq||1)+(phase||0))*amp;if(i===0)ctx.moveTo(x+i,wy);else ctx.lineTo(x+i,wy);}ctx.stroke();ctx.restore();}
+function gradRect(x,y,w,h,c1,c2,vert){var g=vert?ctx.createLinearGradient(x,y,x,y+h):ctx.createLinearGradient(x,y,x+w,y);g.addColorStop(0,c1);g.addColorStop(1,c2);ctx.save();ctx.fillStyle=g;ctx.fillRect(x,y,w,h);ctx.restore();}
+function floatCard(x,y,w,h,r,bg){ctx.save();ctx.shadowColor='rgba(0,0,0,0.2)';ctx.shadowBlur=20;ctx.shadowOffsetY=6;rr(x,y,w,h,r||12,bg||'rgba(255,255,255,0.08)');ctx.restore();}
+function laptop(cx,cy,bW,fn){var bH=bW*0.58,sW=bW*0.83,sH=bH*0.67,sx=cx-sW/2,sy=cy-bH/2+bH*0.07;rr(cx-bW/2,cy-bH/2,bW,bH*0.82,8,'#1a1a2e');rr(sx,sy,sW,sH,4,'#080812');if(fn){ctx.save();ctx.beginPath();ctx.moveTo(sx+4,sy);ctx.lineTo(sx+sW-4,sy);ctx.quadraticCurveTo(sx+sW,sy,sx+sW,sy+4);ctx.lineTo(sx+sW,sy+sH-4);ctx.quadraticCurveTo(sx+sW,sy+sH,sx+sW-4,sy+sH);ctx.lineTo(sx+4,sy+sH);ctx.quadraticCurveTo(sx,sy+sH,sx,sy+sH-4);ctx.lineTo(sx,sy+4);ctx.quadraticCurveTo(sx,sy,sx+4,sy);ctx.closePath();ctx.clip();fn(sx,sy,sW,sH);ctx.restore();}circle(cx,cy-bH/2+bH*0.033,3,'#222238');rr(cx-bW*0.52,cy+bH*0.365,bW*1.04,bH*0.1,4,'#141428');rr(cx-bW*0.13,cy+bH*0.39,bW*0.26,bH*0.055,4,'#1e1e30');}
+function phone(cx,cy,h,fn){var w=h*0.46,sW=w*0.86,sH=h*0.88,sx=cx-sW/2,sy=cy-sH/2;rr(cx-w/2,cy-h/2,w,h,22,'#1c1c2e');rr(sx,sy,sW,sH,16,'#080812');if(fn){ctx.save();ctx.beginPath();ctx.moveTo(sx+16,sy);ctx.lineTo(sx+sW-16,sy);ctx.quadraticCurveTo(sx+sW,sy,sx+sW,sy+16);ctx.lineTo(sx+sW,sy+sH-16);ctx.quadraticCurveTo(sx+sW,sy+sH,sx+sW-16,sy+sH);ctx.lineTo(sx+16,sy+sH);ctx.quadraticCurveTo(sx,sy+sH,sx,sy+sH-16);ctx.lineTo(sx,sy+16);ctx.quadraticCurveTo(sx,sy,sx+16,sy);ctx.closePath();ctx.clip();fn(sx,sy,sW,sH);ctx.restore();}rr(cx-w*0.15,cy-h/2-1,w*0.3,13,7,'#1c1c2e');rr(cx-w*0.2,cy+h/2-11,w*0.4,5,3,'#2a2a3e');}
+function check(cx,cy,r,col,lw){circle(cx,cy,r,null,col||'#22c55e',lw||2);ctx.save();ctx.strokeStyle=col||'#22c55e';ctx.lineWidth=lw||2;ctx.lineCap='round';ctx.lineJoin='round';ctx.beginPath();ctx.moveTo(cx-r*0.35,cy);ctx.lineTo(cx-r*0.05,cy+r*0.32);ctx.lineTo(cx+r*0.38,cy-r*0.3);ctx.stroke();ctx.restore();}
+function bar(x,y,w,maxH,val,fill,anim){var h=val*(anim!==undefined?anim:1);rr(x,y+maxH-h,w,h,4,fill||'#6d4cff');}
+var _PAUSED=false;
+function render(){}
+(function(){function _loop(ts){if(_L==null){_L=ts;requestAnimationFrame(_loop);return;}if(!_PAUSED){var dt=Math.min((ts-_L)/1000,0.1);_T=(_T+dt)%DUR;}_L=ts;ctx.fillStyle='#ffffff';ctx.fillRect(0,0,W,H);ctx.save();ctx.beginPath();ctx.rect(0,0,W,H);ctx.clip();try{render();}catch(e){ctx.font='bold 13px monospace';ctx.fillStyle='rgba(160,0,0,.9)';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('Render error: '+e.message,W/2,H/2);}ctx.restore();ctx.save();ctx.fillStyle='rgba(109,76,255,.12)';ctx.fillRect(0,H-6,W,6);ctx.fillStyle='#6d4cff';ctx.shadowColor='rgba(109,76,255,.5)';ctx.shadowBlur=10;ctx.fillRect(0,H-6,W*C(_T/DUR,0,1),6);ctx.restore();requestAnimationFrame(_loop);}requestAnimationFrame(_loop);})();`;
+}
 
-NV API (already loaded — do not redeclare):
-  NV.stage                         — root container
-  NV.el(tag, cssObj, parent?)      — create element at absolute position
-  NV.text(text, x, y, opts)        — centered text. opts: {color,size(px),weight,font,css:{}}
-  NV.rect(x, y, w, h, opts)        — rectangle. opts: {bg,r(radius px),css:{}}
-  NV.animate(elem, from, to, s, e, easeFn?)  — tween. s/e are 0–1 fractions of total duration
-  NV.onFrame(fn(t, secs))          — per-frame hook
-  NV.ease.out / .in / .inOut / .back / .elastic / .linear
-  NV.lerp(a,b,t)  NV.clamp(v,min,max)  NV.loop()
-  NV.start()  ← MUST be the last line
+// Assembles the final HTML from our canonical runtime + AI scene code
+function buildVideoHtml(fmt: Format, duration: number, sceneCode: string): string {
+  const runtime = buildVideoRuntime(fmt.w, fmt.h, duration);
+  const marker = '// ── YOUR SCENE CODE';
+  const hasMarker = sceneCode.trimStart().startsWith(marker);
+  const body = hasMarker
+    ? sceneCode.trim()
+    : `${marker} ─────────────────────────────────────────────────────────\nrender = function() {\n${sceneCode}\n};`;
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:ital,wght@0,300;0,400;0,600;0,700;0,800;0,900;1,700&family=JetBrains+Mono:wght@400;600&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;background:#ffffff}
+canvas{display:block;width:100%;height:100%;object-fit:contain}
+</style>
+</head>
+<body>
+<canvas id="c" width="${fmt.w}" height="${fmt.h}"></canvas>
+<script>
+${runtime}
 
-CONCRETE EXAMPLE (for a 1080×1920 story):
-  NV.stage.style.background='#0c0b14';
-  const logo=NV.text('ACME',540,300,{color:'#6d4cff',size:52,weight:800});
-  const title=NV.text('Headline Here',540,520,{color:'#fff',size:72,weight:700});
-  NV.animate(logo,{opacity:'0',transform:'scale(0.7)'},{opacity:'1',transform:'scale(1)'},0,0.18,NV.ease.back);
-  NV.animate(title,{opacity:'0',transform:'translateY(40px)'},{opacity:'1',transform:'translateY(0px)'},0.12,0.32,NV.ease.out);
-  NV.start();
+${body}
+</script>
+</body>
+</html>`;
+}
 
-RULES:
-1. Output ONLY valid JavaScript — no HTML, no markdown fences, no import/export
-2. Set NV.stage.style.background first
-3. Every element starts opacity:'0' — animate each in using NV.animate()
-4. Entrance: NV.animate(e,{opacity:'0',transform:'translateY(30px)'},{opacity:'1',transform:'translateY(0px)'},0.0,0.15,NV.ease.back)
-5. Exit: NV.animate(e,{opacity:'1'},{opacity:'0'},0.85,1.0,NV.ease.in)
-6. All positions use EXACT coordinates from the reference above — never guess or use vague values
-7. Last line MUST be exactly: NV.start();
+function buildVideoPrompt(fmt: Format, duration: number, desc: string, context: string, agentBias?: string): string {
+  const W = fmt.w;
+  const H = fmt.h;
 
-BRAND PALETTE: PURPLE=#6d4cff  DARK=#0c0b14  PAPER=#f7f5f1  ACCENT=#a78bfa  GREEN=#22c55e
+  // Scene timing plan
+  type SceneDef = { s: number; e: number; n: string };
+  const sd: SceneDef[] =
+    duration <= 12 ? [
+      { s: 0, e: duration, n: 'Pain hook → solution → CTA (all in one)' },
+    ] :
+    duration <= 22 ? [
+      { s: 0, e: Math.round(duration * 0.35), n: 'Pain hook — emotional opening' },
+      { s: Math.round(duration * 0.35), e: duration, n: 'Solution reveal + CTA' },
+    ] :
+    duration <= 38 ? [
+      { s: 0, e: Math.round(duration * 0.25), n: 'Pain setup — relatable problem' },
+      { s: Math.round(duration * 0.25), e: Math.round(duration * 0.5), n: 'Pain intensify — cost / fragmentation' },
+      { s: Math.round(duration * 0.5), e: duration, n: 'Solution reveal + features + CTA' },
+    ] :
+    duration <= 52 ? [
+      { s: 0,                             e: Math.round(duration * 0.18), n: 'Pain hook — emotional opener' },
+      { s: Math.round(duration * 0.18),   e: Math.round(duration * 0.38), n: 'Pain intensify — tools / cost / chaos' },
+      { s: Math.round(duration * 0.38),   e: Math.round(duration * 0.50), n: 'Bridge — "there has to be a better way"' },
+      { s: Math.round(duration * 0.50),   e: Math.round(duration * 0.72), n: 'Solution reveal — brand + features' },
+      { s: Math.round(duration * 0.72),   e: duration, n: 'CTA — download / website / urgency' },
+    ] :
+    [
+      { s: 0,                             e: Math.round(duration * 0.13), n: 'Pain hook — emotional, relatable' },
+      { s: Math.round(duration * 0.13),   e: Math.round(duration * 0.27), n: 'Pain deepen — cost, fragmentation' },
+      { s: Math.round(duration * 0.27),   e: Math.round(duration * 0.40), n: 'Pain peak — frustration, overwhelm, breaking point' },
+      { s: Math.round(duration * 0.40),   e: Math.round(duration * 0.48), n: 'Bridge — pause, "there has to be a better way"' },
+      { s: Math.round(duration * 0.48),   e: Math.round(duration * 0.63), n: 'Solution reveal — brand, logo, name' },
+      { s: Math.round(duration * 0.63),   e: Math.round(duration * 0.80), n: 'Features showcase — what it does' },
+      { s: Math.round(duration * 0.80),   e: duration, n: 'CTA — download / site / urgency pill' },
+    ];
 
-Content to animate: ${desc}`;
+  const scenePlan = sd.map((sc, i) =>
+    `  Scene${i + 1}(s=${sc.s},e=${sc.e}): ${sc.n}`
+  ).join('\n');
+
+  const subSide   = Math.round(W * 0.074);
+  const subBottom = Math.round(H * 0.08);
+  const subFont   = Math.round(W * 0.038);
+  const subLH     = Math.round(subFont * 1.45);
+
+  // Font size scale — proportional to canvas width
+  const fsHero   = Math.round(W * 0.088);  // main headline (1–3 words)
+  const fsHeroLg = Math.round(W * 0.072);  // headline when 4+ words
+  const fsSub    = Math.round(W * 0.052);  // sub-headline
+  const fsStat   = Math.round(W * 0.13);   // large numbers / stats
+  const fsBody   = Math.round(W * 0.036);  // body / card labels
+  const fsPill   = Math.round(W * 0.030);  // eyebrow pills / tags
+  const fsCta    = Math.round(W * 0.038);  // CTA button text
+
+  // Vertical layout zones (AI must not mix elements between zones)
+  const zTop  = { y: Math.round(H * 0.05), h: Math.round(H * 0.13) }; // eyebrow / badge
+  const zHead = { y: Math.round(H * 0.19), h: Math.round(H * 0.26) }; // hero headline
+  const zMid  = { y: Math.round(H * 0.47), h: Math.round(H * 0.22) }; // stats / cards / sub-head
+  const zCta  = { y: Math.round(H * 0.72), h: Math.round(H * 0.12) }; // CTA button
+  const zSub  = { y: Math.round(H * 0.87), h: Math.round(H * 0.13) }; // subtitle RESERVED
+
+  // Canvas-based runtime — renders to <canvas id="c">, enables video recording
+  const runtime =
+`window.onerror=function(msg,src,ln){var c=document.getElementById('c');if(!c)return;var x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.font='bold 13px monospace';x.fillStyle='rgba(160,0,0,.9)';x.textAlign='center';x.textBaseline='middle';x.fillText(String(msg).slice(0,90),c.width/2,c.height/2-14);x.fillText('line '+ln,c.width/2,c.height/2+14);};
+var canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+var W=${W},H=${H},DUR=${duration};
+var _T=0,_L=null;
+var C=function(v,a,b){return v<a?a:v>b?b:v;};
+var E={
+  o3:function(t){t--;return t*t*t+1;},
+  i3:function(t){return t*t*t;},
+  io:function(t){return t<.5?4*t*t*t:(t-1)*(2*t-2)*(2*t-2)+1;},
+  bk:function(t){var c=1.70158;return 1+(c+1)*Math.pow(t-1,3)+c*Math.pow(t-1,2);},
+  el:function(t){return t<=0?0:t>=1?1:Math.pow(2,-10*t)*Math.sin((t*10-.75)*2.094)+1;},
+  si:function(t){return Math.sin(t*Math.PI/2);}
+};
+// sp(s,e): returns {lt,op,ty,p} during time window or null
+function sp(s,e){
+  if(_T<s||_T>e)return null;
+  var lt=_T-s,dur=e-s,eD=0.45,xD=0.35,xS=dur-xD,op=1,ty=0;
+  if(lt<eD){var p=E.o3(C(lt/eD,0,1));op=p;ty=(1-p)*32;}
+  else if(lt>xS){var p2=E.i3(C((lt-xS)/xD,0,1));op=1-p2;ty=-p2*20;}
+  return {lt:lt,op:op,ty:ty,p:C(lt/dur,0,1)};
+}
+function lp(a,b,s,e,ef){ef=ef||E.o3;return a+(b-a)*ef(C((_T-s)/(e-s),0,1));}
+function cu(n,s,d,ef){ef=ef||E.o3;return Math.round(n*ef(C((_T-s)/d,0,1)));}
+// tx(text,x,y,fs,clr,weight,align,base): draw text on canvas
+function tx(t,x,y,fs,clr,w,al,ba){ctx.font=(w||600)+' '+(fs||36)+'px "Inter Tight",system-ui';ctx.fillStyle=clr||'#0c0b14';ctx.textAlign=al||'center';ctx.textBaseline=ba||'middle';ctx.fillText(t,x,y);}
+// txm(text,x,y,fs,clr): monospace text (JetBrains Mono) for numbers/stats
+function txm(t,x,y,fs,clr){ctx.font='700 '+(fs||48)+'px "JetBrains Mono",monospace';ctx.fillStyle=clr||'#6d4cff';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(t,x,y);}
+// txWrap(lines[],x,yCtr,fs,clr,wt,lineH): draw multi-line text centered at yCtr
+function txWrap(lines,x,yc,fs,clr,wt,lhh){var n=lines.length,ly=yc-(n-1)*(lhh||fs*1.25)/2;for(var i=0;i<n;i++)tx(lines[i],x,ly+i*(lhh||fs*1.25),fs,clr,wt);}
+// rr(x,y,w,h,r,fill,shadowColor,shadowBlur): draw rounded rectangle
+function rr(x,y,w,h,r,fill,sc,sb){
+  ctx.save();
+  if(sc){ctx.shadowColor=sc;ctx.shadowBlur=sb||20;}
+  ctx.fillStyle=fill||'#fff';r=Math.min(r||20,w/2,h/2);
+  ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();ctx.fill();
+  ctx.restore();
+}
+// sub(text,op,color): centered word-wrapped subtitle at bottom with frosted bg
+function sub(text,op,color){
+  if(!op||op<=0)return;
+  ctx.save();ctx.globalAlpha=op;
+  ctx.font='600 ${subFont}px "Inter Tight",system-ui';
+  ctx.textAlign='center';ctx.textBaseline='alphabetic';
+  var mw=W-${subSide * 2},words=text.split(' '),lines=[],cur='';
+  for(var i=0;i<words.length;i++){var tl=cur?(cur+' '+words[i]):words[i];if(ctx.measureText(tl).width>mw&&cur){lines.push(cur);cur=words[i];}else cur=tl;}
+  lines.push(cur);
+  var lh=${subLH},bH=lines.length*lh+12,bY=H-${subBottom}-lines.length*lh-10;
+  rr(${subSide},bY,W-${subSide * 2},bH,10,'rgba(255,255,255,0.88)');
+  ctx.fillStyle=color||'#0c0b14';
+  for(var j=0;j<lines.length;j++)ctx.fillText(lines[j].trim(),W/2,H-${subBottom}-(lines.length-1-j)*lh);
+  ctx.restore();
+}
+// subHL(before,hl,after,op): two-color subtitle — hl part in accent purple, frosted bg
+function subHL(a,hl,b,op){
+  if(!op||op<=0)return;
+  ctx.save();ctx.globalAlpha=op;ctx.font='600 ${subFont}px "Inter Tight",system-ui';ctx.textBaseline='alphabetic';ctx.textAlign='left';
+  var wa=ctx.measureText(a).width,wh=ctx.measureText(hl).width,wb=ctx.measureText(b).width;
+  var tot=wa+wh+wb,x=W/2-tot/2,y=H-${subBottom};
+  rr(x-16,y-${subFont}-6,tot+32,${subFont}+18,10,'rgba(255,255,255,0.88)');
+  ctx.fillStyle='#0c0b14';ctx.fillText(a,x,y);
+  ctx.fillStyle='#6d4cff';ctx.fillText(hl,x+wa,y);
+  ctx.fillStyle='#0c0b14';ctx.fillText(b,x+wa+wh,y);
+  ctx.restore();
+}
+// ripple(cx,cy,startT,count): expanding purple rings for brand reveals
+function ripple(cx,cy,st,n){
+  n=n||3;
+  for(var i=0;i<n;i++){
+    var p=C((_T-st-i*0.3)/1.8,0,1);if(p<=0||p>=1)continue;
+    ctx.save();ctx.globalAlpha=(1-p)*0.5;ctx.strokeStyle='#6d4cff';ctx.lineWidth=3;
+    ctx.shadowColor='rgba(109,76,255,.4)';ctx.shadowBlur=8;
+    ctx.beginPath();ctx.arc(cx,cy,p*Math.min(W,H)*0.4,0,Math.PI*2);ctx.stroke();
+    ctx.restore();
+  }
+}
+// circle(cx,cy,r,fill,stroke,sw): filled/stroked circle
+function circle(cx,cy,r,fill,stroke,sw){ctx.save();ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);if(fill){ctx.fillStyle=fill;ctx.fill();}if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=sw||2;ctx.stroke();}ctx.restore();}
+// ring(cx,cy,r,t,col,p): arc progress ring, p=0–1
+function ring(cx,cy,r,t,col,p){ctx.save();ctx.beginPath();ctx.arc(cx,cy,r,-Math.PI/2,-Math.PI/2+(p||1)*Math.PI*2);ctx.strokeStyle=col||'#6d4cff';ctx.lineWidth=t||8;ctx.lineCap='round';ctx.stroke();ctx.restore();}
+// glow(cx,cy,r,col): radial soft glow
+function glow(cx,cy,r,col){var g=ctx.createRadialGradient(cx,cy,0,cx,cy,r);g.addColorStop(0,col);g.addColorStop(1,'rgba(0,0,0,0)');ctx.save();ctx.fillStyle=g;ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fill();ctx.restore();}
+// arrow(x1,y1,x2,y2,col,lw): directional line with arrowhead
+function arrow(x1,y1,x2,y2,col,lw){var a=Math.atan2(y2-y1,x2-x1),as=12;ctx.save();ctx.strokeStyle=col||'#6d4cff';ctx.fillStyle=col||'#6d4cff';ctx.lineWidth=lw||2;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2-Math.cos(a)*as*0.4,y2-Math.sin(a)*as*0.4);ctx.stroke();ctx.beginPath();ctx.moveTo(x2,y2);ctx.lineTo(x2-as*Math.cos(a-0.4),y2-as*Math.sin(a-0.4));ctx.lineTo(x2-as*Math.cos(a+0.4),y2-as*Math.sin(a+0.4));ctx.closePath();ctx.fill();ctx.restore();}
+// dashed(x1,y1,x2,y2,col,lw,d,g): dashed separator line
+function dashed(x1,y1,x2,y2,col,lw,d,g){ctx.save();ctx.strokeStyle=col||'rgba(255,255,255,0.25)';ctx.lineWidth=lw||1.5;ctx.setLineDash([d||6,g||4]);ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();ctx.setLineDash([]);ctx.restore();}
+// dotGrid(x,y,cols,rows,gap,r,col): decorative dot matrix background
+function dotGrid(x,y,cols,rows,gap,r,col){ctx.save();ctx.fillStyle=col||'rgba(255,255,255,0.1)';for(var c=0;c<cols;c++)for(var row=0;row<rows;row++){ctx.beginPath();ctx.arc(x+c*gap,y+row*gap,r||2,0,Math.PI*2);ctx.fill();}ctx.restore();}
+// wave(x,y,w,amp,freq,col,lw,phase): animated sine wave line
+function wave(x,y,w,amp,freq,col,lw,phase){ctx.save();ctx.strokeStyle=col||'#6d4cff';ctx.lineWidth=lw||2;ctx.beginPath();for(var i=0;i<=w;i+=3){var wy=y+Math.sin((i/w)*Math.PI*2*(freq||1)+(phase||0))*amp;if(i===0)ctx.moveTo(x+i,wy);else ctx.lineTo(x+i,wy);}ctx.stroke();ctx.restore();}
+// gradRect(x,y,w,h,c1,c2,vert): gradient-filled rectangle (vert=top-to-bottom)
+function gradRect(x,y,w,h,c1,c2,vert){var g=vert?ctx.createLinearGradient(x,y,x,y+h):ctx.createLinearGradient(x,y,x+w,y);g.addColorStop(0,c1);g.addColorStop(1,c2);ctx.save();ctx.fillStyle=g;ctx.fillRect(x,y,w,h);ctx.restore();}
+// floatCard(x,y,w,h,r,bg): rounded card with drop shadow
+function floatCard(x,y,w,h,r,bg){ctx.save();ctx.shadowColor='rgba(0,0,0,0.2)';ctx.shadowBlur=20;ctx.shadowOffsetY=6;rr(x,y,w,h,r||12,bg||'rgba(255,255,255,0.08)');ctx.restore();}
+// laptop(cx,cy,bW,fn): laptop device frame; fn(sx,sy,sw,sh) paints inside the screen
+function laptop(cx,cy,bW,fn){var bH=bW*0.58,sW=bW*0.83,sH=bH*0.67,sx=cx-sW/2,sy=cy-bH/2+bH*0.07;rr(cx-bW/2,cy-bH/2,bW,bH*0.82,8,'#1a1a2e');rr(sx,sy,sW,sH,4,'#080812');if(fn){ctx.save();ctx.beginPath();ctx.moveTo(sx+4,sy);ctx.lineTo(sx+sW-4,sy);ctx.quadraticCurveTo(sx+sW,sy,sx+sW,sy+4);ctx.lineTo(sx+sW,sy+sH-4);ctx.quadraticCurveTo(sx+sW,sy+sH,sx+sW-4,sy+sH);ctx.lineTo(sx+4,sy+sH);ctx.quadraticCurveTo(sx,sy+sH,sx,sy+sH-4);ctx.lineTo(sx,sy+4);ctx.quadraticCurveTo(sx,sy,sx+4,sy);ctx.closePath();ctx.clip();fn(sx,sy,sW,sH);ctx.restore();}circle(cx,cy-bH/2+bH*0.033,3,'#222238');rr(cx-bW*0.52,cy+bH*0.365,bW*1.04,bH*0.1,4,'#141428');rr(cx-bW*0.13,cy+bH*0.39,bW*0.26,bH*0.055,4,'#1e1e30');}
+// phone(cx,cy,h,fn): phone device frame; fn(sx,sy,sw,sh) paints inside the screen
+function phone(cx,cy,h,fn){var w=h*0.46,sW=w*0.86,sH=h*0.88,sx=cx-sW/2,sy=cy-sH/2;rr(cx-w/2,cy-h/2,w,h,22,'#1c1c2e');rr(sx,sy,sW,sH,16,'#080812');if(fn){ctx.save();ctx.beginPath();ctx.moveTo(sx+16,sy);ctx.lineTo(sx+sW-16,sy);ctx.quadraticCurveTo(sx+sW,sy,sx+sW,sy+16);ctx.lineTo(sx+sW,sy+sH-16);ctx.quadraticCurveTo(sx+sW,sy+sH,sx+sW-16,sy+sH);ctx.lineTo(sx+16,sy+sH);ctx.quadraticCurveTo(sx,sy+sH,sx,sy+sH-16);ctx.lineTo(sx,sy+16);ctx.quadraticCurveTo(sx,sy,sx+16,sy);ctx.closePath();ctx.clip();fn(sx,sy,sW,sH);ctx.restore();}rr(cx-w*0.15,cy-h/2-1,w*0.3,13,7,'#1c1c2e');rr(cx-w*0.2,cy+h/2-11,w*0.4,5,3,'#2a2a3e');}
+// check(cx,cy,r,col,lw): checkmark drawn inside a circle
+function check(cx,cy,r,col,lw){circle(cx,cy,r,null,col||'#22c55e',lw||2);ctx.save();ctx.strokeStyle=col||'#22c55e';ctx.lineWidth=lw||2;ctx.lineCap='round';ctx.lineJoin='round';ctx.beginPath();ctx.moveTo(cx-r*0.35,cy);ctx.lineTo(cx-r*0.05,cy+r*0.32);ctx.lineTo(cx+r*0.38,cy-r*0.3);ctx.stroke();ctx.restore();}
+// bar(x,y,w,maxH,val,fill,anim): animated vertical bar; anim=0–1 entrance progress
+function bar(x,y,w,maxH,val,fill,anim){var h=val*(anim!==undefined?anim:1);rr(x,y+maxH-h,w,h,4,fill||'#6d4cff');}
+var _PAUSED=false;
+function render(){}
+(function(){
+  function _loop(ts){
+    if(_L==null){_L=ts;requestAnimationFrame(_loop);return;}
+    if(!_PAUSED){var dt=Math.min((ts-_L)/1000,0.1);_T=(_T+dt)%DUR;}
+    _L=ts;
+    ctx.fillStyle='#ffffff';ctx.fillRect(0,0,W,H);
+    ctx.save();ctx.beginPath();ctx.rect(0,0,W,H);ctx.clip();
+    try{render();}catch(e){
+      ctx.font='bold 13px monospace';ctx.fillStyle='rgba(160,0,0,.9)';
+      ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText('Render error: '+e.message,W/2,H/2);
+    }
+    ctx.restore();
+    ctx.save();ctx.fillStyle='rgba(109,76,255,.12)';ctx.fillRect(0,H-6,W,6);
+    ctx.fillStyle='#6d4cff';ctx.shadowColor='rgba(109,76,255,.5)';ctx.shadowBlur=10;
+    ctx.fillRect(0,H-6,W*C(_T/DUR,0,1),6);ctx.restore();
+    requestAnimationFrame(_loop);
+  }
+  requestAnimationFrame(_loop);
+})();`;
+
+  return `You are an elite canvas animator. Create a complete self-contained animated HTML document — renders on a <canvas> element using pure vanilla JS. ZERO external scripts.
+${agentBias ? `\nCREATIVE DIRECTION: ${agentBias}\n` : ''}${context ? `\nBRAND CONTEXT:\n${context}\n` : ''}
+CONTENT / STORY: ${desc}
+CANVAS SIZE: ${W}×${H}px · ${duration}s loop · auto-restarts
+DEFAULT PALETTE: bg #ffffff · text #0c0b14 · accent #6d4cff · soft #efeaff · muted #7a7388
+COLOR OVERRIDE: If the user or brand context specifies colors, USE those instead of defaults above.
+FONTS: Inter Tight (display, headlines) · JetBrains Mono (numbers/stats) — loaded via CSS @import
+
+━━━ SCENE PLAN ━━━
+${scenePlan}
+
+━━━ SUBTITLE SYSTEM ━━━
+Call sub(text, r.op) at the end of every scene block — these are the viewer's voice-over captions.
+Write emotional, story-driven copy derived from the brand brief. NOT placeholder text.
+For two-color: subHL('before ', 'KEY WORD', ' after', r.op).
+
+━━━ VERTICAL LAYOUT GUIDE — READ CAREFULLY ━━━
+Canvas is ${W}×${H}px. Elements MUST stay within their assigned zones. DO NOT mix zones.
+  Top zone    y: ${zTop.y}–${zTop.y + zTop.h}    (eyebrow pill, scene label — small text only)
+  Headline    y: ${zHead.y}–${zHead.y + zHead.h}  (hero text — 1–2 lines; use txWrap() for 2-line headlines)
+  Content     y: ${zMid.y}–${zMid.y + zMid.h}    (stat card, 3 feature lines, sub-headline)
+  CTA zone    y: ${zCta.y}–${zCta.y + zCta.h}    (button only)
+  RESERVED    y: ${zSub.y}–${H}                   (subtitle — sub()/subHL() ONLY, nothing else)
+Gap rule: leave at least ${Math.round(H * 0.04)}px between adjacent zones. ZERO element overlap allowed.
+Text overflow: if a headline is 4+ words, split into 2 lines with txWrap(['Line 1','Line 2'], ...) and reduce fs.
+
+━━━ NO EMOJI RULE ━━━
+ZERO emojis in any canvas text string. Canvas renders emojis as broken boxes on Windows.
+Use clean bold typography, geometric shapes, and color contrast to create visual impact instead.
+
+━━━ MANDATORY HTML SHELL ━━━
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:ital,wght@0,300;0,400;0,600;0,700;0,800;0,900;1,700&family=JetBrains+Mono:wght@400;600&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;background:#0a0a0a}
+canvas{display:block;width:100%;height:100%;object-fit:contain}
+</style>
+</head>
+<body>
+<canvas id="c" width="${W}" height="${H}"></canvas>
+<script>
+// ── RUNTIME (verbatim — do NOT modify) ──────────────────────────────────────
+${runtime}
+
+// ── YOUR SCENE CODE ─────────────────────────────────────────────────────────
+// Assign to render() like this:
+render = function() {
+
+  // ── Scene 1 ── (s=${sd[0].s}, e=${sd[0].e}) — Pain hook
+  // var r = sp(${sd[0].s}, ${sd[0].e});
+  // if(r) {
+  //   ctx.save(); ctx.globalAlpha = r.op;
+  //   // Background gradient
+  //   var g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,'#fff8f0');g.addColorStop(1,'#fff');
+  //   ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  //   // Atmosphere circle (top zone)
+  //   ctx.fillStyle='rgba(220,60,60,.06)';ctx.beginPath();ctx.arc(W/2,H*.22,W*.42,0,Math.PI*2);ctx.fill();
+  //   // Eyebrow pill (top zone y:${zTop.y})
+  //   ctx.globalAlpha=r.op*C(r.lt/.35,0,1);
+  //   rr(W/2-${Math.round(W*0.18)},${zTop.y},${Math.round(W*0.36)},${Math.round(H*0.055)},${Math.round(H*0.027)},'#fff0ee');
+  //   tx('The problem today',W/2,${zTop.y + Math.round(H*0.028)},${fsBody},'#c84040',700);
+  //   // Hero headline (headline zone y:${zHead.y}) — scale bounce
+  //   var hs=E.bk(C(r.lt/.7,0,1));ctx.globalAlpha=r.op*C(r.lt/.4,0,1);
+  //   ctx.save();ctx.translate(W/2,${Math.round(zHead.y + zHead.h * 0.35)}+r.ty);ctx.scale(hs,hs);
+  //   txWrap(['Drowning in','busywork'],0,0,${fsHero},'#0c0b14',900,${Math.round(fsHero*1.2)});
+  //   ctx.restore();
+  //   // Stat card (content zone y:${zMid.y})
+  //   var cp=E.bk(C((r.lt-.6)/.5,0,1));ctx.globalAlpha=r.op*C((r.lt-.6)/.3,0,1);
+  //   rr(W*.1,${zMid.y}+(1-cp)*50,W*.8,${Math.round(zMid.h*0.55)},${Math.round(W*0.02)},'#fff','rgba(0,0,0,.05)',16);
+  //   txm(cu(12,${sd[0].s+0.6},1.8)+' hrs',W/2,${zMid.y + Math.round(zMid.h*0.24)}+(1-cp)*50,${fsStat});
+  //   tx('wasted every week on manual tasks',W/2,${zMid.y + Math.round(zMid.h*0.48)}+(1-cp)*50,${fsBody},'#7a7388',500);
+  //   ctx.restore();
+  //   sub('You spend hours every week doing work that should be instant.',r.op);
+  // }
+
+};
+
+</script>
+</body>
+</html>
+
+━━━ CANVAS ANIMATION PATTERNS ━━━
+// Every scene: var r=sp(START,END); if(r){ ctx.save(); ctx.globalAlpha=r.op; ... ctx.restore(); sub('voice text',r.op); }
+// Gradient bg (pain): gradRect(0,0,W,H,'#1a0808','#0c0b14',true);
+// Atmosphere glow: glow(W/2,H*.28,W*.38,'rgba(109,76,255,0.18)');
+// Decorative dot grid: dotGrid(W*.72,H*.05,8,6,24,2,'rgba(109,76,255,0.13)');
+// Animated wave: wave(0,H*.62,W,H*.025,1.5,'rgba(109,76,255,0.2)',2,_T*1.8);
+// Headline 1 word — scale bounce: ctx.save();ctx.translate(x,y+r.ty);ctx.scale(E.bk(C(r.lt/.65,0,1)),E.bk(C(r.lt/.65,0,1)));tx(text,0,0,${fsHero},'#0c0b14',900);ctx.restore();
+// Headline 2+ words: txWrap(['Word One','Word Two'],W/2,${Math.round(zHead.y + zHead.h*0.5)},${fsHeroLg},'#0c0b14',900,${Math.round(fsHeroLg*1.22)});
+// Stagger 3 feature cards with check bullets (content zone):
+//   var feats=['Feature A','Feature B','Feature C'],cardH=${Math.round(zMid.h*0.28)},gap=${Math.round(H*0.015)};
+//   feats.forEach(function(t,i){
+//     var il=r.lt-.3-i*.25;if(il<0)return;
+//     var p=E.bk(C(il/.45,0,1));ctx.globalAlpha=r.op*C(il/.25,0,1);
+//     floatCard(W*.08,${zMid.y}+i*(cardH+gap)+(1-p)*60,W*.84,cardH,${Math.round(W*0.018)},'rgba(255,255,255,0.92)');
+//     check(W*.14,${zMid.y}+i*(cardH+gap)+cardH/2+(1-p)*60,12,'#6d4cff',2);
+//     tx(t,W/2+W*.03,${zMid.y}+i*(cardH+gap)+cardH/2+(1-p)*60,${fsBody},'#0c0b14',600); });
+// Laptop mockup with UI inside (content zone):
+//   laptop(W*.5,${Math.round(zMid.y + zMid.h*0.5)},W*.55, function(sx,sy,sw,sh){
+//     gradRect(sx,sy,sw,sh,'#0f0e24','#1a1240',true);
+//     rr(sx+sw*.04,sy+sh*.06,sw*.92,sh*.1,4,'#1e1d3a');
+//     tx('Dashboard',sx+sw/2,sy+sh*.11,sw*.055,'#a78bfa',700);
+//     rr(sx+sw*.04,sy+sh*.2,sw*.44,sh*.35,6,'rgba(109,76,255,0.3)');
+//     rr(sx+sw*.52,sy+sh*.2,sw*.44,sh*.35,6,'rgba(109,76,255,0.15)');
+//   });
+// Phone mockup (portrait story):
+//   phone(W*.72,H*.5,H*.46, function(sx,sy,sw,sh){
+//     gradRect(sx,sy,sw,sh,'#0a0912','#130e2e',true);
+//     rr(sx+sw*.05,sy+sh*.04,sw*.9,sh*.1,8,'rgba(109,76,255,0.4)');
+//     tx('Welcome back',sx+sw/2,sy+sh*.12,sw*.07,'#a78bfa',700);
+//   });
+// Count-up stat: txm(cu(50000,s,2.5)+'+',W/2,${Math.round(zMid.y + zMid.h*0.4)},${fsStat});
+// Progress ring metric: ring(W/2,${Math.round(zMid.y + zMid.h*0.5)},${Math.round(Math.min(zMid.h, zMid.h)*0.4)},${Math.round(zMid.h*0.09)},'#6d4cff',C(r.lt/1.5,0,1));
+// Arrow flow diagram: arrow(W*.25,H*.5,W*.75,H*.5,'rgba(109,76,255,0.7)',2);
+// Dashed separator: dashed(W*.08,${Math.round(zMid.y - H*0.02)},W*.92,${Math.round(zMid.y - H*0.02)},'rgba(0,0,0,0.08)',1.5);
+// Circle accent shape: circle(W*.88,H*.1,W*.045,'rgba(109,76,255,0.1)');
+// Ripple brand reveal: ripple(W/2,${Math.round(zHead.y + zHead.h*0.5)},sceneStart,3);
+// Breathing CTA (CTA zone y:${zCta.y}):
+//   var pulse=1+Math.sin(_T*3)*.022,ctaW=${Math.round(W*0.55)},ctaH=${Math.round(zCta.h*0.7)},ctaY=${Math.round(zCta.y + zCta.h*0.35)};
+//   ctx.save();ctx.translate(W/2,ctaY);ctx.scale(pulse,pulse);
+//   rr(-ctaW/2,-ctaH/2,ctaW,ctaH,ctaH/2,'#6d4cff','rgba(109,76,255,.5)',26);
+//   tx('Get Started Free',0,0,${fsCta},'#fff',700);ctx.restore();
+// Animated bar chart (content zone, 3 bars):
+//   var vals=[0.65,0.82,1.0],bW=W*.11,bGap=W*.06,anim=C((r.lt-.4)/1.4,0,1);
+//   vals.forEach(function(v,i){bar(W/2+(i-1)*(bW+bGap),${zMid.y},bW,${zMid.h},${zMid.h}*v,'#6d4cff',anim);});
+
+━━━ VISUAL DEPTH GUIDE — MANDATORY ━━━
+EVERY scene MUST have at least 2 visual layers — NOT just text on flat color:
+  Layer 1 (bg):  gradRect(), glow(), wave(), dotGrid() — create depth and atmosphere
+  Layer 2 (mid): laptop(), phone(), floatCard(), circle(), ring(), bar() — show content/product
+  Layer 3 (top): tx(), txm(), txWrap(), rr() pill — text on top of the visuals
+
+SCENE VARIETY — use a different visual layer each scene:
+  Pain scene:    red-tinted gradRect + glitch jitter (ctx.translate(Math.sin(_T*20)*2,0)) + dashed lines
+  Bridge scene:  dark gradRect + single large glow(W/2,H*.5,W*.4,'rgba(109,76,255,0.22)') + minimal tx
+  Reveal scene:  ripple() + laptop() or phone() with UI inside + floating floatCard() stat
+  Feature scene: dotGrid() bg + 3 floatCard() or rr() cards + check() bullets
+  Stat scene:    dark bg + 3 ring() progress indicators or bar() chart + txm() count-up numbers
+  CTA scene:     gradRect gradient + breathing rr() button + circle() accent shapes
+
+━━━ ELEMENT QUALITY RULES ━━━
+Hero headline (1–2 words):    fs ${fsHero}px, weight 900, Inter Tight — use tx()
+Hero headline (3+ words):     fs ${fsHeroLg}px, weight 900, split into 2 lines — use txWrap()
+Sub-headline / accent line:   fs ${fsSub}px, weight 700, Inter Tight
+Stats / large numbers:        fs ${fsStat}px, weight 700, JetBrains Mono txm(), color #6d4cff
+Card body / feature labels:   fs ${fsBody}px, weight 500–600
+Eyebrow pill text:            fs ${fsPill}px, weight 700, uppercase
+CTA button text:              fs ${fsCta}px, weight 700
+Feature cards: floatCard() or rr() white fill, shadow 'rgba(0,0,0,.05)' blur 14, radius ${Math.round(W*0.018)}
+Accent pills: rr() #efeaff fill, radius 100, text #6d4cff weight 700
+CTA: rr() #6d4cff fill, shadow 'rgba(109,76,255,.5)' blur 26, breathing scale pulse
+Device mockups: laptop() for dashboard/app reveals, phone() for mobile/story format
+Subtitles: sub() or subHL() — every scene MUST end with one call
+
+━━━ NON-NEGOTIABLE RULES ━━━
+1. Output ONLY the HTML. Start with <!DOCTYPE html>. No markdown fences, no explanations.
+2. ZERO external JS. No <script src="">. Google Fonts CSS @import is the ONLY allowed external resource.
+3. Copy the runtime block VERBATIM — do not change a single character.
+4. Redefine render by assigning: render = function(){ ... };
+5. Use ctx.save()/ctx.restore() around every block that changes globalAlpha or shadowBlur.
+6. Every scene uses sp(s,e) — scenes auto-fade in and out.
+7. Every scene ends with sub(voiceOverText, r.op) or subHL(before,hl,after,r.op).
+8. Real copy only — derive ALL text from the brand context. Zero placeholder text.
+9. Respect any colors the user or context specifies — these override the default palette.
+10. NO EMOJIS in any text string. Use typography and geometry for visual impact.
+11. RESPECT VERTICAL ZONES — check the layout guide above before placing every element.
+12. CANVAS BOUNDS — a clip rect [0,0,${W},${H}] is active. Anything outside is invisible. EVERY element must fit: x ≥ 0 AND x+width ≤ ${W} AND y ≥ 0 AND y+height ≤ ${H}. The font sizes above are pre-calibrated — do NOT increase them.`;
 }
 
 function buildScreenPrompt(fmt: Format, desc: string, styleName: string, context: string): string {
-  return `You are an expert UI designer. Create a pixel-perfect ${fmt.label} UI mockup (${fmt.w}×${fmt.h}px).
+  const W = fmt.w;
+  const H = fmt.h;
+  return `You are an expert UI designer. Create a pixel-perfect ${fmt.label} UI mockup (${W}×${H}px).
 ${context ? `\nBrand/product context (use for copy, colors, and data):\n${context}\n` : ''}
-Requirements:
-- Complete, self-contained HTML document with all CSS in <style> tags
-- Canvas exactly ${fmt.w}×${fmt.h}px (set on a root wrapper div with overflow:hidden)
-- Import fonts via Google Fonts @import inside <style> (Sora or Inter)
-- Hover states, micro-interactions, subtle CSS transitions
-- Style direction: ${styleName}
-- NO JavaScript unless essential for the UI interaction
-- Publication-ready quality — no placeholder text like "Lorem ipsum"
-- All elements must stay within the ${fmt.w}×${fmt.h}px canvas bounds
-
 Purpose: ${desc}
+Style: ${styleName}
 
-Output ONLY the complete HTML document starting with <!DOCTYPE html>.`;
+━━━ LAYOUT CONSTRAINTS (non-negotiable) ━━━
+- Root wrapper: width:${W}px; height:${H}px; overflow:hidden; position:relative — this is the hard boundary.
+- html, body: width:${W}px; height:${H}px; overflow:hidden; margin:0; padding:0.
+- ALL content must fit within ${W}×${H}px. Nothing may overflow or require scrolling.
+- Use flex/grid layouts within the fixed wrapper — do NOT use position:absolute for content unless layering decorative elements.
+- If the design has a sidebar + main area: sidebar width must be a fixed px value, main area uses flex:1 with overflow:hidden.
+- Text elements: overflow:hidden; text-overflow:ellipsis or word-break:break-word. Never let text push layout past the boundary.
+- If the design has a scrollable list/feed: the scroll container must have a fixed height and overflow-y:auto — outer wrapper still clips.
+${context ? '- If brand colors are specified in the context above, use them. Otherwise derive from style direction.' : ''}
+
+━━━ QUALITY RULES ━━━
+- Import Inter Tight or Sora via Google Fonts @import in <style>
+- Hover states + subtle CSS transitions on interactive elements
+- NO JavaScript unless essential for a toggle/tab interaction
+- Real copy only — derive every label, stat, and name from context. No "Lorem ipsum."
+- Rich UI: proper nav/header, sidebar or top tabs, cards with real data, status badges, avatar initials
+
+Output ONLY the complete HTML starting with <!DOCTYPE html>. No markdown fences.`;
 }
 
 function buildBannerPrompt(fmt: Format, desc: string, styleName: string, context: string): string {
   const W = fmt.w;
   const H = fmt.h;
-  const cx = Math.round(W / 2);
-  const sidePad   = Math.round(W * 0.08);
-  const topPad    = Math.round(H * 0.08);
+  const sidePad  = Math.round(W * 0.08);
+  const topPad   = Math.round(H * 0.06);
+  const usableW  = W - 2 * sidePad;
+  const cx       = Math.round(W / 2);
+  const cxL      = sidePad;                     // left-aligned start
+
+  // Exact zone boundaries — no ranges, no overlap
+  const z1top = topPad;
+  const z1h   = Math.round(H * 0.13);
+  const z2top = z1top + z1h;
+  const z2h   = Math.round(H * 0.28);
+  const z3top = z2top + z2h;
+  const z3h   = Math.round(H * 0.21);
+  const z4top = z3top + z3h;
+  const z4h   = H - z4top - topPad;
 
   type StyleKey = 'minimal' | 'bold' | 'dark' | 'vibrant' | 'corporate' | 'editorial';
   const styleId = (styleName.split(' — ')[0].trim().toLowerCase()) as StyleKey;
@@ -256,35 +681,32 @@ function buildBannerPrompt(fmt: Format, desc: string, styleName: string, context
   };
   const vars = styleVars[styleId] ?? styleVars.dark;
 
-  const headlineSz = Math.round(Math.min(H, W) * 0.10);
-  const tagSz      = Math.round(Math.min(H, W) * 0.033);
-  const bodySz     = Math.round(Math.min(H, W) * 0.046);
-  const ctaSz      = Math.round(Math.min(H, W) * 0.040);
+  const headlineSz = Math.round(Math.min(H, W) * 0.095);
+  const tagSz      = Math.round(Math.min(H, W) * 0.030);
+  const bodySz     = Math.round(Math.min(H, W) * 0.040);
+  const ctaSz      = Math.round(Math.min(H, W) * 0.036);
+  const ctaBtnH    = Math.round(Math.min(z4h * 0.55, 64));
+  const ctaBtnW    = Math.round(Math.min(usableW * 0.55, 320));
 
-  return `You are an elite creative director and front-end engineer at a world-class design studio. Create a ${fmt.label} graphic (${W}×${H}px) — scroll-stopping, publication-quality, social-media-ready.
+  return `You are an elite creative director and front-end engineer. Create a ${fmt.label} graphic (${W}×${H}px) — scroll-stopping, publication-quality, social-media-ready.
 
 ${context ? `━━━ BRAND BRIEF ━━━\n${context}\n━━━━━━━━━━━━━━━━━\n` : ''}VISUAL INTENT: ${desc}
 STYLE: ${styleName}
-CANVAS: ${W}×${H}px — every element MUST stay inside this boundary.
+CANVAS: ${W}×${H}px
 
-━━━ LAYOUT GRID (absolute pixel positions) ━━━
-Top accent area:   y ≈ ${topPad}–${Math.round(H * 0.20)}px   (logo mark, badge, eyebrow label)
-Headline zone:     y ≈ ${Math.round(H * 0.28)}–${Math.round(H * 0.55)}px   (DOMINANT text — largest element on canvas)
-Supporting zone:   y ≈ ${Math.round(H * 0.58)}–${Math.round(H * 0.72)}px   (subtitle, features, social proof)
-CTA zone:          y ≈ ${Math.round(H * 0.77)}–${Math.round(H - topPad)}px   (button, price, handle)
-Horizontal center: x = ${cx}px  |  Left edge safe: x = ${sidePad}px  |  Right edge safe: x = ${W - sidePad}px
-
-━━━ TYPOGRAPHY SCALE ━━━
-Headline:  font-size ${headlineSz}px, font-weight 800–900, line-height 1.05
-Sub-label: font-size ${tagSz}px, font-weight 600, text-transform uppercase, letter-spacing 0.15em
-Body:      font-size ${bodySz}px, font-weight 400–500
-CTA:       font-size ${ctaSz}px, font-weight 700
-
-━━━ CSS DESIGN SYSTEM ━━━
+━━━ COLOR SYSTEM ━━━
+${context ? 'If the brand brief above mentions specific colors (hex codes, color names, brand palette), use those as --accent, --bg, --text instead of the style defaults.' : ''}
+Style palette (use unless overridden by brand colors above):
 :root { ${vars} }
-Use var(--bg) for background, var(--text) for main copy, var(--accent) for the hero element, var(--muted) for secondary copy.
 
-━━━ MANDATORY TEMPLATE — complete this ━━━
+━━━ EXACT ZONE BOUNDARIES — ABSOLUTE PIXEL VALUES ━━━
+Zone 1 — Brand/Badge:  top:${z1top}px  height:${z1h}px   (logo, eyebrow label, badge — small)
+Zone 2 — Headline:     top:${z2top}px  height:${z2h}px   (DOMINANT text — must fill this zone)
+Zone 3 — Supporting:   top:${z3top}px  height:${z3h}px   (subtitle, features, social proof)
+Zone 4 — CTA:          top:${z4top}px  height:${z4h}px   (button, price, handle)
+Horizontal: left safe edge = ${cxL}px | usable width = ${usableW}px | center = ${cx}px
+
+━━━ MANDATORY TEMPLATE — fill in your content, do NOT change the zone wrapper structure ━━━
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -295,75 +717,110 @@ Use var(--bg) for background, var(--text) for main copy, var(--accent) for the h
 html,body{width:${W}px;height:${H}px;overflow:hidden;font-family:'Inter Tight',system-ui,sans-serif}
 :root{${vars}}
 .canvas{position:relative;width:${W}px;height:${H}px;background:var(--bg);overflow:hidden}
-
-/* ── ADD YOUR CSS BELOW ── */
-
-@keyframes fadeUp{from{opacity:0;transform:translateY(28px)}to{opacity:1;transform:translateY(0)}}
+.zone{position:absolute;left:${cxL}px;width:${usableW}px;overflow:hidden;display:flex;align-items:center}
+.zone-bg{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+@keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
-@keyframes slideRight{from{opacity:0;transform:translateX(-36px)}to{opacity:1;transform:translateX(0)}}
-@keyframes scaleIn{from{opacity:0;transform:scale(0.88)}to{opacity:1;transform:scale(1)}}
-/* Usage: animation: fadeUp 0.55s cubic-bezier(.22,1,.36,1) both 0s; — stagger each element by +0.15s */
+@keyframes scaleIn{from{opacity:0;transform:scale(0.9)}to{opacity:1;transform:scale(1)}}
+/* stagger: add animation-delay 0s / 0.15s / 0.30s / 0.45s to each zone */
+
+/* ── YOUR CSS BELOW ── */
 </style>
 </head>
 <body>
 <div class="canvas">
 
-  <!-- LAYER 1 — Background: gradient, geometric shapes, mesh, texture — MUST be rich, never flat color alone -->
+  <!-- BACKGROUND (z-index:0) — rich gradient + at least one geometric shape, spans full canvas -->
+  <div class="zone-bg"><!-- background SVG/divs here --></div>
 
-  <!-- LAYER 2 — Top zone: logo, brand name, or eyebrow badge -->
+  <!-- ZONE 1: Brand/Badge — top:${z1top}px height:${z1h}px -->
+  <div class="zone" style="top:${z1top}px;height:${z1h}px;animation:fadeIn 0.4s both 0s">
+    <!-- logo text or badge — font-size:${tagSz}px font-weight:700 text-transform:uppercase letter-spacing:0.15em -->
+  </div>
 
-  <!-- LAYER 3 — Headline zone: the dominant message — huge, bold, immediate -->
+  <!-- ZONE 2: Headline — top:${z2top}px height:${z2h}px -->
+  <div class="zone" style="top:${z2top}px;height:${z2h}px;align-items:flex-start;flex-direction:column;animation:fadeUp 0.55s both 0.1s">
+    <!-- main headline — font-size:${headlineSz}px font-weight:900 line-height:1.05 color:var(--text) word-break:break-word -->
+  </div>
 
-  <!-- LAYER 4 — Supporting zone: subtitle, benefits, social proof -->
+  <!-- ZONE 3: Supporting — top:${z3top}px height:${z3h}px -->
+  <div class="zone" style="top:${z3top}px;height:${z3h}px;align-items:flex-start;flex-direction:column;gap:8px;animation:fadeUp 0.55s both 0.25s">
+    <!-- subtitle font-size:${bodySz}px / feature pills / social proof — color:var(--muted) -->
+  </div>
 
-  <!-- LAYER 5 — CTA zone: button, price callout, or action label -->
+  <!-- ZONE 4: CTA — top:${z4top}px height:${z4h}px -->
+  <div class="zone" style="top:${z4top}px;height:${z4h}px;animation:scaleIn 0.45s both 0.4s">
+    <!-- CTA button: width:${ctaBtnW}px height:${ctaBtnH}px border-radius:${Math.round(ctaBtnH/2)}px background:var(--accent) color:#fff font-size:${ctaSz}px font-weight:700 -->
+  </div>
 
 </div>
 </body>
 </html>
 
-━━━ NON-NEGOTIABLE DESIGN RULES ━━━
-1. BACKGROUND MUST BE RICH — use radial/linear gradients + at least one geometric shape (circle, diagonal band, grid lines, blob). A bare flat color fails.
-2. HEADLINE IS DOMINANT — it must be huge (${headlineSz}px+), bold (800+), and immediately readable even as a thumbnail.
-3. STAGGER ALL ANIMATIONS — every element gets animation: fadeUp/fadeIn 0.55s both Xs; where X increases by 0.15s per layer (0s, 0.15s, 0.30s, 0.45s, 0.60s).
-4. REAL COPY ONLY — derive every word from the brief + context above. Zero placeholder text.
-5. USE CSS VARIABLES — apply var(--accent) on CTA button background and var(--text) on headline. No hardcoded colors unless for gradients.
-6. PROFESSIONAL QUALITY — bold typographic choices, strong grid, clear visual hierarchy. Studio-level output.
+━━━ NON-NEGOTIABLE RULES ━━━
+1. NEVER move, remove, or resize the zone wrapper divs. Fill their interiors only.
+2. ZONE OVERFLOW IS CLIPPED — if your content is taller than the zone height, it will be cut. Size content to fit.
+3. All content elements inside a zone: position:relative (NOT absolute) so they stack naturally within the flex zone. Exception: purely decorative background elements use position:absolute within .zone-bg only.
+4. BACKGROUND IS MANDATORY — must have gradient + at least one geometric shape (circle, diagonal band, SVG blob, dot grid). Flat color alone fails.
+5. HEADLINE DOMINANT — font-size ${headlineSz}px minimum, font-weight 900, fills Zone 2 visually.
+6. REAL COPY ONLY — every word derived from the brief. Zero placeholder text.
+7. MAX WIDTH — no element inside a zone may exceed ${usableW}px wide. Text: word-break:break-word; white-space:normal.
+8. COLORS — var(--accent) on CTA background, var(--text) on headline, var(--muted) on supporting copy. If brand colors were in the brief, override :root vars at the top of <style>.
 
-Output ONLY the filled, complete HTML — start with <!DOCTYPE html>. No markdown fences, no explanation.`;
+Output ONLY the filled complete HTML starting with <!DOCTYPE html>. No markdown, no explanation.`;
 }
 
 function buildComponentPrompt(fmt: Format, desc: string, styleName: string, context: string): string {
+  const W = fmt.w;
+  const H = fmt.h;
   return `You are a senior UI engineer. Build a polished, production-ready interactive UI component.
 ${context ? `\nProduct context (use for real copy, data, and brand colors):\n${context}\n` : ''}
-Requirements:
-- Complete self-contained HTML with CSS in <style> and JS in <script>
-- Component centered within a ${fmt.w}×${fmt.h}px viewport
-- Fully functional: all buttons work, toggles toggle, inputs accept input
-- CSS custom properties for theming
-- Smooth transitions and micro-animations
-- Style: ${styleName}
-- No Lorem ipsum — use realistic content from the context if provided
-
 Component: ${desc}
+Style: ${styleName}
+Viewport: ${W}×${H}px
 
-Output ONLY the complete HTML starting with <!DOCTYPE html>.`;
+━━━ LAYOUT CONSTRAINTS ━━━
+- html, body: width:${W}px; height:${H}px; overflow:hidden; margin:0; padding:0; display:flex; align-items:center; justify-content:center.
+- The component must be centered and must fit within ${W}×${H}px — no scrollbars, no overflow.
+- Component max-width: ${Math.round(W * 0.92)}px. Component max-height: ${Math.round(H * 0.92)}px.
+- If the component has an internal list/feed: give it a fixed max-height with overflow-y:auto.
+- Text: word-break:break-word; overflow:hidden on all text containers.
+${context ? '- If brand colors are in the context, use them for CSS custom properties.' : ''}
+
+━━━ QUALITY RULES ━━━
+- CSS custom properties for all colors: --bg, --text, --accent, --muted, --surface
+- Smooth transitions and micro-animations on every interactive element
+- Fully functional: buttons respond, toggles toggle, inputs accept text
+- No Lorem ipsum — realistic content from context
+
+Output ONLY the complete HTML starting with <!DOCTYPE html>. No markdown fences.`;
 }
 
-function buildRefinePrompt(currentHtml: string, instruction: string): string {
-  return `You are refining an existing HTML/JS design. Here is the current code:
+// Extract everything from the YOUR SCENE CODE marker to the closing </script>
+function extractSceneSection(html: string): string {
+  const marker = '// ── YOUR SCENE CODE';
+  const start = html.indexOf(marker);
+  if (start === -1) return '';
+  const end = html.lastIndexOf('</script>');
+  return end === -1 ? html.slice(start).trim() : html.slice(start, end).trim();
+}
 
-\`\`\`html
-${currentHtml.slice(0, 6000)}
-\`\`\`
+// Replace just the scene section, keeping the runtime intact
+function injectSceneSection(html: string, newSection: string): string {
+  const marker = '// ── YOUR SCENE CODE';
+  const start = html.indexOf(marker);
+  if (start === -1) return html;
+  const end = html.lastIndexOf('</script>');
+  if (end === -1) return html;
+  return html.slice(0, start) + newSection.trim() + '\n' + html.slice(end);
+}
 
-The user wants this change: "${instruction}"
-
-Rules:
-- Return the COMPLETE updated HTML document (full file, not just the diff)
-- Keep everything that wasn't mentioned — only change what was asked
-- Maintain the same framework/structure
-- Output ONLY the complete HTML starting with <!DOCTYPE html> (or the JS scene for video files)`;
+function buildRefinePrompt(currentHtml: string, instruction: string, isVideo = false): string {
+  if (isVideo) {
+    const scene = extractSceneSection(currentHtml);
+    return `Current scene code:\n\`\`\`js\n${scene.slice(0, 14000)}\n\`\`\`\n\nInstruction: "${instruction}"\n\nReturn ONLY the scene section — start with the exact line "// ── YOUR SCENE CODE ─" then the render = function(){...}; block. No HTML, no runtime, no </script> tag.`;
+  }
+  return `Current code:\n\`\`\`html\n${currentHtml.slice(0, 18000)}\n\`\`\`\n\nInstruction: "${instruction}"\n\nReturn the COMPLETE updated HTML starting with <!DOCTYPE html>. Keep everything not mentioned unchanged.`;
 }
 
 // ─── History ─────────────────────────────────────────────────────────────────
@@ -381,19 +838,19 @@ interface HistoryEntry {
 
 const EXAMPLES: Record<ProjectType, string[]> = {
   video: [
-    'Nivara product launch — dark bg, purple logo entrance from top, headline "India\'s AI OS" fades in, three feature lines appear one by one, purple CTA button pulses at end',
-    'SaaS pricing reveal — animated card slides up, features appear with checkmarks, price number counts up, CTA glows',
-    'Minimal brand opener — clean white background, company name writes itself letter by letter, tagline fades below, subtle particle effect',
+    'Product launch — dark bg, glowing orb expands, brand name bounces in at 72px, three feature lines stagger up left-to-right, icon+label pairs fade in with 0.2s stagger, CTA button pulses with soft glow',
+    'Pain-to-solution — opening scene shows frustrated user (red tint, glitch text), scene 2 brand name cuts in clean (purple accent, smooth), scene 3 three benefits count up, CTA fades in with ripple',
+    'Metric reveal — black bg, three stat cards slide up (10×, 99%, 2M+), numbers count up with JetBrains Mono, tagline staggered in below, minimal corporate feel',
   ],
   screen: [
     'Analytics dashboard — dark theme, sidebar nav, KPI cards row, line chart, recent activity table',
-    'Mobile app onboarding — step 1 of 3, illustration placeholder, headline, subtext, progress dots, Next CTA',
+    'Mobile app onboarding — step 1 of 3, hero illustration area, headline, subtext, progress dots, Next CTA',
     'SaaS landing page hero — large headline, subtext, two CTA buttons, floating device mockup',
   ],
   banner: [
-    'Instagram post: "Nivara v1.0 is live 🚀" — bold purple gradient, white text, app screenshot',
-    'LinkedIn post: new AI feature announcement — professional, clean layout, brand colors',
-    'YouTube thumbnail: dark red/black, bold title, face placeholder circle, high-contrast text',
+    'Instagram post: product launch announcement — bold gradient bg, large headline, app screenshot, brand CTA',
+    'LinkedIn post: new feature announcement — professional clean layout, icon accent, brand colors',
+    'YouTube thumbnail: dark bg, bold contrasting title text, accent highlight strip, high-contrast visual',
   ],
   component: [
     'Glassmorphism pricing card with monthly/yearly toggle, feature list, highlighted CTA button',
@@ -402,23 +859,61 @@ const EXAMPLES: Record<ProjectType, string[]> = {
   ],
 };
 
+const REFINE_SUGGESTIONS: Record<ProjectType, string[]> = {
+  video: [
+    'Make the headline bigger and bolder with more impact',
+    'Add word-by-word text reveal on the hero title',
+    'Make the background more dramatic — deeper glow, darker',
+    'Add more particles and ambient motion',
+    'Make the CTA section more impactful with a ring pulse',
+  ],
+  screen: [
+    'Make it darker with glassmorphism panels and blur',
+    'Add hover animations to all interactive elements',
+    'Increase spacing and make it more airy',
+    'Change the primary color to emerald green',
+  ],
+  banner: [
+    'Make the headline much larger and more dominant',
+    'Add a diagonal color band across the background',
+    'Strip it down — more minimal, fewer elements',
+    'Make the CTA button pop more',
+  ],
+  component: [
+    'Add a smooth entrance animation on mount',
+    'Make it glassmorphism style with blur',
+    'Increase contrast and make it bolder',
+    'Add keyboard navigation support',
+  ],
+};
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function StudioModule() {
+interface StudioModuleProps {
+  initialRequest?: { prompt: string; formatId: string; duration: number; context: string } | null;
+  onRequestConsumed?: () => void;
+}
+
+export default function StudioModule({ initialRequest, onRequestConsumed }: StudioModuleProps = {}) {
   const { session } = useAuth();
   const callIdRef  = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const iframeRef  = useRef<HTMLIFrameElement>(null);
 
   const [type,           setType]           = useState<ProjectType>('video');
   const [format,         setFormat]         = useState<Format>(FORMATS.video[0]);
   const [duration,       setDuration]       = useState(15);
   const [style,          setStyle]          = useState(STYLES[0].id);
   const [prompt,         setPrompt]         = useState('');
-  const [refine,         setRefine]         = useState('');
   const [generating,     setGenerating]     = useState(false);
   const [html,           setHtml]           = useState<string | null>(null);
   const [error,          setError]          = useState<string | null>(null);
-  const [history,        setHistory]        = useState<HistoryEntry[]>([]);
+  const [history,        setHistory]        = useState<HistoryEntry[]>(() => {
+    try {
+      const saved = localStorage.getItem('studio_history');
+      return saved ? (JSON.parse(saved) as HistoryEntry[]) : [];
+    } catch { return []; }
+  });
   const [copied,         setCopied]         = useState(false);
   const [streamLog,      setStreamLog]      = useState('');
   const [showCode,       setShowCode]       = useState(false);
@@ -426,6 +921,34 @@ export default function StudioModule() {
   const [connMode,       setConnMode]       = useState<string>('');
   const [contextFile,    setContextFile]    = useState<{ name: string; content: string } | null>(null);
   const [showContext,    setShowContext]     = useState(false);
+  const [activeAgent,    setActiveAgent]    = useState<StudioAgent | null>(null);
+  const [briefing,       setBriefing]       = useState(false);
+  const [rightTab,       setRightTab]       = useState<'prompt' | 'reviews'>('prompt');
+  const [reviews,        setReviews]        = useState<Record<string, ReviewResult>>({});
+  const [reviewing,      setReviewing]      = useState(false);
+  const [recording,      setRecording]      = useState(false);
+  const [recordSecs,     setRecordSecs]     = useState(0);
+  const [previewKey,     setPreviewKey]     = useState(0);
+  const [currentTime,    setCurrentTime]    = useState(0);
+  const [isPaused,       setIsPaused]       = useState(false);
+  const syncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    try { localStorage.setItem('studio_history', JSON.stringify(history)); } catch { /* quota */ }
+  }, [history]);
+
+  // Sync playback time from iframe canvas animation
+  useEffect(() => {
+    if (syncIntervalRef.current) clearInterval(syncIntervalRef.current);
+    setCurrentTime(0);
+    setIsPaused(false);
+    if (!html || type !== 'video') return;
+    syncIntervalRef.current = setInterval(() => {
+      const w = iframeRef.current?.contentWindow as (Window & { _T?: number }) | null;
+      if (w && typeof w._T === 'number') setCurrentTime(w._T);
+    }, 80);
+    return () => { if (syncIntervalRef.current) clearInterval(syncIntervalRef.current); };
+  }, [html, type]);
 
   function handleTypeChange(t: ProjectType) {
     setType(t);
@@ -489,25 +1012,160 @@ export default function StudioModule() {
     return raw.trim();
   }
 
-  // For video: strip fences + discard any prose before the first NV. call
-  function stripVideoScene(raw: string): string {
-    const fenced = raw.match(/```(?:javascript|js|jsx?|tsx?)?\n?([\s\S]*?)```/i);
-    if (fenced) return fenced[1].trim();
-    // AI returned full HTML despite instructions → extract <script> body
-    const script = raw.match(/<script[^>]*>([\s\S]*?)<\/script>/i);
-    if (script) return script[1].trim();
-    // AI returned prose + code — find first NV. and discard everything before it
-    const nvIdx = raw.indexOf('NV.');
-    if (nvIdx > 0) return raw.slice(nvIdx).trim();
-    return raw.trim();
-  }
+  // Auto-generate when arriving from Krew with a pre-built request
+  const initConsumed = useRef(false);
+  useEffect(() => {
+    if (!initialRequest || initConsumed.current) return;
+    initConsumed.current = true;
+    const fmt = FORMATS.video.find((f) => f.id === initialRequest.formatId) ?? FORMATS.video[2];
+    setType('video');
+    setFormat(fmt);
+    setDuration(initialRequest.duration);
+    setPrompt(initialRequest.prompt);
+    if (initialRequest.context) setContextFile({ name: 'krew-brief.md', content: initialRequest.context });
+    onRequestConsumed?.();
+    generateFromKrew(initialRequest.prompt, fmt, initialRequest.duration, initialRequest.context);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  async function handleGenerate() {
-    if (!prompt.trim() || generating) return;
+  async function generateFromKrew(p: string, fmt: Format, dur: number, ctx: string) {
+    if (generating) return;
     setGenerating(true);
     setError(null);
     setStreamLog('Preparing…');
     setShowCode(false);
+    setReviews({});
+    let raw = '';
+    try {
+      const sysPrompt = buildVideoPrompt(fmt, dur, p, ctx, activeAgent?.bias);
+      const userMsg = ctx ? `Brand context:\n${ctx}\n\nCreate:\n${p}` : `Create:\n${p}`;
+      await streamAI(sysPrompt, userMsg, (chunk) => { raw += chunk; setStreamLog(raw.slice(-400)); });
+      const stripped = stripFences(raw);
+      const sceneCode = extractSceneSection(stripped) || stripped;
+      const finalHtml = buildVideoHtml(fmt, dur, sceneCode);
+      setHtml(finalHtml);
+      setPreviewKey(k => k + 1);
+      setEditedHtml(finalHtml);
+      setHistory((h) => [{ id: Date.now().toString(), prompt: p, html: finalHtml, type: 'video', format: fmt, at: Date.now() }, ...h.slice(0, 19)]);
+      setTimeout(() => runReviews(finalHtml), 800);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setGenerating(false);
+      setStreamLog('');
+    }
+  }
+
+  async function autoBrief() {
+    if (!contextFile || !activeAgent || briefing) return;
+    setBriefing(true);
+
+    const sysPrompt = `You are a ${activeAgent.role}. Extract a marketing video brief from the brand content below.
+${activeAgent.bias}
+Return ONLY valid JSON (no markdown fences, no explanation):
+{"prompt":"<detailed cinematic video prompt — specific visual elements, scene structure, emoji icons ⚡🤖🚀, color palette, CTA text, animation style>","duration":<${activeAgent.defaultDuration}>}
+The prompt must be specific enough for a motion designer to execute without questions. No placeholder text.`;
+
+    const callId = `brief-${Date.now()}`;
+    let full = '';
+    const done = { cleanup: () => {} };
+
+    try {
+      const result = await new Promise<string>((resolve, reject) => {
+        (async () => {
+          const u1 = await listen<{ id: string; text: string }>('krew-chunk', (e) => {
+            if (e.payload.id === callId) full += e.payload.text;
+          });
+          const u2 = await listen<{ id: string }>('krew-done', (e) => {
+            if (e.payload.id !== callId) return;
+            done.cleanup(); resolve(full);
+          });
+          const u3 = await listen<{ id: string; error: string }>('krew-error', (e) => {
+            if (e.payload.id !== callId) return;
+            done.cleanup(); reject(new Error(e.payload.error));
+          });
+          done.cleanup = () => { u1(); u2(); u3(); };
+          const { mode, apiKey, provider } = await resolveMode();
+          invoke('krew_ai_stream', {
+            callId, mode, systemPrompt: sysPrompt,
+            messages: [{ role: 'user', content: `Brand content:\n\n${contextFile.content.slice(0, 8000)}` }],
+            apiKey, provider, localModel: null, modelName: null, baseUrl: null,
+            sessionToken: session?.access_token ?? null,
+          }).catch((e: unknown) => { done.cleanup(); reject(e); });
+        })();
+      });
+
+      let parsed: { prompt?: string; duration?: number } = {};
+      try { parsed = JSON.parse(result.trim().replace(/```[\w]*\n?|```/g, '').trim()); } catch { /* use defaults */ }
+      if (parsed.prompt) setPrompt(parsed.prompt);
+      if (parsed.duration) setDuration(parsed.duration);
+    } catch { /* silent — user can still type manually */ }
+    finally { setBriefing(false); }
+  }
+
+  async function runReviews(override?: string) {
+    const target = override ?? html;
+    if (!target || reviewing) return;
+    setReviewing(true);
+    setReviews({});
+    setRightTab('reviews');
+
+    const codeSnippet = target.slice(0, 7000);
+
+    for (const agent of REVIEW_AGENTS) {
+      const callId = `rev-${agent.id}-${Date.now()}`;
+      let full = '';
+      const done = { cleanup: () => {} };
+      try {
+        await new Promise<void>((resolve, reject) => {
+          (async () => {
+            const u1 = await listen<{ id: string; text: string }>('krew-chunk', (e) => {
+              if (e.payload.id === callId) full += e.payload.text;
+            });
+            const u2 = await listen<{ id: string }>('krew-done', (e) => {
+              if (e.payload.id !== callId) return;
+              done.cleanup(); resolve();
+            });
+            const u3 = await listen<{ id: string; error: string }>('krew-error', (e) => {
+              if (e.payload.id !== callId) return;
+              done.cleanup(); reject(new Error(e.payload.error));
+            });
+            done.cleanup = () => { u1(); u2(); u3(); };
+            const { mode, apiKey, provider } = await resolveMode();
+            invoke('krew_ai_stream', {
+              callId, mode, systemPrompt: agent.prompt,
+              messages: [{ role: 'user', content: `Review this marketing video HTML:\n\`\`\`html\n${codeSnippet}\n\`\`\`` }],
+              apiKey, provider, localModel: null, modelName: null, baseUrl: null,
+              sessionToken: session?.access_token ?? null,
+            }).catch((e: unknown) => { done.cleanup(); reject(e); });
+          })();
+        });
+
+        try {
+          const parsed = JSON.parse(full.trim().replace(/```[\w]*\n?|```/g, '').trim()) as ReviewResult;
+          setReviews((prev) => ({ ...prev, [agent.id]: parsed }));
+        } catch {
+          setReviews((prev) => ({ ...prev, [agent.id]: { score: 0, verdict: 'needs_work', issues: ['Could not parse review'], fixes: [] } }));
+        }
+      } catch {
+        setReviews((prev) => ({ ...prev, [agent.id]: { score: 0, verdict: 'needs_work', issues: ['Review failed — check your AI connection'], fixes: [] } }));
+      }
+    }
+
+    setReviewing(false);
+  }
+
+  async function handleGenerate() {
+    if (!prompt.trim() || generating) return;
+    // Auto-detect duration from prompt text (e.g. "60 sec")
+    const detectedDur = extractDurationFromPrompt(prompt);
+    if (detectedDur && detectedDur !== duration) setDuration(detectedDur);
+    const effectiveDur = detectedDur ?? duration;
+    setGenerating(true);
+    setError(null);
+    setStreamLog('Preparing…');
+    setShowCode(false);
+    setReviews({});
 
     const selectedStyle = STYLES.find((s) => s.id === style)!;
     const ctx = contextFile?.content ?? '';
@@ -515,7 +1173,7 @@ export default function StudioModule() {
 
     try {
       if (type === 'video') {
-        const sysPrompt = buildVideoPrompt(format, duration, prompt, ctx);
+        const sysPrompt = buildVideoPrompt(format, effectiveDur, prompt, ctx, activeAgent?.bias);
         const userMsg = ctx
           ? `Brand/product context:\n${ctx}\n\nCreate this animation:\n${prompt}`
           : `Create this animation:\n${prompt}`;
@@ -523,11 +1181,15 @@ export default function StudioModule() {
           raw += chunk;
           setStreamLog(raw.slice(-400));
         });
-        const sceneCode = stripVideoScene(raw);
-        const finalHtml = buildVideoHtml(sceneCode, format, duration);
+        const stripped = stripFences(raw);
+        const sceneCode = extractSceneSection(stripped) || stripped;
+        const finalHtml = buildVideoHtml(format, effectiveDur, sceneCode);
         setHtml(finalHtml);
+        setPreviewKey(k => k + 1);
         setEditedHtml(finalHtml);
         setHistory((h) => [{ id: Date.now().toString(), prompt, html: finalHtml, type, format, at: Date.now() }, ...h.slice(0, 19)]);
+        // Agents immediately help review + improve after generation
+        setTimeout(() => runReviews(finalHtml), 800);
       } else {
         const styleDesc = `${selectedStyle.label} — ${selectedStyle.desc}`;
         const sysPrompt =
@@ -541,6 +1203,7 @@ export default function StudioModule() {
         });
         const finalHtml = buildStaticHtml(stripFences(raw));
         setHtml(finalHtml);
+        setPreviewKey(k => k + 1);
         setEditedHtml(finalHtml);
         setHistory((h) => [{ id: Date.now().toString(), prompt, html: finalHtml, type, format, at: Date.now() }, ...h.slice(0, 19)]);
       }
@@ -552,29 +1215,50 @@ export default function StudioModule() {
     }
   }
 
-  async function handleRefine() {
-    if (!refine.trim() || !html || generating) return;
+  async function handleRefine(instruction?: string, skipHistory = false) {
+    const text = instruction ?? prompt;
+    if (!text.trim() || !html || generating) return;
     setGenerating(true);
     setError(null);
     setStreamLog('Refining…');
 
     let raw = '';
-    const sysPrompt = type === 'video'
-      ? buildVideoPrompt(format, duration, refine, contextFile?.content ?? '')
-      : `You are a web design expert. Modify the provided HTML as instructed. Return the complete updated file.`;
+    const isVideo = type === 'video';
+    const sysPrompt = isVideo
+      ? `You are refining a canvas-animated marketing video's scene code.
+Return ONLY the scene section — start exactly with the comment line "// ── YOUR SCENE CODE ─────..." then the complete render = function(){ ... }; block. Nothing else.
+The runtime is already in place with these helpers available:
+  sp(s,e), lp(a,b,s,e,ef), cu(n,s,d,ef), E.{o3,i3,io,bk,el,si}, C(v,a,b), _T, DUR, W, H, ctx
+  tx(), txm(), txWrap(), rr(), sub(), subHL(), ripple()
+  circle(), ring(), glow(), arrow(), dashed(), dotGrid(), wave(), gradRect(), floatCard(), laptop(), phone(), check(), bar()
+RULES:
+1. No emojis — canvas renders them as broken boxes on Windows
+2. Vertical zones: top y<H*0.18, headline y 0.20–0.44H, content y 0.48–0.68H, CTA y 0.72–0.84H, subtitle RESERVED y>0.87H
+3. Canvas bounds strictly enforced by clip: ALL x in [0,W], ALL y in [0,H]. Out-of-bounds is invisible.
+4. Every scene ends with sub() or subHL() for subtitles
+5. Apply ONLY the requested change — keep all other scenes, timing, and copy unchanged`
+      : `You are an expert HTML/CSS designer. Modify the design as instructed. Return the COMPLETE updated HTML starting with <!DOCTYPE html>. Keep everything not mentioned unchanged.`;
 
     try {
-      await streamAI(sysPrompt, buildRefinePrompt(html, refine), (chunk) => {
+      await streamAI(sysPrompt, buildRefinePrompt(html, text, isVideo), (chunk) => {
         raw += chunk;
         setStreamLog(raw.slice(-400));
       });
-      const updated = type === 'video'
-        ? buildVideoHtml(stripVideoScene(raw), format, duration)
-        : buildStaticHtml(stripFences(raw));
+      const stripped = stripFences(raw);
+      let updated: string;
+      if (isVideo && stripped.includes('// ── YOUR SCENE CODE')) {
+        // Inject new scene code into existing HTML (runtime stays intact)
+        updated = injectSceneSection(html, stripped);
+      } else {
+        updated = buildStaticHtml(stripped);
+      }
       setHtml(updated);
+      setPreviewKey(k => k + 1);
       setEditedHtml(updated);
-      setRefine('');
-      setHistory((h) => [{ id: Date.now().toString(), prompt: `↺ ${refine}`, html: updated, type, format, at: Date.now() }, ...h.slice(0, 19)]);
+      if (!instruction) setPrompt('');
+      if (!skipHistory) {
+        setHistory((h) => [{ id: Date.now().toString(), prompt: `↺ ${text}`, html: updated, type, format, at: Date.now() }, ...h.slice(0, 19)]);
+      }
     } catch (err) {
       setError(String(err));
     } finally {
@@ -597,6 +1281,7 @@ export default function StudioModule() {
 
   function applyCodeEdit() {
     setHtml(editedHtml);
+    setPreviewKey(k => k + 1);
     setShowCode(false);
   }
 
@@ -606,13 +1291,104 @@ export default function StudioModule() {
     try {
       await invoke('studio_save_file', { defaultName, content: html });
     } catch {
-      // fallback: browser download
       const blob = new Blob([html], { type: 'text/html' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url; a.download = defaultName; a.click();
       URL.revokeObjectURL(url);
     }
+  }
+
+  function togglePlayPause() {
+    const w = iframeRef.current?.contentWindow as (Window & { _PAUSED?: boolean }) | null;
+    if (!w) return;
+    const next = !isPaused;
+    w._PAUSED = next;
+    setIsPaused(next);
+  }
+
+  function handleScrub(e: React.ChangeEvent<HTMLInputElement>) {
+    const t = parseFloat(e.target.value);
+    const w = iframeRef.current?.contentWindow as (Window & { _T?: number; _L?: number | null }) | null;
+    if (w) { w._T = t; w._L = null; }
+    setCurrentTime(t);
+  }
+
+  function restartPreview() {
+    const w = iframeRef.current?.contentWindow as (Window & { _T?: number; _L?: number | null; _PAUSED?: boolean }) | null;
+    if (w) { w._T = 0; w._L = null; w._PAUSED = false; }
+    setCurrentTime(0);
+    setIsPaused(false);
+  }
+
+  async function handleDownloadVideo() {
+    if (!html || recording) return;
+    const iframe = iframeRef.current;
+    const iframeCanvas = iframe?.contentDocument?.querySelector<HTMLCanvasElement>('canvas#c');
+    if (!iframeCanvas) {
+      handleSave();
+      return;
+    }
+    const mimeType = ['video/webm;codecs=vp9', 'video/webm'].find((t) => {
+      try { return MediaRecorder.isTypeSupported(t); } catch { return false; }
+    }) ?? 'video/webm';
+    let stream: MediaStream;
+    try {
+      stream = (iframeCanvas as HTMLCanvasElement & { captureStream(fps: number): MediaStream }).captureStream(30);
+    } catch {
+      handleSave();
+      return;
+    }
+    const chunks: BlobPart[] = [];
+    const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8_000_000 });
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+    recorder.onstop = () => {
+      const blob = new Blob(chunks, { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `nivara-video-${Date.now()}.webm`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    };
+    setRecording(true);
+    setRecordSecs(duration);
+    recorder.start(100);
+    const tick = setInterval(() => setRecordSecs((s) => Math.max(0, s - 1)), 1000);
+    setTimeout(() => {
+      recorder.stop();
+      clearInterval(tick);
+      setRecording(false);
+      setRecordSecs(0);
+    }, duration * 1000 + 600);
+  }
+
+  async function applyAndRemoveFix(agentId: string, fixIdx: number, fixText: string) {
+    await handleRefine(fixText, true);
+    setReviews(prev => {
+      const r = prev[agentId];
+      if (!r) return prev;
+      const newIssues = r.issues.filter((_, i) => i !== fixIdx);
+      const newFixes  = r.fixes.filter((_, i) => i !== fixIdx);
+      if (newIssues.length === 0) {
+        const next = { ...prev };
+        delete next[agentId];
+        return next;
+      }
+      return { ...prev, [agentId]: { ...r, issues: newIssues, fixes: newFixes } };
+    });
+  }
+
+  async function applyAllFixes() {
+    if (generating) return;
+    const allFixes: string[] = [];
+    for (const result of Object.values(reviews)) {
+      result.fixes.forEach(fix => { if (fix) allFixes.push(fix); });
+    }
+    for (const fixText of allFixes) {
+      await handleRefine(fixText, true);
+    }
+    setReviews({});
   }
 
   function handleCopy() {
@@ -622,7 +1398,6 @@ export default function StudioModule() {
     setTimeout(() => setCopied(false), 1800);
   }
 
-  const isVideo = type === 'video';
   const previewScale = html && format
     ? Math.min(1, 580 / format.w, 440 / format.h)
     : 1;
@@ -651,6 +1426,57 @@ export default function StudioModule() {
         </div>
 
         <div className="p-2.5 space-y-4 flex-1">
+
+          {/* Marketing agents */}
+          <section>
+            <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-1.5 px-1">Agents</p>
+            <div className="flex flex-wrap gap-1 mb-1">
+              {STUDIO_AGENTS.map((a) => (
+                <button
+                  key={a.id}
+                  onClick={() => {
+                    if (activeAgent?.id === a.id) { setActiveAgent(null); return; }
+                    setActiveAgent(a);
+                    setType('video');
+                    const fmt = FORMATS.video.find((f) => f.id === a.defaultFormatId) ?? FORMATS.video[2];
+                    setFormat(fmt);
+                    setDuration(a.defaultDuration);
+                  }}
+                  title={a.role}
+                  className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] border transition-fast ${
+                    activeAgent?.id === a.id
+                      ? 'bg-accent/15 border-accent/40 text-accent'
+                      : 'border-nv-border text-nv-faint hover:border-nv-muted hover:text-nv-muted'
+                  }`}
+                >
+                  <AgentIcon id={a.id} />
+                  <span className="font-medium">{a.name}</span>
+                </button>
+              ))}
+            </div>
+            {activeAgent && (
+              <div className="px-1 mb-1">
+                <p className="text-[9px] text-accent font-mono">{activeAgent.role}</p>
+              </div>
+            )}
+            {activeAgent && contextFile && (
+              <button
+                onClick={autoBrief}
+                disabled={briefing}
+                className="w-full flex items-center justify-center gap-1.5 py-1.5 text-[10px] font-mono border border-accent/35 text-accent rounded-lg hover:bg-accent/10 transition-fast disabled:opacity-50"
+              >
+                {briefing ? (
+                  <><span className="w-2.5 h-2.5 rounded-full border border-accent/30 border-t-accent animate-spin" />Briefing…</>
+                ) : (
+                  <>{activeAgent.emoji} Brief from {contextFile.name.split('.')[0]}</>
+                )}
+              </button>
+            )}
+            {activeAgent && !contextFile && (
+              <p className="text-[9px] text-nv-faint/60 font-mono px-1">Attach a file to auto-brief</p>
+            )}
+          </section>
+
           {/* Project type */}
           <section>
             <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-1.5 px-1">Type</p>
@@ -727,16 +1553,36 @@ export default function StudioModule() {
           {/* History */}
           {history.length > 0 && (
             <section>
-              <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-1.5 px-1">History</p>
-              {history.slice(0, 8).map((h) => (
+              <div className="flex items-center justify-between px-1 mb-1.5">
+                <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono">History</p>
                 <button
-                  key={h.id}
-                  onClick={() => { setHtml(h.html); setEditedHtml(h.html); setShowCode(false); }}
-                  className="w-full text-left px-2 py-1.5 rounded-lg mb-0.5 hover:bg-nv-surface2 transition-fast"
+                  onClick={() => setHistory([])}
+                  className="text-[8px] text-nv-faint/50 hover:text-red-400 font-mono transition-fast"
+                  title="Clear all history"
                 >
-                  <p className="text-[10px] text-nv-muted truncate">{h.prompt}</p>
-                  <p className="text-[9px] text-nv-faint font-mono">{h.type} · {h.format.label}</p>
+                  clear
                 </button>
+              </div>
+              {history.slice(0, 8).map((h) => (
+                <div
+                  key={h.id}
+                  className="group relative flex items-start mb-0.5 rounded-lg hover:bg-nv-surface2 transition-fast"
+                >
+                  <button
+                    onClick={() => { setHtml(h.html); setPreviewKey(k => k + 1); setEditedHtml(h.html); setShowCode(false); }}
+                    className="flex-1 text-left px-2 py-1.5 min-w-0"
+                  >
+                    <p className="text-[10px] text-nv-muted truncate pr-4">{h.prompt}</p>
+                    <p className="text-[9px] text-nv-faint font-mono">{h.type} · {h.format.label}</p>
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setHistory((prev) => prev.filter((x) => x.id !== h.id)); }}
+                    className="opacity-0 group-hover:opacity-100 absolute right-1.5 top-1.5 text-[10px] text-nv-faint/50 hover:text-red-400 transition-fast leading-none"
+                    title="Remove from history"
+                  >
+                    ✕
+                  </button>
+                </div>
               ))}
             </section>
           )}
@@ -751,6 +1597,31 @@ export default function StudioModule() {
             {format.label} · {format.w}×{format.h}
             {type === 'video' && ` · ${duration}s`}
           </span>
+          {html && !generating && (
+            <button
+              onClick={() => { setHtml(null); setEditedHtml(''); setShowCode(false); setError(null); }}
+              className="text-[10px] text-nv-faint hover:text-nv-text font-mono px-2 py-1 rounded border border-nv-border hover:border-nv-muted transition-fast"
+              title="Clear canvas and start fresh"
+            >
+              + New
+            </button>
+          )}
+          {html && !generating && (
+            <button
+              onClick={() => runReviews()}
+              disabled={reviewing}
+              className={`flex items-center gap-1 text-[10px] font-mono px-2 py-1 rounded border transition-fast ${
+                rightTab === 'reviews'
+                  ? 'bg-accent/10 text-accent border-accent/30'
+                  : 'text-nv-faint border-nv-border hover:text-nv-text hover:border-nv-muted'
+              } disabled:opacity-50`}
+              title="Run marketing department review"
+            >
+              {reviewing
+                ? <><span className="w-2.5 h-2.5 rounded-full border border-accent/30 border-t-accent animate-spin" />Reviewing…</>
+                : <>✦ Review</>}
+            </button>
+          )}
           {html && !generating && (
             <>
               <button
@@ -767,15 +1638,35 @@ export default function StudioModule() {
               >
                 {copied ? '✓ Copied' : 'Copy'}
               </button>
-              <button
-                onClick={handleSave}
-                className="flex items-center gap-1.5 text-[10px] text-white bg-accent font-mono px-2.5 py-1 rounded hover:bg-accent-dim transition-fast"
-              >
-                <svg viewBox="0 0 10 10" fill="none" className="w-2.5 h-2.5">
-                  <path d="M5 1v6M2 5l3 2 3-2M1 9h8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-                Save
-              </button>
+              {type === 'video' ? (
+                <button
+                  onClick={handleDownloadVideo}
+                  disabled={recording}
+                  className="flex items-center gap-1.5 text-[10px] text-white bg-accent font-mono px-2.5 py-1 rounded hover:bg-accent-dim transition-fast disabled:opacity-60"
+                  title="Record the animation and download as WebM video"
+                >
+                  {recording ? (
+                    <><span className="w-2.5 h-2.5 rounded-full border border-white/30 border-t-white animate-spin" />
+                    Rec… {recordSecs}s</>
+                  ) : (
+                    <><svg viewBox="0 0 10 10" fill="none" className="w-2.5 h-2.5">
+                      <circle cx="5" cy="5" r="3.5" stroke="currentColor" strokeWidth="1.2"/>
+                      <circle cx="5" cy="5" r="1.8" fill="currentColor"/>
+                    </svg>
+                    Download</>
+                  )}
+                </button>
+              ) : (
+                <button
+                  onClick={handleSave}
+                  className="flex items-center gap-1.5 text-[10px] text-white bg-accent font-mono px-2.5 py-1 rounded hover:bg-accent-dim transition-fast"
+                >
+                  <svg viewBox="0 0 10 10" fill="none" className="w-2.5 h-2.5">
+                    <path d="M5 1v6M2 5l3 2 3-2M1 9h8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                  Save
+                </button>
+              )}
             </>
           )}
         </div>
@@ -784,10 +1675,9 @@ export default function StudioModule() {
         <div
           className="flex-1 overflow-hidden flex items-center justify-center relative"
           style={{ background:
-            showCode                    ? 'var(--nv-surface)' :
-            html && !generating && isVideo ? '#0c0b14'        :
-            html && !generating         ? 'var(--nv-surface2)':
-                                          'var(--nv-bg)'
+            showCode        ? 'var(--nv-surface)' :
+            html && !generating ? 'var(--nv-surface2)' :
+                                  'var(--nv-bg)'
           }}
         >
           {/* Generating overlay — inherits parent background, no hardcoded dark */}
@@ -847,28 +1737,99 @@ export default function StudioModule() {
 
           {/* Live preview */}
           {html && !showCode && !generating && (
-            <div
-              className="shadow-2xl overflow-hidden rounded"
-              style={{
-                width: format.w * previewScale,
-                height: format.h * previewScale,
-                outline: type !== 'video' ? '1px solid rgba(0,0,0,0.08)' : 'none',
-              }}
-            >
-              <iframe
-                key={html.slice(0, 40)}
-                srcDoc={html}
-                sandbox="allow-scripts allow-same-origin"
-                scrolling={type === 'screen' || type === 'component' ? 'auto' : 'no'}
+            <div className="flex flex-col items-center gap-2">
+              <div
+                className="shadow-2xl overflow-hidden rounded"
                 style={{
-                  width: format.w,
-                  height: format.h,
-                  border: 'none',
-                  transform: `scale(${previewScale})`,
-                  transformOrigin: 'top left',
+                  width: format.w * previewScale,
+                  height: format.h * previewScale,
+                  outline: type !== 'video' ? '1px solid rgba(0,0,0,0.08)' : 'none',
                 }}
-                title="Studio preview"
-              />
+              >
+                <iframe
+                  ref={iframeRef}
+                  key={previewKey}
+                  srcDoc={html}
+                  sandbox="allow-scripts allow-same-origin"
+                  scrolling={type === 'screen' || type === 'component' ? 'auto' : 'no'}
+                  style={{
+                    width: format.w,
+                    height: format.h,
+                    border: 'none',
+                    transform: `scale(${previewScale})`,
+                    transformOrigin: 'top left',
+                  }}
+                  title="Studio preview"
+                />
+              </div>
+
+              {/* Playback bar — video only */}
+              {type === 'video' && (
+                <div
+                  className="flex items-center gap-2 px-2 py-1.5 bg-nv-surface border border-nv-border rounded-lg"
+                  style={{ width: format.w * previewScale }}
+                >
+                  {/* Restart */}
+                  <button
+                    onClick={restartPreview}
+                    className="w-5 h-5 flex items-center justify-center text-nv-faint hover:text-nv-text transition-fast shrink-0"
+                    title="Restart"
+                  >
+                    <svg viewBox="0 0 12 12" fill="none" className="w-3 h-3">
+                      <path d="M2 6a4 4 0 1 0 .8-2.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                      <path d="M2 2.5V5h2.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  </button>
+
+                  {/* Play / Pause */}
+                  <button
+                    onClick={togglePlayPause}
+                    className="w-5 h-5 flex items-center justify-center text-nv-text hover:text-accent transition-fast shrink-0"
+                    title={isPaused ? 'Play' : 'Pause'}
+                  >
+                    {isPaused ? (
+                      <svg viewBox="0 0 12 12" fill="currentColor" className="w-3 h-3">
+                        <path d="M3 2l7 4-7 4V2z"/>
+                      </svg>
+                    ) : (
+                      <svg viewBox="0 0 12 12" fill="currentColor" className="w-3 h-3">
+                        <rect x="2" y="2" width="3" height="8" rx="0.8"/>
+                        <rect x="7" y="2" width="3" height="8" rx="0.8"/>
+                      </svg>
+                    )}
+                  </button>
+
+                  {/* Scrub slider */}
+                  <div className="flex-1 relative flex items-center h-4">
+                    <div className="absolute inset-x-0 h-1 bg-nv-border rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-accent rounded-full"
+                        style={{ width: `${(currentTime / duration) * 100}%` }}
+                      />
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={duration}
+                      step={0.1}
+                      value={currentTime}
+                      onChange={handleScrub}
+                      className="absolute inset-x-0 opacity-0 cursor-pointer h-4 w-full"
+                      title={`${Math.floor(currentTime)}s`}
+                    />
+                    {/* Thumb dot */}
+                    <div
+                      className="absolute w-3 h-3 bg-white border-2 border-accent rounded-full shadow pointer-events-none"
+                      style={{ left: `calc(${(currentTime / duration) * 100}% - 6px)` }}
+                    />
+                  </div>
+
+                  {/* Time display */}
+                  <span className="text-[10px] font-mono text-nv-muted shrink-0 tabular-nums">
+                    {`${Math.floor(currentTime)}`.padStart(1, '0')}s / {duration}s
+                  </span>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -876,43 +1837,201 @@ export default function StudioModule() {
 
       {/* ── RIGHT PANEL ──────────────────────────────────────────────────────── */}
       <div className="w-64 shrink-0 flex flex-col border-l border-nv-border">
-        {/* Prompt section header */}
-        <div className="px-3 py-2 border-b border-nv-border shrink-0">
-          <p className="text-[11px] font-semibold text-nv-text">Prompt</p>
-          <p className="text-[9px] text-nv-faint font-mono mt-0.5">Describe what to create</p>
+
+        {/* Header — context-aware */}
+        <div className="px-3 pt-2 pb-0 border-b border-nv-border shrink-0">
+          {html ? (
+            <>
+              <div className="flex items-start justify-between gap-2 pb-1.5">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold text-nv-text">Editing</p>
+                  <p className="text-[9px] text-nv-faint font-mono mt-0.5 truncate">{TYPE_META[type].label} · {format.label}</p>
+                </div>
+                <button
+                  onClick={() => { setHtml(null); setEditedHtml(''); setShowCode(false); setError(null); setPrompt(''); setRightTab('prompt'); setReviews({}); }}
+                  className="text-[9px] text-nv-faint/60 hover:text-accent font-mono shrink-0 mt-0.5 transition-fast"
+                  title="Start a new project"
+                >
+                  + New
+                </button>
+              </div>
+              <div className="flex gap-0">
+                <button
+                  onClick={() => setRightTab('prompt')}
+                  className={`text-[10px] font-mono px-2 pb-1.5 border-b-2 -mb-px transition-fast ${
+                    rightTab === 'prompt' ? 'border-accent text-nv-text' : 'border-transparent text-nv-faint hover:text-nv-muted'
+                  }`}
+                >
+                  Prompt
+                </button>
+                <button
+                  onClick={() => setRightTab('reviews')}
+                  className={`flex items-center gap-1 text-[10px] font-mono px-2 pb-1.5 border-b-2 -mb-px transition-fast ${
+                    rightTab === 'reviews' ? 'border-accent text-nv-text' : 'border-transparent text-nv-faint hover:text-nv-muted'
+                  }`}
+                >
+                  Reviews
+                  {Object.keys(reviews).length > 0 && (
+                    <span className="text-[8px] bg-accent/20 text-accent px-1 rounded-full">{Object.keys(reviews).length}</span>
+                  )}
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="pb-2">
+              <p className="text-[11px] font-semibold text-nv-text">Prompt</p>
+              <p className="text-[9px] text-nv-faint font-mono mt-0.5">Describe what to create</p>
+            </div>
+          )}
         </div>
 
-        {/* Examples */}
-        <div className="flex-1 overflow-y-auto p-2.5">
-          <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-2 px-1">Examples</p>
-          {EXAMPLES[type].map((ex, i) => (
-            <button
-              key={i}
-              onClick={() => setPrompt(ex)}
-              className="w-full text-left px-2.5 py-2 rounded-lg mb-1.5 border border-nv-border/60 hover:border-accent/30 hover:bg-accent/5 transition-fast"
-            >
-              <p className="text-[10px] text-nv-muted leading-relaxed">{ex}</p>
-            </button>
-          ))}
-        </div>
+        {/* Reviews tab / Suggestions tab */}
+        {rightTab === 'reviews' && html ? (
+          <div className="flex-1 overflow-y-auto p-2.5 space-y-2">
+            {/* Initial state */}
+            {!reviewing && Object.keys(reviews).length === 0 && (
+              <div className="flex flex-col items-center justify-center gap-3 py-10 text-center">
+                <svg viewBox="0 0 32 32" fill="none" className="w-8 h-8 text-nv-faint/25">
+                  <circle cx="16" cy="16" r="11" stroke="currentColor" strokeWidth="1.5"/>
+                  <path d="M10.5 16h11M16 10.5v11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                </svg>
+                <p className="text-[10px] text-nv-faint font-mono">No reviews yet</p>
+                <p className="text-[9px] text-nv-faint/50 leading-relaxed">Get brutally honest feedback<br/>from the marketing team</p>
+                <button
+                  onClick={() => runReviews()}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-mono bg-accent/10 text-accent border border-accent/30 rounded-lg hover:bg-accent/20 transition-fast"
+                >
+                  ✦ Run Reviews
+                </button>
+              </div>
+            )}
+            {/* Loading first result */}
+            {reviewing && Object.keys(reviews).length === 0 && (
+              <div className="flex flex-col items-center justify-center gap-2 py-10">
+                <div className="w-5 h-5 rounded-full border-2 border-nv-border border-t-accent animate-spin" />
+                <p className="text-[10px] text-nv-faint font-mono">Asking the team…</p>
+              </div>
+            )}
+            {/* Agent cards */}
+            {REVIEW_AGENTS.map((agent) => {
+              const result = reviews[agent.id];
+              const isPending = reviewing && !result;
+              return (
+                <div
+                  key={agent.id}
+                  className={`border rounded-xl p-2.5 transition-fast ${
+                    result?.verdict === 'approved'   ? 'border-green-500/25 bg-green-500/5' :
+                    result?.verdict === 'rejected'   ? 'border-red-500/25 bg-red-500/5' :
+                    result?.verdict === 'needs_work' ? 'border-yellow-500/25 bg-yellow-500/5' :
+                                                       'border-nv-border bg-nv-surface/50'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <AgentIcon id={agent.id} className="w-4 h-4" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[10px] font-semibold text-nv-text leading-tight">{agent.name}</p>
+                      <p className="text-[8px] text-nv-faint font-mono leading-tight">{agent.role}</p>
+                    </div>
+                    {result ? (
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className={`text-[12px] font-bold font-mono leading-none ${
+                          result.score >= 8 ? 'text-green-400' :
+                          result.score >= 6 ? 'text-yellow-400' : 'text-red-400'
+                        }`}>{result.score}/10</span>
+                        <span className={`text-[8px] px-1.5 py-0.5 rounded-full font-mono border leading-none ${
+                          result.verdict === 'approved'   ? 'bg-green-500/10 text-green-400 border-green-500/25' :
+                          result.verdict === 'needs_work' ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/25' :
+                                                            'bg-red-500/10 text-red-400 border-red-500/25'
+                        }`}>
+                          {result.verdict === 'approved' ? '✓ OK' : result.verdict === 'needs_work' ? '⚠ Fix' : '✕ Fail'}
+                        </span>
+                      </div>
+                    ) : isPending ? (
+                      <span className="w-3 h-3 rounded-full border border-nv-border border-t-accent animate-spin shrink-0" />
+                    ) : null}
+                  </div>
+                  {result && result.issues.map((issue, idx) => (
+                    <div key={idx} className="mt-1.5 p-1.5 bg-nv-bg/50 rounded-lg">
+                      <p className="text-[9px] text-nv-muted leading-relaxed mb-1">{issue}</p>
+                      {result.fixes[idx] && (
+                        <button
+                          onClick={() => applyAndRemoveFix(agent.id, idx, result.fixes[idx])}
+                          disabled={generating}
+                          className="text-[9px] text-accent font-mono hover:underline transition-fast disabled:opacity-40"
+                        >
+                          {generating ? 'Applying…' : 'Apply →'}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {result && result.issues.length === 0 && (
+                    <p className="text-[9px] text-green-400/80 font-mono mt-1">No issues — looks great!</p>
+                  )}
+                </div>
+              );
+            })}
+            {/* Apply All — shown when 2+ fixes remain */}
+            {(() => {
+              const total = Object.values(reviews).reduce((s, r) => s + r.fixes.filter(Boolean).length, 0);
+              return total >= 2 && !reviewing && (
+                <button
+                  onClick={applyAllFixes}
+                  disabled={generating}
+                  className="w-full py-2 text-[10px] font-mono text-white bg-accent rounded-lg hover:bg-accent-dim transition-fast disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {generating ? 'Applying…' : `Apply all fixes (${total})`}
+                </button>
+              );
+            })()}
+            {Object.keys(reviews).length === REVIEW_AGENTS.length && !reviewing && (
+              <button
+                onClick={() => runReviews()}
+                className="w-full py-1.5 text-[10px] font-mono text-nv-faint border border-nv-border rounded-lg hover:text-nv-text hover:border-nv-muted transition-fast"
+              >
+                ↺ Re-run reviews
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="flex-1 overflow-y-auto p-2.5">
+            <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-2 px-1">
+              {html ? 'Quick edits' : 'Examples'}
+            </p>
+            {(html ? REFINE_SUGGESTIONS[type] : EXAMPLES[type]).map((item, i) => (
+              <button
+                key={i}
+                onClick={() => setPrompt(item)}
+                className="w-full text-left px-2.5 py-2 rounded-lg mb-1.5 border border-nv-border/60 hover:border-accent/30 hover:bg-accent/5 transition-fast"
+              >
+                <p className="text-[10px] text-nv-muted leading-relaxed">{item}</p>
+              </button>
+            ))}
+          </div>
+        )}
 
-        {/* Input + Actions */}
-        <div className="p-2.5 border-t border-nv-border shrink-0 space-y-2">
+        {/* Input + Actions — hidden when reviewing */}
+        {rightTab !== 'reviews' && <div className="p-2.5 border-t border-nv-border shrink-0 space-y-2">
           <textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleGenerate(); }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                html ? handleRefine() : handleGenerate();
+              }
+            }}
             placeholder={
-              type === 'video'     ? 'Product launch video — dark bg, purple logo entrance, headline reveals…' :
-              type === 'screen'    ? 'Analytics dashboard, dark theme, sidebar + KPI cards…' :
-              type === 'banner'    ? 'Instagram post announcing product launch — bold headline…' :
+              html
+                ? 'Describe what to change — or pick a quick edit above…'
+                : type === 'video'  ? 'Product launch video — dark bg, purple logo entrance…' :
+                  type === 'screen' ? 'Analytics dashboard, dark theme, sidebar + KPI cards…' :
+                  type === 'banner' ? 'Instagram post announcing product launch…' :
                                      'Glassmorphism pricing card with toggle…'
             }
-            rows={5}
+            rows={html ? 4 : 5}
             className="w-full bg-nv-surface border border-nv-border rounded-xl px-3 py-2.5 text-[12px] text-nv-text placeholder-nv-faint/60 outline-none focus:border-accent transition-fast resize-none leading-relaxed"
           />
 
-          {/* File attach — near the prompt */}
+          {/* File attach */}
           <div className="flex items-center gap-1.5">
             <input
               ref={fileInputRef}
@@ -933,14 +2052,15 @@ export default function StudioModule() {
                 >{showContext ? '▲' : '▼'}</button>
                 <button
                   onClick={() => { setContextFile(null); setShowContext(false); }}
-                  className="text-[10px] text-accent/50 hover:text-accent leading-none shrink-0"
+                  className="w-5 h-5 flex items-center justify-center text-base text-nv-muted hover:text-nv-text leading-none shrink-0 rounded hover:bg-nv-border/50 transition-fast"
+                  title="Remove file"
                 >×</button>
               </div>
             ) : (
               <button
                 onClick={() => fileInputRef.current?.click()}
                 className="flex items-center gap-1.5 text-[10px] text-nv-faint hover:text-accent font-mono transition-fast px-2 py-1 rounded-lg border border-nv-border hover:border-accent/30 w-full"
-                title="Attach a brand doc, product brief, or any .md/.txt/.json file"
+                title="Attach a brand doc, product brief, or .md/.txt/.json file"
               >
                 <svg viewBox="0 0 12 12" fill="none" className="w-3 h-3 shrink-0">
                   <path d="M2 3.5A1.5 1.5 0 013.5 2h4L10 5v5a1 1 0 01-1 1H3.5A1.5 1.5 0 012 9.5V3.5z" stroke="currentColor" strokeWidth="1.1"/>
@@ -957,12 +2077,20 @@ export default function StudioModule() {
           )}
 
           <button
-            onClick={handleGenerate}
+            onClick={html ? () => handleRefine() : handleGenerate}
             disabled={generating || !prompt.trim()}
             className="w-full flex items-center justify-center gap-2 py-2.5 bg-accent text-white text-[12px] font-semibold rounded-xl hover:bg-accent-dim transition-fast disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {generating ? (
-              <><span className="w-3.5 h-3.5 rounded-full border border-white/30 border-t-white animate-spin" />Generating…</>
+              <><span className="w-3.5 h-3.5 rounded-full border border-white/30 border-t-white animate-spin" />{html ? 'Applying…' : 'Generating…'}</>
+            ) : html ? (
+              <>
+                <svg viewBox="0 0 14 14" fill="none" className="w-3.5 h-3.5">
+                  <path d="M2 7h10M7 2l5 5-5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                Apply Changes
+                <span className="text-[10px] opacity-60 ml-0.5">⌘↵</span>
+              </>
             ) : (
               <>
                 <svg viewBox="0 0 14 14" fill="none" className="w-3.5 h-3.5">
@@ -973,39 +2101,57 @@ export default function StudioModule() {
               </>
             )}
           </button>
-
-          {/* Refine row */}
-          {html && !generating && (
-            <div className="flex gap-1.5">
-              <input
-                value={refine}
-                onChange={(e) => setRefine(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') handleRefine(); }}
-                placeholder="Refine: make CTA bigger…"
-                className="flex-1 bg-nv-surface border border-nv-border rounded-lg px-2.5 py-1.5 text-[11px] text-nv-text placeholder-nv-faint/60 outline-none focus:border-accent transition-fast"
-              />
-              <button
-                onClick={handleRefine}
-                disabled={!refine.trim() || generating}
-                className="shrink-0 px-2.5 py-1.5 bg-nv-surface2 border border-nv-border text-nv-muted hover:text-nv-text hover:border-nv-muted text-[10px] font-mono rounded-lg transition-fast disabled:opacity-40"
-              >
-                ↺
-              </button>
-            </div>
-          )}
-
-          {html && !generating && (
-            <button
-              onClick={() => { setHtml(null); setEditedHtml(''); setShowCode(false); setError(null); }}
-              className="w-full text-[11px] text-nv-faint hover:text-nv-muted font-mono py-1.5 rounded-xl border border-nv-border hover:border-nv-muted transition-fast"
-            >
-              Clear
-            </button>
-          )}
-        </div>
+        </div>}
       </div>
     </div>
   );
+}
+
+// ─── Agent icons (filled, slate-400 grey — works dark + light) ───────────────
+
+function AgentIcon({ id, className = 'w-3 h-3' }: { id: string; className?: string }) {
+  const cls = `${className} text-slate-400 shrink-0`;
+  // Target / crosshair — Brand Director, Brand Strategist
+  if (id === 'director' || id === 'brand') return (
+    <svg viewBox="0 0 14 14" fill="none" className={cls}>
+      <circle cx="7" cy="7" r="5" fill="currentColor" opacity=".22"/>
+      <circle cx="7" cy="7" r="2.6" fill="currentColor"/>
+      <path d="M7 1.5v2M7 10.5v2M1.5 7h2M10.5 7h2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+    </svg>
+  );
+  // Mobile phone — Social Expert
+  if (id === 'social') return (
+    <svg viewBox="0 0 14 14" fill="none" className={cls}>
+      <rect x="3.5" y="1" width="7" height="12" rx="1.5" fill="currentColor" opacity=".2"/>
+      <rect x="3.5" y="1" width="7" height="12" rx="1.5" stroke="currentColor" strokeWidth="1.3"/>
+      <rect x="5.2" y="2.5" width="3.6" height="1" rx=".5" fill="currentColor"/>
+      <circle cx="7" cy="11" r=".9" fill="currentColor"/>
+    </svg>
+  );
+  // Rocket — Launch Strategist
+  if (id === 'launch') return (
+    <svg viewBox="0 0 14 14" fill="none" className={cls}>
+      <path d="M7 2C7 2 4 4.5 4 8h6c0-3.5-3-6-3-6z" fill="currentColor"/>
+      <path d="M4 8v3l3-1 3 1V8" fill="currentColor" opacity=".5"/>
+      <path d="M3.5 9.5C2 9.5 1.5 11 1.5 11S3 11 3.5 9.5z" fill="currentColor" opacity=".55"/>
+      <path d="M10.5 9.5C12 9.5 12.5 11 12.5 11S11 11 10.5 9.5z" fill="currentColor" opacity=".55"/>
+    </svg>
+  );
+  // Bar chart — Data Storyteller, Conversion Expert
+  if (id === 'data' || id === 'conversion') return (
+    <svg viewBox="0 0 14 14" fill="currentColor" className={cls}>
+      <rect x="1.5" y="8.5" width="3"   height="4" rx=".6"/>
+      <rect x="5.5" y="5.5" width="3"   height="7" rx=".6"/>
+      <rect x="9.5" y="2.5" width="3"   height="10" rx=".6"/>
+    </svg>
+  );
+  // Star / sparkle — Creative Director
+  if (id === 'creative') return (
+    <svg viewBox="0 0 14 14" fill="none" className={cls}>
+      <path d="M7 1.5 8.5 5.2 12.5 7 8.5 8.8 7 12.5 5.5 8.8 1.5 7 5.5 5.2 7 1.5z" fill="currentColor"/>
+    </svg>
+  );
+  return <svg viewBox="0 0 14 14" fill="currentColor" className={cls}><circle cx="7" cy="7" r="4"/></svg>;
 }
 
 // ─── Icons ────────────────────────────────────────────────────────────────────

@@ -1,14 +1,14 @@
-import { useState } from "react";
+﻿import { useState } from "react";
 import { getPlanConfig } from "../lib/planConfig";
 
 // ── Payment links — fill these in when Razorpay payment links are created ──────
 // Create links at https://dashboard.razorpay.com/app/payment-links
-// Set the product name to "Nivara" and enable INR
+// Set the product name to "adris.tech" and enable INR
 const PAYMENT_LINKS: Record<string, string> = {
-  solo:    "",   // e.g. "https://rzp.io/l/nivara-solo"
-  growth:  "",   // e.g. "https://rzp.io/l/nivara-growth"
-  builder: "",   // e.g. "https://rzp.io/l/nivara-builder"
-  pro:     "",   // e.g. "https://rzp.io/l/nivara-pro"
+  solo:    "",   // e.g. "https://rzp.io/l/adris.tech-solo"
+  growth:  "",   // e.g. "https://rzp.io/l/adris.tech-growth"
+  builder: "",   // e.g. "https://rzp.io/l/adris.tech-builder"
+  pro:     "",   // e.g. "https://rzp.io/l/adris.tech-pro"
 };
 
 interface Plan {
@@ -28,7 +28,7 @@ const PLANS: Plan[] = [
     price:    "₹299",
     sub:      "/ month",
     tokens:   "2M tokens / month",
-    features: ["All 6 modules", "BYOK + Nivara AI", "20 cloud automations", "Priority support"],
+    features: ["All 6 modules", "BYOK + adris.tech AI", "20 cloud automations", "Priority support"],
     accent:   false,
   },
   {
@@ -77,8 +77,8 @@ export default function UpgradeModal({ onClose, currentPlan, highlightPlan, reas
       window.open(link, "_blank");
     } else {
       // Payment links not yet configured — open email
-      const subject = encodeURIComponent(`Upgrade to Nivara ${PLANS.find(p => p.key === selected)?.label ?? selected}`);
-      const body    = encodeURIComponent(`Hi,\n\nI'd like to upgrade my Nivara plan to ${selected}.\n\nEmail: \nCurrent plan: ${currentPlan}\n`);
+      const subject = encodeURIComponent(`Upgrade to adris.tech ${PLANS.find(p => p.key === selected)?.label ?? selected}`);
+      const body    = encodeURIComponent(`Hi,\n\nI'd like to upgrade my adris.tech plan to ${selected}.\n\nEmail: \nCurrent plan: ${currentPlan}\n`);
       window.open(`mailto:astraluxe.tech@gmail.com?subject=${subject}&body=${body}`, "_blank");
       setContacted(true);
     }
@@ -99,7 +99,7 @@ export default function UpgradeModal({ onClose, currentPlan, highlightPlan, reas
         {/* Header */}
         <div className="px-6 pt-6 pb-4 flex items-start justify-between">
           <div>
-            <h2 className="text-[18px] font-semibold text-nv-text tracking-tight">Upgrade Nivara</h2>
+            <h2 className="text-[18px] font-semibold text-nv-text tracking-tight">Upgrade adris.tech</h2>
             {reason && (
               <p className="text-[12px] text-nv-muted mt-1">{reason}</p>
             )}

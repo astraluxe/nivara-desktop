@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Nivara",
+  "productName": "adris.tech",
   "version": "1.0.0",
   "identifier": "tech.nivara.desktop",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Nivara",
+        "title": "adris.tech",
         "width": 1200,
         "height": 800,
         "minWidth": 1000,

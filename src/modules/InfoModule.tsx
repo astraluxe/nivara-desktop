@@ -1,4 +1,4 @@
-import { useState } from 'react';
+﻿import { useState } from 'react';
 
 type Status = 'active' | 'idle' | 'off';
 
@@ -38,7 +38,7 @@ const MODULES: ModuleInfo[] = [
         <path d="M5 10v11h14V10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
       </svg>
     ),
-    desc: 'Your starting point inside Nivara. See all 9 modules at a glance, launch the guided tour, and jump straight to where you left off.',
+    desc: 'Your starting point inside adris.tech. See all 9 modules at a glance, launch the guided tour, and jump straight to where you left off.',
     features: [
       'Overview of every module with live status',
       'Quick navigation — one click to any section',
@@ -56,7 +56,7 @@ const MODULES: ModuleInfo[] = [
         <path d="M16 3l-9 13h8l-3 9 9-13h-8l3-9z" fill="currentColor" />
       </svg>
     ),
-    desc: 'Build workflows that run automatically — even when Nivara is closed. Set a trigger, add AI steps, and choose where the output goes.',
+    desc: 'Build workflows that run automatically — even when adris.tech is closed. Set a trigger, add AI steps, and choose where the output goes.',
     features: [
       'Triggers: schedule (cron), email arrival, file change',
       'AI steps: summarise, reply, extract, classify, report, translate',
@@ -136,14 +136,14 @@ const MODULES: ModuleInfo[] = [
         <rect x="10" y="12" width="8" height="4" fill="currentColor" />
       </svg>
     ),
-    desc: 'A full coding environment inside Nivara. Browse your file system, edit code, run a terminal, and have an AI assistant that can read, write, and run code on your machine.',
+    desc: 'A full coding environment inside adris.tech. Browse your file system, edit code, run a terminal, and have an AI assistant that can read, write, and run code on your machine.',
     features: [
       'File tree browser — navigate any folder on your machine',
       'Code editor with syntax highlighting',
       'Integrated terminal — run commands, scripts, tests',
       'AI chat sidebar — ask about code, request edits, debug',
       'AI can read your files and suggest changes',
-      'Supports Ollama (local), Own Key, or Nivara plan',
+      'Supports Ollama (local), Own Key, or adris.tech plan',
       'Connection bar — switch between AI providers mid-session',
     ],
     tip: 'The AI in Coder uses the same models as Krew. Switch to Local mode + Ollama for fully private coding sessions.',
@@ -191,7 +191,7 @@ const MODULES: ModuleInfo[] = [
       'No VPN overhead — zero impact on speed',
       'Toggle on/off with one click',
     ],
-    tip: 'Vault runs at the OS network layer. It protects every app on your machine — not just Nivara.',
+    tip: 'Vault runs at the OS network layer. It protects every app on your machine — not just adris.tech.',
   },
   {
     id: 'guard',
@@ -258,13 +258,13 @@ const MODULES: ModuleInfo[] = [
     ),
     desc: 'Pool RAM and compute across your local devices. Run large models that don\'t fit in a single machine\'s memory by distributing the load over Wi-Fi.',
     features: [
-      'Auto-discovers Nivara devices on the same network',
+      'Auto-discovers adris.tech devices on the same network',
       'Pools unused RAM from each connected device',
       'Run LLMs larger than any single machine can handle',
       'Zero-config local discovery — no server needed',
       'Works alongside Ollama for distributed inference',
     ],
-    tip: 'Mesh requires Nivara installed on at least two devices on the same Wi-Fi. Currently in planned phase — relay server coming in a future update.',
+    tip: 'Mesh requires adris.tech installed on at least two devices on the same Wi-Fi. Currently in planned phase — relay server coming in a future update.',
   },
 ];
 
@@ -342,7 +342,7 @@ export default function InfoModule() {
       <div className="sticky top-0 z-10 bg-nv-bg border-b border-nv-border px-6 py-4">
         <div className="flex items-center justify-between gap-4">
           <div>
-            <h1 className="text-[15px] font-semibold text-nv-text tracking-tight">What's Inside Nivara</h1>
+            <h1 className="text-[15px] font-semibold text-nv-text tracking-tight">What's Inside adris.tech</h1>
             <p className="text-[10px] text-nv-faint font-mono mt-0.5">
               {MODULES.length} modules · tap any card to expand
             </p>
@@ -376,7 +376,7 @@ export default function InfoModule() {
       <div className="px-6 pb-8 max-w-3xl">
         <div className="flex items-center gap-2 text-[10px] text-nv-faint font-mono">
           <span className="w-1 h-1 rounded-full bg-nv-faint" />
-          Nivara v1.x · All AI processing is local or through your own keys unless you use the Nivara plan
+          adris.tech v1.x · All AI processing is local or through your own keys unless you use the adris.tech plan
           <span className="w-1 h-1 rounded-full bg-nv-faint" />
         </div>
       </div>

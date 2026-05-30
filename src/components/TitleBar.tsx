@@ -27,7 +27,7 @@ export default function TitleBar({ activeModule }: { activeModule: string }) {
       {/* Left — branding */}
       <div className="flex items-center gap-2 px-4 pointer-events-none">
         <NivaraLogo />
-        <span className="text-nv-text text-sm font-semibold tracking-tight">Nivara</span>
+        <span className="text-nv-text text-sm font-semibold tracking-tight">adris.tech</span>
         <span className="text-nv-faint text-xs font-mono">/</span>
         <span className="text-nv-muted text-xs font-mono">{MODULES[activeModule] ?? activeModule}</span>
       </div>

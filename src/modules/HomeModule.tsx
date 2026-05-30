@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../contexts/AuthContext';
 import { chatDb, type ChatSession } from '../lib/chatDb';
@@ -72,7 +72,7 @@ const MODULE_CARDS: ModuleCard[] = [
       'Set an output: Notification, File, Email reply, Notion page, or Slack message.',
       'Automations run automatically based on their trigger — even when you\'re away from the screen.',
       'Connect your AI provider (Gemini, OpenAI, or Claude) in Connect Apps to power the steps.',
-      'Use the AI Builder (⚡ button) to describe what you want in plain English and let Nivara build the flow for you.',
+      'Use the AI Builder (⚡ button) to describe what you want in plain English and let adris.tech build the flow for you.',
     ],
     icon: (
       <svg viewBox="0 0 28 28" fill="none" className="w-7 h-7">
@@ -149,7 +149,7 @@ const MODULE_CARDS: ModuleCard[] = [
       'Click Download on any model to pull it to your machine — no account or API key needed.',
       'Smaller models (1–4B parameters) run on most laptops. Larger models need 8GB+ RAM.',
       'Once downloaded, models are available in Krew and Coder as local AI options.',
-      'Models are stored in your Nivara data folder and never sent to any server.',
+      'Models are stored in your adris.tech data folder and never sent to any server.',
       'Mesh integration lets you pool RAM with other devices on your network to run much larger models.',
     ],
     icon: (
@@ -166,7 +166,7 @@ const MODULE_CARDS: ModuleCard[] = [
       'Vault routes your DNS queries through encrypted servers so your ISP cannot log your browsing.',
       'Choose from five modes: Swift (fast), Block (no ads), Guard (strict), Core (plain), Family (safe).',
       'The Block mode removes ads and trackers from every app on your device — not just the browser.',
-      'DNS provider names are never shown — all modes use Nivara-branded names for simplicity.',
+      'DNS provider names are never shown — all modes use adris.tech-branded names for simplicity.',
       'Vault works at the system level and requires no browser extension.',
       'Vault integrates with Guard for a full privacy + security stack — enable both for maximum protection.',
     ],

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+﻿import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 interface NvSettings {
@@ -121,7 +121,7 @@ export default function SettingsModule() {
             <p className="text-[12px] text-nv-text font-medium mb-2">Run mode</p>
             <div className="flex flex-col gap-2">
               {[
-                { val: 'app_open' as const, label: 'Only while Nivara is open', desc: 'Automations run when the app is active. Nothing runs in the background.' },
+                { val: 'app_open' as const, label: 'Only while adris.tech is open', desc: 'Automations run when the app is active. Nothing runs in the background.' },
                 { val: 'always'   as const, label: '24/7 background mode', desc: 'Automations run even when the window is hidden. App stays in the system tray.' },
               ].map((opt) => (
                 <button
@@ -164,7 +164,7 @@ export default function SettingsModule() {
         <Section title="Local data">
           <div className="py-2">
             <p className="text-[12px] text-nv-text font-medium">Storage location</p>
-            <p className="text-[10px] text-nv-muted mt-1">All data (chat history, credentials, automation logs) is stored on your device only. Nothing is sent to Nivara servers unless you explicitly use cloud features.</p>
+            <p className="text-[10px] text-nv-muted mt-1">All data (chat history, credentials, automation logs) is stored on your device only. Nothing is sent to adris.tech servers unless you explicitly use cloud features.</p>
           </div>
           <div className="pt-3 border-t border-nv-border/60">
             <p className="text-[11px] text-nv-muted mb-3">Clear specific local data:</p>
@@ -182,7 +182,7 @@ export default function SettingsModule() {
         </Section>
 
         {/* About */}
-        <Section title="About Nivara">
+        <Section title="About adris.tech">
           <div className="space-y-1.5 mb-4">
             <div className="flex justify-between text-[11px]">
               <span className="text-nv-muted">Version</span>

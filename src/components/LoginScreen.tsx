@@ -177,13 +177,13 @@ export default function LoginScreen() {
         <div className="w-full max-w-[360px] px-6">
           {/* Logo */}
           <div className="flex flex-col items-center gap-4 mb-10">
-            <svg width="44" height="40" viewBox="0 0 26 24" fill="none" aria-label="Nivara">
+            <svg width="44" height="40" viewBox="0 0 26 24" fill="none" aria-label="adris.tech">
               <path d="M2 4 L9 4 L15 12 L9 20 L2 20 L8 12 Z" fill="#7C5CFF" />
               <path d="M12 4 L19 4 L25 12 L19 20 L12 20 L18 12 Z" fill="#7C5CFF" opacity="0.6" />
             </svg>
             <div className="text-center">
-              <h1 className="text-nv-text text-xl font-semibold tracking-tight">Sign in to Nivara</h1>
-              <p className="text-nv-muted text-sm mt-1">Use your Krew / Nivara account</p>
+              <h1 className="text-nv-text text-xl font-semibold tracking-tight">Sign in to adris.tech</h1>
+              <p className="text-nv-muted text-sm mt-1">Use your Krew / adris.tech account</p>
             </div>
           </div>
 
