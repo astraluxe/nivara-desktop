@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { supabase } from "../lib/supabase";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import { useAuth } from "../contexts/AuthContext";
@@ -108,6 +109,10 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
   const [exoRunning, setExoRunning]           = useState(false);
   const [err, setErr]                         = useState<string | null>(null);
   const [joining, setJoining]                 = useState(false);
+  const [extensionReady, setExtensionReady]   = useState<boolean | null>(null);
+  const [downloading, setDownloading]         = useState(false);
+  const [dlStep, setDlStep]                   = useState("Preparing…");
+  const [dlPct, setDlPct]                     = useState(0);
 
   function showUpgradeFor(reason: string, plan: string) {
     setUpgradeReason(reason);
@@ -125,7 +130,32 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
 
   useEffect(() => {
     invoke<MachineInfo>("mesh_get_machine_info").then(setMachineInfo).catch(() => null);
+    invoke<boolean>("mesh_check_extension").then(setExtensionReady).catch(() => setExtensionReady(false));
   }, []);
+
+  // ── Download extension ───────────────────────────────────────────────────────
+
+  async function downloadExtension() {
+    setDownloading(true);
+    setDlStep("Preparing…");
+    setDlPct(0);
+    setErr(null);
+
+    const unlisten = await listen<{ step: string; pct: number }>("mesh_download_progress", ev => {
+      setDlStep(ev.payload.step);
+      setDlPct(ev.payload.pct);
+    });
+
+    try {
+      await invoke("mesh_download_extension");
+      setExtensionReady(true);
+    } catch (e: any) {
+      setErr(e?.toString() ?? "Download failed. Check your internet connection.");
+    } finally {
+      unlisten();
+      setDownloading(false);
+    }
+  }
 
   // ── Notify parent (App.tsx → Sidebar) about session state ──────────────────
 
@@ -204,6 +234,7 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
 
   async function startSession() {
     if (!machineInfo) return;
+    if (!extensionReady) { await downloadExtension(); return; }
     setErr(null);
     const code = generateRoomCode();
     isCentralRef.current = true;
@@ -224,6 +255,7 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
   async function joinSession() {
     const code = roomCodeInput.trim().toUpperCase();
     if (!machineInfo || !code) return;
+    if (!extensionReady) { await downloadExtension(); return; }
     setErr(null);
     setJoining(true);
     isCentralRef.current = false;
@@ -248,6 +280,36 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
 
   return (
     <div className="h-full overflow-y-auto bg-nv-bg" style={{ scrollbarWidth: "thin" }}>
+
+      {/* Download overlay */}
+      {downloading && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center"
+          style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(6px)" }}>
+          <div className="rounded-2xl border p-7 w-80 space-y-4"
+            style={{ background: "var(--nv-surface)", borderColor: "var(--nv-rule)" }}>
+            <div className="flex items-center gap-3">
+              <svg viewBox="0 0 28 28" fill="none" style={{ width: 22, height: 22, color: "var(--accent)", flexShrink: 0 }}>
+                <circle cx="4" cy="14" r="2.5" fill="currentColor"/>
+                <circle cx="14" cy="4" r="2.5" fill="currentColor"/>
+                <circle cx="24" cy="14" r="2.5" fill="currentColor"/>
+                <circle cx="14" cy="24" r="2.5" fill="currentColor"/>
+                <circle cx="14" cy="14" r="2" fill="currentColor" opacity=".6"/>
+                <path d="M6 14h5M17 14h5M14 6v5M14 17v5" stroke="currentColor" strokeWidth="1.4" opacity=".5"/>
+              </svg>
+              <div>
+                <p className="text-[13px] font-semibold text-nv-text">Installing Mesh Engine</p>
+                <p className="text-[10px] text-nv-muted font-mono mt-0.5">one-time · ~15 MB</p>
+              </div>
+            </div>
+            <div className="rounded-full h-1.5 overflow-hidden" style={{ background: "var(--nv-rule)" }}>
+              <div className="h-full rounded-full transition-all duration-300"
+                style={{ width: `${dlPct}%`, background: "var(--accent)" }} />
+            </div>
+            <p className="text-[11px] text-nv-muted font-mono">{dlStep}</p>
+          </div>
+        </div>
+      )}
+
       <div className="max-w-2xl mx-auto px-6 py-8 space-y-8">
 
         {/* Header row */}
@@ -434,10 +496,21 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
             <span className="font-semibold text-[12px] text-nv-text">{machineInfo.hostname}</span>
             <span className="text-nv-faint">·</span>
             <span className="font-mono text-[11px] text-nv-muted">{Math.round(machineInfo.ram_gb)} GB RAM</span>
-            <div className="ml-auto">
+            <div className="ml-auto flex items-center gap-2">
+              {extensionReady === false && (
+                <button
+                  onClick={downloadExtension}
+                  className="font-mono text-[9px] px-2 py-0.5 rounded transition-opacity hover:opacity-80"
+                  style={{ background: "rgba(124,92,255,0.12)", color: "var(--accent)", border: "1px solid rgba(124,92,255,0.2)" }}
+                >
+                  Install engine
+                </button>
+              )}
               <span className="font-mono text-[9px] px-2 py-0.5 rounded"
-                style={{ background: "rgba(16,185,129,0.1)", color: "#10B981" }}>
-                Mesh ready
+                style={extensionReady
+                  ? { background: "rgba(16,185,129,0.1)", color: "#10B981" }
+                  : { background: "rgba(239,68,68,0.08)", color: "#EF4444" }}>
+                {extensionReady === null ? "Checking…" : extensionReady ? "Mesh ready" : "Engine not installed"}
               </span>
             </div>
           </div>

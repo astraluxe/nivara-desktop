@@ -2932,12 +2932,80 @@ struct MeshMachineInfo {
     os:       String,
 }
 
+fn mesh_exe_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    // 1. Bundled in installer (production)
+    if let Ok(res) = app.path().resource_dir() {
+        let p = res.join("mesh").join("exo-node.exe");
+        if p.exists() { return Some(p); }
+    }
+    // 2. Downloaded at runtime (fallback / dev mode)
+    if let Ok(data) = app.path().app_data_dir() {
+        let p = data.join("mesh").join("exo-node.exe");
+        if p.exists() { return Some(p); }
+    }
+    None
+}
+
 #[tauri::command]
 fn mesh_check_extension(app: tauri::AppHandle) -> bool {
-    if let Ok(res) = app.path().resource_dir() {
-        if res.join("mesh").join("exo-node.exe").exists() { return true; }
+    mesh_exe_path(&app).is_some()
+}
+
+#[tauri::command]
+async fn mesh_download_extension(app: tauri::AppHandle) -> Result<(), String> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    let dest_dir = app.path().app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("mesh");
+    tokio::fs::create_dir_all(&dest_dir).await.map_err(|e| e.to_string())?;
+
+    let dest = dest_dir.join("exo-node.exe");
+
+    let macro_emit = {
+        let app = app.clone();
+        move |step: &str, pct: u32| {
+            let _ = app.emit("mesh_download_progress", serde_json::json!({ "step": step, "pct": pct }));
+        }
+    };
+
+    macro_emit("Fetching Mesh engine…", 5);
+
+    // URL is hidden from frontend — only lives in compiled binary
+    let url = "https://github.com/astraluxe/nivara-desktop/releases/latest/download/exo-node.exe";
+
+    let client = reqwest::Client::builder()
+        .user_agent("NivaraDesktop/1.0")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client.get(url).send().await
+        .map_err(|e| format!("Could not reach release server: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Download failed: HTTP {}", resp.status()));
     }
-    false
+
+    let total = resp.content_length().unwrap_or(0).max(1);
+    let mut downloaded: u64 = 0;
+    let mut file = tokio::fs::File::create(&dest).await.map_err(|e| e.to_string())?;
+    let mut stream = resp.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+        downloaded += chunk.len() as u64;
+        let pct = 5 + (downloaded as f64 / total as f64 * 90.0) as u32;
+        let _ = app.emit("mesh_download_progress", serde_json::json!({
+            "step": format!("Downloading Mesh engine… {:.1} MB", downloaded as f64 / 1_048_576.0),
+            "pct": pct.min(95),
+        }));
+    }
+    file.flush().await.map_err(|e| e.to_string())?;
+
+    macro_emit("Mesh engine installed!", 100);
+    Ok(())
 }
 
 #[tauri::command]
@@ -2962,11 +3030,8 @@ fn mesh_start_exo(
     let mut lock = state.0.lock().unwrap();
     if lock.is_some() { return Ok(()); }
 
-    let exo_path = app.path().resource_dir()
-        .ok()
-        .map(|r| r.join("mesh").join("exo-node.exe"))
-        .filter(|p| p.exists())
-        .ok_or_else(|| "Mesh engine not found. Please reinstall Nivara.".to_string())?;
+    let exo_path = mesh_exe_path(&app)
+        .ok_or_else(|| "Mesh engine not found. Use the download button in Mesh to install it.".to_string())?;
 
     let child = std::process::Command::new(&exo_path)
         .args(["--node-count", &node_count.to_string()])
@@ -4082,6 +4147,7 @@ pub fn run() {
             vault_do_setup,
             // Mesh
             mesh_check_extension,
+            mesh_download_extension,
             mesh_get_machine_info,
             mesh_start_exo,
             mesh_stop_exo,
