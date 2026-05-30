@@ -289,39 +289,17 @@ function buildVideoPrompt(fmt: Format, duration: number, agentBias?: string): st
     duration <= 38 ? 4 :
     duration <= 52 ? 5 : 6;
 
-  const structureGuide = `Choose a scene structure that matches the content. ${sceneCount} scenes for ${duration}s. Allocate timing yourself — do NOT use equal splits.
-Structure options (pick whichever fits, or design your own):
-  Product/App launch  → Hook · Problem · Solution+Features · Proof/Stat · CTA
-  Brand story         → Vision · Journey/Values · Promise · Impact · CTA
-  Data/Analytics      → Big number hook · Insight 1 · Insight 2 · Insight 3 · CTA
-  Tutorial/How-to     → End result first · Step 1 · Step 2 · Step 3 · CTA
-  Announcement        → Reveal · Key detail · Who it's for · When/Where · CTA
-  Event               → Date reveal · What happens · Who's there · RSVP urgency
-  Portfolio/Showcase  → Best work · Style 1 · Style 2 · Style 3 · Contact
-  Mission/Movement    → Problem · Vision · Action · Community · Join
-  Testimonial         → Customer problem · Their journey · Outcome · Others like them · CTA
-NOT every video is a SaaS pain-hook story. Read the content above and decide what THIS video is.`;
-
   const subSide   = Math.round(W * 0.074);
   const subBottom = Math.round(H * 0.08);
   const subFont   = Math.round(W * 0.038);
   const subLH     = Math.round(subFont * 1.45);
 
   // Font size scale — proportional to canvas width
-  const fsHero   = Math.round(W * 0.088);  // main headline (1–3 words)
-  const fsHeroLg = Math.round(W * 0.072);  // headline when 4+ words
-  const fsSub    = Math.round(W * 0.052);  // sub-headline
-  const fsStat   = Math.round(W * 0.13);   // large numbers / stats
-  const fsBody   = Math.round(W * 0.036);  // body / card labels
-  const fsPill   = Math.round(W * 0.030);  // eyebrow pills / tags
-  const fsCta    = Math.round(W * 0.038);  // CTA button text
-
-  // Vertical layout zones (AI must not mix elements between zones)
-  const zTop  = { y: Math.round(H * 0.05), h: Math.round(H * 0.13) }; // eyebrow / badge
-  const zHead = { y: Math.round(H * 0.19), h: Math.round(H * 0.26) }; // hero headline
-  const zMid  = { y: Math.round(H * 0.47), h: Math.round(H * 0.22) }; // stats / cards / sub-head
-  const zCta  = { y: Math.round(H * 0.72), h: Math.round(H * 0.12) }; // CTA button
-  const zSub  = { y: Math.round(H * 0.87), h: Math.round(H * 0.13) }; // subtitle RESERVED
+  const fsHero   = Math.round(W * 0.088);
+  const fsSub    = Math.round(W * 0.052);
+  const fsStat   = Math.round(W * 0.13);
+  const fsBody   = Math.round(W * 0.036);
+  const fsCta    = Math.round(W * 0.038);
 
   // Canvas-based runtime — renders to <canvas id="c">, enables video recording
   const runtime =
@@ -462,57 +440,118 @@ function render(){}
   requestAnimationFrame(_loop);
 })();`;
 
-  return `You are an elite canvas animator. Create a complete self-contained animated HTML document — renders on a <canvas> element using pure vanilla JS. ZERO external scripts.
-${agentBias ? `\nCREATIVE DIRECTION: ${agentBias}\n` : ''}
-CANVAS SIZE: ${W}×${H}px · ${duration}s loop · auto-restarts
-FONTS: Inter Tight (display, headlines) · JetBrains Mono (numbers/stats) — loaded via CSS @import
+  return `You are a professional canvas animation coder. Create a self-contained animated HTML document rendered on <canvas>. ZERO external scripts — Google Fonts @import only.
+${agentBias ? `\nDIRECTION: ${agentBias}\n` : ''}
+CANVAS: ${W}×${H}px  ·  ${duration}s loop  ·  Fonts: Inter Tight (display) + JetBrains Mono (numbers)
 
-━━━ STEP 0 — READ THE CONTENT (do this first, before any code) ━━━
-The user message contains the full content/brand context to base this video on. Read it carefully.
-Extract: the product or subject, the key message, the audience, the emotion, specific facts/numbers/names.
-Use ALL of it — every specific detail, statistic, feature name, person, or phrase from the content.
-NEVER use placeholder copy. Every word in the video must come from the actual content.
+━━━ STEP 1: ANALYZE THE CONTENT ━━━
+Read ALL of the user message — every word. Extract: subject, key message, tone, specific names/numbers/features/facts.
+Then plan before writing any code:
 
-━━━ STEP 1 — CHOOSE YOUR SCENE STRUCTURE ━━━
-Based on what you read in the content, decide the best narrative structure. ${structureGuide}
+A) What narrative TYPE fits this content?
+   Product/app launch  → Hook · Problem · Solution · Proof · CTA
+   Brand story         → Vision · Values · Journey · Promise · CTA
+   Data reveal         → Big number hook · Insight · Insight · CTA
+   Tutorial/how-to     → End result first · Step 1 · Step 2 · Step 3 · CTA
+   Announcement/event  → Reveal · Details · Who/When/Where · CTA
+   Portfolio/showcase  → Best work · Style · Style · Contact
+   ... or invent your own structure — the content dictates it.
 
-━━━ STEP 2 — EXTRACT COLORS ━━━
-From the content and emotion you identified, derive 3 brand colors:
-  - BG: dominant background color matching the brand/mood
-  - FG: main text color (4.5:1 contrast with BG)
-  - ACC: accent/CTA color — choose what fits the emotion: orange (#f97316), amber (#f59e0b), lime (#84cc16), emerald (#10b981), sky (#0ea5e9), pink (#ec4899), rose (#f43f5e), violet (#6d4cff). Do NOT default to violet every time.
-Define at TOP of render() — EXACT pattern required (enables live color override):
-  var CLR_BG = window.__NV_BG || '#<derived>';
-  var CLR_FG = window.__NV_FG || '#<derived>';
-  var CLR_ACC = window.__NV_ACC || '#<derived>';
-Use CLR_BG/CLR_FG/CLR_ACC throughout ALL scenes — never hardcode hex inside scene blocks.
+B) What OBJECTS or VISUALS does the content need?
+   Think like a motion designer: a glowing server rack? bar charts? a phone with UI?
+   Abstract geometry? A network of nodes? A city skyline? A product diagram?
+   These must come FROM the content — not from a template.
 
-━━━ SCENE TIMING (you decide) ━━━
-Total: ${duration}s. Define your scenes with the sp(start, end) function. Example for a 30s product video:
-  var r1=sp(0,7);    // hook — fast and punchy
-  var r2=sp(6,18);   // features — medium stagger
-  var r3=sp(17,25);  // proof — slow and credible
-  var r4=sp(24,30);  // CTA — steady pulse
-Scenes can overlap by 0.5–1s for smooth transitions. Do NOT use equal time splits — vary duration by importance.
+C) ${sceneCount} scenes for ${duration}s — vary lengths, do NOT split equally.
 
-━━━ SUBTITLE SYSTEM ━━━
-Call sub(text, r.op) at the end of every scene block — these are the viewer's voice-over captions.
-Write emotional, story-driven copy derived from the brand brief. NOT placeholder text.
-For two-color: subHL('before ', 'KEY WORD', ' after', r.op).
+━━━ STEP 2: DESIGN YOUR VISUALS ━━━
+For each visual object the content needs, define a drawing function using raw canvas primitives:
+ctx.beginPath(), moveTo(), lineTo(), bezierCurveTo(), arc(), rect(), roundRect(), fillRect(), strokeRect()
 
-━━━ VERTICAL LAYOUT GUIDE — READ CAREFULLY ━━━
-Canvas is ${W}×${H}px. Elements MUST stay within their assigned zones. DO NOT mix zones.
-  Top zone    y: ${zTop.y}–${zTop.y + zTop.h}    (eyebrow pill, scene label — small text only)
-  Headline    y: ${zHead.y}–${zHead.y + zHead.h}  (hero text — 1–2 lines; use txWrap() for 2-line headlines)
-  Content     y: ${zMid.y}–${zMid.y + zMid.h}    (stat card, 3 feature lines, sub-headline)
-  CTA zone    y: ${zCta.y}–${zCta.y + zCta.h}    (button only)
-  RESERVED    y: ${zSub.y}–${H}                   (subtitle — sub()/subHL() ONLY, nothing else)
-Gap rule: leave at least ${Math.round(H * 0.04)}px between adjacent zones. ZERO element overlap allowed.
-Text overflow: if a headline is 4+ words, split into 2 lines with txWrap(['Line 1','Line 2'], ...) and reduce fs.
+Write custom drawing functions ABOVE render(). Match the object to the content:
 
-━━━ NO EMOJI RULE ━━━
-ZERO emojis in any canvas text string. Canvas renders emojis as broken boxes on Windows.
-Use clean bold typography, geometric shapes, and color contrast to create visual impact instead.
+  // Tech product — server rack
+  function drawServer(x,y,w,h,lit){
+    ctx.fillStyle='#1a1a2e'; ctx.fillRect(x,y,w,h);
+    ctx.strokeStyle='#333'; ctx.lineWidth=1; ctx.strokeRect(x,y,w,h);
+    for(var i=0;i<4;i++){
+      ctx.fillStyle='#0f0e24'; ctx.fillRect(x+4,y+i*(h/4.2)+4,w-8,h/5);
+      ctx.fillStyle=lit?'#22c55e':'#ef4444';
+      ctx.beginPath(); ctx.arc(x+w-10,y+i*(h/4.2)+h/10,4,0,Math.PI*2); ctx.fill();
+    }
+  }
+  // Analytics — animated line chart
+  function drawLineChart(cx,cy,w,h,points,col,anim){
+    ctx.save(); ctx.strokeStyle=col; ctx.lineWidth=3; ctx.lineCap='round'; ctx.lineJoin='round';
+    ctx.beginPath();
+    points.forEach(function(v,i){
+      if(i>Math.floor(points.length*anim))return;
+      var px=cx-w/2+i*(w/(points.length-1)), py=cy+h/2-v*h;
+      if(i===0)ctx.moveTo(px,py); else ctx.lineTo(px,py);
+    });
+    ctx.stroke(); ctx.restore();
+  }
+  // AI/network — glowing node
+  function drawNode(cx,cy,r,col,label,fs){
+    ctx.save(); ctx.shadowColor=col; ctx.shadowBlur=20;
+    ctx.fillStyle=col; ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+    if(label) tx(label,cx,cy+r+14,fs||12,col,600);
+  }
+
+Anything the content needs: a basketball, DNA helix, award medal, city skyline, rocket — CODE IT with canvas.
+These drawing functions are what makes each video unique to its content.
+
+━━━ STEP 3: EXTRACT COLORS ━━━
+Derive 3 colors from the content brand/mood — do NOT default to purple every time:
+  BG:  dominant background matching tone (dark/light/neutral)
+  FG:  main text color — high contrast on BG (min 4.5:1)
+  ACC: accent — pick what fits emotionally:
+       violet #6d4cff · orange #f97316 · emerald #10b981 · sky #0ea5e9
+       rose #f43f5e · amber #f59e0b · pink #ec4899 · lime #84cc16
+
+Define FIRST inside render() — enables the live color picker to override:
+  var CLR_BG = window.__NV_BG || '#<your derived color>';
+  var CLR_FG = window.__NV_FG || '#<your derived color>';
+  var CLR_ACC = window.__NV_ACC || '#<your derived color>';
+Use CLR_BG/CLR_FG/CLR_ACC everywhere. NEVER hardcode a hex value inside scene blocks.
+
+━━━ STEP 4: CODE YOUR SCENES ━━━
+Each scene: var r=sp(start,end); if(r){ ctx.save(); ctx.globalAlpha=r.op; ...draw... ctx.restore(); sub('voice-over text',r.op); }
+Scenes can overlap 0.5-1s for smooth cross-fade. Do NOT use equal time splits.
+sp() returns: r.lt (time-in-scene), r.op (fade envelope 0→1→0), r.ty (entrance offset), r.p (progress 0→1)
+
+DRAW ORDER — violating this hides text (the #1 bug in canvas animations):
+  1. Background: gradRect() or ctx.fillRect() — FIRST, always
+  2. Mid layer: your custom objects, shapes, charts — SECOND
+  3. Text: tx(), txm(), txWrap(), txReveal(), txType() — ALWAYS LAST
+
+Pacing — contrast in speed makes videos feel professional:
+  Hook:       fast — easing <=0.3s, urgent energy
+  Content:    medium — 0.35-0.5s per element stagger
+  Stats/data: slow — cu() count-up over 1.5-2.5s, let numbers land
+  CTA:        steady pulse — ctx.scale(1+Math.sin(_T*3)*0.025, 1+Math.sin(_T*3)*0.025)
+
+Text animations — use these, not flat text:
+  Word-by-word: txReveal(['Word','by','Word'],W/2,y,${fsHero},CLR_FG,900,sceneStart,0.22)
+  Typewriter:   txType('tagline here',W/2,y,${fsSub},CLR_FG,700,sceneStart,1.5)
+
+Suggested font scale (${W}px canvas): headline ${fsHero}px · subhead ${fsSub}px · stat ${fsStat}px · body ${fsBody}px · CTA ${fsCta}px
+Subtitle zone (y>${Math.round(H*0.85)}) is RESERVED for sub()/subHL() — place nothing else there.
+Subtitles: sub(text,op) at the end of EVERY scene block — these are the voice-over captions.
+Two-color subtitle: subHL('before ','KEY WORD',' after',op)
+
+━━━ RUNTIME HELPERS ━━━
+All available in scope — do not redefine:
+  sp(s,e)→{lt,op,ty,p}  lp(a,b,s,e,ef)  cu(n,s,dur)  C(v,a,b)  E.{o3,i3,io,bk,el,si}  _T DUR W H ctx
+  tx(t,x,y,fs,clr,wt,al,ba)  txm(t,x,y,fs,clr)  txWrap(lines[],x,yc,fs,clr,wt,lh)
+  txReveal(words[],x,y,fs,clr,wt,start,gap)  txType(text,x,y,fs,clr,wt,start,dur)
+  rr(x,y,w,h,r,fill,shadowCol,shadowBlur)  sub(text,op)  subHL(before,hl,after,op)
+  glow(cx,cy,r,col)  ripple(cx,cy,start,n)  circle(cx,cy,r,fill,stroke,sw)  ring(cx,cy,r,t,col,p)
+  gradRect(x,y,w,h,c1,c2,vert)  floatCard(x,y,w,h,r,bg)  wave(x,y,w,amp,freq,col,lw,phase)
+  dotGrid(x,y,cols,rows,gap,r,col)  arrow(x1,y1,x2,y2,col,lw)  dashed(x1,y1,x2,y2,col,lw,d,g)
+  hexagon(cx,cy,r,fill,stroke,sw)  triangle(cx,cy,r,fill,angle)  bar(x,y,w,maxH,val,fill,anim)
+  check(cx,cy,r,col,lw)  laptop(cx,cy,bW,fn)  phone(cx,cy,h,fn)
 
 ━━━ MANDATORY HTML SHELL ━━━
 <!DOCTYPE html>
@@ -522,7 +561,7 @@ Use clean bold typography, geometric shapes, and color contrast to create visual
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter+Tight:ital,wght@0,300;0,400;0,600;0,700;0,800;0,900;1,700&family=JetBrains+Mono:wght@400;600&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{width:100%;height:100%;overflow:hidden;background:#0a0a0a}
+html,body{width:100%;height:100%;overflow:hidden;background:#ffffff}
 canvas{display:block;width:100%;height:100%;object-fit:contain}
 </style>
 </head>
@@ -532,7 +571,7 @@ canvas{display:block;width:100%;height:100%;object-fit:contain}
 // ── RUNTIME (verbatim — do NOT modify) ──────────────────────────────────────
 ${runtime}
 
-// ── YOUR SCENE CODE goes here ────────────────────────────────────────────────
+// ── YOUR SCENE CODE ─────────────────────────────────────────────────────────
 render = function() {
 
 };
@@ -541,133 +580,17 @@ render = function() {
 </body>
 </html>
 
-━━━ CANVAS ANIMATION PATTERNS ━━━
-// Every scene: var r=sp(START,END); if(r){ ctx.save(); ctx.globalAlpha=r.op; ... ctx.restore(); sub('voice text',r.op); }
-// SCENE STRUCTURE (always in this order): 1) background 2) shapes 3) text
-// Gradient bg (pain): gradRect(0,0,W,H,'#1a0808','#0c0b14',true);
-// Atmosphere glow: glow(W/2,H*.28,W*.38,'rgba(109,76,255,0.18)');
-// Decorative dot grid: dotGrid(W*.72,H*.05,8,6,24,2,'rgba(109,76,255,0.13)');
-// Animated wave: wave(0,H*.62,W,H*.025,1.5,'rgba(109,76,255,0.2)',2,_T*1.8);
-// Hexagon grid (AI/tech bg): for(var _i=0;_i<6;_i++)hexagon(W*.1+_i*W*.15,H*.2,W*.04,'rgba(109,76,255,0.07)','rgba(109,76,255,0.15)',1);
-// Floating triangles (energy): triangle(W*.15,H*.3,W*.04,'rgba(109,76,255,0.12)',_T*.4); triangle(W*.85,H*.65,W*.03,'rgba(109,76,255,0.08)',_T*.3+1);
-// Word-by-word headline (headline zone): txReveal(['Build','smarter','faster'],W/2,${Math.round(zHead.y + zHead.h*0.5)},${fsHeroLg},CLR_FG,900,sceneStart+0.1,0.22);
-// Typewriter sub-headline: txType('Your AI-powered workspace',W/2,${Math.round(zMid.y + zMid.h*0.3)},${fsSub},CLR_FG,600,sceneStart+0.8,1.6);
-// Headline 1 word — scale bounce: ctx.save();ctx.translate(x,y+r.ty);ctx.scale(E.bk(C(r.lt/.65,0,1)),E.bk(C(r.lt/.65,0,1)));tx(text,0,0,${fsHero},'#0c0b14',900);ctx.restore();
-// Headline 2+ words: txWrap(['Word One','Word Two'],W/2,${Math.round(zHead.y + zHead.h*0.5)},${fsHeroLg},'#0c0b14',900,${Math.round(fsHeroLg*1.22)});
-// Stagger 3 feature cards with check bullets (content zone):
-//   var feats=['Feature A','Feature B','Feature C'],cardH=${Math.round(zMid.h*0.28)},gap=${Math.round(H*0.015)};
-//   feats.forEach(function(t,i){
-//     var il=r.lt-.3-i*.25;if(il<0)return;
-//     var p=E.bk(C(il/.45,0,1));ctx.globalAlpha=r.op*C(il/.25,0,1);
-//     floatCard(W*.08,${zMid.y}+i*(cardH+gap)+(1-p)*60,W*.84,cardH,${Math.round(W*0.018)},'rgba(255,255,255,0.92)');
-//     check(W*.14,${zMid.y}+i*(cardH+gap)+cardH/2+(1-p)*60,12,'#6d4cff',2);
-//     tx(t,W/2+W*.03,${zMid.y}+i*(cardH+gap)+cardH/2+(1-p)*60,${fsBody},'#0c0b14',600); });
-// Laptop mockup with UI inside (content zone):
-//   laptop(W*.5,${Math.round(zMid.y + zMid.h*0.5)},W*.55, function(sx,sy,sw,sh){
-//     gradRect(sx,sy,sw,sh,'#0f0e24','#1a1240',true);
-//     rr(sx+sw*.04,sy+sh*.06,sw*.92,sh*.1,4,'#1e1d3a');
-//     tx('Dashboard',sx+sw/2,sy+sh*.11,sw*.055,'#a78bfa',700);
-//     rr(sx+sw*.04,sy+sh*.2,sw*.44,sh*.35,6,'rgba(109,76,255,0.3)');
-//     rr(sx+sw*.52,sy+sh*.2,sw*.44,sh*.35,6,'rgba(109,76,255,0.15)');
-//   });
-// Phone mockup (portrait story):
-//   phone(W*.72,H*.5,H*.46, function(sx,sy,sw,sh){
-//     gradRect(sx,sy,sw,sh,'#0a0912','#130e2e',true);
-//     rr(sx+sw*.05,sy+sh*.04,sw*.9,sh*.1,8,'rgba(109,76,255,0.4)');
-//     tx('Welcome back',sx+sw/2,sy+sh*.12,sw*.07,'#a78bfa',700);
-//   });
-// Count-up stat: txm(cu(50000,s,2.5)+'+',W/2,${Math.round(zMid.y + zMid.h*0.4)},${fsStat});
-// Progress ring metric: ring(W/2,${Math.round(zMid.y + zMid.h*0.5)},${Math.round(Math.min(zMid.h, zMid.h)*0.4)},${Math.round(zMid.h*0.09)},'#6d4cff',C(r.lt/1.5,0,1));
-// Arrow flow diagram: arrow(W*.25,H*.5,W*.75,H*.5,'rgba(109,76,255,0.7)',2);
-// Dashed separator: dashed(W*.08,${Math.round(zMid.y - H*0.02)},W*.92,${Math.round(zMid.y - H*0.02)},'rgba(0,0,0,0.08)',1.5);
-// Circle accent shape: circle(W*.88,H*.1,W*.045,'rgba(109,76,255,0.1)');
-// Ripple brand reveal: ripple(W/2,${Math.round(zHead.y + zHead.h*0.5)},sceneStart,3);
-// Breathing CTA (CTA zone y:${zCta.y}):
-//   var pulse=1+Math.sin(_T*3)*.022,ctaW=${Math.round(W*0.55)},ctaH=${Math.round(zCta.h*0.7)},ctaY=${Math.round(zCta.y + zCta.h*0.35)};
-//   ctx.save();ctx.translate(W/2,ctaY);ctx.scale(pulse,pulse);
-//   rr(-ctaW/2,-ctaH/2,ctaW,ctaH,ctaH/2,'#6d4cff','rgba(109,76,255,.5)',26);
-//   tx('Get Started Free',0,0,${fsCta},'#fff',700);ctx.restore();
-// Animated bar chart (content zone, 3 bars):
-//   var vals=[0.65,0.82,1.0],bW=W*.11,bGap=W*.06,anim=C((r.lt-.4)/1.4,0,1);
-//   vals.forEach(function(v,i){bar(W/2+(i-1)*(bW+bGap),${zMid.y},bW,${zMid.h},${zMid.h}*v,'#6d4cff',anim);});
-
-━━━ DRAW ORDER — ABSOLUTE LAW ━━━
-Canvas paints BACK-TO-FRONT. Any element drawn later covers earlier ones. ALWAYS follow this sequence inside every scene block:
-  1. Background fill: gradRect() or ctx.fillRect() — FIRST, always
-  2. Atmosphere layer: glow(), dotGrid(), wave(), hexagon(), triangle() — decorative depth
-  3. Mid layer: laptop(), phone(), floatCard(), circle(), ring(), bar() — product visuals
-  4. TEXT LAST: tx(), txm(), txWrap(), txReveal(), txType() — ALWAYS drawn after all shapes
-VIOLATION = text hidden behind shapes. Never draw gradRect() or glow() AFTER text. This is non-negotiable.
-
-━━━ VISUAL DEPTH GUIDE — MANDATORY ━━━
-EVERY scene MUST have at least 2 visual layers — NOT just text on flat color:
-  Layer 1 (bg):  gradRect(), glow(), wave(), dotGrid() — create depth and atmosphere
-  Layer 2 (mid): laptop(), phone(), floatCard(), circle(), ring(), bar() — show content/product
-  Layer 3 (top): tx(), txm(), txWrap(), txReveal(), txType(), rr() pill — text LAST
-
-SCENE VARIETY — use a different visual layer each scene:
-  Pain scene:    red-tinted gradRect + glitch jitter (ctx.translate(Math.sin(_T*20)*2,0)) + dashed lines
-  Bridge scene:  dark gradRect + single large glow(W/2,H*.5,W*.4,'rgba(109,76,255,0.22)') + minimal tx
-  Reveal scene:  ripple() + laptop() or phone() with UI inside + floating floatCard() stat
-  Feature scene: dotGrid() bg + 3 floatCard() or rr() cards + check() bullets
-  Stat scene:    dark bg + 3 ring() progress indicators or bar() chart + txm() count-up numbers
-  CTA scene:     gradRect gradient + breathing rr() button + circle() accent shapes
-
-━━━ PACING GUIDE — read the content, vary the speed ━━━
-Professional videos use CONTRAST in speed — fast hooks, slow payoffs, fast action items.
-  Hook/Pain scene:   Fast entry — ease-in ≤ 0.3s, elements stagger ≤ 0.15s apart. Urgency.
-  Pain Deepen:       Medium — 0.3–0.4s ease, slight jitter (ctx.translate(sin*2,0)). Restless.
-  Bridge/Pause:      SLOW — 0.6–0.8s ease, single focused element, glow builds gradually.
-  Solution Reveal:   Dramatic — 0.5s bounce (E.bk), ripple(), then elements emerge one by one.
-  Feature Stagger:   Crisp — 0.2s between cards, each card uses E.o3 at 0.35s. Clean rhythm.
-  Stat/Data scene:   Slow build — count-up over 2–3s, ring() fills over 1.5s. Let numbers land.
-  CTA scene:         Steady pulse — 3–4Hz breathing scale, bold colors, CTA holds center stage.
-Avoid: every scene using the same 0.45s ease. Boring = uniform speed. Vary it deliberately.
-
-━━━ SHAPE PHILOSOPHY — DESIGN DON'T TEMPLATE ━━━
-Do NOT default to the same shapes (circle, hexagon, triangle) every video. THINK about what shape fits this specific content, then DRAW it with raw canvas code.
-You can draw ANY shape using ctx.beginPath() + ctx.moveTo() + ctx.lineTo() + ctx.bezierCurveTo() + ctx.arc() + ctx.closePath(). The helper functions (hexagon, triangle, circle, ring, wave) are available tools — not mandatory templates.
-Examples of creative custom shapes:
-  Brand/logo shape       → draw the actual logo outline with ctx.bezierCurveTo() paths
-  Abstract blob          → smooth bezier curve closed path with random-ish control points, animated with sin(_T)
-  Diagonal band          → ctx.beginPath(); ctx.moveTo(0,H*.3); ctx.lineTo(W,H*.1); ctx.lineTo(W,H*.4); ctx.lineTo(0,H*.6); ctx.closePath(); ctx.fill();
-  Star / asterisk        → draw 6–8 lines from center with ctx.rotate() in a loop
-  Grid lines             → loop ctx.moveTo/lineTo for X and Y lines at fixed intervals
-  Organic circle         → use ctx.arc() with slight radius variation per frame: r + Math.sin(_T*2+i)*4
-  Starburst pulse        → N triangular spikes from center, scale with E.el(p)
-  L-shape / bracket      → 3-point path for a corner bracket accent
-Match the shape to the content. Financial = clean rectangles + bars. AI/tech = organic blobs + nodes. Fashion = diagonal slashes + bold crops. Nature = smooth curves + gradients.
-
-━━━ ELEMENT QUALITY RULES ━━━
-Hero headline (1–2 words):    fs ${fsHero}px, weight 900, Inter Tight — use tx()
-Hero headline (3+ words):     fs ${fsHeroLg}px, weight 900, split into 2 lines — use txWrap()
-Sub-headline / accent line:   fs ${fsSub}px, weight 700, Inter Tight
-Stats / large numbers:        fs ${fsStat}px, weight 700, JetBrains Mono txm(), color #6d4cff
-Card body / feature labels:   fs ${fsBody}px, weight 500–600
-Eyebrow pill text:            fs ${fsPill}px, weight 700, uppercase
-CTA button text:              fs ${fsCta}px, weight 700
-Feature cards: floatCard() or rr() white fill, shadow 'rgba(0,0,0,.05)' blur 14, radius ${Math.round(W*0.018)}
-Accent pills: rr() #efeaff fill, radius 100, text #6d4cff weight 700
-CTA: rr() #6d4cff fill, shadow 'rgba(109,76,255,.5)' blur 26, breathing scale pulse
-Device mockups: laptop() for dashboard/app reveals, phone() for mobile/story format
-Subtitles: sub() or subHL() — every scene MUST end with one call
-
 ━━━ NON-NEGOTIABLE RULES ━━━
-1. Output ONLY the HTML. Start with <!DOCTYPE html>. No markdown fences, no explanations.
-2. ZERO external JS. No <script src="">. Google Fonts CSS @import is the ONLY allowed external resource.
-3. Copy the runtime block VERBATIM — do not change a single character.
-4. Redefine render by assigning: render = function(){ ... };
-5. Use ctx.save()/ctx.restore() around every block that changes globalAlpha or shadowBlur.
-6. Every scene uses sp(s,e) — scenes auto-fade in and out.
-7. Every scene ends with sub(voiceOverText, r.op) or subHL(before,hl,after,r.op).
-8. Real copy only — derive ALL text from the brand context. Zero placeholder text.
-9. DEFINE color vars (CLR_BG, CLR_FG, CLR_ACC) at the top of render() and use them everywhere. Never hardcode hex inside scene blocks.
-10. NO EMOJIS in any text string. Use typography and geometry for visual impact.
-11. RESPECT VERTICAL ZONES — check the layout guide above before placing every element.
-12. CANVAS BOUNDS — a clip rect [0,0,${W},${H}] is active. Anything outside is invisible. EVERY element must fit: x ≥ 0 AND x+width ≤ ${W} AND y ≥ 0 AND y+height ≤ ${H}. The font sizes above are pre-calibrated — do NOT increase them.
-13. DRAW ORDER LAW: background FIRST, shapes SECOND, text ALWAYS LAST. A gradient or glow drawn after text will paint over it. This is the #1 cause of invisible text — never violate it.
-14. VARY PACING: use the pacing guide. Hook = fast (≤0.3s ease), bridge = slow (0.6–0.8s), CTA = punchy pulse. Uniform speed = boring video. Vary deliberately.
-15. USE txReveal() for multi-word headlines for cinematic word-by-word entrance. Use txType() for short taglines or terminal-style reveals. These replace flat fade-ins.`;
+1. Output ONLY the HTML — start with <!DOCTYPE html>. No markdown fences, no explanations.
+2. Copy the runtime block VERBATIM — do not change a single character.
+3. Custom drawing functions go inside <script> ABOVE render = function(){...}
+4. ctx.save()/ctx.restore() around every block that changes globalAlpha or shadowBlur.
+5. Every scene uses sp(s,e). Every scene ends with sub() or subHL().
+6. Real copy only — derive every word from the content. Zero placeholder text.
+7. CLR_BG/CLR_FG/CLR_ACC defined at top of render(). Never hardcode hex in scene blocks.
+8. No emojis in any canvas text string — they render as broken boxes on Windows.
+9. ALL elements must fit within [0,0,${W},${H}]. Canvas has an active clip rect — overflow is invisible.
+10. DRAW ORDER always: background first, objects second, text ALWAYS last.`;
 }
 
 function buildScreenPrompt(fmt: Format, desc: string, styleName: string, context: string): string {
@@ -1162,7 +1085,11 @@ The prompt must be specific enough for a motion designer to execute without ques
     setReviews({});
     setRightTab('reviews');
 
-    const codeSnippet = target.slice(0, 7000);
+    // For video: agents review scene code only (not the runtime boilerplate)
+    const isVideoTarget = type === 'video';
+    const codeSnippet = isVideoTarget
+      ? (extractSceneSection(target) || target).slice(0, 9000)
+      : target.slice(0, 7000);
 
     for (const agent of REVIEW_AGENTS) {
       const callId = `rev-${agent.id}-${Date.now()}`;
@@ -1186,7 +1113,7 @@ The prompt must be specific enough for a motion designer to execute without ques
             const { mode, apiKey, provider } = await resolveMode();
             invoke('krew_ai_stream', {
               callId, mode, systemPrompt: agent.prompt,
-              messages: [{ role: 'user', content: `Review this marketing video HTML:\n\`\`\`html\n${codeSnippet}\n\`\`\`` }],
+              messages: [{ role: 'user', content: `Review this marketing video scene code:\n\`\`\`js\n${codeSnippet}\n\`\`\`` }],
               apiKey, provider, localModel: null, modelName: null, baseUrl: null,
               sessionToken: session?.access_token ?? null,
             }).catch((e: unknown) => { done.cleanup(); reject(e); });
@@ -1277,18 +1204,25 @@ The prompt must be specific enough for a motion designer to execute without ques
     let raw = '';
     const isVideo = type === 'video';
     const sysPrompt = isVideo
-      ? `You are refining a canvas-animated marketing video's scene code.
-Return ONLY the scene section — start exactly with the comment line "// ── YOUR SCENE CODE ─────..." then the complete render = function(){ ... }; block. Nothing else.
-The runtime is already in place with these helpers available:
-  sp(s,e), lp(a,b,s,e,ef), cu(n,s,d,ef), E.{o3,i3,io,bk,el,si}, C(v,a,b), _T, DUR, W, H, ctx
-  tx(), txm(), txWrap(), rr(), sub(), subHL(), ripple()
-  circle(), ring(), glow(), arrow(), dashed(), dotGrid(), wave(), gradRect(), floatCard(), laptop(), phone(), check(), bar()
-RULES:
-1. No emojis — canvas renders them as broken boxes on Windows
-2. Vertical zones: top y<H*0.18, headline y 0.20–0.44H, content y 0.48–0.68H, CTA y 0.72–0.84H, subtitle RESERVED y>0.87H
-3. Canvas bounds strictly enforced by clip: ALL x in [0,W], ALL y in [0,H]. Out-of-bounds is invisible.
-4. Every scene ends with sub() or subHL() for subtitles
-5. Apply ONLY the requested change — keep all other scenes, timing, and copy unchanged`
+      ? `You are refining a canvas-animated video's scene code.
+Return ONLY the scene section — start with "// ── YOUR SCENE CODE ─────..." then render = function(){ ... }; Nothing else.
+
+Runtime helpers available (already in scope — do not redefine):
+  sp(s,e), lp(), cu(), E.{o3,i3,io,bk,el,si}, C(), _T, DUR, W, H, ctx
+  tx(), txm(), txWrap(), txReveal(), txType(), rr(), sub(), subHL()
+  glow(), ripple(), circle(), ring(), gradRect(), floatCard(), wave(), dotGrid()
+  arrow(), dashed(), hexagon(), triangle(), bar(), check(), laptop(), phone()
+
+You may also define custom drawing functions (ABOVE render =) using raw canvas primitives:
+  ctx.beginPath(), moveTo(), lineTo(), bezierCurveTo(), arc(), rect(), roundRect()
+
+Rules:
+1. No emojis in canvas text — they render as broken boxes on Windows
+2. Draw order: background FIRST, objects SECOND, text ALWAYS LAST
+3. Canvas bounds [0,0,W,H] — clip is active, overflow invisible
+4. Every scene ends with sub() or subHL()
+5. CLR_BG/CLR_FG/CLR_ACC must be defined at top of render() — never hardcode hex in scene blocks
+6. Apply ONLY the requested changes — keep unchanged scenes intact`
       : `You are an expert HTML/CSS designer. Modify the design as instructed. Return the COMPLETE updated HTML starting with <!DOCTYPE html>. Keep everything not mentioned unchanged.`;
 
     try {
@@ -1298,9 +1232,19 @@ RULES:
       });
       const stripped = stripFences(raw);
       let updated: string;
-      if (isVideo && stripped.includes('// ── YOUR SCENE CODE')) {
-        // Inject new scene code into existing HTML (runtime stays intact)
-        updated = injectSceneSection(html, stripped);
+      if (isVideo) {
+        const hasMarker = stripped.includes('// ── YOUR SCENE CODE');
+        const hasRender = /render\s*=\s*function/.test(stripped);
+        if (hasMarker) {
+          updated = injectSceneSection(html, stripped);
+        } else if (hasRender) {
+          // AI returned render code without the marker — add it and inject
+          updated = injectSceneSection(html, `// ── YOUR SCENE CODE ─────────────────────────────────────────────────────────\n${stripped}`);
+        } else {
+          // Try to extract scene section from a full HTML response
+          const extracted = extractSceneSection(stripped);
+          updated = extracted ? injectSceneSection(html, extracted) : buildVideoHtml(format, duration, stripped);
+        }
       } else {
         updated = buildStaticHtml(stripped);
       }
@@ -1442,9 +1386,10 @@ RULES:
     for (const result of Object.values(reviews)) {
       result.fixes.forEach(fix => { if (fix) allFixes.push(fix); });
     }
-    for (const fixText of allFixes) {
-      await handleRefine(fixText, true);
-    }
+    if (allFixes.length === 0) return;
+    // Combine into a single instruction — sequential calls would each read stale html state
+    const combined = allFixes.map((f, i) => `${i + 1}. ${f}`).join('\n');
+    await handleRefine(combined, true);
     setReviews({});
   }
 
