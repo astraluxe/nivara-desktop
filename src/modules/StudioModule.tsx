@@ -51,6 +51,20 @@ const STYLES = [
   { id: 'editorial', label: 'Editorial',  desc: 'Magazine-style, large type, strong grid, editorial photography-like feel' },
 ];
 
+// ─── Accent color palette ─────────────────────────────────────────────────────
+
+const ACCENT_PALETTE = [
+  { name: 'Violet',  hex: '#6d4cff' },
+  { name: 'Orange',  hex: '#f97316' },
+  { name: 'Amber',   hex: '#f59e0b' },
+  { name: 'Lime',    hex: '#84cc16' },
+  { name: 'Emerald', hex: '#10b981' },
+  { name: 'Sky',     hex: '#0ea5e9' },
+  { name: 'Pink',    hex: '#ec4899' },
+  { name: 'Rose',    hex: '#f43f5e' },
+  { name: 'White',   hex: '#f8fafc' },
+];
+
 // ─── Marketing agents ─────────────────────────────────────────────────────────
 
 interface StudioAgent {
@@ -228,6 +242,7 @@ function txReveal(words,x,yc,fs,clr,wt,s,gap){ctx.font=(wt||700)+' '+(fs||48)+'p
 function txType(text,x,y,fs,clr,wt,s,dur){var p=C((_T-s)/(dur||1.2),0,1),ch=Math.floor(text.length*p),vis=text.slice(0,ch);tx(vis,x,y,fs,clr,wt);if(p<1&&Math.sin(_T*8)>0){ctx.save();ctx.font=(wt||700)+' '+(fs||48)+'px "Inter Tight",system-ui';ctx.textAlign='center';ctx.textBaseline='middle';var vw=ctx.measureText(vis).width;ctx.fillStyle=clr||'#0c0b14';ctx.fillRect(x+vw/2+2,y-fs*.5,2,fs);ctx.restore();}}
 function hexagon(cx,cy,r,fill,stroke,sw){ctx.save();ctx.beginPath();for(var i=0;i<6;i++){var a=Math.PI/3*i-Math.PI/6;if(i===0)ctx.moveTo(cx+r*Math.cos(a),cy+r*Math.sin(a));else ctx.lineTo(cx+r*Math.cos(a),cy+r*Math.sin(a));}ctx.closePath();if(fill){ctx.fillStyle=fill;ctx.fill();}if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=sw||2;ctx.stroke();}ctx.restore();}
 function triangle(cx,cy,r,fill,angle){ctx.save();ctx.translate(cx,cy);if(angle)ctx.rotate(angle);ctx.beginPath();for(var i=0;i<3;i++){var a=Math.PI*2/3*i-Math.PI/2;if(i===0)ctx.moveTo(r*Math.cos(a),r*Math.sin(a));else ctx.lineTo(r*Math.cos(a),r*Math.sin(a));}ctx.closePath();ctx.fillStyle=fill||'rgba(109,76,255,0.15)';ctx.fill();ctx.restore();}
+window.addEventListener('message',function(e){if(!e.data)return;if(e.data.__nv_acc)window.__NV_ACC=e.data.__nv_acc;if(e.data.__nv_bg)window.__NV_BG=e.data.__nv_bg;if(e.data.__nv_fg)window.__NV_FG=e.data.__nv_fg;});
 var _PAUSED=false;
 function render(){}
 (function(){function _loop(ts){if(_L==null){_L=ts;requestAnimationFrame(_loop);return;}if(!_PAUSED){var dt=Math.min((ts-_L)/1000,0.1);_T=(_T+dt)%DUR;}_L=ts;ctx.fillStyle='#ffffff';ctx.fillRect(0,0,W,H);ctx.save();ctx.beginPath();ctx.rect(0,0,W,H);ctx.clip();try{render();}catch(e){ctx.font='bold 13px monospace';ctx.fillStyle='rgba(160,0,0,.9)';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('Render error: '+e.message,W/2,H/2);}ctx.restore();ctx.save();ctx.fillStyle='rgba(109,76,255,.12)';ctx.fillRect(0,H-6,W,6);ctx.fillStyle='#6d4cff';ctx.shadowColor='rgba(109,76,255,.5)';ctx.shadowBlur=10;ctx.fillRect(0,H-6,W*C(_T/DUR,0,1),6);ctx.restore();requestAnimationFrame(_loop);}requestAnimationFrame(_loop);})();`;
@@ -438,6 +453,8 @@ function txType(text,x,y,fs,clr,wt,s,dur){var p=C((_T-s)/(dur||1.2),0,1),ch=Math
 function hexagon(cx,cy,r,fill,stroke,sw){ctx.save();ctx.beginPath();for(var i=0;i<6;i++){var a=Math.PI/3*i-Math.PI/6;if(i===0)ctx.moveTo(cx+r*Math.cos(a),cy+r*Math.sin(a));else ctx.lineTo(cx+r*Math.cos(a),cy+r*Math.sin(a));}ctx.closePath();if(fill){ctx.fillStyle=fill;ctx.fill();}if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=sw||2;ctx.stroke();}ctx.restore();}
 // triangle(cx,cy,r,fill,angle): equilateral triangle — use for direction, growth, energy; angle in radians
 function triangle(cx,cy,r,fill,angle){ctx.save();ctx.translate(cx,cy);if(angle)ctx.rotate(angle);ctx.beginPath();for(var i=0;i<3;i++){var a=Math.PI*2/3*i-Math.PI/2;if(i===0)ctx.moveTo(r*Math.cos(a),r*Math.sin(a));else ctx.lineTo(r*Math.cos(a),r*Math.sin(a));}ctx.closePath();ctx.fillStyle=fill||'rgba(109,76,255,0.15)';ctx.fill();ctx.restore();}
+// Color override listener — allows parent window to change accent/bg/fg in real-time via postMessage({__nv_acc:'#hex'})
+window.addEventListener('message',function(e){if(!e.data)return;if(e.data.__nv_acc)window.__NV_ACC=e.data.__nv_acc;if(e.data.__nv_bg)window.__NV_BG=e.data.__nv_bg;if(e.data.__nv_fg)window.__NV_FG=e.data.__nv_fg;});
 var _PAUSED=false;
 function render(){}
 (function(){
@@ -473,11 +490,13 @@ FONTS: Inter Tight (display, headlines) · JetBrains Mono (numbers/stats) — lo
 Scan the CONTENT/STORY and BRAND CONTEXT above. Extract or derive 3 brand colors:
   - Primary BG: the dominant background color for this brand/topic
   - Foreground: the main text color (must contrast 4.5:1 with BG)
-  - Accent: the highlight/CTA color — bold and distinct from BG
-Define them at the TOP of your render() function as:
-  var CLR_BG='#...', CLR_FG='#...', CLR_ACC='#...';
+  - Accent: the highlight/CTA color — bold and distinct from BG. Choose from: orange (#f97316), amber (#f59e0b), lime (#84cc16), emerald (#10b981), sky (#0ea5e9), pink (#ec4899), rose (#f43f5e), violet (#6d4cff) — pick what fits the content emotion best. Do NOT default to violet every time.
+Define them at the TOP of your render() function using this EXACT pattern (allows real-time color override from outside):
+  var CLR_BG = window.__NV_BG || '#<your-derived-bg>';
+  var CLR_FG = window.__NV_FG || '#<your-derived-fg>';
+  var CLR_ACC = window.__NV_ACC || '#<your-derived-accent>';
 Then use CLR_BG, CLR_FG, CLR_ACC consistently throughout ALL scenes — NEVER hardcode hex colors inside scene blocks.
-If no brand colors are specified, use defaults (BG=#ffffff, FG=#0c0b14, ACC=#6d4cff) but still define the vars.
+The window.__NV_* values let the user change colors instantly from the palette — your code must read them EVERY frame.
 
 ━━━ SCENE PLAN ━━━
 ${scenePlan}
@@ -639,15 +658,19 @@ Professional videos use CONTRAST in speed — fast hooks, slow payoffs, fast act
   CTA scene:         Steady pulse — 3–4Hz breathing scale, bold colors, CTA holds center stage.
 Avoid: every scene using the same 0.45s ease. Boring = uniform speed. Vary it deliberately.
 
-━━━ CONTENT-AWARE SHAPE SELECTION ━━━
-Pick background shapes that reinforce the topic — do not default to circles every time:
-  Flow / process / steps  → arrow(), dashed() connectors, sequential circles
-  Network / AI / tech     → hexagon() grid, dotGrid(), wave()
-  Growth / direction      → triangle() pointing up, bar() chart, ring() progress
-  Security / protection   → circle() shield outline, check() marks
-  Speed / energy          → triangle() diagonal, wave() fast-freq, glitch jitter
-  Data / analytics        → ring() + txm() stats, bar() chart, grid lines
-  Trust / premium         → glow() soft, floatCard() elevated, minimal dotGrid()
+━━━ SHAPE PHILOSOPHY — DESIGN DON'T TEMPLATE ━━━
+Do NOT default to the same shapes (circle, hexagon, triangle) every video. THINK about what shape fits this specific content, then DRAW it with raw canvas code.
+You can draw ANY shape using ctx.beginPath() + ctx.moveTo() + ctx.lineTo() + ctx.bezierCurveTo() + ctx.arc() + ctx.closePath(). The helper functions (hexagon, triangle, circle, ring, wave) are available tools — not mandatory templates.
+Examples of creative custom shapes:
+  Brand/logo shape       → draw the actual logo outline with ctx.bezierCurveTo() paths
+  Abstract blob          → smooth bezier curve closed path with random-ish control points, animated with sin(_T)
+  Diagonal band          → ctx.beginPath(); ctx.moveTo(0,H*.3); ctx.lineTo(W,H*.1); ctx.lineTo(W,H*.4); ctx.lineTo(0,H*.6); ctx.closePath(); ctx.fill();
+  Star / asterisk        → draw 6–8 lines from center with ctx.rotate() in a loop
+  Grid lines             → loop ctx.moveTo/lineTo for X and Y lines at fixed intervals
+  Organic circle         → use ctx.arc() with slight radius variation per frame: r + Math.sin(_T*2+i)*4
+  Starburst pulse        → N triangular spikes from center, scale with E.el(p)
+  L-shape / bracket      → 3-point path for a corner bracket accent
+Match the shape to the content. Financial = clean rectangles + bars. AI/tech = organic blobs + nodes. Fashion = diagonal slashes + bold crops. Nature = smooth curves + gradients.
 
 ━━━ ELEMENT QUALITY RULES ━━━
 Hero headline (1–2 words):    fs ${fsHero}px, weight 900, Inter Tight — use tx()
@@ -990,6 +1013,8 @@ export default function StudioModule({ initialRequest, onRequestConsumed }: Stud
   const [previewKey,     setPreviewKey]     = useState(0);
   const [currentTime,    setCurrentTime]    = useState(0);
   const [isPaused,       setIsPaused]       = useState(false);
+  const [accentColor,    setAccentColor]    = useState<string | null>(null);
+  const [showCustomColor, setShowCustomColor] = useState(false);
   const syncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -1105,6 +1130,8 @@ export default function StudioModule({ initialRequest, onRequestConsumed }: Stud
       setHtml(finalHtml);
       setPreviewKey(k => k + 1);
       setEditedHtml(finalHtml);
+      setAccentColor(null);
+      setShowCustomColor(false);
       setHistory((h) => [{ id: Date.now().toString(), prompt: p, html: finalHtml, type: 'video', format: fmt, at: Date.now() }, ...h.slice(0, 19)]);
       setTimeout(() => runReviews(finalHtml), 800);
     } catch (err) {
@@ -1378,6 +1405,11 @@ RULES:
     if (w) { w._T = 0; w._L = null; w._PAUSED = false; }
     setCurrentTime(0);
     setIsPaused(false);
+  }
+
+  function applyAccentColor(hex: string) {
+    setAccentColor(hex);
+    iframeRef.current?.contentWindow?.postMessage({ __nv_acc: hex }, '*');
   }
 
   async function handleDownloadVideo() {
@@ -1889,6 +1921,64 @@ RULES:
                   </span>
                 </div>
               )}
+
+              {/* ── Color palette (video only) ── */}
+              {type === 'video' && <div
+                className="flex flex-col gap-1.5 px-1 pt-0.5"
+                style={{ width: format.w * previewScale }}
+              >
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] text-nv-faint font-mono shrink-0">Accent</span>
+                  <div className="flex items-center gap-1 flex-wrap">
+                    {ACCENT_PALETTE.map((c) => (
+                      <button
+                        key={c.hex}
+                        onClick={() => applyAccentColor(c.hex)}
+                        title={c.name}
+                        className="w-4 h-4 rounded-full shrink-0 transition-all hover:scale-110"
+                        style={{
+                          background: c.hex,
+                          outline: accentColor === c.hex ? `2px solid ${c.hex}` : '2px solid transparent',
+                          outlineOffset: '1px',
+                          boxShadow: c.hex === '#f8fafc' ? 'inset 0 0 0 1px rgba(0,0,0,0.15)' : undefined,
+                        }}
+                      />
+                    ))}
+                    <button
+                      onClick={() => setShowCustomColor((v) => !v)}
+                      title="Custom color"
+                      className="w-4 h-4 rounded-full border border-dashed border-nv-border text-nv-faint hover:border-nv-muted text-[9px] flex items-center justify-center shrink-0 transition-fast"
+                    >
+                      {showCustomColor ? '×' : '+'}
+                    </button>
+                  </div>
+                </div>
+
+                {showCustomColor && (
+                  <div className="flex items-center gap-2 px-0.5">
+                    <input
+                      type="color"
+                      defaultValue={accentColor ?? '#6d4cff'}
+                      onChange={(e) => applyAccentColor(e.target.value)}
+                      className="w-7 h-7 rounded cursor-pointer border border-nv-border bg-nv-surface p-0.5 shrink-0"
+                      title="Pick any color"
+                    />
+                    <input
+                      type="text"
+                      placeholder="#hex or rgb()"
+                      defaultValue={accentColor ?? ''}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          const v = (e.target as HTMLInputElement).value.trim();
+                          if (v) applyAccentColor(v);
+                        }
+                      }}
+                      className="flex-1 min-w-0 text-[10px] font-mono bg-nv-surface border border-nv-border rounded px-2 py-1 text-nv-text placeholder:text-nv-faint outline-none focus:border-accent/50 transition-fast"
+                    />
+                    <span className="text-[9px] text-nv-faint font-mono shrink-0">↵ apply</span>
+                  </div>
+                )}
+              </div>}
             </div>
           )}
         </div>
