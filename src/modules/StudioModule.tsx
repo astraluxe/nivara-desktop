@@ -224,6 +224,10 @@ function laptop(cx,cy,bW,fn){var bH=bW*0.58,sW=bW*0.83,sH=bH*0.67,sx=cx-sW/2,sy=
 function phone(cx,cy,h,fn){var w=h*0.46,sW=w*0.86,sH=h*0.88,sx=cx-sW/2,sy=cy-sH/2;rr(cx-w/2,cy-h/2,w,h,22,'#1c1c2e');rr(sx,sy,sW,sH,16,'#080812');if(fn){ctx.save();ctx.beginPath();ctx.moveTo(sx+16,sy);ctx.lineTo(sx+sW-16,sy);ctx.quadraticCurveTo(sx+sW,sy,sx+sW,sy+16);ctx.lineTo(sx+sW,sy+sH-16);ctx.quadraticCurveTo(sx+sW,sy+sH,sx+sW-16,sy+sH);ctx.lineTo(sx+16,sy+sH);ctx.quadraticCurveTo(sx,sy+sH,sx,sy+sH-16);ctx.lineTo(sx,sy+16);ctx.quadraticCurveTo(sx,sy,sx+16,sy);ctx.closePath();ctx.clip();fn(sx,sy,sW,sH);ctx.restore();}rr(cx-w*0.15,cy-h/2-1,w*0.3,13,7,'#1c1c2e');rr(cx-w*0.2,cy+h/2-11,w*0.4,5,3,'#2a2a3e');}
 function check(cx,cy,r,col,lw){circle(cx,cy,r,null,col||'#22c55e',lw||2);ctx.save();ctx.strokeStyle=col||'#22c55e';ctx.lineWidth=lw||2;ctx.lineCap='round';ctx.lineJoin='round';ctx.beginPath();ctx.moveTo(cx-r*0.35,cy);ctx.lineTo(cx-r*0.05,cy+r*0.32);ctx.lineTo(cx+r*0.38,cy-r*0.3);ctx.stroke();ctx.restore();}
 function bar(x,y,w,maxH,val,fill,anim){var h=val*(anim!==undefined?anim:1);rr(x,y+maxH-h,w,h,4,fill||'#6d4cff');}
+function txReveal(words,x,yc,fs,clr,wt,s,gap){ctx.font=(wt||700)+' '+(fs||48)+'px "Inter Tight",system-ui';var tw=[],tot=0;for(var i=0;i<words.length;i++){tw[i]=ctx.measureText(words[i]+' ').width;tot+=tw[i];}var cx=x-tot/2;for(var i=0;i<words.length;i++){var p=C((_T-s-i*(gap||0.18))/.35,0,1);if(p<=0)break;ctx.save();ctx.globalAlpha=E.o3(p);ctx.fillStyle=clr||'#0c0b14';ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText(words[i],cx+(1-E.o3(p))*14,yc);ctx.restore();cx+=tw[i];}}
+function txType(text,x,y,fs,clr,wt,s,dur){var p=C((_T-s)/(dur||1.2),0,1),ch=Math.floor(text.length*p),vis=text.slice(0,ch);tx(vis,x,y,fs,clr,wt);if(p<1&&Math.sin(_T*8)>0){ctx.save();ctx.font=(wt||700)+' '+(fs||48)+'px "Inter Tight",system-ui';ctx.textAlign='center';ctx.textBaseline='middle';var vw=ctx.measureText(vis).width;ctx.fillStyle=clr||'#0c0b14';ctx.fillRect(x+vw/2+2,y-fs*.5,2,fs);ctx.restore();}}
+function hexagon(cx,cy,r,fill,stroke,sw){ctx.save();ctx.beginPath();for(var i=0;i<6;i++){var a=Math.PI/3*i-Math.PI/6;if(i===0)ctx.moveTo(cx+r*Math.cos(a),cy+r*Math.sin(a));else ctx.lineTo(cx+r*Math.cos(a),cy+r*Math.sin(a));}ctx.closePath();if(fill){ctx.fillStyle=fill;ctx.fill();}if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=sw||2;ctx.stroke();}ctx.restore();}
+function triangle(cx,cy,r,fill,angle){ctx.save();ctx.translate(cx,cy);if(angle)ctx.rotate(angle);ctx.beginPath();for(var i=0;i<3;i++){var a=Math.PI*2/3*i-Math.PI/2;if(i===0)ctx.moveTo(r*Math.cos(a),r*Math.sin(a));else ctx.lineTo(r*Math.cos(a),r*Math.sin(a));}ctx.closePath();ctx.fillStyle=fill||'rgba(109,76,255,0.15)';ctx.fill();ctx.restore();}
 var _PAUSED=false;
 function render(){}
 (function(){function _loop(ts){if(_L==null){_L=ts;requestAnimationFrame(_loop);return;}if(!_PAUSED){var dt=Math.min((ts-_L)/1000,0.1);_T=(_T+dt)%DUR;}_L=ts;ctx.fillStyle='#ffffff';ctx.fillRect(0,0,W,H);ctx.save();ctx.beginPath();ctx.rect(0,0,W,H);ctx.clip();try{render();}catch(e){ctx.font='bold 13px monospace';ctx.fillStyle='rgba(160,0,0,.9)';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('Render error: '+e.message,W/2,H/2);}ctx.restore();ctx.save();ctx.fillStyle='rgba(109,76,255,.12)';ctx.fillRect(0,H-6,W,6);ctx.fillStyle='#6d4cff';ctx.shadowColor='rgba(109,76,255,.5)';ctx.shadowBlur=10;ctx.fillRect(0,H-6,W*C(_T/DUR,0,1),6);ctx.restore();requestAnimationFrame(_loop);}requestAnimationFrame(_loop);})();`;
@@ -426,6 +430,14 @@ function phone(cx,cy,h,fn){var w=h*0.46,sW=w*0.86,sH=h*0.88,sx=cx-sW/2,sy=cy-sH/
 function check(cx,cy,r,col,lw){circle(cx,cy,r,null,col||'#22c55e',lw||2);ctx.save();ctx.strokeStyle=col||'#22c55e';ctx.lineWidth=lw||2;ctx.lineCap='round';ctx.lineJoin='round';ctx.beginPath();ctx.moveTo(cx-r*0.35,cy);ctx.lineTo(cx-r*0.05,cy+r*0.32);ctx.lineTo(cx+r*0.38,cy-r*0.3);ctx.stroke();ctx.restore();}
 // bar(x,y,w,maxH,val,fill,anim): animated vertical bar; anim=0–1 entrance progress
 function bar(x,y,w,maxH,val,fill,anim){var h=val*(anim!==undefined?anim:1);rr(x,y+maxH-h,w,h,4,fill||'#6d4cff');}
+// txReveal(words[],x,yCtr,fs,clr,wt,startT,gapT): reveal each word left-to-right with fade+slide; gapT=delay between words (default 0.18s)
+function txReveal(words,x,yc,fs,clr,wt,s,gap){ctx.font=(wt||700)+' '+(fs||48)+'px "Inter Tight",system-ui';var tw=[],tot=0;for(var i=0;i<words.length;i++){tw[i]=ctx.measureText(words[i]+' ').width;tot+=tw[i];}var cx=x-tot/2;for(var i=0;i<words.length;i++){var p=C((_T-s-i*(gap||0.18))/.35,0,1);if(p<=0)break;ctx.save();ctx.globalAlpha=E.o3(p);ctx.fillStyle=clr||'#0c0b14';ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText(words[i],cx+(1-E.o3(p))*14,yc);ctx.restore();cx+=tw[i];}}
+// txType(text,x,y,fs,clr,wt,startT,dur): typewriter effect with blinking cursor
+function txType(text,x,y,fs,clr,wt,s,dur){var p=C((_T-s)/(dur||1.2),0,1),ch=Math.floor(text.length*p),vis=text.slice(0,ch);tx(vis,x,y,fs,clr,wt);if(p<1&&Math.sin(_T*8)>0){ctx.save();ctx.font=(wt||700)+' '+(fs||48)+'px "Inter Tight",system-ui';ctx.textAlign='center';ctx.textBaseline='middle';var vw=ctx.measureText(vis).width;ctx.fillStyle=clr||'#0c0b14';ctx.fillRect(x+vw/2+2,y-fs*.5,2,fs);ctx.restore();}}
+// hexagon(cx,cy,r,fill,stroke,sw): regular hexagon shape — use for network/AI/tech visuals
+function hexagon(cx,cy,r,fill,stroke,sw){ctx.save();ctx.beginPath();for(var i=0;i<6;i++){var a=Math.PI/3*i-Math.PI/6;if(i===0)ctx.moveTo(cx+r*Math.cos(a),cy+r*Math.sin(a));else ctx.lineTo(cx+r*Math.cos(a),cy+r*Math.sin(a));}ctx.closePath();if(fill){ctx.fillStyle=fill;ctx.fill();}if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=sw||2;ctx.stroke();}ctx.restore();}
+// triangle(cx,cy,r,fill,angle): equilateral triangle — use for direction, growth, energy; angle in radians
+function triangle(cx,cy,r,fill,angle){ctx.save();ctx.translate(cx,cy);if(angle)ctx.rotate(angle);ctx.beginPath();for(var i=0;i<3;i++){var a=Math.PI*2/3*i-Math.PI/2;if(i===0)ctx.moveTo(r*Math.cos(a),r*Math.sin(a));else ctx.lineTo(r*Math.cos(a),r*Math.sin(a));}ctx.closePath();ctx.fillStyle=fill||'rgba(109,76,255,0.15)';ctx.fill();ctx.restore();}
 var _PAUSED=false;
 function render(){}
 (function(){
@@ -456,6 +468,16 @@ CANVAS SIZE: ${W}×${H}px · ${duration}s loop · auto-restarts
 DEFAULT PALETTE: bg #ffffff · text #0c0b14 · accent #6d4cff · soft #efeaff · muted #7a7388
 COLOR OVERRIDE: If the user or brand context specifies colors, USE those instead of defaults above.
 FONTS: Inter Tight (display, headlines) · JetBrains Mono (numbers/stats) — loaded via CSS @import
+
+━━━ STEP 0 — COLOR EXTRACTION (do this before writing any scene code) ━━━
+Scan the CONTENT/STORY and BRAND CONTEXT above. Extract or derive 3 brand colors:
+  - Primary BG: the dominant background color for this brand/topic
+  - Foreground: the main text color (must contrast 4.5:1 with BG)
+  - Accent: the highlight/CTA color — bold and distinct from BG
+Define them at the TOP of your render() function as:
+  var CLR_BG='#...', CLR_FG='#...', CLR_ACC='#...';
+Then use CLR_BG, CLR_FG, CLR_ACC consistently throughout ALL scenes — NEVER hardcode hex colors inside scene blocks.
+If no brand colors are specified, use defaults (BG=#ffffff, FG=#0c0b14, ACC=#6d4cff) but still define the vars.
 
 ━━━ SCENE PLAN ━━━
 ${scenePlan}
@@ -536,10 +558,15 @@ render = function() {
 
 ━━━ CANVAS ANIMATION PATTERNS ━━━
 // Every scene: var r=sp(START,END); if(r){ ctx.save(); ctx.globalAlpha=r.op; ... ctx.restore(); sub('voice text',r.op); }
+// SCENE STRUCTURE (always in this order): 1) background 2) shapes 3) text
 // Gradient bg (pain): gradRect(0,0,W,H,'#1a0808','#0c0b14',true);
 // Atmosphere glow: glow(W/2,H*.28,W*.38,'rgba(109,76,255,0.18)');
 // Decorative dot grid: dotGrid(W*.72,H*.05,8,6,24,2,'rgba(109,76,255,0.13)');
 // Animated wave: wave(0,H*.62,W,H*.025,1.5,'rgba(109,76,255,0.2)',2,_T*1.8);
+// Hexagon grid (AI/tech bg): for(var _i=0;_i<6;_i++)hexagon(W*.1+_i*W*.15,H*.2,W*.04,'rgba(109,76,255,0.07)','rgba(109,76,255,0.15)',1);
+// Floating triangles (energy): triangle(W*.15,H*.3,W*.04,'rgba(109,76,255,0.12)',_T*.4); triangle(W*.85,H*.65,W*.03,'rgba(109,76,255,0.08)',_T*.3+1);
+// Word-by-word headline (headline zone): txReveal(['Build','smarter','faster'],W/2,${Math.round(zHead.y + zHead.h*0.5)},${fsHeroLg},CLR_FG,900,sceneStart+0.1,0.22);
+// Typewriter sub-headline: txType('Your AI-powered workspace',W/2,${Math.round(zMid.y + zMid.h*0.3)},${fsSub},CLR_FG,600,sceneStart+0.8,1.6);
 // Headline 1 word — scale bounce: ctx.save();ctx.translate(x,y+r.ty);ctx.scale(E.bk(C(r.lt/.65,0,1)),E.bk(C(r.lt/.65,0,1)));tx(text,0,0,${fsHero},'#0c0b14',900);ctx.restore();
 // Headline 2+ words: txWrap(['Word One','Word Two'],W/2,${Math.round(zHead.y + zHead.h*0.5)},${fsHeroLg},'#0c0b14',900,${Math.round(fsHeroLg*1.22)});
 // Stagger 3 feature cards with check bullets (content zone):
@@ -579,11 +606,19 @@ render = function() {
 //   var vals=[0.65,0.82,1.0],bW=W*.11,bGap=W*.06,anim=C((r.lt-.4)/1.4,0,1);
 //   vals.forEach(function(v,i){bar(W/2+(i-1)*(bW+bGap),${zMid.y},bW,${zMid.h},${zMid.h}*v,'#6d4cff',anim);});
 
+━━━ DRAW ORDER — ABSOLUTE LAW ━━━
+Canvas paints BACK-TO-FRONT. Any element drawn later covers earlier ones. ALWAYS follow this sequence inside every scene block:
+  1. Background fill: gradRect() or ctx.fillRect() — FIRST, always
+  2. Atmosphere layer: glow(), dotGrid(), wave(), hexagon(), triangle() — decorative depth
+  3. Mid layer: laptop(), phone(), floatCard(), circle(), ring(), bar() — product visuals
+  4. TEXT LAST: tx(), txm(), txWrap(), txReveal(), txType() — ALWAYS drawn after all shapes
+VIOLATION = text hidden behind shapes. Never draw gradRect() or glow() AFTER text. This is non-negotiable.
+
 ━━━ VISUAL DEPTH GUIDE — MANDATORY ━━━
 EVERY scene MUST have at least 2 visual layers — NOT just text on flat color:
   Layer 1 (bg):  gradRect(), glow(), wave(), dotGrid() — create depth and atmosphere
   Layer 2 (mid): laptop(), phone(), floatCard(), circle(), ring(), bar() — show content/product
-  Layer 3 (top): tx(), txm(), txWrap(), rr() pill — text on top of the visuals
+  Layer 3 (top): tx(), txm(), txWrap(), txReveal(), txType(), rr() pill — text LAST
 
 SCENE VARIETY — use a different visual layer each scene:
   Pain scene:    red-tinted gradRect + glitch jitter (ctx.translate(Math.sin(_T*20)*2,0)) + dashed lines
@@ -592,6 +627,27 @@ SCENE VARIETY — use a different visual layer each scene:
   Feature scene: dotGrid() bg + 3 floatCard() or rr() cards + check() bullets
   Stat scene:    dark bg + 3 ring() progress indicators or bar() chart + txm() count-up numbers
   CTA scene:     gradRect gradient + breathing rr() button + circle() accent shapes
+
+━━━ PACING GUIDE — read the content, vary the speed ━━━
+Professional videos use CONTRAST in speed — fast hooks, slow payoffs, fast action items.
+  Hook/Pain scene:   Fast entry — ease-in ≤ 0.3s, elements stagger ≤ 0.15s apart. Urgency.
+  Pain Deepen:       Medium — 0.3–0.4s ease, slight jitter (ctx.translate(sin*2,0)). Restless.
+  Bridge/Pause:      SLOW — 0.6–0.8s ease, single focused element, glow builds gradually.
+  Solution Reveal:   Dramatic — 0.5s bounce (E.bk), ripple(), then elements emerge one by one.
+  Feature Stagger:   Crisp — 0.2s between cards, each card uses E.o3 at 0.35s. Clean rhythm.
+  Stat/Data scene:   Slow build — count-up over 2–3s, ring() fills over 1.5s. Let numbers land.
+  CTA scene:         Steady pulse — 3–4Hz breathing scale, bold colors, CTA holds center stage.
+Avoid: every scene using the same 0.45s ease. Boring = uniform speed. Vary it deliberately.
+
+━━━ CONTENT-AWARE SHAPE SELECTION ━━━
+Pick background shapes that reinforce the topic — do not default to circles every time:
+  Flow / process / steps  → arrow(), dashed() connectors, sequential circles
+  Network / AI / tech     → hexagon() grid, dotGrid(), wave()
+  Growth / direction      → triangle() pointing up, bar() chart, ring() progress
+  Security / protection   → circle() shield outline, check() marks
+  Speed / energy          → triangle() diagonal, wave() fast-freq, glitch jitter
+  Data / analytics        → ring() + txm() stats, bar() chart, grid lines
+  Trust / premium         → glow() soft, floatCard() elevated, minimal dotGrid()
 
 ━━━ ELEMENT QUALITY RULES ━━━
 Hero headline (1–2 words):    fs ${fsHero}px, weight 900, Inter Tight — use tx()
@@ -616,10 +672,13 @@ Subtitles: sub() or subHL() — every scene MUST end with one call
 6. Every scene uses sp(s,e) — scenes auto-fade in and out.
 7. Every scene ends with sub(voiceOverText, r.op) or subHL(before,hl,after,r.op).
 8. Real copy only — derive ALL text from the brand context. Zero placeholder text.
-9. Respect any colors the user or context specifies — these override the default palette.
+9. DEFINE color vars (CLR_BG, CLR_FG, CLR_ACC) at the top of render() and use them everywhere. Never hardcode hex inside scene blocks.
 10. NO EMOJIS in any text string. Use typography and geometry for visual impact.
 11. RESPECT VERTICAL ZONES — check the layout guide above before placing every element.
-12. CANVAS BOUNDS — a clip rect [0,0,${W},${H}] is active. Anything outside is invisible. EVERY element must fit: x ≥ 0 AND x+width ≤ ${W} AND y ≥ 0 AND y+height ≤ ${H}. The font sizes above are pre-calibrated — do NOT increase them.`;
+12. CANVAS BOUNDS — a clip rect [0,0,${W},${H}] is active. Anything outside is invisible. EVERY element must fit: x ≥ 0 AND x+width ≤ ${W} AND y ≥ 0 AND y+height ≤ ${H}. The font sizes above are pre-calibrated — do NOT increase them.
+13. DRAW ORDER LAW: background FIRST, shapes SECOND, text ALWAYS LAST. A gradient or glow drawn after text will paint over it. This is the #1 cause of invisible text — never violate it.
+14. VARY PACING: use the pacing guide. Hook = fast (≤0.3s ease), bridge = slow (0.6–0.8s), CTA = punchy pulse. Uniform speed = boring video. Vary deliberately.
+15. USE txReveal() for multi-word headlines for cinematic word-by-word entrance. Use txType() for short taglines or terminal-style reveals. These replace flat fade-ins.`;
 }
 
 function buildScreenPrompt(fmt: Format, desc: string, styleName: string, context: string): string {
