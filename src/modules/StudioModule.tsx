@@ -240,6 +240,8 @@ html,body{width:${W}px;height:${H}px;overflow:hidden;font-family:'Inter Tight',s
 :root{--bg:#111118;--fg:#f1f5f9;--acc:#6d4cff;}
 body{position:relative;background:var(--bg);color:var(--fg);}
 .clip{position:absolute;inset:0;display:none;overflow:hidden;}
+.icon{font-family:'Material Symbols Outlined';font-variation-settings:'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 48;font-size:96px;line-height:1;user-select:none;}
+.icon-fill{font-family:'Material Symbols Rounded';font-variation-settings:'FILL' 1,'wght' 400,'GRAD' 0,'opsz' 48;font-size:96px;line-height:1;user-select:none;}
 .sub{position:absolute;bottom:0;left:0;right:0;padding:${subPad}px ${subW}px;background:linear-gradient(transparent,rgba(0,0,0,0.65));font-size:${subFs}px;color:#fff;font-weight:500;text-align:center;}
 </style>
 </head>
@@ -317,19 +319,17 @@ Decide:
   B) SCENE PLAN — ${sceneCount} scenes. For each: name, job (one sentence), duration in seconds. Durations must sum to ${duration}.
   C) VISUAL STYLE — dark glassmorphism / clean minimal / bold gradient / editorial. Derived from content emotion.
   D) COLOR TRIO — --bg / --fg / --acc. Derived from brand or content feel. DO NOT default to purple.
-  E) SCENE VISUALS — plan the PROP or OBJECT for each scene BEFORE writing code.
-     Each scene = 1 big visual prop that fills 50-60% of the viewport. Text is secondary.
-     PICK ONE PROP PER SCENE:
-     - Laptop/phone mockup built from CSS divs with a glowing screen
-     - Animated bar chart (5-8 bars, CSS height animation, labelled)
-     - Ring/donut chart (SVG circle with stroke-dasharray animation)
-     - 3-stat card grid (each card: big mono number + label)
-     - Feature icon grid (icon box + label, 2-3 columns, SVG icons)
-     - Waveform / audio bars (20 thin divs animating height)
-     - Network diagram (SVG nodes + lines, nodes glow)
-     - Progress timeline (horizontal steps, animated fill)
-     - Code terminal mockup (dark card, monospace fake code lines)
-     - Abstract shape / logo mark built from CSS border-radius + rotate
+  E) HERO VISUAL — decide the ONE dominant visual for each scene BEFORE writing code.
+     PRIORITY ORDER (use higher options when content fits):
+     1. ICON-FIRST (best for most scenes): One giant Material Symbols icon (160-220px) centered,
+        with a radial glow behind it, entrance animation, and subtle float. The icon IS the scene.
+     2. UI INTERACTION (tech/product content): Search bar with typing, browser with URL animation,
+        phone with animated notification, app screen with a micro-interaction.
+     3. VISUAL PROP (data/feature content): Bar chart, donut ring, stat card grid, waveform,
+        network diagram, device mockup. Sized to max 84% W × 54% H.
+     4. EMOJI HERO (brand/announcement): One 150-200px emoji centered, CSS glow + float.
+        emoji are perfect as concept icons — e.g. 🚀 for launch, 🔒 for security, ⚡ for speed.
+     The .sub CARRIES ALL NARRATIVE TEXT. Scene body = 80% visual, 20% text (max 1 short headline).
 
 ━━━ STEP 2: SCENE STRUCTURE (data-start / data-duration) ━━━
 Each scene is a <div class="clip"> with data-start and data-duration in whole seconds.
@@ -434,79 +434,161 @@ Metric card (3 in a row for data scenes):
   .metric .num  { font-family:'JetBrains Mono',monospace; font-size:${fsStat}px; font-weight:700; color:var(--acc); }
   .metric .label { font-size:${fsBody}px; opacity:0.6; text-align:center; }
 
-DESIGN YOUR OWN VISUAL PROP for each scene — do not copy these verbatim. Adapt every prop to the actual content.
-Every prop container: position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+DESIGN YOUR OWN VISUAL for each scene — read the content, pick the best technique, code it fresh.
+Every visual: position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
 All props: max-width:${Math.round(W*0.84)}px; max-height:${Math.round(H*0.54)}px; overflow:hidden.
 
-PROP MENU — pick the best fit, invent freely beyond this list:
+━━━ TECHNIQUE A: ICON HERO (the most powerful and versatile) ━━━
+Material Symbols icons are loaded via Google Fonts — use them at any size. Scale to 160-220px for hero scenes.
 
-1. DEVICE FRAME (product/app scene)
-   Outer shell = dark rounded div + deep box-shadow. Inner screen = darker div with real mini-UI.
-   Laptop: ~55% W wide. Phone: ~18% W wide × 33% W tall. Add radial glow behind device.
-   Screen content = simplified UI mockup, not placeholder text.
+Single giant icon with glow:
+  <div style="position:relative;display:inline-flex;align-items:center;justify-content:center;">
+    <div style="position:absolute;width:280px;height:280px;border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--acc) 30%,transparent),transparent 70%);animation:pulse 2s ease infinite;"></div>
+    <span class="icon-fill" style="font-size:180px;color:var(--acc);animation:scaleIn 0.6s cubic-bezier(0.34,1.56,0.64,1) 0.2s both,float 3s ease-in-out 1s infinite;">cloud_upload</span>
+  </div>
 
-2. STAT CARD GRID (metrics/proof scene)
-   3 glass cards in a flex row, gap:2% W, each flex:1 min-width:0.
-   Card: rounded-20px glass bg, big JetBrains Mono number (data-suffix attr) + short label.
-   Use countUp() JS to animate numbers from 0 when the scene appears.
+Useful icon names (from what Material Symbols has):
+  cloud_upload · cloud_sync · security · lock · bolt · rocket_launch · analytics · dashboard
+  auto_awesome · smart_toy · hub · lan · speed · verified · shield · trending_up · insights
+  code · terminal · api · data_object · storage · memory · router · wifi · cell_tower
+  notifications · send · share · favorite · star · workspace_premium · emoji_events · military_tech
 
-3. FEATURE ICON GRID (features/benefits scene)
-   2-3 column flex grid of icon boxes. Each box: 64×64 rounded square, accent-tinted bg.
-   Real SVG icon inside (28px, stroke style — Heroicons/Lucide paths you know exactly).
-   Feature name below icon in body font. Stagger animate-in with 0.1s delays.
+Icon grid (3-4 icons for feature scenes):
+  <div style="display:flex;gap:${Math.round(W*0.05)}px;flex-wrap:wrap;justify-content:center;max-width:${Math.round(W*0.84)}px;">
+    <div style="display:flex;flex-direction:column;align-items:center;gap:16px;animation:fadeUp 0.7s ease 0.1s both;">
+      <div style="width:88px;height:88px;border-radius:22px;background:color-mix(in srgb,var(--acc) 15%,transparent);border:1px solid color-mix(in srgb,var(--acc) 30%,transparent);display:flex;align-items:center;justify-content:center;">
+        <span class="icon-fill" style="font-size:44px;color:var(--acc);">bolt</span>
+      </div>
+      <span style="font-size:${fsBody}px;font-weight:600;text-align:center;max-width:120px;">Feature Name</span>
+    </div>
+    <!-- repeat for each feature — different icon, same structure, stagger animation-delay -->
+  </div>
 
-4. VERTICAL BAR CHART (data/growth scene)
-   Flex row, align-items:flex-end, height:${Math.round(H*0.3)}px, max-width:${Math.round(W*0.65)}px.
-   5-7 bars, each flex:1, height controlled by CSS var --h (15%-90%).
-   @keyframes growBar{from{height:0}to{height:var(--h)}} — stagger delays.
-   Real labels below each bar.
+━━━ TECHNIQUE B: EMOJI HERO ━━━
+Large emoji as a concept icon. Use when the content concept maps to an emoji naturally.
+  <div style="display:flex;flex-direction:column;align-items:center;gap:${Math.round(H*0.025)}px;">
+    <div style="font-size:160px;line-height:1;filter:drop-shadow(0 0 60px color-mix(in srgb,var(--acc) 50%,transparent));animation:scaleIn 0.7s cubic-bezier(0.34,1.56,0.64,1) 0.1s both,float 3s ease-in-out 1s infinite;">🚀</div>
+    <h1 style="font-size:${fsHero}px;font-weight:900;letter-spacing:-0.04em;animation:fadeUp 0.7s ease 0.4s both;">ONE HEADLINE</h1>
+  </div>
+Concept → emoji: launch=🚀  security=🔒  speed=⚡  AI=🤖  data=📊  global=🌍  money=💰  growth=📈  star=⭐  fire=🔥
 
-5. DONUT / RING CHART (progress/completion/stat scene)
-   SVG, size ~${Math.round(Math.min(W,H)*0.22)}px. Track = low-opacity circle. Progress = accent stroke.
-   @keyframes dashIn{from{stroke-dasharray:0 290}to{stroke-dasharray:230 60}}
-   Center text = the actual stat/percentage. Outer label ring if needed.
+━━━ TECHNIQUE C: UI INTERACTION ANIMATIONS ━━━
 
-6. WAVEFORM / AUDIO BARS (energy/signal/activity scene)
-   20-24 thin divs (width:5px, border-radius:3px, accent color), flex row, align-items:center.
-   @keyframes waveBar{from{height:8px}to{height:${Math.round(H*0.1)}px}}
-   Stagger animation-delay 0.06s each. Alternate infinite. Some bars tall, some short.
+Typing search bar (great for search/discovery/AI products):
+  <div style="display:flex;flex-direction:column;align-items:center;gap:${Math.round(H*0.03)}px;width:100%;max-width:${Math.round(W*0.7)}px;">
+    <div style="display:flex;align-items:center;gap:14px;width:100%;background:rgba(255,255,255,0.08);border:1.5px solid rgba(255,255,255,0.18);border-radius:100px;padding:18px 28px;animation:fadeUp 0.6s ease 0.2s both;box-shadow:0 0 40px color-mix(in srgb,var(--acc) 15%,transparent);">
+      <span class="icon" style="font-size:26px;opacity:0.5;flex-shrink:0;">search</span>
+      <span id="q1" style="font-size:${fsSub}px;flex:1;font-weight:500;letter-spacing:-0.01em;"></span>
+      <span style="width:2px;height:22px;background:var(--acc);animation:blink 0.8s step-end infinite;border-radius:1px;"></span>
+    </div>
+  </div>
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+  // JS: typeText('q1', 'Find the best solution...', 55)
+  // function typeText(id,txt,ms,cb){var el=document.getElementById(id),i=0;el.textContent='';var t=setInterval(function(){el.textContent=txt.slice(0,++i);if(i>=txt.length){clearInterval(t);if(cb)setTimeout(cb,600);}},ms);}
 
-7. TIMELINE / STEPS (process/workflow scene)
-   Flex row: numbered circle → line → numbered circle → line → ...
-   Active steps = accent bg. Pending = low opacity bg. Lines animate width with fillBar.
-   Label below each step node. Max-width:${Math.round(W*0.78)}px.
+Browser window with URL typing:
+  <div style="width:${Math.round(W*0.72)}px;border-radius:14px;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,0.5);animation:scaleIn 0.6s ease 0.2s both;">
+    <div style="background:#1e1e2e;padding:14px 18px;display:flex;align-items:center;gap:10px;">
+      <div style="display:flex;gap:6px;flex-shrink:0;">
+        <div style="width:13px;height:13px;border-radius:50%;background:#ff5f57;"></div>
+        <div style="width:13px;height:13px;border-radius:50%;background:#febc2e;"></div>
+        <div style="width:13px;height:13px;border-radius:50%;background:#28c840;"></div>
+      </div>
+      <div style="flex:1;background:rgba(255,255,255,0.08);border-radius:8px;padding:7px 14px;display:flex;align-items:center;gap:8px;">
+        <span class="icon" style="font-size:15px;opacity:0.4;">lock</span>
+        <span id="url1" style="font-size:13px;opacity:0.7;font-family:'JetBrains Mono',monospace;"></span>
+      </div>
+    </div>
+    <div style="background:#0d0d1a;min-height:${Math.round(H*0.2)}px;display:flex;align-items:center;justify-content:center;padding:24px;">
+      <!-- mini page content inside browser -->
+    </div>
+  </div>
+  // JS: typeText('url1', 'yourdomain.com/product', 40)
 
-8. NETWORK GRAPH (integrations/connections scene)
-   SVG. 5-7 circle nodes scattered by absolute position or SVG coordinates.
-   Lines between nodes = stroke, 0.2 opacity. Central node = accent + glow filter.
-   Outer nodes scaleIn with stagger. Lines animate stroke-dashoffset.
+Phone notification card (push notification sliding in):
+  <div style="max-width:${Math.round(W*0.4)}px;width:100%;background:rgba(255,255,255,0.12);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.18);border-radius:20px;padding:18px 20px;display:flex;align-items:center;gap:14px;animation:slideInR 0.6s cubic-bezier(0.16,1,0.3,1) 0.4s both;box-shadow:0 8px 40px rgba(0,0,0,0.3);">
+    <div style="width:44px;height:44px;border-radius:12px;background:var(--acc);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+      <span class="icon-fill" style="font-size:24px;color:#fff;">notifications</span>
+    </div>
+    <div>
+      <div style="font-size:${fsBody}px;font-weight:700;">App Name</div>
+      <div style="font-size:${Math.round(fsBody*0.9)}px;opacity:0.65;margin-top:3px;">Your notification message here</div>
+    </div>
+  </div>
 
-9. CODE TERMINAL (developer/API/tech scene)
-   Dark card, radius:16px. Top row: 3 colored circles (red/yellow/green).
-   Below: monospace lines with syntax coloring — actual relevant code/command from the content.
-   Cursor blink at end. Card glow = accent color-mix.
+Animated checklist (feature/benefit scenes):
+  <div style="display:flex;flex-direction:column;gap:${Math.round(H*0.02)}px;max-width:${Math.round(W*0.55)}px;width:100%;">
+    <!-- repeat 3-4 items with stagger delay -->
+    <div style="display:flex;align-items:center;gap:16px;animation:slideInL 0.5s ease 0.1s both;">
+      <div style="width:28px;height:28px;border-radius:50%;background:color-mix(in srgb,var(--acc) 20%,transparent);border:2px solid var(--acc);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+        <span class="icon-fill" style="font-size:16px;color:var(--acc);">check</span>
+      </div>
+      <span style="font-size:${fsSub}px;font-weight:500;">Benefit or feature statement</span>
+    </div>
+  </div>
 
-10. ABSTRACT / BRAND MARK (opening/brand scene)
-    Geometric CSS shapes built from border, border-radius, rotate, clip-path.
-    Must REPRESENT the brand concept visually — not random shapes.
-    Animate: float + slow rotate. Layer 2-3 shapes for depth.
+Star rating reveal (social proof / testimonial):
+  <div style="display:flex;flex-direction:column;align-items:center;gap:${Math.round(H*0.025)}px;">
+    <div style="display:flex;gap:8px;">
+      <!-- 5 stars, staggered scaleIn -->
+      <span style="font-size:52px;color:#f59e0b;animation:scaleIn 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.1s both;filter:drop-shadow(0 0 12px rgba(245,158,11,0.6));">★</span>
+      <span style="font-size:52px;color:#f59e0b;animation:scaleIn 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.2s both;filter:drop-shadow(0 0 12px rgba(245,158,11,0.6));">★</span>
+      <!-- repeat for 5 stars -->
+    </div>
+    <div style="font-size:${fsStat}px;font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--acc);">4.9</div>
+    <div style="font-size:${fsBody}px;opacity:0.6;">from 2,400+ reviews</div>
+  </div>
 
-11. LINE CHART (trend/growth scene)
-    SVG polyline. @keyframes drawLine{from{stroke-dashoffset:500}to{stroke-dashoffset:0}}
-    Gradient fill below line using linearGradient. Dots at data points with scaleIn delay.
-    X-axis labels at bottom. Y-axis faint grid lines.
+━━━ TECHNIQUE D: ANIMATED SVG ICON (draw-in effect) ━━━
+Draw a path stroke-by-stroke — works for logos, arrows, checkmarks, shapes:
+  <svg viewBox="0 0 80 80" width="${Math.round(Math.min(W,H)*0.2)}px" height="${Math.round(Math.min(W,H)*0.2)}px" fill="none">
+    <circle cx="40" cy="40" r="36" stroke="rgba(255,255,255,0.1)" stroke-width="4"/>
+    <path d="M22 40 L34 52 L58 28" stroke="var(--acc)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"
+          stroke-dasharray="60" stroke-dashoffset="60" style="animation:drawPath 0.8s ease-out 0.5s forwards;"/>
+  </svg>
+  @keyframes drawPath{to{stroke-dashoffset:0}}
 
-12. CIRCULAR PROGRESS RINGS (multi-metric scene)
-    3 concentric SVG rings, each a different metric. Different radii, stroke widths, accent variants.
-    Each ring animates dashIn independently with offset delays.
+━━━ TECHNIQUE E: DATA PROPS ━━━
+(use when content is about metrics, growth, performance)
 
-Count-up JS (always include if you use numbers):
-  function countUp(el,to,ms){var from=0,s=Date.now(),suf=el.dataset.suffix||'';function f(){var p=Math.min((Date.now()-s)/ms,1),e=1-Math.pow(1-p,3);el.textContent=Math.round(from+(to-from)*e)+suf;if(p<1)requestAnimationFrame(f);}requestAnimationFrame(f);}
-  // Trigger once per scene appearance:
-  document.getElementById('scene-stats').addEventListener('animationstart',function(ev){if(ev.animationName!=='clipIn')return;countUp(document.getElementById('myNum'),2500000,1800);},{once:false});
+Vertical bar chart:
+  <div style="display:flex;align-items:flex-end;gap:${Math.round(W*0.015)}px;height:${Math.round(H*0.28)}px;max-width:${Math.round(W*0.65)}px;padding-bottom:8px;">
+    <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;">
+      <span style="font-size:${Math.round(fsBody*0.85)}px;opacity:0.6;font-family:'JetBrains Mono',monospace;">75%</span>
+      <div style="width:100%;background:var(--acc);border-radius:6px 6px 0 0;--h:75%;height:var(--h);animation:growBar 1.2s cubic-bezier(0.16,1,0.3,1) 0.1s both;max-height:100%;"></div>
+      <span style="font-size:${Math.round(fsBody*0.85)}px;opacity:0.5;">Jan</span>
+    </div>
+    <!-- repeat with different --h and animation-delay per bar -->
+  </div>
+  @keyframes growBar{from{height:0}to{height:var(--h,50%)}}
 
-SVG icons: always fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round". Color via CSS color:var(--acc).
-Only use Heroicons/Lucide SVG paths you know with certainty — never guess or approximate a path.
+Donut chart:
+  <svg width="${Math.round(Math.min(W,H)*0.22)}" height="${Math.round(Math.min(W,H)*0.22)}" viewBox="0 0 120 120">
+    <circle cx="60" cy="60" r="46" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="14"/>
+    <circle cx="60" cy="60" r="46" fill="none" stroke="var(--acc)" stroke-width="14" stroke-linecap="round"
+            stroke-dasharray="0 290" transform="rotate(-90 60 60)"
+            style="animation:dashIn 1.4s cubic-bezier(0.16,1,0.3,1) 0.3s both;"/>
+    <text x="60" y="56" text-anchor="middle" font-size="18" font-weight="700" fill="var(--fg)">87%</text>
+    <text x="60" y="72" text-anchor="middle" font-size="9" fill="var(--fg)" opacity="0.5">satisfied</text>
+  </svg>
+  @keyframes dashIn{from{stroke-dasharray:0 290}to{stroke-dasharray:230 60}}
+
+Stat cards:
+  <div style="display:flex;gap:${Math.round(W*0.02)}px;max-width:${Math.round(W*0.84)}px;width:100%;">
+    <div style="flex:1;min-width:0;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:${Math.round(H*0.03)}px ${Math.round(W*0.015)}px;text-align:center;animation:scaleIn 0.5s ease 0.1s both;">
+      <span class="icon-fill" style="font-size:32px;color:var(--acc);">trending_up</span>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:${fsStat}px;font-weight:700;color:var(--acc);margin:8px 0 4px;" data-suffix="%">0</div>
+      <div style="font-size:${fsBody}px;opacity:0.55;">Growth</div>
+    </div>
+  </div>
+
+countUp JS (always include with data):
+  function countUp(el,to,ms){var s=Date.now(),suf=el.dataset.suffix||'';(function f(){var p=Math.min((Date.now()-s)/ms,1),e=1-Math.pow(1-p,3);el.textContent=Math.round(to*e)+suf;if(p<1)requestAnimationFrame(f);})();}
+  // trigger: scene.addEventListener('animationstart',function(ev){if(ev.animationName==='clipIn')document.querySelectorAll('[data-suffix]').forEach(function(el){countUp(el,+el.textContent||99,1800);});},{once:false});
+
+typeText JS helper (for typing animations):
+  function typeText(id,txt,ms,cb){var el=document.getElementById(id),i=0;if(!el)return;el.textContent='';var t=setInterval(function(){el.textContent=txt.slice(0,++i);if(i>=txt.length){clearInterval(t);if(cb)setTimeout(cb,800);}},ms);}
+  // start typing on scene appear: document.getElementById('scene-NAME').addEventListener('animationstart',function(ev){if(ev.animationName==='clipIn')typeText('typed-el','Your search query...',50);},{once:false});
 
 Subtitle bar (REQUIRED on every clip — write real voice-over copy from the content):
   <div class="sub">Your actual caption text here</div>
@@ -518,7 +600,7 @@ Subtitle bar (REQUIRED on every clip — write real voice-over copy from the con
 <head>
 <meta charset="utf-8">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;700&family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@48,400,0,0&family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@48,400,1,0&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body{width:${W}px;height:${H}px;overflow:hidden;font-family:'Inter Tight',system-ui,sans-serif;}
 :root{--bg:#111118;--fg:#f1f5f9;--acc:#6d4cff;}  /* ← OVERRIDE — derive from content */
@@ -566,10 +648,12 @@ ${playbackJs}
 5. Every .clip MUST contain a .sub element with real voice-over text derived from the content.
 6. All visible text comes from user content — no placeholders, no "Lorem ipsum", no generic labels.
 7. html,body must stay width:${W}px; height:${H}px; overflow:hidden.
-8. No emojis in text. Use inline SVG paths for any icon/symbol.
+8. Icons over text: use Material Symbols (.icon or .icon-fill class) or large emoji for visual heroes.
+   Emoji allowed as large visual anchors (font-size 120-200px, centered, with CSS glow). No emoji in subtitle or body copy.
 9. Scene times: last clip's data-start + data-duration = ${duration}. No gaps. No overlaps.
 10. Every scene must have a distinct visual prop — no two scenes with the same layout.
-11. TEXT BUDGET: max 1 headline + 1 subline per scene. If you have a third text line, cut it and make it a visual prop instead.
+11. TEXT BUDGET: .sub subtitle CARRIES the narrative. Scene body: max 1 short headline + the visual prop. No paragraph text in scenes.
+    If you feel you need more text in the scene body — put it in .sub and use an icon/visual instead.
 12. CENTERING: all content divs use display:flex + align-items:center + justify-content:center. NEVER top/left pixel offsets for text.
 13. SIZE BOUNDS: no element wider than ${Math.round(W*0.9)}px or taller than ${Math.round(H*0.7)}px. Use max-width/max-height on every visual prop.
 14. OVERFLOW: every .clip has overflow:hidden — but also add overflow:hidden on any inner container with dynamic content to be safe.`;
