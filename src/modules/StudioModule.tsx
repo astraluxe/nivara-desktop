@@ -434,76 +434,79 @@ Metric card (3 in a row for data scenes):
   .metric .num  { font-family:'JetBrains Mono',monospace; font-size:${fsStat}px; font-weight:700; color:var(--acc); }
   .metric .label { font-size:${fsBody}px; opacity:0.6; text-align:center; }
 
-Laptop mockup (CSS only):
-  <div style="width:${Math.round(W*0.55)}px;height:${Math.round(W*0.34)}px;background:#1a1a2e;border-radius:12px;position:relative;box-shadow:0 20px 60px rgba(0,0,0,0.5);">
-    <div style="position:absolute;inset:10px 12px 24px 12px;background:#080812;border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center;"><!-- screen content --></div>
-    <div style="position:absolute;bottom:-10px;left:50%;transform:translateX(-50%);width:55%;height:10px;background:#141428;border-radius:0 0 8px 8px;"></div>
-  </div>
+DESIGN YOUR OWN VISUAL PROP for each scene — do not copy these verbatim. Adapt every prop to the actual content.
+Every prop container: position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+All props: max-width:${Math.round(W*0.84)}px; max-height:${Math.round(H*0.54)}px; overflow:hidden.
 
-Phone mockup (CSS only):
-  <div style="width:${Math.round(W*0.18)}px;height:${Math.round(W*0.33)}px;background:#1c1c2e;border-radius:28px;display:flex;align-items:center;justify-content:center;box-shadow:0 20px 50px rgba(0,0,0,0.5);">
-    <div style="width:88%;height:92%;background:#080812;border-radius:22px;overflow:hidden;display:flex;align-items:center;justify-content:center;"><!-- content --></div>
-  </div>
+PROP MENU — pick the best fit, invent freely beyond this list:
 
-Stat card grid (3 across — max-width enforced):
-  <div style="display:flex;gap:${Math.round(W*0.02)}px;max-width:${Math.round(W*0.84)}px;width:100%;">
-    <div style="flex:1;min-width:0;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:${Math.round(H*0.03)}px ${Math.round(W*0.02)}px;text-align:center;animation:scaleIn 0.6s cubic-bezier(0.34,1.56,0.64,1) 0.2s both;">
-      <div style="font-family:'JetBrains Mono',monospace;font-size:${fsStat}px;font-weight:700;color:var(--acc);" data-suffix="%">99</div>
-      <div style="font-size:${fsBody}px;opacity:0.6;margin-top:8px;">Metric label</div>
-    </div>
-  </div>
+1. DEVICE FRAME (product/app scene)
+   Outer shell = dark rounded div + deep box-shadow. Inner screen = darker div with real mini-UI.
+   Laptop: ~55% W wide. Phone: ~18% W wide × 33% W tall. Add radial glow behind device.
+   Screen content = simplified UI mockup, not placeholder text.
 
-Feature icon grid (SVG icons + labels):
-  <div style="display:flex;flex-wrap:wrap;gap:${Math.round(W*0.03)}px;justify-content:center;max-width:${Math.round(W*0.84)}px;">
-    <div style="display:flex;flex-direction:column;align-items:center;gap:12px;width:${Math.round(W*0.22)}px;animation:fadeUp 0.7s ease 0.1s both;">
-      <div style="width:64px;height:64px;background:color-mix(in srgb,var(--acc) 18%,transparent);border-radius:18px;display:flex;align-items:center;justify-content:center;color:var(--acc);">
-        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="..."/></svg>
-      </div>
-      <span style="font-size:${fsBody}px;text-align:center;opacity:0.9;">Feature</span>
-    </div>
-  </div>
+2. STAT CARD GRID (metrics/proof scene)
+   3 glass cards in a flex row, gap:2% W, each flex:1 min-width:0.
+   Card: rounded-20px glass bg, big JetBrains Mono number (data-suffix attr) + short label.
+   Use countUp() JS to animate numbers from 0 when the scene appears.
 
-Bar chart (CSS vertical bars — use for data scenes):
-  <div style="display:flex;align-items:flex-end;gap:${Math.round(W*0.015)}px;height:${Math.round(H*0.3)}px;max-width:${Math.round(W*0.7)}px;">
-    <div style="flex:1;background:var(--acc);border-radius:6px 6px 0 0;animation:growBar 1.2s cubic-bezier(0.16,1,0.3,1) 0.1s both;--h:75%;height:var(--h);max-height:100%;"></div>
-    <!-- repeat with different --h and animation-delay -->
-  </div>
-  @keyframes growBar { from{height:0} to{height:var(--h,50%)} }
+3. FEATURE ICON GRID (features/benefits scene)
+   2-3 column flex grid of icon boxes. Each box: 64×64 rounded square, accent-tinted bg.
+   Real SVG icon inside (28px, stroke style — Heroicons/Lucide paths you know exactly).
+   Feature name below icon in body font. Stagger animate-in with 0.1s delays.
 
-Donut / ring chart (SVG):
-  <svg width="${Math.round(Math.min(W,H)*0.22)}" height="${Math.round(Math.min(W,H)*0.22)}" viewBox="0 0 120 120">
-    <circle cx="60" cy="60" r="46" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="14"/>
-    <circle cx="60" cy="60" r="46" fill="none" stroke="var(--acc)" stroke-width="14" stroke-linecap="round"
-            stroke-dasharray="230 60" stroke-dashoffset="-60" transform="rotate(-90 60 60)"
-            style="animation:dashIn 1.4s cubic-bezier(0.16,1,0.3,1) 0.3s both;"/>
-    <text x="60" y="65" text-anchor="middle" font-size="20" font-weight="700" fill="var(--fg)">80%</text>
-  </svg>
-  @keyframes dashIn { from{stroke-dasharray:0 290} to{stroke-dasharray:230 60} }
+4. VERTICAL BAR CHART (data/growth scene)
+   Flex row, align-items:flex-end, height:${Math.round(H*0.3)}px, max-width:${Math.round(W*0.65)}px.
+   5-7 bars, each flex:1, height controlled by CSS var --h (15%-90%).
+   @keyframes growBar{from{height:0}to{height:var(--h)}} — stagger delays.
+   Real labels below each bar.
 
-Animated waveform (audio/signal bars):
-  <div style="display:flex;align-items:center;gap:4px;height:${Math.round(H*0.12)}px;">
-    <!-- 18-24 bars, each a thin div, alternate animation-delay for wave effect -->
-    <div style="width:5px;background:var(--acc);border-radius:3px;opacity:0.85;animation:waveBar 0.7s ease-in-out infinite alternate;animation-delay:0s;"></div>
-    <!-- repeat pattern with varying delay: 0s, 0.06s, 0.12s, 0.18s, etc. -->
-  </div>
-  @keyframes waveBar { from{height:8px} to{height:${Math.round(H*0.1)}px} }
+5. DONUT / RING CHART (progress/completion/stat scene)
+   SVG, size ~${Math.round(Math.min(W,H)*0.22)}px. Track = low-opacity circle. Progress = accent stroke.
+   @keyframes dashIn{from{stroke-dasharray:0 290}to{stroke-dasharray:230 60}}
+   Center text = the actual stat/percentage. Outer label ring if needed.
 
-Progress timeline (horizontal steps):
-  <div style="display:flex;align-items:center;gap:0;max-width:${Math.round(W*0.75)}px;width:100%;">
-    <div style="width:36px;height:36px;border-radius:50%;background:var(--acc);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0;">1</div>
-    <div style="flex:1;height:3px;background:var(--acc);animation:fillBar 0.8s ease 0.3s both;--pct:100%;"></div>
-    <div style="width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,0.1);...">2</div>
-  </div>
+6. WAVEFORM / AUDIO BARS (energy/signal/activity scene)
+   20-24 thin divs (width:5px, border-radius:3px, accent color), flex row, align-items:center.
+   @keyframes waveBar{from{height:8px}to{height:${Math.round(H*0.1)}px}}
+   Stagger animation-delay 0.06s each. Alternate infinite. Some bars tall, some short.
 
-Count-up number (JS, triggers once per clip appearance):
+7. TIMELINE / STEPS (process/workflow scene)
+   Flex row: numbered circle → line → numbered circle → line → ...
+   Active steps = accent bg. Pending = low opacity bg. Lines animate width with fillBar.
+   Label below each step node. Max-width:${Math.round(W*0.78)}px.
+
+8. NETWORK GRAPH (integrations/connections scene)
+   SVG. 5-7 circle nodes scattered by absolute position or SVG coordinates.
+   Lines between nodes = stroke, 0.2 opacity. Central node = accent + glow filter.
+   Outer nodes scaleIn with stagger. Lines animate stroke-dashoffset.
+
+9. CODE TERMINAL (developer/API/tech scene)
+   Dark card, radius:16px. Top row: 3 colored circles (red/yellow/green).
+   Below: monospace lines with syntax coloring — actual relevant code/command from the content.
+   Cursor blink at end. Card glow = accent color-mix.
+
+10. ABSTRACT / BRAND MARK (opening/brand scene)
+    Geometric CSS shapes built from border, border-radius, rotate, clip-path.
+    Must REPRESENT the brand concept visually — not random shapes.
+    Animate: float + slow rotate. Layer 2-3 shapes for depth.
+
+11. LINE CHART (trend/growth scene)
+    SVG polyline. @keyframes drawLine{from{stroke-dashoffset:500}to{stroke-dashoffset:0}}
+    Gradient fill below line using linearGradient. Dots at data points with scaleIn delay.
+    X-axis labels at bottom. Y-axis faint grid lines.
+
+12. CIRCULAR PROGRESS RINGS (multi-metric scene)
+    3 concentric SVG rings, each a different metric. Different radii, stroke widths, accent variants.
+    Each ring animates dashIn independently with offset delays.
+
+Count-up JS (always include if you use numbers):
   function countUp(el,to,ms){var from=0,s=Date.now(),suf=el.dataset.suffix||'';function f(){var p=Math.min((Date.now()-s)/ms,1),e=1-Math.pow(1-p,3);el.textContent=Math.round(from+(to-from)*e)+suf;if(p<1)requestAnimationFrame(f);}requestAnimationFrame(f);}
-  // wire up: document.getElementById('scene-stats').addEventListener('animationstart',function(){countUp(document.getElementById('num1'),2400000,2000);},{once:true});
+  // Trigger once per scene appearance:
+  document.getElementById('scene-stats').addEventListener('animationstart',function(ev){if(ev.animationName!=='clipIn')return;countUp(document.getElementById('myNum'),2500000,1800);},{once:false});
 
-SVG icon (inline, use stroke icons — cleaner than filled at small sizes):
-  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-    <path d="M12 2L2 7l10 5 10-5-10-5z"/>  <!-- example: use real Heroicons/Lucide paths you know -->
-  </svg>
-  Style: color:var(--acc); (stroke inherits currentColor)
+SVG icons: always fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round". Color via CSS color:var(--acc).
+Only use Heroicons/Lucide SVG paths you know with certainty — never guess or approximate a path.
 
 Subtitle bar (REQUIRED on every clip — write real voice-over copy from the content):
   <div class="sub">Your actual caption text here</div>
