@@ -278,45 +278,29 @@ ${body}
 </html>`;
 }
 
-function buildVideoPrompt(fmt: Format, duration: number, desc: string, context: string, agentBias?: string): string {
+function buildVideoPrompt(fmt: Format, duration: number, agentBias?: string): string {
   const W = fmt.w;
   const H = fmt.h;
 
-  // Scene timing plan
-  type SceneDef = { s: number; e: number; n: string };
-  const sd: SceneDef[] =
-    duration <= 12 ? [
-      { s: 0, e: duration, n: 'Pain hook → solution → CTA (all in one)' },
-    ] :
-    duration <= 22 ? [
-      { s: 0, e: Math.round(duration * 0.35), n: 'Pain hook — emotional opening' },
-      { s: Math.round(duration * 0.35), e: duration, n: 'Solution reveal + CTA' },
-    ] :
-    duration <= 38 ? [
-      { s: 0, e: Math.round(duration * 0.25), n: 'Pain setup — relatable problem' },
-      { s: Math.round(duration * 0.25), e: Math.round(duration * 0.5), n: 'Pain intensify — cost / fragmentation' },
-      { s: Math.round(duration * 0.5), e: duration, n: 'Solution reveal + features + CTA' },
-    ] :
-    duration <= 52 ? [
-      { s: 0,                             e: Math.round(duration * 0.18), n: 'Pain hook — emotional opener' },
-      { s: Math.round(duration * 0.18),   e: Math.round(duration * 0.38), n: 'Pain intensify — tools / cost / chaos' },
-      { s: Math.round(duration * 0.38),   e: Math.round(duration * 0.50), n: 'Bridge — "there has to be a better way"' },
-      { s: Math.round(duration * 0.50),   e: Math.round(duration * 0.72), n: 'Solution reveal — brand + features' },
-      { s: Math.round(duration * 0.72),   e: duration, n: 'CTA — download / website / urgency' },
-    ] :
-    [
-      { s: 0,                             e: Math.round(duration * 0.13), n: 'Pain hook — emotional, relatable' },
-      { s: Math.round(duration * 0.13),   e: Math.round(duration * 0.27), n: 'Pain deepen — cost, fragmentation' },
-      { s: Math.round(duration * 0.27),   e: Math.round(duration * 0.40), n: 'Pain peak — frustration, overwhelm, breaking point' },
-      { s: Math.round(duration * 0.40),   e: Math.round(duration * 0.48), n: 'Bridge — pause, "there has to be a better way"' },
-      { s: Math.round(duration * 0.48),   e: Math.round(duration * 0.63), n: 'Solution reveal — brand, logo, name' },
-      { s: Math.round(duration * 0.63),   e: Math.round(duration * 0.80), n: 'Features showcase — what it does' },
-      { s: Math.round(duration * 0.80),   e: duration, n: 'CTA — download / site / urgency pill' },
-    ];
+  // How many scenes fit this duration
+  const sceneCount =
+    duration <= 12 ? 2 :
+    duration <= 22 ? 3 :
+    duration <= 38 ? 4 :
+    duration <= 52 ? 5 : 6;
 
-  const scenePlan = sd.map((sc, i) =>
-    `  Scene${i + 1}(s=${sc.s},e=${sc.e}): ${sc.n}`
-  ).join('\n');
+  const structureGuide = `Choose a scene structure that matches the content. ${sceneCount} scenes for ${duration}s. Allocate timing yourself — do NOT use equal splits.
+Structure options (pick whichever fits, or design your own):
+  Product/App launch  → Hook · Problem · Solution+Features · Proof/Stat · CTA
+  Brand story         → Vision · Journey/Values · Promise · Impact · CTA
+  Data/Analytics      → Big number hook · Insight 1 · Insight 2 · Insight 3 · CTA
+  Tutorial/How-to     → End result first · Step 1 · Step 2 · Step 3 · CTA
+  Announcement        → Reveal · Key detail · Who it's for · When/Where · CTA
+  Event               → Date reveal · What happens · Who's there · RSVP urgency
+  Portfolio/Showcase  → Best work · Style 1 · Style 2 · Style 3 · Contact
+  Mission/Movement    → Problem · Vision · Action · Community · Join
+  Testimonial         → Customer problem · Their journey · Outcome · Others like them · CTA
+NOT every video is a SaaS pain-hook story. Read the content above and decide what THIS video is.`;
 
   const subSide   = Math.round(W * 0.074);
   const subBottom = Math.round(H * 0.08);
@@ -479,27 +463,37 @@ function render(){}
 })();`;
 
   return `You are an elite canvas animator. Create a complete self-contained animated HTML document — renders on a <canvas> element using pure vanilla JS. ZERO external scripts.
-${agentBias ? `\nCREATIVE DIRECTION: ${agentBias}\n` : ''}${context ? `\nBRAND CONTEXT:\n${context}\n` : ''}
-CONTENT / STORY: ${desc}
+${agentBias ? `\nCREATIVE DIRECTION: ${agentBias}\n` : ''}
 CANVAS SIZE: ${W}×${H}px · ${duration}s loop · auto-restarts
-DEFAULT PALETTE: bg #ffffff · text #0c0b14 · accent #6d4cff · soft #efeaff · muted #7a7388
-COLOR OVERRIDE: If the user or brand context specifies colors, USE those instead of defaults above.
 FONTS: Inter Tight (display, headlines) · JetBrains Mono (numbers/stats) — loaded via CSS @import
 
-━━━ STEP 0 — COLOR EXTRACTION (do this before writing any scene code) ━━━
-Scan the CONTENT/STORY and BRAND CONTEXT above. Extract or derive 3 brand colors:
-  - Primary BG: the dominant background color for this brand/topic
-  - Foreground: the main text color (must contrast 4.5:1 with BG)
-  - Accent: the highlight/CTA color — bold and distinct from BG. Choose from: orange (#f97316), amber (#f59e0b), lime (#84cc16), emerald (#10b981), sky (#0ea5e9), pink (#ec4899), rose (#f43f5e), violet (#6d4cff) — pick what fits the content emotion best. Do NOT default to violet every time.
-Define them at the TOP of your render() function using this EXACT pattern (allows real-time color override from outside):
-  var CLR_BG = window.__NV_BG || '#<your-derived-bg>';
-  var CLR_FG = window.__NV_FG || '#<your-derived-fg>';
-  var CLR_ACC = window.__NV_ACC || '#<your-derived-accent>';
-Then use CLR_BG, CLR_FG, CLR_ACC consistently throughout ALL scenes — NEVER hardcode hex colors inside scene blocks.
-The window.__NV_* values let the user change colors instantly from the palette — your code must read them EVERY frame.
+━━━ STEP 0 — READ THE CONTENT (do this first, before any code) ━━━
+The user message contains the full content/brand context to base this video on. Read it carefully.
+Extract: the product or subject, the key message, the audience, the emotion, specific facts/numbers/names.
+Use ALL of it — every specific detail, statistic, feature name, person, or phrase from the content.
+NEVER use placeholder copy. Every word in the video must come from the actual content.
 
-━━━ SCENE PLAN ━━━
-${scenePlan}
+━━━ STEP 1 — CHOOSE YOUR SCENE STRUCTURE ━━━
+Based on what you read in the content, decide the best narrative structure. ${structureGuide}
+
+━━━ STEP 2 — EXTRACT COLORS ━━━
+From the content and emotion you identified, derive 3 brand colors:
+  - BG: dominant background color matching the brand/mood
+  - FG: main text color (4.5:1 contrast with BG)
+  - ACC: accent/CTA color — choose what fits the emotion: orange (#f97316), amber (#f59e0b), lime (#84cc16), emerald (#10b981), sky (#0ea5e9), pink (#ec4899), rose (#f43f5e), violet (#6d4cff). Do NOT default to violet every time.
+Define at TOP of render() — EXACT pattern required (enables live color override):
+  var CLR_BG = window.__NV_BG || '#<derived>';
+  var CLR_FG = window.__NV_FG || '#<derived>';
+  var CLR_ACC = window.__NV_ACC || '#<derived>';
+Use CLR_BG/CLR_FG/CLR_ACC throughout ALL scenes — never hardcode hex inside scene blocks.
+
+━━━ SCENE TIMING (you decide) ━━━
+Total: ${duration}s. Define your scenes with the sp(start, end) function. Example for a 30s product video:
+  var r1=sp(0,7);    // hook — fast and punchy
+  var r2=sp(6,18);   // features — medium stagger
+  var r3=sp(17,25);  // proof — slow and credible
+  var r4=sp(24,30);  // CTA — steady pulse
+Scenes can overlap by 0.5–1s for smooth transitions. Do NOT use equal time splits — vary duration by importance.
 
 ━━━ SUBTITLE SYSTEM ━━━
 Call sub(text, r.op) at the end of every scene block — these are the viewer's voice-over captions.
@@ -538,36 +532,8 @@ canvas{display:block;width:100%;height:100%;object-fit:contain}
 // ── RUNTIME (verbatim — do NOT modify) ──────────────────────────────────────
 ${runtime}
 
-// ── YOUR SCENE CODE ─────────────────────────────────────────────────────────
-// Assign to render() like this:
+// ── YOUR SCENE CODE goes here ────────────────────────────────────────────────
 render = function() {
-
-  // ── Scene 1 ── (s=${sd[0].s}, e=${sd[0].e}) — Pain hook
-  // var r = sp(${sd[0].s}, ${sd[0].e});
-  // if(r) {
-  //   ctx.save(); ctx.globalAlpha = r.op;
-  //   // Background gradient
-  //   var g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,'#fff8f0');g.addColorStop(1,'#fff');
-  //   ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
-  //   // Atmosphere circle (top zone)
-  //   ctx.fillStyle='rgba(220,60,60,.06)';ctx.beginPath();ctx.arc(W/2,H*.22,W*.42,0,Math.PI*2);ctx.fill();
-  //   // Eyebrow pill (top zone y:${zTop.y})
-  //   ctx.globalAlpha=r.op*C(r.lt/.35,0,1);
-  //   rr(W/2-${Math.round(W*0.18)},${zTop.y},${Math.round(W*0.36)},${Math.round(H*0.055)},${Math.round(H*0.027)},'#fff0ee');
-  //   tx('The problem today',W/2,${zTop.y + Math.round(H*0.028)},${fsBody},'#c84040',700);
-  //   // Hero headline (headline zone y:${zHead.y}) — scale bounce
-  //   var hs=E.bk(C(r.lt/.7,0,1));ctx.globalAlpha=r.op*C(r.lt/.4,0,1);
-  //   ctx.save();ctx.translate(W/2,${Math.round(zHead.y + zHead.h * 0.35)}+r.ty);ctx.scale(hs,hs);
-  //   txWrap(['Drowning in','busywork'],0,0,${fsHero},'#0c0b14',900,${Math.round(fsHero*1.2)});
-  //   ctx.restore();
-  //   // Stat card (content zone y:${zMid.y})
-  //   var cp=E.bk(C((r.lt-.6)/.5,0,1));ctx.globalAlpha=r.op*C((r.lt-.6)/.3,0,1);
-  //   rr(W*.1,${zMid.y}+(1-cp)*50,W*.8,${Math.round(zMid.h*0.55)},${Math.round(W*0.02)},'#fff','rgba(0,0,0,.05)',16);
-  //   txm(cu(12,${sd[0].s+0.6},1.8)+' hrs',W/2,${zMid.y + Math.round(zMid.h*0.24)}+(1-cp)*50,${fsStat});
-  //   tx('wasted every week on manual tasks',W/2,${zMid.y + Math.round(zMid.h*0.48)}+(1-cp)*50,${fsBody},'#7a7388',500);
-  //   ctx.restore();
-  //   sub('You spend hours every week doing work that should be instant.',r.op);
-  // }
 
 };
 
@@ -1121,7 +1087,7 @@ export default function StudioModule({ initialRequest, onRequestConsumed }: Stud
     setReviews({});
     let raw = '';
     try {
-      const sysPrompt = buildVideoPrompt(fmt, dur, p, ctx, activeAgent?.bias);
+      const sysPrompt = buildVideoPrompt(fmt, dur, activeAgent?.bias);
       const userMsg = ctx ? `Brand context:\n${ctx}\n\nCreate:\n${p}` : `Create:\n${p}`;
       await streamAI(sysPrompt, userMsg, (chunk) => { raw += chunk; setStreamLog(raw.slice(-400)); });
       const stripped = stripFences(raw);
@@ -1259,7 +1225,7 @@ The prompt must be specific enough for a motion designer to execute without ques
 
     try {
       if (type === 'video') {
-        const sysPrompt = buildVideoPrompt(format, effectiveDur, prompt, ctx, activeAgent?.bias);
+        const sysPrompt = buildVideoPrompt(format, effectiveDur, activeAgent?.bias);
         const userMsg = ctx
           ? `Brand/product context:\n${ctx}\n\nCreate this animation:\n${prompt}`
           : `Create this animation:\n${prompt}`;
