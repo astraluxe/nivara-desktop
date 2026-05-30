@@ -317,12 +317,19 @@ Decide:
   B) SCENE PLAN — ${sceneCount} scenes. For each: name, job (one sentence), duration in seconds. Durations must sum to ${duration}.
   C) VISUAL STYLE — dark glassmorphism / clean minimal / bold gradient / editorial. Derived from content emotion.
   D) COLOR TRIO — --bg / --fg / --acc. Derived from brand or content feel. DO NOT default to purple.
-  E) SCENE VISUALS — for each scene, what specific custom graphic goes there?
-     - Data scene → animated bar chart drawn with CSS divs
-     - Feature scene → 3-column icon+label card grid
-     - Product scene → SVG mockup or device frame with inner content
-     - Stats scene → large JetBrains Mono number that counts up via JS
-     - Brand scene → logo-style mark built from CSS shapes
+  E) SCENE VISUALS — plan the PROP or OBJECT for each scene BEFORE writing code.
+     Each scene = 1 big visual prop that fills 50-60% of the viewport. Text is secondary.
+     PICK ONE PROP PER SCENE:
+     - Laptop/phone mockup built from CSS divs with a glowing screen
+     - Animated bar chart (5-8 bars, CSS height animation, labelled)
+     - Ring/donut chart (SVG circle with stroke-dasharray animation)
+     - 3-stat card grid (each card: big mono number + label)
+     - Feature icon grid (icon box + label, 2-3 columns, SVG icons)
+     - Waveform / audio bars (20 thin divs animating height)
+     - Network diagram (SVG nodes + lines, nodes glow)
+     - Progress timeline (horizontal steps, animated fill)
+     - Code terminal mockup (dark card, monospace fake code lines)
+     - Abstract shape / logo mark built from CSS border-radius + rotate
 
 ━━━ STEP 2: SCENE STRUCTURE (data-start / data-duration) ━━━
 Each scene is a <div class="clip"> with data-start and data-duration in whole seconds.
@@ -338,11 +345,30 @@ For YOUR ${duration}s video with ${sceneCount} scenes: choose your own durations
 CRITICAL: last clip's data-start + data-duration = ${duration}. No gaps. No overlaps.
 .clip is already set to { position:absolute; inset:0; display:none; overflow:hidden } in CSS — do not add display:block.
 
-Layer content inside each clip:
-  1. Background <div> — full-size gradient, radial glow, grid, noise (position:absolute; inset:0; z-index:0)
-  2. Visual <div> — your custom graphic (z-index:1)
-  3. Text <div> — headline + subhead (z-index:2)
-  4. .sub subtitle (z-index:3, position:absolute, bottom)
+Layer content inside each clip — ALWAYS this structure:
+  1. BG div:     <div style="position:absolute;inset:0;z-index:0;">  ← gradient/texture
+  2. Visual div: <div style="position:absolute;inset:0;z-index:1;display:flex;align-items:center;justify-content:center;">  ← your prop
+  3. Text div:   <div style="position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8% 10%;gap:3%;">  ← headline only
+  4. Sub div:    <div class="sub">  ← caption, bottom
+
+CENTERING RULE (the #1 cause of text in corners):
+Every content div MUST use display:flex + align-items:center + justify-content:center.
+NEVER position text with top/left pixel offsets. NEVER put text in a position:absolute div without flex centering.
+
+CORRECT — text always centered:
+  <div style="position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8% 10%;gap:3%;">
+    <h1 style="font-size:${fsHero}px;...">Headline</h1>
+    <p style="font-size:${fsSub}px;...">One short line</p>
+  </div>
+WRONG — causes corner text:
+  <div style="position:absolute;top:80px;left:60px;"><h1>Text</h1></div>
+
+SIZE RULE (prevents elements overflowing the ${W}×${H}px viewport):
+  - All visual elements: max-width:${Math.round(W*0.84)}px; max-height:${Math.round(H*0.54)}px; overflow:hidden
+  - Icon/card rows: flex-wrap:wrap; justify-content:center; max-width:${Math.round(W*0.84)}px
+  - Individual cards in a 3-col grid: max-width:${Math.round(W*0.26)}px
+  - SVG elements: width/height ≤ ${Math.round(Math.min(W,H)*0.24)}px
+  - Headline text: max-width:${Math.round(W*0.82)}px; word-break:break-word
 
 ━━━ STEP 3: WITHIN-CLIP ANIMATIONS ━━━
 CSS animations inside each clip play from 0s when the clip becomes visible.
@@ -383,7 +409,9 @@ Sizes:
   Body:  font-size:${fsBody}px; font-weight:400; opacity:0.7;
   CTA:   font-size:${fsCta}px;  font-weight:700; background:var(--acc); color:#fff; border-radius:100px; padding:18px 48px;
 
-━━━ STEP 5: VISUAL QUALITY TOOLKIT ━━━
+━━━ STEP 5: VISUAL PROPS TOOLKIT (use these — text alone = rejected) ━━━
+TEXT BUDGET: max 1 headline + 1 short subline per scene. The remaining 60% of the scene is a VISUAL PROP.
+If a scene has more than 2 lines of text and no visual prop, redesign it.
 Dark atmospheric BG:
   background: radial-gradient(ellipse 80% 60% at 30% 20%, color-mix(in srgb,var(--acc) 22%,transparent), transparent 60%), var(--bg);
 
@@ -406,10 +434,66 @@ Metric card (3 in a row for data scenes):
   .metric .num  { font-family:'JetBrains Mono',monospace; font-size:${fsStat}px; font-weight:700; color:var(--acc); }
   .metric .label { font-size:${fsBody}px; opacity:0.6; text-align:center; }
 
-Bar chart (CSS-only):
-  .bar-row { display:flex; align-items:center; gap:16px; margin:8px 0; }
-  .bar-track { flex:1; height:8px; background:rgba(255,255,255,0.1); border-radius:4px; overflow:hidden; }
-  .bar-fill  { height:100%; background:var(--acc); border-radius:4px; animation:fillBar 1.4s cubic-bezier(0.16,1,0.3,1) 0.3s both; --pct:70%; }
+Laptop mockup (CSS only):
+  <div style="width:${Math.round(W*0.55)}px;height:${Math.round(W*0.34)}px;background:#1a1a2e;border-radius:12px;position:relative;box-shadow:0 20px 60px rgba(0,0,0,0.5);">
+    <div style="position:absolute;inset:10px 12px 24px 12px;background:#080812;border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center;"><!-- screen content --></div>
+    <div style="position:absolute;bottom:-10px;left:50%;transform:translateX(-50%);width:55%;height:10px;background:#141428;border-radius:0 0 8px 8px;"></div>
+  </div>
+
+Phone mockup (CSS only):
+  <div style="width:${Math.round(W*0.18)}px;height:${Math.round(W*0.33)}px;background:#1c1c2e;border-radius:28px;display:flex;align-items:center;justify-content:center;box-shadow:0 20px 50px rgba(0,0,0,0.5);">
+    <div style="width:88%;height:92%;background:#080812;border-radius:22px;overflow:hidden;display:flex;align-items:center;justify-content:center;"><!-- content --></div>
+  </div>
+
+Stat card grid (3 across — max-width enforced):
+  <div style="display:flex;gap:${Math.round(W*0.02)}px;max-width:${Math.round(W*0.84)}px;width:100%;">
+    <div style="flex:1;min-width:0;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:${Math.round(H*0.03)}px ${Math.round(W*0.02)}px;text-align:center;animation:scaleIn 0.6s cubic-bezier(0.34,1.56,0.64,1) 0.2s both;">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:${fsStat}px;font-weight:700;color:var(--acc);" data-suffix="%">99</div>
+      <div style="font-size:${fsBody}px;opacity:0.6;margin-top:8px;">Metric label</div>
+    </div>
+  </div>
+
+Feature icon grid (SVG icons + labels):
+  <div style="display:flex;flex-wrap:wrap;gap:${Math.round(W*0.03)}px;justify-content:center;max-width:${Math.round(W*0.84)}px;">
+    <div style="display:flex;flex-direction:column;align-items:center;gap:12px;width:${Math.round(W*0.22)}px;animation:fadeUp 0.7s ease 0.1s both;">
+      <div style="width:64px;height:64px;background:color-mix(in srgb,var(--acc) 18%,transparent);border-radius:18px;display:flex;align-items:center;justify-content:center;color:var(--acc);">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="..."/></svg>
+      </div>
+      <span style="font-size:${fsBody}px;text-align:center;opacity:0.9;">Feature</span>
+    </div>
+  </div>
+
+Bar chart (CSS vertical bars — use for data scenes):
+  <div style="display:flex;align-items:flex-end;gap:${Math.round(W*0.015)}px;height:${Math.round(H*0.3)}px;max-width:${Math.round(W*0.7)}px;">
+    <div style="flex:1;background:var(--acc);border-radius:6px 6px 0 0;animation:growBar 1.2s cubic-bezier(0.16,1,0.3,1) 0.1s both;--h:75%;height:var(--h);max-height:100%;"></div>
+    <!-- repeat with different --h and animation-delay -->
+  </div>
+  @keyframes growBar { from{height:0} to{height:var(--h,50%)} }
+
+Donut / ring chart (SVG):
+  <svg width="${Math.round(Math.min(W,H)*0.22)}" height="${Math.round(Math.min(W,H)*0.22)}" viewBox="0 0 120 120">
+    <circle cx="60" cy="60" r="46" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="14"/>
+    <circle cx="60" cy="60" r="46" fill="none" stroke="var(--acc)" stroke-width="14" stroke-linecap="round"
+            stroke-dasharray="230 60" stroke-dashoffset="-60" transform="rotate(-90 60 60)"
+            style="animation:dashIn 1.4s cubic-bezier(0.16,1,0.3,1) 0.3s both;"/>
+    <text x="60" y="65" text-anchor="middle" font-size="20" font-weight="700" fill="var(--fg)">80%</text>
+  </svg>
+  @keyframes dashIn { from{stroke-dasharray:0 290} to{stroke-dasharray:230 60} }
+
+Animated waveform (audio/signal bars):
+  <div style="display:flex;align-items:center;gap:4px;height:${Math.round(H*0.12)}px;">
+    <!-- 18-24 bars, each a thin div, alternate animation-delay for wave effect -->
+    <div style="width:5px;background:var(--acc);border-radius:3px;opacity:0.85;animation:waveBar 0.7s ease-in-out infinite alternate;animation-delay:0s;"></div>
+    <!-- repeat pattern with varying delay: 0s, 0.06s, 0.12s, 0.18s, etc. -->
+  </div>
+  @keyframes waveBar { from{height:8px} to{height:${Math.round(H*0.1)}px} }
+
+Progress timeline (horizontal steps):
+  <div style="display:flex;align-items:center;gap:0;max-width:${Math.round(W*0.75)}px;width:100%;">
+    <div style="width:36px;height:36px;border-radius:50%;background:var(--acc);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0;">1</div>
+    <div style="flex:1;height:3px;background:var(--acc);animation:fillBar 0.8s ease 0.3s both;--pct:100%;"></div>
+    <div style="width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,0.1);...">2</div>
+  </div>
 
 Count-up number (JS, triggers once per clip appearance):
   function countUp(el,to,ms){var from=0,s=Date.now(),suf=el.dataset.suffix||'';function f(){var p=Math.min((Date.now()-s)/ms,1),e=1-Math.pow(1-p,3);el.textContent=Math.round(from+(to-from)*e)+suf;if(p<1)requestAnimationFrame(f);}requestAnimationFrame(f);}
@@ -481,7 +565,11 @@ ${playbackJs}
 7. html,body must stay width:${W}px; height:${H}px; overflow:hidden.
 8. No emojis in text. Use inline SVG paths for any icon/symbol.
 9. Scene times: last clip's data-start + data-duration = ${duration}. No gaps. No overlaps.
-10. Every scene must have a distinct visual — no two scenes with the same layout.`;
+10. Every scene must have a distinct visual prop — no two scenes with the same layout.
+11. TEXT BUDGET: max 1 headline + 1 subline per scene. If you have a third text line, cut it and make it a visual prop instead.
+12. CENTERING: all content divs use display:flex + align-items:center + justify-content:center. NEVER top/left pixel offsets for text.
+13. SIZE BOUNDS: no element wider than ${Math.round(W*0.9)}px or taller than ${Math.round(H*0.7)}px. Use max-width/max-height on every visual prop.
+14. OVERFLOW: every .clip has overflow:hidden — but also add overflow:hidden on any inner container with dynamic content to be safe.`;
 }
 
 function buildScreenPrompt(fmt: Format, desc: string, styleName: string, context: string): string {
