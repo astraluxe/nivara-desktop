@@ -182,6 +182,16 @@ function buildStaticHtml(code: string): string {
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{box-sizing:border-box;margin:0;padding:0}html,body{height:100%;font-family:'Inter Tight',system-ui,sans-serif}</style></head><body>${code}</body></html>`;
 }
 
+// Use AI's complete HTML as-is (preserving drawing functions defined anywhere in the script)
+// Falls back to wrapping bare scene code with the canonical runtime
+function assembleVideoHtml(stripped: string, fmt: Format, dur: number): string {
+  if (/^<!DOCTYPE/i.test(stripped.trimStart()) || /^<html/i.test(stripped.trimStart())) {
+    return stripped;
+  }
+  const sceneCode = extractSceneSection(stripped) || stripped;
+  return buildVideoHtml(fmt, dur, sceneCode);
+}
+
 // ─── AI helpers ──────────────────────────────────────────────────────────────
 
 async function loadAllCreds(): Promise<Record<string, Record<string, string>>> {
@@ -209,7 +219,7 @@ function buildVideoRuntime(W: number, H: number, duration: number): string {
   const subBottom = Math.round(H * 0.08);
   const subFont   = Math.round(W * 0.038);
   const subLH     = Math.round(subFont * 1.45);
-  return `window.onerror=function(msg,src,ln){var c=document.getElementById('c')||document.querySelector('canvas');if(!c)return;var x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.font='bold 13px monospace';x.fillStyle='rgba(160,0,0,.9)';x.textAlign='center';x.textBaseline='middle';x.fillText(String(msg).slice(0,90),c.width/2,c.height/2-14);x.fillText('line '+ln,c.width/2,c.height/2+14);};
+  return `window.onerror=function(msg,src,ln){var c=document.getElementById('c')||document.querySelector('canvas');if(!c)return;var x=c.getContext('2d');var fs=Math.round(Math.min(c.width,c.height)*0.04);x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.font='bold '+fs+'px monospace';x.fillStyle='rgba(160,0,0,.9)';x.textAlign='center';x.textBaseline='middle';x.fillText(String(msg).slice(0,80),c.width/2,c.height/2-fs);x.fillText('(line '+ln+')',c.width/2,c.height/2+fs);};
 var canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
 var W=${W},H=${H},DUR=${duration};
 var _T=0,_L=null;
@@ -245,7 +255,7 @@ function triangle(cx,cy,r,fill,angle){ctx.save();ctx.translate(cx,cy);if(angle)c
 window.addEventListener('message',function(e){if(!e.data)return;if(e.data.__nv_acc)window.__NV_ACC=e.data.__nv_acc;if(e.data.__nv_bg)window.__NV_BG=e.data.__nv_bg;if(e.data.__nv_fg)window.__NV_FG=e.data.__nv_fg;});
 var _PAUSED=false;
 function render(){}
-(function(){function _loop(ts){if(_L==null){_L=ts;requestAnimationFrame(_loop);return;}if(!_PAUSED){var dt=Math.min((ts-_L)/1000,0.1);_T=(_T+dt)%DUR;}_L=ts;ctx.fillStyle='#ffffff';ctx.fillRect(0,0,W,H);ctx.save();ctx.beginPath();ctx.rect(0,0,W,H);ctx.clip();try{render();}catch(e){ctx.font='bold 13px monospace';ctx.fillStyle='rgba(160,0,0,.9)';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('Render error: '+e.message,W/2,H/2);}ctx.restore();ctx.save();ctx.fillStyle='rgba(109,76,255,.12)';ctx.fillRect(0,H-6,W,6);ctx.fillStyle='#6d4cff';ctx.shadowColor='rgba(109,76,255,.5)';ctx.shadowBlur=10;ctx.fillRect(0,H-6,W*C(_T/DUR,0,1),6);ctx.restore();requestAnimationFrame(_loop);}requestAnimationFrame(_loop);})();`;
+(function(){function _loop(ts){if(_L==null){_L=ts;requestAnimationFrame(_loop);return;}if(!_PAUSED){var dt=Math.min((ts-_L)/1000,0.1);_T=(_T+dt)%DUR;}_L=ts;ctx.fillStyle='#ffffff';ctx.fillRect(0,0,W,H);ctx.save();ctx.beginPath();ctx.rect(0,0,W,H);ctx.clip();try{render();}catch(e){var _ef=Math.round(Math.min(W,H)*0.04);ctx.font='bold '+_ef+'px monospace';ctx.fillStyle='rgba(160,0,0,.9)';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('Error: '+String(e.message||e).slice(0,60),W/2,H/2-_ef*0.6);ctx.font='bold '+Math.round(_ef*0.7)+'px monospace';ctx.fillText('(check code view for details)',W/2,H/2+_ef*0.8);}ctx.restore();ctx.save();ctx.fillStyle='rgba(109,76,255,.12)';ctx.fillRect(0,H-6,W,6);ctx.fillStyle='#6d4cff';ctx.shadowColor='rgba(109,76,255,.5)';ctx.shadowBlur=10;ctx.fillRect(0,H-6,W*C(_T/DUR,0,1),6);ctx.restore();requestAnimationFrame(_loop);}requestAnimationFrame(_loop);})();`;
 }
 
 // Assembles the final HTML from our canonical runtime + AI scene code
@@ -572,8 +582,23 @@ canvas{display:block;width:100%;height:100%;object-fit:contain}
 ${runtime}
 
 // ── YOUR SCENE CODE ─────────────────────────────────────────────────────────
-render = function() {
+// Step 2 custom drawing functions go HERE (between this comment and render):
+// function drawMyObject(x, y, w, h) { ctx.fillRect(x,y,w,h); }
 
+render = function() {
+  // COLOR VARS — always first (enables live color picker):
+  var CLR_BG = window.__NV_BG || '#<derived-bg>';
+  var CLR_FG = window.__NV_FG || '#<derived-fg>';
+  var CLR_ACC = window.__NV_ACC || '#<derived-acc>';
+
+  // SCENES — pattern: background -> objects -> text LAST -> subtitle
+  // var r1 = sp(0, 8); if(r1) {
+  //   ctx.save(); ctx.globalAlpha = r1.op;
+  //   gradRect(0,0,W,H,CLR_BG,CLR_BG,true);   // 1. background
+  //   drawMyObject(W*.3,H*.4,W*.4,H*.2);        // 2. objects
+  //   txReveal(['Title'],W/2,H*.35,${fsHero},CLR_FG,900,0,0.22); // 3. text LAST
+  //   ctx.restore(); sub('voice-over caption', r1.op);
+  // }
 };
 
 </script>
@@ -583,7 +608,7 @@ render = function() {
 ━━━ NON-NEGOTIABLE RULES ━━━
 1. Output ONLY the HTML — start with <!DOCTYPE html>. No markdown fences, no explanations.
 2. Copy the runtime block VERBATIM — do not change a single character.
-3. Custom drawing functions go inside <script> ABOVE render = function(){...}
+3. Custom drawing functions go BETWEEN the "// ── YOUR SCENE CODE" comment and "render = function()".
 4. ctx.save()/ctx.restore() around every block that changes globalAlpha or shadowBlur.
 5. Every scene uses sp(s,e). Every scene ends with sub() or subHL().
 6. Real copy only — derive every word from the content. Zero placeholder text.
@@ -1014,8 +1039,7 @@ export default function StudioModule({ initialRequest, onRequestConsumed }: Stud
       const userMsg = ctx ? `Brand context:\n${ctx}\n\nCreate:\n${p}` : `Create:\n${p}`;
       await streamAI(sysPrompt, userMsg, (chunk) => { raw += chunk; setStreamLog(raw.slice(-400)); });
       const stripped = stripFences(raw);
-      const sceneCode = extractSceneSection(stripped) || stripped;
-      const finalHtml = buildVideoHtml(fmt, dur, sceneCode);
+      const finalHtml = assembleVideoHtml(stripped, fmt, dur);
       setHtml(finalHtml);
       setPreviewKey(k => k + 1);
       setEditedHtml(finalHtml);
@@ -1161,8 +1185,7 @@ The prompt must be specific enough for a motion designer to execute without ques
           setStreamLog(raw.slice(-400));
         });
         const stripped = stripFences(raw);
-        const sceneCode = extractSceneSection(stripped) || stripped;
-        const finalHtml = buildVideoHtml(format, effectiveDur, sceneCode);
+        const finalHtml = assembleVideoHtml(stripped, format, effectiveDur);
         setHtml(finalHtml);
         setPreviewKey(k => k + 1);
         setEditedHtml(finalHtml);
