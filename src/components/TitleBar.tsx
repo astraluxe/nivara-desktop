@@ -26,7 +26,7 @@ export default function TitleBar({ activeModule }: { activeModule: string }) {
     >
       {/* Left — branding */}
       <div className="flex items-center gap-2 px-4 pointer-events-none">
-        <NivaraLogo />
+        <AppLogo />
         <span className="text-nv-text text-sm font-semibold tracking-tight">adris.tech</span>
         <span className="text-nv-faint text-xs font-mono">/</span>
         <span className="text-nv-muted text-xs font-mono">{MODULES[activeModule] ?? activeModule}</span>
@@ -95,7 +95,7 @@ function WinBtn({
   );
 }
 
-function NivaraLogo() {
+function AppLogo() {
   return (
     <svg width="16" height="15" viewBox="0 0 26 24" fill="none" aria-hidden="true">
       <path d="M2 4 L9 4 L15 12 L9 20 L2 20 L8 12 Z" fill="#7C5CFF" />

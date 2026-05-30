@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+﻿import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
@@ -762,7 +762,7 @@ export default function ModelsModule() {
     } catch {
       // Pull API not deployed yet — inform user how to get the model now
       alert(
-        `Direct downloads will be available with the Nivara v1.0 release.\n\n` +
+        `Direct downloads will be available with the adris.tech v1.0 release.\n\n` +
         `To get this model now:\n` +
         `  1. Install Ollama from ollama.com\n` +
         `  2. Run:  ollama pull ${model.id.replace(/-q4$/, '')}\n` +
@@ -1049,7 +1049,7 @@ export default function ModelsModule() {
               <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-nv-bg border border-nv-border">
                 <svg width="13" height="13" viewBox="0 0 13 13" fill="none" className="text-amber-400 shrink-0 mt-0.5"><circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" strokeWidth="1"/><path d="M6.5 4v3M6.5 9h.01" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>
                 <p className="text-nv-faint text-[10px] leading-relaxed">
-                  Manual import requires filling in all fields below. <span className="text-nv-text">Models downloaded via Nivara attach automatically</span> — no setup needed.
+                  Manual import requires filling in all fields below. <span className="text-nv-text">Models downloaded via adris.tech attach automatically</span> — no setup needed.
                 </p>
               </div>
 
@@ -1208,7 +1208,7 @@ export default function ModelsModule() {
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none" className="text-nv-faint shrink-0"><rect x="1" y="1" width="12" height="12" rx="1.5" stroke="currentColor" strokeWidth="1"/><path d="M4 7h6M4 5h2M4 9h4" stroke="currentColor" strokeWidth="1" strokeLinecap="round"/></svg>
                 <div className="flex-1 min-w-0">
                   <p className="text-nv-faint text-[10px] font-mono">
-                    {installed.reduce((s, m) => s + m.size_gb, 0).toFixed(1)} GB used by Nivara models
+                    {installed.reduce((s, m) => s + m.size_gb, 0).toFixed(1)} GB used by adris.tech models
                   </p>
                 </div>
                 <p className="text-nv-faint text-[9px] font-mono">%APPDATA%\Nivara\nivara-models\</p>

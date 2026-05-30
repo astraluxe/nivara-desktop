@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+﻿import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { credentialStore } from './krewDb';
 import { buildTwitterOAuthHeader } from './krewTools';
@@ -144,26 +144,26 @@ async function ensureNotionDatabase(token: string, automationName: string, isOAu
     Status:  { select: { options: [{ name: 'New', color: 'green' }, { name: 'Reviewed', color: 'gray' }] } },
   };
 
-  // Search for existing Nivara Automations DB first
+  // Search for existing adris.tech Automations DB first
   const searchRaw = await invoke<string>('krew_http_call', {
     method: 'POST', url: 'https://api.notion.com/v1/search',
-    headers, body: JSON.stringify({ query: 'Nivara Automations', filter: { value: 'database', property: 'object' } }),
+    headers, body: JSON.stringify({ query: 'adris.tech Automations', filter: { value: 'database', property: 'object' } }),
   }).catch(() => '{}');
   const searchData = JSON.parse(searchRaw) as { results?: { id?: string; title?: { plain_text?: string }[] }[] };
-  const existing = searchData.results?.find(r => r.title?.[0]?.plain_text === 'Nivara Automations');
+  const existing = searchData.results?.find(r => r.title?.[0]?.plain_text === 'adris.tech Automations');
   if (existing?.id) return existing.id.replace(/-/g, '');
 
-  // With OAuth token, create a top-level "Nivara" page then the DB under it
+  // With OAuth token, create a top-level "adris.tech" page then the DB under it
   if (isOAuth) {
-    // Try to find existing Nivara root page
+    // Try to find existing adris.tech root page
     const pageSearchRaw = await invoke<string>('krew_http_call', {
       method: 'POST', url: 'https://api.notion.com/v1/search',
-      headers, body: JSON.stringify({ query: 'Nivara', filter: { value: 'page', property: 'object' }, page_size: 5 }),
+      headers, body: JSON.stringify({ query: 'adris.tech', filter: { value: 'page', property: 'object' }, page_size: 5 }),
     }).catch(() => '{}');
     const pageSearch = JSON.parse(pageSearchRaw) as { results?: { id?: string; properties?: { title?: { title?: { plain_text?: string }[] } } }[] };
     let rootPageId = pageSearch.results?.find(r => {
       const t = r.properties?.title?.title?.[0]?.plain_text ?? '';
-      return t === 'Nivara';
+      return t === 'adris.tech';
     })?.id ?? '';
 
     // Create root page if not found
@@ -173,7 +173,7 @@ async function ensureNotionDatabase(token: string, automationName: string, isOAu
         headers,
         body: JSON.stringify({
           parent: { workspace: true },
-          properties: { title: { title: [{ text: { content: 'Nivara' } }] } },
+          properties: { title: { title: [{ text: { content: 'adris.tech' } }] } },
         }),
       }).catch(() => '{}');
       const rootPage = JSON.parse(rootRaw) as { id?: string };
@@ -186,7 +186,7 @@ async function ensureNotionDatabase(token: string, automationName: string, isOAu
       headers,
       body: JSON.stringify({
         parent: { type: 'page_id', page_id: rootPageId },
-        title: [{ type: 'text', text: { content: 'Nivara Automations' } }],
+        title: [{ type: 'text', text: { content: 'adris.tech Automations' } }],
         properties: dbProps,
       }),
     }).catch(() => '{}');
@@ -208,7 +208,7 @@ async function ensureNotionDatabase(token: string, automationName: string, isOAu
     headers,
     body: JSON.stringify({
       parent: { type: 'page_id', page_id: parentPageId },
-      title: [{ type: 'text', text: { content: 'Nivara Automations' } }],
+      title: [{ type: 'text', text: { content: 'adris.tech Automations' } }],
       properties: dbProps,
     }),
   }).catch(() => '{}');
@@ -221,10 +221,10 @@ async function ensureNotionDatabase(token: string, automationName: string, isOAu
 async function ensureGoogleSheet(accessToken: string, automationName: string): Promise<string> {
   const headers = { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' };
 
-  // Search Drive for existing Nivara sheet
+  // Search Drive for existing adris.tech sheet
   const searchRaw = await invoke<string>('krew_http_call', {
     method: 'GET',
-    url: `https://www.googleapis.com/drive/v3/files?q=name%3D'Nivara+Automations'+and+mimeType%3D'application%2Fvnd.google-apps.spreadsheet'&fields=files(id,name)`,
+    url: `https://www.googleapis.com/drive/v3/files?q=name%3D'adris.tech+Automations'+and+mimeType%3D'application%2Fvnd.google-apps.spreadsheet'&fields=files(id,name)`,
     headers, body: null,
   }).catch(() => '{}');
   const searchData = JSON.parse(searchRaw) as { files?: { id?: string }[] };
@@ -235,7 +235,7 @@ async function ensureGoogleSheet(accessToken: string, automationName: string): P
     method: 'POST', url: 'https://sheets.googleapis.com/v4/spreadsheets',
     headers,
     body: JSON.stringify({
-      properties: { title: 'Nivara Automations' },
+      properties: { title: 'adris.tech Automations' },
       sheets: [{ properties: { title: automationName.slice(0, 100) }, data: [{ rowData: [{ values: [
         { userEnteredValue: { stringValue: 'Date' } },
         { userEnteredValue: { stringValue: 'Automation' } },
@@ -372,7 +372,7 @@ export async function executeAutomation(
       try {
         const rssRaw = await invoke<string>('krew_http_call', {
           method: 'GET', url: cfg.rss_url,
-          headers: { 'User-Agent': 'Nivara/1.0' }, body: null,
+          headers: { 'User-Agent': 'adris.tech/1.0' }, body: null,
         }).catch(() => '');
         if (rssRaw) {
           const titleMatch = rssRaw.match(/<title[^>]*>([^<]{1,200})<\/title>/i);
@@ -391,7 +391,7 @@ export async function executeAutomation(
       try {
         const ghCred = await credentialStore.get('github').catch(() => null);
         const headers: Record<string, string> = {
-          'User-Agent': 'Nivara/1.0',
+          'User-Agent': 'adris.tech/1.0',
           'Accept': 'application/vnd.github+json',
         };
         if (ghCred?.api_key) headers['Authorization'] = `Bearer ${ghCred.api_key}`;
@@ -468,17 +468,17 @@ export async function executeAutomation(
         if (notionCred?.token) {
           const headers = { 'Authorization': `Bearer ${notionCred.token}`, 'Notion-Version': '2022-06-28', 'Content-Type': 'application/json' };
 
-          // Resolve the database ID: prefer explicit URL, fall back to auto-discover "Nivara Automations"
+          // Resolve the database ID: prefer explicit URL, fall back to auto-discover "adris.tech Automations"
           let dbId = '';
           if (cfg.notion_crm_db) {
             const urlMatch = cfg.notion_crm_db.match(/([a-f0-9]{32})/i);
             dbId = urlMatch ? urlMatch[1] : '';
           }
           if (!dbId) {
-            // Auto-discover the "Nivara Automations" database created by the notion output step
+            // Auto-discover the "adris.tech Automations" database created by the notion output step
             const searchRaw = await invoke<string>('krew_http_call', {
               method: 'POST', url: 'https://api.notion.com/v1/search',
-              headers, body: JSON.stringify({ query: 'Nivara Automations', filter: { value: 'database', property: 'object' } }),
+              headers, body: JSON.stringify({ query: 'adris.tech Automations', filter: { value: 'database', property: 'object' } }),
             }).catch(() => '{}');
             const searchData = JSON.parse(searchRaw) as { results?: { id?: string }[] };
             const found = searchData.results?.[0]?.id;

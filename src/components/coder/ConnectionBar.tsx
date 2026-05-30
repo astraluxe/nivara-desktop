@@ -1,4 +1,4 @@
-import { useState } from 'react';
+﻿import { useState } from 'react';
 import { ConnectionMode, Provider, PROVIDERS } from '../../lib/ai';
 
 interface Props {
@@ -19,7 +19,7 @@ interface Props {
 const MODES: { id: ConnectionMode; label: string; dotClass: string }[] = [
   { id: 'local',   label: 'Local',   dotClass: 'bg-nv-green' },
   { id: 'own_key', label: 'Own Key', dotClass: 'bg-nv-yellow' },
-  { id: 'nivara',  label: 'Nivara',  dotClass: 'bg-accent' },
+  { id: 'nivara',  label: 'adris.tech',  dotClass: 'bg-accent' },
 ];
 
 const PROVIDER_ORDER: Provider[] = [
@@ -77,7 +77,7 @@ export default function ConnectionBar(props: Props) {
             <p className="text-[11px] font-semibold text-nv-text uppercase tracking-wider mb-4">
               {popup === 'local'   && 'Local Model (Ollama)'}
               {popup === 'own_key' && 'Own API Key'}
-              {popup === 'nivara'  && 'Nivara Plan'}
+              {popup === 'nivara'  && 'adris.tech Plan'}
             </p>
 
             {popup === 'local' && (
@@ -156,7 +156,7 @@ export default function ConnectionBar(props: Props) {
             {popup === 'nivara' && (
               <div className="space-y-3">
                 <p className="text-nv-muted text-[12px] leading-relaxed">
-                  Uses <span className="text-nv-text font-semibold">Gemini 2.0 Flash</span> via Nivara's secure servers.
+                  Uses <span className="text-nv-text font-semibold">Gemini 2.0 Flash</span> via adris.tech's secure servers.
                   Your API key is never stored in this app.
                 </p>
                 <div className="rounded-lg border border-nv-border bg-nv-bg px-3 py-2 space-y-1">

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+﻿import { useState, useRef, useEffect, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import type { Node, Edge } from '@xyflow/react';
@@ -1242,7 +1242,7 @@ The prompt must be production-ready — specific enough for a motion designer to
         addMsg({ role: 'assistant', content: '', streaming: true });
       }
 
-      // Track tokens for Nivara mode
+      // Track tokens for adris.tech mode
       if (mode === 'nivara' && totalChars > 0) {
         trackTokenUsage('krew', totalChars);
       }

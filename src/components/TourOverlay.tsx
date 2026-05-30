@@ -21,8 +21,8 @@ interface Step {
 const STEPS: Step[] = [
   {
     id: 'welcome',
-    title: 'Welcome to Nivara',
-    body: "Your AI operating system — 43 agents, a dev terminal, and more in one app. Let's take a quick tour.",
+    title: 'Welcome to adris.tech',
+    body: "Your AI operating system — 43 agents, a dev terminal, automation, and more in one app. Let's take a quick tour.",
     target: null,
   },
   {

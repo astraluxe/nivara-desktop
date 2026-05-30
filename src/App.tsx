@@ -18,6 +18,7 @@ import AccountPanel from "./modules/AccountPanel";
 import SettingsModule, { loadSettings } from "./modules/SettingsModule";
 import InfoModule from "./modules/InfoModule";
 import StudioModule from "./modules/StudioModule";
+import HeadModule from "./modules/HeadModule";
 import { AppSkeleton } from "./components/Skeleton";
 import TourOverlay, { isTourDone } from "./components/TourOverlay";
 import type { Node, Edge } from "@xyflow/react";
@@ -177,6 +178,7 @@ function AppShell() {
           {activeModule === "guard"   && <GuardModule />}
           {activeModule === "mesh"    && <MeshModule onSessionChange={setMeshActive} />}
           {activeModule === "studio"  && <StudioModule initialRequest={studioRequest} onRequestConsumed={() => setStudioRequest(null)} />}
+          {activeModule === "head"    && <HeadModule />}
           {activeModule === "info"     && <InfoModule />}
           {activeModule === "account"  && <AccountPanel />}
           {activeModule === "settings" && <SettingsModule />}

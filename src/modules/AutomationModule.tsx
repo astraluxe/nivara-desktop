@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+﻿import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../contexts/AuthContext';
 import type { Node, Edge } from '@xyflow/react';
@@ -301,7 +301,7 @@ function templateToFlow(t: Template) {
 }
 
 const AUTOMATION_CAPABILITY_CONTEXT = `
-## Nivara Automation — Full Capability Reference
+## adris.tech Automation — Full Capability Reference
 
 TRIGGERS — ONLY these exist, nothing else:
 - schedule: Cron schedule (every hour, daily at 9am, weekdays only, monthly, custom cron)
@@ -356,7 +356,7 @@ These fields are set on the trigger config and are injected automatically into t
 
 2. knowledge_context (labelled "Paste product info" in the UI): Paste text directly (product description, FAQs, talking points). Injected as "Company Knowledge Base" into every AI step. Same rule — injected automatically, prompt should reference "the product details above".
 
-3. notion_crm_db: Optional Notion database URL. The runner fetches the last 30 records from this database before each run and injects them as context so the AI knows what was done before. If left blank AND Notion is connected, the runner automatically discovers the "Nivara Automations" database (auto-created when any notion output runs). THIS IS HOW YOU GIVE THE AI MEMORY OF PAST ACTIONS — no manual URL needed if Notion is already connected.
+3. notion_crm_db: Optional Notion database URL. The runner fetches the last 30 records from this database before each run and injects them as context so the AI knows what was done before. If left blank AND Notion is connected, the runner automatically discovers the "adris.tech Automations" database (auto-created when any notion output runs). THIS IS HOW YOU GIVE THE AI MEMORY OF PAST ACTIONS — no manual URL needed if Notion is already connected.
    - "Check what posts were already made before writing a new one" → notion output saves each post → next run auto-reads those posts → AI sees them and picks a fresh angle.
    - "Check CRM contacts before drafting outreach" → same mechanism.
    IMPORTANT: This is NOT a second trigger. It is context injection within a single automation. Never say this requires multiple automations.
@@ -374,7 +374,7 @@ HARD LIMITS — these do NOT exist, never suggest them:
 - NO sending LinkedIn DMs programmatically.
 `;
 
-const FLOW_SYSTEM_PROMPT = `You are a workflow automation builder. You have complete knowledge of Nivara's automation system:
+const FLOW_SYSTEM_PROMPT = `You are a workflow automation builder. You have complete knowledge of adris.tech's automation system:
 ${AUTOMATION_CAPABILITY_CONTEXT}
 
 The user will describe an automation. Return ONLY valid JSON (no markdown, no explanation, no code fences) with this exact shape:
@@ -398,8 +398,8 @@ srcType in edge data matches the source node's type.
 
 AI ACTION PROMPT QUALITY — critical for content-generation automations:
 When writing the "prompt" field for an ai_action node that generates marketing content, social posts, outreach, or product-specific text:
-- NEVER write a vague prompt like "Write a LinkedIn post about Nivara" — the AI running the automation has zero product knowledge.
-- ALWAYS embed the key product facts directly inside the prompt field. Example: "You are a founder marketing Nivara — an all-in-one AI desktop app (~10MB installer) that replaces 5 separate tools (AI coding, personal AI team, automations, local model manager, privacy shield). It runs locally with no cloud lock-in. Write a LinkedIn post targeting founders who are tired of paying for multiple AI SaaS subscriptions. Pose a relatable question about tool sprawl. Keep it under 200 words, conversational, no buzzwords."
+- NEVER write a vague prompt like "Write a LinkedIn post about adris.tech" — the AI running the automation has zero product knowledge.
+- ALWAYS embed the key product facts directly inside the prompt field. Example: "You are a founder marketing adris.tech — an all-in-one AI desktop app (~10MB installer) that replaces 5 separate tools (AI coding, personal AI team, automations, local model manager, privacy shield). It runs locally with no cloud lock-in. Write a LinkedIn post targeting founders who are tired of paying for multiple AI SaaS subscriptions. Pose a relatable question about tool sprawl. Keep it under 200 words, conversational, no buzzwords."
 - If the user's input includes product details, extract and embed them verbatim in the prompt.
 - If the user hasn't provided product details, write the prompt with a [PASTE YOUR PRODUCT DETAILS HERE] placeholder and note it in a comment in the subtitle field.
 
@@ -435,7 +435,7 @@ function buildDiscussionPrompt(savedAutomations: Automation[], selectedAutomatio
     ? `\n## User's Connected Services\n${connectedServices.join(', ')}\nUse these automatically — never ask the user which service to use, never ask for API keys, these are already set up.\n`
     : '\n## Connected Services: none yet\n';
 
-  return `You are Nivara's automation assistant — honest, decisive, and action-oriented. Your job is to tell the user exactly what is and isn't possible, then build what CAN be done immediately.
+  return `You are adris.tech's automation assistant — honest, decisive, and action-oriented. Your job is to tell the user exactly what is and isn't possible, then build what CAN be done immediately.
 ${AUTOMATION_CAPABILITY_CONTEXT}
 ${savedSummary}
 ${connectedCtx}
@@ -788,7 +788,7 @@ const TRIGGER_OPTIONS = [
   { type: 'schedule'        as TriggerType, icon: '⏰', label: 'Schedule',        desc: 'Run at a set time — daily, weekly, hourly' },
   { type: 'file_watch'      as TriggerType, icon: '📁', label: 'File added',      desc: 'New file lands in a folder you choose' },
   { type: 'email'           as TriggerType, icon: '✉',  label: 'Email received',  desc: 'Incoming email matches your filters' },
-  { type: 'webhook'         as TriggerType, icon: '🔗', label: 'Webhook',         desc: 'Another app sends a signal to Nivara' },
+  { type: 'webhook'         as TriggerType, icon: '🔗', label: 'Webhook',         desc: 'Another app sends a signal to adris.tech' },
   { type: 'twitter_mention' as TriggerType, icon: '𝕏',  label: 'X mention',       desc: 'Someone @mentions you on X (Twitter)' },
   { type: 'rss'             as TriggerType, icon: '📡', label: 'RSS Feed',        desc: 'New article published on a website' },
   { type: 'github'          as TriggerType, icon: '⚙',  label: 'GitHub',          desc: 'New PR, issue, or push in a repo' },
@@ -984,7 +984,7 @@ function WorkflowBuilder({
                       placeholder="C:\Users\you\Downloads"
                       className={`${iCls(e0.includes('folder'))} pl-8 font-mono`} />
                   </div>
-                  <p className="text-[10px] text-nv-muted">Paste the full path to a folder on your computer. Nivara watches for new files here.</p>
+                  <p className="text-[10px] text-nv-muted">Paste the full path to a folder on your computer. adris.tech watches for new files here.</p>
                 </div>
                 <div className="space-y-1.5">
                   <label className={lCls}>File types to watch</label>
@@ -1158,7 +1158,7 @@ function WorkflowBuilder({
               <div className="space-y-1.5">
                 <label className={lCls}>Notion history database <span className="normal-case font-normal text-nv-faint">(optional)</span></label>
                 <input value={triggerConfig.notion_crm_db ?? ''} onChange={e => patchTC({ notion_crm_db: e.target.value })}
-                  placeholder="Leave blank — auto-discovers 'Nivara Automations' if Notion is connected"
+                  placeholder="Leave blank — auto-discovers 'adris.tech Automations' if Notion is connected"
                   className={`${iCls(false)} text-xs`} />
                 <p className="text-[10px] text-nv-muted">Fetches the last 30 records before each run so the AI knows what was already posted/sent — prevents duplicate content.</p>
               </div>
@@ -1333,7 +1333,7 @@ function WorkflowBuilder({
                           <input value={s.output_config?.file_path ?? ''} onChange={e => patchOC(s.id, { file_path: e.target.value })}
                             placeholder="C:\Users\you\Documents\output.md"
                             className={`${iCls(e3.includes(`step_${i}_file`))} font-mono`} />
-                          <p className="text-[10px] text-nv-muted">Full path including filename. Nivara creates the file if it doesn't exist.</p>
+                          <p className="text-[10px] text-nv-muted">Full path including filename. adris.tech creates the file if it doesn't exist.</p>
                         </div>
                         <div className="grid grid-cols-2 gap-3">
                           <div className="space-y-1.5">
@@ -1395,7 +1395,7 @@ function WorkflowBuilder({
                             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
                             <div>
                               <p className="text-[11px] text-emerald-400 font-medium">Notion connected · auto-provisioned</p>
-                              <p className="text-[10px] text-nv-faint mt-0.5">We'll create a "Nivara Automations" database automatically on first run.</p>
+                              <p className="text-[10px] text-nv-faint mt-0.5">We'll create a "adris.tech Automations" database automatically on first run.</p>
                             </div>
                           </div>
                         ) : (
@@ -1523,7 +1523,7 @@ function WorkflowBuilder({
                               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
                               <div>
                                 <p className="text-[11px] text-emerald-400 font-medium">Google Sheets connected · auto-provisioned</p>
-                                <p className="text-[10px] text-nv-faint mt-0.5">We'll create a "Nivara Automations" spreadsheet automatically on first run.</p>
+                                <p className="text-[10px] text-nv-faint mt-0.5">We'll create a "adris.tech Automations" spreadsheet automatically on first run.</p>
                               </div>
                             </div>
                           ) : (
@@ -1782,7 +1782,7 @@ function AIChatBar({ canvasRef, automations = [], selectedAutomation: initialSel
     setDiscussMsgs(newMsgs);
     setLoading(true);
     setError('');
-    setStatusMsg('Nivara AI is thinking…');
+    setStatusMsg('adris.tech AI is thinking…');
     try {
       const history = newMsgs.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n');
       const systemPrompt = buildDiscussionPrompt(automations, selectedAutomation, connectedServices);

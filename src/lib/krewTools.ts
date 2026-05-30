@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+﻿import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { krewMemoryDb } from './krewDb';
 
@@ -483,7 +483,7 @@ export function buildKrewSystemPrompt(activeTools: ToolDef[]): string {
     return `### ${t.name}\n${t.description}${params ? `\nParameters:\n${params}` : ''}`;
   }).join('\n\n');
 
-  return `You are Krew, a powerful AI agent running locally inside the Nivara desktop app. You have access to the user's machine and connected apps.
+  return `You are Krew, a powerful AI agent running locally inside the adris.tech desktop app. You have access to the user's machine and connected apps.
 
 ## Available tools
 ${toolDocs}

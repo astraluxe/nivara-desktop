@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, RefObject } from 'react';
+﻿import { useEffect, useRef, useCallback, RefObject } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -61,7 +61,7 @@ export function useTerminal(containerRef: RefObject<HTMLDivElement>, cwd: string
         });
         unlistenData = unlisten;
       })
-      .catch((e) => term.write(`\r\n\x1b[31m[Nivara] PTY error: ${e}\x1b[0m\r\n`));
+      .catch((e) => term.write(`\r\n\x1b[31m[adris.tech] PTY error: ${e}\x1b[0m\r\n`));
 
     term.onData((data) => {
       if (ptyIdRef.current !== null)

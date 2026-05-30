@@ -1,4 +1,4 @@
-import { useState } from 'react';
+﻿import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { credentialStore } from '../../lib/krewDb';
 
@@ -29,7 +29,7 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
     icon: '⬡',
     steps: [
       { title: 'Get an OpenAI API key', body: 'Go to platform.openai.com → API keys → Create new secret key. You\'ll need a small amount of credit added to your account first (even $5 lasts a long time).', link: 'https://platform.openai.com/api-keys' },
-      { title: 'Create and copy the key', body: 'Click "Create new secret key", paste the name below, then immediately copy the key — OpenAI only shows it once. It starts with "sk-".', copyItems: [{ label: 'Key name', text: 'Nivara' }] },
+      { title: 'Create and copy the key', body: 'Click "Create new secret key", paste the name below, then immediately copy the key — OpenAI only shows it once. It starts with "sk-".', copyItems: [{ label: 'Key name', text: 'adris' }] },
       { title: 'Paste your API key', body: '', field: 'api_key', fieldLabel: 'OpenAI API Key', fieldPlaceholder: 'sk-...', secret: true },
     ],
   },
@@ -38,7 +38,7 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
     icon: '◎',
     steps: [
       { title: 'Get an Anthropic API key', body: 'Go to console.anthropic.com → Settings → API Keys → Create Key. You\'ll need a small amount of credit added first — Haiku is very affordable.', link: 'https://console.anthropic.com/settings/keys' },
-      { title: 'Create and copy the key', body: 'Click "Create Key", paste the name below, then copy the key — it starts with "sk-ant-".', copyItems: [{ label: 'Key name', text: 'Nivara' }] },
+      { title: 'Create and copy the key', body: 'Click "Create Key", paste the name below, then copy the key — it starts with "sk-ant-".', copyItems: [{ label: 'Key name', text: 'adris' }] },
       { title: 'Paste your API key', body: '', field: 'api_key', fieldLabel: 'Anthropic API Key', fieldPlaceholder: 'sk-ant-...', secret: true },
     ],
   },
@@ -51,10 +51,10 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
         title: 'Create an App Password',
         body: 'Go to your Google Account → Security → "App Passwords". Select "Other (Custom name)" as the app type, paste the name below, and click Generate. Copy the 16-character password shown.',
         link: 'https://myaccount.google.com/apppasswords',
-        copyItems: [{ label: 'App name', text: 'Nivara' }],
+        copyItems: [{ label: 'App name', text: 'adris' }],
       },
       { title: 'Enter your Gmail address', body: '', field: 'email', fieldLabel: 'Gmail address', fieldPlaceholder: 'you@gmail.com' },
-      { title: 'Paste the App Password', body: 'Paste the 16-character App Password you just generated. Spaces are fine — Nivara will clean them up.', field: 'app_password', fieldLabel: 'App Password', fieldPlaceholder: 'xxxx xxxx xxxx xxxx', secret: true },
+      { title: 'Paste the App Password', body: 'Paste the 16-character App Password you just generated. Spaces are fine — adris.tech will clean them up.', field: 'app_password', fieldLabel: 'App Password', fieldPlaceholder: 'xxxx xxxx xxxx xxxx', secret: true },
     ],
   },
   google: {
@@ -63,7 +63,7 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
     steps: [
       { title: 'Create a Google Cloud project', body: 'Go to console.cloud.google.com and create a new project (or use an existing one). This is free.', link: 'https://console.cloud.google.com/projectcreate' },
       { title: 'Enable APIs', body: 'In your project, go to APIs & Services → Library. Search for and enable each of these APIs one by one.', link: 'https://console.cloud.google.com/apis/library', copyItems: [{ label: 'Google Calendar API', text: 'Google Calendar API' }, { label: 'Google Sheets API', text: 'Google Sheets API' }, { label: 'Google Drive API', text: 'Google Drive API' }] },
-      { title: 'Create OAuth credentials', body: 'Go to APIs & Services → Credentials → Create Credentials → OAuth client ID. Choose "Desktop App" as the application type. Paste the name below and click Create.', link: 'https://console.cloud.google.com/apis/credentials/oauthclient', copyItems: [{ label: 'Application name', text: 'Nivara' }] },
+      { title: 'Create OAuth credentials', body: 'Go to APIs & Services → Credentials → Create Credentials → OAuth client ID. Choose "Desktop App" as the application type. Paste the name below and click Create.', link: 'https://console.cloud.google.com/apis/credentials/oauthclient', copyItems: [{ label: 'Application name', text: 'adris' }] },
       { title: 'Add redirect URI', body: 'In the OAuth client settings, click "Add URI" under Authorized redirect URIs. Copy from below and paste it in, then click Save.', copyItems: [{ label: 'Authorized Redirect URI', text: 'http://127.0.0.1:54322/callback' }] },
       { title: 'Enter your credentials', body: '', field: 'client_id', fieldLabel: 'Client ID', fieldPlaceholder: '123456-abc.apps.googleusercontent.com' },
       { title: 'Enter Client Secret', body: '', field: 'client_secret', fieldLabel: 'Client Secret', fieldPlaceholder: 'GOCSPX-...', secret: true },
@@ -77,7 +77,7 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
         title: 'Create a Notion integration',
         body: 'Click the link below. Then:\n\n1. Click "+ New integration"\n2. Set the name (copy from below)\n3. "Authentication method" → choose Access token  ← important\n   (NOT OAuth — that one needs redirect URLs and is for public apps)\n4. Click Submit',
         link: 'https://www.notion.so/my-integrations',
-        copyItems: [{ label: 'Integration name', text: 'Nivara' }],
+        copyItems: [{ label: 'Integration name', text: 'adris' }],
       },
       {
         title: 'Copy your token',
@@ -88,9 +88,9 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
         secret: true,
       },
       {
-        title: 'Give Nivara access to a page',
-        body: 'Create a page in Notion for Nivara to store automation results, then grant access:\n\n1. In Notion, click "+ New page" in the left sidebar and name it (copy from below)\n2. In Notion, go to Settings → Connections → All Connections\n3. Find "Nivara (Internal)" → click the ··· next to it\n4. Click "Manage Connection" → in the popup click "Go to Manage Page Access"\n5. Select the page you just created → click Save\n\nNivara will automatically create databases inside that page — you never need to touch it again.',
-        copyItems: [{ label: 'Page name', text: 'Nivara' }],
+        title: 'Give adris.tech access to a page',
+        body: 'Create a page in Notion for adris.tech to store automation results, then grant access:\n\n1. In Notion, click "+ New page" in the left sidebar and name it (copy from below)\n2. In Notion, go to Settings → Connections → All Connections\n3. Find "adris.tech (Internal)" → click the ··· next to it\n4. Click "Manage Connection" → in the popup click "Go to Manage Page Access"\n5. Select the page you just created → click Save\n\nadris.tech will automatically create databases inside that page — you never need to touch it again.',
+        copyItems: [{ label: 'Page name', text: 'adris' }],
       },
     ],
   },
@@ -98,7 +98,7 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
     title: 'Connect Slack',
     icon:  '#',
     steps: [
-      { title: 'Create a Slack App', body: 'Go to api.slack.com/apps and click "Create New App" → "From scratch". Paste the app name below, pick your workspace, and click Create App.', link: 'https://api.slack.com/apps/new', copyItems: [{ label: 'App name', text: 'Nivara' }] },
+      { title: 'Create a Slack App', body: 'Go to api.slack.com/apps and click "Create New App" → "From scratch". Paste the app name below, pick your workspace, and click Create App.', link: 'https://api.slack.com/apps/new', copyItems: [{ label: 'App name', text: 'adris' }] },
       {
         title: 'Add OAuth scopes',
         body: 'Go to "OAuth & Permissions" → "Scopes" → "Bot Token Scopes". Click "Add an OAuth Scope" and add each scope below one by one.',
@@ -119,7 +119,7 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
     title: 'Connect GitHub',
     icon:  '⌥',
     steps: [
-      { title: 'Generate a Personal Access Token', body: 'Go to GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token (classic).', link: 'https://github.com/settings/tokens/new', copyItems: [{ label: 'Note (token name)', text: 'Nivara' }] },
+      { title: 'Generate a Personal Access Token', body: 'Go to GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token (classic).', link: 'https://github.com/settings/tokens/new', copyItems: [{ label: 'Note (token name)', text: 'adris' }] },
       {
         title: 'Select scopes',
         body: 'Check the scopes below (tick the top-level checkbox for each — it selects all sub-scopes). Set expiration to 90 days. Click Generate token.',
@@ -136,7 +136,7 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
     title: 'Connect Linear',
     icon:  '◈',
     steps: [
-      { title: 'Generate an API key', body: 'Go to Linear Settings → API → Personal API keys → Create key. Paste the label below and click Create.', link: 'https://linear.app/settings/api', copyItems: [{ label: 'Key label', text: 'Nivara' }] },
+      { title: 'Generate an API key', body: 'Go to Linear Settings → API → Personal API keys → Create key. Paste the label below and click Create.', link: 'https://linear.app/settings/api', copyItems: [{ label: 'Key label', text: 'adris' }] },
       { title: 'Paste the API key', body: 'Copy and paste the key below. It starts with "lin_api_".', field: 'api_key', fieldLabel: 'API Key', fieldPlaceholder: 'lin_api_...', secret: true },
     ],
   },
@@ -144,7 +144,7 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
     title: 'Connect Airtable',
     icon:  '▦',
     steps: [
-      { title: 'Create a Personal Access Token', body: 'Go to airtable.com/create/tokens (link below). Click "Create new token" and paste the name below.', link: 'https://airtable.com/create/tokens', copyItems: [{ label: 'Token name', text: 'Nivara' }] },
+      { title: 'Create a Personal Access Token', body: 'Go to airtable.com/create/tokens (link below). Click "Create new token" and paste the name below.', link: 'https://airtable.com/create/tokens', copyItems: [{ label: 'Token name', text: 'adris' }] },
       {
         title: 'Select scopes and bases',
         body: 'Under "Scopes", click "Add a scope" and add each scope below. Under "Access", click "Add a base" and select the bases you want Krew to use.',
@@ -171,7 +171,7 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
     steps: [
       {
         title: 'Open the X Developer Portal',
-        body: 'Click the link below. Sign in with the X account you want Nivara to post from. You\'ll land on a page titled "Tap Into What\'s Happening" with a form to apply for developer access.',
+        body: 'Click the link below. Sign in with the X account you want adris.tech to post from. You\'ll land on a page titled "Tap Into What\'s Happening" with a form to apply for developer access.',
         link: 'https://developer.x.com/en/portal/petition/essential/basic-info',
       },
       {
@@ -183,7 +183,7 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
         title: 'Create an App',
         body: 'In the left sidebar click "Apps", then click "+ Add App" or "Create App". Paste the app name below and click Create.\n\nX will show an "Application Created Successfully" screen with 3 values — keep that screen open.',
         link: 'https://developer.x.com/en/portal/apps/new',
-        copyItems: [{ label: 'App name', text: 'Nivara' }],
+        copyItems: [{ label: 'App name', text: 'adris' }],
       },
       {
         title: 'Paste your Consumer Key',
@@ -206,7 +206,7 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
         body: 'Apps → click your app name → scroll to User authentication settings → click the pencil icon.\n\n• App permissions → Read and write\n• Type of App → Native App\n• Callback URI → copy from below\n• Website URL → copy from below\n\nLeave everything else empty. Click Save Changes.',
         copyItems: [
           { label: 'Callback URI / Redirect URL', text: 'http://localhost/' },
-          { label: 'Website URL', text: 'https://nivara.tech' },
+          { label: 'Website URL', text: 'https://adris.tech' },
         ],
       },
       {
@@ -245,7 +245,7 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
         body: 'Now go to reddit.com/prefs/apps (link below) and scroll to the bottom. Click "create another app…". Fill in each field using the copy buttons below. Select "script" as the type. Click "create app".',
         link: 'https://www.reddit.com/prefs/apps',
         copyItems: [
-          { label: 'Name', text: 'Nivara' },
+          { label: 'Name', text: 'adris' },
           { label: 'Description', text: 'Personal use script' },
           { label: 'About URL', text: 'http://localhost' },
           { label: 'Redirect URI', text: 'http://localhost' },
@@ -275,7 +275,7 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
       },
       {
         title: 'Enter your Reddit password',
-        body: 'Enter the password for that Reddit account. Stored locally on your device only — never sent to Nivara servers.',
+        body: 'Enter the password for that Reddit account. Stored locally on your device only — never sent to adris.tech servers.',
         field: 'password',
         fieldLabel: 'Reddit password',
         fieldPlaceholder: '••••••••••••',
@@ -294,16 +294,16 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
       },
       {
         title: 'Find or create your LinkedIn Company Page',
-        body: 'LinkedIn requires a Company Page (not a personal profile) linked to every developer app.\n\nIf you already have a company or brand page on LinkedIn, skip to the next step — you\'ll use that.\n\nIf you don\'t have one yet, click the link below to create a free one in 30 seconds. Use your own brand or business name (not "Nivara"). After creating it, copy the page URL from your browser — you\'ll need it next.',
+        body: 'LinkedIn requires a Company Page (not a personal profile) linked to every developer app.\n\nIf you already have a company or brand page on LinkedIn, skip to the next step — you\'ll use that.\n\nIf you don\'t have one yet, click the link below to create a free one in 30 seconds. Use your own brand or business name (not "adris.tech"). After creating it, copy the page URL from your browser — you\'ll need it next.',
         link: 'https://www.linkedin.com/company/setup/new/',
       },
       {
         title: 'Create the Developer App',
-        body: 'Go to the LinkedIn Developer portal (link below). On the create form:\n\n• App name → copy from below\n• LinkedIn Page → type your company/brand name and select your page from the dropdown (this is YOUR company page, not Nivara\'s)\n• Privacy policy URL → copy from below\n• App logo → skip (optional)\n• Check the "I have read and agree" checkbox\n\nClick "Create app".',
+        body: 'Go to the LinkedIn Developer portal (link below). On the create form:\n\n• App name → copy from below\n• LinkedIn Page → type your company/brand name and select your page from the dropdown (this is YOUR company page, not adris.tech)\n• Privacy policy URL → copy from below\n• App logo → skip (optional)\n• Check the "I have read and agree" checkbox\n\nClick "Create app".',
         link: 'https://www.linkedin.com/developers/apps/new',
         copyItems: [
-          { label: 'App name', text: 'Nivara' },
-          { label: 'Privacy policy URL', text: 'https://nivara.tech/privacy' },
+          { label: 'App name', text: 'adris' },
+          { label: 'Privacy policy URL', text: 'https://adris.tech/privacy' },
         ],
       },
       {

@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useAuth } from "../contexts/AuthContext";
 
-export type Module = "home" | "automation" | "coder" | "krew" | "connect" | "models" | "vault" | "guard" | "mesh" | "studio" | "info" | "account" | "settings";
+export type Module = "home" | "automation" | "coder" | "krew" | "connect" | "models" | "vault" | "guard" | "mesh" | "studio" | "head" | "info" | "account" | "settings";
 
 interface Props {
   activeModule: Module;
@@ -185,6 +185,7 @@ const SHORT_LABEL: Record<string, string> = {
   guard:      "Guard",
   mesh:       "Mesh",
   studio:     "Studio",
+  head:       "Head",
   info:       "Info",
 };
 
@@ -359,6 +360,68 @@ export default function Sidebar({ activeModule, onModuleChange, meshSessionActiv
             </button>
           );
         })}
+
+        {/* Head admin module — only visible to head users */}
+        {profile?.admin_level === 'head' && (
+          <>
+            <div className="h-px bg-nv-border my-1 mx-3" />
+            <button
+              onClick={() => onModuleChange('head')}
+              title="Head Dashboard"
+              aria-label="Head Dashboard"
+              className={`
+                relative flex items-center rounded-lg transition-fast mx-1.5
+                ${activeModule === 'head'
+                  ? 'bg-accent/15 text-accent'
+                  : 'text-nv-muted hover:bg-nv-surface2 hover:text-nv-text'
+                }
+              `}
+              style={{ height: '36px', padding: '0 8px', justifyContent: expanded ? 'flex-start' : 'center' }}
+            >
+              {activeModule === 'head' && (
+                <span className="absolute left-0 top-2 bottom-2 w-0.5 rounded-full bg-accent" />
+              )}
+              <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 20, height: 20, flexShrink: 0 }}>
+                <svg viewBox="0 0 20 20" fill="none" style={{ width: 14, height: 14 }}>
+                  <path d="M10 2l2.4 4.9 5.4.8-3.9 3.8.9 5.4L10 14.5l-4.8 2.4.9-5.4L2.2 7.7l5.4-.8L10 2z" fill="currentColor"/>
+                </svg>
+              </span>
+              <span
+                className="font-sans text-xs font-medium whitespace-nowrap text-left"
+                style={{
+                  opacity: expanded ? 1 : 0,
+                  maxWidth: expanded ? '100px' : 0,
+                  overflow: 'hidden',
+                  marginLeft: expanded ? '8px' : 0,
+                  flex: 'none',
+                  transition: 'opacity 0.12s 0.06s, max-width 0.18s, margin-left 0.18s',
+                  pointerEvents: 'none',
+                }}
+              >
+                Head
+              </span>
+              {expanded && <span style={{ flex: 1 }} />}
+              <span
+                className="flex items-center gap-1 shrink-0"
+                style={expanded ? {} : { position: 'absolute', bottom: 5, right: 5 }}
+              >
+                <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-nv-green" title="Admin" />
+                <span
+                  className="text-[8px] font-mono text-nv-green"
+                  style={{
+                    opacity: expanded ? 1 : 0,
+                    maxWidth: expanded ? '50px' : 0,
+                    overflow: 'hidden',
+                    transition: 'opacity 0.12s 0.06s, max-width 0.18s',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  Admin
+                </span>
+              </span>
+            </button>
+          </>
+        )}
       </nav>
 
       {/* Bottom — theme toggle + settings + avatar */}

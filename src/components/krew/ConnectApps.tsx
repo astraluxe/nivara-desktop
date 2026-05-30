@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+﻿import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { credentialStore } from '../../lib/krewDb';
 import ServiceSetupModal from './ServiceSetupModal';
@@ -129,7 +129,7 @@ export default function ConnectApps({ onClose }: Props) {
           <div>
             <h2 className="text-[13px] font-semibold text-nv-text">Connect Apps</h2>
             <p className="text-[10px] text-nv-faint">
-              Used by Krew · Guard · Automation &nbsp;·&nbsp; Stored locally, never sent to Nivara servers
+              Used by Krew · Guard · Automation &nbsp;·&nbsp; Stored locally, never sent to adris.tech servers
             </p>
           </div>
           {onClose && (

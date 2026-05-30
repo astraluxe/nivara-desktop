@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+﻿import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { supabase } from "../lib/supabase";
@@ -355,7 +355,7 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
             {sessionState === "idle" && (
               <div className="p-5">
                 <p className="text-[11px] text-nv-muted mb-4 leading-relaxed">
-                  Start a session to get a room code, then share it with anyone on another device running Nivara to pool your RAM.
+                  Start a session to get a room code, then share it with anyone on another device running adris.tech to pool your RAM.
                 </p>
                 <button
                   onClick={startSession}
@@ -628,7 +628,7 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
           <div className="grid grid-cols-3 gap-3">
             {[
               { n: "01", t: "Host creates session", b: "The device that starts the session becomes the central node. They generate a room code and control device limits based on their Mesh tier." },
-              { n: "02", t: "Guests join with code", b: "Anyone on the same Nivara account or with the code can join. Their RAM is added to the shared pool." },
+              { n: "02", t: "Guests join with code", b: "Anyone on the same adris.tech account or with the code can join. Their RAM is added to the shared pool." },
               { n: "03", t: "Host controls everything", b: "When the central node leaves, all guests are automatically disconnected. Model inference splits across all connected devices." },
             ].map(s => (
               <div key={s.n} className="rounded-xl border p-4" style={{ borderColor: "var(--nv-rule)", background: "var(--nv-surface)" }}>

@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect } from 'react';
+﻿import { useState, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useAuth } from '../contexts/AuthContext';
+import { supabase } from '../lib/supabase';
 import { credentialStore } from '../lib/krewDb';
 import type { Provider } from '../lib/ai';
 
@@ -192,6 +193,22 @@ function assembleVideoHtml(stripped: string, fmt: Format, dur: number): string {
   return buildVideoHtml(fmt, dur, sceneCode);
 }
 
+// Post-process generated video HTML to enforce selected emoji style at code level
+// (LLM prompt instructions alone are unreliable for this — we do it ourselves)
+function applyEmojiStyle(html: string, style: 'color' | 'infill' | 'outline'): string {
+  if (style === 'color') return html;
+  const emojiRe = /\p{Emoji_Presentation}/gu;
+  return html.replace(/(<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>|>[^<]*<)/gi, (m) => {
+    if (/^<style/i.test(m) || /^<script/i.test(m)) return m;
+    return m.replace(emojiRe, (e) => {
+      if (style === 'outline') {
+        return `<span style="display:inline-block;-webkit-text-stroke:3px var(--acc);color:transparent;filter:drop-shadow(0 0 8px color-mix(in srgb,var(--acc) 40%,transparent));">${e}</span>`;
+      }
+      return `<span style="display:inline-block;position:relative;line-height:1;vertical-align:middle;"><span style="filter:grayscale(1) brightness(0);">${e}</span><span style="position:absolute;inset:0;background:var(--acc);mix-blend-mode:screen;pointer-events:none;"></span></span>`;
+    });
+  });
+}
+
 // ─── AI helpers ──────────────────────────────────────────────────────────────
 
 async function loadAllCreds(): Promise<Record<string, Record<string, string>>> {
@@ -240,8 +257,6 @@ html,body{width:${W}px;height:${H}px;overflow:hidden;font-family:'Inter Tight',s
 :root{--bg:#111118;--fg:#f1f5f9;--acc:#6d4cff;}
 body{position:relative;background:var(--bg);color:var(--fg);}
 .clip{position:absolute;inset:0;display:none;overflow:hidden;}
-.icon{font-family:'Material Symbols Outlined';font-variation-settings:'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 48;font-size:96px;line-height:1;user-select:none;}
-.icon-fill{font-family:'Material Symbols Rounded';font-variation-settings:'FILL' 1,'wght' 400,'GRAD' 0,'opsz' 48;font-size:96px;line-height:1;user-select:none;}
 .sub{position:absolute;bottom:0;left:0;right:0;padding:${subPad}px ${subW}px;background:linear-gradient(transparent,rgba(0,0,0,0.65));font-size:${subFs}px;color:#fff;font-weight:500;text-align:center;}
 </style>
 </head>
@@ -256,20 +271,25 @@ ${playbackJs}
 </html>`;
 }
 
-function buildVideoPrompt(fmt: Format, duration: number, agentBias?: string): string {
+function getSceneCount(duration: number): number {
+  return duration <= 8 ? 3 : duration <= 15 ? 5 : duration <= 22 ? 7 : duration <= 32 ? 9 : duration <= 45 ? 12 : duration <= 60 ? 15 : 18;
+}
+
+function buildVideoPrompt(fmt: Format, duration: number, agentBias?: string, emojiStyle: 'color' | 'infill' | 'outline' = 'infill'): string {
   const W = fmt.w;
   const H = fmt.h;
 
-  const sceneCount = duration <= 12 ? 2 : duration <= 22 ? 3 : duration <= 38 ? 4 : duration <= 52 ? 5 : 6;
+  const sceneCount = getSceneCount(duration);
 
-  const fsHero = Math.round(H * 0.09);
-  const fsSub  = Math.round(H * 0.04);
-  const fsStat = Math.round(H * 0.13);
-  const fsBody = Math.round(H * 0.028);
-  const fsCta  = Math.round(H * 0.038);
-  const subPad = Math.round(H * 0.015);
-  const subW   = Math.round(W * 0.05);
-  const subFs  = Math.round(H * 0.025);
+  const fsHero    = Math.round(H * 0.09);   // full-scene headlines
+  const fsSub     = Math.round(H * 0.04);   // secondary text / supporting lines
+  const fsStat    = Math.round(H * 0.13);   // STANDALONE full-screen hero numbers only
+  const fsCardNum = Math.round(H * 0.062);  // numbers INSIDE a card/badge/box
+  const fsBody    = Math.round(H * 0.028);  // body / label text
+  const fsCta     = Math.round(H * 0.038);  // CTA button text
+  const subPad    = Math.round(H * 0.015);
+  const subW      = Math.round(W * 0.05);
+  const subFs     = Math.round(H * 0.025);
 
   // Playback + clip-runtime block (AI copies verbatim into their HTML)
   const playbackJs = `(function(){
@@ -311,25 +331,28 @@ function buildVideoPrompt(fmt: Format, duration: number, agentBias?: string): st
   return `You are a professional motion designer and frontend developer. Create a stunning, polished animated marketing video as a single self-contained HTML file.
 ${agentBias ? `\nDIRECTION: ${agentBias}\n` : ''}
 VIEWPORT: ${W}x${H}px fixed · ${duration}s loop · Fonts: Inter Tight + JetBrains Mono (Google Fonts)
+SAFE ZONE: ${Math.round(W*0.05)}px from left/right edges, ${Math.round(H*0.04)}px from bottom. No content may touch the canvas border. The 3-zone template already encodes these — do not set left:0 or right:0 on any content div.
 
 ━━━ STEP 1: PLAN BEFORE WRITING ━━━
-Read the entire user message. Extract every specific name, number, feature, and fact — use them, do not invent.
+Read the ENTIRE user message + brand content. Extract every name, number, feature, fact. Use them — do not invent.
 Decide:
   A) VIDEO TYPE — Product launch / Brand story / Data reveal / Tutorial / Announcement
-  B) SCENE PLAN — ${sceneCount} scenes. For each: name, job (one sentence), duration in seconds. Durations must sum to ${duration}.
-  C) VISUAL STYLE — dark glassmorphism / clean minimal / bold gradient / editorial. Derived from content emotion.
-  D) COLOR TRIO — --bg / --fg / --acc. Derived from brand or content feel. DO NOT default to purple.
-  E) HERO VISUAL — decide the ONE dominant visual for each scene BEFORE writing code.
-     PRIORITY ORDER (use higher options when content fits):
-     1. ICON-FIRST (best for most scenes): One giant Material Symbols icon (160-220px) centered,
-        with a radial glow behind it, entrance animation, and subtle float. The icon IS the scene.
-     2. UI INTERACTION (tech/product content): Search bar with typing, browser with URL animation,
-        phone with animated notification, app screen with a micro-interaction.
-     3. VISUAL PROP (data/feature content): Bar chart, donut ring, stat card grid, waveform,
-        network diagram, device mockup. Sized to max 84% W × 54% H.
-     4. EMOJI HERO (brand/announcement): One 150-200px emoji centered, CSS glow + float.
-        emoji are perfect as concept icons — e.g. 🚀 for launch, 🔒 for security, ⚡ for speed.
-     The .sub CARRIES ALL NARRATIVE TEXT. Scene body = 80% visual, 20% text (max 1 short headline).
+  B) NARRATIVE ARC — if user specifies a story structure (e.g. "pain then solution", "problem first"), lay out ALL ${sceneCount} scenes in that exact order:
+     Pain arc: scenes 1-3 = relatable user problem (use pain-point language from content), scenes 4+ = product as the solution, last scene = CTA.
+     If no arc specified: hook → features → proof → CTA.
+  C) SCENE PLAN — exactly ${sceneCount} scenes. For each: name, narrative role, duration. Durations must sum to ${duration}.
+  D) VISUAL STYLE — derive from (1) user color signal: white/light → light theme; dark/no signal → dark theme. (2) platform: Instagram → punchy 3-4s scenes.
+  E) COLOR TRIO — --bg / --fg / --acc. White/light signal → light theme. DO NOT default to purple. NEVER override a color explicitly stated in the prompt.
+  F) HERO VISUAL — decide the ONE dominant visual for each scene BEFORE writing code.
+     PRIORITY ORDER — use the HIGHEST option that fits. Do NOT default to emoji.
+     1. CODED CSS VISUAL (preferred — rich, branded): staggered card list, hero stat number, terminal window, item/tile grid, progress bar, pill-badge + cards. See TECHNIQUE A for copy-paste templates.
+     2. UI INTERACTION (tech/product): search bar typing, browser/app mockup, chat bubbles, phone notification.
+     3. DATA PROP (metrics/growth): bar chart, donut ring, stat card grid.
+     4. MULTI-EMOJI STORY (emotion/pain — use sparingly): 2-3 emoji side-by-side, only if no coded visual fits.
+     5. SINGLE EMOJI HERO (last resort — max 2 scenes per video): only for pure emotion (pain hook, win/CTA).
+     RULE: coded CSS visuals MUST appear in at least 60% of scenes. Emoji alone is a crutch — avoid it.
+     NEVER use icon font class names (.icon, .icon-fill) — they render as raw text. ONLY use emoji or inline SVG.
+     LAYOUT: every scene = TOP keyword + MIDDLE visual + BOTTOM subtitle. That's the only layout.
 
 ━━━ STEP 2: SCENE STRUCTURE (data-start / data-duration) ━━━
 Each scene is a <div class="clip"> with data-start and data-duration in whole seconds.
@@ -345,30 +368,102 @@ For YOUR ${duration}s video with ${sceneCount} scenes: choose your own durations
 CRITICAL: last clip's data-start + data-duration = ${duration}. No gaps. No overlaps.
 .clip is already set to { position:absolute; inset:0; display:none; overflow:hidden } in CSS — do not add display:block.
 
-Layer content inside each clip — ALWAYS this structure:
-  1. BG div:     <div style="position:absolute;inset:0;z-index:0;">  ← gradient/texture
-  2. Visual div: <div style="position:absolute;inset:0;z-index:1;display:flex;align-items:center;justify-content:center;">  ← your prop
-  3. Text div:   <div style="position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8% 10%;gap:3%;">  ← headline only
-  4. Sub div:    <div class="sub">  ← caption, bottom
+━━━ THE ONE LAYOUT — every scene uses this exact 3-zone structure ━━━
 
-CENTERING RULE (the #1 cause of text in corners):
-Every content div MUST use display:flex + align-items:center + justify-content:center.
-NEVER position text with top/left pixel offsets. NEVER put text in a position:absolute div without flex centering.
+  ┌────────────────────────────────┐
+  │  ZONE 1 — TOP: keyword(s)     │  ← 1-4 important words, accent color, centered
+  │                                │
+  │  ZONE 2 — MIDDLE: visual prop  │  ← emoji / UI component (search, browser, app) / chart
+  │                                │
+  │  ZONE 3 — BOTTOM: .sub only   │  ← voice-over caption, explanation
+  └────────────────────────────────┘
 
-CORRECT — text always centered:
-  <div style="position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8% 10%;gap:3%;">
-    <h1 style="font-size:${fsHero}px;...">Headline</h1>
-    <p style="font-size:${fsSub}px;...">One short line</p>
+PIXEL ZONES for this ${W}×${H}px canvas:
+  TOP    starts: ${Math.round(H*0.055)}px from top, height ≈ ${Math.round(H*0.18)}px
+  MIDDLE starts: ${Math.round(H*0.24)}px from top → ends ${Math.round(H*0.14)}px from bottom
+  BOTTOM .sub:   position:absolute; bottom:0; (already in CSS)
+
+FULL SCENE TEMPLATE (copy and fill — do NOT change the zone structure):
+  <div class="clip" data-start="X" data-duration="Y" id="scene-NAME">
+
+    <!-- ZONE 0: Background — full bleed, z-index:0 -->
+    <div style="position:absolute;inset:0;z-index:0;
+                background:radial-gradient(ellipse 70% 50% at 50% 40%,color-mix(in srgb,var(--acc) 18%,transparent),transparent 70%),var(--bg);"></div>
+
+    <!-- ZONE 1: TOP — 1-4 keyword words, centered, accent color -->
+    <div style="position:absolute;top:${Math.round(H*0.055)}px;left:${Math.round(W*0.06)}px;right:${Math.round(W*0.06)}px;
+                z-index:2;display:flex;justify-content:center;align-items:flex-start;">
+      <h1 style="font-size:${fsHero}px;font-weight:900;letter-spacing:-0.04em;line-height:1.0;
+                 text-align:center;color:var(--acc);max-width:${Math.round(W*0.88)}px;word-break:break-word;
+                 animation:revealWord 0.6s cubic-bezier(0.16,1,0.3,1) 0.05s both;">KEY WORDS</h1>
+    </div>
+
+    <!-- ZONE 2: MIDDLE — visual prop. Text only inside UI shells (search bar, browser, app). Never as standalone labels. -->
+    <div style="position:absolute;top:${Math.round(H*0.24)}px;left:${Math.round(W*0.05)}px;right:${Math.round(W*0.05)}px;bottom:${Math.round(H*0.14)}px;
+                z-index:1;display:flex;align-items:center;justify-content:center;overflow:hidden;">
+      <!--
+        PREFERRED (use coded CSS visuals first — see TECHNIQUE A):
+          • Staggered card list (A1) — sliding rows of items/benefits/features
+          • Hero stat number (A2) — giant number with accent color
+          • Badge pill + card grid (A3) — grouped cards with category label
+          • Terminal window (A4) — CLI/code/download scenes
+          • Numbered item grid (A5) — tile matrix for counts
+
+        ALSO ALLOWED (see TECHNIQUE B/C):
+          • Typing search bar — user types a query
+          • Browser/app window — mini website or UI mockup with real content
+          • Chat bubbles — conversation between user and AI
+          • Stat cards / bar chart / donut chart
+          • Phone notification sliding in
+
+        EMOJI (last resort — max 2 scenes per video):
+          • Single large emoji ONLY for pure emotion (pain hook, win CTA)
+          • Never emoji as the ONLY visual for feature/data/product scenes
+
+        NOT ALLOWED (ever):
+          • Plain sentences or paragraphs floating in the zone
+          • Standalone text labels (headlines belong in ZONE 1)
+          • position:absolute on content children — they escape the overflow boundary
+
+        SIZING — this zone is ${Math.round(H*0.62)}px tall. Size content to fit:
+          • 4-row card list → each row ≈ ${Math.round(H*0.62/4*0.82)}px tall
+          • 2×2 grid → each card ≈ ${Math.round(H*0.62/2*0.82)}px tall
+          • Never pack more items than fit the height — split to next scene
+
+        max-width:${Math.round(W*0.84)}px on any row container; overflow:hidden on every child
+      -->
+    </div>
+
+    <!-- ZONE 3: BOTTOM — subtitle caption only -->
+    <div class="sub">Voice-over: max 10 words that explain the scene</div>
   </div>
-WRONG — causes corner text:
-  <div style="position:absolute;top:80px;left:60px;"><h1>Text</h1></div>
 
-SIZE RULE (prevents elements overflowing the ${W}×${H}px viewport):
-  - All visual elements: max-width:${Math.round(W*0.84)}px; max-height:${Math.round(H*0.54)}px; overflow:hidden
-  - Icon/card rows: flex-wrap:wrap; justify-content:center; max-width:${Math.round(W*0.84)}px
-  - Individual cards in a 3-col grid: max-width:${Math.round(W*0.26)}px
-  - SVG elements: width/height ≤ ${Math.round(Math.min(W,H)*0.24)}px
-  - Headline text: max-width:${Math.round(W*0.82)}px; word-break:break-word
+KEYWORD STYLES for ZONE 1 (pick by scene emotion):
+  Single accent word:    <h1 style="...;color:var(--acc);">Pain</h1>
+  Two words, split tone: <h1 style="...;color:var(--fg);">Still <span style="color:var(--acc);">Waiting?</span></h1>
+  Stat as keyword:       <h1 style="...;color:var(--acc);font-family:'JetBrains Mono',monospace;">3 Hours</h1>
+  Question hook:         <h1 style="...;color:var(--fg);">Sound <span style="color:var(--acc);">Familiar?</span></h1>
+  Word reveal:           wrap each word in <span style="display:inline-block;clip-path:inset(0 0 100% 0);animation:revealWord 0.65s cubic-bezier(0.16,1,0.3,1) Xs both;">word</span>
+
+RULES — enforced for every scene:
+  1. ZONE 1 (top): keyword text only. Max 4 words. Always centered. Color: var(--acc) or mix fg+acc.
+  2. ZONE 2 (middle): visual prop only. Text is permitted ONLY when it appears INSIDE a UI component:
+       ✅ Search bar with animated typing
+       ✅ Browser window with a styled mini website inside
+       ✅ App/desktop screen showing a UI (chat, dashboard, form, feed)
+       ✅ Phone mockup showing app content
+       ❌ Standalone sentence floating in the zone
+       ❌ Labels or descriptions sitting directly in the zone
+       ❌ Anything that looks like a heading or paragraph by itself
+  3. ZONE 3 (bottom): .sub caption only. Max 10 words. Voice-over narration.
+  4. NEVER put a visual or UI component in ZONE 1. NEVER put a naked sentence in ZONE 2.
+  5. Middle visual size: freely fills the zone — use max-width:${Math.round(W*0.84)}px on any row container.
+
+CARD/CONTAINER FONT SIZES:
+  Numbers inside cards/badges → fsCardNum (${fsCardNum}px). NEVER use fsStat (${fsStat}px) inside any box.
+  fsStat = standalone full-screen hero number only (nothing around it).
+  Every card: overflow:hidden + display:flex + align-items:center + justify-content:center.
+  Card max-width for 3-col grid: ${Math.round(W*0.26)}px per card.
 
 ━━━ STEP 3: WITHIN-CLIP ANIMATIONS ━━━
 CSS animations inside each clip play from 0s when the clip becomes visible.
@@ -397,21 +492,49 @@ Element stagger example:
   #scene-hook .visual   { animation: scaleIn 0.6s cubic-bezier(0.34,1.56,0.64,1) 0.5s both; }
   #scene-hook .cta      { animation: fadeUp 0.5s ease-out 0.7s both, pulse 2s ease 1.4s infinite; }
 
-━━━ STEP 4: COLORS + TYPOGRAPHY ━━━
-:root { --bg: #YOUR; --fg: #YOUR; --acc: #YOUR; }
+━━━ STEP 4: COLORS + NARRATIVE ━━━
+FIRST — scan the user's prompt for these signals BEFORE picking colors or scene order:
+  • Color signal: "white", "light", "clean" → LIGHT THEME.  "dark", "black", "deep" or no mention → DARK THEME.
+  • Narrative arc: "pain then solution", "problem first", "before → after" → open with 3-4 pain scenes, then pivot to solution.
+  • Platform: "instagram", "reel", "story", "shorts" → punchy 2-4s scenes, big visuals, minimal text.
+  • Subtitle color: if user says "black subtitles" or "dark text" → light subtitle bar.
+
+DARK THEME (default when no signal):
+  :root { --bg:#0d0d1a; --fg:#f1f5f9; --acc: (brand-derived) }
+  .sub override in <style>: .sub { color:#fff; background:linear-gradient(transparent,rgba(0,0,0,0.7)); }
+
+LIGHT THEME (when user says white/light):
+  :root { --bg:#f8f9fa; --fg:#111827; --acc: (brand-derived, must be vivid enough on white) }
+  .sub override in <style>: .sub { color:#111827 !important; background:linear-gradient(transparent,rgba(248,249,250,0.95)) !important; }
+  Body BG elements: use var(--acc) tints, soft shadows, light gradients — NOT dark overlays.
+
 Accent palette: violet #6d4cff · orange #f97316 · emerald #10b981 · sky #0ea5e9 · rose #f43f5e · amber #f59e0b · pink #ec4899 · lime #84cc16
 Use var(--bg)/var(--fg)/var(--acc) EVERYWHERE — never hardcode hex in element styles.
 
 Sizes:
-  Hero:  font-size:${fsHero}px; font-weight:900; letter-spacing:-0.04em; line-height:0.95; color:var(--fg);
-  Sub:   font-size:${fsSub}px;  font-weight:600; opacity:0.8;
-  Stats: font-family:'JetBrains Mono',monospace; font-size:${fsStat}px; font-weight:700; color:var(--acc);
-  Body:  font-size:${fsBody}px; font-weight:400; opacity:0.7;
-  CTA:   font-size:${fsCta}px;  font-weight:700; background:var(--acc); color:#fff; border-radius:100px; padding:18px 48px;
+  Hero:     font-size:${fsHero}px;    font-weight:900; letter-spacing:-0.04em; line-height:0.95; color:var(--fg);
+  Sub:      font-size:${fsSub}px;     font-weight:600; opacity:0.8;
+  StatHero: font-size:${fsStat}px;    font-family:'JetBrains Mono',monospace; font-weight:700; color:var(--acc); ← STANDALONE only, NOT in cards
+  CardNum:  font-size:${fsCardNum}px; font-family:'JetBrains Mono',monospace; font-weight:700; color:var(--acc); ← use for numbers INSIDE stat cards
+  Body:     font-size:${fsBody}px;    font-weight:400; opacity:0.7;
+  CTA:      font-size:${fsCta}px;     font-weight:700; background:var(--acc); color:#fff; border-radius:100px; padding:18px 48px;
 
-━━━ STEP 5: VISUAL PROPS TOOLKIT (use these — text alone = rejected) ━━━
-TEXT BUDGET: max 1 headline + 1 short subline per scene. The remaining 60% of the scene is a VISUAL PROP.
-If a scene has more than 2 lines of text and no visual prop, redesign it.
+━━━ STEP 5: VISUAL PROPS TOOLKIT (text alone = rejected) ━━━
+TEXT BUDGET PER SCENE:
+  Main content area: max 1 headline (≤5 words) + EITHER a subline OR a visual — not both
+  .sub subtitle: carries all narrative (max 10 words)
+  If you have a sentence to say → put it in .sub and replace it with an icon/emoji in the main area
+
+EMOJI-FIRST RULE: if the concept maps to an emoji — USE IT at ${Math.round(H*0.18)}–${Math.round(H*0.24)}px, not a paragraph.
+  Pain/frustration → 😩 😤 😫 💀 😭 ❌ 💸 ⏰
+  Speed/power      → ⚡ 🚀 💨 🔥
+  Security/trust   → 🔒 🛡️ ✅ 🤝
+  Growth/success   → 📈 🏆 💪 🎯 ⭐
+  AI/tech          → 🤖 🧠 ✨ 💡
+  Money/savings    → 💰 💳 💸 🤑
+  Data/analytics   → 📊 📋 📉
+  Simple/easy      → ✅ 👌 🎯
+  DO NOT use .icon or .icon-fill class — those render as raw text. Emoji only.
 Dark atmospheric BG:
   background: radial-gradient(ellipse 80% 60% at 30% 20%, color-mix(in srgb,var(--acc) 22%,transparent), transparent 60%), var(--bg);
 
@@ -438,46 +561,122 @@ DESIGN YOUR OWN VISUAL for each scene — read the content, pick the best techni
 Every visual: position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
 All props: max-width:${Math.round(W*0.84)}px; max-height:${Math.round(H*0.54)}px; overflow:hidden.
 
-━━━ TECHNIQUE A: ICON HERO (the most powerful and versatile) ━━━
-Material Symbols icons are loaded via Google Fonts — use them at any size. Scale to 160-220px for hero scenes.
+━━━ EMOJI STYLE — GLOBAL DIRECTIVE — applies to every emoji in the entire output ━━━
+Selected style: ${emojiStyle === 'color' ? 'FULL COLOR' : emojiStyle === 'infill' ? 'INFILL (accent silhouette)' : 'OUTLINE (stroke only)'}
+${emojiStyle !== 'color' ? `⚠️ MANDATORY: every emoji character in every scene MUST use the wrapper below. No bare emoji allowed.` : `Full color: use emoji as-is, no wrapper needed.`}
 
-Single giant icon with glow:
-  <div style="position:relative;display:inline-flex;align-items:center;justify-content:center;">
-    <div style="position:absolute;width:280px;height:280px;border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--acc) 30%,transparent),transparent 70%);animation:pulse 2s ease infinite;"></div>
-    <span class="icon-fill" style="font-size:180px;color:var(--acc);animation:scaleIn 0.6s cubic-bezier(0.34,1.56,0.64,1) 0.2s both,float 3s ease-in-out 1s infinite;">cloud_upload</span>
-  </div>
+${emojiStyle === 'infill' ? `INFILL wrapper — copy this EXACTLY for every emoji (replace 😀 with your emoji):
+  <div style="display:inline-block;position:relative;line-height:1;vertical-align:middle;">
+    <div style="font-size:${Math.round(H*0.22)}px;line-height:1;filter:grayscale(1) brightness(0);">😀</div>
+    <div style="position:absolute;inset:0;background:var(--acc);mix-blend-mode:screen;pointer-events:none;border-radius:6px;"></div>
+  </div>` : ''}
+${emojiStyle === 'outline' ? `OUTLINE wrapper — copy this EXACTLY for every emoji (replace 😀 with your emoji):
+  <span style="font-size:${Math.round(H*0.22)}px;line-height:1;-webkit-text-stroke:4px var(--acc);color:transparent;display:inline-block;
+               filter:drop-shadow(0 0 ${Math.round(H*0.018)}px color-mix(in srgb,var(--acc) 45%,transparent));">😀</span>` : ''}
 
-Useful icon names (from what Material Symbols has):
-  cloud_upload · cloud_sync · security · lock · bolt · rocket_launch · analytics · dashboard
-  auto_awesome · smart_toy · hub · lan · speed · verified · shield · trending_up · insights
-  code · terminal · api · data_object · storage · memory · router · wifi · cell_tower
-  notifications · send · share · favorite · star · workspace_premium · emoji_events · military_tech
+━━━ TECHNIQUE A: CODED CSS VISUALS — use for 60%+ of all scenes ━━━
+Pure CSS components. No emoji required. These look premium, always render, and match the brand aesthetic.
+All entrance animations use CSS keyframes already defined in the <style> block (scaleIn, fadeUp, slideInL, etc).
 
-Icon grid (3-4 icons for feature scenes):
-  <div style="display:flex;gap:${Math.round(W*0.05)}px;flex-wrap:wrap;justify-content:center;max-width:${Math.round(W*0.84)}px;">
-    <div style="display:flex;flex-direction:column;align-items:center;gap:16px;animation:fadeUp 0.7s ease 0.1s both;">
-      <div style="width:88px;height:88px;border-radius:22px;background:color-mix(in srgb,var(--acc) 15%,transparent);border:1px solid color-mix(in srgb,var(--acc) 30%,transparent);display:flex;align-items:center;justify-content:center;">
-        <span class="icon-fill" style="font-size:44px;color:var(--acc);">bolt</span>
+── A1. STAGGERED CARD LIST — feature list, benefit list, bill list, model catalogue ──
+Rows that slide in from left with animation-delay stagger. Use for 3-5 items.
+  <div style="display:flex;flex-direction:column;gap:${Math.round(H*0.014)}px;width:100%;max-width:${Math.round(W*0.78)}px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:${Math.round(H*0.022)}px ${Math.round(W*0.04)}px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:${Math.round(H*0.018)}px;animation:slideInL 0.45s cubic-bezier(0.16,1,0.3,1) 0.10s both;">
+      <div>
+        <div style="font-size:${fsSub}px;font-weight:700;color:var(--fg);">Item Name</div>
+        <div style="font-size:${fsBody}px;opacity:0.5;margin-top:3px;font-family:'JetBrains Mono',monospace;letter-spacing:0.05em;text-transform:uppercase;">CATEGORY</div>
       </div>
-      <span style="font-size:${fsBody}px;font-weight:600;text-align:center;max-width:120px;">Feature Name</span>
+      <div style="font-family:'JetBrains Mono',monospace;font-weight:700;font-size:${fsSub}px;color:var(--acc);padding:8px 16px;background:color-mix(in srgb,var(--acc) 12%,transparent);border-radius:8px;">Metric</div>
     </div>
-    <!-- repeat for each feature — different icon, same structure, stagger animation-delay -->
+    <!-- Row 2: same structure, animation-delay:0.20s — Row 3: 0.30s — Row 4: 0.40s — Row 5: 0.50s -->
+  </div>
+  LIGHT THEME variant: replace rgba(255,255,255,0.06)→rgba(12,11,20,0.04) and rgba(255,255,255,0.1)→rgba(12,11,20,0.08)
+
+── A2. HERO STAT DISPLAY — large number, key metric, cost, count ──
+Commanding number that fills the zone. Use for: $2,000/mo, 671B params, 100 people, 4.9★.
+  <div style="display:flex;flex-direction:column;align-items:center;gap:${Math.round(H*0.015)}px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:${Math.round(fsBody*1.1)}px;color:var(--acc);letter-spacing:0.18em;text-transform:uppercase;opacity:0.8;animation:fadeUp 0.4s ease 0.05s both;">CATEGORY LABEL</div>
+    <div style="display:flex;align-items:baseline;gap:${Math.round(W*0.02)}px;animation:scaleIn 0.6s cubic-bezier(0.34,1.56,0.64,1) 0.2s both;">
+      <span style="font-size:${Math.round(fsStat*1.05)}px;font-weight:800;color:var(--acc);letter-spacing:-0.05em;line-height:0.95;font-family:'JetBrains Mono',monospace;">$2,000</span>
+      <span style="font-size:${Math.round(fsSub*1.2)}px;font-weight:600;color:var(--fg);opacity:0.55;">/mo</span>
+    </div>
+    <div style="font-size:${fsBody}px;font-weight:500;opacity:0.45;letter-spacing:0.12em;text-transform:uppercase;animation:fadeUp 0.4s ease 0.5s both;">SUPPORTING CONTEXT</div>
   </div>
 
-━━━ TECHNIQUE B: EMOJI HERO ━━━
-Large emoji as a concept icon. Use when the content concept maps to an emoji naturally.
-  <div style="display:flex;flex-direction:column;align-items:center;gap:${Math.round(H*0.025)}px;">
-    <div style="font-size:160px;line-height:1;filter:drop-shadow(0 0 60px color-mix(in srgb,var(--acc) 50%,transparent));animation:scaleIn 0.7s cubic-bezier(0.34,1.56,0.64,1) 0.1s both,float 3s ease-in-out 1s infinite;">🚀</div>
-    <h1 style="font-size:${fsHero}px;font-weight:900;letter-spacing:-0.04em;animation:fadeUp 0.7s ease 0.4s both;">ONE HEADLINE</h1>
+── A3. BADGE PILL + 2-COL CARD GRID — category header above grouped cards ──
+Use for: model catalogue, plan tiers, feature groups, LoRA marketplace, option sets.
+  <div style="display:flex;flex-direction:column;align-items:center;gap:${Math.round(H*0.022)}px;width:100%;max-width:${Math.round(W*0.78)}px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:${Math.round(fsBody*0.95)}px;color:var(--acc);letter-spacing:0.16em;text-transform:uppercase;padding:10px 24px;background:color-mix(in srgb,var(--acc) 10%,transparent);border-radius:999px;border:1px solid color-mix(in srgb,var(--acc) 28%,transparent);animation:scaleIn 0.4s ease 0.05s both;">CATEGORY · LABEL</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:${Math.round(H*0.013)}px;width:100%;">
+      <div style="padding:${Math.round(H*0.024)}px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:${Math.round(H*0.016)}px;display:flex;flex-direction:column;gap:6px;animation:scaleIn 0.4s cubic-bezier(0.34,1.4,0.64,1) 0.15s both;">
+        <div style="width:14px;height:14px;border-radius:4px;background:var(--acc);box-shadow:0 0 10px color-mix(in srgb,var(--acc) 60%,transparent);"></div>
+        <div style="font-size:${fsSub}px;font-weight:700;color:var(--fg);">Name</div>
+        <div style="font-size:${fsBody}px;opacity:0.45;font-family:'JetBrains Mono',monospace;">Sub-label</div>
+        <div style="font-family:'JetBrains Mono',monospace;font-weight:700;font-size:${fsSub}px;color:var(--acc);margin-top:4px;">Value</div>
+      </div>
+      <!-- Card 2: delay 0.25s — Card 3: 0.35s — Card 4: 0.45s -->
+    </div>
   </div>
-Concept → emoji: launch=🚀  security=🔒  speed=⚡  AI=🤖  data=📊  global=🌍  money=💰  growth=📈  star=⭐  fire=🔥
+  LIGHT THEME: rgba(255,255,255,0.05)→rgba(12,11,20,0.03), rgba(255,255,255,0.1)→rgba(12,11,20,0.07)
+
+── A4. TERMINAL WINDOW — CLI, code, download progress, technical scenes ──
+Dark card with monospace text lines appearing with animation-delay stagger.
+  <div style="width:${Math.round(W*0.72)}px;border-radius:${Math.round(H*0.022)}px;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,0.45);animation:scaleIn 0.55s ease 0.1s both;">
+    <div style="background:#1e1e2e;padding:12px 18px;display:flex;align-items:center;gap:8px;border-bottom:1px solid rgba(255,255,255,0.06);">
+      <div style="display:flex;gap:6px;"><div style="width:12px;height:12px;border-radius:50%;background:#ff5f57;"></div><div style="width:12px;height:12px;border-radius:50%;background:#febc2e;"></div><div style="width:12px;height:12px;border-radius:50%;background:#28c840;"></div></div>
+      <div style="margin-left:auto;font-size:${Math.round(fsBody*0.82)}px;opacity:0.38;font-family:'JetBrains Mono',monospace;">~ terminal</div>
+    </div>
+    <div style="background:#0c0b14;padding:${Math.round(H*0.024)}px ${Math.round(W*0.038)}px;font-family:'JetBrains Mono',monospace;font-size:${Math.round(fsBody*1.02)}px;line-height:1.65;display:flex;flex-direction:column;gap:2px;">
+      <div style="animation:fadeUp 0.3s ease 0.15s both;"><span style="color:#8a6cff;">$</span> <span style="color:#cfc7e3;">command --flag value</span></div>
+      <div style="animation:fadeUp 0.3s ease 0.40s both;color:#a785ff;">→ Resolving...</div>
+      <div style="animation:fadeUp 0.3s ease 0.65s both;color:#7a7388;">→ Output line 2</div>
+      <div style="margin-top:8px;height:10px;border-radius:5px;background:rgba(255,255,255,0.07);overflow:hidden;animation:fadeUp 0.3s ease 0.85s both;">
+        <div style="height:100%;background:linear-gradient(90deg,var(--acc),color-mix(in srgb,var(--acc) 65%,#fff));animation:growH 1.8s cubic-bezier(0.16,1,0.3,1) 0.9s both;width:0;"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;color:#7a7388;font-size:${Math.round(fsBody*0.78)}px;animation:fadeUp 0.3s ease 1.1s both;margin-top:4px;"><span>100%</span><span style="color:#3ddc84;">✓ DONE · LOCAL</span></div>
+    </div>
+  </div>
+  @keyframes growH{from{width:0}to{width:100%}}
+
+── A5. NUMBERED ITEM GRID — office headcount, plan grid, tile matrix ──
+Use for: showing N items (people, tasks, nodes, seats). Cells appear with stagger.
+  <div style="display:flex;flex-direction:column;align-items:center;gap:${Math.round(H*0.02)}px;">
+    <div style="display:grid;grid-template-columns:repeat(8,${Math.round(W*0.065)}px);gap:${Math.round(W*0.011)}px;">
+      <!-- Write 24+ cells. Each: animation-delay increases by 0.015s per cell (0.05s, 0.065s, 0.08s...) -->
+      <div style="width:${Math.round(W*0.065)}px;height:${Math.round(W*0.065)}px;border-radius:${Math.round(H*0.01)}px;background:color-mix(in srgb,var(--acc) 14%,transparent);border:1px solid color-mix(in srgb,var(--acc) 28%,transparent);display:grid;place-items:center;font-family:'JetBrains Mono',monospace;font-size:${Math.round(fsBody*0.65)}px;font-weight:700;color:var(--acc);animation:scaleIn 0.28s cubic-bezier(0.34,1.4,0.64,1) 0.05s both;">01</div>
+      <!-- ...repeat with increasing animation-delay... -->
+    </div>
+    <div style="font-size:${Math.round(fsSub*1.1)}px;font-weight:800;color:var(--fg);letter-spacing:-0.03em;animation:fadeUp 0.5s ease 0.7s both;"><span style="color:var(--acc);">N</span> total count label</div>
+  </div>
+
+── A6. EMOJI HERO (last resort — max 2 per video, pure emotion scenes only) ──
+Use ONLY for: pain hook opener, win/CTA closer, pure emotional beat with NO data to show.
+EMOJI CONCEPT MAP:
+  Pain/frustration → 😩 😤 😫 💀 😭   Problem/broken → ❌ 🚫 ⚠️ 💔
+  Celebrate/win    → 🎉 🏆 ⭐ 🎊       Launch/growth  → 🚀 📈 💡 🔥
+  Money/cost       → 💸 💰 💳 🤑       Security       → 🔒 🛡️ ✅
+  Speed/AI         → ⚡ 🤖 🧠 ✨        Time/waiting   → ⏰ ⌛
+
+  <div style="position:relative;display:inline-flex;align-items:center;justify-content:center;">
+    <div style="position:absolute;width:${Math.round(H*0.32)}px;height:${Math.round(H*0.32)}px;border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--acc) 22%,transparent),transparent 70%);animation:pulse 2.5s ease infinite;pointer-events:none;"></div>
+    <div style="font-size:${Math.round(H*0.22)}px;line-height:1;filter:drop-shadow(0 0 ${Math.round(H*0.025)}px color-mix(in srgb,var(--acc) 55%,transparent));animation:scaleIn 0.7s cubic-bezier(0.34,1.56,0.64,1) 0.1s both,float 3.5s ease-in-out 1s infinite;">🚀</div>
+  </div>
+
+━━━ TECHNIQUE B: MULTI-EMOJI STORY ━━━
+Combine 2-3 large emoji to tell a visual story in one scene (e.g. pain arc: ❌📊😤):
+  <div style="display:flex;align-items:center;justify-content:center;gap:${Math.round(W*0.04)}px;">
+    <div style="font-size:${Math.round(H*0.14)}px;line-height:1;filter:drop-shadow(0 0 30px color-mix(in srgb,#ff4444 40%,transparent));animation:scaleIn 0.5s ease 0.1s both;">❌</div>
+    <div style="font-size:${Math.round(H*0.1)}px;line-height:1;opacity:0.4;animation:scaleIn 0.5s ease 0.25s both;">→</div>
+    <div style="font-size:${Math.round(H*0.14)}px;line-height:1;filter:drop-shadow(0 0 30px color-mix(in srgb,var(--acc) 40%,transparent));animation:scaleIn 0.5s ease 0.4s both;">✅</div>
+  </div>
+Use for: before/after, problem/solution, compare contrasts.
 
 ━━━ TECHNIQUE C: UI INTERACTION ANIMATIONS ━━━
 
 Typing search bar (great for search/discovery/AI products):
   <div style="display:flex;flex-direction:column;align-items:center;gap:${Math.round(H*0.03)}px;width:100%;max-width:${Math.round(W*0.7)}px;">
     <div style="display:flex;align-items:center;gap:14px;width:100%;background:rgba(255,255,255,0.08);border:1.5px solid rgba(255,255,255,0.18);border-radius:100px;padding:18px 28px;animation:fadeUp 0.6s ease 0.2s both;box-shadow:0 0 40px color-mix(in srgb,var(--acc) 15%,transparent);">
-      <span class="icon" style="font-size:26px;opacity:0.5;flex-shrink:0;">search</span>
+      <span style="font-size:22px;opacity:0.5;flex-shrink:0;">🔍</span>
       <span id="q1" style="font-size:${fsSub}px;flex:1;font-weight:500;letter-spacing:-0.01em;"></span>
       <span style="width:2px;height:22px;background:var(--acc);animation:blink 0.8s step-end infinite;border-radius:1px;"></span>
     </div>
@@ -495,20 +694,36 @@ Browser window with URL typing:
         <div style="width:13px;height:13px;border-radius:50%;background:#28c840;"></div>
       </div>
       <div style="flex:1;background:rgba(255,255,255,0.08);border-radius:8px;padding:7px 14px;display:flex;align-items:center;gap:8px;">
-        <span class="icon" style="font-size:15px;opacity:0.4;">lock</span>
+        <span style="font-size:12px;opacity:0.4;">🔒</span>
         <span id="url1" style="font-size:13px;opacity:0.7;font-family:'JetBrains Mono',monospace;"></span>
       </div>
     </div>
-    <div style="background:#0d0d1a;min-height:${Math.round(H*0.2)}px;display:flex;align-items:center;justify-content:center;padding:24px;">
-      <!-- mini page content inside browser -->
+    <!-- INNER SCREEN: style as a real mini-website — nav + hero section using actual brand content -->
+    <div style="background:#0d0d1a;overflow:hidden;display:flex;flex-direction:column;max-height:${Math.round(H*0.48)}px;">
+      <!-- Fake nav bar — use real brand name + real nav items from content -->
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 18px;border-bottom:1px solid rgba(255,255,255,0.07);flex-shrink:0;">
+        <span style="font-weight:800;font-size:13px;color:var(--acc);">BrandName</span>
+        <div style="display:flex;gap:14px;opacity:0.45;font-size:10px;"><span>Features</span><span>Pricing</span><span>Docs</span></div>
+        <div style="background:var(--acc);color:#fff;padding:4px 12px;border-radius:20px;font-size:10px;font-weight:700;flex-shrink:0;">Get Started</div>
+      </div>
+      <!-- Fake hero section — big headline + short desc + CTA, all from real content -->
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:18px 20px;gap:8px;text-align:center;">
+        <div style="font-size:18px;font-weight:900;letter-spacing:-0.03em;color:var(--fg);animation:fadeUp 0.5s ease 0.4s both;line-height:1.1;">Real Product Headline</div>
+        <div style="font-size:10px;opacity:0.45;max-width:220px;line-height:1.4;">Short one-line description from the brand content.</div>
+        <div style="display:flex;gap:8px;margin-top:6px;">
+          <div style="background:var(--acc);color:#fff;padding:5px 14px;border-radius:20px;font-size:10px;font-weight:700;animation:scaleIn 0.4s ease 0.6s both;">Try Free</div>
+          <div style="border:1px solid rgba(255,255,255,0.18);padding:5px 14px;border-radius:20px;font-size:10px;opacity:0.6;">Learn more</div>
+        </div>
+      </div>
     </div>
   </div>
   // JS: typeText('url1', 'yourdomain.com/product', 40)
+  // IMPORTANT: Replace "BrandName", "Real Product Headline", description, and nav items with actual content from the brief.
 
 Phone notification card (push notification sliding in):
   <div style="max-width:${Math.round(W*0.4)}px;width:100%;background:rgba(255,255,255,0.12);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.18);border-radius:20px;padding:18px 20px;display:flex;align-items:center;gap:14px;animation:slideInR 0.6s cubic-bezier(0.16,1,0.3,1) 0.4s both;box-shadow:0 8px 40px rgba(0,0,0,0.3);">
     <div style="width:44px;height:44px;border-radius:12px;background:var(--acc);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-      <span class="icon-fill" style="font-size:24px;color:#fff;">notifications</span>
+      <span style="font-size:22px;">🔔</span>
     </div>
     <div>
       <div style="font-size:${fsBody}px;font-weight:700;">App Name</div>
@@ -521,7 +736,7 @@ Animated checklist (feature/benefit scenes):
     <!-- repeat 3-4 items with stagger delay -->
     <div style="display:flex;align-items:center;gap:16px;animation:slideInL 0.5s ease 0.1s both;">
       <div style="width:28px;height:28px;border-radius:50%;background:color-mix(in srgb,var(--acc) 20%,transparent);border:2px solid var(--acc);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-        <span class="icon-fill" style="font-size:16px;color:var(--acc);">check</span>
+        <span style="font-size:14px;font-weight:700;color:var(--acc);">✓</span>
       </div>
       <span style="font-size:${fsSub}px;font-weight:500;">Benefit or feature statement</span>
     </div>
@@ -561,6 +776,7 @@ Vertical bar chart:
     <!-- repeat with different --h and animation-delay per bar -->
   </div>
   @keyframes growBar{from{height:0}to{height:var(--h,50%)}}
+  @keyframes growH{from{width:0}to{width:100%}}
 
 Donut chart:
   <svg width="${Math.round(Math.min(W,H)*0.22)}" height="${Math.round(Math.min(W,H)*0.22)}" viewBox="0 0 120 120">
@@ -573,12 +789,12 @@ Donut chart:
   </svg>
   @keyframes dashIn{from{stroke-dasharray:0 290}to{stroke-dasharray:230 60}}
 
-Stat cards:
+Stat cards (use fsCardNum NOT fsStat — fsStat overflows cards):
   <div style="display:flex;gap:${Math.round(W*0.02)}px;max-width:${Math.round(W*0.84)}px;width:100%;">
-    <div style="flex:1;min-width:0;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:${Math.round(H*0.03)}px ${Math.round(W*0.015)}px;text-align:center;animation:scaleIn 0.5s ease 0.1s both;">
-      <span class="icon-fill" style="font-size:32px;color:var(--acc);">trending_up</span>
-      <div style="font-family:'JetBrains Mono',monospace;font-size:${fsStat}px;font-weight:700;color:var(--acc);margin:8px 0 4px;" data-suffix="%">0</div>
-      <div style="font-size:${fsBody}px;opacity:0.55;">Growth</div>
+    <div style="flex:1;min-width:0;max-width:${Math.round(W*0.26)}px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:${Math.round(H*0.025)}px ${Math.round(W*0.012)}px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:${Math.round(H*0.008)}px;overflow:hidden;animation:scaleIn 0.5s ease 0.1s both;">
+      <div style="font-size:28px;line-height:1;flex-shrink:0;">📈</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:${fsCardNum}px;font-weight:700;color:var(--acc);line-height:1;white-space:nowrap;" data-suffix="%">0</div>
+      <div style="font-size:${fsBody}px;opacity:0.55;text-align:center;max-width:90%;">Label</div>
     </div>
   </div>
 
@@ -590,6 +806,46 @@ typeText JS helper (for typing animations):
   function typeText(id,txt,ms,cb){var el=document.getElementById(id),i=0;if(!el)return;el.textContent='';var t=setInterval(function(){el.textContent=txt.slice(0,++i);if(i>=txt.length){clearInterval(t);if(cb)setTimeout(cb,800);}},ms);}
   // start typing on scene appear: document.getElementById('scene-NAME').addEventListener('animationstart',function(ev){if(ev.animationName==='clipIn')typeText('typed-el','Your search query...',50);},{once:false});
 
+━━━ TECHNIQUE F: TEXT REVEAL + ATMOSPHERE ━━━
+
+Clip-path word reveal (cinematic title entrance — split headline into word spans):
+  <h1 style="display:flex;flex-wrap:wrap;gap:0.22em;justify-content:center;font-size:${fsHero}px;font-weight:900;letter-spacing:-0.04em;line-height:0.95;">
+    <span style="display:inline-block;clip-path:inset(0 0 100% 0);animation:revealWord 0.65s cubic-bezier(0.16,1,0.3,1) 0.05s forwards;">First</span>
+    <span style="display:inline-block;clip-path:inset(0 0 100% 0);animation:revealWord 0.65s cubic-bezier(0.16,1,0.3,1) 0.22s forwards;">Word</span>
+    <span style="display:inline-block;clip-path:inset(0 0 100% 0);animation:revealWord 0.65s cubic-bezier(0.16,1,0.3,1) 0.39s forwards;color:var(--acc);">Accent</span>
+  </h1>
+  @keyframes revealWord{to{clip-path:inset(0 0 -10% 0)}}
+
+Gradient text shine (accent sweep across headline):
+  <h1 style="font-size:${fsHero}px;font-weight:900;letter-spacing:-0.04em;background:linear-gradient(90deg,var(--fg) 0%,var(--acc) 45%,var(--fg) 100%);background-size:200% auto;-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;animation:textShine 2.8s linear infinite;">Headline</h1>
+  @keyframes textShine{to{background-position:200% center}}
+
+Character stagger (short brand name / acronym):
+  <div style="display:flex;gap:0.02em;font-size:${fsHero}px;font-weight:900;letter-spacing:-0.04em;">
+    <span style="display:inline-block;animation:scaleIn 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.05s both;">N</span>
+    <span style="display:inline-block;animation:scaleIn 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.12s both;">I</span>
+    <span style="display:inline-block;animation:scaleIn 0.4s cubic-bezier(0.34,1.56,0.64,1) 0.19s both;color:var(--acc);">V</span>
+    <!-- one <span> per letter, stagger delay by 0.07s each -->
+  </div>
+
+Morphing glow blob (living background orb — always z-index:0, pointer-events:none):
+  <div style="position:absolute;width:${Math.round(W*0.65)}px;height:${Math.round(W*0.65)}px;left:50%;top:50%;transform:translate(-50%,-50%);background:radial-gradient(circle,color-mix(in srgb,var(--acc) 28%,transparent),transparent 70%);animation:blobMorph 6s ease-in-out infinite;filter:blur(${Math.round(W*0.045)}px);z-index:0;pointer-events:none;"></div>
+  @keyframes blobMorph{0%,100%{border-radius:60% 40% 30% 70% / 60% 30% 70% 40%;transform:translate(-50%,-50%) scale(1);}50%{border-radius:30% 60% 70% 40% / 50% 60% 30% 60%;transform:translate(-50%,-50%) scale(1.1);}}
+
+Shimmer sweep (card highlight — great with stat/glass cards):
+  Add to a card: position:relative;overflow:hidden — then inside it:
+  <div style="position:absolute;inset:0;background:linear-gradient(105deg,transparent 40%,color-mix(in srgb,var(--acc) 20%,transparent) 50%,transparent 60%);background-size:200% 100%;animation:shimmer 2s linear infinite;pointer-events:none;border-radius:inherit;"></div>
+  @keyframes shimmer{from{background-position:-200% 0}to{background-position:200% 0}}
+
+Floating particles (depth for brand/opening scenes):
+  Generate 6-10 small divs absolutely positioned, each a tiny circle:
+  <div style="position:absolute;width:6px;height:6px;border-radius:50%;background:var(--acc);opacity:0.5;left:15%;top:25%;animation:float 4s ease-in-out infinite;animation-delay:0s;"></div>
+  <div style="position:absolute;width:4px;height:4px;border-radius:50%;background:var(--fg);opacity:0.25;left:75%;top:65%;animation:float 5s ease-in-out infinite;animation-delay:1.3s;"></div>
+  <!-- vary size (3-8px), opacity (0.2-0.6), position, and animation-delay for each particle -->
+
+Spotlight beam (hero/opening scenes):
+  <div style="position:absolute;top:-20%;left:30%;width:${Math.round(W*0.4)}px;height:${Math.round(H*1.4)}px;background:linear-gradient(180deg,color-mix(in srgb,var(--acc) 15%,transparent),transparent 70%);transform:rotate(-15deg);transform-origin:top center;animation:blurIn 1.2s ease 0.3s both;pointer-events:none;z-index:0;"></div>
+
 Subtitle bar (REQUIRED on every clip — write real voice-over copy from the content):
   <div class="sub">Your actual caption text here</div>
   .sub { position:absolute; bottom:0; left:0; right:0; padding:${subPad}px ${subW}px; background:linear-gradient(transparent,rgba(0,0,0,0.65)); font-size:${subFs}px; color:#fff; font-weight:500; text-align:center; line-height:1.4; }
@@ -600,13 +856,14 @@ Subtitle bar (REQUIRED on every clip — write real voice-over copy from the con
 <head>
 <meta charset="utf-8">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;700&family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@48,400,0,0&family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@48,400,1,0&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;700&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body{width:${W}px;height:${H}px;overflow:hidden;font-family:'Inter Tight',system-ui,sans-serif;}
-:root{--bg:#111118;--fg:#f1f5f9;--acc:#6d4cff;}  /* ← OVERRIDE — derive from content */
+:root{--bg:#111118;--fg:#f1f5f9;--acc:#6d4cff;}  /* ← ALWAYS OVERRIDE based on user prompt — white/light prompt → --bg:#f8f9fa --fg:#111827 */
 body{position:relative;background:var(--bg);color:var(--fg);}
 .clip{position:absolute;inset:0;display:none;overflow:hidden;}
-.sub{position:absolute;bottom:0;left:0;right:0;padding:${subPad}px ${subW}px;background:linear-gradient(transparent,rgba(0,0,0,0.65));font-size:${subFs}px;color:#fff;font-weight:500;text-align:center;line-height:1.4;}
+.sub{position:absolute;bottom:${Math.round(H*0.022)}px;left:${Math.round(W*0.05)}px;right:${Math.round(W*0.05)}px;padding:${subPad}px ${Math.round(W*0.04)}px;background:linear-gradient(transparent,rgba(0,0,0,0.7));font-size:${subFs}px;color:#fff;font-weight:500;text-align:center;line-height:1.4;border-radius:0 0 10px 10px;}
+/* LIGHT THEME: color:#111827 !important; background:linear-gradient(transparent,rgba(248,249,250,0.96)) !important; */
 /* ─── @keyframes ─────────────────────────────────────────── */
 @keyframes fadeUp   { from{opacity:0;transform:translateY(44px)}  to{opacity:1;transform:translateY(0)} }
 @keyframes scaleIn  { from{opacity:0;transform:scale(0.7)}        to{opacity:1;transform:scale(1)} }
@@ -616,6 +873,15 @@ body{position:relative;background:var(--bg);color:var(--fg);}
 @keyframes float    { 0%,100%{transform:translateY(0)}  50%{transform:translateY(-14px)} }
 @keyframes pulse    { 0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--acc) 55%,transparent)} 50%{box-shadow:0 0 0 22px transparent} }
 @keyframes fillBar  { from{width:0} to{width:var(--pct,80%)} }
+@keyframes growBar  { from{height:0} to{height:var(--h,50%)} }
+@keyframes dashIn   { from{stroke-dasharray:0 290} to{stroke-dasharray:230 60} }
+@keyframes drawPath { to{stroke-dashoffset:0} }
+@keyframes blink    { 0%,100%{opacity:1} 50%{opacity:0} }
+@keyframes revealWord { to{clip-path:inset(0 0 -10% 0)} }
+@keyframes textShine  { to{background-position:200% center} }
+@keyframes blobMorph  { 0%,100%{border-radius:60% 40% 30% 70% / 60% 30% 70% 40%} 50%{border-radius:30% 60% 70% 40% / 50% 60% 30% 60%} }
+@keyframes shimmer    { from{background-position:-200% 0} to{background-position:200% 0} }
+.clip *{box-sizing:border-box;max-width:100%;}
 /* ─── YOUR SCENE-SPECIFIC STYLES BELOW ──────────────────── */
 </style>
 </head>
@@ -641,6 +907,8 @@ ${playbackJs}
 </html>
 
 ━━━ NON-NEGOTIABLE RULES ━━━
+0. READ USER PROMPT FIRST: extract (a) color preference → set theme, (b) narrative arc → order scenes exactly, (c) platform → adjust pacing. These override all defaults.
+   EMOJI RULE: NEVER use .icon or .icon-fill CSS classes — Material Symbols DO NOT LOAD and render as raw text. Use emoji sparingly (max 2 scenes). Default to coded CSS visuals (TECHNIQUE A) for all product, feature, data, and benefit scenes.
 1. Output ONLY raw HTML — starts with <!DOCTYPE html>. Zero markdown, zero explanation.
 2. Copy the PLAYBACK + CLIP RUNTIME block VERBATIM between the comment markers. Never alter it.
 3. Override :root { --bg, --fg, --acc } with content-derived colors. NEVER default to #6d4cff purple.
@@ -648,15 +916,106 @@ ${playbackJs}
 5. Every .clip MUST contain a .sub element with real voice-over text derived from the content.
 6. All visible text comes from user content — no placeholders, no "Lorem ipsum", no generic labels.
 7. html,body must stay width:${W}px; height:${H}px; overflow:hidden.
-8. Icons over text: use Material Symbols (.icon or .icon-fill class) or large emoji for visual heroes.
-   Emoji allowed as large visual anchors (font-size 120-200px, centered, with CSS glow). No emoji in subtitle or body copy.
+8. VISUAL HIERARCHY: default to coded CSS visuals (TECHNIQUE A) for all product, feature, and data scenes. Emoji is permitted ONLY as a pure emotion anchor (pain hook, win CTA) — max 2 scenes per video. No emoji in subtitle or body copy. Material Symbols (.icon, .icon-fill classes) are NOT available and render as raw text — never use them.
 9. Scene times: last clip's data-start + data-duration = ${duration}. No gaps. No overlaps.
 10. Every scene must have a distinct visual prop — no two scenes with the same layout.
-11. TEXT BUDGET: .sub subtitle CARRIES the narrative. Scene body: max 1 short headline + the visual prop. No paragraph text in scenes.
-    If you feel you need more text in the scene body — put it in .sub and use an icon/visual instead.
-12. CENTERING: all content divs use display:flex + align-items:center + justify-content:center. NEVER top/left pixel offsets for text.
+11. 3-ZONE LAYOUT — mandatory every scene:
+    TOP    = 1-4 keyword words, accent color, centered.
+    MIDDLE = visual prop. Text allowed ONLY inside a UI shell (search bar typing, browser window, app screen, phone mockup). Naked sentences/labels/headings in the middle zone = rejected.
+    BOTTOM = .sub caption only (max 10 words).
+    Wrong: a sentence floating in ZONE 2. Right: that sentence typed into a search bar, or shown on a browser screen.
+12. ZONE POSITIONING: TOP zone uses position:absolute + top:${Math.round(H*0.055)}px. MIDDLE zone uses top:${Math.round(H*0.24)}px bottom:${Math.round(H*0.14)}px. Both zones center their content with display:flex+align-items:center+justify-content:center. NEVER arbitrary top/left pixel values.
 13. SIZE BOUNDS: no element wider than ${Math.round(W*0.9)}px or taller than ${Math.round(H*0.7)}px. Use max-width/max-height on every visual prop.
-14. OVERFLOW: every .clip has overflow:hidden — but also add overflow:hidden on any inner container with dynamic content to be safe.`;
+18. FONT-IN-CONTAINER: when text/number sits inside a bounded box (card, badge, circle, square):
+    font-size MUST be ≤ box_height × 0.38. Example: a ${Math.round(H*0.15)}px tall card → max font-size ${Math.round(H*0.15*0.38)}px.
+    Always add overflow:hidden + display:flex + align-items:center + justify-content:center to the box.
+    NEVER use fsStat (${fsStat}px) inside a box shorter than ${Math.round(fsStat*2.6)}px.
+19. NARRATIVE CONTRACT: if user's prompt specifies a story arc, the scene order MUST follow it. "Pain first" = first 3-4 scenes show the user's problem — no product yet. Then pivot.
+22. SAFE ZONE: no content div may have left:0 or right:0. Always use at least left:${Math.round(W*0.05)}px; right:${Math.round(W*0.05)}px on every zone container. The viewport border must stay visibly empty on all sides.
+20. LIGHT-THEME SUBTITLE: if --bg is light, override .sub in <style> with: color:#111827 !important; background:linear-gradient(transparent,rgba(248,249,250,0.95)) !important;
+14. OVERFLOW — CRITICAL: every .clip has overflow:hidden. Every direct child of ZONE 2 must also have overflow:hidden + max-width:100%. NEVER use position:absolute on content children inside ZONE 2 — they will escape the clip boundary. Use display:flex or display:grid for layout inside zones. If content looks squished, use fewer items or a smaller font-size, NOT a larger container.
+24. ZONE 2 SIZING: the middle zone is ${Math.round(H*0.62)}px tall × ${Math.round(W*0.9)}px wide. A staggered card list of 4 rows should use row height ≈ ${Math.round(H*0.62/4*0.85)}px. A 2-col grid of 4 cards should use card height ≈ ${Math.round(H*0.62/2*0.85)}px. Never pack more items than fit — split across scenes if needed.
+21. FILL THE MIDDLE ZONE: the visual prop in ZONE 2 should fill the available height (${Math.round(H*0.24)}px to ${Math.round(H*(1-0.14))}px = ${Math.round(H*0.62)}px tall). Make emoji/charts/cards large enough to occupy this space naturally — no tiny visuals floating in a giant empty zone.
+15. SUBTITLE LENGTH: max 10 words per .sub. If you need more — split the info across 2 scenes. Subtitles should sound like speech, not captions.
+16. VISUAL-FIRST: A viewer watching with sound OFF must understand each scene from the visual + headline alone. If the visual alone doesn't communicate the message, replace or enhance it.
+17. BROWSER MOCKUP RULE: If you use a browser frame, the inner screen MUST be a styled mini-website (fake nav + hero section + CTAs using real brand content). NEVER put plain text inside a browser frame.
+23. EMOJI STYLE ENFORCEMENT: Emoji style = ${emojiStyle === 'color' ? 'FULL COLOR — use emoji as-is, no wrapper needed' : emojiStyle === 'infill' ? 'INFILL — wrap every single emoji with the infill div shown in the GLOBAL DIRECTIVE above. Bare emoji without the mix-blend-mode wrapper = INVALID.' : 'OUTLINE — wrap every single emoji with the outline span shown in the GLOBAL DIRECTIVE above. Bare emoji without -webkit-text-stroke = INVALID.'}
+25. MINIMUM FONT SIZE: No text element in any scene may use font-size smaller than ${Math.round(H*0.018)}px. Labels inside cards, badges, subtitles — all ≥ ${Math.round(H*0.018)}px. Tiny invisible text = failed output. Reduce item count instead of shrinking font-size.`;
+}
+
+function buildContentExtractPrompt(): string {
+  return `You are a content analyst extracting brand/product data for a marketing video.
+
+Read the ENTIRE document carefully. Extract ALL key information into this JSON:
+{
+  "brandName": "string",
+  "tagline": "string or null",
+  "description": "1-2 sentence product description",
+  "features": ["every feature mentioned"],
+  "benefits": ["every user benefit mentioned"],
+  "metrics": [{"value": "99%", "label": "uptime"}, ...],
+  "targetAudience": "string",
+  "tone": "professional|playful|bold|minimal|energetic",
+  "keyMessages": ["every key marketing message"],
+  "callToAction": "string or null",
+  "uniqueSellingPoints": ["every USP"],
+  "useCases": ["every use case mentioned"],
+  "pricing": "string or null"
+}
+
+Rules:
+- Extract EVERY number, percentage, statistic from the document — miss nothing
+- Extract ALL features, benefits, use cases — miss nothing
+- Use exact words from the document where possible
+- If information is absent, use null or empty array
+- Output ONLY valid JSON, no explanation`;
+}
+
+function buildScriptPrompt(sceneCount: number, duration: number): string {
+  return `You are a marketing video scriptwriter specializing in short-form social media videos.
+
+Given brand content and a user brief, write a scene-by-scene script.
+
+Output a JSON array of exactly ${sceneCount} scenes with durations summing to ${duration} seconds:
+[
+  {
+    "id": "scene-hook",
+    "title": "Opening Hook",
+    "duration": 4,
+    "headline": "Max 5 words, punchy screen text",
+    "subtitle": "Max 10 words. Conversational voice-over. Like speech.",
+    "visualProp": "ICON_HERO|EMOJI_HERO|TYPING_SEARCH|BROWSER_MOCKUP|STAT_CARDS|BAR_CHART|DONUT_CHART|CHECKLIST|NOTIFICATION|WORD_REVEAL|BLOB_GLOW|FEATURE_GRID|DEVICE_MOCKUP",
+    "visualDetails": "Specific content: exact icon name OR emoji OR what data/stat to show OR what to type OR what feature names to list",
+    "keyword": "1-4 word key phrase for top zone (accent colored)",
+    "textReveal": "NONE|CLIP_PATH|CHAR_STAGGER|GRADIENT_SHINE",
+    "atmosphere": "NONE|BLOB_MORPH|SHIMMER_CARD|PARTICLES|SPOTLIGHT",
+    "mood": "energetic|calm|bold|minimal|data",
+    "accentHint": "color name that fits this scene emotion",
+    "theme": "light|dark"
+  }
+]
+
+Script writing rules:
+- READ USER BRIEF for color preference FIRST. "white"/"light"/"clean" → theme:light for ALL scenes. "dark"/"black" → theme:dark. No signal → theme:dark.
+- LIGHT THEME scenes: backgrounds = soft gradients on white, accent colors = vivid (readable on white), subtitle text = dark.
+- NARRATIVE ARC: if user brief specifies "pain then solution" or "problem first":
+    Scenes 1-4: show the USER'S PAIN — relatable frustrations, problems, the "before" state. Do NOT mention the product yet.
+    Scenes 5-N-1: introduce and demonstrate the SOLUTION (the product) — features, benefits, proof.
+    Last scene: CTA — brand name + call to action.
+  If no arc specified: scene 1 = hook, middle = features/proof, last = CTA.
+- Scene 1: powerful hook matching the arc (pain hook OR brand reveal)
+- Middle scenes: each covers ONE distinct feature/benefit/USP from content — spread all key info
+- Last scene: CTA with brand name + call to action
+- EVERY key feature and metric from the content must appear in some scene
+- Each scene must be visually self-explanatory — no scene needs its subtitle to make sense
+- keyword: the 1-4 important words that go TOP of the scene in accent color. For pain: "Still Struggling?", "Wasted Hours", "Sound Familiar?". For solution: "Fixed.", "Instant Results", brand name.
+- Subtitle = voice-over narration (max 10 words, sounds like speech not text)
+- Headline = screen text (max 5 words, punchy, no full sentences)
+- For pain scenes: visualProp must be EMOJI_HERO or ICON_HERO (emotional icon/emoji — NOT text, NOT charts)
+- NEVER put a sentence or description in the main content area — it belongs in subtitle
+- Duration: 3-5 seconds per scene for a fast-paced professional feel
+- Sum of all durations MUST equal ${duration}
+- Output ONLY valid JSON array, no explanation`;
 }
 
 function buildScreenPrompt(fmt: Format, desc: string, styleName: string, context: string): string {
@@ -844,7 +1203,7 @@ function extractSceneSection(html: string): string {
 
 
 function buildRefinePrompt(currentHtml: string, instruction: string, _isVideo = false): string {
-  return `Current HTML:\n\`\`\`html\n${currentHtml.slice(0, 20000)}\n\`\`\`\n\nInstruction: "${instruction}"\n\nReturn the COMPLETE updated HTML starting with <!DOCTYPE html>. Keep everything not mentioned unchanged.`;
+  return `Current HTML:\n\`\`\`html\n${currentHtml.slice(0, 80000)}\n\`\`\`\n\nInstruction: "${instruction}"\n\nReturn the COMPLETE updated HTML starting with <!DOCTYPE html>. Keep everything not mentioned unchanged.`;
 }
 
 // ─── History ─────────────────────────────────────────────────────────────────
@@ -915,7 +1274,7 @@ function getStreamPhase(raw: string, projectType: ProjectType): string {
   const len = raw.length;
   if (projectType === 'video') {
     if (len === 0) return 'Thinking…';
-    if (raw.includes('</html>') || len > 7000) return 'Finalizing…';
+    if (raw.includes('</html>') || len > 18000) return 'Finalizing…';
     if (raw.includes('<script')) return 'Adding playback engine…';
     if (raw.includes('data-start') || raw.includes('class="clip"')) return 'Building scenes…';
     if (raw.includes('@keyframes') || raw.includes('animation:')) return 'Writing animations…';
@@ -938,7 +1297,7 @@ interface StudioModuleProps {
 }
 
 export default function StudioModule({ initialRequest, onRequestConsumed }: StudioModuleProps = {}) {
-  const { session } = useAuth();
+  const { session, profile } = useAuth();
   const callIdRef  = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const iframeRef  = useRef<HTMLIFrameElement>(null);
@@ -947,6 +1306,7 @@ export default function StudioModule({ initialRequest, onRequestConsumed }: Stud
   const [format,         setFormat]         = useState<Format>(FORMATS.video[0]);
   const [duration,       setDuration]       = useState(15);
   const [style,          setStyle]          = useState(STYLES[0].id);
+  const emojiStyle = 'infill' as const;
   const [prompt,         setPrompt]         = useState('');
   const [generating,     setGenerating]     = useState(false);
   const [html,           setHtml]           = useState<string | null>(null);
@@ -976,6 +1336,11 @@ export default function StudioModule({ initialRequest, onRequestConsumed }: Stud
   const [isPaused,       setIsPaused]       = useState(false);
   const [accentColor,    setAccentColor]    = useState<string | null>(null);
   const [showCustomColor, setShowCustomColor] = useState(false);
+  const [noticeDismissed, setNoticeDismissed] = useState(() => sessionStorage.getItem('studio-notice') === '1');
+  const [showSuggest,    setShowSuggest]    = useState(false);
+  const [suggestText,    setSuggestText]    = useState('');
+  const [suggestSending, setSuggestSending] = useState(false);
+  const [suggestSent,    setSuggestSent]    = useState(false);
   const syncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -1011,7 +1376,7 @@ export default function StudioModule({ initialRequest, onRequestConsumed }: Stud
         return { mode: 'own_key' as const, apiKey: creds[svc].api_key, provider: p };
       }
     }
-    setConnMode('Nivara AI');
+    setConnMode('adris.tech AI');
     return { mode: 'nivara' as const, apiKey: null as string | null, provider: null as Provider | null };
   }
 
@@ -1082,11 +1447,32 @@ export default function StudioModule({ initialRequest, onRequestConsumed }: Stud
     setReviews({});
     let raw = '';
     try {
-      const sysPrompt = buildVideoPrompt(fmt, dur, activeAgent?.bias);
-      const userMsg = ctx ? `Brand context:\n${ctx}\n\nCreate:\n${p}` : `Create:\n${p}`;
-      await streamAI(sysPrompt, userMsg, (chunk) => { raw += chunk; setStreamLog(getStreamPhase(raw, 'video')); });
+      let krewUserMsg: string;
+      if (ctx && ctx.length > 800) {
+        setStreamLog('Reading content…');
+        let extracted = '';
+        try {
+          extracted = await streamAI(buildContentExtractPrompt(), `Document:\n${ctx.slice(0, 25000)}`, () => {});
+          extracted = stripFences(extracted);
+        } catch { extracted = ''; }
+        setStreamLog('Writing script…');
+        const sc = getSceneCount(dur);
+        let script = '';
+        try {
+          script = await streamAI(buildScriptPrompt(sc, dur), `Brand content:\n${extracted || ctx.slice(0, 12000)}\n\nBrief:\n${p}`, () => {});
+          script = stripFences(script);
+        } catch { script = ''; }
+        krewUserMsg = script.length > 50
+          ? `Scene script:\n${script}\n\nBrief:\n${p}`
+          : ctx ? `Brand context:\n${ctx.slice(0, 20000)}\n\nCreate:\n${p}` : `Create:\n${p}`;
+      } else {
+        krewUserMsg = ctx ? `Brand context:\n${ctx}\n\nCreate:\n${p}` : `Create:\n${p}`;
+      }
+      setStreamLog('Building scenes…');
+      const sysPrompt = buildVideoPrompt(fmt, dur, activeAgent?.bias, emojiStyle);
+      await streamAI(sysPrompt, krewUserMsg, (chunk) => { raw += chunk; setStreamLog(getStreamPhase(raw, 'video')); });
       const stripped = stripFences(raw);
-      const finalHtml = assembleVideoHtml(stripped, fmt, dur);
+      const finalHtml = applyEmojiStyle(assembleVideoHtml(stripped, fmt, dur), emojiStyle);
       setHtml(finalHtml);
       setPreviewKey(k => k + 1);
       setEditedHtml(finalHtml);
@@ -1134,7 +1520,7 @@ The prompt must be specific enough for a motion designer to execute without ques
           const { mode, apiKey, provider } = await resolveMode();
           invoke('krew_ai_stream', {
             callId, mode, systemPrompt: sysPrompt,
-            messages: [{ role: 'user', content: `Brand content:\n\n${contextFile.content.slice(0, 8000)}` }],
+            messages: [{ role: 'user', content: `Brand content:\n\n${contextFile.content.slice(0, 20000)}` }],
             apiKey, provider, localModel: null, modelName: null, baseUrl: null,
             sessionToken: session?.access_token ?? null,
           }).catch((e: unknown) => { done.cleanup(); reject(e); });
@@ -1223,16 +1609,44 @@ The prompt must be specific enough for a motion designer to execute without ques
 
     try {
       if (type === 'video') {
-        const sysPrompt = buildVideoPrompt(format, effectiveDur, activeAgent?.bias);
-        const userMsg = ctx
-          ? `Brand/product context:\n${ctx}\n\nCreate this animation:\n${prompt}`
-          : `Create this animation:\n${prompt}`;
-        await streamAI(sysPrompt, userMsg, (chunk) => {
+        let videoUserMsg: string;
+        if (ctx && ctx.length > 800) {
+          // ── Stage 1: Extract structured content from the file ─────────────
+          setStreamLog('Reading content…');
+          let extracted = '';
+          try {
+            extracted = await streamAI(buildContentExtractPrompt(), `Document:\n${ctx.slice(0, 25000)}`, () => {});
+            extracted = stripFences(extracted);
+          } catch { extracted = ''; }
+          // ── Stage 2: Write scene-by-scene script ──────────────────────────
+          setStreamLog('Writing script…');
+          const sc = getSceneCount(effectiveDur);
+          let script = '';
+          try {
+            script = await streamAI(
+              buildScriptPrompt(sc, effectiveDur),
+              `Brand content:\n${extracted || ctx.slice(0, 12000)}\n\nUser brief:\n${prompt}`,
+              () => {}
+            );
+            script = stripFences(script);
+          } catch { script = ''; }
+          videoUserMsg = script.length > 50
+            ? `Scene script (implement each scene EXACTLY — visual prop, headline, subtitle are specified):\n${script}\n\nUser brief:\n${prompt}`
+            : `Brand/product context:\n${ctx.slice(0, 20000)}\n\nCreate this animation:\n${prompt}`;
+        } else {
+          videoUserMsg = ctx
+            ? `Brand/product context:\n${ctx}\n\nCreate this animation:\n${prompt}`
+            : `Create this animation:\n${prompt}`;
+        }
+        // ── Stage 3: Generate HTML/CSS video from script ──────────────────
+        setStreamLog('Building scenes…');
+        const sysPrompt = buildVideoPrompt(format, effectiveDur, activeAgent?.bias, emojiStyle);
+        await streamAI(sysPrompt, videoUserMsg, (chunk) => {
           raw += chunk;
           setStreamLog(getStreamPhase(raw, 'video'));
         });
         const stripped = stripFences(raw);
-        const finalHtml = assembleVideoHtml(stripped, format, effectiveDur);
+        const finalHtml = applyEmojiStyle(assembleVideoHtml(stripped, format, effectiveDur), emojiStyle);
         setHtml(finalHtml);
         setPreviewKey(k => k + 1);
         setEditedHtml(finalHtml);
@@ -1275,16 +1689,17 @@ The prompt must be specific enough for a motion designer to execute without ques
     const isVideo = type === 'video';
     const sysPrompt = isVideo
       ? `You are refining a CSS-animated marketing video HTML file that uses data-start/data-duration attributes for scene timing.
-Return the COMPLETE updated HTML starting with <!DOCTYPE html>.
+Return the COMPLETE updated HTML starting with <!DOCTYPE html>. The output must be at least as long as the input HTML.
 
 Rules:
 1. Keep the // ── PLAYBACK + CLIP RUNTIME block VERBATIM — never modify it
 2. Keep all .clip data-start and data-duration values unless timing is explicitly requested to change
 3. Keep :root { --bg, --fg, --acc } — use CSS variables, never hardcode hex in element styles
 4. Every .clip must keep its .sub subtitle div
-5. No emojis in visible text
+5. Preserve all visual content including emoji, animations, and keyframes — only change what the instruction asks
 6. html,body must stay width/height fixed with overflow:hidden
-7. Apply ONLY the requested changes — preserve everything else exactly`
+7. Apply ONLY the requested changes — preserve everything else exactly
+8. Output the full HTML — never truncate or summarise`
       : `You are an expert HTML/CSS designer. Modify the design as instructed. Return the COMPLETE updated HTML starting with <!DOCTYPE html>. Keep everything not mentioned unchanged.`;
 
     try {
@@ -1302,6 +1717,11 @@ Rules:
       } else {
         updated = buildStaticHtml(stripped);
       }
+      // Safety: don't apply if the result is shorter than half the original (LLM truncated)
+      if (updated.length < (html?.length ?? 0) * 0.5) {
+        throw new Error('Refine returned incomplete HTML — try again');
+      }
+      if (isVideo) updated = applyEmojiStyle(updated, emojiStyle);
       setHtml(updated);
       setPreviewKey(k => k + 1);
       setEditedHtml(updated);
@@ -1323,7 +1743,7 @@ Rules:
     const reader = new FileReader();
     reader.onload = (ev) => {
       const content = (ev.target?.result as string) ?? '';
-      setContextFile({ name: file.name, content: content.slice(0, 8000) });
+      setContextFile({ name: file.name, content });
     };
     reader.readAsText(file);
     e.target.value = '';
@@ -1454,6 +1874,20 @@ Rules:
     setTimeout(() => setCopied(false), 1800);
   }
 
+  async function handleSuggest() {
+    if (!suggestText.trim()) return;
+    setSuggestSending(true);
+    try {
+      await supabase.from('suggestions').insert({
+        user_id: session?.user.id,
+        email: profile?.email ?? session?.user.email,
+        message: suggestText.trim(),
+      });
+      setSuggestSent(true);
+      setTimeout(() => { setShowSuggest(false); setSuggestSent(false); setSuggestText(''); }, 2200);
+    } catch { /* silent */ } finally { setSuggestSending(false); }
+  }
+
   const previewScale = html && format
     ? Math.min(1, 580 / format.w, 440 / format.h)
     : 1;
@@ -1466,7 +1900,19 @@ Rules:
   };
 
   return (
-    <div className="flex h-full overflow-hidden bg-nv-bg">
+    <div className="flex flex-col h-full overflow-hidden bg-nv-bg">
+
+      {/* Studio notice bar */}
+      {!noticeDismissed && (
+        <div className="flex items-center gap-2 px-3 py-1.5 bg-accent/10 border-b border-accent/15 shrink-0">
+          <span className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
+          <span className="text-[11px] text-nv-muted flex-1">Studio is in beta — video output quality is actively being improved.</span>
+          <button onClick={() => setShowSuggest(true)} className="text-[11px] text-accent hover:underline font-medium shrink-0 transition-fast">Suggest</button>
+          <button onClick={() => { sessionStorage.setItem('studio-notice', '1'); setNoticeDismissed(true); }} className="text-nv-faint hover:text-nv-text ml-1 text-xs shrink-0 leading-none transition-fast px-1">✕</button>
+        </div>
+      )}
+
+      <div className="flex flex-1 overflow-hidden">
 
       {/* ── LEFT PANEL ───────────────────────────────────────────────────────── */}
       <div className="w-52 shrink-0 flex flex-col border-r border-nv-border overflow-y-auto">
@@ -1546,6 +1992,7 @@ Rules:
               >
                 <span className="w-4 h-4 shrink-0">{TYPE_META[t].icon}</span>
                 <span className="text-[11px] font-medium">{TYPE_META[t].label}</span>
+                {t === 'video' && <span className="ml-auto text-[7px] font-mono bg-accent/15 text-accent px-1 py-0.5 rounded leading-none">β</span>}
               </button>
             ))}
           </section>
@@ -2217,6 +2664,53 @@ Rules:
           </button>
         </div>}
       </div>
+      </div>
+
+      {showSuggest && (
+        <div
+          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowSuggest(false); }}
+        >
+          <div className="bg-nv-surface border border-nv-border rounded-2xl p-5 w-80 shadow-2xl flex flex-col gap-3">
+            <div className="flex items-center justify-between mb-0.5">
+              <span className="text-[13px] font-semibold text-nv-text">Suggest an Improvement</span>
+              <button
+                onClick={() => setShowSuggest(false)}
+                className="w-6 h-6 flex items-center justify-center text-nv-faint hover:text-nv-text rounded-lg hover:bg-nv-surface2 transition-fast text-base leading-none"
+              >×</button>
+            </div>
+            {suggestSent ? (
+              <div className="flex flex-col items-center gap-2 py-6 text-nv-ok">
+                <svg viewBox="0 0 20 20" fill="none" className="w-7 h-7">
+                  <circle cx="10" cy="10" r="8" stroke="currentColor" strokeWidth="1.5" opacity=".3"/>
+                  <path d="M6.5 10l2.5 2.5 4.5-4.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                <span className="text-[12px] font-medium">Thanks! We’ll look into it.</span>
+              </div>
+            ) : (
+              <>
+                <p className="text-[11px] text-nv-faint -mt-1">What could be better? Describe a visual issue, missing feature, or quality problem.</p>
+                <textarea
+                  value={suggestText}
+                  onChange={(e) => setSuggestText(e.target.value)}
+                  placeholder="e.g. Scene text is too small, or animations feel choppy…"
+                  rows={4}
+                  className="bg-nv-bg border border-nv-border rounded-xl px-3 py-2 text-[12px] text-nv-text placeholder-nv-faint/60 outline-none focus:border-accent/50 transition-fast resize-none leading-relaxed"
+                  autoFocus
+                />
+                <button
+                  onClick={handleSuggest}
+                  disabled={suggestSending || !suggestText.trim()}
+                  className="flex items-center justify-center gap-2 py-2.5 bg-accent text-white text-[12px] font-semibold rounded-xl hover:bg-accent-dim transition-fast disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {suggestSending ? <span className="w-3 h-3 rounded-full border border-white/30 border-t-white animate-spin shrink-0" /> : null}
+                  {suggestSending ? 'Sending…' : 'Send Suggestion'}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

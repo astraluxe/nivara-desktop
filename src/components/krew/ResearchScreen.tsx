@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+﻿import { useState, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useAuth } from '../../contexts/AuthContext';
@@ -407,7 +407,7 @@ Write the competitive intelligence report now.`;
               <input
                 value={businessName}
                 onChange={e => setBusinessName(e.target.value)}
-                placeholder="e.g. Nivara, Meesho, Cred…"
+                placeholder="e.g. adris.tech, Meesho, Cred…"
                 className="w-full bg-nv-surface border border-nv-border rounded-xl px-4 py-2.5 text-[13px] text-nv-text placeholder-nv-faint outline-none focus:border-accent transition-fast"
               />
             </div>
