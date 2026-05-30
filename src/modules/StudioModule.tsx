@@ -736,6 +736,25 @@ const REFINE_SUGGESTIONS: Record<ProjectType, string[]> = {
   ],
 };
 
+function getStreamPhase(raw: string, projectType: ProjectType): string {
+  const len = raw.length;
+  if (projectType === 'video') {
+    if (len === 0) return 'Thinking…';
+    if (raw.includes('</html>') || len > 7000) return 'Finalizing…';
+    if (raw.includes('<script')) return 'Adding playback engine…';
+    if (raw.includes('data-start') || raw.includes('class="clip"')) return 'Building scenes…';
+    if (raw.includes('@keyframes') || raw.includes('animation:')) return 'Writing animations…';
+    if (raw.includes('<style')) return 'Styling visuals…';
+    if (raw.includes('<!DOCTYPE') || raw.includes('<html')) return 'Generating HTML…';
+    return 'Planning scenes…';
+  }
+  if (raw.includes('</html>') || len > 6000) return 'Finalizing…';
+  if (raw.includes('<body') || raw.includes('<main')) return 'Building layout…';
+  if (raw.includes('<style') || raw.includes('animation')) return 'Styling…';
+  if (raw.includes('<!DOCTYPE')) return 'Generating…';
+  return 'Writing…';
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 interface StudioModuleProps {
@@ -890,7 +909,7 @@ export default function StudioModule({ initialRequest, onRequestConsumed }: Stud
     try {
       const sysPrompt = buildVideoPrompt(fmt, dur, activeAgent?.bias);
       const userMsg = ctx ? `Brand context:\n${ctx}\n\nCreate:\n${p}` : `Create:\n${p}`;
-      await streamAI(sysPrompt, userMsg, (chunk) => { raw += chunk; setStreamLog(raw.slice(-400)); });
+      await streamAI(sysPrompt, userMsg, (chunk) => { raw += chunk; setStreamLog(getStreamPhase(raw, 'video')); });
       const stripped = stripFences(raw);
       const finalHtml = assembleVideoHtml(stripped, fmt, dur);
       setHtml(finalHtml);
@@ -1035,7 +1054,7 @@ The prompt must be specific enough for a motion designer to execute without ques
           : `Create this animation:\n${prompt}`;
         await streamAI(sysPrompt, userMsg, (chunk) => {
           raw += chunk;
-          setStreamLog(raw.slice(-400));
+          setStreamLog(getStreamPhase(raw, 'video'));
         });
         const stripped = stripFences(raw);
         const finalHtml = assembleVideoHtml(stripped, format, effectiveDur);
@@ -1054,7 +1073,7 @@ The prompt must be specific enough for a motion designer to execute without ques
         const userMsg = ctx ? `Brand/product context:\n${ctx}\n\n${prompt}` : prompt;
         await streamAI(sysPrompt, userMsg, (chunk) => {
           raw += chunk;
-          setStreamLog(raw.slice(-400));
+          setStreamLog(getStreamPhase(raw, type));
         });
         const finalHtml = buildStaticHtml(stripFences(raw));
         setHtml(finalHtml);
@@ -1096,7 +1115,7 @@ Rules:
     try {
       await streamAI(sysPrompt, buildRefinePrompt(html, text, isVideo), (chunk) => {
         raw += chunk;
-        setStreamLog(raw.slice(-400));
+        setStreamLog(getStreamPhase(raw, type));
       });
       const stripped = stripFences(raw);
       let updated: string;
@@ -1548,9 +1567,9 @@ Rules:
               <div className="w-8 h-8 rounded-full border-2 border-nv-border border-t-accent animate-spin" />
               <p className="text-[11px] text-nv-muted font-mono">Generating {type}…</p>
               {streamLog && (
-                <pre className="text-[9px] text-nv-faint/60 font-mono max-w-sm text-center overflow-hidden line-clamp-3">
+                <p className="text-[11px] text-nv-muted/70 text-center">
                   {streamLog}
-                </pre>
+                </p>
               )}
             </div>
           )}
