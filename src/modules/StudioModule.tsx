@@ -213,76 +213,42 @@ function extractDurationFromPrompt(text: string): number | null {
   return DURATIONS.includes(n) ? n : null;
 }
 
-// Builds the canonical JS runtime for a given canvas size — the single source of truth
-function buildVideoRuntime(W: number, H: number, duration: number): string {
-  const subSide   = Math.round(W * 0.074);
-  const subBottom = Math.round(H * 0.08);
-  const subFont   = Math.round(W * 0.038);
-  const subLH     = Math.round(subFont * 1.45);
-  return `window.onerror=function(msg,src,ln){var c=document.getElementById('c')||document.querySelector('canvas');if(!c)return;var x=c.getContext('2d');var fs=Math.round(Math.min(c.width,c.height)*0.04);x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.font='bold '+fs+'px monospace';x.fillStyle='rgba(160,0,0,.9)';x.textAlign='center';x.textBaseline='middle';x.fillText(String(msg).slice(0,80),c.width/2,c.height/2-fs);x.fillText('(line '+ln+')',c.width/2,c.height/2+fs);};
-var canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
-var W=${W},H=${H},DUR=${duration};
-var _T=0,_L=null;
-var C=function(v,a,b){return v<a?a:v>b?b:v;};
-var E={o3:function(t){t--;return t*t*t+1;},i3:function(t){return t*t*t;},io:function(t){return t<.5?4*t*t*t:(t-1)*(2*t-2)*(2*t-2)+1;},bk:function(t){var c=1.70158;return 1+(c+1)*Math.pow(t-1,3)+c*Math.pow(t-1,2);},el:function(t){return t<=0?0:t>=1?1:Math.pow(2,-10*t)*Math.sin((t*10-.75)*2.094)+1;},si:function(t){return Math.sin(t*Math.PI/2);}};
-function sp(s,e){if(_T<s||_T>e)return null;var lt=_T-s,dur=e-s,eD=0.45,xD=0.35,xS=dur-xD,op=1,ty=0;if(lt<eD){var p=E.o3(C(lt/eD,0,1));op=p;ty=(1-p)*32;}else if(lt>xS){var p2=E.i3(C((lt-xS)/xD,0,1));op=1-p2;ty=-p2*20;}return{lt:lt,op:op,ty:ty,p:C(lt/dur,0,1)};}
-function lp(a,b,s,e,ef){ef=ef||E.o3;return a+(b-a)*ef(C((_T-s)/(e-s),0,1));}
-function cu(n,s,d,ef){ef=ef||E.o3;return Math.round(n*ef(C((_T-s)/d,0,1)));}
-function tx(t,x,y,fs,clr,w,al,ba){ctx.font=(w||600)+' '+(fs||36)+'px "Inter Tight",system-ui';ctx.fillStyle=clr||'#0c0b14';ctx.textAlign=al||'center';ctx.textBaseline=ba||'middle';ctx.fillText(t,x,y);}
-function txm(t,x,y,fs,clr){ctx.font='700 '+(fs||48)+'px "JetBrains Mono",monospace';ctx.fillStyle=clr||'#6d4cff';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(t,x,y);}
-function txWrap(lines,x,yc,fs,clr,wt,lhh){var n=lines.length,ly=yc-(n-1)*(lhh||fs*1.25)/2;for(var i=0;i<n;i++)tx(lines[i],x,ly+i*(lhh||fs*1.25),fs,clr,wt);}
-function rr(x,y,w,h,r,fill,sc,sb){ctx.save();if(sc){ctx.shadowColor=sc;ctx.shadowBlur=sb||20;}ctx.fillStyle=fill||'#fff';r=Math.min(r||20,w/2,h/2);ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();ctx.fill();ctx.restore();}
-function sub(text,op,color){if(!op||op<=0)return;ctx.save();ctx.globalAlpha=op;ctx.font='600 ${subFont}px "Inter Tight",system-ui';ctx.textAlign='center';ctx.textBaseline='alphabetic';var mw=W-${subSide*2},words=text.split(' '),lines=[],cur='';for(var i=0;i<words.length;i++){var tl=cur?(cur+' '+words[i]):words[i];if(ctx.measureText(tl).width>mw&&cur){lines.push(cur);cur=words[i];}else cur=tl;}lines.push(cur);var lh=${subLH},bH=lines.length*lh+12,bY=H-${subBottom}-lines.length*lh-10;rr(${subSide},bY,W-${subSide*2},bH,10,'rgba(255,255,255,0.88)');ctx.fillStyle=color||'#0c0b14';for(var j=0;j<lines.length;j++)ctx.fillText(lines[j].trim(),W/2,H-${subBottom}-(lines.length-1-j)*lh);ctx.restore();}
-function subHL(a,hl,b,op){if(!op||op<=0)return;ctx.save();ctx.globalAlpha=op;ctx.font='600 ${subFont}px "Inter Tight",system-ui';ctx.textBaseline='alphabetic';ctx.textAlign='left';var wa=ctx.measureText(a).width,wh=ctx.measureText(hl).width,wb=ctx.measureText(b).width;var tot=wa+wh+wb,x=W/2-tot/2,y=H-${subBottom};rr(x-16,y-${subFont}-6,tot+32,${subFont}+18,10,'rgba(255,255,255,0.88)');ctx.fillStyle='#0c0b14';ctx.fillText(a,x,y);ctx.fillStyle='#6d4cff';ctx.fillText(hl,x+wa,y);ctx.fillStyle='#0c0b14';ctx.fillText(b,x+wa+wh,y);ctx.restore();}
-function ripple(cx,cy,st,n){n=n||3;for(var i=0;i<n;i++){var p=C((_T-st-i*0.3)/1.8,0,1);if(p<=0||p>=1)continue;ctx.save();ctx.globalAlpha=(1-p)*0.5;ctx.strokeStyle='#6d4cff';ctx.lineWidth=3;ctx.shadowColor='rgba(109,76,255,.4)';ctx.shadowBlur=8;ctx.beginPath();ctx.arc(cx,cy,p*Math.min(W,H)*0.4,0,Math.PI*2);ctx.stroke();ctx.restore();}}
-function circle(cx,cy,r,fill,stroke,sw){ctx.save();ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);if(fill){ctx.fillStyle=fill;ctx.fill();}if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=sw||2;ctx.stroke();}ctx.restore();}
-function ring(cx,cy,r,t,col,p){ctx.save();ctx.beginPath();ctx.arc(cx,cy,r,-Math.PI/2,-Math.PI/2+(p||1)*Math.PI*2);ctx.strokeStyle=col||'#6d4cff';ctx.lineWidth=t||8;ctx.lineCap='round';ctx.stroke();ctx.restore();}
-function glow(cx,cy,r,col){var g=ctx.createRadialGradient(cx,cy,0,cx,cy,r);g.addColorStop(0,col);g.addColorStop(1,'rgba(0,0,0,0)');ctx.save();ctx.fillStyle=g;ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fill();ctx.restore();}
-function arrow(x1,y1,x2,y2,col,lw){var a=Math.atan2(y2-y1,x2-x1),as=12;ctx.save();ctx.strokeStyle=col||'#6d4cff';ctx.fillStyle=col||'#6d4cff';ctx.lineWidth=lw||2;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2-Math.cos(a)*as*0.4,y2-Math.sin(a)*as*0.4);ctx.stroke();ctx.beginPath();ctx.moveTo(x2,y2);ctx.lineTo(x2-as*Math.cos(a-0.4),y2-as*Math.sin(a-0.4));ctx.lineTo(x2-as*Math.cos(a+0.4),y2-as*Math.sin(a+0.4));ctx.closePath();ctx.fill();ctx.restore();}
-function dashed(x1,y1,x2,y2,col,lw,d,g){ctx.save();ctx.strokeStyle=col||'rgba(255,255,255,0.25)';ctx.lineWidth=lw||1.5;ctx.setLineDash([d||6,g||4]);ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();ctx.setLineDash([]);ctx.restore();}
-function dotGrid(x,y,cols,rows,gap,r,col){ctx.save();ctx.fillStyle=col||'rgba(255,255,255,0.1)';for(var c=0;c<cols;c++)for(var row=0;row<rows;row++){ctx.beginPath();ctx.arc(x+c*gap,y+row*gap,r||2,0,Math.PI*2);ctx.fill();}ctx.restore();}
-function wave(x,y,w,amp,freq,col,lw,phase){ctx.save();ctx.strokeStyle=col||'#6d4cff';ctx.lineWidth=lw||2;ctx.beginPath();for(var i=0;i<=w;i+=3){var wy=y+Math.sin((i/w)*Math.PI*2*(freq||1)+(phase||0))*amp;if(i===0)ctx.moveTo(x+i,wy);else ctx.lineTo(x+i,wy);}ctx.stroke();ctx.restore();}
-function gradRect(x,y,w,h,c1,c2,vert){var g=vert?ctx.createLinearGradient(x,y,x,y+h):ctx.createLinearGradient(x,y,x+w,y);g.addColorStop(0,c1);g.addColorStop(1,c2);ctx.save();ctx.fillStyle=g;ctx.fillRect(x,y,w,h);ctx.restore();}
-function floatCard(x,y,w,h,r,bg){ctx.save();ctx.shadowColor='rgba(0,0,0,0.2)';ctx.shadowBlur=20;ctx.shadowOffsetY=6;rr(x,y,w,h,r||12,bg||'rgba(255,255,255,0.08)');ctx.restore();}
-function laptop(cx,cy,bW,fn){var bH=bW*0.58,sW=bW*0.83,sH=bH*0.67,sx=cx-sW/2,sy=cy-bH/2+bH*0.07;rr(cx-bW/2,cy-bH/2,bW,bH*0.82,8,'#1a1a2e');rr(sx,sy,sW,sH,4,'#080812');if(fn){ctx.save();ctx.beginPath();ctx.moveTo(sx+4,sy);ctx.lineTo(sx+sW-4,sy);ctx.quadraticCurveTo(sx+sW,sy,sx+sW,sy+4);ctx.lineTo(sx+sW,sy+sH-4);ctx.quadraticCurveTo(sx+sW,sy+sH,sx+sW-4,sy+sH);ctx.lineTo(sx+4,sy+sH);ctx.quadraticCurveTo(sx,sy+sH,sx,sy+sH-4);ctx.lineTo(sx,sy+4);ctx.quadraticCurveTo(sx,sy,sx+4,sy);ctx.closePath();ctx.clip();fn(sx,sy,sW,sH);ctx.restore();}circle(cx,cy-bH/2+bH*0.033,3,'#222238');rr(cx-bW*0.52,cy+bH*0.365,bW*1.04,bH*0.1,4,'#141428');rr(cx-bW*0.13,cy+bH*0.39,bW*0.26,bH*0.055,4,'#1e1e30');}
-function phone(cx,cy,h,fn){var w=h*0.46,sW=w*0.86,sH=h*0.88,sx=cx-sW/2,sy=cy-sH/2;rr(cx-w/2,cy-h/2,w,h,22,'#1c1c2e');rr(sx,sy,sW,sH,16,'#080812');if(fn){ctx.save();ctx.beginPath();ctx.moveTo(sx+16,sy);ctx.lineTo(sx+sW-16,sy);ctx.quadraticCurveTo(sx+sW,sy,sx+sW,sy+16);ctx.lineTo(sx+sW,sy+sH-16);ctx.quadraticCurveTo(sx+sW,sy+sH,sx+sW-16,sy+sH);ctx.lineTo(sx+16,sy+sH);ctx.quadraticCurveTo(sx,sy+sH,sx,sy+sH-16);ctx.lineTo(sx,sy+16);ctx.quadraticCurveTo(sx,sy,sx+16,sy);ctx.closePath();ctx.clip();fn(sx,sy,sW,sH);ctx.restore();}rr(cx-w*0.15,cy-h/2-1,w*0.3,13,7,'#1c1c2e');rr(cx-w*0.2,cy+h/2-11,w*0.4,5,3,'#2a2a3e');}
-function check(cx,cy,r,col,lw){circle(cx,cy,r,null,col||'#22c55e',lw||2);ctx.save();ctx.strokeStyle=col||'#22c55e';ctx.lineWidth=lw||2;ctx.lineCap='round';ctx.lineJoin='round';ctx.beginPath();ctx.moveTo(cx-r*0.35,cy);ctx.lineTo(cx-r*0.05,cy+r*0.32);ctx.lineTo(cx+r*0.38,cy-r*0.3);ctx.stroke();ctx.restore();}
-function bar(x,y,w,maxH,val,fill,anim){var h=val*(anim!==undefined?anim:1);rr(x,y+maxH-h,w,h,4,fill||'#6d4cff');}
-function txReveal(words,x,yc,fs,clr,wt,s,gap){ctx.font=(wt||700)+' '+(fs||48)+'px "Inter Tight",system-ui';var tw=[],tot=0;for(var i=0;i<words.length;i++){tw[i]=ctx.measureText(words[i]+' ').width;tot+=tw[i];}var cx=x-tot/2;for(var i=0;i<words.length;i++){var p=C((_T-s-i*(gap||0.18))/.35,0,1);if(p<=0)break;ctx.save();ctx.globalAlpha=E.o3(p);ctx.fillStyle=clr||'#0c0b14';ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText(words[i],cx+(1-E.o3(p))*14,yc);ctx.restore();cx+=tw[i];}}
-function txType(text,x,y,fs,clr,wt,s,dur){var p=C((_T-s)/(dur||1.2),0,1),ch=Math.floor(text.length*p),vis=text.slice(0,ch);tx(vis,x,y,fs,clr,wt);if(p<1&&Math.sin(_T*8)>0){ctx.save();ctx.font=(wt||700)+' '+(fs||48)+'px "Inter Tight",system-ui';ctx.textAlign='center';ctx.textBaseline='middle';var vw=ctx.measureText(vis).width;ctx.fillStyle=clr||'#0c0b14';ctx.fillRect(x+vw/2+2,y-fs*.5,2,fs);ctx.restore();}}
-function hexagon(cx,cy,r,fill,stroke,sw){ctx.save();ctx.beginPath();for(var i=0;i<6;i++){var a=Math.PI/3*i-Math.PI/6;if(i===0)ctx.moveTo(cx+r*Math.cos(a),cy+r*Math.sin(a));else ctx.lineTo(cx+r*Math.cos(a),cy+r*Math.sin(a));}ctx.closePath();if(fill){ctx.fillStyle=fill;ctx.fill();}if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=sw||2;ctx.stroke();}ctx.restore();}
-function triangle(cx,cy,r,fill,angle){ctx.save();ctx.translate(cx,cy);if(angle)ctx.rotate(angle);ctx.beginPath();for(var i=0;i<3;i++){var a=Math.PI*2/3*i-Math.PI/2;if(i===0)ctx.moveTo(r*Math.cos(a),r*Math.sin(a));else ctx.lineTo(r*Math.cos(a),r*Math.sin(a));}ctx.closePath();ctx.fillStyle=fill||'rgba(109,76,255,0.15)';ctx.fill();ctx.restore();}
-window.addEventListener('message',function(e){if(!e.data)return;if(e.data.__nv_acc)window.__NV_ACC=e.data.__nv_acc;if(e.data.__nv_bg)window.__NV_BG=e.data.__nv_bg;if(e.data.__nv_fg)window.__NV_FG=e.data.__nv_fg;});
-var _PAUSED=false;
-function render(){}
-(function(){function _loop(ts){if(_L==null){_L=ts;requestAnimationFrame(_loop);return;}if(!_PAUSED){var dt=Math.min((ts-_L)/1000,0.1);_T=(_T+dt)%DUR;}_L=ts;ctx.fillStyle='#ffffff';ctx.fillRect(0,0,W,H);ctx.save();ctx.beginPath();ctx.rect(0,0,W,H);ctx.clip();try{render();}catch(e){var _ef=Math.round(Math.min(W,H)*0.04);ctx.font='bold '+_ef+'px monospace';ctx.fillStyle='rgba(160,0,0,.9)';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('Error: '+String(e.message||e).slice(0,60),W/2,H/2-_ef*0.6);ctx.font='bold '+Math.round(_ef*0.7)+'px monospace';ctx.fillText('(check code view for details)',W/2,H/2+_ef*0.8);}ctx.restore();ctx.save();ctx.fillStyle='rgba(109,76,255,.12)';ctx.fillRect(0,H-6,W,6);ctx.fillStyle='#6d4cff';ctx.shadowColor='rgba(109,76,255,.5)';ctx.shadowBlur=10;ctx.fillRect(0,H-6,W*C(_T/DUR,0,1),6);ctx.restore();requestAnimationFrame(_loop);}requestAnimationFrame(_loop);})();`;
-}
-
-// Assembles the final HTML from our canonical runtime + AI scene code
-function buildVideoHtml(fmt: Format, duration: number, sceneCode: string): string {
-  const runtime = buildVideoRuntime(fmt.w, fmt.h, duration);
-  const marker = '// ── YOUR SCENE CODE';
-  const hasMarker = sceneCode.trimStart().startsWith(marker);
-  const body = hasMarker
-    ? sceneCode.trim()
-    : `${marker} ─────────────────────────────────────────────────────────\nrender = function() {\n${sceneCode}\n};`;
+// Fallback HTML shell for bare snippet responses (rare — AI normally returns full HTML)
+function buildVideoHtml(fmt: Format, duration: number, snippet: string): string {
+  const W = fmt.w, H = fmt.h;
+  const subPad = Math.round(H * 0.015), subW = Math.round(W * 0.05), subFs = Math.round(H * 0.025);
+  const playbackJs = `(function(){
+  var DUR=${duration},start=performance.now(),_paused=false,_pausedAt=0;
+  window._PAUSED=false;
+  function rawT(){return(performance.now()-start)/1000;}
+  function curT(){return _paused?_pausedAt:rawT()%DUR;}
+  Object.defineProperty(window,'_T',{get:curT,set:function(v){start=performance.now()-v*1000;_pausedAt=v;}});
+  var _clips=null;
+  function _tick(){if(!_clips)_clips=[].slice.call(document.querySelectorAll('.clip'));var t=curT();for(var i=0;i<_clips.length;i++){var el=_clips[i],s=parseFloat(el.dataset.start)||0,d=parseFloat(el.dataset.duration)||DUR,on=t>=s&&t<(s+d);if(on!==el._nvOn){el._nvOn=on;el.style.display=on?'block':'none';}}requestAnimationFrame(_tick);}
+  requestAnimationFrame(_tick);
+  setInterval(function(){var anims=document.getAnimations?document.getAnimations():[];if(window._PAUSED!==_paused){_paused=window._PAUSED;if(_paused){_pausedAt=rawT()%DUR;anims.forEach(function(a){try{a.pause();}catch(e){}});}else{start=performance.now()-_pausedAt*1000;anims.forEach(function(a){try{a.play();}catch(e){}});}}},60);
+  window.addEventListener('message',function(e){if(!e||!e.data)return;var r=document.documentElement;if(e.data.__nv_acc)r.style.setProperty('--acc',e.data.__nv_acc);if(e.data.__nv_bg)r.style.setProperty('--bg',e.data.__nv_bg);if(e.data.__nv_fg)r.style.setProperty('--fg',e.data.__nv_fg);if(e.data.__nv_restart){start=performance.now();_paused=false;window._PAUSED=false;_pausedAt=0;_clips=null;document.getAnimations&&document.getAnimations().forEach(function(a){try{a.cancel();a.play();}catch(e){}});}});
+})()`;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:ital,wght@0,300;0,400;0,600;0,700;0,800;0,900;1,700&family=JetBrains+Mono:wght@400;600&display=swap');
-*{box-sizing:border-box;margin:0;padding:0}
-html,body{width:100%;height:100%;overflow:hidden;background:#ffffff}
-canvas{display:block;width:100%;height:100%;object-fit:contain}
+@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;600;700;800;900&family=JetBrains+Mono:wght@400;700&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{width:${W}px;height:${H}px;overflow:hidden;font-family:'Inter Tight',system-ui,sans-serif;}
+:root{--bg:#111118;--fg:#f1f5f9;--acc:#6d4cff;}
+body{position:relative;background:var(--bg);color:var(--fg);}
+.clip{position:absolute;inset:0;display:none;overflow:hidden;}
+.sub{position:absolute;bottom:0;left:0;right:0;padding:${subPad}px ${subW}px;background:linear-gradient(transparent,rgba(0,0,0,0.65));font-size:${subFs}px;color:#fff;font-weight:500;text-align:center;}
 </style>
 </head>
 <body>
-<canvas id="c" width="${fmt.w}" height="${fmt.h}"></canvas>
+<div class="clip" data-start="0" data-duration="${duration}" id="scene-main">
+${snippet}
+</div>
 <script>
-${runtime}
-
-${body}
+${playbackJs}
 </script>
 </body>
 </html>`;
@@ -299,15 +265,29 @@ function buildVideoPrompt(fmt: Format, duration: number, agentBias?: string): st
   const fsStat = Math.round(H * 0.13);
   const fsBody = Math.round(H * 0.028);
   const fsCta  = Math.round(H * 0.038);
+  const subPad = Math.round(H * 0.015);
+  const subW   = Math.round(W * 0.05);
+  const subFs  = Math.round(H * 0.025);
 
-  // Playback JS block — included verbatim in the HTML shell
+  // Playback + clip-runtime block (AI copies verbatim into their HTML)
   const playbackJs = `(function(){
   var DUR=${duration},start=performance.now(),_paused=false,_pausedAt=0;
   window._PAUSED=false;
   function rawT(){return(performance.now()-start)/1000;}
   function curT(){return _paused?_pausedAt:rawT()%DUR;}
   Object.defineProperty(window,'_T',{get:curT,set:function(v){start=performance.now()-v*1000;_pausedAt=v;}});
-  Object.defineProperty(window,'_L',{get:function(){return null;},set:function(v){if(v===null){var t=curT();start=performance.now()-t*1000;document.getAnimations&&document.getAnimations().forEach(function(a){try{a.currentTime=t*1000;}catch(e){}});}}});
+  // Clip visibility runtime: reads data-start/data-duration on every .clip element
+  var _clips=null;
+  function _tick(){
+    if(!_clips)_clips=[].slice.call(document.querySelectorAll('.clip'));
+    var t=curT();
+    for(var i=0;i<_clips.length;i++){
+      var el=_clips[i],s=parseFloat(el.dataset.start)||0,d=parseFloat(el.dataset.duration)||DUR,on=t>=s&&t<(s+d);
+      if(on!==el._nvOn){el._nvOn=on;el.style.display=on?'block':'none';}
+    }
+    requestAnimationFrame(_tick);
+  }
+  requestAnimationFrame(_tick);
   setInterval(function(){
     var anims=document.getAnimations?document.getAnimations():[];
     if(window._PAUSED!==_paused){
@@ -322,108 +302,128 @@ function buildVideoPrompt(fmt: Format, duration: number, agentBias?: string): st
     if(e.data.__nv_acc)r.style.setProperty('--acc',e.data.__nv_acc);
     if(e.data.__nv_bg)r.style.setProperty('--bg',e.data.__nv_bg);
     if(e.data.__nv_fg)r.style.setProperty('--fg',e.data.__nv_fg);
-    if(e.data.__nv_restart){start=performance.now();_paused=false;window._PAUSED=false;_pausedAt=0;document.getAnimations&&document.getAnimations().forEach(function(a){try{a.cancel();a.play();}catch(e){}});}
+    if(e.data.__nv_restart){start=performance.now();_paused=false;window._PAUSED=false;_pausedAt=0;_clips=null;document.getAnimations&&document.getAnimations().forEach(function(a){try{a.cancel();a.play();}catch(e){}});}
   });
 })()`;
 
   return `You are a professional motion designer and frontend developer. Create a stunning, polished animated marketing video as a single self-contained HTML file.
 ${agentBias ? `\nDIRECTION: ${agentBias}\n` : ''}
-VIEWPORT: ${W}×${H}px fixed · ${duration}s loop · Fonts: Inter Tight + JetBrains Mono (Google Fonts)
+VIEWPORT: ${W}x${H}px fixed · ${duration}s loop · Fonts: Inter Tight + JetBrains Mono (Google Fonts)
 
-━━━ STEP 1: ANALYZE THE CONTENT ━━━
-Read EVERYTHING in the user message — extract: subject, key message, tone, specific names/numbers/features/facts.
-Plan:
-A) What TYPE of video? Product launch · Brand story · Data reveal · Tutorial · Announcement · Portfolio
-B) How many scenes? ${sceneCount} scenes. Vary durations — short hook, longer content, punchy CTA.
-C) What visual style fits: dark glassmorphism? clean minimal? bold gradient? editorial?
-D) What 3 colors? BG · FG · ACC — derived from the brand/content emotion.
+━━━ STEP 1: PLAN BEFORE WRITING ━━━
+Read the entire user message. Extract every specific name, number, feature, and fact — use them, do not invent.
+Decide:
+  A) VIDEO TYPE — Product launch / Brand story / Data reveal / Tutorial / Announcement
+  B) SCENE PLAN — ${sceneCount} scenes. For each: name, job (one sentence), duration in seconds. Durations must sum to ${duration}.
+  C) VISUAL STYLE — dark glassmorphism / clean minimal / bold gradient / editorial. Derived from content emotion.
+  D) COLOR TRIO — --bg / --fg / --acc. Derived from brand or content feel. DO NOT default to purple.
+  E) SCENE VISUALS — for each scene, what specific custom graphic goes there?
+     - Data scene → animated bar chart drawn with CSS divs
+     - Feature scene → 3-column icon+label card grid
+     - Product scene → SVG mockup or device frame with inner content
+     - Stats scene → large JetBrains Mono number that counts up via JS
+     - Brand scene → logo-style mark built from CSS shapes
 
-━━━ STEP 2: BUILD WITH HTML + CSS ANIMATIONS ━━━
-Use HTML elements + CSS @keyframes. No canvas. No complex math. Pure CSS motion.
+━━━ STEP 2: SCENE STRUCTURE (data-start / data-duration) ━━━
+Each scene is a <div class="clip"> with data-start and data-duration in whole seconds.
+The built-in runtime auto-shows/hides scenes — you write ZERO keyframe math for scene visibility.
 
-SCENE TIMING — each scene is an absolutely-positioned div, hidden by default, shown via @keyframes:
-Every keyframe percentage maps to: percentage = time / ${duration} * 100
+TIMING EXAMPLE for a 30s/4-scene video:
+  <div class="clip" data-start="0"  data-duration="7"  id="scene-hook">      <!-- 0s → 7s -->
+  <div class="clip" data-start="7"  data-duration="10" id="scene-features">  <!-- 7s → 17s -->
+  <div class="clip" data-start="17" data-duration="8"  id="scene-proof">     <!-- 17s → 25s -->
+  <div class="clip" data-start="25" data-duration="5"  id="scene-cta">       <!-- 25s → 30s -->
 
-Example for a ${duration}s video with ${sceneCount} scenes:
-  /* Scene 1: 0s → ${Math.round(duration/sceneCount)}s */
-  .s1 { position:absolute; inset:0; animation: s1 ${duration}s infinite; }
-  @keyframes s1 {
-    0%   { opacity:0; }
-    2%   { opacity:1; }          /* 0.6s — fade in */
-    ${Math.round(duration/sceneCount/duration*100-4)}% { opacity:1; }   /* hold */
-    ${Math.round(duration/sceneCount/duration*100)}%   { opacity:0; }   /* fade out */
-    100% { opacity:0; }
-  }
-  /* Scene 2: ${Math.round(duration/sceneCount)}s → ${Math.round(duration/sceneCount*2)}s */
-  .s2 { position:absolute; inset:0; animation: s2 ${duration}s infinite; }
-  @keyframes s2 {
-    0%,${Math.round(duration/sceneCount/duration*100)}% { opacity:0; }
-    ${Math.round(duration/sceneCount/duration*100)+2}% { opacity:1; }
-    ${Math.round(duration/sceneCount*2/duration*100-4)}% { opacity:1; }
-    ${Math.round(duration/sceneCount*2/duration*100)}% { opacity:0; }
-    100% { opacity:0; }
-  }
+For YOUR ${duration}s video with ${sceneCount} scenes: choose your own durations — they must SUM to exactly ${duration}.
+CRITICAL: last clip's data-start + data-duration = ${duration}. No gaps. No overlaps.
+.clip is already set to { position:absolute; inset:0; display:none; overflow:hidden } in CSS — do not add display:block.
 
-ELEMENT ANIMATIONS — apply to children inside each scene div using animation-delay:
-  .fade-up   { animation: fadeUp 0.7s cubic-bezier(0.16,1,0.3,1) both; }
-  @keyframes fadeUp { from{opacity:0;transform:translateY(40px)} to{opacity:1;transform:translateY(0)} }
+Layer content inside each clip:
+  1. Background <div> — full-size gradient, radial glow, grid, noise (position:absolute; inset:0; z-index:0)
+  2. Visual <div> — your custom graphic (z-index:1)
+  3. Text <div> — headline + subhead (z-index:2)
+  4. .sub subtitle (z-index:3, position:absolute, bottom)
 
-  .scale-in  { animation: scaleIn 0.5s cubic-bezier(0.34,1.56,0.64,1) both; }
-  @keyframes scaleIn { from{opacity:0;transform:scale(0.75)} to{opacity:1;transform:scale(1)} }
+━━━ STEP 3: WITHIN-CLIP ANIMATIONS ━━━
+CSS animations inside each clip play from 0s when the clip becomes visible.
+When the video loops, the runtime toggles display:none→block, restarting all animations. Design for this.
+Use animation-fill-mode:both. Use animation-delay for stagger (0.1s / 0.25s / 0.4s / 0.6s).
 
-  .slide-in  { animation: slideIn 0.6s cubic-bezier(0.16,1,0.3,1) both; }
-  @keyframes slideIn { from{opacity:0;transform:translateX(-50px)} to{opacity:1;transform:translateX(0)} }
+Standard keyframes (define once in <style>):
+  @keyframes fadeUp   { from{opacity:0;transform:translateY(44px)}  to{opacity:1;transform:translateY(0)} }
+  @keyframes fadeDown { from{opacity:0;transform:translateY(-44px)} to{opacity:1;transform:translateY(0)} }
+  @keyframes scaleIn  { from{opacity:0;transform:scale(0.7)}        to{opacity:1;transform:scale(1)} }
+  @keyframes slideInL { from{opacity:0;transform:translateX(-56px)} to{opacity:1;transform:translateX(0)} }
+  @keyframes slideInR { from{opacity:0;transform:translateX(56px)}  to{opacity:1;transform:translateX(0)} }
+  @keyframes blurIn   { from{opacity:0;filter:blur(20px)}           to{opacity:1;filter:blur(0)} }
+  @keyframes clipIn   { from{opacity:0}                             to{opacity:1} }
+  @keyframes float    { 0%,100%{transform:translateY(0)}  50%{transform:translateY(-14px)} }
+  @keyframes pulse    { 0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--acc) 55%,transparent)} 50%{box-shadow:0 0 0 22px transparent} }
+  @keyframes fillBar  { from{width:0} to{width:var(--pct,80%)} }
+  @keyframes spinIn   { from{opacity:0;transform:rotate(-90deg) scale(0.5)} to{opacity:1;transform:rotate(0) scale(1)} }
 
-  .blur-in   { animation: blurIn 0.8s ease both; }
-  @keyframes blurIn  { from{opacity:0;filter:blur(16px)} to{opacity:1;filter:blur(0)} }
+Clip entrance (add to the clip div's CSS):
+  #scene-hook { animation: clipIn 0.5s ease-out both; }
 
-Stagger children: .child:nth-child(2){animation-delay:0.15s} .child:nth-child(3){animation-delay:0.3s}
+Element stagger example:
+  #scene-hook .headline { animation: fadeUp 0.7s cubic-bezier(0.16,1,0.3,1) 0.1s both; }
+  #scene-hook .subtext  { animation: fadeUp 0.7s cubic-bezier(0.16,1,0.3,1) 0.3s both; }
+  #scene-hook .visual   { animation: scaleIn 0.6s cubic-bezier(0.34,1.56,0.64,1) 0.5s both; }
+  #scene-hook .cta      { animation: fadeUp 0.5s ease-out 0.7s both, pulse 2s ease 1.4s infinite; }
 
-VISUAL DEPTH — every scene must have layered depth:
-  Background layer: full-size gradient, mesh, or noise texture
-  Mid layer: cards, shapes, image placeholders, UI mockups
-  Top layer: headline + subtext
+━━━ STEP 4: COLORS + TYPOGRAPHY ━━━
+:root { --bg: #YOUR; --fg: #YOUR; --acc: #YOUR; }
+Accent palette: violet #6d4cff · orange #f97316 · emerald #10b981 · sky #0ea5e9 · rose #f43f5e · amber #f59e0b · pink #ec4899 · lime #84cc16
+Use var(--bg)/var(--fg)/var(--acc) EVERYWHERE — never hardcode hex in element styles.
 
-━━━ STEP 3: COLORS + TYPOGRAPHY ━━━
-Override :root in <style> with your derived colors:
-  :root { --bg: #<derived>; --fg: #<derived>; --acc: #<derived>; }
-Do NOT default to purple. Pick from: violet #6d4cff · orange #f97316 · emerald #10b981 · sky #0ea5e9 · rose #f43f5e · amber #f59e0b · pink #ec4899 · lime #84cc16
-Use var(--bg)/var(--fg)/var(--acc) everywhere — never hardcode hex in element styles.
+Sizes:
+  Hero:  font-size:${fsHero}px; font-weight:900; letter-spacing:-0.04em; line-height:0.95; color:var(--fg);
+  Sub:   font-size:${fsSub}px;  font-weight:600; opacity:0.8;
+  Stats: font-family:'JetBrains Mono',monospace; font-size:${fsStat}px; font-weight:700; color:var(--acc);
+  Body:  font-size:${fsBody}px; font-weight:400; opacity:0.7;
+  CTA:   font-size:${fsCta}px;  font-weight:700; background:var(--acc); color:#fff; border-radius:100px; padding:18px 48px;
 
-Headline (hero): font-size:${fsHero}px; font-weight:900; letter-spacing:-0.04em; line-height:0.9; color:var(--fg);
-Subhead: font-size:${fsSub}px; font-weight:600; color:var(--fg); opacity:0.8;
-Stats: font-family:'JetBrains Mono',monospace; font-size:${fsStat}px; font-weight:700; color:var(--acc);
-Body: font-size:${fsBody}px; font-weight:400; color:var(--fg); opacity:0.7;
-CTA: font-size:${fsCta}px; font-weight:700; background:var(--acc); color:#fff; border-radius:100px; padding:18px 48px;
+━━━ STEP 5: VISUAL QUALITY TOOLKIT ━━━
+Dark atmospheric BG:
+  background: radial-gradient(ellipse 80% 60% at 30% 20%, color-mix(in srgb,var(--acc) 22%,transparent), transparent 60%), var(--bg);
 
-━━━ STEP 4: QUALITY TECHNIQUES ━━━
-Dark/atmospheric:
-  background: radial-gradient(ellipse at 30% 20%, color-mix(in srgb, var(--acc) 25%, transparent), transparent 60%), var(--bg);
-  Glowing card: background:rgba(255,255,255,0.06); backdrop-filter:blur(16px); border:1px solid rgba(255,255,255,0.12); border-radius:24px; box-shadow:0 0 60px color-mix(in srgb,var(--acc) 20%,transparent);
+Noise overlay (subtle texture):
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+  background-size: 200px 200px;
 
-Light/minimal:
-  background:linear-gradient(135deg,#f8fafc 0%,#f1f5f9 100%);
-  Cards: background:#fff; border-radius:20px; box-shadow:0 4px 32px rgba(0,0,0,0.08);
+Dot grid:
+  background-image: radial-gradient(circle, color-mix(in srgb,var(--fg) 20%,transparent) 1px, transparent 1px);
+  background-size: 40px 40px;
 
-Number count-up (CSS only): Use JS to animate a counter:
-  function countUp(el,from,to,dur){var s=Date.now();function t(){var p=Math.min((Date.now()-s)/dur,1);el.textContent=Math.round(from+(to-from)*p);if(p<1)requestAnimationFrame(t);}requestAnimationFrame(t);}
+Glass card:
+  background:rgba(255,255,255,0.06); backdrop-filter:blur(16px); border:1px solid rgba(255,255,255,0.1); border-radius:24px; box-shadow:0 0 60px color-mix(in srgb,var(--acc) 12%,transparent);
 
-Progress/loading bars:
-  .bar { height:6px; background:rgba(255,255,255,0.15); border-radius:3px; }
-  .bar-fill { height:100%; background:var(--acc); border-radius:3px; animation:fillBar 2s ease both; }
-  @keyframes fillBar { from{width:0} to{width:80%} }
+Light card:
+  background:#fff; border-radius:20px; box-shadow:0 8px 40px rgba(0,0,0,0.09);
 
-CTA button pulse:
-  .cta-btn { animation: pulse 2s ease infinite; }
-  @keyframes pulse { 0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--acc) 60%,transparent)} 50%{box-shadow:0 0 0 20px transparent} }
+Metric card (3 in a row for data scenes):
+  .metric { display:flex; flex-direction:column; align-items:center; gap:8px; padding:32px 24px; }
+  .metric .num  { font-family:'JetBrains Mono',monospace; font-size:${fsStat}px; font-weight:700; color:var(--acc); }
+  .metric .label { font-size:${fsBody}px; opacity:0.6; text-align:center; }
 
-Floating elements:
-  .float { animation: float 3s ease-in-out infinite; }
-  @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-12px)} }
+Bar chart (CSS-only):
+  .bar-row { display:flex; align-items:center; gap:16px; margin:8px 0; }
+  .bar-track { flex:1; height:8px; background:rgba(255,255,255,0.1); border-radius:4px; overflow:hidden; }
+  .bar-fill  { height:100%; background:var(--acc); border-radius:4px; animation:fillBar 1.4s cubic-bezier(0.16,1,0.3,1) 0.3s both; --pct:70%; }
 
-SUBTITLES (mandatory at bottom of every scene):
-  <div class="sub">Caption text here</div>
-  .sub { position:absolute; bottom:0; left:0; right:0; padding:${Math.round(H*0.015)}px ${Math.round(W*0.05)}px; background:linear-gradient(transparent,rgba(0,0,0,0.7)); font-size:${Math.round(H*0.025)}px; color:#fff; text-align:center; font-weight:500; }
+Count-up number (JS, triggers once per clip appearance):
+  function countUp(el,to,ms){var from=0,s=Date.now(),suf=el.dataset.suffix||'';function f(){var p=Math.min((Date.now()-s)/ms,1),e=1-Math.pow(1-p,3);el.textContent=Math.round(from+(to-from)*e)+suf;if(p<1)requestAnimationFrame(f);}requestAnimationFrame(f);}
+  // wire up: document.getElementById('scene-stats').addEventListener('animationstart',function(){countUp(document.getElementById('num1'),2400000,2000);},{once:true});
+
+SVG icon (inline, use stroke icons — cleaner than filled at small sizes):
+  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+    <path d="M12 2L2 7l10 5 10-5-10-5z"/>  <!-- example: use real Heroicons/Lucide paths you know -->
+  </svg>
+  Style: color:var(--acc); (stroke inherits currentColor)
+
+Subtitle bar (REQUIRED on every clip — write real voice-over copy from the content):
+  <div class="sub">Your actual caption text here</div>
+  .sub { position:absolute; bottom:0; left:0; right:0; padding:${subPad}px ${subW}px; background:linear-gradient(transparent,rgba(0,0,0,0.65)); font-size:${subFs}px; color:#fff; font-weight:500; text-align:center; line-height:1.4; }
 
 ━━━ MANDATORY OUTPUT FORMAT ━━━
 <!DOCTYPE html>
@@ -434,34 +434,54 @@ SUBTITLES (mandatory at bottom of every scene):
 @import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;700&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body{width:${W}px;height:${H}px;overflow:hidden;font-family:'Inter Tight',system-ui,sans-serif;}
-:root{--bg:#0c0b14;--fg:#f8fafc;--acc:#6d4cff;} /* OVERRIDE THESE */
-body{background:var(--bg);color:var(--fg);}
-/* YOUR STYLES AND KEYFRAMES */
+:root{--bg:#111118;--fg:#f1f5f9;--acc:#6d4cff;}  /* ← OVERRIDE — derive from content */
+body{position:relative;background:var(--bg);color:var(--fg);}
+.clip{position:absolute;inset:0;display:none;overflow:hidden;}
+.sub{position:absolute;bottom:0;left:0;right:0;padding:${subPad}px ${subW}px;background:linear-gradient(transparent,rgba(0,0,0,0.65));font-size:${subFs}px;color:#fff;font-weight:500;text-align:center;line-height:1.4;}
+/* ─── @keyframes ─────────────────────────────────────────── */
+@keyframes fadeUp   { from{opacity:0;transform:translateY(44px)}  to{opacity:1;transform:translateY(0)} }
+@keyframes scaleIn  { from{opacity:0;transform:scale(0.7)}        to{opacity:1;transform:scale(1)} }
+@keyframes slideInL { from{opacity:0;transform:translateX(-56px)} to{opacity:1;transform:translateX(0)} }
+@keyframes blurIn   { from{opacity:0;filter:blur(20px)}           to{opacity:1;filter:blur(0)} }
+@keyframes clipIn   { from{opacity:0}                             to{opacity:1} }
+@keyframes float    { 0%,100%{transform:translateY(0)}  50%{transform:translateY(-14px)} }
+@keyframes pulse    { 0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--acc) 55%,transparent)} 50%{box-shadow:0 0 0 22px transparent} }
+@keyframes fillBar  { from{width:0} to{width:var(--pct,80%)} }
+/* ─── YOUR SCENE-SPECIFIC STYLES BELOW ──────────────────── */
 </style>
 </head>
 <body>
 
-<!-- YOUR SCENE DIVS -->
+<div class="clip" data-start="0" data-duration="X" id="scene-hook">
+  <div style="position:absolute;inset:0;z-index:0;"><!-- background --></div>
+  <div style="position:absolute;inset:0;z-index:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;">
+    <!-- visual + text -->
+  </div>
+  <div class="sub">Caption text</div>
+</div>
+
+<!-- more .clip divs... -->
 
 <script>
-// ── PLAYBACK (copy verbatim, do NOT modify) ──────────────────────────────
+// ── PLAYBACK + CLIP RUNTIME (copy verbatim — do NOT modify) ──
 ${playbackJs}
-// ─────────────────────────────────────────────────────────────────────────
-// YOUR JS (count-up counters, interactive effects, etc.)
+// ─────────────────────────────────────────────────────────────
+// YOUR JS below:
 </script>
 </body>
 </html>
 
 ━━━ NON-NEGOTIABLE RULES ━━━
-1. Output ONLY the HTML — start with <!DOCTYPE html>. No markdown, no explanations.
-2. Copy the PLAYBACK script block VERBATIM between the markers.
-3. Override :root{--bg,--fg,--acc} with content-derived colors.
-4. Use var(--bg)/var(--fg)/var(--acc) — never hardcode hex in element CSS.
-5. Every scene MUST have a .sub subtitle with real voice-over copy from the content.
-6. Text from content only — no placeholder copy, no Lorem ipsum.
-7. Fixed size: html,body{width:${W}px;height:${H}px;overflow:hidden}
-8. No emojis.
-9. Animation must loop seamlessly: last scene fades out just as scene 1 fades back in.`;
+1. Output ONLY raw HTML — starts with <!DOCTYPE html>. Zero markdown, zero explanation.
+2. Copy the PLAYBACK + CLIP RUNTIME block VERBATIM between the comment markers. Never alter it.
+3. Override :root { --bg, --fg, --acc } with content-derived colors. NEVER default to #6d4cff purple.
+4. Use var(--bg)/var(--fg)/var(--acc) everywhere — no hardcoded hex in element styles, ever.
+5. Every .clip MUST contain a .sub element with real voice-over text derived from the content.
+6. All visible text comes from user content — no placeholders, no "Lorem ipsum", no generic labels.
+7. html,body must stay width:${W}px; height:${H}px; overflow:hidden.
+8. No emojis in text. Use inline SVG paths for any icon/symbol.
+9. Scene times: last clip's data-start + data-duration = ${duration}. No gaps. No overlaps.
+10. Every scene must have a distinct visual — no two scenes with the same layout.`;
 }
 
 function buildScreenPrompt(fmt: Format, desc: string, styleName: string, context: string): string {
@@ -1060,17 +1080,17 @@ The prompt must be specific enough for a motion designer to execute without ques
     let raw = '';
     const isVideo = type === 'video';
     const sysPrompt = isVideo
-      ? `You are refining a CSS-animated marketing video HTML file.
-Return the COMPLETE updated HTML starting with <!DOCTYPE html>. Keep the PLAYBACK script block and structure intact.
+      ? `You are refining a CSS-animated marketing video HTML file that uses data-start/data-duration attributes for scene timing.
+Return the COMPLETE updated HTML starting with <!DOCTYPE html>.
 
 Rules:
-1. Keep the // ── PLAYBACK block VERBATIM — never modify it
-2. Keep :root { --bg, --fg, --acc } — use CSS variables, never hardcode hex in element styles
-3. Keep all scene @keyframes timing — only change what is requested
-4. Every scene must keep its .sub subtitle div
+1. Keep the // ── PLAYBACK + CLIP RUNTIME block VERBATIM — never modify it
+2. Keep all .clip data-start and data-duration values unless timing is explicitly requested to change
+3. Keep :root { --bg, --fg, --acc } — use CSS variables, never hardcode hex in element styles
+4. Every .clip must keep its .sub subtitle div
 5. No emojis in visible text
 6. html,body must stay width/height fixed with overflow:hidden
-7. Apply ONLY the requested changes — keep everything else unchanged`
+7. Apply ONLY the requested changes — preserve everything else exactly`
       : `You are an expert HTML/CSS designer. Modify the design as instructed. Return the COMPLETE updated HTML starting with <!DOCTYPE html>. Keep everything not mentioned unchanged.`;
 
     try {
