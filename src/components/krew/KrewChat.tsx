@@ -37,6 +37,13 @@ interface DisplayMsg {
   choices?:  ChoiceSet;
 }
 
+interface StudioRequest {
+  prompt: string;
+  formatId: string;
+  duration: number;
+  context: string;
+}
+
 interface Props {
   sessionId: string | null;
   agent: KrewAgent;
@@ -45,6 +52,7 @@ interface Props {
   onBrowseAgents?: () => void;
   onAgentChange?: (a: KrewAgent) => void;
   onViewOnCanvas?: (nodes: Node[], edges: Edge[]) => void;
+  onOpenStudio?: (req: StudioRequest) => void;
 }
 
 // ─── Terminal approval modal ──────────────────────────────────────────────────
@@ -762,7 +770,7 @@ function getStarterPrompts(agent: KrewAgent): string[] {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenConnectApps, onBrowseAgents, onViewOnCanvas }: Props) {
+export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenConnectApps, onBrowseAgents, onViewOnCanvas, onOpenStudio }: Props) {
   const { user, session, profile } = useAuth();
   const planCfg = getPlanConfig(profile?.plan ?? 'explore');
   type VoiceStatus = 'idle' | 'recording' | 'transcribing' | 'error';
@@ -809,6 +817,7 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
   const [agentMemories, setAgentMemories] = useState<KrewMemory[]>([]);
 
   const [termApproval, setTermApproval] = useState<{ command: string; resolve: (ok: boolean) => void } | null>(null);
+  const [studioExtracting, setStudioExtracting] = useState(false);
 
   const stopRef         = useRef(false);
   const bottomRef       = useRef<HTMLDivElement>(null);
@@ -967,6 +976,69 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
   }
 
   // ── Main send / ReAct loop ─────────────────────────────────────────────────
+
+  async function openInStudio() {
+    const content = input.trim();
+    if (!content || studioExtracting || !onOpenStudio) return;
+    setStudioExtracting(true);
+
+    const EXTRACT_SYS = `You are a creative director. Extract a marketing video brief from the given content and return ONLY valid JSON (no markdown fences, no explanation):
+{"prompt":"<detailed cinematic video prompt — include: hero headline with gradient white-to-purple text, 3 key features with emoji icons (⚡🤖🚀), brand color palette, CTA button text, animation style, multi-scene structure with scene descriptions>","formatId":"<wide|story|square>","duration":<15|30|45|60>}
+formatId: story=portrait 9:16 (Instagram/TikTok/Reels), wide=landscape 16:9 (YouTube/landing page), square=1:1 (Instagram feed).
+duration: 15=short snappy brand moment, 30=standard product showcase, 45=detailed story, 60=full narrative.
+The prompt must be production-ready — specific enough for a motion designer to execute without questions.`;
+
+    const callId = `sx-${Date.now()}`;
+    let full = '';
+    const done = { cleanup: () => {} };
+
+    try {
+      const result = await new Promise<string>((resolve, reject) => {
+        (async () => {
+          const u1 = await listen<{ id: string; text: string }>('krew-chunk', (e) => {
+            if (e.payload.id === callId) full += e.payload.text;
+          });
+          const u2 = await listen<{ id: string }>('krew-done', (e) => {
+            if (e.payload.id !== callId) return;
+            done.cleanup(); resolve(full);
+          });
+          const u3 = await listen<{ id: string; error: string }>('krew-error', (e) => {
+            if (e.payload.id !== callId) return;
+            done.cleanup(); reject(new Error(e.payload.error));
+          });
+          done.cleanup = () => { u1(); u2(); u3(); };
+          invoke('krew_ai_stream', {
+            callId, mode, systemPrompt: EXTRACT_SYS,
+            messages: [{ role: 'user', content: `Product content:\n\n${content.slice(0, 8000)}` }],
+            apiKey: apiKey || null, provider,
+            localModel: null, modelName: null, baseUrl: null,
+            sessionToken: session?.access_token ?? null,
+          }).catch((e: unknown) => { done.cleanup(); reject(e); });
+        })();
+      });
+
+      let parsed: { prompt?: string; formatId?: string; duration?: number } = {};
+      try {
+        parsed = JSON.parse(result.trim().replace(/```[\w]*\n?|```/g, '').trim());
+      } catch { /* use fallback */ }
+
+      onOpenStudio({
+        prompt: parsed.prompt ?? 'Design a cinematic 30s product launch video from this brief',
+        formatId: parsed.formatId ?? 'wide',
+        duration: typeof parsed.duration === 'number' ? parsed.duration : 30,
+        context: content,
+      });
+    } catch {
+      onOpenStudio({
+        prompt: 'Design a cinematic 30s product launch video from this brief',
+        formatId: 'wide',
+        duration: 30,
+        context: content,
+      });
+    } finally {
+      setStudioExtracting(false);
+    }
+  }
 
   async function send() {
     const text = input.trim();
@@ -1464,6 +1536,23 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
                 text-[11px] text-nv-text outline-none focus:border-accent transition-fast
                 resize-none placeholder:text-nv-faint"
             />
+            {onOpenStudio && !busy && input.trim() && (
+              <button
+                onClick={openInStudio}
+                disabled={studioExtracting}
+                title="Open this content in Studio as a video"
+                className="flex items-center gap-1 text-[10px] px-2 py-1.5 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-fast shrink-0 font-mono disabled:opacity-50"
+              >
+                {studioExtracting ? (
+                  <span className="w-2.5 h-2.5 rounded-full border border-accent/30 border-t-accent animate-spin" />
+                ) : (
+                  <svg viewBox="0 0 10 10" fill="none" className="w-2.5 h-2.5">
+                    <path d="M5 1l.9 2.7H8.5l-2.3 1.7.9 2.7L5 6.7l-2.2 1.4.9-2.7L1.5 3.7h2.6z" fill="currentColor"/>
+                  </svg>
+                )}
+                Studio
+              </button>
+            )}
             {busy ? (
               <button
                 onClick={stop}

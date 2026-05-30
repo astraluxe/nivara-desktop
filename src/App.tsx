@@ -26,6 +26,13 @@ import { supabase } from "./lib/supabase";
 
 const LAST_OPEN_KEY = "nv-last-open";
 
+interface StudioRequest {
+  prompt: string;
+  formatId: string;
+  duration: number;
+  context: string;
+}
+
 interface MissedRun {
   id: string;
   automation_id: string;
@@ -58,6 +65,12 @@ function AppShell() {
   const [canvasFlow, setCanvasFlow] = useState<{ nodes: Node[]; edges: Edge[] } | null>(null);
   const [missedRuns, setMissedRuns] = useState<MissedRun[]>([]);
   const [meshActive, setMeshActive] = useState(false);
+  const [studioRequest, setStudioRequest] = useState<StudioRequest | null>(null);
+
+  function handleOpenStudio(req: StudioRequest) {
+    setStudioRequest(req);
+    setActiveModule('studio');
+  }
 
   function handleViewOnCanvas(nodes: Node[], edges: Edge[]) {
     setCanvasFlow({ nodes, edges });
@@ -157,13 +170,13 @@ function AppShell() {
           {activeModule === "home"       && <HomeModule onNavigate={setActiveModule} onStartTour={() => setShowTour(true)} />}
           {activeModule === "automation" && <AutomationModule canvasFlow={canvasFlow} onCanvasFlowConsumed={() => setCanvasFlow(null)} />}
           {activeModule === "coder"      && <CoderModule />}
-          {activeModule === "krew"    && <KrewModule onViewOnCanvas={handleViewOnCanvas} onOpenAutomations={() => setActiveModule('automation')} />}
+          {activeModule === "krew"    && <KrewModule onViewOnCanvas={handleViewOnCanvas} onOpenAutomations={() => setActiveModule('automation')} onOpenStudio={handleOpenStudio} />}
           {activeModule === "connect" && <ConnectApps />}
           {activeModule === "models"  && <ModelsModule />}
           {activeModule === "vault"   && <VaultModule />}
           {activeModule === "guard"   && <GuardModule />}
           {activeModule === "mesh"    && <MeshModule onSessionChange={setMeshActive} />}
-          {activeModule === "studio"  && <StudioModule />}
+          {activeModule === "studio"  && <StudioModule initialRequest={studioRequest} onRequestConsumed={() => setStudioRequest(null)} />}
           {activeModule === "info"     && <InfoModule />}
           {activeModule === "account"  && <AccountPanel />}
           {activeModule === "settings" && <SettingsModule />}
