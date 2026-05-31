@@ -156,6 +156,57 @@ function renderInline(text: string): React.ReactNode[] {
   return result;
 }
 
+function TableBlock({ mdTable, headers, aligns, rows }: {
+  mdTable: string;
+  headers: string[];
+  aligns: string[];
+  rows: string[][];
+}) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="my-2 rounded-lg border border-nv-border overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-1 bg-nv-surface2 border-b border-nv-border">
+        <span className="text-[9px] font-mono text-nv-faint uppercase tracking-wide">table</span>
+        <button
+          onClick={() => navigator.clipboard.writeText(mdTable).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1800); })}
+          className="text-[10px] text-nv-faint hover:text-nv-muted transition-fast font-mono flex items-center gap-1"
+        >
+          {copied
+            ? <><span className="text-emerald-400">✓</span> copied</>
+            : <><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> copy</>
+          }
+        </button>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-[11px] border-collapse">
+          <thead>
+            <tr className="bg-nv-surface2/50">
+              {headers.map((h, hi) => (
+                <th key={hi} className="px-3 py-1.5 font-semibold text-nv-text border-b border-nv-border whitespace-nowrap"
+                  style={{ textAlign: aligns[hi] as React.CSSProperties['textAlign'] }}>
+                  {renderInline(h)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, ri) => (
+              <tr key={ri} className={ri % 2 === 0 ? '' : 'bg-nv-surface/40'}>
+                {row.map((cell, ci) => (
+                  <td key={ci} className="px-3 py-1.5 text-nv-muted border-b border-nv-border/50 last:border-b-0"
+                    style={{ textAlign: (aligns[ci] ?? 'left') as React.CSSProperties['textAlign'] }}>
+                    {renderInline(cell)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function renderMarkdown(text: string): React.ReactNode {
   const lines = text.split('\n');
   const els: React.ReactNode[] = [];
@@ -171,6 +222,37 @@ function renderMarkdown(text: string): React.ReactNode {
       i++; continue;
     }
     if (line.match(/^---+$/)) { els.push(<hr key={i} className="border-nv-border my-2" />); i++; continue; }
+    // Markdown table: collect all pipe-starting lines, render if separator row present
+    if (line.trimStart().startsWith('|')) {
+      const tableLines: string[] = [];
+      while (i < lines.length && lines[i].trimStart().startsWith('|')) {
+        tableLines.push(lines[i]);
+        i++;
+      }
+      const isSeparator = (s: string) => /^\|[\s\-:|]+\|/.test(s.trim());
+      if (tableLines.length >= 2 && isSeparator(tableLines[1])) {
+        const parseCells = (row: string) =>
+          row.split('|').slice(1, -1).map(c => c.trim());
+        const headers = parseCells(tableLines[0]);
+        const aligns  = parseCells(tableLines[1]).map(a =>
+          a.startsWith(':') && a.endsWith(':') ? 'center' : a.endsWith(':') ? 'right' : 'left'
+        );
+        const rows = tableLines.slice(2).map(parseCells);
+        const tKey = `tbl-${i}`;
+        // Build markdown text for clipboard copy
+        const mdSep   = '| ' + headers.map((_, hi) => (aligns[hi] === 'center' ? ':---:' : aligns[hi] === 'right' ? '---:' : '---')).join(' | ') + ' |';
+        const mdTable = ['| ' + headers.join(' | ') + ' |', mdSep, ...rows.map(r => '| ' + r.join(' | ') + ' |')].join('\n');
+        els.push(
+          <TableBlock key={tKey} mdTable={mdTable} headers={headers} aligns={aligns} rows={rows} />
+        );
+        continue;
+      }
+      // Not a real table — render as plain text
+      for (const tl of tableLines) {
+        els.push(<p key={tl + Math.random()} className="mb-0.5 font-mono text-[11px]">{tl}</p>);
+      }
+      continue;
+    }
     if (line.match(/^\s*[-*]\s+/)) {
       const items: React.ReactNode[] = [];
       while (i < lines.length && lines[i].match(/^\s*[-*]\s+/)) {
@@ -231,14 +313,26 @@ function DelegationBubble({ agentKey, content, streaming }: { agentKey: string; 
   const agent = AGENT_BY_KEY[agentKey];
   return (
     <div className="my-3">
+      {/* "called by boss" label */}
+      <div className="flex items-center gap-1.5 mb-2 ml-0.5">
+        <span className="text-[9px] font-mono text-nv-faint uppercase tracking-wide">Arjun.Boss called</span>
+        <svg width="8" height="8" viewBox="0 0 10 10" fill="none" className="text-accent shrink-0">
+          <path d="M2 5h6M5 2l3 3-3 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      </div>
       <div className="flex items-center gap-2 mb-2">
         <div className={`w-7 h-7 rounded-md flex items-center justify-center text-[10px] font-bold shrink-0 ${agent ? CATEGORY_COLOR[agent.category] : 'bg-accent/20 text-accent'}`}>
           {agent ? agentInitials(agent) : agentKey.slice(0, 2).toUpperCase()}
         </div>
         <div className="flex flex-col">
-          <span className="text-[13px] font-semibold text-nv-text leading-tight">
-            {agent ? agentHandle(agent) : agentKey}
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[13px] font-semibold text-nv-text leading-tight">
+              {agent ? agentHandle(agent) : agentKey}
+            </span>
+            {streaming && (
+              <span className="text-[9px] font-mono text-accent animate-pulse">working…</span>
+            )}
+          </div>
           {agent?.description && (
             <span className="text-[10px] text-nv-faint leading-tight">{agent.description}</span>
           )}
@@ -818,16 +912,40 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
 
   const [termApproval, setTermApproval] = useState<{ command: string; resolve: (ok: boolean) => void } | null>(null);
   const [studioExtracting, setStudioExtracting] = useState(false);
+  const [attachedFiles, setAttachedFiles] = useState<{ name: string; content: string }[]>([]);
+  const [braveNudge, setBraveNudge] = useState(false);
 
-  const stopRef         = useRef(false);
-  const bottomRef       = useRef<HTMLDivElement>(null);
-  const callIdRef       = useRef(0);
-  const sidRef          = useRef<string | null>(sessionId);
-  const freshSessionRef = useRef<string | null>(null);
-  sidRef.current        = sessionId;
+  const stopRef            = useRef(false);
+  const bottomRef          = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const atBottomRef        = useRef(true);
+  const callIdRef          = useRef(0);
+  const sidRef             = useRef<string | null>(sessionId);
+  const freshSessionRef    = useRef<string | null>(null);
+  sidRef.current           = sessionId;
 
-  // Scroll to bottom on new messages
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+
+  function scrollToBottom() {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    atBottomRef.current = true;
+    setShowScrollBtn(false);
+  }
+
+  function handleScroll() {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 60;
+    atBottomRef.current = nearBottom;
+    setShowScrollBtn(!nearBottom);
+  }
+
+  // Auto-scroll only when user is already at the bottom
+  useEffect(() => {
+    if (atBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages]);
 
   // Load session messages when sessionId changes
   useEffect(() => {
@@ -892,6 +1010,21 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
     return tools;
   }, [creds, agent.key, agent.category]);
 
+  function sanitiseError(raw: unknown): string {
+    const msg = raw instanceof Error ? raw.message : String(raw);
+    // Network / connectivity errors — hide URL, API key, provider name
+    if (/sending request|connect(ion)?|network|timeout|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|failed to fetch/i.test(msg))
+      return 'Connection failed. Please check your internet connection and try again.';
+    if (/401|unauthori[sz]ed|invalid.*key|api.?key/i.test(msg))
+      return 'Invalid API key. Go to Connect Apps and check your key.';
+    if (/429|rate.?limit|quota/i.test(msg))
+      return 'API rate limit reached. Please wait a moment and try again.';
+    if (/500|502|503|504|server.?error|internal.?error/i.test(msg))
+      return 'The AI service is temporarily unavailable. Please try again shortly.';
+    // Strip any URL or API key that leaked through
+    return msg.replace(/https?:\/\/[^\s)]+/g, '[service]').replace(/key=[A-Za-z0-9_-]{20,}/g, 'key=[hidden]');
+  }
+
   // Stream one AI turn — returns full response text
   async function streamTurn(
     msgs: { role: string; content: string }[],
@@ -919,21 +1052,34 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
     }
 
     return new Promise<string>(async (resolve, reject) => {
+      let stallTimer: ReturnType<typeof setTimeout> | null = null;
+      const resetStall = () => {
+        if (stallTimer) clearTimeout(stallTimer);
+        stallTimer = setTimeout(() => {
+          done.cleanup();
+          reject(new Error('Response stopped. Please check your connection and try again.'));
+        }, 30_000);
+      };
+
       const u1 = await listen<{ id: string; text: string }>('krew-chunk', (e) => {
         if (e.payload.id !== callId) return;
         fullText += e.payload.text;
         onChunk(e.payload.text);
+        resetStall();
       });
       const u2 = await listen<{ id: string }>('krew-done', (e) => {
         if (e.payload.id !== callId) return;
+        if (stallTimer) clearTimeout(stallTimer);
         done.cleanup(); resolve(fullText);
       });
       const u3 = await listen<{ id: string; error: string }>('krew-error', (e) => {
         if (e.payload.id !== callId) return;
-        done.cleanup(); reject(new Error(e.payload.error));
+        if (stallTimer) clearTimeout(stallTimer);
+        done.cleanup(); reject(new Error(sanitiseError(e.payload.error)));
       });
 
-      done.cleanup = () => { u1(); u2(); u3(); };
+      done.cleanup = () => { u1(); u2(); u3(); if (stallTimer) clearTimeout(stallTimer); };
+      resetStall(); // start stall timer immediately
 
       invoke('krew_ai_stream', {
         callId, mode, systemPrompt, messages: msgs,
@@ -1004,7 +1150,7 @@ The prompt must be production-ready — specific enough for a motion designer to
           });
           const u3 = await listen<{ id: string; error: string }>('krew-error', (e) => {
             if (e.payload.id !== callId) return;
-            done.cleanup(); reject(new Error(e.payload.error));
+            done.cleanup(); reject(new Error(sanitiseError(e.payload.error)));
           });
           done.cleanup = () => { u1(); u2(); u3(); };
           invoke('krew_ai_stream', {
@@ -1042,21 +1188,36 @@ The prompt must be production-ready — specific enough for a motion designer to
 
   async function send() {
     const text = input.trim();
-    if (!text || busy) return;
+    if ((!text && attachedFiles.length === 0) || busy) return;
     setInput('');
     setBusy(true);
     stopRef.current = false;
 
+    // Capture and clear attached files
+    const currentFiles = attachedFiles;
+    setAttachedFiles([]);
+
+    // Build file block injected into the API — no size limit, full content
+    const fileBlock = currentFiles.length > 0
+      ? currentFiles.map(f => `[File: ${f.name}]\n\`\`\`\n${f.content}\n\`\`\`\n\n`).join('')
+      : '';
+    const apiText = fileBlock + text;
+
+    // Chat bubble shows typed text + file name chips (not raw content)
+    const displayText = currentFiles.length > 0
+      ? (text ? text + '\n' : '') + currentFiles.map(f => `📎 ${f.name}`).join('  ')
+      : text;
+
     // Ensure session exists
     let sid = sidRef.current;
     if (!sid) {
-      sid = await krewDb.newSession(text.slice(0, 40), mode, agent.key, localModel).catch(() => null);
+      sid = await krewDb.newSession((text || currentFiles[0]?.name || 'File').slice(0, 40), mode, agent.key, localModel).catch(() => null);
       if (sid) { freshSessionRef.current = sid; onSessionCreated(sid); sidRef.current = sid; }
     }
 
-    // Add user message to display
-    addMsg({ role: 'user', content: text });
-    if (sid) krewDb.saveMessage(sid, 'user', text).catch(() => {});
+    // Add user message to display (typed text + file names only)
+    addMsg({ role: 'user', content: displayText });
+    if (sid) krewDb.saveMessage(sid, 'user', displayText).catch(() => {});
 
     const tools      = getActiveTools();
     // Inject cross-session memories into system prompt
@@ -1078,7 +1239,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     let history: { role: string; content: string }[] = messages
       .filter((m) => m.role === 'user' || m.role === 'assistant')
       .map((m) => ({ role: m.role, content: m.content }));
-    history.push({ role: 'user', content: text });
+    history.push({ role: 'user', content: apiText }); // full file content goes to AI, not display
 
     // Compress if needed
     if (sid) history = await compressIfNeeded(history, sid);
@@ -1104,9 +1265,10 @@ The prompt must be production-ready — specific enough for a motion designer to
           (chunk) => {
             stepText += chunk;
             totalChars += chunk.length;
-            // Strip raw XML blocks from streaming display
+            // Strip raw XML blocks from streaming display (handle both <tool_call> and <tool_code>)
             const displayText = stepText
               .replace(/<tool_call>[\s\S]*/g, '')
+              .replace(/<tool_code>[\s\S]*/g, '')
               .replace(/CHOICES_BLOCK:[\s\S]*/g, '')
               .trim();
             updateLastMsg(displayText);
@@ -1115,38 +1277,38 @@ The prompt must be production-ready — specific enough for a motion designer to
 
         if (stopRef.current) break;
 
-        // Check for tool call
-        const match = fullResponse.match(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/);
+        // Check for tool call — handle <tool_call> and <tool_code> (model uses both), plus unclosed tags
+        const OPEN_TAGS  = ['<tool_call>', '<tool_code>'];
+        const CLOSE_TAGS = ['</tool_call>', '</tool_code>'];
+        let match: RegExpMatchArray | null =
+          fullResponse.match(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/) ??
+          fullResponse.match(/<tool_code>\s*([\s\S]*?)\s*<\/tool_code>/);
         if (!match) {
-          // Empty response = API key issue or safety block
-          const displayResponse = fullResponse.trim() || "No response received. Go to Connect Apps and check your API key, then try again.";
+          const openTag = OPEN_TAGS.find(t => fullResponse.includes(t));
+          if (openTag) {
+            const afterTag = fullResponse.slice(fullResponse.indexOf(openTag) + openTag.length).trim();
+            // Strip closing tag if present but malformed, or handle unclosed
+            const clean = CLOSE_TAGS.reduce((s, t) => s.replace(t, ''), afterTag).trim();
+            if (clean.startsWith('{')) match = ['', clean] as unknown as RegExpMatchArray;
+          }
+        }
+        if (!match) {
+          // Strip any partial/orphaned tool block before showing to user
+          const displayResponse = fullResponse
+            .replace(/<tool_call>[\s\S]*/g, '')
+            .replace(/<tool_code>[\s\S]*/g, '')
+            .trim() || "No response received. Go to Connect Apps and check your API key, then try again.";
           finaliseLastMsg(displayResponse);
           if (sid) krewDb.saveMessage(sid, 'assistant', fullResponse).catch(() => {});
           history.push({ role: 'assistant', content: fullResponse });
 
-          // Self-reflection pass (only for substantive responses)
-          if (fullResponse.length > 300 && !stopRef.current) {
-            setAgentStep('Reflecting…');
-            const reflectMsgs = [
-              ...history,
-              { role: 'user', content: 'Review your answer above. If it contains errors or is missing something important, provide a corrected version. Otherwise reply with exactly: [LGTM]' },
-            ];
-            try {
-              let revised = '';
-              const revResult = await streamTurn(reflectMsgs, systemPrt, (chunk) => { revised += chunk; });
-              if (!revResult.startsWith('[LGTM]') && revResult.trim().length > 0) {
-                finaliseLastMsg(revResult);
-                if (sid) krewDb.saveMessage(sid, 'assistant', revResult).catch(() => {});
-              }
-            } catch { /* ignore reflection errors */ }
-          }
-
           break;
         }
 
-        // Preserve any planning prose Boss wrote before the <tool_call> tag
+        // Preserve any planning prose Boss wrote before the tool call tag
         const proseBeforeTool = stepText
           .replace(/<tool_call>[\s\S]*/g, '')
+          .replace(/<tool_code>[\s\S]*/g, '')
           .replace(/CHOICES_BLOCK:[\s\S]*/g, '')
           .trim();
         if (proseBeforeTool) {
@@ -1160,13 +1322,43 @@ The prompt must be production-ready — specific enough for a motion designer to
           removeLastMsg();
         }
 
-        let parsed: { tool: string; args: Record<string, unknown> } | null = null;
-        try { parsed = JSON.parse(match[1]); } catch {
-          addMsg({ role: 'assistant', content: 'I tried to use a tool but produced invalid JSON. Let me try again.' });
+        let parsed: { tool: string; args?: Record<string, unknown>; [key: string]: unknown } | null = null;
+        const rawJson = match[1];
+        // Try increasingly lenient parsing strategies
+        parsed = (() => {
+          // 1. Direct parse
+          try { return JSON.parse(rawJson); } catch {}
+          // 2. Strip markdown fences the model sometimes wraps around JSON
+          const stripped = rawJson.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+          try { return JSON.parse(stripped); } catch {}
+          // 3. Extract outermost {...} block
+          const objMatch = stripped.match(/\{[\s\S]*\}/);
+          if (objMatch) { try { return JSON.parse(objMatch[0]); } catch {} }
+          // 4. Fix literal newlines inside string values (model writes multi-line task)
+          const fixed = stripped.replace(/"([^"\\]*(\\.[^"\\]*)*)"/g, (m) =>
+            m.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')
+          );
+          try { return JSON.parse(fixed); } catch {}
+          // 5. Regex field extraction — last resort when JSON is structurally broken
+          const tool      = stripped.match(/"tool"\s*:\s*"([^"]+)"/)?.[1];
+          const agentKey  = stripped.match(/"agent_key"\s*:\s*"([^"]+)"/)?.[1];
+          const taskMatch = stripped.match(/"task"\s*:\s*"([\s\S]+?)"\s*[,}]/);
+          const task      = taskMatch?.[1]?.replace(/\\n/g, '\n');
+          if (tool) return { tool, ...(agentKey ? { agent_key: agentKey } : {}), ...(task ? { task } : {}) };
+          return null;
+        })();
+        if (!parsed) {
+          addMsg({ role: 'assistant', content: 'I tried to use a tool but the response could not be parsed. Please try rephrasing your request.' });
           break;
         }
 
-        const { tool, args } = parsed!;
+        const { tool } = parsed!;
+        // Params are at root level (flat format) — fall back to nested args if present
+        const rootParams = { ...parsed! } as Record<string, unknown>;
+        delete rootParams.tool;
+        const args: Record<string, unknown> = (parsed!.args && typeof parsed!.args === 'object')
+          ? { ...rootParams, ...(parsed!.args as Record<string, unknown>) }
+          : rootParams;
         setAgentStep(`Running…`);
         setAgentTool(tool);
 
@@ -1179,6 +1371,7 @@ The prompt must be production-ready — specific enough for a motion designer to
         // Execute the tool (Boss delegation gets special handling)
         let toolResult = '';
         let isDelegation = false;
+        let delegationKey = '';  // agent key for delegations — used when saving to DB
         try {
           if (tool === 'delegate_to_agent') {
             const targetKey   = String(args.agent_key ?? '');
@@ -1188,6 +1381,7 @@ The prompt must be production-ready — specific enough for a motion designer to
               toolResult = `Unknown agent key: "${targetKey}". Valid keys are found in krewAgents.ts.`;
             } else {
               isDelegation = true;
+              delegationKey = targetKey;
               setAgentStep(`Delegating to ${agentHandle(targetAgent)}…`);
               addMsg({ role: 'delegation', content: '', toolName: targetKey, streaming: true });
               const delegateMemories = await krewMemoryDb.getAll(targetKey).catch(() => [] as KrewMemory[]);
@@ -1195,17 +1389,69 @@ The prompt must be production-ready — specific enough for a motion designer to
                 ? '\n\n## Your memory\n' + delegateMemories.map((m) => `- ${m.key}: ${m.value}`).join('\n')
                 : '';
               const delegateSystem = targetAgent.systemPrompt + delegateMemBlock + userBlock + '\n\n' + buildKrewSystemPrompt(getActiveTools());
-              const delegateMsgs   = [{ role: 'user', content: task }];
-              let delegateText = '';
-              toolResult = await streamTurn(delegateMsgs, delegateSystem, (chunk) => {
-                delegateText += chunk;
-                // Strip CHOICES_BLOCK from live display — empty = shows "Thinking..." dots
-                const displayText = delegateText.replace(/CHOICES_BLOCK:[\s\S]*/g, '').trim();
-                updateLastMsg(displayText);
-              });
-              const { cleanContent: delegateClean, choices: delegateChoices } = extractChoices(toolResult);
+              // Mini ReAct loop — lets delegated agents call web_search and other tools
+              const delegateMsgsHist = [{ role: 'user', content: task }];
+              let delegateAccum = '';   // clean prose accumulated across turns
+              let delegateFinalResp = '';
+              const DELEGATE_MAX = 5;
+              for (let ds = 0; ds < DELEGATE_MAX; ds++) {
+                let stepText = '';
+                delegateFinalResp = await streamTurn(delegateMsgsHist, delegateSystem, (chunk) => {
+                  stepText += chunk;
+                  const cleanStep = stepText
+                    .replace(/<tool_call>[\s\S]*/g, '')
+                    .replace(/<tool_code>[\s\S]*/g, '')
+                    .replace(/CHOICES_BLOCK:[\s\S]*/g, '')
+                    .trim();
+                  updateLastMsg(delegateAccum ? delegateAccum + '\n\n' + cleanStep : cleanStep);
+                });
+                // Extract prose before any tool call tag
+                const prosePart = delegateFinalResp
+                  .replace(/<tool_call>[\s\S]*/g, '')
+                  .replace(/<tool_code>[\s\S]*/g, '')
+                  .replace(/CHOICES_BLOCK:[\s\S]*/g, '')
+                  .trim();
+                if (prosePart) delegateAccum = delegateAccum ? delegateAccum + '\n\n' + prosePart : prosePart;
+                // Check for tool call
+                let dm = delegateFinalResp.match(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/) ??
+                  delegateFinalResp.match(/<tool_code>\s*([\s\S]*?)\s*<\/tool_code>/);
+                if (!dm) {
+                  const ot = ['<tool_call>','<tool_code>'].find(t => delegateFinalResp.includes(t));
+                  if (ot) {
+                    const after = delegateFinalResp.slice(delegateFinalResp.indexOf(ot) + ot.length).trim();
+                    const cl = ['</tool_call>','</tool_code>'].reduce((s,t) => s.split(t).join(''), after).trim();
+                    if (cl.startsWith('{')) dm = ['', cl] as unknown as RegExpMatchArray;
+                  }
+                }
+                if (!dm) break; // no tool call — final answer
+                // Parse tool call
+                const dRaw = dm[1];
+                let dParsed: Record<string, unknown> | null = null;
+                try {
+                  dParsed = (() => {
+                    try { return JSON.parse(dRaw) as Record<string, unknown>; } catch {}
+                    const s = dRaw.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'').trim();
+                    try { return JSON.parse(s) as Record<string, unknown>; } catch {}
+                    const m2 = s.match(/\{[\s\S]*\}/); if (m2) { try { return JSON.parse(m2[0]) as Record<string, unknown>; } catch {} }
+                    return null;
+                  })();
+                } catch {}
+                if (!dParsed) break;
+                const dTool = String(dParsed.tool ?? '');
+                const dRoot = { ...dParsed } as Record<string, unknown>; delete dRoot.tool;
+                const dArgs = (dParsed.args && typeof dParsed.args === 'object')
+                  ? { ...dRoot, ...(dParsed.args as Record<string, unknown>) } : dRoot;
+                updateLastMsg((delegateAccum || '') + '\n\n*Searching…*');
+                let dResult = '';
+                try {
+                  dResult = await executeTool(dTool, dArgs, creds, requestTerminalApproval, targetKey, user?.id ?? '');
+                  if (dTool === 'web_search' && !creds.brave?.api_key) setBraveNudge(true);
+                } catch (e) { dResult = `Error: ${e}`; }
+                delegateMsgsHist.push({ role: 'assistant', content: delegateFinalResp });
+                delegateMsgsHist.push({ role: 'user', content: `<tool_result>${dResult}</tool_result>` });
+              }
+              const { cleanContent: delegateClean, choices: delegateChoices } = extractChoices(delegateAccum || delegateFinalResp);
               toolResult = delegateClean;
-              // If the whole response was a CHOICES_BLOCK, show a context line in the bubble
               const bubbleContent = delegateClean.trim() ||
                 (delegateChoices ? `Here are ${delegateChoices.choices.length} variants — pick the one you want:` : '(no response)');
               setMessages(prev => {
@@ -1221,10 +1467,11 @@ The prompt must be production-ready — specific enough for a motion designer to
             }
           } else {
             toolResult = await executeTool(tool, args, creds, requestTerminalApproval, agent.key, user?.id ?? '');
-            // Refresh memories if they changed
             if (tool === 'save_memory' || tool === 'forget_memory') {
               krewMemoryDb.getAll(agent.key).then(setAgentMemories).catch(() => {});
             }
+            // Show Brave nudge when web search runs without a Brave key (DuckDuckGo fallback gives stale data)
+            if (tool === 'web_search' && !creds.brave?.api_key) setBraveNudge(true);
           }
         } catch (e) {
           toolResult = `Error: ${e}`;
@@ -1232,7 +1479,12 @@ The prompt must be production-ready — specific enough for a motion designer to
 
         // Show result bubble (skip for delegation — it already has its own bubble)
         if (!isDelegation) addMsg({ role: 'tool_result', content: toolResult, toolName: tool });
-        if (sid) krewDb.saveMessage(sid, 'tool_result', toolResult, tool).catch(() => {});
+        // Save delegations with role 'delegation' + agent key so they restore correctly on reload
+        if (isDelegation) {
+          if (sid) krewDb.saveMessage(sid, 'delegation', toolResult, delegationKey).catch(() => {});
+        } else {
+          if (sid) krewDb.saveMessage(sid, 'tool_result', toolResult, tool).catch(() => {});
+        }
 
         // Add to history for next AI turn
         history.push({ role: 'assistant', content: fullResponse });
@@ -1247,7 +1499,7 @@ The prompt must be production-ready — specific enough for a motion designer to
         trackTokenUsage('krew', totalChars);
       }
     } catch (e: unknown) {
-      finaliseLastMsg(`Error: ${e instanceof Error ? e.message : String(e)}`);
+      finaliseLastMsg(sanitiseError(e));
     } finally {
       setBusy(false);
       setAgentStep(null);
@@ -1397,8 +1649,30 @@ The prompt must be production-ready — specific enough for a motion designer to
           </div>
         )}
 
+        {/* Brave nudge banner — shown after a web search without Brave key */}
+        {braveNudge && (
+          <div className="mx-3 mb-1 flex items-start gap-2.5 px-3 py-2.5 rounded-xl border border-orange-500/25 bg-orange-500/8">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-orange-400 shrink-0 mt-0.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+            </svg>
+            <div className="flex-1 min-w-0">
+              <p className="text-[11px] font-semibold text-orange-300 leading-tight">Live search not active</p>
+              <p className="text-[10px] text-nv-faint mt-0.5 leading-relaxed">Results are from a basic fallback — data may be months out of date. Connect Brave Search for real-time results. Free tier includes 2,000 searches/month.</p>
+            </div>
+            <button
+              onClick={() => { setBraveNudge(false); onOpenConnectApps?.(); }}
+              className="shrink-0 text-[10px] font-mono px-2.5 py-1 rounded-lg bg-orange-500/20 text-orange-300 hover:bg-orange-500/30 border border-orange-500/30 transition-fast whitespace-nowrap"
+            >Connect Brave →</button>
+          </div>
+        )}
+
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-4 py-4">
+        <div
+          ref={scrollContainerRef}
+          onScroll={handleScroll}
+          className="flex-1 overflow-y-auto px-4 py-4 relative"
+          style={{ pointerEvents: 'auto' }}
+        >
           {messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full gap-3 select-none">
               <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-[14px] font-bold ${CATEGORY_COLOR[agent.category]}`}>
@@ -1465,12 +1739,43 @@ The prompt must be production-ready — specific enough for a motion designer to
           )}
         </div>
 
+        {/* Scroll to bottom button */}
+        {showScrollBtn && (
+          <div className="flex justify-center pb-1 shrink-0">
+            <button
+              onClick={scrollToBottom}
+              className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-nv-surface border border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40 text-[11px] font-mono shadow-sm transition-fast"
+            >
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M5 1v7M1.5 5.5L5 9l3.5-3.5"/>
+              </svg>
+              Scroll to bottom
+            </button>
+          </div>
+        )}
+
         {/* Input */}
         <div className="p-3 border-t border-nv-border shrink-0">
           {voiceErr && (
             <p className="text-[10px] text-red-400 mb-1.5 px-0.5">{voiceErr}
               <button className="ml-1.5 underline opacity-60" onClick={() => { setVoiceErr(null); setVoiceStatus('idle'); }}>dismiss</button>
             </p>
+          )}
+          {attachedFiles.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {attachedFiles.map((f, i) => (
+                <div key={i} className="flex items-center gap-1.5 px-2 py-1 bg-accent/10 border border-accent/25 rounded-lg">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-accent shrink-0">
+                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+                  </svg>
+                  <span className="text-[10px] font-mono text-accent max-w-[150px] truncate">{f.name}</span>
+                  <button
+                    onClick={() => setAttachedFiles(prev => prev.filter((_, j) => j !== i))}
+                    className="text-accent/50 hover:text-accent transition-fast text-[12px] leading-none ml-0.5"
+                  >×</button>
+                </div>
+              ))}
+            </div>
           )}
           <div className="flex gap-2 items-end">
             {/* Mic button */}
@@ -1499,19 +1804,23 @@ The prompt must be production-ready — specific enough for a motion designer to
             {/* File attach */}
             <input
               type="file"
+              multiple
               accept=".txt,.md,.csv,.json,.ts,.tsx,.js,.jsx,.py,.rs,.go,.java,.html,.css,.xml,.yaml,.yml,.toml,.sh,.sql,.log"
               style={{ display: 'none' }}
               id="krew-file-attach"
               onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (!file) return;
-                const reader = new FileReader();
-                reader.onload = (ev) => {
-                  const content = ev.target?.result as string;
-                  const header = `[File: ${file.name}]\n\`\`\`\n${content.slice(0, 12000)}${content.length > 12000 ? '\n…(truncated)' : ''}\n\`\`\`\n\n`;
-                  setInput((prev: string) => header + prev);
-                };
-                reader.readAsText(file);
+                const files = Array.from(e.target.files ?? []);
+                if (!files.length) return;
+                let pending = files.length;
+                const results: { name: string; content: string }[] = new Array(files.length);
+                files.forEach((file, i) => {
+                  const reader = new FileReader();
+                  reader.onload = (ev) => {
+                    results[i] = { name: file.name, content: ev.target?.result as string ?? '' };
+                    if (--pending === 0) setAttachedFiles(prev => [...prev, ...results]);
+                  };
+                  reader.readAsText(file);
+                });
                 e.target.value = '';
               }}
             />

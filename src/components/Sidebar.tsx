@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { useAuth } from "../contexts/AuthContext";
+import FeedbackModal from "./FeedbackModal";
 
 export type Module = "home" | "automation" | "coder" | "krew" | "connect" | "models" | "vault" | "guard" | "mesh" | "studio" | "head" | "info" | "account" | "settings";
 
@@ -195,6 +196,7 @@ export default function Sidebar({ activeModule, onModuleChange, meshSessionActiv
   const { profile, user } = useAuth();
   const { paper, toggle } = useTheme();
   const [expanded, setExpanded] = useState(false);
+  const [showFeedback, setShowFeedback] = useState(false);
   const expandTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const email = profile?.email ?? user?.email ?? "";
@@ -464,6 +466,18 @@ export default function Sidebar({ activeModule, onModuleChange, meshSessionActiv
           </svg>
         </button>
 
+        {/* Feedback / Suggest */}
+        <button
+          title="Suggest or report"
+          onClick={() => setShowFeedback(true)}
+          aria-label="Suggest or report"
+          className="w-8 h-8 flex items-center justify-center rounded-lg transition-fast shrink-0 text-nv-muted hover:bg-nv-surface2 hover:text-nv-text"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+          </svg>
+        </button>
+
         {/* User avatar */}
         <button
           title="Account"
@@ -478,6 +492,8 @@ export default function Sidebar({ activeModule, onModuleChange, meshSessionActiv
           {initial}
         </button>
       </div>
+
+      {showFeedback && <FeedbackModal onClose={() => setShowFeedback(false)} />}
     </aside>
   );
 }

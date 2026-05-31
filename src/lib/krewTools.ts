@@ -66,6 +66,14 @@ export const SYSTEM_TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'get_exchange_rate',
+    description: 'Get a live currency exchange rate. Use this for any USD/INR, EUR/INR or other conversion — do NOT use web_search for exchange rates, always use this tool instead.',
+    parameters: {
+      base:   { type: 'string', description: 'Base currency code, e.g. "USD"', required: true },
+      target: { type: 'string', description: 'Target currency code, e.g. "INR"', required: true },
+    },
+  },
+  {
     name: 'save_memory',
     description: 'Save a persistent fact to your long-term memory. Recalled automatically in future sessions.',
     parameters: {
@@ -94,7 +102,7 @@ export const SYSTEM_TOOLS: ToolDef[] = [
 export const BOSS_TOOLS: ToolDef[] = [
   {
     name: 'delegate_to_agent',
-    description: 'Delegate a subtask to a specialist agent. ALWAYS use this for content, marketing, sales, code, automation, and visual tasks — do NOT handle these yourself. Valid agent_key values:\n- caption_writer → social media captions (LinkedIn, Instagram, Twitter)\n- email_marketer → email campaigns, drip sequences, subject lines\n- cold_outreach → cold email/DM templates for sales prospecting\n- blog_writer → blog posts and articles\n- content_planner → content calendars and content strategy\n- seo_agent → SEO copy, keywords, meta descriptions\n- ad_copywriter → ad copy (Facebook, Google, LinkedIn ads)\n- social_scheduler → posting schedules and platform strategy\n- researcher → market research, competitor analysis, data gathering\n- product_describer → product descriptions and landing page copy\n- coder → code writing, scripts, technical implementation\n- bug_hunter → debugging and error fixing\n- docs_writer → documentation and READMEs\n- data_analyst → data analysis and insights\n- proposal_writer → business proposals and pitches\n- rate_advisor → pricing strategy\n- translator → language translation\n- ops_agent → automation setup, listing automations, running/pausing automations, workflow management\n- automation_strategist → designing complex multi-step automation workflows\n- visual_creator → HTML/CSS visual assets: social banners, animated graphics, thumbnails, promo cards',
+    description: 'Delegate a subtask to a specialist agent. ALWAYS use this for content, marketing, sales, code, automation, and visual tasks — do NOT handle these yourself. Valid agent_key values:\n- caption_writer → social media captions (LinkedIn, Instagram, Twitter)\n- email_marketer → email campaigns, drip sequences, subject lines\n- cold_outreach → cold email/DM templates for sales prospecting\n- blog_writer → blog posts and articles\n- content_planner → content strategy, content calendars, growth content planning, organic marketing plan\n- seo_agent → SEO copy, keywords, meta descriptions\n- ad_copywriter → ad copy, paid acquisition strategy (Facebook, Google, LinkedIn ads)\n- social_scheduler → posting schedules and platform strategy\n- researcher → market research, growth strategy research, user acquisition research, competitor analysis, data gathering — USE THIS FIRST for any strategy question\n- competitor_watcher → deep competitor breakdowns, what competitors are doing for marketing, pricing and differentiation analysis\n- product_describer → product descriptions and landing page copy\n- coder → code writing, scripts, technical implementation\n- bug_hunter → debugging and error fixing\n- docs_writer → documentation and READMEs\n- data_analyst → data analysis and insights\n- proposal_writer → business proposals and pitches\n- cfo → ALL financial work: pricing strategy, revenue modelling, P&L, unit economics, affiliate commission structures, cost analysis, financial projections, profit breakdowns, budget planning — the dedicated CFO agent\n- translator → language translation\n- ops_agent → automation setup, listing automations, running/pausing automations, workflow management\n- automation_strategist → designing complex multi-step automation workflows\n- visual_creator → HTML/CSS visual assets: social banners, animated graphics, thumbnails, promo cards',
     parameters: {
       agent_key: { type: 'string', description: 'Exact agent key from the list above (e.g. "cold_outreach", "caption_writer").', required: true },
       task:      { type: 'string', description: 'A clear, self-contained task description with all context the specialist needs.', required: true },
@@ -489,15 +497,23 @@ export function buildKrewSystemPrompt(activeTools: ToolDef[]): string {
 ${toolDocs}
 
 ## How to use tools
-When you need a tool, respond with ONLY this XML block — nothing before or after it:
+When you need a tool, output ONLY this XML block — no text before it, no text after it:
 <tool_call>
-{"tool": "tool_name", "args": {"param1": "value1"}}
+{"tool": "tool_name", "param1": "value1", "param2": "value2"}
 </tool_call>
+
+Put all parameters directly in the JSON object alongside "tool". Do NOT nest them under "args". The tag is <tool_call> only — not <tool_code>, not a code block.
 
 Wait for the tool result before continuing. After receiving a result, if there are still remaining tasks that need tools, call the next tool IMMEDIATELY — do not stop to explain or ask the user anything. Only write your final answer after ALL required tool calls are complete. NEVER invent tool results — always use the actual output.
 
 ## Final answer
 When you have enough information to fully answer the user's request, respond normally in clear markdown. Do not include any <tool_call> block in the final answer.
+
+## Verify before stating
+For live figures: use the right tool once, then answer — never loop.
+- **Exchange rates** → always use the get_exchange_rate tool (e.g. base: "USD", target: "INR"). Never use web_search for this.
+- **API pricing / competitor prices** → attempt ONE web_search. If it returns no useful result, state your best estimate clearly labelled as an assumption.
+- If any tool fails, proceed immediately with a labelled assumption. Do NOT retry. Do NOT delegate to another agent. Always give a complete response.
 
 ## Guidelines
 - Think step by step before calling tools
@@ -597,6 +613,27 @@ export async function executeTool(
     const approved = await onTerminalApprovalNeeded(command);
     if (!approved) return 'User declined to run this command.';
     return await invoke<string>('krew_execute_command', { command });
+  }
+
+  if (toolName === 'get_exchange_rate') {
+    const base   = str(args.base).toUpperCase();
+    const target = str(args.target).toUpperCase();
+    try {
+      const raw  = await invoke<string>('krew_http_call', {
+        method:  'GET',
+        url:     `https://open.er-api.com/v6/latest/${base}`,
+        headers: { 'Accept': 'application/json' },
+        body:    null,
+      });
+      const data = JSON.parse(raw) as { result: string; rates?: Record<string, number>; time_last_update_utc?: string };
+      if (data.result === 'success' && data.rates?.[target] != null) {
+        const rate = data.rates[target];
+        return `Live exchange rate: 1 ${base} = ${rate} ${target} (as of ${data.time_last_update_utc ?? 'just now'}, source: open.er-api.com)`;
+      }
+      return `Could not fetch live rate for ${base}/${target}. Use an approximate rate and label it as an assumption.`;
+    } catch {
+      return `Could not fetch live rate for ${base}/${target}. Use an approximate rate and label it as an assumption.`;
+    }
   }
 
   if (toolName === 'web_search') {
