@@ -75,7 +75,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     );
 
-    return () => subscription.unsubscribe();
+    // Realtime profile sync — picks up payment/plan changes made on the website instantly
+    let realtimeChannel: ReturnType<typeof supabase.channel> | null = null;
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!session?.user) return;
+      const userId = session.user.id;
+      realtimeChannel = supabase
+        .channel(`profile:${userId}`)
+        .on(
+          'postgres_changes',
+          { event: 'UPDATE', schema: 'public', table: 'users', filter: `id=eq.${userId}` },
+          async () => {
+            try {
+              const p = await loadProfile(userId, session.user.email ?? '');
+              setProfile(p);
+            } catch { /* ignore */ }
+          }
+        )
+        .subscribe();
+    });
+
+    return () => {
+      subscription.unsubscribe();
+      realtimeChannel?.unsubscribe();
+    };
   }, []);
 
   const signIn = async (email: string, password: string) => {
