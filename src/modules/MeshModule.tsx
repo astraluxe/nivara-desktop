@@ -374,7 +374,7 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
                     value={roomCodeInput}
                     onChange={e => setRoomCodeInput(e.target.value.toUpperCase())}
                     onKeyDown={e => e.key === "Enter" && roomCodeInput.trim() && joinSession()}
-                    placeholder="Enter room code — e.g. NIVARA-XK9F2A"
+                    placeholder="Enter room code — e.g. ADRIS-XK9F2A"
                     spellCheck={false}
                     className="flex-1 px-3 py-2 rounded-lg border font-mono text-[12px] outline-none"
                     style={{ borderColor: "var(--nv-rule)", background: "var(--nv-bg)", color: "var(--nv-ink)" }}
