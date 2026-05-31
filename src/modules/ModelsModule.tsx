@@ -68,7 +68,7 @@ interface PullResponse {
 
 // Pull URL for when Vercel API routes are deployed (Phase 9).
 // Downloads are deferred until then — catalogue browsing is fully static/local.
-const PULL_URL = 'https://nivara.tech/api/models/pull';
+const PULL_URL = 'https://adris.tech/api/models/pull';
 
 const FILTER_LABELS: Record<string, string> = {
   all:       'All',
@@ -533,9 +533,9 @@ function ModelCard({
       {/* Pull command */}
       <div className="flex items-center gap-2 bg-nv-bg border border-nv-border rounded-lg px-3 py-1.5">
         <span className="text-accent text-[10px] font-mono shrink-0">$</span>
-        <code className="text-nv-muted text-[10px] font-mono flex-1">nivara pull {model.id}</code>
+        <code className="text-nv-muted text-[10px] font-mono flex-1">adris pull {model.id}</code>
         <button
-          onClick={() => navigator.clipboard.writeText(`nivara pull ${model.id}`)}
+          onClick={() => navigator.clipboard.writeText(`adris pull ${model.id}`)}
           className="text-[9px] text-nv-faint hover:text-nv-text transition-fast shrink-0 font-mono"
         >copy</button>
       </div>
@@ -762,12 +762,11 @@ export default function ModelsModule() {
     } catch {
       // Pull API not deployed yet — inform user how to get the model now
       alert(
-        `Direct downloads will be available with the adris.tech v1.0 release.\n\n` +
-        `To get this model now:\n` +
+        `Could not reach the download server. Check your internet connection and try again.\n\n` +
+        `If the problem continues, you can download this model manually:\n` +
         `  1. Install Ollama from ollama.com\n` +
         `  2. Run:  ollama pull ${model.id.replace(/-q4$/, '')}\n` +
-        `  3. Find the file in %USERPROFILE%\\.ollama\\models\\\n` +
-        `  4. Use the "Import model" button in My Models tab to register it.`
+        `  3. Use the "Import model" button in My Models to register it.`
       );
     }
   }
