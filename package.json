@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "bundle-exo": "node scripts/bundle-exo.js",
+    "tauri:build": "npm run bundle-exo && tauri build"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
