@@ -141,7 +141,7 @@ const DESKTOP_MODELS: RegistryModel[] = [
   { id:'qwen25-3b-q4', name:'Qwen 2.5 3B', creator:'Alibaba', params:'3B', quantization:'Q4_K_M', size_gb:2.0, ram_min_gb:4, ram_recommended_gb:4, context_length:32768, best_for:['coding','chat'], license:'Apache 2.0', gated:false, cpu_only:true, description:'Solid coding model for CPU-only devices. 4 GB RAM minimum.' },
   { id:'gemma2-2b-q4', name:'Gemma 2 2B', creator:'Google', params:'2B', quantization:'Q4_K_M', size_gb:1.5, ram_min_gb:2, ram_recommended_gb:3, context_length:8192, best_for:['quick','chat'], license:'Gemma', gated:true, cpu_only:true, description:'Tiny but capable. Runs on 2 GB RAM. Good for simple tasks on any laptop.' },
   { id:'qwen25-1b-q4', name:'Qwen 2.5 1.5B', creator:'Alibaba', params:'1.5B', quantization:'Q4_K_M', size_gb:1.0, ram_min_gb:2, ram_recommended_gb:2, context_length:32768, best_for:['quick'], license:'Apache 2.0', gated:false, cpu_only:true, description:'Runs on 2 GB RAM. Emails, summaries, quick replies — no GPU at all.' },
-  { id:'smollm2-1b-q4', name:'SmolLM2 1.7B', creator:'HuggingFace', params:'1.7B', quantization:'Q4_K_M', size_gb:1.1, ram_min_gb:2, ram_recommended_gb:2, context_length:8192, best_for:['quick'], license:'Apache 2.0', gated:false, cpu_only:true, description:'Built for on-device use. 1.1 GB file, no GPU, works on any machine.' },
+  { id:'smollm2-1b-q4', name:'SmolLM2 1.7B', creator:'HF Research', params:'1.7B', quantization:'Q4_K_M', size_gb:1.1, ram_min_gb:2, ram_recommended_gb:2, context_length:8192, best_for:['quick'], license:'Apache 2.0', gated:false, cpu_only:true, description:'Built for on-device use. 1.1 GB file, no GPU, works on any machine.' },
   { id:'llama32-1b-q4', name:'Llama 3.2 1B', creator:'Meta', params:'1B', quantization:'Q4_K_M', size_gb:0.8, ram_min_gb:2, ram_recommended_gb:2, context_length:131072, best_for:['quick'], license:'Llama 3.2', gated:true, cpu_only:true, description:'Meta ultra-tiny. 128K context window. Runs on any device with 2 GB RAM.' },
   { id:'tinyllama-1b-q4', name:'TinyLlama 1.1B', creator:'TinyLlama', params:'1.1B', quantization:'Q4_K_M', size_gb:0.7, ram_min_gb:2, ram_recommended_gb:2, context_length:2048, best_for:['quick','chat'], license:'Apache 2.0', gated:false, cpu_only:true, description:'Smallest model in the hub. 700 MB. Works on any laptop, any OS, no GPU.' },
 ];
@@ -230,7 +230,7 @@ function CompareTab({ installed, sysRam, ollamaOk }: {
         signal,
       });
 
-      if (!resp.ok || !resp.body) throw new Error(`Ollama returned ${resp.status}`);
+      if (!resp.ok || !resp.body) throw new Error(`Local AI engine returned ${resp.status}`);
 
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
@@ -380,7 +380,7 @@ function CompareTab({ installed, sysRam, ollamaOk }: {
             <button
               disabled={selected.length < 2 || !prompt.trim() || !ollamaOk}
               onClick={handleCompare}
-              title={!ollamaOk ? 'Ollama is not running' : selected.length < 2 ? 'Select at least 2 models' : ''}
+              title={!ollamaOk ? 'Local AI engine is not running' : selected.length < 2 ? 'Select at least 2 models' : ''}
               className="px-4 py-2 rounded-lg bg-accent text-white text-[11px] font-medium hover:bg-accent-dim transition-fast disabled:opacity-40 shrink-0"
             >
               {runMode === 'together' ? '▶ Run together' : runMode === 'sequential' ? '▶ Run one by one' : '▶ Compare'}
@@ -433,7 +433,7 @@ function CompareTab({ installed, sysRam, ollamaOk }: {
       {results.length === 0 && (
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center p-5">
           <p className="text-nv-faint text-[11px]">Select models above, type a prompt, and hit Compare.</p>
-          <p className="text-nv-faint text-[10px] font-mono opacity-60">Outputs are real — streamed from Ollama on your machine.</p>
+          <p className="text-nv-faint text-[10px] font-mono opacity-60">Outputs are real — streamed from local models on your machine.</p>
         </div>
       )}
     </div>
@@ -767,9 +767,7 @@ export default function ModelsModule() {
       alert(
         `Could not reach the download server. Check your internet connection and try again.\n\n` +
         `If the problem continues, you can download this model manually:\n` +
-        `  1. Install Ollama from ollama.com\n` +
-        `  2. Run:  ollama pull ${model.id.replace(/-q4$/, '')}\n` +
-        `  3. Use the "Import model" button in My Models to register it.`
+        `Try again in a moment. If the issue persists, contact hello@adris.tech`
       );
     }
   }
@@ -799,7 +797,7 @@ export default function ModelsModule() {
 
   async function handleRun(filename: string) {
     if (!ollamaOk) {
-      alert('Ollama is not running. Install Ollama from ollama.com, then try again.');
+      alert('Local AI engine is not running. Make sure adris.tech has finished setting up, then try again.');
       return;
     }
     await invoke('models_run', { modelFilename: filename }).catch(e => alert(`Could not start: ${e}`));
@@ -895,10 +893,10 @@ export default function ModelsModule() {
           />
         )}
 
-        {/* Ollama status */}
+        {/* Local AI engine status */}
         <div className={`flex items-center gap-1.5 text-[10px] font-mono ${ollamaOk ? 'text-emerald-400' : 'text-nv-faint'}`}>
           <span className={`w-1.5 h-1.5 rounded-full ${ollamaOk ? 'bg-emerald-400' : 'bg-nv-faint'}`} />
-          {ollamaOk ? 'Ollama ready' : 'Ollama offline'}
+          {ollamaOk ? 'Local AI ready' : 'Local AI offline'}
         </div>
       </div>
 
@@ -1148,8 +1146,8 @@ export default function ModelsModule() {
                 <p className="text-nv-faint text-[10px] font-mono">
                   {installed.length} model{installed.length > 1 ? 's' : ''} installed
                   {ollamaOk
-                    ? ' · Ollama ready — click Run to load into Coder'
-                    : ' · Install Ollama to run models locally'
+                    ? ' · Local AI ready — click Run to load into Coder'
+                    : ' · Local AI offline — restart the app to try again'
                   }
                 </p>
                 {!showImport && (
@@ -1185,7 +1183,7 @@ export default function ModelsModule() {
                     <div className="flex items-center gap-2 shrink-0">
                       <button
                         onClick={() => handleRun(m.filename)}
-                        title={ollamaOk ? 'Run this model in Coder' : 'Ollama not running'}
+                        title={ollamaOk ? 'Run this model in Coder' : 'Local AI engine offline'}
                         className={`text-[11px] px-3 py-1.5 rounded-lg transition-fast font-medium ${
                           ollamaOk
                             ? 'bg-accent text-white hover:bg-accent-dim'
