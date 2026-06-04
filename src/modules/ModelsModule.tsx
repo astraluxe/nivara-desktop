@@ -19,6 +19,7 @@ interface RegistryModel {
   gated: boolean;
   description: string;
   mesh_required?: boolean;
+  cpu_only?: boolean;
   benchmark_mmlu?: number;
   benchmark_humaneval?: number;
   hf_repo?: string;
@@ -72,6 +73,7 @@ const PULL_URL = 'https://adris.tech/api/models/pull';
 
 const FILTER_LABELS: Record<string, string> = {
   all:       'All',
+  cpu:       'CPU · No GPU',
   coding:    'Coding',
   chat:      'Chat',
   reasoning: 'Reasoning',
@@ -125,23 +127,23 @@ const DESKTOP_MODELS: RegistryModel[] = [
   { id:'gemma3-9b-q4', name:'Gemma 3 9B', creator:'Google', params:'9B', quantization:'Q4_K_M', size_gb:5.7, ram_min_gb:8, ram_recommended_gb:10, context_length:131072, best_for:['chat','writing','indic'], benchmark_mmlu:72, license:'Gemma', gated:true, description:'Google compact mid-size. Excellent multilingual instruction following.' },
   { id:'gemma2-9b-q4', name:'Gemma 2 9B', creator:'Google', params:'9B', quantization:'Q4_K_M', size_gb:5.7, ram_min_gb:8, ram_recommended_gb:10, context_length:8192, best_for:['chat','reasoning'], benchmark_mmlu:71, license:'Gemma', gated:true, description:'Previous Gemma 2 generation. Solid for chat and reasoning tasks.' },
   { id:'solar-10b-q4', name:'SOLAR 10.7B', creator:'Upstage', params:'10.7B', quantization:'Q4_K_M', size_gb:6.5, ram_min_gb:8, ram_recommended_gb:10, context_length:4096, best_for:['chat','reasoning'], license:'Apache 2.0', gated:false, description:'Outperforms Llama 2 70B despite being 10B, using depth upscaling.' },
-  { id:'deepseek-r1-7b-q4', name:'DeepSeek R1 7B', creator:'DeepSeek', params:'7B', quantization:'Q4_K_M', size_gb:4.5, ram_min_gb:6, ram_recommended_gb:8, context_length:32768, best_for:['reasoning'], benchmark_mmlu:67, license:'MIT', gated:false, description:'Strong chain-of-thought reasoning at 7B. Best for maths, logic, analysis.' },
-  { id:'qwen25-coder-7b-q4', name:'Qwen 2.5 Coder 7B', creator:'Alibaba', params:'7B', quantization:'Q4_K_M', size_gb:4.3, ram_min_gb:6, ram_recommended_gb:8, context_length:131072, best_for:['coding'], benchmark_humaneval:88, license:'Apache 2.0', gated:false, description:'Top coder at 7B — beats models 2× its size. 128K context.' },
-  { id:'mistral-7b-q4', name:'Mistral 7B', creator:'Mistral AI', params:'7B', quantization:'Q4_K_M', size_gb:4.4, ram_min_gb:6, ram_recommended_gb:8, context_length:32768, best_for:['chat','writing','coding'], benchmark_mmlu:62, license:'Apache 2.0', gated:false, description:'Best quality-to-size at 7B. Great all-rounder for writing and chat.' },
+  { id:'deepseek-r1-7b-q4', name:'DeepSeek R1 7B', creator:'DeepSeek', params:'7B', quantization:'Q4_K_M', size_gb:4.5, ram_min_gb:6, ram_recommended_gb:8, context_length:32768, best_for:['reasoning'], benchmark_mmlu:67, license:'MIT', gated:false, cpu_only:true, description:'Strong chain-of-thought reasoning at 7B. Best for maths, logic, analysis.' },
+  { id:'qwen25-coder-7b-q4', name:'Qwen 2.5 Coder 7B', creator:'Alibaba', params:'7B', quantization:'Q4_K_M', size_gb:4.3, ram_min_gb:6, ram_recommended_gb:8, context_length:131072, best_for:['coding'], benchmark_humaneval:88, license:'Apache 2.0', gated:false, cpu_only:true, description:'Top coder at 7B — beats models 2× its size. 128K context.' },
+  { id:'mistral-7b-q4', name:'Mistral 7B', creator:'Mistral AI', params:'7B', quantization:'Q4_K_M', size_gb:4.4, ram_min_gb:6, ram_recommended_gb:8, context_length:32768, best_for:['chat','writing','coding'], benchmark_mmlu:62, license:'Apache 2.0', gated:false, cpu_only:true, description:'Best quality-to-size at 7B. Great all-rounder for writing and chat.' },
   { id:'sarvam1-7b-q4', name:'Sarvam-1 7B', creator:'Sarvam AI', params:'7.3B', quantization:'Q4_K_M', size_gb:4.6, ram_min_gb:6, ram_recommended_gb:8, context_length:4096, best_for:['chat','indic'], license:'Apache 2.0', gated:false, description:'India-first model. Best Indic support — Hindi, Tamil, Telugu, Kannada, Bengali and more.' },
-  { id:'llama31-8b-q4', name:'Llama 3.1 8B', creator:'Meta', params:'8B', quantization:'Q4_K_M', size_gb:4.9, ram_min_gb:6, ram_recommended_gb:8, context_length:131072, best_for:['chat','writing','reasoning'], benchmark_mmlu:73, license:'Llama 3.1', gated:true, description:'Meta flagship small model. 128K context, 8-language support.' },
-  { id:'deepseek-coder-6b-q4', name:'DeepSeek Coder 6.7B', creator:'DeepSeek', params:'6.7B', quantization:'Q4_K_M', size_gb:3.9, ram_min_gb:6, ram_recommended_gb:8, context_length:16384, best_for:['coding'], benchmark_humaneval:74, license:'DeepSeek', gated:false, description:'Code-specialised. Excellent Python, JavaScript, TypeScript generation.' },
+  { id:'llama31-8b-q4', name:'Llama 3.1 8B', creator:'Meta', params:'8B', quantization:'Q4_K_M', size_gb:4.9, ram_min_gb:6, ram_recommended_gb:8, context_length:131072, best_for:['chat','writing','reasoning'], benchmark_mmlu:73, license:'Llama 3.1', gated:true, cpu_only:true, description:'Meta flagship small model. 128K context, 8-language support.' },
+  { id:'deepseek-coder-6b-q4', name:'DeepSeek Coder 6.7B', creator:'DeepSeek', params:'6.7B', quantization:'Q4_K_M', size_gb:3.9, ram_min_gb:6, ram_recommended_gb:8, context_length:16384, best_for:['coding'], benchmark_humaneval:74, license:'DeepSeek', gated:false, cpu_only:true, description:'Code-specialised. Excellent Python, JavaScript, TypeScript generation.' },
   // 2–6 GB RAM
-  { id:'gemma3-4b-q4', name:'Gemma 3 4B', creator:'Google', params:'4B', quantization:'Q4_K_M', size_gb:3.0, ram_min_gb:4, ram_recommended_gb:6, context_length:131072, best_for:['chat','reasoning','indic'], benchmark_mmlu:72, license:'Gemma', gated:true, description:'Google compact model. Strong multilingual and reasoning per GB of RAM.' },
-  { id:'phi4-mini-q4', name:'Phi-4 Mini', creator:'Microsoft', params:'3.8B', quantization:'Q4_K_M', size_gb:2.4, ram_min_gb:4, ram_recommended_gb:6, context_length:128000, best_for:['chat','reasoning','indic'], benchmark_mmlu:69, license:'MIT', gated:false, description:'Runs on 4 GB RAM. Surprisingly capable for its size. Great for budget laptops.' },
-  { id:'phi35-mini-q4', name:'Phi-3.5 Mini', creator:'Microsoft', params:'3.8B', quantization:'Q4_K_M', size_gb:2.4, ram_min_gb:4, ram_recommended_gb:4, context_length:131072, best_for:['chat','reasoning'], benchmark_mmlu:69, license:'MIT', gated:false, description:'Strong reasoning at 3.8B with 128K context. Good for CPU-only machines.' },
-  { id:'llama32-3b-q4', name:'Llama 3.2 3B', creator:'Meta', params:'3B', quantization:'Q4_K_M', size_gb:2.0, ram_min_gb:4, ram_recommended_gb:4, context_length:131072, best_for:['chat','quick'], license:'Llama 3.2', gated:true, description:'Meta small instruction model. Fast, multilingual, 4 GB RAM.' },
-  { id:'qwen25-3b-q4', name:'Qwen 2.5 3B', creator:'Alibaba', params:'3B', quantization:'Q4_K_M', size_gb:2.0, ram_min_gb:4, ram_recommended_gb:4, context_length:32768, best_for:['coding','chat'], license:'Apache 2.0', gated:false, description:'Qwen 2.5 at 3B — solid coding model for low-RAM devices.' },
-  { id:'gemma2-2b-q4', name:'Gemma 2 2B', creator:'Google', params:'2B', quantization:'Q4_K_M', size_gb:1.5, ram_min_gb:2, ram_recommended_gb:3, context_length:8192, best_for:['quick','chat'], license:'Gemma', gated:true, description:'Tiny but capable. Good for simple tasks on low-end hardware.' },
-  { id:'qwen25-1b-q4', name:'Qwen 2.5 1.5B', creator:'Alibaba', params:'1.5B', quantization:'Q4_K_M', size_gb:1.0, ram_min_gb:2, ram_recommended_gb:2, context_length:32768, best_for:['quick'], license:'Apache 2.0', gated:false, description:'Runs on 2 GB RAM. For the most basic on-device tasks.' },
-  { id:'smollm2-1b-q4', name:'SmolLM2 1.7B', creator:'HuggingFace', params:'1.7B', quantization:'Q4_K_M', size_gb:1.1, ram_min_gb:2, ram_recommended_gb:2, context_length:8192, best_for:['quick'], license:'Apache 2.0', gated:false, description:'Built for on-device use. Tiny, fast, and surprisingly capable.' },
-  { id:'llama32-1b-q4', name:'Llama 3.2 1B', creator:'Meta', params:'1B', quantization:'Q4_K_M', size_gb:0.8, ram_min_gb:2, ram_recommended_gb:2, context_length:131072, best_for:['quick'], license:'Llama 3.2', gated:true, description:'Meta ultra-tiny model. For extremely low-RAM or edge devices.' },
-  { id:'tinyllama-1b-q4', name:'TinyLlama 1.1B', creator:'TinyLlama', params:'1.1B', quantization:'Q4_K_M', size_gb:0.7, ram_min_gb:2, ram_recommended_gb:2, context_length:2048, best_for:['quick','chat'], license:'Apache 2.0', gated:false, description:'Ultra-tiny. Runs on any device. Great for quick offline tasks.' },
+  { id:'gemma3-4b-q4', name:'Gemma 3 4B', creator:'Google', params:'4B', quantization:'Q4_K_M', size_gb:3.0, ram_min_gb:4, ram_recommended_gb:6, context_length:131072, best_for:['chat','reasoning','indic'], benchmark_mmlu:72, license:'Gemma', gated:true, cpu_only:true, description:'Google compact model. Strong multilingual and reasoning per GB of RAM.' },
+  { id:'phi4-mini-q4', name:'Phi-4 Mini', creator:'Microsoft', params:'3.8B', quantization:'Q4_K_M', size_gb:2.4, ram_min_gb:4, ram_recommended_gb:6, context_length:128000, best_for:['chat','reasoning','indic'], benchmark_mmlu:69, license:'MIT', gated:false, cpu_only:true, description:'Runs on 4 GB RAM, no GPU needed. Surprisingly capable. Best pick for office laptops.' },
+  { id:'phi35-mini-q4', name:'Phi-3.5 Mini', creator:'Microsoft', params:'3.8B', quantization:'Q4_K_M', size_gb:2.4, ram_min_gb:4, ram_recommended_gb:4, context_length:131072, best_for:['chat','reasoning'], benchmark_mmlu:69, license:'MIT', gated:false, cpu_only:true, description:'128K context at 3.8B. No GPU needed. Ideal for CPU-only office laptops.' },
+  { id:'llama32-3b-q4', name:'Llama 3.2 3B', creator:'Meta', params:'3B', quantization:'Q4_K_M', size_gb:2.0, ram_min_gb:4, ram_recommended_gb:4, context_length:131072, best_for:['chat','quick'], license:'Llama 3.2', gated:true, cpu_only:true, description:'Meta small instruction model. Runs on 4 GB RAM. Fast on CPU.' },
+  { id:'qwen25-3b-q4', name:'Qwen 2.5 3B', creator:'Alibaba', params:'3B', quantization:'Q4_K_M', size_gb:2.0, ram_min_gb:4, ram_recommended_gb:4, context_length:32768, best_for:['coding','chat'], license:'Apache 2.0', gated:false, cpu_only:true, description:'Solid coding model for CPU-only devices. 4 GB RAM minimum.' },
+  { id:'gemma2-2b-q4', name:'Gemma 2 2B', creator:'Google', params:'2B', quantization:'Q4_K_M', size_gb:1.5, ram_min_gb:2, ram_recommended_gb:3, context_length:8192, best_for:['quick','chat'], license:'Gemma', gated:true, cpu_only:true, description:'Tiny but capable. Runs on 2 GB RAM. Good for simple tasks on any laptop.' },
+  { id:'qwen25-1b-q4', name:'Qwen 2.5 1.5B', creator:'Alibaba', params:'1.5B', quantization:'Q4_K_M', size_gb:1.0, ram_min_gb:2, ram_recommended_gb:2, context_length:32768, best_for:['quick'], license:'Apache 2.0', gated:false, cpu_only:true, description:'Runs on 2 GB RAM. Emails, summaries, quick replies — no GPU at all.' },
+  { id:'smollm2-1b-q4', name:'SmolLM2 1.7B', creator:'HuggingFace', params:'1.7B', quantization:'Q4_K_M', size_gb:1.1, ram_min_gb:2, ram_recommended_gb:2, context_length:8192, best_for:['quick'], license:'Apache 2.0', gated:false, cpu_only:true, description:'Built for on-device use. 1.1 GB file, no GPU, works on any machine.' },
+  { id:'llama32-1b-q4', name:'Llama 3.2 1B', creator:'Meta', params:'1B', quantization:'Q4_K_M', size_gb:0.8, ram_min_gb:2, ram_recommended_gb:2, context_length:131072, best_for:['quick'], license:'Llama 3.2', gated:true, cpu_only:true, description:'Meta ultra-tiny. 128K context window. Runs on any device with 2 GB RAM.' },
+  { id:'tinyllama-1b-q4', name:'TinyLlama 1.1B', creator:'TinyLlama', params:'1.1B', quantization:'Q4_K_M', size_gb:0.7, ram_min_gb:2, ram_recommended_gb:2, context_length:2048, best_for:['quick','chat'], license:'Apache 2.0', gated:false, cpu_only:true, description:'Smallest model in the hub. 700 MB. Works on any laptop, any OS, no GPU.' },
 ];
 
 const CONTEXT_LABELS = (ctx: number) => {
@@ -733,7 +735,8 @@ export default function ModelsModule() {
 
   const filteredModels = registry.filter(m => {
     if (filterByPC && !modelFitsPC(m)) return false;
-    if (filter !== 'all' && filter !== '__pc__' && !m.best_for.includes(filter)) return false;
+    if (filter === 'cpu') { if (!m.cpu_only) return false; }
+    else if (filter !== 'all' && filter !== '__pc__' && !m.best_for.includes(filter)) return false;
     if (search) {
       const q = search.toLowerCase();
       return m.name.toLowerCase().includes(q)

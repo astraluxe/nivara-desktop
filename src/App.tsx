@@ -59,6 +59,60 @@ function OfflineBanner({ runs, onDismiss, onView }: { runs: MissedRun[]; onDismi
   );
 }
 
+interface Announcement {
+  id: string;
+  title: string;
+  body: string;
+  type: 'info' | 'update' | 'warning';
+  cta_label?: string;
+  cta_url?: string;
+}
+
+function AnnouncementModal({ ann, onClose }: { ann: Announcement; onClose: () => void }) {
+  const [installing, setInstalling] = useState(false);
+  const icons: Record<string, string> = { info: 'ℹ', update: '↑', warning: '⚠' };
+  const colours: Record<string, string> = {
+    info:    'border-nv-info bg-nv-info/10',
+    update:  'border-accent bg-accent/10',
+    warning: 'border-nv-bad bg-nv-bad/10',
+  };
+
+  async function handleCta() {
+    if (ann.type === 'update' && !ann.cta_url) {
+      setInstalling(true);
+      try { await invoke('install_update'); } catch { setInstalling(false); }
+      return;
+    }
+    if (ann.cta_url) window.open(ann.cta_url, '_blank');
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+      <div className={`w-full max-w-sm mx-4 bg-nv-bg border-2 rounded-xl p-6 shadow-2xl ${colours[ann.type] ?? colours.info}`}>
+        <div className="flex items-start gap-3 mb-4">
+          <span className="text-2xl">{icons[ann.type] ?? icons.info}</span>
+          <h2 className="text-base font-semibold text-nv-text leading-snug flex-1">{ann.title}</h2>
+        </div>
+        <p className="text-sm text-nv-faint leading-relaxed mb-5">{ann.body}</p>
+        <div className="flex gap-2">
+          {ann.cta_label && (
+            <button onClick={handleCta} disabled={installing}
+              className="flex-1 px-4 py-2 bg-accent text-white text-sm font-semibold rounded-lg hover:bg-accent/80 transition-colors disabled:opacity-60">
+              {installing ? 'Installing…' : ann.cta_label}
+            </button>
+          )}
+          <button onClick={onClose}
+            className="flex-1 px-4 py-2 border border-nv-border text-nv-faint text-sm rounded-lg hover:text-nv-text hover:border-nv-text transition-colors">
+            {ann.type === 'update' ? 'Later' : 'Got it'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const DISMISSED_KEY = 'nv-dismissed-announcements';
+
 function AppShell() {
   const { session, loading } = useAuth();
   const [activeModule, setActiveModule] = useState<Module>("home");
@@ -67,6 +121,7 @@ function AppShell() {
   const [missedRuns, setMissedRuns] = useState<MissedRun[]>([]);
   const [meshActive, setMeshActive] = useState(false);
   const [studioRequest, setStudioRequest] = useState<StudioRequest | null>(null);
+  const [announcement, setAnnouncement] = useState<Announcement | null>(null);
 
   function handleOpenStudio(req: StudioRequest) {
     setStudioRequest(req);
@@ -105,6 +160,41 @@ function AppShell() {
     ping();
     const id = setInterval(ping, 5 * 60 * 1000); // every 5 minutes
     return () => clearInterval(id);
+  }, [session]);
+
+  // Announcement fetch — shows a modal once per announcement id
+  useEffect(() => {
+    if (!session) return;
+    supabase
+      .from('announcements')
+      .select('id, title, body, type, cta_label, cta_url')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .then(({ data }) => {
+        if (!data || data.length === 0) return;
+        const ann = data[0] as Announcement;
+        const dismissed = JSON.parse(localStorage.getItem(DISMISSED_KEY) ?? '[]') as string[];
+        if (!dismissed.includes(ann.id)) setAnnouncement(ann);
+      });
+  }, [session]);
+
+  // Auto-update check on startup — silent, shows banner only if update available
+  useEffect(() => {
+    if (!session) return;
+    invoke<{ available: boolean; version?: string }>('check_for_update')
+      .then(res => {
+        if (res.available) {
+          setAnnouncement({
+            id: `update-${res.version ?? 'new'}`,
+            title: `Update available — v${res.version ?? 'new'}`,
+            body: 'A new version of adris.tech is ready. Install it now and restart to get the latest features and fixes.',
+            type: 'update',
+            cta_label: 'Install & restart',
+            cta_url: undefined,
+          });
+        }
+      })
+      .catch(() => {/* no network or no update — silent */});
   }, [session]);
 
   // Global automation trigger listener — active regardless of which module is open
@@ -185,6 +275,23 @@ function AppShell() {
         </main>
       </div>
       {showTour && <TourOverlay onDone={() => setShowTour(false)} />}
+      {announcement && (
+        <AnnouncementModal
+          ann={announcement}
+          onClose={() => {
+            // If it's an update announcement and user clicked "Got it", just dismiss
+            // If cta_label is "Install & restart", clicking the CTA button runs install
+            if (announcement.type === 'update' && announcement.cta_url === undefined) {
+              // Install update flow — CTA button handled separately; dismiss just hides modal
+            }
+            const dismissed = JSON.parse(localStorage.getItem(DISMISSED_KEY) ?? '[]') as string[];
+            if (!dismissed.includes(announcement.id)) {
+              localStorage.setItem(DISMISSED_KEY, JSON.stringify([...dismissed, announcement.id]));
+            }
+            setAnnouncement(null);
+          }}
+        />
+      )}
     </div>
   );
 }
