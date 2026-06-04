@@ -223,10 +223,15 @@ function CompareTab({ installed, sysRam, ollamaOk }: {
     ));
 
     try {
-      const resp = await fetch('http://localhost:11434/api/generate', {
+      // llama.cpp OpenAI-compatible API (port 8080)
+      const resp = await fetch('http://127.0.0.1:8080/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: model.path, prompt: promptText, stream: true }),
+        body: JSON.stringify({
+          model: 'local',
+          messages: [{ role: 'user', content: promptText }],
+          stream: true,
+        }),
         signal,
       });
 
@@ -234,28 +239,36 @@ function CompareTab({ installed, sysRam, ollamaOk }: {
 
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
+      let buf = '';
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        const lines = decoder.decode(value, { stream: true }).split('\n').filter(Boolean);
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
         for (const line of lines) {
+          const t = line.trim();
+          if (!t.startsWith('data: ')) continue;
+          const data = t.slice(6);
+          if (data === '[DONE]') {
+            setResults(prev => prev.map(r =>
+              r.model.id === model.id
+                ? { ...r, done: true, time_ms: Date.now() - start, token_count: tokenCount }
+                : r
+            ));
+            continue;
+          }
           try {
-            const j = JSON.parse(line);
-            if (j.response) {
+            const j = JSON.parse(data);
+            const chunk = j?.choices?.[0]?.delta?.content ?? '';
+            if (chunk) {
               tokenCount++;
               setResults(prev => prev.map(r =>
-                r.model.id === model.id ? { ...r, output: r.output + j.response } : r
+                r.model.id === model.id ? { ...r, output: r.output + chunk } : r
               ));
             }
-            if (j.done) {
-              setResults(prev => prev.map(r =>
-                r.model.id === model.id
-                  ? { ...r, done: true, time_ms: Date.now() - start, token_count: tokenCount }
-                  : r
-              ));
-            }
-          } catch { /* partial line */ }
+          } catch { /* partial */ }
         }
       }
     } catch (err: unknown) {
@@ -679,8 +692,8 @@ export default function ModelsModule() {
     // Load installed models
     refreshInstalled();
 
-    // Check Ollama
-    invoke<boolean>('models_check_ollama').then(setOllamaOk).catch(() => setOllamaOk(false));
+    // Check local AI engine (llama.cpp server)
+    invoke<boolean>('models_check_engine').then(setOllamaOk).catch(() => setOllamaOk(false));
 
     // Listen for download events
     const unP = listen<{ model_id: string; pct: number; downloaded_gb: number; total_gb: number }>(

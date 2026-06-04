@@ -21,6 +21,7 @@ import StudioModule from "./modules/StudioModule";
 import HeadModule from "./modules/HeadModule";
 import { AppSkeleton } from "./components/Skeleton";
 import TourOverlay, { isTourDone } from "./components/TourOverlay";
+import FirstRunSetup, { needsFirstRun } from "./components/FirstRunSetup";
 import type { Node, Edge } from "@xyflow/react";
 import { executeAutomation, type AutomationRow } from "./lib/automationRunner";
 import { supabase } from "./lib/supabase";
@@ -122,6 +123,7 @@ function AppShell() {
   const [meshActive, setMeshActive] = useState(false);
   const [studioRequest, setStudioRequest] = useState<StudioRequest | null>(null);
   const [announcement, setAnnouncement] = useState<Announcement | null>(null);
+  const [showFirstRun, setShowFirstRun] = useState(false);
 
   function handleOpenStudio(req: StudioRequest) {
     setStudioRequest(req);
@@ -136,6 +138,13 @@ function AppShell() {
   useEffect(() => {
     if (session && !isTourDone()) {
       setShowTour(true);
+    }
+  }, [session]);
+
+  // First-run setup — show once after first install, after user is logged in
+  useEffect(() => {
+    if (session && needsFirstRun()) {
+      setShowFirstRun(true);
     }
   }, [session]);
 
@@ -275,6 +284,7 @@ function AppShell() {
         </main>
       </div>
       {showTour && <TourOverlay onDone={() => setShowTour(false)} />}
+      {showFirstRun && <FirstRunSetup onDone={() => setShowFirstRun(false)} />}
       {announcement && (
         <AnnouncementModal
           ann={announcement}

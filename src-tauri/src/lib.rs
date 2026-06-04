@@ -894,20 +894,126 @@ fn models_delete(app: tauri::AppHandle, model_id: String) -> Result<(), String> 
     save_installed_models(&dir, &list)
 }
 
+// ─── llama.cpp engine state ──────────────────────────────────────────────────
+
+struct LlamaEngineProcess(Mutex<Option<tokio::process::Child>>);
+
+fn llama_engine_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    // 1. Bundled in app resources
+    if let Ok(res) = app.path().resource_dir() {
+        let p = res.join("llama-server.exe");
+        if p.exists() { return Some(p); }
+    }
+    // 2. Downloaded at runtime into app data
+    if let Ok(data) = app.path().app_data_dir() {
+        let p = data.join("llama-engine").join("llama-server.exe");
+        if p.exists() { return Some(p); }
+    }
+    None
+}
+
 #[tauri::command]
-async fn models_check_ollama() -> bool {
-    reqwest::get("http://localhost:11434/api/tags").await
+fn models_check_engine_installed(app: tauri::AppHandle) -> bool {
+    llama_engine_path(&app).is_some()
+}
+
+#[tauri::command]
+async fn models_check_engine() -> bool {
+    reqwest::get("http://127.0.0.1:8080/health").await
         .map(|r| r.status().is_success())
         .unwrap_or(false)
 }
 
 #[tauri::command]
-async fn models_run(model_filename: String) -> Result<(), String> {
-    tokio::process::Command::new("ollama")
-        .args(["run", &model_filename])
+async fn models_stop_engine(state: tauri::State<'_, LlamaEngineProcess>) -> Result<(), String> {
+    let mut guard = state.0.lock().unwrap();
+    if let Some(mut child) = guard.take() {
+        let _ = child.kill().await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn models_run(
+    app:            tauri::AppHandle,
+    model_filename: String,
+    state:          tauri::State<'_, LlamaEngineProcess>,
+) -> Result<(), String> {
+    let dir    = models_dir(&app)?;
+    let models = load_installed_models(&dir);
+    let model  = models.iter()
+        .find(|m| m.filename == model_filename || m.id == model_filename)
+        .ok_or_else(|| format!("Model '{}' not found", model_filename))?;
+    let model_path = model.path.clone();
+
+    let engine = llama_engine_path(&app)
+        .ok_or("Local AI engine not found. Open Settings → Setup to download it.")?;
+
+    // Stop any currently running server
+    {
+        let mut guard = state.0.lock().unwrap();
+        if let Some(mut child) = guard.take() { let _ = child.kill().await; }
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+
+    let child = tokio::process::Command::new(&engine)
+        .args(["-m", &model_path, "--port", "8080", "--host", "127.0.0.1",
+               "-c", "4096", "--log-disable"])
+        .kill_on_drop(true)
         .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("Could not start Ollama: {e}"))
+        .map_err(|e| format!("Could not start engine: {e}"))?;
+
+    { let mut g = state.0.lock().unwrap(); *g = Some(child); }
+
+    // Wait for the server to become ready (up to 30 s)
+    for _ in 0..60 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        if reqwest::get("http://127.0.0.1:8080/health").await
+            .map(|r| r.status().is_success()).unwrap_or(false)
+        { return Ok(()); }
+    }
+    Err("Engine started but is not responding. Try again or restart the app.".into())
+}
+
+#[tauri::command]
+async fn models_download_engine(app: tauri::AppHandle) -> Result<(), String> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    let dest_dir = app.path().app_data_dir()
+        .map_err(|e| e.to_string())?.join("llama-engine");
+    tokio::fs::create_dir_all(&dest_dir).await.map_err(|e| e.to_string())?;
+    let dest = dest_dir.join("llama-server.exe");
+    if dest.exists() { return Ok(()); }
+
+    let _ = app.emit("engine_download_progress",
+        serde_json::json!({ "step": "Downloading AI engine…", "pct": 5 }));
+
+    let url = "https://github.com/astraluxe/nivara-desktop/releases/latest/download/llama-server.exe";
+    let client = reqwest::Client::builder().user_agent("NivaraDesktop/1.0")
+        .build().map_err(|e| e.to_string())?;
+    let resp = client.get(url).send().await
+        .map_err(|e| format!("Download failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("Engine download failed: HTTP {}", resp.status())); }
+
+    let total = resp.content_length().unwrap_or(0).max(1);
+    let mut downloaded: u64 = 0;
+    let mut file = tokio::fs::File::create(&dest).await.map_err(|e| e.to_string())?;
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+        downloaded += chunk.len() as u64;
+        let pct = 5 + (downloaded as f64 / total as f64 * 90.0) as u32;
+        let _ = app.emit("engine_download_progress", serde_json::json!({
+            "step": format!("Downloading AI engine… {:.1} MB", downloaded as f64 / 1_048_576.0),
+            "pct": pct.min(95) }));
+    }
+    file.flush().await.map_err(|e| e.to_string())?;
+    let _ = app.emit("engine_download_progress",
+        serde_json::json!({ "step": "Engine ready ✓", "pct": 100 }));
+    Ok(())
 }
 
 #[tauri::command]
@@ -2207,12 +2313,14 @@ async fn krew_ai_stream(
                 emit_error(format!("{} — {}", status, body.chars().take(300).collect::<String>()));
                 return Ok(());
             }
+            let emit_truncated = { let app = app.clone(); let cid = call_id.clone(); move || { let _ = app.emit("krew-truncated", serde_json::json!({ "id": cid })); } };
             let mut stream = resp.bytes_stream();
             while let Some(chunk) = stream.next().await {
                 let bytes = chunk.map_err(|e| e.to_string())?;
                 for line in String::from_utf8_lossy(&bytes).lines() {
                     if let Some(data) = line.strip_prefix("data: ") {
                         if data == "[DONE]" { emit_done(); return Ok(()); }
+                        if data == "[TRUNCATED]" { emit_truncated(); continue; }
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
                             if let Some(t) = v["text"].as_str() { if !t.is_empty() { emit_chunk(t.to_string()); } }
                         }
@@ -3962,6 +4070,7 @@ pub fn run() {
             app.manage(TriggerState(Mutex::new(HashMap::new())));
             app.manage(VaultState::new());
             app.manage(MeshExoProcess(Mutex::new(None)));
+            app.manage(LlamaEngineProcess(Mutex::new(None)));
             app.manage(VoiceState::new());
             setup_tray(app)?;
 
@@ -4132,8 +4241,11 @@ pub fn run() {
             models_list_installed,
             models_download,
             models_delete,
-            models_check_ollama,
+            models_check_engine_installed,
+            models_check_engine,
             models_run,
+            models_stop_engine,
+            models_download_engine,
             models_pick_file,
             models_import,
             studio_save_file,
