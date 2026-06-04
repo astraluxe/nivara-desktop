@@ -901,12 +901,12 @@ struct LlamaEngineProcess(Mutex<Option<tokio::process::Child>>);
 fn llama_engine_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
     // 1. Bundled in app resources
     if let Ok(res) = app.path().resource_dir() {
-        let p = res.join("llama-server.exe");
+        let p = res.join("adris-engine.exe");
         if p.exists() { return Some(p); }
     }
     // 2. Downloaded at runtime into app data
     if let Ok(data) = app.path().app_data_dir() {
-        let p = data.join("llama-engine").join("llama-server.exe");
+        let p = data.join("adris-ai").join("adris-engine.exe");
         if p.exists() { return Some(p); }
     }
     None
@@ -981,15 +981,15 @@ async fn models_download_engine(app: tauri::AppHandle) -> Result<(), String> {
     use tokio::io::AsyncWriteExt;
 
     let dest_dir = app.path().app_data_dir()
-        .map_err(|e| e.to_string())?.join("llama-engine");
+        .map_err(|e| e.to_string())?.join("adris-ai");
     tokio::fs::create_dir_all(&dest_dir).await.map_err(|e| e.to_string())?;
-    let dest = dest_dir.join("llama-server.exe");
+    let dest = dest_dir.join("adris-engine.exe");
     if dest.exists() { return Ok(()); }
 
     let _ = app.emit("engine_download_progress",
         serde_json::json!({ "step": "Downloading AI engine…", "pct": 5 }));
 
-    let url = "https://github.com/astraluxe/nivara-desktop/releases/latest/download/llama-server.exe";
+    let url = "https://github.com/astraluxe/nivara-desktop/releases/latest/download/adris-engine.exe";
     let client = reqwest::Client::builder().user_agent("NivaraDesktop/1.0")
         .build().map_err(|e| e.to_string())?;
     let resp = client.get(url).send().await
