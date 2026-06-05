@@ -980,16 +980,18 @@ async fn models_download_engine(app: tauri::AppHandle) -> Result<(), String> {
     use futures_util::StreamExt;
     use tokio::io::AsyncWriteExt;
 
+    use std::io::Read as _;
     let dest_dir = app.path().app_data_dir()
         .map_err(|e| e.to_string())?.join("adris-ai");
     tokio::fs::create_dir_all(&dest_dir).await.map_err(|e| e.to_string())?;
-    let dest = dest_dir.join("adris-engine.exe");
-    if dest.exists() { return Ok(()); }
+    let dest_exe = dest_dir.join("adris-engine.exe");
+    if dest_exe.exists() { return Ok(()); }
 
     let _ = app.emit("engine_download_progress",
         serde_json::json!({ "step": "Downloading AI engine…", "pct": 5 }));
 
-    let url = "https://github.com/astraluxe/nivara-desktop/releases/latest/download/adris-engine.exe";
+    // Download the zip package (exe + required DLLs)
+    let url = "https://github.com/astraluxe/nivara-desktop/releases/latest/download/adris-engine.zip";
     let client = reqwest::Client::builder().user_agent("NivaraDesktop/1.0")
         .build().map_err(|e| e.to_string())?;
     let resp = client.get(url).send().await
@@ -999,18 +1001,38 @@ async fn models_download_engine(app: tauri::AppHandle) -> Result<(), String> {
 
     let total = resp.content_length().unwrap_or(0).max(1);
     let mut downloaded: u64 = 0;
-    let mut file = tokio::fs::File::create(&dest).await.map_err(|e| e.to_string())?;
+    let zip_path = dest_dir.join("adris-engine.zip");
+    let mut file = tokio::fs::File::create(&zip_path).await.map_err(|e| e.to_string())?;
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| e.to_string())?;
         file.write_all(&chunk).await.map_err(|e| e.to_string())?;
         downloaded += chunk.len() as u64;
-        let pct = 5 + (downloaded as f64 / total as f64 * 90.0) as u32;
+        let pct = 5 + (downloaded as f64 / total as f64 * 80.0) as u32;
         let _ = app.emit("engine_download_progress", serde_json::json!({
             "step": format!("Downloading AI engine… {:.1} MB", downloaded as f64 / 1_048_576.0),
-            "pct": pct.min(95) }));
+            "pct": pct.min(85) }));
     }
     file.flush().await.map_err(|e| e.to_string())?;
+    drop(file);
+
+    // Extract zip
+    let _ = app.emit("engine_download_progress",
+        serde_json::json!({ "step": "Unpacking engine…", "pct": 88 }));
+    let zip_bytes = std::fs::read(&zip_path).map_err(|e| e.to_string())?;
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes))
+        .map_err(|e| e.to_string())?;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        let name = entry.name().to_string();
+        if name.ends_with('/') { continue; }
+        let out_path = dest_dir.join(&name);
+        let mut buf = Vec::new();
+        entry.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+        std::fs::write(&out_path, &buf).map_err(|e| e.to_string())?;
+    }
+    let _ = std::fs::remove_file(&zip_path);
+
     let _ = app.emit("engine_download_progress",
         serde_json::json!({ "step": "Engine ready ✓", "pct": 100 }));
     Ok(())
