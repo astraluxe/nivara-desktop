@@ -23,7 +23,7 @@ const STATUS_TEXT: Record<Status, string> = {
   idle:   'text-yellow-400',
   off:    'text-nv-faint',
 };
-const STATUS_LABEL: Record<Status, string> = { active: 'Live', idle: 'Beta', off: 'Planned' };
+const STATUS_LABEL: Record<Status, string> = { active: 'Live', idle: 'Coming soon', off: 'Planned' };
 
 const MODULES: ModuleInfo[] = [
   {
@@ -376,7 +376,7 @@ export default function InfoModule() {
       <div className="px-6 pb-8 max-w-3xl">
         <div className="flex items-center gap-2 text-[10px] text-nv-faint font-mono">
           <span className="w-1 h-1 rounded-full bg-nv-faint" />
-          adris.tech v1.x · All AI processing is local or through your own keys unless you use the adris.tech plan
+          adris.tech · All AI processing is local or through your own keys unless you use the adris.tech plan
           <span className="w-1 h-1 rounded-full bg-nv-faint" />
         </div>
       </div>

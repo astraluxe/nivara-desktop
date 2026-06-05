@@ -1902,15 +1902,6 @@ Rules:
   return (
     <div className="flex flex-col h-full overflow-hidden bg-nv-bg">
 
-      {/* Studio notice bar */}
-      {!noticeDismissed && (
-        <div className="flex items-center gap-2 px-3 py-1.5 bg-accent/10 border-b border-accent/15 shrink-0">
-          <span className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
-          <span className="text-[11px] text-nv-muted flex-1">Studio is in beta — video output quality is actively being improved.</span>
-          <button onClick={() => setShowSuggest(true)} className="text-[11px] text-accent hover:underline font-medium shrink-0 transition-fast">Suggest</button>
-          <button onClick={() => { sessionStorage.setItem('studio-notice', '1'); setNoticeDismissed(true); }} className="text-nv-faint hover:text-nv-text ml-1 text-xs shrink-0 leading-none transition-fast px-1">✕</button>
-        </div>
-      )}
 
       <div className="flex flex-1 overflow-hidden">
 
