@@ -15,46 +15,45 @@ interface Plan {
   accent:   boolean;
 }
 
-// Update prices (and paise) when final plan amounts are decided
 const PLANS: Plan[] = [
   {
     key:      "solo",
     label:    "Solo",
-    price:    "₹299",
-    paise:    29900,
+    price:    "₹1,499",
+    paise:    149900,
     sub:      "/ month",
-    tokens:   "500K tokens / month",
-    features: ["All 6 modules", "BYOK + adris.tech AI", "20 cloud automations", "Priority support"],
-    accent:   false,
-  },
-  {
-    key:      "growth",
-    label:    "Growth",
-    price:    "₹599",
-    paise:    59900,
-    sub:      "/ month",
-    tokens:   "2M tokens / month",
-    features: ["Everything in Solo", "Mesh (join sessions)", "100 cloud automations", "Guard security"],
+    tokens:   "~2,000 tasks / month",
+    features: ["All 6 modules", "2M tokens/mo", "500 cloud automations", "10 Mesh devices"],
     accent:   false,
   },
   {
     key:      "builder",
     label:    "Builder",
-    price:    "₹999",
-    paise:    99900,
+    price:    "₹4,999",
+    paise:    499900,
     sub:      "/ month",
-    tokens:   "10M tokens / month",
-    features: ["Everything in Growth", "Voice to Code", "Mesh hosting", "500 automations", "Contract scanning"],
+    tokens:   "~8,000 tasks / month",
+    features: ["Everything in Solo", "8M tokens/mo", "5,000 cloud automations", "25 Mesh devices + relay nodes", "Voice to Code"],
     accent:   true,
   },
   {
-    key:      "pro",
-    label:    "Pro",
-    price:    "₹2,499",
-    paise:    249900,
+    key:      "business",
+    label:    "Business",
+    price:    "₹14,999",
+    paise:    1499900,
     sub:      "/ month",
+    tokens:   "~30,000 tasks / month",
+    features: ["Everything in Builder", "30M tokens/mo", "Unlimited automations", "50 Mesh devices", "Guard + Audit export"],
+    accent:   false,
+  },
+  {
+    key:      "custom",
+    label:    "Custom",
+    price:    "Contact us",
+    paise:    0,
+    sub:      "",
     tokens:   "Unlimited tokens",
-    features: ["Everything in Builder", "10 Mesh devices", "Unlimited automations", "Audit export", "Priority queue"],
+    features: ["Everything in Business", "Dedicated infra", "Custom integrations", "SLA & priority support"],
     accent:   false,
   },
 ];
@@ -249,17 +248,27 @@ export default function UpgradeModal({ onClose, currentPlan, highlightPlan, reas
 
         {/* CTA */}
         <div className="px-6 pb-6 flex items-center gap-4">
-          <button
-            onClick={handleSubscribe}
-            disabled={paying || !session}
-            className="flex-1 py-3 rounded-xl text-[13px] font-semibold transition-opacity hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
-            style={{ background: "#7C5CFF", color: "#fff" }}
-          >
-            {paying && <span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin shrink-0" />}
-            {paying
-              ? 'Opening payment…'
-              : `Subscribe to ${plan.label} — ${plan.price}/mo`}
-          </button>
+          {plan.paise === 0 ? (
+            <a
+              href="mailto:team@adris.tech?subject=Custom%20Plan%20Inquiry"
+              className="flex-1 py-3 rounded-xl text-[13px] font-semibold text-center transition-opacity hover:opacity-90"
+              style={{ background: "#7C5CFF", color: "#fff" }}
+            >
+              Contact us for Custom plan
+            </a>
+          ) : (
+            <button
+              onClick={handleSubscribe}
+              disabled={paying || !session}
+              className="flex-1 py-3 rounded-xl text-[13px] font-semibold transition-opacity hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
+              style={{ background: "#7C5CFF", color: "#fff" }}
+            >
+              {paying && <span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin shrink-0" />}
+              {paying
+                ? 'Opening payment…'
+                : `Subscribe to ${plan.label} — ${plan.price}/mo`}
+            </button>
+          )}
           <button
             onClick={onClose}
             disabled={paying}
