@@ -5,7 +5,7 @@ const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
 
 export const supabase = createClient(url, key);
 
-export type Plan = "free" | "solo" | "builder" | "business" | "custom";
+export type Plan = "explore" | "free" | "solo" | "builder" | "business" | "custom";
 
 export interface UserProfile {
   id: string;

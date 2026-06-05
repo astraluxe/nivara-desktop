@@ -198,9 +198,10 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
         if (status === "SUBSCRIBED") {
           const state   = ch.presenceState<Device>();
           const current = Object.keys(state).length;
-          if (!isCentral && current >= currentTier.maxDevices) {
+          const devLimit = planCfg.meshDevices;
+          if (!isCentral && current >= devLimit) {
             await ch.unsubscribe();
-            setErr(`Session is full (${currentTier.maxDevices} device limit for ${currentTier.label}).`);
+            setErr(`Session is full (${devLimit} device limit on your plan).`);
             resolve(false);
             return;
           }
@@ -243,7 +244,7 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
     if (ok) {
       setRoomCode(code);
       setSessionState("hosting");
-      invoke<void>("mesh_start_exo", { nodeCount: currentTier.maxDevices })
+      invoke<void>("mesh_start_exo", { nodeCount: planCfg.meshDevices })
         .then(() => setExoRunning(true)).catch(() => null);
     } else {
       isCentralRef.current = false;
@@ -407,7 +408,7 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
                     {sessionState === "hosting" ? "Central node · hosting" : "Connected as guest"}
                   </span>
                   <span className="font-mono text-[9px]" style={{ color: "#10B981" }}>
-                    {devices.length} / {currentTier.maxDevices} devices
+                    {devices.length} / {planCfg.meshDevices} devices
                   </span>
                 </div>
 

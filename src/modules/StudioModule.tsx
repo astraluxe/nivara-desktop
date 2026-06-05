@@ -1336,7 +1336,6 @@ export default function StudioModule({ initialRequest, onRequestConsumed }: Stud
   const [isPaused,       setIsPaused]       = useState(false);
   const [accentColor,    setAccentColor]    = useState<string | null>(null);
   const [showCustomColor, setShowCustomColor] = useState(false);
-  const [noticeDismissed, setNoticeDismissed] = useState(() => sessionStorage.getItem('studio-notice') === '1');
   const [showSuggest,    setShowSuggest]    = useState(false);
   const [suggestText,    setSuggestText]    = useState('');
   const [suggestSending, setSuggestSending] = useState(false);

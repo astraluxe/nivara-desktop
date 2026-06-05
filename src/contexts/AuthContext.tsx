@@ -14,7 +14,7 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null);
 
-const VALID_PLANS: Plan[] = ["free", "solo", "builder", "business", "custom"];
+const VALID_PLANS: Plan[] = ["explore", "free", "solo", "builder", "business", "custom"];
 
 async function loadProfile(userId: string, email: string): Promise<UserProfile> {
   const { data, error } = await supabase

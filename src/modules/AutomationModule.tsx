@@ -1,6 +1,8 @@
 ﻿import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../contexts/AuthContext';
+import { getPlanConfig } from '../lib/planConfig';
+import UpgradeModal from '../components/UpgradeModal';
 import type { Node, Edge } from '@xyflow/react';
 import FlowCanvas, { type FlowCanvasHandle } from '../components/automation/FlowCanvas';
 import { executeAutomation, callAutomationAI, type AutomationRow } from '../lib/automationRunner';
@@ -2092,7 +2094,9 @@ interface AutomationModuleProps {
 }
 
 export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: AutomationModuleProps = {}) {
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
+  const planCfg = getPlanConfig(profile?.plan ?? 'explore');
+  const [showCloudUpgrade, setShowCloudUpgrade] = useState(false);
   const [tab, setTab] = useState<'canvas' | 'automations' | 'templates' | 'logs'>('canvas');
   const chatH = useResize({ initial: 220, min: 120, max: 560, direction: 'vertical', invert: true, storageKey: 'nv-auto-chat-h' });
   const [automations, setAutomations] = useState<Automation[]>([]);
@@ -2197,6 +2201,10 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
 
   async function handleCloudToggle(a: Automation) {
     const enable = !a.cloud_enabled;
+    if (enable && planCfg.cloudAutomations === 0) {
+      setShowCloudUpgrade(true);
+      return;
+    }
     await invoke('automation_cloud_toggle', { id: a.id, cloudEnabled: enable });
 
     if (enable) {
@@ -2481,6 +2489,14 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
             </div>
           </div>
         </div>
+      )}
+      {showCloudUpgrade && (
+        <UpgradeModal
+          onClose={() => setShowCloudUpgrade(false)}
+          currentPlan={profile?.plan ?? 'explore'}
+          highlightPlan="solo"
+          reason="Cloud automations run on our servers when your PC is off. Available on Solo plan and above."
+        />
       )}
     </div>
   );

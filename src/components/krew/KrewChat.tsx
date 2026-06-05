@@ -871,6 +871,7 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
   const [voiceStatus,       setVoiceStatus]       = useState<VoiceStatus>('idle');
   const [voiceErr,          setVoiceErr]           = useState<string | null>(null);
   const [showVoiceUpgrade,  setShowVoiceUpgrade]   = useState(false);
+  const [showQuotaUpgrade,  setShowQuotaUpgrade]   = useState(false);
 
   async function handleMicClick() {
     setVoiceErr(null);
@@ -1017,22 +1018,26 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
       return 'Connection failed. Please check your internet connection and try again.';
     if (/401|unauthori[sz]ed|invalid.*key|api.?key/i.test(msg))
       return 'Invalid API key. Go to Connect Apps and check your key.';
-    if (/429|rate.?limit|quota/i.test(msg))
-      return 'API rate limit reached. Please wait a moment and try again.';
+    if (/429|rate.?limit|quota/i.test(msg)) {
+      // Check if it's our own token-limit message from krew-stream (passes through unmodified)
+      if (/monthly.*token|reached.*monthly|upgrade.*plan|adris\.tech\/pricing/i.test(msg)) return msg;
+      return 'AI rate limit reached. Switch to Own Key mode in the connection bar, or upgrade your plan at adris.tech/pricing.';
+    }
     if (/500|502|503|504|server.?error|internal.?error/i.test(msg))
       return 'The AI service is temporarily unavailable. Please try again shortly.';
     // Strip any URL or API key that leaked through
     return msg.replace(/https?:\/\/[^\s)]+/g, '[service]').replace(/key=[A-Za-z0-9_-]{20,}/g, 'key=[hidden]');
   }
 
-  // Stream one AI turn — returns full response text
+  // Stream one AI turn — returns { text, truncated }
   async function streamTurn(
     msgs: { role: string; content: string }[],
     systemPrompt: string,
     onChunk: (t: string) => void,
-  ): Promise<string> {
+  ): Promise<{ text: string; truncated: boolean }> {
     const callId  = String(++callIdRef.current);
     let   fullText = '';
+    let   truncated = false;
     const done = { cleanup: () => {} };
 
     // Auto-detect API key + provider from ConnectApps when own_key and no manual key set
@@ -1051,14 +1056,14 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
       }
     }
 
-    return new Promise<string>(async (resolve, reject) => {
+    return new Promise<{ text: string; truncated: boolean }>(async (resolve, reject) => {
       let stallTimer: ReturnType<typeof setTimeout> | null = null;
       const resetStall = () => {
         if (stallTimer) clearTimeout(stallTimer);
         stallTimer = setTimeout(() => {
           done.cleanup();
           reject(new Error('Response stopped. Please check your connection and try again.'));
-        }, 30_000);
+        }, 90_000);
       };
 
       const u1 = await listen<{ id: string; text: string }>('krew-chunk', (e) => {
@@ -1070,15 +1075,19 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
       const u2 = await listen<{ id: string }>('krew-done', (e) => {
         if (e.payload.id !== callId) return;
         if (stallTimer) clearTimeout(stallTimer);
-        done.cleanup(); resolve(fullText);
+        done.cleanup(); resolve({ text: fullText, truncated });
       });
       const u3 = await listen<{ id: string; error: string }>('krew-error', (e) => {
         if (e.payload.id !== callId) return;
         if (stallTimer) clearTimeout(stallTimer);
         done.cleanup(); reject(new Error(sanitiseError(e.payload.error)));
       });
+      const u4 = await listen<{ id: string }>('krew-truncated', (e) => {
+        if (e.payload.id !== callId) return;
+        truncated = true;
+      });
 
-      done.cleanup = () => { u1(); u2(); u3(); if (stallTimer) clearTimeout(stallTimer); };
+      done.cleanup = () => { u1(); u2(); u3(); u4(); if (stallTimer) clearTimeout(stallTimer); };
       resetStall(); // start stall timer immediately
 
       invoke('krew_ai_stream', {
@@ -1106,7 +1115,7 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
     const summaryMsgs  = [{ role: 'user', content: summaryPrompt + '\n\n' + toSummarise.map((m) => `${m.role}: ${m.content}`).join('\n') }];
 
     try {
-      const summary = await streamTurn(summaryMsgs, '', () => {});
+      const { text: summary } = await streamTurn(summaryMsgs, '', () => {});
       await krewDb.saveSummary(sessionId, summary, 0);
       return [{ role: 'user', content: `[Previous conversation summary]\n${summary}` }, ...keep];
     } catch {
@@ -1247,6 +1256,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     const MAX_STEPS = 10;
     let steps       = 0;
     let totalChars  = 0;
+    const delegatedAgents = new Set<string>();
 
     // Add placeholder assistant message for streaming
     addMsg({ role: 'assistant', content: '', streaming: true });
@@ -1259,7 +1269,7 @@ The prompt must be production-ready — specific enough for a motion designer to
 
         let stepText = '';
 
-        const fullResponse = await streamTurn(
+        const { text: fullResponse, truncated: wasTruncated } = await streamTurn(
           history,
           systemPrt,
           (chunk) => {
@@ -1276,6 +1286,14 @@ The prompt must be production-ready — specific enough for a motion designer to
         );
 
         if (stopRef.current) break;
+
+        // Auto-continue if Gemini hit its output token limit mid-response
+        if (wasTruncated && !fullResponse.includes('<tool_call>') && !fullResponse.includes('<tool_code>')) {
+          history.push({ role: 'assistant', content: fullResponse });
+          history.push({ role: 'user', content: 'continue' });
+          // Don't break — loop naturally continues to fetch the rest
+          continue;
+        }
 
         // Check for tool call — handle <tool_call> and <tool_code> (model uses both), plus unclosed tags
         const OPEN_TAGS  = ['<tool_call>', '<tool_code>'];
@@ -1379,9 +1397,14 @@ The prompt must be production-ready — specific enough for a motion designer to
             const targetAgent = AGENT_BY_KEY[targetKey];
             if (!targetAgent) {
               toolResult = `Unknown agent key: "${targetKey}". Valid keys are found in krewAgents.ts.`;
+            } else if (delegatedAgents.has(targetKey)) {
+              // Boss tried to re-delegate to an agent that already ran — stop the loop
+              removeLastMsg();
+              break;
             } else {
               isDelegation = true;
               delegationKey = targetKey;
+              delegatedAgents.add(targetKey);
               setAgentStep(`Delegating to ${agentHandle(targetAgent)}…`);
               addMsg({ role: 'delegation', content: '', toolName: targetKey, streaming: true });
               const delegateMemories = await krewMemoryDb.getAll(targetKey).catch(() => [] as KrewMemory[]);
@@ -1393,10 +1416,10 @@ The prompt must be production-ready — specific enough for a motion designer to
               const delegateMsgsHist = [{ role: 'user', content: task }];
               let delegateAccum = '';   // clean prose accumulated across turns
               let delegateFinalResp = '';
-              const DELEGATE_MAX = 5;
+              const DELEGATE_MAX = 8;
               for (let ds = 0; ds < DELEGATE_MAX; ds++) {
                 let stepText = '';
-                delegateFinalResp = await streamTurn(delegateMsgsHist, delegateSystem, (chunk) => {
+                const { text: delegateRaw, truncated: delegateTruncated } = await streamTurn(delegateMsgsHist, delegateSystem, (chunk) => {
                   stepText += chunk;
                   const cleanStep = stepText
                     .replace(/<tool_call>[\s\S]*/g, '')
@@ -1405,6 +1428,15 @@ The prompt must be production-ready — specific enough for a motion designer to
                     .trim();
                   updateLastMsg(delegateAccum ? delegateAccum + '\n\n' + cleanStep : cleanStep);
                 });
+                delegateFinalResp = delegateRaw;
+                // Auto-continue delegate response if truncated mid-prose
+                if (delegateTruncated && !delegateRaw.includes('<tool_call>') && !delegateRaw.includes('<tool_code>')) {
+                  delegateMsgsHist.push({ role: 'assistant', content: delegateRaw });
+                  delegateMsgsHist.push({ role: 'user', content: 'continue' });
+                  const proseSoFar = delegateRaw.replace(/<tool_call>[\s\S]*/g, '').replace(/<tool_code>[\s\S]*/g, '').replace(/CHOICES_BLOCK:[\s\S]*/g, '').trim();
+                  if (proseSoFar) delegateAccum = delegateAccum ? delegateAccum + '\n\n' + proseSoFar : proseSoFar;
+                  continue;
+                }
                 // Extract prose before any tool call tag
                 const prosePart = delegateFinalResp
                   .replace(/<tool_call>[\s\S]*/g, '')
@@ -1499,7 +1531,18 @@ The prompt must be production-ready — specific enough for a motion designer to
         trackTokenUsage('krew', totalChars);
       }
     } catch (e: unknown) {
-      finaliseLastMsg(sanitiseError(e));
+      const raw = e instanceof Error ? e.message : String(e);
+      if (/monthly.*token|reached.*monthly|token.*limit|upgrade.*plan|adris\.tech\/pricing/i.test(raw)) {
+        // Server-side quota exceeded — remove streaming bubble and show upgrade modal
+        setMessages(prev => {
+          const copy = [...prev];
+          if (copy[copy.length - 1]?.streaming) copy.pop();
+          return copy;
+        });
+        setShowQuotaUpgrade(true);
+      } else {
+        finaliseLastMsg(sanitiseError(e));
+      }
     } finally {
       setBusy(false);
       setAgentStep(null);
@@ -1885,6 +1928,14 @@ The prompt must be production-ready — specific enough for a motion designer to
           currentPlan={profile?.plan ?? 'explore'}
           highlightPlan="builder"
           reason="Voice input in Krew requires Builder plan or higher."
+        />
+      )}
+      {showQuotaUpgrade && (
+        <UpgradeModal
+          onClose={() => setShowQuotaUpgrade(false)}
+          currentPlan={profile?.plan ?? 'explore'}
+          highlightPlan="solo"
+          reason="You've used all your AI tasks for this period. Upgrade to keep going."
         />
       )}
     </>

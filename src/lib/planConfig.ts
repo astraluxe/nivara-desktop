@@ -1,27 +1,40 @@
-export type Plan = 'free' | 'solo' | 'builder' | 'business' | 'custom';
+export type Plan = 'explore' | 'free' | 'solo' | 'builder' | 'business' | 'custom';
 
 export interface PlanConfig {
-  monthlyTokens:    number | null; // null = unlimited or lifetime pool
+  monthlyTokens:    number | null; // null = unlimited; free plan uses as lifetime cap
   label:            string;
   mcpConnections:   number;
-  canCreateMesh:    boolean;
+  canCreateMesh:    boolean;       // relay nodes available (Builder+)
   canJoinMesh:      boolean;
-  meshDevices:      number;
-  guardAccess:      boolean;
+  meshDevices:      number;        // max devices in a Mesh session
+  guardAccess:      boolean;       // Team plan only
   contractScanning: boolean;
   auditExport:      boolean;
   voiceToCode:      boolean;
-  cloudAutomations: number;
+  cloudAutomations: number;        // monthly cloud automation run quota
 }
 
 export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
-  free: {
-    monthlyTokens:    100_000,  // lifetime, not monthly
-    label:            '50 tasks lifetime',
+  explore: {
+    monthlyTokens:    100_000,
+    label:            '50 tasks · lifetime',
     mcpConnections:   2,
     canCreateMesh:    false,
-    canJoinMesh:      false,
-    meshDevices:      0,
+    canJoinMesh:      true,
+    meshDevices:      3,
+    guardAccess:      false,
+    contractScanning: false,
+    auditExport:      false,
+    voiceToCode:      false,
+    cloudAutomations: 0,
+  },
+  free: {
+    monthlyTokens:    100_000,     // ~50 tasks at ~2K tokens each (lifetime cap)
+    label:            '50 tasks · lifetime',
+    mcpConnections:   2,
+    canCreateMesh:    false,
+    canJoinMesh:      true,
+    meshDevices:      3,
     guardAccess:      false,
     contractScanning: false,
     auditExport:      false,
@@ -29,43 +42,43 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     cloudAutomations: 0,
   },
   solo: {
-    monthlyTokens:    5_000_000,
-    label:            '5M / month',
+    monthlyTokens:    2_000_000,   // ~2,000 tasks/month
+    label:            '~2,000 tasks/mo',
     mcpConnections:   5,
     canCreateMesh:    false,
-    canJoinMesh:      false,
-    meshDevices:      0,
+    canJoinMesh:      true,
+    meshDevices:      10,
     guardAccess:      false,
     contractScanning: false,
     auditExport:      false,
     voiceToCode:      false,
-    cloudAutomations: 20,
-  },
-  builder: {
-    monthlyTokens:    22_000_000,
-    label:            '22M / month',
-    mcpConnections:   25,
-    canCreateMesh:    true,
-    canJoinMesh:      true,
-    meshDevices:      5,
-    guardAccess:      true,
-    contractScanning: true,
-    auditExport:      false,
-    voiceToCode:      true,
     cloudAutomations: 500,
   },
+  builder: {
+    monthlyTokens:    8_000_000,   // ~8,000 tasks/month
+    label:            '~8,000 tasks/mo',
+    mcpConnections:   25,
+    canCreateMesh:    true,        // relay nodes unlocked
+    canJoinMesh:      true,
+    meshDevices:      25,
+    guardAccess:      false,       // Guard is Team-only
+    contractScanning: false,
+    auditExport:      false,
+    voiceToCode:      true,
+    cloudAutomations: 5_000,
+  },
   business: {
-    monthlyTokens:    62_000_000,
-    label:            '62M / month',
+    monthlyTokens:    30_000_000,  // ~30,000 tasks/month
+    label:            '~30,000 tasks/mo',
     mcpConnections:   999,
     canCreateMesh:    true,
     canJoinMesh:      true,
-    meshDevices:      10,
+    meshDevices:      50,
     guardAccess:      true,
     contractScanning: true,
     auditExport:      true,
     voiceToCode:      true,
-    cloudAutomations: 999999,
+    cloudAutomations: 999_999,
   },
   custom: {
     monthlyTokens:    null,
@@ -73,12 +86,12 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     mcpConnections:   999,
     canCreateMesh:    true,
     canJoinMesh:      true,
-    meshDevices:      10,
+    meshDevices:      50,
     guardAccess:      true,
     contractScanning: true,
     auditExport:      true,
     voiceToCode:      true,
-    cloudAutomations: 999999,
+    cloudAutomations: 999_999,
   },
 };
 

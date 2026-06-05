@@ -310,7 +310,7 @@ export default function HomeModule({ onNavigate, onStartTour }: Props) {
             <ProgressBar pct={tokenCap === null ? 100 : tokenPct} color={tokenPct > 85 ? 'bg-nv-red' : 'bg-accent'} />
             <p className="text-[9px] text-nv-muted mt-1.5">
               {tokenCap === null
-                ? (plan === 'pro' ? 'Unlimited' : planMeta.label)
+                ? (plan === 'custom' ? 'Unlimited' : planMeta.label)
                 : `${monthlyUsed.toLocaleString()} / ${tokenCap.toLocaleString()} used`}
             </p>
           </div>
