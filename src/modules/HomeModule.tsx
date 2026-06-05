@@ -44,12 +44,11 @@ const PLAN_STYLE: Record<string, string> = {
 };
 
 const PLAN_TOKENS: Record<string, { monthly: number | null; label: string }> = {
-  explore: { monthly: null,       label: '100K lifetime' },
-  solo:    { monthly: 500_000,    label: '500K / month'  },
-  growth:  { monthly: 2_000_000,  label: '2M / month'    },
-  builder: { monthly: 10_000_000, label: '10M / month'   },
-  pro:     { monthly: null,       label: 'Unlimited'     },
-  custom:  { monthly: null,       label: 'Custom'        },
+  free:     { monthly: null,       label: '50 tasks lifetime' },
+  solo:     { monthly: 5_000_000,  label: '5M / month'        },
+  builder:  { monthly: 22_000_000, label: '22M / month'       },
+  business: { monthly: 62_000_000, label: '62M / month'       },
+  custom:   { monthly: null,       label: 'Unlimited'         },
 };
 
 interface ModuleCard {
