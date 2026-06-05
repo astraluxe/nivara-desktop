@@ -1,5 +1,6 @@
-﻿import { useState } from 'react';
+﻿import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 interface NvSettings {
   automationAutoRun: boolean;
@@ -56,11 +57,40 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 type UpdateStatus = 'idle' | 'checking' | 'available' | 'latest' | 'installing' | 'error';
+type VoiceStatus = 'checking' | 'ready' | 'downloading' | 'idle' | 'error';
 
 export default function SettingsModule() {
   const [settings, setSettings] = useState<NvSettings>(loadSettings);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('idle');
   const [updateInfo, setUpdateInfo] = useState<{ version?: string; body?: string }>({});
+  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>('checking');
+  const [voicePct, setVoicePct]       = useState(0);
+  const [voiceStep, setVoiceStep]     = useState('');
+
+  useEffect(() => {
+    invoke<{ ready: boolean }>('voice_check_setup')
+      .then(r => setVoiceStatus(r.ready ? 'ready' : 'idle'))
+      .catch(() => setVoiceStatus('idle'));
+  }, []);
+
+  async function downloadVoice() {
+    setVoiceStatus('downloading');
+    setVoiceStep('Preparing…');
+    setVoicePct(0);
+    const unsub = await listen<{ step: string; pct: number }>('voice_setup_progress', e => {
+      setVoiceStep(e.payload.step);
+      setVoicePct(e.payload.pct);
+    });
+    try {
+      await invoke('voice_download_setup');
+      setVoiceStatus('ready');
+    } catch (e) {
+      setVoiceStatus('error');
+      setVoiceStep(`Failed: ${e}`);
+    } finally {
+      unsub();
+    }
+  }
 
   async function checkUpdate() {
     setUpdateStatus('checking');
@@ -179,6 +209,46 @@ export default function SettingsModule() {
               >Reset onboarding tour</button>
             </div>
           </div>
+        </Section>
+
+        {/* Voice */}
+        <Section title="Voice — Whisper">
+          {voiceStatus === 'checking' && (
+            <p className="text-[11px] text-nv-muted">Checking…</p>
+          )}
+          {voiceStatus === 'ready' && (
+            <div className="flex items-center gap-2 py-1">
+              <span className="text-emerald-400 text-sm">✓</span>
+              <div>
+                <p className="text-[12px] text-nv-text font-medium">Voice is ready</p>
+                <p className="text-[10px] text-nv-muted mt-0.5">Whisper engine + model installed. Use the mic button in any chat.</p>
+              </div>
+            </div>
+          )}
+          {(voiceStatus === 'idle' || voiceStatus === 'error') && (
+            <div>
+              <p className="text-[12px] text-nv-text font-medium mb-0.5">Voice / Speech-to-text</p>
+              <p className="text-[10px] text-nv-muted mb-3">Downloads Whisper (OpenAI) locally — ~150 MB. Lets you speak to adris.tech instead of typing.</p>
+              {voiceStatus === 'error' && (
+                <p className="text-[10px] text-nv-red font-mono mb-2">{voiceStep}</p>
+              )}
+              <button
+                onClick={downloadVoice}
+                className="text-[10px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:border-accent hover:text-accent transition-fast"
+              >
+                Download Voice (~150 MB)
+              </button>
+            </div>
+          )}
+          {voiceStatus === 'downloading' && (
+            <div>
+              <p className="text-[12px] text-nv-text font-medium mb-2">Downloading…</p>
+              <div className="h-1 bg-nv-border rounded-full overflow-hidden mb-1">
+                <div className="h-full bg-accent rounded-full transition-all duration-300" style={{ width: `${voicePct}%` }} />
+              </div>
+              <p className="text-[10px] text-nv-faint font-mono">{voiceStep}</p>
+            </div>
+          )}
         </Section>
 
         {/* About */}
