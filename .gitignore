@@ -26,3 +26,6 @@ Thumbs.db
 src-tauri/resources/voice/*.exe
 src-tauri/resources/voice/*.bin
 src-tauri/resources/mesh/*.exe
+
+# One-off patch scripts (already applied, kept locally for reference)
+fix_*.cjs
