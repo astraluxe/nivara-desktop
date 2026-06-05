@@ -14,7 +14,7 @@ export interface KrewSession {
 export interface KrewMessage {
   id: number;
   session_id: string;
-  role: 'user' | 'assistant' | 'tool_call' | 'tool_result' | 'system';
+  role: 'user' | 'assistant' | 'tool_call' | 'tool_result' | 'system' | 'delegation';
   content: string;
   tool_name: string | null;
   created_at: number;

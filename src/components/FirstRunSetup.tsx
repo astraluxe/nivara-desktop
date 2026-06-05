@@ -79,7 +79,6 @@ export default function FirstRunSetup({ onDone }: Props) {
   }
 
   const engineDone  = engineStatus === 'done' || engineStatus === 'error';
-  const voiceDone   = voiceStatus === 'done' || voiceStatus === 'skip';
   const canContinue = engineDone;
 
   return (
