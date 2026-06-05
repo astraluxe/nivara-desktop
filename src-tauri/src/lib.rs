@@ -926,10 +926,8 @@ async fn models_check_engine() -> bool {
 
 #[tauri::command]
 async fn models_stop_engine(state: tauri::State<'_, LlamaEngineProcess>) -> Result<(), String> {
-    let mut guard = state.0.lock().unwrap();
-    if let Some(mut child) = guard.take() {
-        let _ = child.kill().await;
-    }
+    let old_child = { let mut g = state.0.lock().unwrap(); g.take() };
+    if let Some(mut child) = old_child { let _ = child.kill().await; }
     Ok(())
 }
 
@@ -949,11 +947,9 @@ async fn models_run(
     let engine = llama_engine_path(&app)
         .ok_or("Local AI engine not found. Open Settings → Setup to download it.")?;
 
-    // Stop any currently running server
-    {
-        let mut guard = state.0.lock().unwrap();
-        if let Some(mut child) = guard.take() { let _ = child.kill().await; }
-    }
+    // Stop any currently running server — take child OUT of mutex before awaiting
+    let old_child = { let mut g = state.0.lock().unwrap(); g.take() };
+    if let Some(mut child) = old_child { let _ = child.kill().await; }
     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
 
     let child = tokio::process::Command::new(&engine)
