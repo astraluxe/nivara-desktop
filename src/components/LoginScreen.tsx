@@ -51,34 +51,76 @@ export default function LoginScreen() {
 
       let done = false;
 
+      // Race a promise against a timeout; rejects with the given message on expiry
+      function withTimeout<T>(p: Promise<T>, ms: number, msg: string): Promise<T> {
+        return new Promise((resolve, reject) => {
+          const t = setTimeout(() => reject(new Error(msg)), ms);
+          p.then(v => { clearTimeout(t); resolve(v); }, e => { clearTimeout(t); reject(e); });
+        });
+      }
+
       async function finish(payload: OAuthPayload) {
         if (done) return;
         done = true;
-        cancelRef.current = null;
         clearTimeout(timeoutId);
         clearInterval(pollId);
         try { unlisten(); } catch {}
 
+        // Keep cancel active throughout — user can abort a slow setSession() call.
+        // When fired after done=true it just resets the UI without touching timers.
+        let aborted = false;
+        cancelRef.current = () => {
+          aborted = true;
+          cancelRef.current = null;
+          setGoogleLoading(false);
+          setOauthUrl("");
+        };
+
         if (payload.error) {
+          cancelRef.current = null;
           setError(payload.error);
           setGoogleLoading(false);
           return;
         }
 
+        const done_ = (err?: string) => {
+          if (aborted) return;
+          cancelRef.current = null;
+          if (err) { setError(err); setGoogleLoading(false); }
+          else setGoogleLoading(false);
+        };
+
         if (payload.code) {
-          const { error: e } = await supabase.auth.exchangeCodeForSession(payload.code);
-          if (e) { setError(e.message); setGoogleLoading(false); }
-          else { await refreshSession(); setGoogleLoading(false); }
+          try {
+            const { error: e } = await withTimeout(
+              supabase.auth.exchangeCodeForSession(payload.code),
+              12_000, "Sign-in timed out. Please try again."
+            );
+            if (!aborted) {
+              if (e) done_(e.message);
+              else { await refreshSession(); done_(); }
+            }
+          } catch (err) {
+            done_(err instanceof Error ? err.message : "Sign-in failed. Please try again.");
+          }
         } else if (payload.access_token) {
-          const { error: e } = await supabase.auth.setSession({
-            access_token: payload.access_token,
-            refresh_token: payload.refresh_token ?? "",
-          });
-          if (e) { setError(e.message); setGoogleLoading(false); }
-          else { await refreshSession(); setGoogleLoading(false); }
+          try {
+            const { error: e } = await withTimeout(
+              supabase.auth.setSession({
+                access_token: payload.access_token,
+                refresh_token: payload.refresh_token ?? "",
+              }),
+              12_000, "Sign-in timed out. Please try again."
+            );
+            if (!aborted) {
+              if (e) done_(e.message);
+              else { await refreshSession(); done_(); }
+            }
+          } catch (err) {
+            done_(err instanceof Error ? err.message : "Sign-in failed. Please try again.");
+          }
         } else {
-          setError("Sign-in incomplete. Please try again.");
-          setGoogleLoading(false);
+          done_("Sign-in incomplete. Please try again.");
         }
       }
 
