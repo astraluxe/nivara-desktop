@@ -3,12 +3,17 @@ import { createClient } from "@supabase/supabase-js";
 const url = import.meta.env.VITE_SUPABASE_URL as string;
 const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
 
-// flowType: 'implicit' is required for the desktop TCP-server OAuth callback.
-// With 'pkce' (the supabase-js v2 default) and skipBrowserRedirect: true,
-// the code verifier is never stored, so exchangeCodeForSession() always fails.
-// Implicit flow returns #access_token= in the hash, which setSession() handles fine.
+// Desktop-specific auth configuration:
+// - flowType: 'implicit' — avoids PKCE code-verifier storage issues with skipBrowserRedirect
+// - lock: no-op — supabase-js's Navigator Lock API causes cascading lock contention in
+//   Tauri's WebView2 (initialize(), signOut(), setSession() queue on the same lock and
+//   the lock is never released when getUser() hangs). Desktop apps don't need multi-tab
+//   session sync, so a no-op lock is safe.
 export const supabase = createClient(url, key, {
-  auth: { flowType: 'implicit' },
+  auth: {
+    flowType: 'implicit',
+    lock: (_name: string, _acquireTimeout: number, fn: () => Promise<unknown>) => fn(),
+  },
 });
 
 export type Plan = "explore" | "free" | "solo" | "builder" | "business" | "custom";

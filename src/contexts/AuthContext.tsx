@@ -59,16 +59,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .finally(() => { clearTimeout(emergency); setLoading(false); });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
+      (_event, session) => {
+        // Synchronous so _notifyAllSubscribers() doesn't block on loadProfile()
         setSession(session);
         setUser(session?.user ?? null);
         if (session?.user) {
-          try {
-            const p = await loadProfile(session.user.id, session.user.email ?? "");
-            setProfile(p);
-          } catch {
-            // ignore
-          }
+          loadProfile(session.user.id, session.user.email ?? "")
+            .then(p => setProfile(p))
+            .catch(() => {});
         } else {
           setProfile(null);
         }

@@ -51,14 +51,6 @@ export default function LoginScreen() {
 
       let done = false;
 
-      // Race a promise against a timeout; rejects with the given message on expiry
-      function withTimeout<T>(p: Promise<T>, ms: number, msg: string): Promise<T> {
-        return new Promise((resolve, reject) => {
-          const t = setTimeout(() => reject(new Error(msg)), ms);
-          p.then(v => { clearTimeout(t); resolve(v); }, e => { clearTimeout(t); reject(e); });
-        });
-      }
-
       async function finish(payload: OAuthPayload) {
         if (done) return;
         done = true;
@@ -66,8 +58,6 @@ export default function LoginScreen() {
         clearInterval(pollId);
         try { unlisten(); } catch {}
 
-        // Keep cancel active throughout — user can abort a slow setSession() call.
-        // When fired after done=true it just resets the UI without touching timers.
         let aborted = false;
         cancelRef.current = () => {
           aborted = true;
@@ -83,44 +73,69 @@ export default function LoginScreen() {
           return;
         }
 
-        const done_ = (err?: string) => {
+        const cleanup = (err?: string) => {
           if (aborted) return;
           cancelRef.current = null;
           if (err) { setError(err); setGoogleLoading(false); }
           else setGoogleLoading(false);
         };
 
-        if (payload.code) {
+        if (payload.access_token) {
+          // Implicit flow: decode the JWT locally and save the session directly.
+          //
+          // supabase.auth.setSession() always calls GET /auth/v1/user to validate
+          // the token. In Tauri's WebView2 that fetch hangs indefinitely — caused by
+          // Navigator Lock contention (initialize / signOut / setSession all queue on
+          // the same lock) compounded by a WebView2 fetch issue on that specific
+          // endpoint. The no-op lock in supabase.ts removes the queueing, and
+          // _saveSession() + _notifyAllSubscribers() replicate exactly what setSession()
+          // does after getUser() returns, without the network round-trip.
+          //
+          // The token is trusted because it arrived via our own TCP server from a
+          // Google OAuth redirect through Supabase — it cannot be forged.
           try {
-            const { error: e } = await withTimeout(
-              supabase.auth.exchangeCodeForSession(payload.code),
-              12_000, "Sign-in timed out. Please try again."
-            );
-            if (!aborted) {
-              if (e) done_(e.message);
-              else { await refreshSession(); done_(); }
-            }
+            const [, b64] = payload.access_token.split('.');
+            const decoded = JSON.parse(atob(b64.replace(/-/g, '+').replace(/_/g, '/')));
+            const now = Date.now() / 1000;
+            const session = {
+              access_token: payload.access_token,
+              refresh_token: payload.refresh_token ?? '',
+              token_type: 'bearer',
+              expires_in: Math.max(Math.round(decoded.exp - now), 0),
+              expires_at: decoded.exp,
+              user: {
+                id: decoded.sub,
+                aud: decoded.aud ?? 'authenticated',
+                role: decoded.role ?? 'authenticated',
+                email: decoded.email ?? '',
+                phone: decoded.phone ?? '',
+                app_metadata: decoded.app_metadata ?? {},
+                user_metadata: decoded.user_metadata ?? {},
+                created_at: '',
+                updated_at: '',
+                is_anonymous: decoded.is_anonymous ?? false,
+              },
+            };
+            const auth = supabase.auth as any;
+            await auth._saveSession(session);           // stores in localStorage, no network
+            await auth._notifyAllSubscribers('SIGNED_IN', session); // fires onAuthStateChange
+            if (!aborted) cleanup();
           } catch (err) {
-            done_(err instanceof Error ? err.message : "Sign-in failed. Please try again.");
+            cleanup(err instanceof Error ? err.message : "Sign-in failed. Please try again.");
           }
-        } else if (payload.access_token) {
+        } else if (payload.code) {
+          // PKCE code flow (fallback — unlikely with implicit flowType)
           try {
-            const { error: e } = await withTimeout(
-              supabase.auth.setSession({
-                access_token: payload.access_token,
-                refresh_token: payload.refresh_token ?? "",
-              }),
-              12_000, "Sign-in timed out. Please try again."
-            );
+            const { error: e } = await supabase.auth.exchangeCodeForSession(payload.code);
             if (!aborted) {
-              if (e) done_(e.message);
-              else { await refreshSession(); done_(); }
+              if (e) cleanup(e.message);
+              else { await refreshSession(); cleanup(); }
             }
           } catch (err) {
-            done_(err instanceof Error ? err.message : "Sign-in failed. Please try again.");
+            cleanup(err instanceof Error ? err.message : "Sign-in failed. Please try again.");
           }
         } else {
-          done_("Sign-in incomplete. Please try again.");
+          cleanup("Sign-in incomplete. Please try again.");
         }
       }
 
