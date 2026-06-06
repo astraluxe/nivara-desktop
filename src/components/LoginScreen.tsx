@@ -6,6 +6,13 @@ import { open } from "@tauri-apps/plugin-shell";
 import { useAuth } from "../contexts/AuthContext";
 import { supabase } from "../lib/supabase";
 
+type OAuthPayload = {
+  code?: string | null;
+  access_token?: string | null;
+  refresh_token?: string | null;
+  error?: string | null;
+};
+
 export default function LoginScreen() {
   const { refreshSession } = useAuth();
   const [error, setError] = useState("");
@@ -30,72 +37,65 @@ export default function LoginScreen() {
         return;
       }
 
-      // Register event listener BEFORE starting server to avoid any race condition
-      let timeoutId: ReturnType<typeof setTimeout>;
-      const unlisten = await listen<string>("oauth_complete", async (event) => {
+      let done = false;
+
+      async function finish(payload: OAuthPayload) {
+        if (done) return;
+        done = true;
         clearTimeout(timeoutId);
-        unlisten();
-        try {
-          const payload: {
-            code?: string | null;
-            access_token?: string | null;
-            refresh_token?: string | null;
-            error?: string | null;
-          } = JSON.parse(event.payload);
+        clearInterval(pollId);
+        try { unlisten(); } catch {}
 
-          if (payload.error) {
-            setError(payload.error);
-            setGoogleLoading(false);
-            return;
-          }
+        if (payload.error) {
+          setError(payload.error);
+          setGoogleLoading(false);
+          return;
+        }
 
-          if (payload.code) {
-            const { error: e } = await supabase.auth.exchangeCodeForSession(payload.code);
-            if (e) {
-              setError(e.message);
-              setGoogleLoading(false);
-            } else {
-              await refreshSession();
-              setGoogleLoading(false);
-            }
-          } else if (payload.access_token) {
-            const { error: e } = await supabase.auth.setSession({
-              access_token: payload.access_token,
-              refresh_token: payload.refresh_token ?? "",
-            });
-            if (e) {
-              setError(e.message);
-              setGoogleLoading(false);
-            } else {
-              await refreshSession();
-              setGoogleLoading(false);
-            }
-          } else {
-            setError("Sign-in incomplete. Please try again.");
-            setGoogleLoading(false);
-          }
-        } catch {
-          setError("Authentication failed. Please try again.");
+        if (payload.code) {
+          const { error: e } = await supabase.auth.exchangeCodeForSession(payload.code);
+          if (e) { setError(e.message); setGoogleLoading(false); }
+          else { await refreshSession(); setGoogleLoading(false); }
+        } else if (payload.access_token) {
+          const { error: e } = await supabase.auth.setSession({
+            access_token: payload.access_token,
+            refresh_token: payload.refresh_token ?? "",
+          });
+          if (e) { setError(e.message); setGoogleLoading(false); }
+          else { await refreshSession(); setGoogleLoading(false); }
+        } else {
+          setError("Sign-in incomplete. Please try again.");
           setGoogleLoading(false);
         }
-      });
-
-      timeoutId = setTimeout(() => {
-        unlisten();
-        setError("Google sign-in timed out. Close the browser tab and try again.");
-        setGoogleLoading(false);
-      }, 180_000);
-
-      // Start the local callback server (emits "oauth_complete" when code arrives)
-      const serverErr = await invoke<string | null>("start_oauth_server");
-      if (serverErr) {
-        clearTimeout(timeoutId);
-        unlisten();
-        setError(serverErr);
-        setGoogleLoading(false);
-        return;
       }
 
+      // Primary: Tauri event fired by the server when it receives the callback
+      const unlisten = await listen<string>("oauth_complete", async (event) => {
+        try { await finish(JSON.parse(event.payload)); }
+        catch { if (!done) { done = true; setError("Authentication failed. Please try again."); setGoogleLoading(false); } }
+      });
+
+      // Fallback: poll poll_oauth_code every 800 ms in case the event is dropped
+      const pollId = setInterval(async () => {
+        if (done) { clearInterval(pollId); return; }
+        try {
+          const raw = await invoke<string | null>("poll_oauth_code");
+          if (raw) await finish(JSON.parse(raw));
+        } catch {}
+      }, 800);
+
+      const timeoutId = setTimeout(() => {
+        if (!done) {
+          done = true;
+          clearInterval(pollId);
+          try { unlisten(); } catch {}
+          setError("Google sign-in timed out. Close the browser tab and try again.");
+          setGoogleLoading(false);
+        }
+      }, 180_000);
+
+      // Start callback server, then open browser
+      await invoke("start_oauth_server");
       await open(data.url);
 
     } catch {
@@ -104,7 +104,6 @@ export default function LoginScreen() {
     }
   }
 
-  // Title bar drag — only drag when not clicking a button
   function handleTitleBarMouseDown(e: React.MouseEvent<HTMLDivElement>) {
     if ((e.target as HTMLElement).closest("button")) return;
     getCurrentWindow().startDragging();
@@ -181,7 +180,9 @@ export default function LoginScreen() {
             disabled={googleLoading}
             className="w-full py-3 rounded-lg bg-nv-surface hover:bg-nv-surface2 disabled:opacity-50 border border-nv-border text-nv-text text-sm font-medium transition-fast flex items-center justify-center gap-3"
           >
-            {googleLoading ? <><Spinner />Opening browser…</> : <><GoogleIcon />Continue with Google</>}
+            {googleLoading
+              ? <><Spinner />Waiting for browser…</>
+              : <><GoogleIcon />Continue with Google</>}
           </button>
 
           {error && (
@@ -190,9 +191,17 @@ export default function LoginScreen() {
             </p>
           )}
 
-          <p className="text-nv-faint text-[11px] text-center mt-6 leading-relaxed">
-            A browser window will open to complete sign-in.<br/>Return to this app once done.
-          </p>
+          {googleLoading && (
+            <p className="text-nv-faint text-[11px] text-center mt-4 leading-relaxed">
+              Complete sign-in in the browser window.<br/>The app will log in automatically once done.
+            </p>
+          )}
+
+          {!googleLoading && !error && (
+            <p className="text-nv-faint text-[11px] text-center mt-6 leading-relaxed">
+              A browser window will open to complete sign-in.<br/>Return to this app once done.
+            </p>
+          )}
         </div>
       </div>
     </div>

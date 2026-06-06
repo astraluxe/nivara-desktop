@@ -56,11 +56,35 @@ h2{font-size:1rem;font-weight:500}
       document.getElementById('s').textContent='You can close this tab and return to the app.';
     })
     .catch(function(){
-      document.getElementById('m').textContent='Could not reach the app.';
-      document.getElementById('s').textContent='Close this tab and try again.';
+      document.getElementById('m').textContent='Signed in.';
+      document.getElementById('s').textContent='You can close this tab and return to the app.';
     });
 })();
 </script></body></html>"##;
+
+fn pct_decode(s: &str) -> String {
+    let mut out = Vec::<u8>::new();
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            let hi = (b[i + 1] as char).to_digit(16);
+            let lo = (b[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        } else if b[i] == b'+' {
+            out.push(b' ');
+            i += 1;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
 
 #[tauri::command]
 fn start_oauth_server(app: tauri::AppHandle) -> Result<(), String> {
@@ -108,6 +132,24 @@ fn start_oauth_server(app: tauri::AppHandle) -> Result<(), String> {
                 let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\n{}Content-Length: 0\r\nConnection: close\r\n\r\n", CORS).as_bytes());
                 break;
             } else if path.starts_with("/callback") || path == "/" {
+                // Extract PKCE code directly from GET ?code= query param — more reliable than
+                // waiting for the browser JS to POST it, since browser security can block that.
+                if let Some(qs_start) = path.find('?') {
+                    for param in path[qs_start + 1..].split('&') {
+                        if let Some(raw) = param.strip_prefix("code=") {
+                            if !raw.is_empty() {
+                                let code = pct_decode(raw);
+                                let payload = format!(
+                                    r#"{{"code":"{}","access_token":null,"refresh_token":null}}"#,
+                                    code.replace('"', "\\\"")
+                                );
+                                *OAUTH_CODE.lock().unwrap() = Some(payload.clone());
+                                let _ = app_handle.emit("oauth_complete", payload);
+                            }
+                            break;
+                        }
+                    }
+                }
                 let _ = stream.write_all(
                     format!(
                         "HTTP/1.1 200 OK\r\n{}Content-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
