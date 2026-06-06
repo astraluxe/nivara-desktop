@@ -69,7 +69,10 @@ export default function FirstRunSetup({ onDone }: Props) {
           <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-3">
             <div className="flex items-center gap-3">
               <div className="w-5 h-5 flex items-center justify-center shrink-0">
-                <span className="text-emerald-400 text-sm">✓</span>
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                  <circle cx="10" cy="10" r="10" fill="#22c55e"/>
+                  <path d="M5.5 10.5l3 3 6-6" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
               </div>
               <div className="flex-1">
                 <p className="text-[13px] font-medium text-nv-text">Core app</p>
@@ -107,7 +110,13 @@ export default function FirstRunSetup({ onDone }: Props) {
                   </div>
                 )}
                 {voiceStatus === 'done' && (
-                  <p className="text-[11px] text-emerald-400 mt-1">Whisper ready ✓</p>
+                  <div className="flex items-center gap-1.5 mt-1">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                      <circle cx="7" cy="7" r="7" fill="#22c55e"/>
+                      <path d="M3.5 7.5l2.5 2.5 4.5-4.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                    <span className="text-[11px] text-emerald-400">Whisper ready</span>
+                  </div>
                 )}
               </div>
               {voiceStatus === 'idle' && (

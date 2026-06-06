@@ -218,7 +218,10 @@ export default function SettingsModule() {
           )}
           {voiceStatus === 'ready' && (
             <div className="flex items-center gap-2 py-1">
-              <span className="text-emerald-400 text-sm">✓</span>
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none" className="shrink-0">
+                <circle cx="9" cy="9" r="9" fill="#22c55e"/>
+                <path d="M4.5 9.5l3 3 6-6" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
               <div>
                 <p className="text-[12px] text-nv-text font-medium">Voice is ready</p>
                 <p className="text-[10px] text-nv-muted mt-0.5">Whisper engine + model installed. Use the mic button in any chat.</p>
