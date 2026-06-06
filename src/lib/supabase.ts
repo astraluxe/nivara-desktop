@@ -12,7 +12,7 @@ const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
 export const supabase = createClient(url, key, {
   auth: {
     flowType: 'implicit',
-    lock: (_name: string, _acquireTimeout: number, fn: () => Promise<unknown>) => fn(),
+    lock: <R>(_name: string, _acquireTimeout: number, fn: () => Promise<R>) => fn(),
   },
 });
 
