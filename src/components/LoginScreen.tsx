@@ -94,8 +94,18 @@ export default function LoginScreen() {
         }
       }, 180_000);
 
-      // Start callback server, then open browser
-      await invoke("start_oauth_server");
+      // Start callback server (synchronous bind), then open browser
+      try {
+        await invoke("start_oauth_server");
+      } catch (e: unknown) {
+        done = true;
+        clearTimeout(timeoutId);
+        clearInterval(pollId);
+        try { unlisten(); } catch {}
+        setError(typeof e === "string" ? e : "Could not start sign-in server. Restart the app.");
+        setGoogleLoading(false);
+        return;
+      }
       await open(data.url);
 
     } catch {

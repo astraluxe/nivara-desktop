@@ -88,28 +88,35 @@ fn pct_decode(s: &str) -> String {
 
 #[tauri::command]
 fn start_oauth_server(app: tauri::AppHandle) -> Result<(), String> {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
     *OAUTH_CODE.lock().unwrap() = None;
+
+    // Bind synchronously — port must be ready BEFORE the caller opens the browser.
+    // Binding inside the spawned thread causes a race: the OAuth redirect can arrive
+    // before the thread runs, giving ERR_CONNECTION_REFUSED in the browser.
+    let listener = TcpListener::bind("127.0.0.1:54321")
+        .map_err(|_| "Port 54321 is already in use. Restart the app and try again.".to_string())?;
+
     let app_handle = app.clone();
     std::thread::spawn(move || {
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-
-        let listener = match TcpListener::bind("127.0.0.1:54321") {
-            Ok(l) => l,
-            Err(e) => {
-                let err = r#"{"error":"Port 54321 already in use. Restart the app and try again."}"#.to_string();
-                *OAUTH_CODE.lock().unwrap() = Some(err.clone());
-                let _ = app_handle.emit("oauth_complete", err);
-                eprintln!("[oauth] bind failed: {}", e);
-                return;
-            }
-        };
+        // Non-blocking so the deadline check doesn't hang inside accept().
+        listener.set_nonblocking(true).ok();
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
         loop {
             if std::time::Instant::now() > deadline { break; }
 
-            let Ok((mut stream, _)) = listener.accept() else { continue };
+            let (mut stream, _) = match listener.accept() {
+                Ok(pair) => pair,
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    continue;
+                }
+                Err(_) => break,
+            };
+            stream.set_nonblocking(false).ok();
             let mut buf = [0u8; 16384];
             let n = stream.read(&mut buf).unwrap_or(0);
             let req = String::from_utf8_lossy(&buf[..n]);
@@ -132,8 +139,8 @@ fn start_oauth_server(app: tauri::AppHandle) -> Result<(), String> {
                 let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\n{}Content-Length: 0\r\nConnection: close\r\n\r\n", CORS).as_bytes());
                 break;
             } else if path.starts_with("/callback") || path == "/" {
-                // Extract PKCE code directly from GET ?code= query param — more reliable than
-                // waiting for the browser JS to POST it, since browser security can block that.
+                // PKCE flow: extract ?code= from GET URL directly.
+                // Implicit flow (#access_token=) is client-side only; CALLBACK_HTML JS handles it.
                 if let Some(qs_start) = path.find('?') {
                     for param in path[qs_start + 1..].split('&') {
                         if let Some(raw) = param.strip_prefix("code=") {
