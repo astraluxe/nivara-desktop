@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Nivara</title>
+    <!-- Apply theme + background before any module script runs to prevent black flash -->
+    <style>html{background:#0a0a0a}html.paper{background:#ffffff}</style>
+    <script>try{if(localStorage.getItem('nv-theme')!=='ink')document.documentElement.classList.add('paper')}catch(e){}</script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />

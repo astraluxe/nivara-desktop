@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -7,21 +7,9 @@ import { useAuth } from "../contexts/AuthContext";
 import { supabase } from "../lib/supabase";
 
 export default function LoginScreen() {
-  const { signIn, refreshSession } = useAuth();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const { refreshSession } = useAuth();
   const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
-
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
-    const { error } = await signIn(email, password);
-    setLoading(false);
-    if (error) setError(error);
-  }
 
   async function handleGoogleSignIn() {
     setError("");
@@ -67,7 +55,6 @@ export default function LoginScreen() {
               setError(e.message);
               setGoogleLoading(false);
             } else {
-              // onAuthStateChange is unreliable in Tauri webview — refresh directly
               await refreshSession();
               setGoogleLoading(false);
             }
@@ -95,7 +82,7 @@ export default function LoginScreen() {
 
       timeoutId = setTimeout(() => {
         unlisten();
-        setError("Google sign-in timed out. If the browser showed 'couldn't sign in', please use email/password to log in instead.");
+        setError("Google sign-in timed out. Close the browser tab and try again.");
         setGoogleLoading(false);
       }, 180_000);
 
@@ -183,7 +170,7 @@ export default function LoginScreen() {
             </svg>
             <div className="text-center">
               <h1 className="text-nv-text text-xl font-semibold tracking-tight">Sign in to adris.tech</h1>
-              <p className="text-nv-muted text-sm mt-1">Use your Krew / adris.tech account</p>
+              <p className="text-nv-muted text-sm mt-1">Use your Google / Gmail account</p>
             </div>
           </div>
 
@@ -191,60 +178,21 @@ export default function LoginScreen() {
           <button
             type="button"
             onClick={handleGoogleSignIn}
-            disabled={googleLoading || loading}
-            className="w-full py-2.5 rounded-lg mb-4 bg-nv-surface hover:bg-nv-surface2 disabled:opacity-50 border border-nv-border text-nv-text text-sm font-medium transition-fast flex items-center justify-center gap-3"
+            disabled={googleLoading}
+            className="w-full py-3 rounded-lg bg-nv-surface hover:bg-nv-surface2 disabled:opacity-50 border border-nv-border text-nv-text text-sm font-medium transition-fast flex items-center justify-center gap-3"
           >
             {googleLoading ? <><Spinner />Opening browser…</> : <><GoogleIcon />Continue with Google</>}
           </button>
 
-          {/* Divider */}
-          <div className="flex items-center gap-3 mb-4">
-            <div className="flex-1 h-px bg-nv-border" />
-            <span className="text-nv-faint text-xs font-mono">or</span>
-            <div className="flex-1 h-px bg-nv-border" />
-          </div>
+          {error && (
+            <p className="mt-4 text-nv-red text-xs font-mono px-3 py-2 bg-nv-red/10 border border-nv-red/20 rounded-lg">
+              {error}
+            </p>
+          )}
 
-          {/* Email / password form */}
-          <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-            <div className="flex flex-col gap-1.5">
-              <label className="text-nv-muted text-xs font-medium uppercase tracking-wider">Email</label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@domain.in"
-                required
-                autoComplete="email"
-                className="w-full px-3 py-2.5 rounded-lg bg-nv-surface border border-nv-border text-nv-text text-sm placeholder:text-nv-faint focus:outline-none focus:border-accent transition-fast"
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <label className="text-nv-muted text-xs font-medium uppercase tracking-wider">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                required
-                autoComplete="current-password"
-                className="w-full px-3 py-2.5 rounded-lg bg-nv-surface border border-nv-border text-nv-text text-sm placeholder:text-nv-faint focus:outline-none focus:border-accent transition-fast"
-              />
-            </div>
-
-            {error && (
-              <p className="text-nv-red text-xs font-mono px-3 py-2 bg-nv-red/10 border border-nv-red/20 rounded-lg">
-                {error}
-              </p>
-            )}
-
-            <button
-              type="submit"
-              disabled={loading || googleLoading}
-              className="mt-1 w-full py-2.5 rounded-lg bg-accent hover:bg-accent-dim disabled:opacity-50 text-white text-sm font-semibold transition-fast flex items-center justify-center gap-2"
-            >
-              {loading ? <><Spinner />Signing in…</> : "Sign in"}
-            </button>
-          </form>
+          <p className="text-nv-faint text-[11px] text-center mt-6 leading-relaxed">
+            A browser window will open to complete sign-in.<br/>Return to this app once done.
+          </p>
         </div>
       </div>
     </div>
