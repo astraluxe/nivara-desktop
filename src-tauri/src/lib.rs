@@ -445,21 +445,26 @@ async fn ai_stream(
 
     match mode.as_str() {
         "local" => {
-            let model = local_model.unwrap_or_else(|| "llama3".to_string());
-            let client = reqwest::Client::new();
-            let body = serde_json::json!({ "model": model, "messages": messages, "stream": true });
-            let resp = client.post("http://localhost:11434/api/chat")
+            // adris-engine (llama.cpp) serves OpenAI-compatible API on port 8080
+            let msgs: Vec<serde_json::Value> = messages.iter()
+                .map(|m| serde_json::json!({"role": m.role, "content": m.content}))
+                .collect();
+            let body = serde_json::json!({ "model": "local", "messages": msgs, "stream": true });
+            let resp = reqwest::Client::new()
+                .post("http://127.0.0.1:8080/v1/chat/completions")
                 .json(&body).send().await
-                .map_err(|e| { let s = e.to_string(); emit_error(s.clone()); s })?;
+                .map_err(|e| { let s = format!("Local AI engine not running. Load a model first in the Models tab. ({})", e); emit_error(s.clone()); s })?;
             let mut stream = resp.bytes_stream();
             while let Some(chunk) = stream.next().await {
                 let bytes = chunk.map_err(|e| e.to_string())?;
-                let text = String::from_utf8_lossy(&bytes);
-                for line in text.lines() {
-                    if line.is_empty() { continue; }
-                    if let Ok(v) = serde_json::from_str::<OllamaChunk>(line) {
-                        if let Some(msg) = v.message { if !msg.content.is_empty() { emit_chunk(msg.content); } }
-                        if v.done.unwrap_or(false) { emit_done(); return Ok(()); }
+                for line in String::from_utf8_lossy(&bytes).lines() {
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        if data.trim() == "[DONE]" { emit_done(); return Ok(()); }
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+                            if let Some(t) = v["choices"][0]["delta"]["content"].as_str() {
+                                if !t.is_empty() { emit_chunk(t.to_string()); }
+                            }
+                        }
                     }
                 }
             }
@@ -2231,22 +2236,26 @@ async fn krew_ai_stream(
 
     match mode.as_str() {
         "local" => {
-            let model = local_model.unwrap_or_else(|| "llama3".to_string());
-            let client = reqwest::Client::new();
+            // adris-engine (llama.cpp) serves OpenAI-compatible API on port 8080
             let mut all_msgs = Vec::new();
             if !sys.is_empty() { all_msgs.push(serde_json::json!({"role":"system","content":sys})); }
             for m in &messages { all_msgs.push(serde_json::json!({"role":m.role,"content":m.content})); }
-            let body = serde_json::json!({ "model": model, "messages": all_msgs, "stream": true });
-            let resp = client.post("http://localhost:11434/api/chat").json(&body).send().await
-                .map_err(|e| { let s = e.to_string(); emit_error(s.clone()); s })?;
+            let body = serde_json::json!({ "model": "local", "messages": all_msgs, "stream": true });
+            let resp = reqwest::Client::new()
+                .post("http://127.0.0.1:8080/v1/chat/completions")
+                .json(&body).send().await
+                .map_err(|e| { let s = format!("Local AI engine not running. Load a model first in the Models tab. ({})", e); emit_error(s.clone()); s })?;
             let mut stream = resp.bytes_stream();
             while let Some(chunk) = stream.next().await {
                 let bytes = chunk.map_err(|e| e.to_string())?;
                 for line in String::from_utf8_lossy(&bytes).lines() {
-                    if line.is_empty() { continue; }
-                    if let Ok(v) = serde_json::from_str::<OllamaChunk>(line) {
-                        if let Some(msg) = v.message { if !msg.content.is_empty() { emit_chunk(msg.content); } }
-                        if v.done.unwrap_or(false) { emit_done(); return Ok(()); }
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        if data.trim() == "[DONE]" { emit_done(); return Ok(()); }
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+                            if let Some(t) = v["choices"][0]["delta"]["content"].as_str() {
+                                if !t.is_empty() { emit_chunk(t.to_string()); }
+                            }
+                        }
                     }
                 }
             }
