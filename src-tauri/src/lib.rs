@@ -121,9 +121,28 @@ fn start_oauth_server(app: tauri::AppHandle) -> Result<(), String> {
                 Err(_) => break,
             };
             stream.set_nonblocking(false).ok();
-            let mut buf = [0u8; 16384];
-            let n = stream.read(&mut buf).unwrap_or(0);
-            let req = String::from_utf8_lossy(&buf[..n]);
+            // Read the full HTTP request — body may arrive in a second TCP packet,
+            // so we loop until Content-Length bytes of body have been received.
+            let mut raw: Vec<u8> = Vec::with_capacity(8192);
+            let mut tmp = [0u8; 8192];
+            let req = loop {
+                match stream.read(&mut tmp) {
+                    Ok(0) | Err(_) => break String::from_utf8_lossy(&raw).into_owned(),
+                    Ok(n) => raw.extend_from_slice(&tmp[..n]),
+                }
+                let s = String::from_utf8_lossy(&raw);
+                if let Some(sep) = s.find("\r\n\r\n") {
+                    let cl: usize = s[..sep].lines()
+                        .find(|l| l.to_lowercase().starts_with("content-length:"))
+                        .and_then(|l| l.splitn(2, ':').nth(1))
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(0);
+                    if raw.len() >= sep + 4 + cl { break s.into_owned(); }
+                    // body not fully arrived yet — read more
+                } else if raw.len() > 65536 {
+                    break s.into_owned(); // safety cap
+                }
+            };
             let first_line = req.lines().next().unwrap_or("").to_string();
             let method_path: Vec<&str> = first_line.splitn(3, ' ').collect();
             let method = method_path.get(0).copied().unwrap_or("");
