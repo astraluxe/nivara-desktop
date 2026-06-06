@@ -404,11 +404,6 @@ async fn scan_folder_for_compliance(folder_path: String) -> Result<String, Strin
 use serde::Deserialize;
 use reqwest::header;
 
-#[derive(Deserialize)]
-struct OllamaChunk { message: Option<OllamaMsg>, done: Option<bool> }
-#[derive(Deserialize)]
-struct OllamaMsg { content: String }
-
 #[derive(Serialize, Deserialize, Clone)]
 struct AiMessage { role: String, content: String }
 
@@ -420,7 +415,7 @@ async fn ai_stream(
     messages: Vec<AiMessage>,
     api_key: Option<String>,
     provider: Option<String>,
-    local_model: Option<String>,
+    _local_model: Option<String>,
     model_name: Option<String>,
     base_url: Option<String>,
     session_token: Option<String>,
@@ -2218,7 +2213,7 @@ async fn krew_ai_stream(
     messages: Vec<AiMessage>,
     api_key: Option<String>,
     provider: Option<String>,
-    local_model: Option<String>,
+    _local_model: Option<String>,
     model_name: Option<String>,
     base_url: Option<String>,
     session_token: Option<String>,

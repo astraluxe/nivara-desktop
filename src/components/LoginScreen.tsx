@@ -111,7 +111,9 @@ export default function LoginScreen() {
         return;
       }
       setOauthUrl(data.url);
-      await open(data.url);
+      // Do NOT auto-open — let user choose which browser gets the OAuth callback.
+      // Auto-opening causes the default browser to race and shut down the TCP server
+      // before the user can paste the link in their preferred browser.
 
     } catch {
       setError("Something went wrong. Please try again.");
@@ -196,7 +198,7 @@ export default function LoginScreen() {
             className="w-full py-3 rounded-lg bg-nv-surface hover:bg-nv-surface2 disabled:opacity-50 border border-nv-border text-nv-text text-sm font-medium transition-fast flex items-center justify-center gap-3"
           >
             {googleLoading
-              ? <><Spinner />Waiting for browser…</>
+              ? <><Spinner />{oauthUrl ? "Waiting for sign-in…" : "Starting…"}</>
               : <><GoogleIcon />Continue with Google</>}
           </button>
 
@@ -206,33 +208,50 @@ export default function LoginScreen() {
             </p>
           )}
 
-          {googleLoading && (
-            <p className="text-nv-faint text-[11px] text-center mt-4 leading-relaxed">
-              Complete sign-in in the browser window.<br/>The app will log in automatically once done.
-            </p>
-          )}
-
           {googleLoading && oauthUrl && (
-            <div className="mt-3 p-3 bg-nv-surface border border-nv-border rounded-lg">
-              <p className="text-nv-faint text-[10px] mb-2 leading-relaxed">
-                Wrong Google account opened? Copy this link and paste it in a browser where your correct account is signed in.
-              </p>
+            <div className="mt-4 space-y-2">
+              {/* Primary action: open in whichever browser the user wants */}
+              <button
+                onClick={() => open(oauthUrl)}
+                className="w-full py-2.5 rounded-lg bg-accent/10 border border-accent/30 text-accent text-[12px] font-medium hover:bg-accent/20 transition-colors flex items-center justify-center gap-2"
+              >
+                Open sign-in in browser →
+              </button>
+
+              {/* Divider */}
+              <div className="relative flex items-center py-0.5">
+                <div className="flex-1 h-px bg-nv-border"/>
+                <span className="px-2 text-[10px] text-nv-faint">or</span>
+                <div className="flex-1 h-px bg-nv-border"/>
+              </div>
+
+              {/* Secondary: copy for pasting in a specific browser */}
               <button
                 onClick={() => {
                   navigator.clipboard.writeText(oauthUrl);
                   setCopied(true);
                   setTimeout(() => setCopied(false), 2000);
                 }}
-                className="w-full text-[11px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:border-accent hover:text-accent transition-colors font-mono"
+                className="w-full text-[11px] px-3 py-2 rounded-lg border border-nv-border text-nv-muted hover:border-accent hover:text-accent transition-colors"
               >
-                {copied ? "Copied ✓" : "Copy sign-in link"}
+                {copied ? "✓ Copied!" : "Copy link — paste in your preferred browser"}
               </button>
+
+              <p className="text-nv-faint text-[10px] text-center leading-relaxed pt-1">
+                The app logs in automatically once you complete sign-in.
+              </p>
             </div>
+          )}
+
+          {googleLoading && !oauthUrl && (
+            <p className="text-nv-faint text-[11px] text-center mt-4">
+              Starting sign-in…
+            </p>
           )}
 
           {!googleLoading && !error && (
             <p className="text-nv-faint text-[11px] text-center mt-6 leading-relaxed">
-              A browser window will open to complete sign-in.<br/>Return to this app once done.
+              Opens a sign-in page — choose which browser to use.<br/>Return to this app once done.
             </p>
           )}
         </div>
