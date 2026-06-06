@@ -17,9 +17,13 @@ export default function LoginScreen() {
   const { refreshSession } = useAuth();
   const [error, setError] = useState("");
   const [googleLoading, setGoogleLoading] = useState(false);
+  const [oauthUrl, setOauthUrl] = useState("");
+  const [copied, setCopied] = useState(false);
 
   async function handleGoogleSignIn() {
     setError("");
+    setOauthUrl("");
+    setCopied(false);
     setGoogleLoading(true);
 
     try {
@@ -106,6 +110,7 @@ export default function LoginScreen() {
         setGoogleLoading(false);
         return;
       }
+      setOauthUrl(data.url);
       await open(data.url);
 
     } catch {
@@ -205,6 +210,24 @@ export default function LoginScreen() {
             <p className="text-nv-faint text-[11px] text-center mt-4 leading-relaxed">
               Complete sign-in in the browser window.<br/>The app will log in automatically once done.
             </p>
+          )}
+
+          {googleLoading && oauthUrl && (
+            <div className="mt-3 p-3 bg-nv-surface border border-nv-border rounded-lg">
+              <p className="text-nv-faint text-[10px] mb-2 leading-relaxed">
+                Wrong Google account opened? Copy this link and paste it in a browser where your correct account is signed in.
+              </p>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(oauthUrl);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                }}
+                className="w-full text-[11px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:border-accent hover:text-accent transition-colors font-mono"
+              >
+                {copied ? "Copied ✓" : "Copy sign-in link"}
+              </button>
+            </div>
           )}
 
           {!googleLoading && !error && (
