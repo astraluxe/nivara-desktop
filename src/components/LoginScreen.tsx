@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -19,12 +19,20 @@ export default function LoginScreen() {
   const [googleLoading, setGoogleLoading] = useState(false);
   const [oauthUrl, setOauthUrl] = useState("");
   const [copied, setCopied] = useState(false);
+  // Lets the Cancel button tear down the in-flight OAuth listeners/timers
+  const cancelRef = useRef<(() => void) | null>(null);
+
+  function handleCancel() {
+    cancelRef.current?.();
+    cancelRef.current = null;
+  }
 
   async function handleGoogleSignIn() {
     setError("");
     setOauthUrl("");
     setCopied(false);
     setGoogleLoading(true);
+    cancelRef.current = null;
 
     try {
       const { data, error } = await supabase.auth.signInWithOAuth({
@@ -46,6 +54,7 @@ export default function LoginScreen() {
       async function finish(payload: OAuthPayload) {
         if (done) return;
         done = true;
+        cancelRef.current = null;
         clearTimeout(timeoutId);
         clearInterval(pollId);
         try { unlisten(); } catch {}
@@ -76,7 +85,7 @@ export default function LoginScreen() {
       // Primary: Tauri event fired by the server when it receives the callback
       const unlisten = await listen<string>("oauth_complete", async (event) => {
         try { await finish(JSON.parse(event.payload)); }
-        catch { if (!done) { done = true; setError("Authentication failed. Please try again."); setGoogleLoading(false); } }
+        catch { if (!done) { done = true; cancelRef.current = null; setError("Authentication failed. Please try again."); setGoogleLoading(false); } }
       });
 
       // Fallback: poll poll_oauth_code every 800 ms in case the event is dropped
@@ -91,18 +100,32 @@ export default function LoginScreen() {
       const timeoutId = setTimeout(() => {
         if (!done) {
           done = true;
+          cancelRef.current = null;
           clearInterval(pollId);
           try { unlisten(); } catch {}
-          setError("Google sign-in timed out. Close the browser tab and try again.");
+          setError("Sign-in timed out. Please try again.");
           setGoogleLoading(false);
+          setOauthUrl("");
         }
       }, 180_000);
 
-      // Start callback server (synchronous bind), then open browser
+      // Wire up cancel so the button can tear everything down cleanly
+      cancelRef.current = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timeoutId);
+        clearInterval(pollId);
+        try { unlisten(); } catch {}
+        setGoogleLoading(false);
+        setOauthUrl("");
+      };
+
+      // Start callback server (synchronous bind — port must be ready before user opens browser)
       try {
         await invoke("start_oauth_server");
       } catch (e: unknown) {
         done = true;
+        cancelRef.current = null;
         clearTimeout(timeoutId);
         clearInterval(pollId);
         try { unlisten(); } catch {}
@@ -111,9 +134,9 @@ export default function LoginScreen() {
         return;
       }
       setOauthUrl(data.url);
-      // Do NOT auto-open — let user choose which browser gets the OAuth callback.
-      // Auto-opening causes the default browser to race and shut down the TCP server
-      // before the user can paste the link in their preferred browser.
+      // Do NOT auto-open any browser — let user choose.
+      // Auto-opening races: if the default browser completes OAuth first it shuts down
+      // the TCP server, so any other browser then gets ERR_CONNECTION_REFUSED.
 
     } catch {
       setError("Something went wrong. Please try again.");
@@ -240,6 +263,14 @@ export default function LoginScreen() {
               <p className="text-nv-faint text-[10px] text-center leading-relaxed pt-1">
                 The app logs in automatically once you complete sign-in.
               </p>
+
+              {/* Cancel — lets user restart without waiting for 3-min timeout */}
+              <button
+                onClick={handleCancel}
+                className="w-full text-[10px] text-nv-faint hover:text-nv-muted transition-colors pt-1"
+              >
+                Cancel sign-in
+              </button>
             </div>
           )}
 

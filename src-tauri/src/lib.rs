@@ -41,8 +41,12 @@ h2{font-size:1rem;font-weight:500}
   var h=new URLSearchParams(location.hash.slice(1));
   var err=q.get('error')||h.get('error');
   if(err){
+    var desc=q.get('error_description')||h.get('error_description')||err;
     document.getElementById('m').textContent='Sign-in failed.';
-    document.getElementById('s').textContent=q.get('error_description')||h.get('error_description')||err;
+    document.getElementById('s').textContent=desc;
+    // Notify the app so it can show the error and reset instead of waiting 3 minutes
+    fetch('http://localhost:54321/code',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({error:desc,code:null,access_token:null,refresh_token:null})});
     return;
   }
   var payload=JSON.stringify({
