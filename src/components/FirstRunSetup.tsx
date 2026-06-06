@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
@@ -17,14 +17,14 @@ export default function FirstRunSetup({ onDone }: Props) {
   const [voicePct,    setVoicePct]    = useState(0);
   const [voiceStep,   setVoiceStep]   = useState('');
 
-  useState(() => {
+  useEffect(() => {
     const unsub = listen<ProgressEvent>('voice_setup_progress', e => {
       setVoiceStep(e.payload.step);
       setVoicePct(e.payload.pct);
       if (e.payload.pct >= 100) setVoiceStatus('done');
     });
     return () => { unsub.then(f => f()); };
-  });
+  }, []);
 
   async function downloadVoice() {
     setVoiceStatus('downloading');
