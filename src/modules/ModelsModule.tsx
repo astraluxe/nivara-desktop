@@ -665,6 +665,10 @@ export default function ModelsModule() {
   const [sysInfo, setSysInfo] = useState<SysInfo | null>(null);
   const [gpuInfo, setGpuInfo] = useState<GpuInfo>({ name: 'Detecting…', vram_gb: 0 });
   const [ollamaOk, setOllamaOk] = useState<boolean | null>(null);
+  const [engineInstalled, setEngineInstalled] = useState<boolean | null>(null);
+  const [engineDownloading, setEngineDownloading] = useState(false);
+  const [engineDlPct, setEngineDlPct] = useState(0);
+  const [engineDlStep, setEngineDlStep] = useState('');
   const [gatedModal, setGatedModal] = useState<PullResponse | null>(null);
   const [pendingModel, setPendingModel] = useState<RegistryModel | null>(null);
   const [_showSpecsBar, _setShowSpecsBar]           = useState(false);
@@ -692,10 +696,11 @@ export default function ModelsModule() {
     // Load installed models
     refreshInstalled();
 
-    // Check local AI engine (llama.cpp server)
+    // Check local AI engine — installed binary + running server
+    invoke<boolean>('models_check_engine_installed').then(setEngineInstalled).catch(() => setEngineInstalled(false));
     invoke<boolean>('models_check_engine').then(setOllamaOk).catch(() => setOllamaOk(false));
 
-    // Listen for download events
+    // Listen for model download events
     const unP = listen<{ model_id: string; pct: number; downloaded_gb: number; total_gb: number }>(
       'model_download_progress',
       e => setDownloading(prev => ({
@@ -708,9 +713,20 @@ export default function ModelsModule() {
       refreshInstalled();
     });
 
+    // Listen for engine download progress
+    const unE = listen<{ step: string; pct: number }>('engine_download_progress', e => {
+      setEngineDlStep(e.payload.step);
+      setEngineDlPct(e.payload.pct);
+      if (e.payload.pct >= 100) {
+        setEngineDownloading(false);
+        setEngineInstalled(true);
+      }
+    });
+
     return () => {
       unP.then(fn => fn());
       unC.then(fn => fn());
+      unE.then(fn => fn());
     };
   }, []);
 
@@ -809,11 +825,26 @@ export default function ModelsModule() {
   }
 
   async function handleRun(filename: string) {
-    if (!ollamaOk) {
-      alert('Local AI engine is not running. Make sure adris.tech has finished setting up, then try again.');
-      return;
+    // Step 1 — ensure the engine binary is installed
+    if (!engineInstalled) {
+      setEngineDownloading(true);
+      setEngineDlPct(0);
+      setEngineDlStep('Starting download…');
+      try {
+        await invoke('models_download_engine');
+        setEngineInstalled(true);
+      } catch (e) {
+        setEngineDownloading(false);
+        alert(`Could not download AI engine: ${e}`);
+        return;
+      }
+      setEngineDownloading(false);
     }
-    await invoke('models_run', { modelFilename: filename }).catch(e => alert(`Could not start: ${e}`));
+
+    // Step 2 — start the engine with this model (waits up to 30 s for /health)
+    await invoke('models_run', { modelFilename: filename })
+      .then(() => invoke<boolean>('models_check_engine').then(setOllamaOk).catch(() => {}))
+      .catch(e => alert(`Could not start model: ${e}`));
   }
 
   async function handlePickFile() {
@@ -907,10 +938,17 @@ export default function ModelsModule() {
         )}
 
         {/* Local AI engine status */}
-        <div className={`flex items-center gap-1.5 text-[10px] font-mono ${ollamaOk ? 'text-emerald-400' : 'text-nv-faint'}`}>
-          <span className={`w-1.5 h-1.5 rounded-full ${ollamaOk ? 'bg-emerald-400' : 'bg-nv-faint'}`} />
-          {ollamaOk ? 'Local AI ready' : 'Local AI offline'}
-        </div>
+        {engineDownloading ? (
+          <div className="flex items-center gap-2 text-[10px] font-mono text-accent">
+            <span className="w-3 h-3 rounded-full border-2 border-accent border-t-transparent animate-spin shrink-0" />
+            <span>{engineDlStep || 'Downloading engine…'} {engineDlPct > 0 ? `${engineDlPct}%` : ''}</span>
+          </div>
+        ) : (
+          <div className={`flex items-center gap-1.5 text-[10px] font-mono ${ollamaOk ? 'text-emerald-400' : engineInstalled === false ? 'text-nv-yellow' : 'text-nv-faint'}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${ollamaOk ? 'bg-emerald-400' : engineInstalled === false ? 'bg-nv-yellow' : 'bg-nv-faint'}`} />
+            {ollamaOk ? 'Local AI ready' : engineInstalled === false ? 'Engine not installed — click Run to install' : 'Local AI offline'}
+          </div>
+        )}
       </div>
 
       {/* Your machine specs bar */}
@@ -1196,14 +1234,10 @@ export default function ModelsModule() {
                     <div className="flex items-center gap-2 shrink-0">
                       <button
                         onClick={() => handleRun(m.filename)}
-                        title={ollamaOk ? 'Run this model in Coder' : 'Local AI engine offline'}
-                        className={`text-[11px] px-3 py-1.5 rounded-lg transition-fast font-medium ${
-                          ollamaOk
-                            ? 'bg-accent text-white hover:bg-accent-dim'
-                            : 'bg-nv-surface2 text-nv-faint cursor-not-allowed'
-                        }`}
+                        title={!engineInstalled ? 'Downloads AI engine (~15 MB) then starts this model' : ollamaOk ? 'Run this model in Coder' : 'Load this model into the local AI engine'}
+                        className="text-[11px] px-3 py-1.5 rounded-lg transition-fast font-medium bg-accent text-white hover:bg-accent-dim"
                       >
-                        ▶ Run
+                        {!engineInstalled ? '↓ Install & Run' : '▶ Run'}
                       </button>
                       <button
                         onClick={() => handleDelete(m.id)}
