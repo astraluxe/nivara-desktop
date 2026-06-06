@@ -37,7 +37,9 @@
       "icons/128x128@2x.png",
       "icons/icon.ico"
     ],
-    "resources": {},
+    "resources": {
+      "resources/adris-engine.zip": "adris-engine.zip"
+    },
     "windows": {
       "nsis": {
         "installerIcon": "icons/icon.ico",

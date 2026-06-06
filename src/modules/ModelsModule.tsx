@@ -941,12 +941,12 @@ export default function ModelsModule() {
         {engineDownloading ? (
           <div className="flex items-center gap-2 text-[10px] font-mono text-accent">
             <span className="w-3 h-3 rounded-full border-2 border-accent border-t-transparent animate-spin shrink-0" />
-            <span>{engineDlStep || 'Downloading engine…'} {engineDlPct > 0 ? `${engineDlPct}%` : ''}</span>
+            <span>{engineDlStep || 'Setting up engine…'} {engineDlPct > 0 ? `${engineDlPct}%` : ''}</span>
           </div>
         ) : (
           <div className={`flex items-center gap-1.5 text-[10px] font-mono ${ollamaOk ? 'text-emerald-400' : engineInstalled === false ? 'text-nv-yellow' : 'text-nv-faint'}`}>
             <span className={`w-1.5 h-1.5 rounded-full ${ollamaOk ? 'bg-emerald-400' : engineInstalled === false ? 'bg-nv-yellow' : 'bg-nv-faint'}`} />
-            {ollamaOk ? 'Local AI ready' : engineInstalled === false ? 'Engine not installed — click Run to install' : 'Local AI offline'}
+            {ollamaOk ? 'Local AI ready' : engineInstalled === false ? 'First run — click Run to set up engine' : 'Local AI offline'}
           </div>
         )}
       </div>
@@ -1234,10 +1234,10 @@ export default function ModelsModule() {
                     <div className="flex items-center gap-2 shrink-0">
                       <button
                         onClick={() => handleRun(m.filename)}
-                        title={!engineInstalled ? 'Downloads AI engine (~15 MB) then starts this model' : ollamaOk ? 'Run this model in Coder' : 'Load this model into the local AI engine'}
+                        title={!engineInstalled ? 'Sets up the bundled AI engine then starts this model' : ollamaOk ? 'Run this model in Coder' : 'Load this model into the local AI engine'}
                         className="text-[11px] px-3 py-1.5 rounded-lg transition-fast font-medium bg-accent text-white hover:bg-accent-dim"
                       >
-                        {!engineInstalled ? '↓ Install & Run' : '▶ Run'}
+                        {!engineInstalled ? '▶ Set up & Run' : '▶ Run'}
                       </button>
                       <button
                         onClick={() => handleDelete(m.id)}
