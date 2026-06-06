@@ -38,7 +38,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "resources/adris-engine.zip": "adris-engine.zip"
+      "resources/adris-engine.zip": "adris-engine.zip",
+      "target/release/exo-node.exe": "mesh/exo-node.exe"
     },
     "windows": {
       "nsis": {

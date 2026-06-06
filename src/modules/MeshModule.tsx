@@ -498,13 +498,20 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
             <span className="text-nv-faint">·</span>
             <span className="font-mono text-[11px] text-nv-muted">{Math.round(machineInfo.ram_gb)} GB RAM</span>
             <div className="ml-auto flex items-center gap-2">
+              {extensionReady === false && (
+                <button
+                  onClick={downloadExtension}
+                  className="font-mono text-[9px] px-2 py-0.5 rounded transition-opacity hover:opacity-80"
+                  style={{ background: "rgba(124,92,255,0.12)", color: "var(--accent)", border: "1px solid rgba(124,92,255,0.2)" }}
+                >
+                  Install engine
+                </button>
+              )}
               <span className="font-mono text-[9px] px-2 py-0.5 rounded"
                 style={extensionReady
                   ? { background: "rgba(16,185,129,0.1)", color: "#10B981" }
-                  : extensionReady === null
-                  ? { background: "rgba(0,0,0,0.04)", color: "var(--nv-muted)" }
-                  : { background: "rgba(245,158,11,0.1)", color: "#F59E0B" }}>
-                {extensionReady === null ? "Checking…" : extensionReady ? "Mesh ready" : "Engine · coming soon"}
+                  : { background: "rgba(239,68,68,0.08)", color: "#EF4444" }}>
+                {extensionReady === null ? "Checking…" : extensionReady ? "Mesh ready" : "Engine not installed"}
               </span>
             </div>
           </div>
