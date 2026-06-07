@@ -7,6 +7,7 @@ interface ServiceDef {
   id:     string;
   name:   string;
   desc:   string;
+  note?:  string;
   tags:   string[];
   usedBy: string[];
 }
@@ -77,8 +78,8 @@ const SERVICES: ServiceDef[] = [
   { id: 'claude',   name: 'Claude (Anthropic)',  desc: 'Powers Krew and Automation with Claude Haiku. Pay-per-use.',                            tags: ['ai','llm'],                              usedBy: ['Krew','Automation','Guard'] },
   // Tools
   { id: 'brave',    name: 'Web Search',          desc: 'Brave Search — 2K free searches/month. Krew uses this for any web lookup.',             tags: ['search'],                                usedBy: ['Krew'] },
-  { id: 'gmail',    name: 'Gmail',               desc: 'Read and search inbox via IMAP. Used by Automation email triggers and Guard.',           tags: ['email','google'],                        usedBy: ['Krew','Automation','Guard'] },
-  { id: 'google',   name: 'Google Suite',        desc: 'Calendar, Sheets, Drive, Slides — connected once, works across all four.',              tags: ['calendar','sheets','drive','slides'],     usedBy: ['Krew','Automation'] },
+  { id: 'gmail',    name: 'Gmail',               desc: 'Read and search inbox via IMAP. Used by Automation email triggers and Guard.',           note: 'Read-only. Connect Google Suite below to send emails.',           tags: ['email','google'],                        usedBy: ['Krew','Automation','Guard'] },
+  { id: 'google',   name: 'Google Suite',        desc: 'Calendar, Sheets, Drive, Slides — connected once, works across all four.',              note: 'Also required to send emails via Krew agents.',                   tags: ['calendar','sheets','drive','slides'],     usedBy: ['Krew','Automation'] },
   { id: 'notion',   name: 'Notion',              desc: 'Search pages, read databases, create pages. Also used by Automation → Notion output.',  tags: ['notes','docs'],                          usedBy: ['Krew','Automation'] },
   { id: 'slack',    name: 'Slack',               desc: 'Read channels, send messages, search workspace. Used by Automation → Slack output.',    tags: ['chat','messaging'],                      usedBy: ['Krew','Automation'] },
   { id: 'github',   name: 'GitHub',              desc: 'List repos, read files, create issues, search code. Used by Guard vuln scanner.',       tags: ['code','git'],                            usedBy: ['Krew','Guard'] },
@@ -246,6 +247,11 @@ function ServiceCard({ service, isConnected, onConnect, onDisconnect }: {
 
       {/* Desc */}
       <p className="text-[11px] text-nv-muted leading-snug line-clamp-2">{service.desc}</p>
+      {service.note && (
+        <p className="text-[10px] text-nv-yellow leading-snug mt-1">
+          <span className="font-semibold">Note:</span> {service.note}
+        </p>
+      )}
 
       {/* Test result */}
       {testState !== 'idle' && (
