@@ -2283,6 +2283,7 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
   const [canvasName, setCanvasName] = useState('');
   const [discussTarget, setDiscussTarget] = useState<Automation | null>(null);
   const [notifToast, setNotifToast] = useState<{ title: string; body: string } | null>(null);
+  const [errorToast, setErrorToast] = useState<{ title: string; body: string } | null>(null);
 
   const userId = user?.id ?? '';
 
@@ -2297,6 +2298,18 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
       listen<{ title: string; body: string }>('automation-notification', ({ payload }) => {
         setNotifToast({ title: payload.title, body: payload.body });
         setTimeout(() => setNotifToast(null), 10000);
+      }).then(fn => { unlisten = fn; });
+    });
+    return () => { unlisten?.(); };
+  }, []);
+
+  // Listen for automation delivery / auth-error events
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      listen<{ title: string; body: string }>('automation-error', ({ payload }) => {
+        setErrorToast({ title: payload.title, body: payload.body });
+        setTimeout(() => setErrorToast(null), 15000);
       }).then(fn => { unlisten = fn; });
     });
     return () => { unlisten?.(); };
@@ -2532,6 +2545,20 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
             <p className="text-xs text-nv-muted mt-1 leading-relaxed line-clamp-4">{notifToast.body}</p>
           </div>
           <button onClick={() => setNotifToast(null)} className="text-nv-faint hover:text-nv-text transition-fast shrink-0 mt-0.5">
+            <svg viewBox="0 0 16 16" fill="none" className="w-3.5 h-3.5"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+          </button>
+        </div>
+      )}
+
+      {/* Automation error / token-expiry warning toast */}
+      {errorToast && (
+        <div className="fixed top-6 right-6 z-[999] max-w-sm w-full bg-nv-surface border border-nv-red/40 rounded-xl shadow-2xl p-4 flex items-start gap-3 animate-in fade-in slide-in-from-top-4 duration-300">
+          <span className="text-xl shrink-0">⚠️</span>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-nv-red truncate">{errorToast.title}</p>
+            <p className="text-xs text-nv-muted mt-1 leading-relaxed line-clamp-4">{errorToast.body}</p>
+          </div>
+          <button onClick={() => setErrorToast(null)} className="text-nv-faint hover:text-nv-text transition-fast shrink-0 mt-0.5">
             <svg viewBox="0 0 16 16" fill="none" className="w-3.5 h-3.5"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
           </button>
         </div>

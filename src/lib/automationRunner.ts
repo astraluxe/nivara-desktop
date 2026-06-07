@@ -1,5 +1,5 @@
 ﻿import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen, emit } from '@tauri-apps/api/event';
 import { credentialStore } from './krewDb';
 import { buildTwitterOAuthHeader } from './krewTools';
 
@@ -248,6 +248,22 @@ async function ensureGoogleSheet(accessToken: string, automationName: string): P
   return createData.spreadsheetId ?? '';
 }
 
+// ─── Auth-error delivery notification ────────────────────────────────────────
+
+async function emitDeliveryError(service: string, err: unknown): Promise<void> {
+  const msg = String(err ?? '').toLowerCase();
+  const isAuth = msg.includes('401') || msg.includes('403') || msg.includes('unauthorized')
+    || msg.includes('forbidden') || msg.includes('invalid_token') || msg.includes('expired');
+  try {
+    await emit('automation-error', {
+      title: isAuth ? `${service} — token expired` : `${service} — delivery failed`,
+      body: isAuth
+        ? `Your ${service} access token has expired. Open Connect Apps and reconnect ${service} to fix this.`
+        : `Could not deliver automation output to ${service}. Check your credentials in Connect Apps.`,
+    });
+  } catch (_e) { /* ignore */ }
+}
+
 // ─── Retry with exponential backoff ──────────────────────────────────────────
 
 async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 3, baseDelayMs = 1000): Promise<T> {
@@ -446,7 +462,8 @@ export async function executeAutomation(
           const lookahead = (cfg.lookahead_mins ?? 480) * 60_000;
           const later = new Date(Date.now() + lookahead).toISOString();
           const calUrl = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calId)}/events?timeMin=${now}&timeMax=${later}&singleEvents=true&orderBy=startTime&maxResults=10`;
-          const calRaw = await invoke<string>('krew_http_call', { method: 'GET', url: calUrl, headers: { Authorization: `Bearer ${calCred.access_token}` }, body: null }).catch(() => '{}');
+          const calRaw = await invoke<string>('krew_http_call', { method: 'GET', url: calUrl, headers: { Authorization: `Bearer ${calCred.access_token}` }, body: null })
+            .catch(async (e) => { await emitDeliveryError('Google Calendar', e); return '{}'; });
           const calData = JSON.parse(calRaw) as { items?: { summary?: string; start?: { dateTime?: string; date?: string }; description?: string; location?: string }[] };
           if (calData.items?.length) {
             triggerContent = `Calendar events for today (${new Date().toLocaleDateString()}):\n\n` +
@@ -534,6 +551,7 @@ export async function executeAutomation(
           if (items.length) {
             triggerContent = `RSS Feed: ${cfg.rss_url}\nLatest ${items.length} item(s):\n\n${items.join('\n\n')}`;
           }
+        }
       } catch (_e) { /* RSS fetch failed */ }
     }
 
@@ -739,7 +757,7 @@ export async function executeAutomation(
               url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send',
               headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
               body: JSON.stringify({ raw: encoded }),
-            }).catch(() => {});
+            }).catch(e => emitDeliveryError('Gmail', e));
           }
         }
       } catch (_e) { /* Google not connected */ }
@@ -781,8 +799,12 @@ export async function executeAutomation(
             'Content-Type':              'application/json',
             'X-Restli-Protocol-Version': '2.0.0',
           };
-          const meRaw     = await invoke<string>('krew_http_call', { method: 'GET', url: 'https://api.linkedin.com/v2/me', headers: liHeaders, body: null }).catch(() => '{}');
-          const meData    = JSON.parse(meRaw) as { id?: string };
+          const meRaw     = await invoke<string>('krew_http_call', { method: 'GET', url: 'https://api.linkedin.com/v2/me', headers: liHeaders, body: null })
+            .catch(async (e) => { await emitDeliveryError('LinkedIn', e); return '{}'; });
+          const meData    = JSON.parse(meRaw) as { id?: string; message?: string; status?: number };
+          if (meData.status === 401 || meData.status === 403 || meData.message?.toLowerCase().includes('expired')) {
+            await emitDeliveryError('LinkedIn', `${meData.status} ${meData.message ?? ''}`);
+          } else {
           const personUrn = oc.linkedin_person_urn ?? `urn:li:person:${meData.id ?? ''}`;
           const vis       = oc.linkedin_visibility ?? 'PUBLIC';
           await invoke('krew_http_call', {
@@ -800,7 +822,8 @@ export async function executeAutomation(
               },
               visibility: { 'com.linkedin.ugc.MemberNetworkVisibility': vis },
             }),
-          }).catch(() => {});
+          }).catch(e => emitDeliveryError('LinkedIn', e));
+          }
         }
       } catch (_e) { /* credentials missing — run still logged */ }
     }
@@ -861,7 +884,7 @@ export async function executeAutomation(
               url: `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(sheetName)}!A1:append?valueInputOption=USER_ENTERED`,
               headers: { 'Authorization': `Bearer ${gsCred.access_token}`, 'Content-Type': 'application/json' },
               body: JSON.stringify({ values: [[new Date().toLocaleString(), automation.name, finalOutput.slice(0, 500)]] }),
-            }).catch(() => {});
+            }).catch(e => emitDeliveryError('Google Sheets', e));
           }
         }
       } catch (_e) { /* Google Sheets not connected */ }
