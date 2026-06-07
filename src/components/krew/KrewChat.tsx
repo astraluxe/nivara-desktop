@@ -1002,11 +1002,18 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
 
   // Build active toolkit based on connected services
   const getActiveTools = useCallback((): ToolDef[] => {
+    // Boss is delegation-only — giving it service tools (gmail, etc.) causes it to act directly
+    // instead of delegating. Only expose delegate_to_agent + memory tools.
+    if (agent.key === 'boss') {
+      return [
+        ...SYSTEM_TOOLS.filter(t => ['save_memory', 'recall_memory', 'forget_memory'].includes(t.name)),
+        ...BOSS_TOOLS,
+      ];
+    }
     const tools: ToolDef[] = [...SYSTEM_TOOLS];
     for (const service of Object.keys(creds)) {
       if (SERVICE_TOOLS[service]) tools.push(...SERVICE_TOOLS[service]);
     }
-    if (agent.key === 'boss') tools.push(...BOSS_TOOLS);
     if (agent.category === 'Ops') tools.push(...AUTOMATION_TOOLS);
     return tools;
   }, [creds, agent.key, agent.category]);
@@ -1681,8 +1688,8 @@ The prompt must be production-ready — specific enough for a motion designer to
           </div>
         )}
 
-        {/* Connect Apps nudge — shown when no service tools are active */}
-        {activeTools.filter((t) => !['read_file','execute_terminal','web_search','save_memory','recall_memory','forget_memory','delegate_to_agent'].includes(t.name)).length === 0 && onOpenConnectApps && (
+        {/* Connect Apps nudge — shown when no service tools are active (not for boss — it delegates) */}
+        {agent.key !== 'boss' && activeTools.filter((t) => !['read_file','execute_terminal','web_search','save_memory','recall_memory','forget_memory','delegate_to_agent'].includes(t.name)).length === 0 && onOpenConnectApps && (
           <div className="flex items-center gap-2 px-3 py-1.5 border-b border-nv-border bg-nv-surface shrink-0">
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none" className="text-nv-faint shrink-0">
               <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.4"/>
