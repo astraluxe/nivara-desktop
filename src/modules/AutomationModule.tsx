@@ -255,19 +255,27 @@ function buildFlow(
   });
 
   // If schedule has a data_source, show it as an explicit data-fetch node
-  const hasGmailSource = triggerType === 'schedule' && triggerConfig.data_source === 'gmail';
+  const ds = triggerConfig.data_source;
+  const hasDataSource = triggerType === 'schedule' && !!ds;
+  const DATA_SOURCE_NODE: Record<string, { label: string; subtitle: string; triggerType: string }> = {
+    gmail:      { label: 'Gmail Inbox',       subtitle: 'Fetch unread emails',       triggerType: 'email' },
+    x_mentions: { label: 'X Mentions',        subtitle: 'Fetch recent @mentions',    triggerType: 'twitter_mention' },
+    rss:        { label: 'RSS Feed',           subtitle: triggerConfig.rss_url ?? 'Fetch latest items', triggerType: 'rss' },
+    github:     { label: 'GitHub',             subtitle: `${triggerConfig.github_repo ?? ''} ${triggerConfig.github_event ?? 'activity'}`, triggerType: 'github' },
+    calendar:   { label: 'Google Calendar',   subtitle: 'Fetch today\'s events',     triggerType: 'google_calendar' },
+  };
   let dataNodeId = 'n0';
-  if (hasGmailSource) {
+  if (hasDataSource && ds && DATA_SOURCE_NODE[ds]) {
     nodes.push({
       id: 'ndata', type: 'trigger',
       position: { x: 80 + X, y: 200 },
-      data: { label: 'Gmail Inbox', subtitle: 'Fetch unread emails', triggerType: 'email' },
+      data: { ...DATA_SOURCE_NODE[ds] },
     });
     edges.push({ id: 'edata', source: 'n0', target: 'ndata', type: 'line', data: { srcType: 'trigger' } });
     dataNodeId = 'ndata';
   }
 
-  const stepXOffset = hasGmailSource ? 2 : 1;
+  const stepXOffset = hasDataSource && DATA_SOURCE_NODE[ds ?? ''] ? 2 : 1;
   steps.forEach((step, i) => {
     const id = `n${i + 1}`;
     nodes.push({
@@ -366,13 +374,21 @@ CANVAS FLOWS vs FORM AUTOMATIONS — critical distinction:
 - If a user wants something to actually run and do work automatically, they need a form-based automation, not a canvas flow.
 - When discussing an automation the user wants to actually run, make this clear.
 
-SCHEDULE + DATA SOURCE — critical for email briefing automations:
-- A "schedule" trigger alone fires with only a timestamp — no real data. The AI has nothing to work with.
-- To build "check my emails every morning": use trigger_type "schedule" + data_source "gmail" in trigger_config.
-  Example: {"cron":"0 9 * * 1-5","data_source":"gmail"}
-  The runner will fetch unread emails before the AI step runs, so the summarise/report step has actual email content.
-- data_source "gmail" = fetches unread emails via connected Gmail (IMAP, connected in Connect Apps)
-- This is NOT the same as trigger_type "email" — that fires reactively when an email arrives; data_source "gmail" fetches on a schedule.
+SCHEDULE + DATA SOURCE — critical rule: schedule trigger alone = AI only sees the time. Add data_source to fetch real content.
+
+data_source options (add to trigger_config of a "schedule" trigger):
+- data_source "gmail"      → Fetches unread emails before AI runs. trigger_config: {"cron":"0 9 * * 1-5","data_source":"gmail"}
+                              Needs: Gmail (IMAP) connected. DIFFERENT from trigger_type "email" (reactive).
+- data_source "x_mentions" → Fetches recent @mentions on X before AI runs. trigger_config: {"cron":"0 9 * * *","data_source":"x_mentions"}
+                              Needs: X/Twitter connected. DIFFERENT from trigger_type "twitter_mention" (real-time per mention).
+- data_source "rss"        → Fetches latest RSS feed items before AI runs. trigger_config: {"cron":"0 8 * * 1-5","data_source":"rss","rss_url":"https://..."}
+                              Needs: rss_url in trigger_config. DIFFERENT from trigger_type "rss" (fires per new item).
+- data_source "github"     → Fetches GitHub activity (PRs/issues/commits) before AI runs.
+                              trigger_config: {"cron":"0 9 * * 1-5","data_source":"github","github_repo":"owner/repo","github_event":"pull_request"}
+                              Needs: GitHub (optional token for private repos).
+- data_source "calendar"   → Fetches today's calendar events before AI runs.
+                              trigger_config: {"cron":"0 8 * * 1-5","data_source":"calendar","lookahead_mins":480}
+                              Needs: Google Calendar connected.
 
 CONTEXT INJECTION — built-in features that run BEFORE each automation execution (these are NOT separate triggers, they are part of a single automation):
 These fields are set on the trigger config and are injected automatically into the AI's context before any step runs:
@@ -1000,12 +1016,16 @@ function WorkflowBuilder({
                   <p className="text-[10px] text-nv-muted -mt-1">Choose a data source so the AI has real content to work with — otherwise it only knows the current time.</p>
                   <div className="grid grid-cols-2 gap-2">
                     {[
-                      { val: '', label: 'None', icon: '⏰', desc: 'AI runs without external data' },
-                      { val: 'gmail', label: 'Gmail', icon: '✉', desc: 'Fetch unread emails as AI input' },
+                      { val: '',          label: 'None',          icon: '⏰', desc: 'Time only — no external data' },
+                      { val: 'gmail',     label: 'Gmail',         icon: '✉',  desc: 'Fetch unread emails' },
+                      { val: 'x_mentions',label: 'X Mentions',    icon: '𝕏',  desc: 'Fetch recent @mentions' },
+                      { val: 'rss',       label: 'RSS Feed',      icon: '📡', desc: 'Fetch latest feed items' },
+                      { val: 'github',    label: 'GitHub',        icon: '⚙',  desc: 'Fetch PRs, issues or commits' },
+                      { val: 'calendar',  label: 'Google Calendar',icon: '📅', desc: "Fetch today's events" },
                     ].map(opt => {
                       const active = (triggerConfig.data_source ?? '') === opt.val;
                       return (
-                        <button key={opt.val} type="button"
+                        <button key={opt.val || 'none'} type="button"
                           onClick={() => patchTC({ data_source: opt.val || undefined })}
                           className={`p-3 rounded-xl border text-left transition-fast ${active ? 'border-accent bg-accent/10' : 'border-nv-border bg-nv-surface hover:border-accent/40'}`}>
                           <span className="text-lg mb-1 block">{opt.icon}</span>
@@ -1019,7 +1039,71 @@ function WorkflowBuilder({
                     <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-accent/5 border border-accent/20">
                       <span className="text-base mt-0.5">✉</span>
                       <p className="text-[11px] text-accent/80 leading-relaxed">
-                        Unread emails will be fetched each time this runs and passed to your AI step. <strong>Connect Gmail in Connect Apps first.</strong> Your step prompt should say something like: <em>"Summarise these emails and give me a morning brief."</em>
+                        Fetches your unread Gmail inbox each run. <strong>Connect Gmail (IMAP) in Connect Apps.</strong> Prompt: "Summarise these emails and give me a morning brief."
+                      </p>
+                    </div>
+                  )}
+                  {triggerConfig.data_source === 'x_mentions' && (
+                    <div className="space-y-2">
+                      <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-sky-500/5 border border-sky-500/20">
+                        <span className="text-base mt-0.5">𝕏</span>
+                        <p className="text-[11px] text-sky-400/80 leading-relaxed">
+                          Fetches recent @mentions on your X account each run. <strong>Connect X/Twitter in Connect Apps.</strong> Prompt: "Summarise these mentions and flag any requiring a response."
+                        </p>
+                      </div>
+                      <div className="space-y-1">
+                        <label className={lCls}>Filter by keyword <span className="normal-case font-normal text-nv-faint">(optional)</span></label>
+                        <input value={triggerConfig.twitter_filter ?? ''} onChange={e => patchTC({ twitter_filter: e.target.value || undefined })}
+                          placeholder="e.g. bug, support, great" className={iCls(false)} />
+                      </div>
+                    </div>
+                  )}
+                  {triggerConfig.data_source === 'rss' && (
+                    <div className="space-y-2">
+                      <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-orange-500/5 border border-orange-500/20">
+                        <span className="text-base mt-0.5">📡</span>
+                        <p className="text-[11px] text-orange-400/80 leading-relaxed">
+                          Fetches the latest articles from an RSS feed each run. Great for competitor blogs, news sites, industry updates.
+                        </p>
+                      </div>
+                      <div className="space-y-1">
+                        <label className={lCls}>RSS Feed URL <span className="text-nv-red">*</span></label>
+                        <input value={triggerConfig.rss_url ?? ''} onChange={e => patchTC({ rss_url: e.target.value || undefined })}
+                          placeholder="https://example.com/feed.xml" className={iCls(!triggerConfig.rss_url)} />
+                      </div>
+                    </div>
+                  )}
+                  {triggerConfig.data_source === 'github' && (
+                    <div className="space-y-2">
+                      <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-violet-500/5 border border-violet-500/20">
+                        <span className="text-base mt-0.5">⚙</span>
+                        <p className="text-[11px] text-violet-400/80 leading-relaxed">
+                          Fetches GitHub activity (PRs, issues, commits, releases) each run. Great for daily dev digests and team briefings.
+                        </p>
+                      </div>
+                      <div className="space-y-1">
+                        <label className={lCls}>GitHub Repository <span className="text-nv-red">*</span></label>
+                        <input value={triggerConfig.github_repo ?? ''} onChange={e => patchTC({ github_repo: e.target.value || undefined })}
+                          placeholder="owner/repo" className={iCls(!triggerConfig.github_repo)} />
+                      </div>
+                      <div className="space-y-1">
+                        <label className={lCls}>Event type</label>
+                        <div className="flex gap-2 flex-wrap">
+                          {['pull_request', 'issue', 'push', 'release'].map(ev => (
+                            <button key={ev} type="button" onClick={() => patchTC({ github_event: ev })}
+                              className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-fast ${(triggerConfig.github_event ?? 'pull_request') === ev ? 'border-accent bg-accent/10 text-accent' : 'border-nv-border text-nv-muted hover:text-nv-text'}`}>
+                              {ev.replace('_', ' ')}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {triggerConfig.data_source === 'calendar' && (
+                    <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-blue-500/5 border border-blue-500/20">
+                      <span className="text-base mt-0.5">📅</span>
+                      <p className="text-[11px] text-blue-400/80 leading-relaxed">
+                        Fetches your upcoming calendar events each run. <strong>Connect Google Calendar in Connect Apps.</strong> Prompt: "Give me a brief overview of today's meetings and any prep I need."
                       </p>
                     </div>
                   )}
@@ -1684,7 +1768,15 @@ function AutomationCard({ automation, onToggle, onCloudToggle, onEdit, onDelete,
     try { steps = JSON.parse(automation.steps) as Step[]; } catch {}
   }
   const triggerLabel = (TRIGGER_LABELS as Record<string, string>)[automation.trigger_type] ?? 'Canvas Flow';
-  const hasGmailSource = automation.trigger_type === 'schedule' && cfg.data_source === 'gmail';
+  const ds = cfg.data_source ?? '';
+  const hasDataSource = automation.trigger_type === 'schedule' && !!ds;
+  const DATA_SOURCE_BADGE: Record<string, { icon: string; label: string; color: string }> = {
+    gmail:      { icon: '✉',  label: 'Gmail',    color: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' },
+    x_mentions: { icon: '𝕏',  label: 'X/Twitter', color: 'bg-sky-500/15 text-sky-400 border-sky-500/30' },
+    rss:        { icon: '📡', label: 'RSS Feed',  color: 'bg-orange-500/15 text-orange-400 border-orange-500/30' },
+    github:     { icon: '⚙',  label: 'GitHub',   color: 'bg-violet-500/15 text-violet-400 border-violet-500/30' },
+    calendar:   { icon: '📅', label: 'Calendar', color: 'bg-blue-500/15 text-blue-400 border-blue-500/30' },
+  };
   const needsGmailSource = automation.trigger_type === 'schedule' && !cfg.data_source &&
     steps.some(s => /email|gmail|inbox|unread/i.test(s.prompt));
   const hasEmailReplyOutput = steps.some(s => s.output === 'email_reply');
@@ -1705,14 +1797,15 @@ function AutomationCard({ automation, onToggle, onCloudToggle, onEdit, onDelete,
                 Temp · {cfg.max_runs ?? 1} run{(cfg.max_runs ?? 1) !== 1 ? 's' : ''}
               </span>
             )}
-            {hasGmailSource && (
-              <span title="Fetches unread Gmail emails before each run" className="shrink-0 text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                ✉ Gmail
+            {hasDataSource && DATA_SOURCE_BADGE[ds] && (
+              <span title={`Fetches live ${DATA_SOURCE_BADGE[ds].label} data before each run`}
+                className={`shrink-0 text-[9px] font-mono px-1.5 py-0.5 rounded-full border ${DATA_SOURCE_BADGE[ds].color}`}>
+                {DATA_SOURCE_BADGE[ds].icon} {DATA_SOURCE_BADGE[ds].label}
               </span>
             )}
           </div>
           <p className="text-xs text-nv-muted font-mono">
-            {triggerLabel}{cfg.cron ? ` · ${cronToHuman(cfg.cron)}` : ''}{cfg.folder ? ` · ${cfg.folder}` : ''}{hasGmailSource ? ' · Gmail inbox' : ''}
+            {triggerLabel}{cfg.cron ? ` · ${cronToHuman(cfg.cron)}` : ''}{cfg.folder ? ` · ${cfg.folder}` : ''}{hasDataSource && DATA_SOURCE_BADGE[ds] ? ` · ${DATA_SOURCE_BADGE[ds].label}` : ''}
           </p>
           {needsGmailSource && (
             <div className="flex items-start gap-1.5 mt-1.5 px-2.5 py-1.5 rounded-lg bg-nv-yellow/10 border border-nv-yellow/30">

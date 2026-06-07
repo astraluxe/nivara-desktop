@@ -356,6 +356,112 @@ export async function executeAutomation(
       } catch (_e) { /* Gmail not connected */ }
     }
 
+    // ── Schedule + X mentions data source ────────────────────────────────────
+    if (!overrideContext && automation.trigger_type === 'schedule' && cfg.data_source === 'x_mentions') {
+      try {
+        const twCred = await credentialStore.get('twitter').catch(() => null);
+        if (twCred?.api_key && twCred?.api_secret && twCred?.access_token && twCred?.access_token_secret) {
+          const meUrl = 'https://api.twitter.com/2/users/me';
+          const meAuth = await buildTwitterOAuthHeader('GET', meUrl, {}, twCred.api_key, twCred.api_secret, twCred.access_token, twCred.access_token_secret);
+          const meRaw = await invoke<string>('krew_http_call', { method: 'GET', url: meUrl, headers: { Authorization: meAuth }, body: null }).catch(() => '{}');
+          const uid = (JSON.parse(meRaw) as { data?: { id: string } }).data?.id;
+          if (uid) {
+            const mUrl = `https://api.twitter.com/2/users/${uid}/mentions?max_results=10&tweet.fields=created_at,author_id,text`;
+            const mAuth = await buildTwitterOAuthHeader('GET', mUrl, {}, twCred.api_key, twCred.api_secret, twCred.access_token, twCred.access_token_secret);
+            const mRaw = await invoke<string>('krew_http_call', { method: 'GET', url: mUrl, headers: { Authorization: mAuth }, body: null }).catch(() => '{}');
+            const tweets = (JSON.parse(mRaw) as { data?: { id: string; text: string; author_id: string; created_at: string }[] }).data ?? [];
+            const filtered = cfg.twitter_filter
+              ? tweets.filter(t => t.text.toLowerCase().includes(cfg.twitter_filter!.toLowerCase()))
+              : tweets;
+            if (filtered.length) {
+              triggerContent = `Recent X @mentions (${new Date().toLocaleString()}):\n\n` +
+                filtered.slice(0, 10).map((t, i) => `${i + 1}. Author: ${t.author_id} | ${t.created_at}\n   "${t.text}"`).join('\n\n');
+            } else {
+              triggerContent = `No X @mentions found at ${new Date().toLocaleString()}.`;
+            }
+          }
+        } else {
+          triggerContent = `X/Twitter not connected. Connect X in Connect Apps to fetch mentions.`;
+        }
+      } catch (_e) { /* X fetch failed */ }
+    }
+
+    // ── Schedule + RSS data source ────────────────────────────────────────────
+    if (!overrideContext && automation.trigger_type === 'schedule' && cfg.data_source === 'rss' && cfg.rss_url) {
+      try {
+        const rssRaw = await invoke<string>('krew_http_call', { method: 'GET', url: cfg.rss_url, headers: { 'User-Agent': 'adris.tech/1.0' }, body: null }).catch(() => '');
+        if (rssRaw) {
+          const clean = (s: string) => s.replace(/<!\[CDATA\[|\]\]>/g, '').replace(/<[^>]+>/g, '').trim();
+          const itemRegex = /<(?:item|entry)[\s>]([\s\S]*?)<\/(?:item|entry)>/gi;
+          const items: string[] = [];
+          let m: RegExpExecArray | null;
+          while ((m = itemRegex.exec(rssRaw)) && items.length < 10) {
+            const block = m[1];
+            const t = clean((block.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? ''));
+            const l = (block.match(/<link[^>]*>(https?:[^<]*)<\/link>/i)?.[1] ?? '').trim();
+            const d = clean((block.match(/<(?:description|summary|content)[^>]*>([\s\S]*?)<\/(?:description|summary|content)>/i)?.[1] ?? '')).slice(0, 300);
+            if (t) items.push(`${items.length + 1}. ${t}${l ? `\n   ${l}` : ''}${d ? `\n   ${d}` : ''}`);
+          }
+          triggerContent = items.length
+            ? `RSS Feed: ${cfg.rss_url}\nFetched at ${new Date().toLocaleString()}\nLatest ${items.length} item(s):\n\n${items.join('\n\n')}`
+            : `RSS feed returned no items at ${new Date().toLocaleString()}.`;
+        }
+      } catch (_e) { /* RSS fetch failed */ }
+    }
+
+    // ── Schedule + GitHub data source ─────────────────────────────────────────
+    if (!overrideContext && automation.trigger_type === 'schedule' && cfg.data_source === 'github' && cfg.github_repo) {
+      try {
+        const ghCred = await credentialStore.get('github').catch(() => null);
+        const headers: Record<string, string> = { 'User-Agent': 'adris.tech/1.0', Accept: 'application/vnd.github+json' };
+        if (ghCred?.api_key) headers['Authorization'] = `Bearer ${ghCred.api_key}`;
+        const event = cfg.github_event ?? 'pull_request';
+        const urls: Record<string, string> = {
+          pull_request: `https://api.github.com/repos/${cfg.github_repo}/pulls?state=open&per_page=5`,
+          issue:        `https://api.github.com/repos/${cfg.github_repo}/issues?state=open&per_page=5`,
+          push:         `https://api.github.com/repos/${cfg.github_repo}/commits?per_page=5`,
+          release:      `https://api.github.com/repos/${cfg.github_repo}/releases?per_page=3`,
+        };
+        const ghUrl = urls[event] ?? urls.pull_request;
+        const ghRaw = await invoke<string>('krew_http_call', { method: 'GET', url: ghUrl, headers, body: null }).catch(() => '[]');
+        const ghData = JSON.parse(ghRaw) as { title?: string; body?: string; message?: string; html_url?: string }[];
+        if (Array.isArray(ghData) && ghData.length) {
+          triggerContent = `GitHub ${event} digest — ${cfg.github_repo} (${new Date().toLocaleString()}):\n\n` +
+            ghData.slice(0, 5).map((item, i) =>
+              `${i + 1}. ${item.title || item.message || ''}\n   ${item.html_url ?? ''}\n   ${(item.body || '').slice(0, 200)}`
+            ).join('\n\n');
+        } else {
+          triggerContent = `No GitHub ${event}s found for ${cfg.github_repo} at ${new Date().toLocaleString()}.`;
+        }
+      } catch (_e) { /* GitHub fetch failed */ }
+    }
+
+    // ── Schedule + Google Calendar data source ────────────────────────────────
+    if (!overrideContext && automation.trigger_type === 'schedule' && cfg.data_source === 'calendar') {
+      try {
+        const calCred = await credentialStore.get('google_calendar').catch(() => null);
+        if (calCred?.access_token) {
+          const calId = cfg.calendar_id ?? 'primary';
+          const now = new Date().toISOString();
+          const lookahead = (cfg.lookahead_mins ?? 480) * 60_000;
+          const later = new Date(Date.now() + lookahead).toISOString();
+          const calUrl = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calId)}/events?timeMin=${now}&timeMax=${later}&singleEvents=true&orderBy=startTime&maxResults=10`;
+          const calRaw = await invoke<string>('krew_http_call', { method: 'GET', url: calUrl, headers: { Authorization: `Bearer ${calCred.access_token}` }, body: null }).catch(() => '{}');
+          const calData = JSON.parse(calRaw) as { items?: { summary?: string; start?: { dateTime?: string; date?: string }; description?: string; location?: string }[] };
+          if (calData.items?.length) {
+            triggerContent = `Calendar events for today (${new Date().toLocaleDateString()}):\n\n` +
+              calData.items.slice(0, 10).map((ev, i) =>
+                `${i + 1}. ${ev.summary ?? 'Untitled'}\n   Time: ${ev.start?.dateTime ?? ev.start?.date ?? 'All day'}${ev.location ? `\n   Location: ${ev.location}` : ''}${ev.description ? `\n   ${ev.description.slice(0, 150)}` : ''}`
+              ).join('\n\n');
+          } else {
+            triggerContent = `No calendar events in the next ${cfg.lookahead_mins ?? 480} minutes at ${new Date().toLocaleString()}.`;
+          }
+        } else {
+          triggerContent = `Google Calendar not connected. Connect it in Connect Apps.`;
+        }
+      } catch (_e) { /* Calendar fetch failed */ }
+    }
+
     // ── File watch — read actual file content from Rust-provided path ────────
     if (automation.trigger_type === 'file_watch') {
       if (overrideContext && overrideContext.match(/\.[a-zA-Z0-9]{1,6}$/)) {

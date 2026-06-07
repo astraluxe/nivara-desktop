@@ -291,16 +291,25 @@ function proposalToFlow(proposal: AutomationProposal): { nodes: Node[]; edges: E
   nodes.push({ id: 'n-trigger', type: 'trigger', position: { x: X, y: 80 },
     data: { label: tLabels[proposal.trigger_type] ?? 'Trigger', triggerType: proposal.trigger_type, ...proposal.trigger_config } });
 
-  // If this is a schedule + gmail automation, insert a Gmail fetch node between trigger and AI steps
+  // If this is a schedule + data_source automation, insert a data-fetch node between trigger and AI steps
   const tc = proposal.trigger_config as Record<string, unknown>;
-  const hasGmailSource = proposal.trigger_type === 'schedule' && tc?.data_source === 'gmail';
+  const ds = String(tc?.data_source ?? '');
+  const DATA_SOURCE_NODES: Record<string, { label: string; subtitle: string; triggerType: string }> = {
+    gmail:      { label: 'Gmail Inbox',      subtitle: 'Fetch unread emails',      triggerType: 'email' },
+    x_mentions: { label: 'X Mentions',       subtitle: 'Fetch recent @mentions',   triggerType: 'twitter_mention' },
+    rss:        { label: 'RSS Feed',          subtitle: String(tc?.rss_url ?? 'Fetch latest items'), triggerType: 'rss' },
+    github:     { label: 'GitHub',            subtitle: `${String(tc?.github_repo ?? '')} ${String(tc?.github_event ?? 'activity')}`.trim(), triggerType: 'github' },
+    calendar:   { label: 'Google Calendar',  subtitle: "Fetch today's events",     triggerType: 'google_calendar' },
+  };
+  const hasDataSource = proposal.trigger_type === 'schedule' && !!ds && !!DATA_SOURCE_NODES[ds];
   let prevNodeId = 'n-trigger';
   let yShift = 0;
-  if (hasGmailSource) {
-    nodes.push({ id: 'n-gmail', type: 'trigger', position: { x: X, y: 80 + GAP },
-      data: { label: 'Gmail Inbox', subtitle: 'Fetch unread emails', triggerType: 'email' } });
-    edges.push({ id: 'e-trigger-gmail', source: 'n-trigger', target: 'n-gmail', type: 'dot', data: { srcType: 'trigger' } });
-    prevNodeId = 'n-gmail';
+  if (hasDataSource) {
+    const dsNode = DATA_SOURCE_NODES[ds];
+    nodes.push({ id: 'n-datasource', type: 'trigger', position: { x: X, y: 80 + GAP },
+      data: { label: dsNode.label, subtitle: dsNode.subtitle, triggerType: dsNode.triggerType } });
+    edges.push({ id: 'e-trigger-ds', source: 'n-trigger', target: 'n-datasource', type: 'dot', data: { srcType: 'trigger' } });
+    prevNodeId = 'n-datasource';
     yShift = GAP;
   }
 
