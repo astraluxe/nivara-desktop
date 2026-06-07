@@ -766,9 +766,11 @@ AUTOMATION_PROPOSAL format — STRICT RULES:
 - DO NOT put API calls, tool calls, or extra fields (like "query", "limit") inside steps — those are not supported
 - is_temp: false + max_runs: 0 = runs forever | is_temp: true + max_runs: 1 = one-shot
 
+CRITICAL: For "check emails on a schedule" → use trigger_type "schedule" + data_source "gmail" in trigger_config. This fetches real unread emails before the AI step runs. Without data_source:"gmail", the AI only sees a timestamp.
+
 Example — morning email brief:
 AUTOMATION_PROPOSAL:
-{"name":"Morning Email Brief","description":"Summarises unread emails every morning at 9 AM.","trigger_type":"schedule","trigger_config":{"cron":"0 9 * * 1-5"},"steps":[{"action":"summarise","prompt":"Check my unread emails and summarise the top 5 — sender, subject, and one-line action needed for each.","output":"notification"}],"is_temp":false,"max_runs":0}
+{"name":"Morning Email Brief","description":"Fetches unread emails every morning and summarises them.","trigger_type":"schedule","trigger_config":{"cron":"0 9 * * 1-5","data_source":"gmail"},"steps":[{"action":"summarise","prompt":"Summarise the unread emails provided — for each: sender, subject, and one-line action needed. Format as a numbered list.","output":"notification"}],"is_temp":false,"max_runs":0}
 END_PROPOSAL`,
   },
   {
@@ -786,22 +788,29 @@ For each automation you design:
 
 AUTOMATION_PROPOSAL format — STRICT RULES:
 - trigger_type: "schedule" | "email" | "file_watch" (only these three)
-- trigger_config: schedule → {"cron":"M H D * W"} | email → {"email_from":"x","email_subject":"y"} | file_watch → {"folder":"path"}
+- trigger_config:
+  - schedule → {"cron":"M H D * W"} — optionally add "data_source":"gmail" to fetch unread emails before each run
+  - email → {"email_from":"x","email_subject":"y"} — fires when email arrives
+  - file_watch → {"folder":"path"}
 - steps: each step has ONLY: action, prompt, output
   - action: ONLY "summarise" | "reply" | "extract" | "classify" | "report" | "translate"
   - output: ONLY "notification" | "email_reply" | "file" | "notion" | "slack"
   - NO extra fields (no "query", "limit", "tool", "url" — only action/prompt/output)
 - is_temp: false + max_runs: 0 = runs forever
 
+CRITICAL: For "check emails on a schedule" → trigger_type "schedule" + data_source "gmail" in trigger_config.
+
 AUTOMATION_PROPOSAL:
-{"name":"<name>","description":"<one sentence>","trigger_type":"schedule","trigger_config":{"cron":"0 9 * * 1-5"},"steps":[{"action":"report","prompt":"<specific AI instructions>","output":"notification"}],"is_temp":false,"max_runs":0}
+{"name":"<name>","description":"<one sentence>","trigger_type":"schedule","trigger_config":{"cron":"0 9 * * 1-5","data_source":"gmail"},"steps":[{"action":"summarise","prompt":"Summarise the unread emails — sender, subject, action needed for each.","output":"notification"}],"is_temp":false,"max_runs":0}
 END_PROPOSAL
 
 WHAT IS AND ISN'T POSSIBLE:
 ✅ Schedule-based AI reports (daily digest, weekly summary)
-✅ Email trigger → AI classifies/replies/extracts data from email
+✅ Schedule + data_source "gmail" → fetch unread emails then AI summarises/reports
+✅ Email trigger → AI classifies/replies/extracts data from email (reactive)
 ✅ File trigger → AI summarises a file dropped in a folder
 ✅ Chained steps (extract → report → notify)
+❌ Fetching emails on a schedule WITHOUT data_source "gmail" — AI would have no email data
 ❌ Posting directly to social media (no twitter_post or linkedin_post output)
 ❌ Fetching external URLs or calling APIs inside steps
 ❌ Real-time triggers (only schedule, email arrival, file drop)`,

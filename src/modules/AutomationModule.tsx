@@ -40,6 +40,7 @@ interface TriggerConfig {
   stripe_event?: string;
   calendar_id?: string;
   lookahead_mins?: number;
+  data_source?: string; // 'gmail' = fetch unread emails before running
 }
 
 interface OutputConfig {
@@ -350,6 +351,14 @@ CANVAS FLOWS vs FORM AUTOMATIONS — critical distinction:
 - Form-based automations (created via the workflow builder form) are the ones that ACTUALLY RUN on a schedule or trigger, execute AI steps, and send outputs.
 - If a user wants something to actually run and do work automatically, they need a form-based automation, not a canvas flow.
 - When discussing an automation the user wants to actually run, make this clear.
+
+SCHEDULE + DATA SOURCE — critical for email briefing automations:
+- A "schedule" trigger alone fires with only a timestamp — no real data. The AI has nothing to work with.
+- To build "check my emails every morning": use trigger_type "schedule" + data_source "gmail" in trigger_config.
+  Example: {"cron":"0 9 * * 1-5","data_source":"gmail"}
+  The runner will fetch unread emails before the AI step runs, so the summarise/report step has actual email content.
+- data_source "gmail" = fetches unread emails via connected Gmail (IMAP, connected in Connect Apps)
+- This is NOT the same as trigger_type "email" — that fires reactively when an email arrives; data_source "gmail" fetches on a schedule.
 
 CONTEXT INJECTION — built-in features that run BEFORE each automation execution (these are NOT separate triggers, they are part of a single automation):
 These fields are set on the trigger config and are injected automatically into the AI's context before any step runs:
@@ -967,9 +976,40 @@ function WorkflowBuilder({
             </div>
 
             {triggerType === 'schedule' && (
-              <div className="space-y-1.5">
-                <label className={lCls}>Schedule</label>
-                <SchedulePicker value={triggerConfig.cron ?? '0 9 * * *'} onChange={cron => patchTC({ cron })} />
+              <div className="space-y-4">
+                <div className="space-y-1.5">
+                  <label className={lCls}>Schedule</label>
+                  <SchedulePicker value={triggerConfig.cron ?? '0 9 * * *'} onChange={cron => patchTC({ cron })} />
+                </div>
+                <div className="space-y-2">
+                  <label className={lCls}>Fetch live data from <span className="normal-case font-normal text-nv-faint">(optional)</span></label>
+                  <p className="text-[10px] text-nv-muted -mt-1">Choose a data source so the AI has real content to work with — otherwise it only knows the current time.</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      { val: '', label: 'None', icon: '⏰', desc: 'AI runs without external data' },
+                      { val: 'gmail', label: 'Gmail', icon: '✉', desc: 'Fetch unread emails as AI input' },
+                    ].map(opt => {
+                      const active = (triggerConfig.data_source ?? '') === opt.val;
+                      return (
+                        <button key={opt.val} type="button"
+                          onClick={() => patchTC({ data_source: opt.val || undefined })}
+                          className={`p-3 rounded-xl border text-left transition-fast ${active ? 'border-accent bg-accent/10' : 'border-nv-border bg-nv-surface hover:border-accent/40'}`}>
+                          <span className="text-lg mb-1 block">{opt.icon}</span>
+                          <span className={`text-xs font-semibold block ${active ? 'text-accent' : 'text-nv-text'}`}>{opt.label}</span>
+                          <span className="text-[10px] text-nv-muted leading-tight block mt-0.5">{opt.desc}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {triggerConfig.data_source === 'gmail' && (
+                    <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-accent/5 border border-accent/20">
+                      <span className="text-base mt-0.5">✉</span>
+                      <p className="text-[11px] text-accent/80 leading-relaxed">
+                        Unread emails will be fetched each time this runs and passed to your AI step. <strong>Connect Gmail in Connect Apps first.</strong> Your step prompt should say something like: <em>"Summarise these emails and give me a morning brief."</em>
+                      </p>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -2110,11 +2150,24 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
   const [canvasPending, setCanvasPending] = useState<{ nodes: Node[]; edges: Edge[] } | null>(null);
   const [canvasName, setCanvasName] = useState('');
   const [discussTarget, setDiscussTarget] = useState<Automation | null>(null);
+  const [notifToast, setNotifToast] = useState<{ title: string; body: string } | null>(null);
 
   const userId = user?.id ?? '';
 
   useEffect(() => {
     credentialStore.list().then(setConnectedServices).catch(() => setConnectedServices([]));
+  }, []);
+
+  // Listen for in-app notification toasts from automationRunner
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      listen<{ title: string; body: string }>('automation-notification', ({ payload }) => {
+        setNotifToast({ title: payload.title, body: payload.body });
+        setTimeout(() => setNotifToast(null), 10000);
+      }).then(fn => { unlisten = fn; });
+    });
+    return () => { unlisten?.(); };
   }, []);
 
   useEffect(() => {
@@ -2338,6 +2391,20 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
 
   return (
     <div className="flex flex-col h-full bg-nv-bg overflow-hidden">
+      {/* In-app notification toast */}
+      {notifToast && (
+        <div className="fixed bottom-6 right-6 z-[999] max-w-sm w-full bg-nv-surface border border-nv-border rounded-xl shadow-2xl p-4 flex items-start gap-3 animate-in fade-in slide-in-from-bottom-4 duration-300">
+          <span className="text-xl shrink-0">🔔</span>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-nv-text truncate">{notifToast.title}</p>
+            <p className="text-xs text-nv-muted mt-1 leading-relaxed line-clamp-4">{notifToast.body}</p>
+          </div>
+          <button onClick={() => setNotifToast(null)} className="text-nv-faint hover:text-nv-text transition-fast shrink-0 mt-0.5">
+            <svg viewBox="0 0 16 16" fill="none" className="w-3.5 h-3.5"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-3.5 border-b border-nv-border shrink-0">
         <div>

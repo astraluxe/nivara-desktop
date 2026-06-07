@@ -58,6 +58,7 @@ export interface TriggerConfig {
   stripe_event?: string;
   calendar_id?: string;
   lookahead_mins?: number;
+  data_source?: string; // 'gmail' = fetch unread emails before running (for schedule triggers)
 }
 
 export interface AutomationRow {
@@ -333,6 +334,28 @@ export async function executeAutomation(
       } catch { /* Gmail not connected */ }
     }
 
+    // ── Schedule + Gmail data source (fetch emails on a schedule) ────────────
+    if (!overrideContext && automation.trigger_type === 'schedule' && cfg.data_source === 'gmail') {
+      try {
+        const gmailCred = await credentialStore.get('gmail').catch(() => null);
+        if (gmailCred?.email && gmailCred?.app_password) {
+          const emails = await invoke<string>('gmail_fetch_emails', {
+            email: gmailCred.email,
+            appPassword: gmailCred.app_password,
+            query: 'is:unread',
+            limit: 10,
+          }).catch(() => null);
+          if (emails && !emails.startsWith('No emails')) {
+            triggerContent = `Unread emails fetched at ${new Date().toLocaleString()}:\n\n${emails}`;
+          } else {
+            triggerContent = `No unread emails found at ${new Date().toLocaleString()}.`;
+          }
+        } else {
+          triggerContent = `Gmail not connected. Connect Gmail in Connect Apps to fetch emails.`;
+        }
+      } catch { /* Gmail not connected */ }
+    }
+
     if (!overrideContext && automation.trigger_type === 'file_watch' && cfg.folder) {
       triggerContent = `Files monitored in: ${cfg.folder}`;
     }
@@ -538,6 +561,27 @@ export async function executeAutomation(
     // ── Deliver output for the last step ──────────────────────────────────
     const lastStep = steps[steps.length - 1];
     const oc = lastStep?.output_config ?? {};
+
+    // ── Desktop notification ──────────────────────────────────────────────
+    if (lastStep?.output === 'notification' && finalOutput) {
+      const title = oc.notif_title || automation.name;
+      const body  = finalOutput.slice(0, 300);
+      try {
+        if (typeof Notification !== 'undefined') {
+          const perm = Notification.permission === 'default'
+            ? await Notification.requestPermission()
+            : Notification.permission;
+          if (perm === 'granted') {
+            new Notification(title, { body, silent: false });
+          }
+        }
+      } catch { /* Notification API not available */ }
+      // Also emit in-app event so AutomationModule can show a toast
+      try {
+        const { emit } = await import('@tauri-apps/api/event');
+        await emit('automation-notification', { title, body });
+      } catch { /* ignore */ }
+    }
 
     if (lastStep?.output === 'file' && oc.file_path && finalOutput) {
       const separator = `\n\n---\n${new Date().toLocaleString()}\n\n`;
