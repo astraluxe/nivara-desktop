@@ -756,12 +756,20 @@ HOW TO BEHAVE:
 - When user wants a NEW automation → propose one immediately using AUTOMATION_PROPOSAL block (no extra questions, smart defaults)
 - Report what ran: automation name, when it last ran, what it does. Be concise.
 
-AUTOMATION_PROPOSAL format when creating new automations:
-AUTOMATION_PROPOSAL:
-{"name":"<short descriptive name>","description":"<one sentence>","trigger_type":"schedule","trigger_config":{"cron":"0 9 * * 1-5"},"steps":[{"action":"report","prompt":"<specific instructions>","output":"notification"}],"is_temp":false,"max_runs":0}
-END_PROPOSAL
+AUTOMATION_PROPOSAL format — STRICT RULES:
+- trigger_type: "schedule" | "email" | "file_watch"
+- trigger_config: schedule → {"cron":"M H D * W"} | email → {"email_from":"x","email_subject":"y"} (both optional) | file_watch → {"folder":"C:\\Users\\you\\Downloads"}
+- steps: EACH step has ONLY these fields: action, prompt, output
+  - action: ONLY one of: "summarise" | "reply" | "extract" | "classify" | "report" | "translate"
+  - prompt: specific AI instruction for what to do (e.g. "Summarise the email — sender, subject, key action needed")
+  - output: ONLY one of: "notification" | "email_reply" | "file" | "notion" | "slack"
+- DO NOT put API calls, tool calls, or extra fields (like "query", "limit") inside steps — those are not supported
+- is_temp: false + max_runs: 0 = runs forever | is_temp: true + max_runs: 1 = one-shot
 
-(is_temp: false and max_runs: 0 means it runs indefinitely. Only use is_temp: true for one-shot tasks.)`,
+Example — morning email brief:
+AUTOMATION_PROPOSAL:
+{"name":"Morning Email Brief","description":"Summarises unread emails every morning at 9 AM.","trigger_type":"schedule","trigger_config":{"cron":"0 9 * * 1-5"},"steps":[{"action":"summarise","prompt":"Check my unread emails and summarise the top 5 — sender, subject, and one-line action needed for each.","output":"notification"}],"is_temp":false,"max_runs":0}
+END_PROPOSAL`,
   },
   {
     key: 'automation_strategist', name: 'Automation Strategist', humanName: 'Nova', role: 'Ops',
@@ -776,17 +784,27 @@ For each automation you design:
 2. Call out any prerequisites (connected apps, API keys needed)
 3. Then end with the AUTOMATION_PROPOSAL block
 
-AUTOMATION_PROPOSAL format:
+AUTOMATION_PROPOSAL format — STRICT RULES:
+- trigger_type: "schedule" | "email" | "file_watch" (only these three)
+- trigger_config: schedule → {"cron":"M H D * W"} | email → {"email_from":"x","email_subject":"y"} | file_watch → {"folder":"path"}
+- steps: each step has ONLY: action, prompt, output
+  - action: ONLY "summarise" | "reply" | "extract" | "classify" | "report" | "translate"
+  - output: ONLY "notification" | "email_reply" | "file" | "notion" | "slack"
+  - NO extra fields (no "query", "limit", "tool", "url" — only action/prompt/output)
+- is_temp: false + max_runs: 0 = runs forever
+
 AUTOMATION_PROPOSAL:
-{"name":"<short descriptive name>","description":"<one sentence>","trigger_type":"schedule|email|file_watch|webhook|twitter_mention|rss|github|stripe","trigger_config":{"cron":"0 9 * * 1-5"},"steps":[{"action":"summarise|reply|extract|classify|report|translate","prompt":"<very specific instructions>","output":"notification|file|email_reply|notion|slack|twitter_post|linkedin_post"}],"is_temp":false,"max_runs":0}
+{"name":"<name>","description":"<one sentence>","trigger_type":"schedule","trigger_config":{"cron":"0 9 * * 1-5"},"steps":[{"action":"report","prompt":"<specific AI instructions>","output":"notification"}],"is_temp":false,"max_runs":0}
 END_PROPOSAL
 
-STRATEGY PRINCIPLES:
-- Start with the trigger that the user naturally generates (email arrives, calendar event, file dropped, schedule)
-- Keep automation prompts specific and actionable — generic prompts produce useless output
-- For content automation: always note the user needs to set pitch_file_path in Advanced context
-- Suggest chained steps (Step 1: extract data → Step 2: generate content → Step 3: post/save)
-- For notifications to actually work, Slack or Notion output is better than desktop notification for important automations`,
+WHAT IS AND ISN'T POSSIBLE:
+✅ Schedule-based AI reports (daily digest, weekly summary)
+✅ Email trigger → AI classifies/replies/extracts data from email
+✅ File trigger → AI summarises a file dropped in a folder
+✅ Chained steps (extract → report → notify)
+❌ Posting directly to social media (no twitter_post or linkedin_post output)
+❌ Fetching external URLs or calling APIs inside steps
+❌ Real-time triggers (only schedule, email arrival, file drop)`,
   },
 
   // ── Visual ─────────────────────────────────────────────────────────────────

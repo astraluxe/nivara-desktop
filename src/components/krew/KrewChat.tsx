@@ -1426,7 +1426,8 @@ The prompt must be production-ready — specific enough for a motion designer to
                 if (SERVICE_TOOLS[service]) delegateTools.push(...SERVICE_TOOLS[service]);
               }
               if (targetAgent.category === 'Ops') delegateTools.push(...AUTOMATION_TOOLS);
-              const delegateSystem = targetAgent.systemPrompt + delegateMemBlock + userBlock + '\n\n' + buildKrewSystemPrompt(delegateTools);
+              const pipelineRule = '\n\nCRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.';
+              const delegateSystem = targetAgent.systemPrompt + delegateMemBlock + pipelineRule + userBlock + '\n\n' + buildKrewSystemPrompt(delegateTools);
               // Mini ReAct loop — lets delegated agents call web_search and other tools
               const delegateMsgsHist = [{ role: 'user', content: task }];
               let delegateAccum = '';   // clean prose accumulated across turns
@@ -1497,16 +1498,25 @@ The prompt must be production-ready — specific enough for a motion designer to
                 delegateMsgsHist.push({ role: 'assistant', content: delegateFinalResp });
                 delegateMsgsHist.push({ role: 'user', content: `<tool_result>${dResult}</tool_result>` });
               }
-              const { cleanContent: delegateClean, choices: delegateChoices } = extractChoices(delegateAccum || delegateFinalResp);
+              const { cleanContent: afterPropExtract, proposal: delegateProposal } = extractProposal(delegateAccum || delegateFinalResp);
+              const { cleanContent: delegateClean, choices: delegateChoices } = extractChoices(afterPropExtract);
               toolResult = delegateClean;
               const bubbleContent = delegateClean.trim() ||
-                (delegateChoices ? `Here are ${delegateChoices.choices.length} variants — pick the one you want:` : '(no response)');
+                (delegateChoices ? `Here are ${delegateChoices.choices.length} variants — pick the one you want:` :
+                 delegateProposal ? 'Automation plan ready — review the card below.' : '(no response)');
               setMessages(prev => {
                 const copy = [...prev];
                 const last = copy[copy.length - 1];
                 if (last?.role === 'delegation') copy[copy.length - 1] = { ...last, content: bubbleContent, streaming: false };
                 return copy;
               });
+              if (delegateProposal) {
+                addMsg({ role: 'proposal', content: '', proposal: delegateProposal });
+                if (sid) {
+                  sessionStorage.setItem(`krew-proposal-${sid}`, JSON.stringify(delegateProposal));
+                  krewDb.saveMessage(sid, 'tool_result', JSON.stringify(delegateProposal), '__proposal__').catch(() => {});
+                }
+              }
               if (delegateChoices) {
                 addMsg({ role: 'choices', content: '', choices: delegateChoices });
                 if (sid) krewDb.saveMessage(sid, 'tool_result', JSON.stringify(delegateChoices), '__choices__').catch(() => {});
