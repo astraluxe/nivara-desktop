@@ -32,18 +32,24 @@ export async function trackTokenUsage(module: TokenModule, charsUsed: number): P
   }
 }
 
-/** Returns tokens used this calendar month, or 0 on error. */
-export async function getMonthlyUsage(): Promise<number> {
+/** Returns tokens used this calendar month (or lifetime for free/explore), or 0 on error. */
+export async function getMonthlyUsage(isLifetime = false): Promise<number> {
   try {
-    const creds = await getSupabaseCreds();
-    if (!creds.userId || !creds.sessionToken) return 0;
-    const used = await invoke<number>('get_token_usage_this_month', {
-      supabaseUrl:     creds.supabaseUrl,
-      supabaseAnonKey: creds.supabaseAnonKey,
-      sessionToken:    creds.sessionToken,
-      userId:          creds.userId,
-    });
-    return used ?? 0;
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user?.id) return 0;
+    let query = supabase
+      .from('token_usage')
+      .select('tokens_consumed')
+      .eq('user_id', session.user.id);
+    if (!isLifetime) {
+      const monthStart = new Date();
+      monthStart.setUTCDate(1);
+      monthStart.setUTCHours(0, 0, 0, 0);
+      query = query.gte('created_at', monthStart.toISOString());
+    }
+    const { data, error } = await query;
+    if (error) return 0;
+    return (data ?? []).reduce((s: number, r: { tokens_consumed: number }) => s + (r.tokens_consumed ?? 0), 0);
   } catch {
     return 0;
   }

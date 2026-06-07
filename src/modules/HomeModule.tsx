@@ -43,12 +43,13 @@ const PLAN_STYLE: Record<string, string> = {
   custom:  'text-nv-muted  border-nv-border',
 };
 
-const PLAN_TOKENS: Record<string, { monthly: number | null; label: string }> = {
-  free:     { monthly: null,       label: '50 tasks lifetime' },
-  solo:     { monthly: 5_000_000,  label: '5M / month'        },
-  builder:  { monthly: 22_000_000, label: '22M / month'       },
-  business: { monthly: 62_000_000, label: '62M / month'       },
-  custom:   { monthly: null,       label: 'Unlimited'         },
+const PLAN_TOKENS: Record<string, { monthly: number | null; label: string; lifetime?: boolean }> = {
+  free:     { monthly: 100_000,    label: '50 tasks lifetime', lifetime: true },
+  explore:  { monthly: 100_000,    label: '50 tasks lifetime', lifetime: true },
+  solo:     { monthly: 2_000_000,  label: '~2,000 tasks/mo'  },
+  builder:  { monthly: 8_000_000,  label: '~8,000 tasks/mo'  },
+  business: { monthly: 30_000_000, label: '~30,000 tasks/mo' },
+  custom:   { monthly: null,       label: 'Unlimited'        },
 };
 
 interface ModuleCard {
@@ -225,7 +226,9 @@ export default function HomeModule({ onNavigate, onStartTour }: Props) {
     } catch {}
     chatDb.getRecentSessions(3).then((s) => { setSessions(s); setSessionsLoaded(true); }).catch(() => setSessionsLoaded(true));
     invoke<SystemInfo>('get_system_info').then(setSysInfo).catch(() => {});
-    getMonthlyUsage().then(setMonthlyUsed).catch(() => {});
+    const pl = profile?.plan ?? 'free';
+    const isLifetime = pl === 'free' || pl === 'explore';
+    getMonthlyUsage(isLifetime).then(setMonthlyUsed).catch(() => {});
   }, []);
 
   const projectName  = lastProject?.path.split(/[/\\]/).pop() ?? null;

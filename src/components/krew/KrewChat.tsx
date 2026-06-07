@@ -1007,7 +1007,7 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
       if (SERVICE_TOOLS[service]) tools.push(...SERVICE_TOOLS[service]);
     }
     if (agent.key === 'boss') tools.push(...BOSS_TOOLS);
-    if (agent.key === 'boss' || agent.category === 'Ops') tools.push(...AUTOMATION_TOOLS);
+    if (agent.category === 'Ops') tools.push(...AUTOMATION_TOOLS);
     return tools;
   }, [creds, agent.key, agent.category]);
 
@@ -1413,7 +1413,13 @@ The prompt must be production-ready — specific enough for a motion designer to
               const delegateMemBlock = delegateMemories.length > 0
                 ? '\n\n## Your memory\n' + delegateMemories.map((m) => `- ${m.key}: ${m.value}`).join('\n')
                 : '';
-              const delegateSystem = targetAgent.systemPrompt + delegateMemBlock + userBlock + '\n\n' + buildKrewSystemPrompt(getActiveTools());
+              // Build tools for the delegated agent based on its own role, not boss's tools
+              const delegateTools: ToolDef[] = [...SYSTEM_TOOLS];
+              for (const service of Object.keys(creds)) {
+                if (SERVICE_TOOLS[service]) delegateTools.push(...SERVICE_TOOLS[service]);
+              }
+              if (targetAgent.category === 'Ops') delegateTools.push(...AUTOMATION_TOOLS);
+              const delegateSystem = targetAgent.systemPrompt + delegateMemBlock + userBlock + '\n\n' + buildKrewSystemPrompt(delegateTools);
               // Mini ReAct loop — lets delegated agents call web_search and other tools
               const delegateMsgsHist = [{ role: 'user', content: task }];
               let delegateAccum = '';   // clean prose accumulated across turns
