@@ -34,16 +34,6 @@ function useTheme() {
 
 const MODULES: { id: Module; label: string; icon: React.ReactNode; status: "active" | "idle" | "off" }[] = [
   {
-    id: "automation",
-    label: "Automation · workflows",
-    status: "active",
-    icon: (
-      <svg viewBox="0 0 28 28" fill="none" className="w-5 h-5">
-        <path d="M16 3l-9 13h8l-3 9 9-13h-8l3-9z" fill="currentColor" />
-      </svg>
-    ),
-  },
-  {
     id: "krew",
     label: "Krew · AI agent",
     status: "active",
@@ -55,6 +45,16 @@ const MODULES: { id: Module; label: string; icon: React.ReactNode; status: "acti
         <circle cx="3"  cy="14" r="2" fill="currentColor" opacity=".7"/>
         <circle cx="14" cy="3"  r="2" fill="currentColor" opacity=".7"/>
         <circle cx="14" cy="25" r="2" fill="currentColor" opacity=".7"/>
+      </svg>
+    ),
+  },
+  {
+    id: "automation",
+    label: "Automation · workflows",
+    status: "active",
+    icon: (
+      <svg viewBox="0 0 28 28" fill="none" className="w-5 h-5">
+        <path d="M16 3l-9 13h8l-3 9 9-13h-8l3-9z" fill="currentColor" />
       </svg>
     ),
   },

@@ -326,7 +326,7 @@ TRIGGERS — ONLY these exist, nothing else:
 - file_watch: Watches a local folder for new/changed files (filter by type)
 - webhook: HTTP endpoint — any external service can POST to trigger it
 - twitter_mention: X (Twitter) @mentions of the connected account — optional keyword filter on the mention text. IMPORTANT: only catches posts where someone @mentions the user. Cannot search all of X for arbitrary keywords or monitor other people's timelines.
-- rss: Polls any RSS/Atom feed URL for new items
+- rss: Fetches latest items from any RSS/Atom feed URL (up to 5 items per run — re-fetches same items if feed hasn't updated)
 - github: GitHub repo events — pull_request, issue, push, release
 - stripe: Stripe payment events (payment_intent.succeeded, charge.failed, etc.)
 - google_calendar: Upcoming calendar events — lookahead window in minutes
@@ -340,9 +340,9 @@ AI ACTIONS — ONLY these exist:
 - translate: Translate content to another language
 
 OUTPUTS — ONLY these exist:
-- notification: Desktop notification (title + body)
+- notification: Desktop notification (title + body) + in-app toast
 - file: Write/append to a local file (txt, md, json, csv)
-- email_reply: Send email reply via Gmail
+- email_reply: Send email via Gmail API (requires Google Suite connected in Connect Apps — different from Gmail IMAP)
 - notion: Add a page to a Notion database
 - slack: Post to a Slack channel
 - twitter_post: Post a new tweet on the connected X account
@@ -1687,6 +1687,7 @@ function AutomationCard({ automation, onToggle, onCloudToggle, onEdit, onDelete,
   const hasGmailSource = automation.trigger_type === 'schedule' && cfg.data_source === 'gmail';
   const needsGmailSource = automation.trigger_type === 'schedule' && !cfg.data_source &&
     steps.some(s => /email|gmail|inbox|unread/i.test(s.prompt));
+  const hasEmailReplyOutput = steps.some(s => s.output === 'email_reply');
   return (
     <div className={`rounded-lg border bg-nv-surface p-4 transition-fast ${automation.enabled ? 'border-nv-border' : 'border-nv-border/50 opacity-60'}`}>
       <div className="flex items-start justify-between gap-3">
@@ -1717,7 +1718,15 @@ function AutomationCard({ automation, onToggle, onCloudToggle, onEdit, onDelete,
             <div className="flex items-start gap-1.5 mt-1.5 px-2.5 py-1.5 rounded-lg bg-nv-yellow/10 border border-nv-yellow/30">
               <span className="text-nv-yellow text-xs shrink-0">⚠</span>
               <p className="text-[10px] text-nv-yellow leading-relaxed">
-                <strong>Email data not connected.</strong> This schedule runs without fetching emails — the AI has nothing to summarise. Edit this automation and set <strong>Fetch live data from → Gmail</strong>.
+                <strong>No email data source.</strong> This schedule runs without fetching emails — AI has nothing to summarise. Edit → Trigger → set <strong>Fetch live data from → Gmail</strong>.
+              </p>
+            </div>
+          )}
+          {hasEmailReplyOutput && (
+            <div className="flex items-start gap-1.5 mt-1.5 px-2.5 py-1.5 rounded-lg bg-nv-surface border border-nv-border">
+              <span className="text-nv-muted text-xs shrink-0">ℹ</span>
+              <p className="text-[10px] text-nv-muted leading-relaxed">
+                Email output requires <strong>Google Suite</strong> connected in Connect Apps (not just Gmail).
               </p>
             </div>
           )}

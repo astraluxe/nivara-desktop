@@ -756,19 +756,35 @@ HOW TO BEHAVE:
 - When user wants a NEW automation → propose one immediately using AUTOMATION_PROPOSAL block (no extra questions, smart defaults)
 - Report what ran: automation name, when it last ran, what it does. Be concise.
 
-AUTOMATION_PROPOSAL format — STRICT RULES:
-- trigger_type: "schedule" | "email" | "file_watch"
-- trigger_config: schedule → {"cron":"M H D * W"} | email → {"email_from":"x","email_subject":"y"} (both optional) | file_watch → {"folder":"C:\\Users\\you\\Downloads"}
-- steps: EACH step has ONLY these fields: action, prompt, output
-  - action: ONLY one of: "summarise" | "reply" | "extract" | "classify" | "report" | "translate"
-  - prompt: specific AI instruction for what to do (e.g. "Summarise the email — sender, subject, key action needed")
-  - output: ONLY one of: "notification" | "email_reply" | "file" | "notion" | "slack"
-- DO NOT put API calls, tool calls, or extra fields (like "query", "limit") inside steps — those are not supported
-- is_temp: false + max_runs: 0 = runs forever | is_temp: true + max_runs: 1 = one-shot
+AUTOMATION_PROPOSAL format — COMPLETE RULES:
 
-CRITICAL: For "check emails on a schedule" → use trigger_type "schedule" + data_source "gmail" in trigger_config. This fetches real unread emails before the AI step runs. Without data_source:"gmail", the AI only sees a timestamp.
+trigger_type + trigger_config — choose the right one:
+- "schedule"        → {"cron":"0 9 * * 1-5"} — add "data_source":"gmail" to fetch unread emails each run
+- "email"           → {"email_from":"addr","email_subject":"keyword"} — fires when matching email arrives
+- "file_watch"      → {"folder":"C:\\Users\\you\\Downloads"} — fires when a file is added to folder
+- "twitter_mention" → {"twitter_filter":"keyword"} — fires on @mentions (keyword optional)
+- "rss"             → {"rss_url":"https://..."} — fires on new RSS/Atom feed items
+- "github"          → {"github_repo":"owner/repo","github_event":"pull_request|issue|push|release"}
+- "stripe"          → {"stripe_event":"payment_intent.succeeded|invoice.payment_failed|..."}
+- "google_calendar" → {"calendar_id":"primary","lookahead_mins":30}
+- "webhook"         → {"webhook_path":"/my-hook"} — external POST triggers this
 
-Example — morning email brief:
+steps: EACH step has ONLY: action, prompt, output
+- action: "summarise" | "reply" | "extract" | "classify" | "report" | "translate"
+- output: "notification" | "email_reply" | "file" | "notion" | "slack" | "discord" | "google_sheets" | "twitter_post" | "twitter_reply" | "linkedin_post" | "twilio_sms" | "telegram" | "hubspot" | "reddit_post"
+- NO extra fields in steps — only action/prompt/output
+
+is_temp: false + max_runs: 0 = runs forever | is_temp: true + max_runs: 1 = one-shot
+
+CRITICAL: Schedule trigger alone = just a timestamp. Add data_source:"gmail" to fetch real emails.
+NEVER propose a trigger that doesn't match user's actual need (e.g. don't use "email" trigger for "daily briefing" — that's "schedule" + data_source:"gmail").
+
+Examples:
+- Email brief at 9am: trigger_type "schedule", trigger_config {"cron":"0 9 * * 1-5","data_source":"gmail"}, action "summarise", output "notification"
+- New GitHub PR → Slack: trigger_type "github", trigger_config {"github_repo":"owner/repo","github_event":"pull_request"}, action "summarise", output "slack"
+- Invoice email → extract: trigger_type "email", trigger_config {"email_subject":"invoice"}, action "extract", output "file"
+- RSS article → Discord: trigger_type "rss", trigger_config {"rss_url":"https://..."}, action "summarise", output "discord"
+
 AUTOMATION_PROPOSAL:
 {"name":"Morning Email Brief","description":"Fetches unread emails every morning and summarises them.","trigger_type":"schedule","trigger_config":{"cron":"0 9 * * 1-5","data_source":"gmail"},"steps":[{"action":"summarise","prompt":"Summarise the unread emails provided — for each: sender, subject, and one-line action needed. Format as a numbered list.","output":"notification"}],"is_temp":false,"max_runs":0}
 END_PROPOSAL`,
@@ -786,34 +802,50 @@ For each automation you design:
 2. Call out any prerequisites (connected apps, API keys needed)
 3. Then end with the AUTOMATION_PROPOSAL block
 
-AUTOMATION_PROPOSAL format — STRICT RULES:
-- trigger_type: "schedule" | "email" | "file_watch" (only these three)
-- trigger_config:
-  - schedule → {"cron":"M H D * W"} — optionally add "data_source":"gmail" to fetch unread emails before each run
-  - email → {"email_from":"x","email_subject":"y"} — fires when email arrives
-  - file_watch → {"folder":"path"}
-- steps: each step has ONLY: action, prompt, output
-  - action: ONLY "summarise" | "reply" | "extract" | "classify" | "report" | "translate"
-  - output: ONLY "notification" | "email_reply" | "file" | "notion" | "slack"
-  - NO extra fields (no "query", "limit", "tool", "url" — only action/prompt/output)
-- is_temp: false + max_runs: 0 = runs forever
+AUTOMATION_PROPOSAL format — COMPLETE RULES:
 
-CRITICAL: For "check emails on a schedule" → trigger_type "schedule" + data_source "gmail" in trigger_config.
+trigger_type + trigger_config — choose the right trigger for the user's need:
+- "schedule"        → {"cron":"0 9 * * 1-5"} — add "data_source":"gmail" to fetch unread emails each run
+- "email"           → {"email_from":"addr","email_subject":"keyword"} — fires when matching email arrives
+- "file_watch"      → {"folder":"C:\\Users\\you\\Downloads"} — fires when a file is added
+- "twitter_mention" → {"twitter_filter":"keyword"} — fires on @mentions (keyword optional)
+- "rss"             → {"rss_url":"https://..."} — fires on new RSS/Atom feed items
+- "github"          → {"github_repo":"owner/repo","github_event":"pull_request|issue|push|release"}
+- "stripe"          → {"stripe_event":"payment_intent.succeeded|invoice.payment_failed|..."}
+- "google_calendar" → {"calendar_id":"primary","lookahead_mins":30}
+- "webhook"         → {"webhook_path":"/my-hook"}
+
+steps: EACH step has ONLY: action, prompt, output
+- action: "summarise" | "reply" | "extract" | "classify" | "report" | "translate"
+- output: "notification" | "email_reply" | "file" | "notion" | "slack" | "discord" | "google_sheets" | "twitter_post" | "twitter_reply" | "linkedin_post" | "twilio_sms" | "telegram" | "hubspot" | "reddit_post"
+- NO extra fields in steps — only action/prompt/output
+
+CRITICAL DATA SOURCE RULES:
+- "schedule" trigger alone = only timestamp context. AI has nothing to work with unless data_source is set.
+- For email briefings on schedule: MUST use data_source:"gmail" in trigger_config
+- NEVER use "email" trigger for "daily briefing" — email trigger is REACTIVE (fires when email arrives)
+- For GitHub/Stripe/RSS/Calendar/X-mention: those trigger types fetch data automatically — no data_source needed
+
+WHAT IS POSSIBLE:
+✅ Schedule + data_source:"gmail" → daily email brief → notification/file/slack
+✅ Email arrives → AI replies/classifies/extracts → email_reply/notification/notion
+✅ File added to folder → AI reads and processes file → file/notification/slack
+✅ New X @mention → AI classifies/replies → notification/twitter_reply
+✅ RSS new item → AI summarises → discord/slack/notion
+✅ GitHub PR/issue → AI summarises → slack/discord
+✅ Stripe payment → AI extracts → twilio_sms/slack/notion
+✅ Calendar event → AI drafts agenda → email_reply/notification
+✅ Chained steps: extract → classify → report → output
+
+WHAT IS NOT POSSIBLE:
+❌ Schedule without data_source — AI just sees "Automation fired at [time]", nothing to process
+❌ Monitoring other people's social feeds (only @mentions to your own account)
+❌ Web search or browsing inside AI steps
+❌ Multi-trigger automations — one automation = one trigger
 
 AUTOMATION_PROPOSAL:
 {"name":"<name>","description":"<one sentence>","trigger_type":"schedule","trigger_config":{"cron":"0 9 * * 1-5","data_source":"gmail"},"steps":[{"action":"summarise","prompt":"Summarise the unread emails — sender, subject, action needed for each.","output":"notification"}],"is_temp":false,"max_runs":0}
-END_PROPOSAL
-
-WHAT IS AND ISN'T POSSIBLE:
-✅ Schedule-based AI reports (daily digest, weekly summary)
-✅ Schedule + data_source "gmail" → fetch unread emails then AI summarises/reports
-✅ Email trigger → AI classifies/replies/extracts data from email (reactive)
-✅ File trigger → AI summarises a file dropped in a folder
-✅ Chained steps (extract → report → notify)
-❌ Fetching emails on a schedule WITHOUT data_source "gmail" — AI would have no email data
-❌ Posting directly to social media (no twitter_post or linkedin_post output)
-❌ Fetching external URLs or calling APIs inside steps
-❌ Real-time triggers (only schedule, email arrival, file drop)`,
+END_PROPOSAL`,
   },
 
   // ── Visual ─────────────────────────────────────────────────────────────────

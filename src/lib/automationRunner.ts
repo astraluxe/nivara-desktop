@@ -356,8 +356,23 @@ export async function executeAutomation(
       } catch { /* Gmail not connected */ }
     }
 
-    if (!overrideContext && automation.trigger_type === 'file_watch' && cfg.folder) {
-      triggerContent = `Files monitored in: ${cfg.folder}`;
+    // ── File watch — read actual file content from Rust-provided path ────────
+    if (automation.trigger_type === 'file_watch') {
+      if (overrideContext && overrideContext.match(/\.[a-zA-Z0-9]{1,6}$/)) {
+        // overrideContext is a file path sent by Rust — read the file content
+        try {
+          const fileContent = await invoke<string>('read_file', { path: overrideContext }).catch(() => null);
+          if (fileContent && fileContent.trim()) {
+            triggerContent = `File added: ${overrideContext}\n\nContents:\n${fileContent.slice(0, 8000)}`;
+          } else {
+            triggerContent = `File added: ${overrideContext}\n(File is empty or could not be read.)`;
+          }
+        } catch {
+          triggerContent = `File added: ${overrideContext}\n(Could not read file content.)`;
+        }
+      } else if (!overrideContext) {
+        triggerContent = `File watch active on folder: ${cfg.folder || '(no folder set)'}. Drop a file in the folder to trigger processing.`;
+      }
     }
 
     // ── X (Twitter) mention trigger ───────────────────────────────────────────
@@ -398,14 +413,21 @@ export async function executeAutomation(
           headers: { 'User-Agent': 'adris.tech/1.0' }, body: null,
         }).catch(() => '');
         if (rssRaw) {
-          const titleMatch = rssRaw.match(/<title[^>]*>([^<]{1,200})<\/title>/i);
-          const descMatch  = rssRaw.match(/<description[^>]*>([\s\S]{1,1000})<\/description>/i);
-          const linkMatch  = rssRaw.match(/<link[^>]*>(https?:[^<]{1,300})<\/link>/i);
-          const title = titleMatch ? titleMatch[1].replace(/<!\[CDATA\[|\]\]>/g, '').trim() : '';
-          const desc  = descMatch  ? descMatch[1].replace(/<!\[CDATA\[|\]\]>/g, '').replace(/<[^>]+>/g, '').trim().slice(0, 800) : '';
-          const link  = linkMatch  ? linkMatch[1].trim() : cfg.rss_url;
-          if (title) triggerContent = `RSS: ${title}\nURL: ${link}\n\n${desc}`;
-        }
+          // Extract multiple <item> or <entry> blocks
+          const clean = (s: string) => s.replace(/<!\[CDATA\[|\]\]>/g, '').replace(/<[^>]+>/g, '').trim();
+          const itemRegex = /<(?:item|entry)[\s>]([\s\S]*?)<\/(?:item|entry)>/gi;
+          const items: string[] = [];
+          let itemMatch: RegExpExecArray | null;
+          while ((itemMatch = itemRegex.exec(rssRaw)) && items.length < 5) {
+            const block = itemMatch[1];
+            const t = clean((block.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? ''));
+            const l = (block.match(/<link[^>]*>(https?:[^<]*)<\/link>/i)?.[1] ?? '').trim();
+            const d = clean((block.match(/<(?:description|summary|content)[^>]*>([\s\S]*?)<\/(?:description|summary|content)>/i)?.[1] ?? '')).slice(0, 300);
+            if (t) items.push(`${items.length + 1}. ${t}${l ? `\n   ${l}` : ''}${d ? `\n   ${d}` : ''}`);
+          }
+          if (items.length) {
+            triggerContent = `RSS Feed: ${cfg.rss_url}\nLatest ${items.length} item(s):\n\n${items.join('\n\n')}`;
+          }
       } catch { /* RSS fetch failed */ }
     }
 
@@ -581,6 +603,40 @@ export async function executeAutomation(
         const { emit } = await import('@tauri-apps/api/event');
         await emit('automation-notification', { title, body });
       } catch { /* ignore */ }
+    }
+
+    // ── Email reply / send ────────────────────────────────────────────────────
+    if (lastStep?.output === 'email_reply' && finalOutput) {
+      try {
+        const goCred = await credentialStore.get('google').catch(() => null);
+        const accessToken = goCred?.access_token ?? '';
+        if (accessToken) {
+          // Resolve recipient: explicit address or extract sender from trigger content
+          let toAddr = oc.email_to ?? '';
+          if (!toAddr || toAddr === 'sender') {
+            const fromMatch = triggerContent.match(/From:\s*([^\s<]+@[^\s>]+)/i);
+            toAddr = fromMatch ? fromMatch[1].replace(/[<>]/g, '') : '';
+          }
+          if (toAddr && toAddr !== 'sender') {
+            const subject = `Re: ${automation.name}`;
+            const rawEmail = [
+              `To: ${toAddr}`,
+              `Subject: ${subject}`,
+              `Content-Type: text/plain; charset=utf-8`,
+              '',
+              finalOutput.slice(0, 2000),
+            ].join('\r\n');
+            const encoded = btoa(unescape(encodeURIComponent(rawEmail)))
+              .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+            await invoke('krew_http_call', {
+              method: 'POST',
+              url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send',
+              headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ raw: encoded }),
+            }).catch(() => {});
+          }
+        }
+      } catch { /* Google not connected */ }
     }
 
     if (lastStep?.output === 'file' && oc.file_path && finalOutput) {
