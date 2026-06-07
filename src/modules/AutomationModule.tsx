@@ -254,14 +254,28 @@ function buildFlow(
     data: { label: TRIGGER_LABELS[triggerType] ?? triggerType, subtitle: tSubtitle, triggerType, ...tExtraData },
   });
 
+  // If schedule has a data_source, show it as an explicit data-fetch node
+  const hasGmailSource = triggerType === 'schedule' && triggerConfig.data_source === 'gmail';
+  let dataNodeId = 'n0';
+  if (hasGmailSource) {
+    nodes.push({
+      id: 'ndata', type: 'trigger',
+      position: { x: 80 + X, y: 200 },
+      data: { label: 'Gmail Inbox', subtitle: 'Fetch unread emails', triggerType: 'email' },
+    });
+    edges.push({ id: 'edata', source: 'n0', target: 'ndata', type: 'line', data: { srcType: 'trigger' } });
+    dataNodeId = 'ndata';
+  }
+
+  const stepXOffset = hasGmailSource ? 2 : 1;
   steps.forEach((step, i) => {
     const id = `n${i + 1}`;
     nodes.push({
       id, type: 'ai_action',
-      position: { x: 80 + (i + 1) * X, y: 200 },
+      position: { x: 80 + (i + stepXOffset) * X, y: 200 },
       data: { label: ACTION_LABELS[step.action] ?? step.action, action: step.action, prompt: step.prompt },
     });
-    edges.push({ id: `e${i}`, source: i === 0 ? 'n0' : `n${i}`, target: id, type: 'line', data: { srcType: i === 0 ? 'trigger' : 'ai_action' } });
+    edges.push({ id: `e${i}`, source: i === 0 ? dataNodeId : `n${i}`, target: id, type: 'line', data: { srcType: 'trigger' } });
   });
 
   if (steps.length > 0) {
@@ -275,7 +289,7 @@ function buildFlow(
     };
     nodes.push({
       id: 'nout', type: 'output',
-      position: { x: 80 + (steps.length + 1) * X, y: 200 },
+      position: { x: 80 + (steps.length + stepXOffset) * X, y: 200 },
       data: { label: outLabels[lastStep.output] ?? lastStep.output, outputType: lastStep.output, subtitle: '' },
     });
     edges.push({ id: 'eout', source: `n${steps.length}`, target: 'nout', type: 'line', data: { srcType: 'ai_action' } });
@@ -1670,12 +1684,15 @@ function AutomationCard({ automation, onToggle, onCloudToggle, onEdit, onDelete,
     try { steps = JSON.parse(automation.steps) as Step[]; } catch {}
   }
   const triggerLabel = (TRIGGER_LABELS as Record<string, string>)[automation.trigger_type] ?? 'Canvas Flow';
+  const hasGmailSource = automation.trigger_type === 'schedule' && cfg.data_source === 'gmail';
+  const needsGmailSource = automation.trigger_type === 'schedule' && !cfg.data_source &&
+    steps.some(s => /email|gmail|inbox|unread/i.test(s.prompt));
   return (
     <div className={`rounded-lg border bg-nv-surface p-4 transition-fast ${automation.enabled ? 'border-nv-border' : 'border-nv-border/50 opacity-60'}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <span className={`inline-block w-1.5 h-1.5 rounded-full ${automation.enabled ? 'bg-nv-green' : 'bg-nv-faint'}`} />
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${automation.enabled ? 'bg-nv-green' : 'bg-nv-faint'}`} />
             <h3 className="text-sm font-semibold text-nv-text truncate">{automation.name}</h3>
             {automation.cloud_enabled && (
               <span title="Runs in cloud when PC is off" className="shrink-0 text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-sky-500/15 text-sky-400 border border-sky-500/30">
@@ -1687,10 +1704,23 @@ function AutomationCard({ automation, onToggle, onCloudToggle, onEdit, onDelete,
                 Temp · {cfg.max_runs ?? 1} run{(cfg.max_runs ?? 1) !== 1 ? 's' : ''}
               </span>
             )}
+            {hasGmailSource && (
+              <span title="Fetches unread Gmail emails before each run" className="shrink-0 text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                ✉ Gmail
+              </span>
+            )}
           </div>
           <p className="text-xs text-nv-muted font-mono">
-            {triggerLabel}{cfg.cron ? ` · ${cronToHuman(cfg.cron)}` : ''}{cfg.folder ? ` · ${cfg.folder}` : ''}
+            {triggerLabel}{cfg.cron ? ` · ${cronToHuman(cfg.cron)}` : ''}{cfg.folder ? ` · ${cfg.folder}` : ''}{hasGmailSource ? ' · Gmail inbox' : ''}
           </p>
+          {needsGmailSource && (
+            <div className="flex items-start gap-1.5 mt-1.5 px-2.5 py-1.5 rounded-lg bg-nv-yellow/10 border border-nv-yellow/30">
+              <span className="text-nv-yellow text-xs shrink-0">⚠</span>
+              <p className="text-[10px] text-nv-yellow leading-relaxed">
+                <strong>Email data not connected.</strong> This schedule runs without fetching emails — the AI has nothing to summarise. Edit this automation and set <strong>Fetch live data from → Gmail</strong>.
+              </p>
+            </div>
+          )}
           <p className="text-xs text-nv-muted mt-1">
             {isCanvas ? 'Visual canvas flow' : `${steps.length} step${steps.length !== 1 ? 's' : ''}`} · {automation.run_count} run{automation.run_count !== 1 ? 's' : ''} · last {fmtTs(automation.last_run_at)}
           </p>
