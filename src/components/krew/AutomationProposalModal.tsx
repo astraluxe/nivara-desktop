@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 export interface AutomationProposal {
   name:               string;
   description?:       string;
-  trigger_type:       'schedule' | 'email' | 'file_watch' | 'webhook';
+  trigger_type:       'schedule' | 'email' | 'file_watch' | 'webhook' | 'twitter_mention' | 'rss' | 'github' | 'stripe' | 'google_calendar';
   trigger_config:     Record<string, unknown>;
   steps:              Array<{ action: string; prompt: string; output: string }>;
   is_temp:            boolean;

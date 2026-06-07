@@ -102,7 +102,7 @@ export async function callAutomationAI(userMessage: string, systemPrompt: string
         }
       }
     }
-  } catch { /* no credentials — fall back to local */ }
+  } catch (_e) { /* no credentials — fall back to local */ }
 
   return new Promise<string>(async (resolve, reject) => {
     let fullText = '';
@@ -300,7 +300,7 @@ export async function executeAutomation(
       try {
         const fileContent = await invoke<string>('read_file', { path: cfg.pitch_file_path }).catch(() => '');
         if (fileContent) pitchContext = `## Product / Pitch Context\n${fileContent.slice(0, 4000)}\n\n---\n\n`;
-      } catch { /* file not found */ }
+      } catch (_e) { /* file not found */ }
     }
 
     const knowledgeBlock = [
@@ -331,7 +331,7 @@ export async function executeAutomation(
           }).catch(() => null);
           if (emails && !emails.startsWith('No emails')) triggerContent = emails;
         }
-      } catch { /* Gmail not connected */ }
+      } catch (_e) { /* Gmail not connected */ }
     }
 
     // ── Schedule + Gmail data source (fetch emails on a schedule) ────────────
@@ -353,7 +353,7 @@ export async function executeAutomation(
         } else {
           triggerContent = `Gmail not connected. Connect Gmail in Connect Apps to fetch emails.`;
         }
-      } catch { /* Gmail not connected */ }
+      } catch (_e) { /* Gmail not connected */ }
     }
 
     // ── File watch — read actual file content from Rust-provided path ────────
@@ -367,7 +367,7 @@ export async function executeAutomation(
           } else {
             triggerContent = `File added: ${overrideContext}\n(File is empty or could not be read.)`;
           }
-        } catch {
+        } catch (_e) {
           triggerContent = `File added: ${overrideContext}\n(Could not read file content.)`;
         }
       } else if (!overrideContext) {
@@ -402,7 +402,7 @@ export async function executeAutomation(
             }
           }
         }
-      } catch { /* X not connected */ }
+      } catch (_e) { /* X not connected */ }
     }
 
     // ── RSS feed trigger ──────────────────────────────────────────────────────
@@ -428,7 +428,7 @@ export async function executeAutomation(
           if (items.length) {
             triggerContent = `RSS Feed: ${cfg.rss_url}\nLatest ${items.length} item(s):\n\n${items.join('\n\n')}`;
           }
-      } catch { /* RSS fetch failed */ }
+      } catch (_e) { /* RSS fetch failed */ }
     }
 
     // ── GitHub trigger ────────────────────────────────────────────────────────
@@ -455,7 +455,7 @@ export async function executeAutomation(
             ).join('\n');
           }
         }
-      } catch { /* GitHub fetch failed */ }
+      } catch (_e) { /* GitHub fetch failed */ }
     }
 
     // ── Stripe trigger ────────────────────────────────────────────────────────
@@ -476,7 +476,7 @@ export async function executeAutomation(
             triggerContent = `Stripe ${eventType}:\n${JSON.stringify(event, null, 2).slice(0, 1000)}`;
           }
         }
-      } catch { /* Stripe fetch failed */ }
+      } catch (_e) { /* Stripe fetch failed */ }
     }
 
     // ── Google Calendar trigger ───────────────────────────────────────────────
@@ -502,7 +502,7 @@ export async function executeAutomation(
             ).join('\n');
           }
         }
-      } catch { /* Calendar fetch failed */ }
+      } catch (_e) { /* Calendar fetch failed */ }
     }
 
     // ── Notion CRM pre-fetch (inject records as context before AI runs) ─────────
@@ -562,7 +562,7 @@ export async function executeAutomation(
             }
           }
         }
-      } catch { /* Notion not connected or search failed */ }
+      } catch (_e) { /* Notion not connected or search failed */ }
     }
 
     // Chain steps: output of step N → input of step N+1
@@ -597,12 +597,12 @@ export async function executeAutomation(
             new Notification(title, { body, silent: false });
           }
         }
-      } catch { /* Notification API not available */ }
+      } catch (_e) { /* Notification API not available */ }
       // Also emit in-app event so AutomationModule can show a toast
       try {
         const { emit } = await import('@tauri-apps/api/event');
         await emit('automation-notification', { title, body });
-      } catch { /* ignore */ }
+      } catch (_e) { /* ignore */ }
     }
 
     // ── Email reply / send ────────────────────────────────────────────────────
@@ -636,7 +636,7 @@ export async function executeAutomation(
             }).catch(() => {});
           }
         }
-      } catch { /* Google not connected */ }
+      } catch (_e) { /* Google not connected */ }
     }
 
     if (lastStep?.output === 'file' && oc.file_path && finalOutput) {
@@ -663,7 +663,7 @@ export async function executeAutomation(
             body:    JSON.stringify(body),
           }).catch(() => {});
         }
-      } catch { /* credentials missing or API error — run still logged */ }
+      } catch (_e) { /* credentials missing or API error — run still logged */ }
     }
 
     if (lastStep?.output === 'linkedin_post' && finalOutput) {
@@ -696,7 +696,7 @@ export async function executeAutomation(
             }),
           }).catch(() => {});
         }
-      } catch { /* credentials missing — run still logged */ }
+      } catch (_e) { /* credentials missing — run still logged */ }
     }
 
     if (lastStep?.output === 'slack' && oc.slack_channel && finalOutput) {
@@ -710,7 +710,7 @@ export async function executeAutomation(
             body:    JSON.stringify({ channel: oc.slack_channel, text: finalOutput }),
           }).catch(() => {});
         }
-      } catch { /* Slack not connected */ }
+      } catch (_e) { /* Slack not connected */ }
     }
 
     if (lastStep?.output === 'reddit_post' && oc.reddit_subreddit && finalOutput) {
@@ -729,7 +729,7 @@ export async function executeAutomation(
             password:     rd.password,
           }).catch(() => {});
         }
-      } catch { /* Reddit not connected */ }
+      } catch (_e) { /* Reddit not connected */ }
     }
 
     if (lastStep?.output === 'discord' && oc.discord_webhook && finalOutput) {
@@ -758,7 +758,7 @@ export async function executeAutomation(
             }).catch(() => {});
           }
         }
-      } catch { /* Google Sheets not connected */ }
+      } catch (_e) { /* Google Sheets not connected */ }
     }
 
     if (lastStep?.output === 'twilio_sms' && oc.sms_to && finalOutput) {
@@ -778,7 +778,7 @@ export async function executeAutomation(
             body,
           }).catch(() => {});
         }
-      } catch { /* Twilio not connected */ }
+      } catch (_e) { /* Twilio not connected */ }
     }
 
     if (lastStep?.output === 'telegram' && oc.telegram_chat_id && finalOutput) {
@@ -792,7 +792,7 @@ export async function executeAutomation(
             body: JSON.stringify({ chat_id: oc.telegram_chat_id, text: finalOutput.slice(0, 4096) }),
           }).catch(() => {});
         }
-      } catch { /* Telegram not connected */ }
+      } catch (_e) { /* Telegram not connected */ }
     }
 
     if (lastStep?.output === 'hubspot' && finalOutput) {
@@ -819,7 +819,7 @@ export async function executeAutomation(
             }).catch(() => {});
           }
         }
-      } catch { /* HubSpot not connected */ }
+      } catch (_e) { /* HubSpot not connected */ }
     }
 
     if (lastStep?.output === 'notion' && finalOutput) {
@@ -850,7 +850,7 @@ export async function executeAutomation(
             }).catch(() => {});
           }
         }
-      } catch { /* Notion not connected */ }
+      } catch (_e) { /* Notion not connected */ }
     }
 
     await invoke('automation_log_run', {
@@ -881,3 +881,4 @@ export async function executeAutomation(
     }).catch(() => {});
   }
 }
+

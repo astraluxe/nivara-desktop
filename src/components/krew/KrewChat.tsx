@@ -284,23 +284,38 @@ function renderMarkdown(text: string): React.ReactNode {
 function proposalToFlow(proposal: AutomationProposal): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = [], edges: Edge[] = [];
   const X = 200, GAP = 170;
-  const tLabels: Record<string, string> = { schedule: 'Schedule', email: 'Email received', file_watch: 'File added', webhook: 'Webhook' };
+  const tLabels: Record<string, string> = { schedule: 'Schedule', email: 'Email received', file_watch: 'File added', webhook: 'Webhook', twitter_mention: 'X mention', rss: 'RSS Feed', github: 'GitHub event', stripe: 'Stripe event', google_calendar: 'Calendar event' };
   const aLabels: Record<string, string> = { summarise: 'Summarise', reply: 'Draft reply', extract: 'Extract data', classify: 'Classify', report: 'Generate report', translate: 'Translate' };
-  const oLabels: Record<string, string> = { notification: 'Desktop alert', file: 'Save to file', email_reply: 'Send email', notion: 'Notion page', slack: 'Slack message' };
+  const oLabels: Record<string, string> = { notification: 'Desktop alert', file: 'Save to file', email_reply: 'Send email', notion: 'Notion page', slack: 'Slack message', discord: 'Discord', google_sheets: 'Google Sheets', twitter_post: 'X post', twitter_reply: 'X reply', linkedin_post: 'LinkedIn post', twilio_sms: 'SMS', telegram: 'Telegram', hubspot: 'HubSpot CRM', reddit_post: 'Reddit post' };
 
   nodes.push({ id: 'n-trigger', type: 'trigger', position: { x: X, y: 80 },
     data: { label: tLabels[proposal.trigger_type] ?? 'Trigger', triggerType: proposal.trigger_type, ...proposal.trigger_config } });
 
+  // If this is a schedule + gmail automation, insert a Gmail fetch node between trigger and AI steps
+  const tc = proposal.trigger_config as Record<string, unknown>;
+  const hasGmailSource = proposal.trigger_type === 'schedule' && tc?.data_source === 'gmail';
+  let prevNodeId = 'n-trigger';
+  let yShift = 0;
+  if (hasGmailSource) {
+    nodes.push({ id: 'n-gmail', type: 'trigger', position: { x: X, y: 80 + GAP },
+      data: { label: 'Gmail Inbox', subtitle: 'Fetch unread emails', triggerType: 'email' } });
+    edges.push({ id: 'e-trigger-gmail', source: 'n-trigger', target: 'n-gmail', type: 'dot', data: { srcType: 'trigger' } });
+    prevNodeId = 'n-gmail';
+    yShift = GAP;
+  }
+
   proposal.steps.forEach((step, i) => {
-    const id = `n-ai-${i}`, prevId = i === 0 ? 'n-trigger' : `n-ai-${i - 1}`;
-    nodes.push({ id, type: 'ai_action', position: { x: X, y: 80 + (i + 1) * GAP },
+    const id = `n-ai-${i}`;
+    const prevId = i === 0 ? prevNodeId : `n-ai-${i - 1}`;
+    nodes.push({ id, type: 'ai_action', position: { x: X, y: 80 + yShift + (i + 1) * GAP },
       data: { label: aLabels[step.action] ?? step.action, action: step.action, prompt: step.prompt } });
-    edges.push({ id: `e-${prevId}-${id}`, source: prevId, target: id, type: 'dot', data: { srcType: prevId === 'n-trigger' ? 'trigger' : 'ai_action' } });
+    const srcType = (prevId === 'n-trigger' || prevId === 'n-gmail') ? 'trigger' : 'ai_action';
+    edges.push({ id: `e-${prevId}-${id}`, source: prevId, target: id, type: 'dot', data: { srcType } });
   });
 
   if (proposal.steps.length > 0) {
     const lastStep = proposal.steps[proposal.steps.length - 1], lastId = `n-ai-${proposal.steps.length - 1}`;
-    nodes.push({ id: 'n-output', type: 'output', position: { x: X, y: 80 + proposal.steps.length * GAP + GAP },
+    nodes.push({ id: 'n-output', type: 'output', position: { x: X, y: 80 + yShift + proposal.steps.length * GAP + GAP },
       data: { label: oLabels[lastStep.output] ?? 'Output', outputType: lastStep.output } });
     edges.push({ id: `e-${lastId}-n-output`, source: lastId, target: 'n-output', type: 'dot', data: { srcType: 'ai_action' } });
   }
@@ -1251,7 +1266,12 @@ The prompt must be production-ready — specific enough for a motion designer to
     const userBlock  = `\n\n## User Identity\nEmail: ${userEmail}${userName ? `\nName: ${userName}` : ''}\nSigning name: ${displayName || '[user]'}\nIMPORTANT: When writing emails, LinkedIn posts, cold outreach, or any content on behalf of the user — sign off with "${displayName || '[Your Name]'}". Never use your own agent persona name as the sender.\n\nCOMPLIANCE RULE: All content you produce will be published by the user under their name. NEVER add any AI disclosure, watermark, or signal that the content is AI-generated or automated. The content must read as if the user wrote it naturally. Do not add phrases like "AI-assisted", "Note: drafted by AI", or any variation. Platforms must see only a human author.`;
     // Boss orchestrates — giving him "when writing content" instructions makes him write directly instead of delegating.
     // Only inject userBlock into the primary prompt for non-Boss agents.
-    const systemPrt  = agent.systemPrompt + memBlock + (agent.key === 'boss' ? '' : userBlock) + '\n\n' + buildKrewSystemPrompt(tools);
+    // bossPostfix comes AFTER buildKrewSystemPrompt so it is the absolute last instruction Gemini reads —
+    // it overrides the "respond normally in clear markdown" final-answer rule that would otherwise let the boss answer directly.
+    const bossPostfix = agent.key === 'boss'
+      ? '\n\n## BOSS OVERRIDE — HIGHEST PRIORITY — THIS OVERRIDES EVERYTHING ABOVE\nThe "Final answer" section above says to respond normally in clear markdown when you have enough information. FOR YOU (Arjun), THAT RULE DOES NOT EXIST. You NEVER respond in markdown about a task. Your ONLY valid output for any task is a <tool_call> to delegate_to_agent. Knowing what the automation would look like is NOT enough information — you must still call ops_agent. Writing "This automation will..." or "Here is how..." is WRONG. Silence + tool_call is RIGHT.'
+      : '';
+    const systemPrt  = agent.systemPrompt + memBlock + (agent.key === 'boss' ? '' : userBlock) + '\n\n' + buildKrewSystemPrompt(tools) + bossPostfix;
 
     // Build history from display messages (user + assistant only, not tool calls/results)
     let history: { role: string; content: string }[] = messages

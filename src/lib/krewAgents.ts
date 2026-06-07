@@ -762,6 +762,7 @@ is_temp: false + max_runs: 0 = runs forever | is_temp: true + max_runs: 1 = one-
 
 CRITICAL: Schedule trigger alone = just a timestamp. Add data_source:"gmail" to fetch real emails.
 NEVER propose a trigger that doesn't match user's actual need (e.g. don't use "email" trigger for "daily briefing" — that's "schedule" + data_source:"gmail").
+MODIFYING AN AUTOMATION: If the user says "change the time", "make it 9am", "update cron" — keep ALL existing trigger_config fields (especially data_source:"gmail"). NEVER drop data_source when only changing the cron expression.
 
 Examples:
 - Email brief at 9am: trigger_type "schedule", trigger_config {"cron":"0 9 * * 1-5","data_source":"gmail"}, action "summarise", output "notification"
