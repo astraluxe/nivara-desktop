@@ -1680,7 +1680,15 @@ The prompt must be production-ready — specific enough for a motion designer to
         </div>
 
         {/* Active tools strip */}
-        {activeTools.length > 3 && (
+        {agent.key === 'boss' ? (
+          <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-nv-border overflow-x-auto shrink-0">
+            <span className="text-[9px] px-1.5 py-0.5 rounded bg-nv-surface2 text-nv-muted font-mono shrink-0">43 agents</span>
+            <span className="text-[9px] px-1.5 py-0.5 rounded bg-nv-surface2 text-nv-faint font-mono shrink-0">persistent memory</span>
+            {Object.keys(creds).filter(k => !['gemini','openai','claude','brave'].includes(k)).map(service => (
+              <span key={service} className="text-[9px] px-1.5 py-0.5 rounded bg-accent/10 text-accent font-mono shrink-0">{service}</span>
+            ))}
+          </div>
+        ) : activeTools.length > 3 && (
           <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-nv-border overflow-x-auto shrink-0">
             {activeTools.slice(3).map((t) => (
               <span key={t.name} className="text-[9px] px-1.5 py-0.5 rounded bg-accent/10 text-accent font-mono shrink-0">{t.name}</span>
