@@ -156,15 +156,14 @@ export default function ConnectionBar(props: Props) {
             {popup === 'nivara' && (
               <div className="space-y-3">
                 <p className="text-nv-muted text-[12px] leading-relaxed">
-                  Uses <span className="text-nv-text font-semibold">Gemini 2.0 Flash</span> via adris.tech's secure servers.
-                  Your API key is never stored in this app.
+                  Powered by <span className="text-nv-text font-semibold">Nivara AI</span> — runs securely on adris.tech servers. No API key needed.
                 </p>
                 <div className="rounded-lg border border-nv-border bg-nv-bg px-3 py-2 space-y-1">
-                  <p className="text-[10px] text-nv-faint font-mono uppercase tracking-wide">Token limits</p>
-                  <p className="text-[11px] text-nv-muted">Explore · 50K / month</p>
-                  <p className="text-[11px] text-nv-muted">Solo · 500K / month</p>
-                  <p className="text-[11px] text-nv-muted">Growth · 2M / month</p>
-                  <p className="text-[11px] text-nv-muted">Builder · 10M / month</p>
+                  <p className="text-[10px] text-nv-faint font-mono uppercase tracking-wide">Task limits</p>
+                  <p className="text-[11px] text-nv-muted">Free · 50 tasks lifetime</p>
+                  <p className="text-[11px] text-nv-muted">Solo · ~2,000 tasks / month</p>
+                  <p className="text-[11px] text-nv-muted">Builder · ~8,000 tasks / month</p>
+                  <p className="text-[11px] text-nv-muted">Business · ~30,000 tasks / month</p>
                 </div>
                 <p className="text-[10px] text-nv-faint">
                   Hit the limit? Switch to Own Key mode — connect Gemini free in ConnectApps.

@@ -286,6 +286,16 @@ const GMAIL_TOOLS: ToolDef[] = [
       uid: { type: 'string', description: 'Email UID returned from gmail_search.', required: true },
     },
   },
+  {
+    name: 'gmail_send_email',
+    description: 'Send an email via Gmail. Requires Google account connected in ConnectApps.',
+    parameters: {
+      to:      { type: 'string', description: 'Recipient email address.',            required: true  },
+      subject: { type: 'string', description: 'Email subject line.',                 required: true  },
+      body:    { type: 'string', description: 'Plain-text email body.',              required: true  },
+      cc:      { type: 'string', description: 'CC email address (optional).',        required: false },
+    },
+  },
 ];
 
 const GCAL_TOOLS: ToolDef[] = [
@@ -872,6 +882,36 @@ export async function executeTool(
   // ── Google services (OAuth-based) ─────────────────────────────────────────
   const googleToken = creds.google?.access_token ?? '';
   const authHeader  = { 'Authorization': `Bearer ${googleToken}` };
+
+  if (toolName === 'gmail_send_email') {
+    if (!googleToken) return 'Gmail sending requires your Google account connected in ConnectApps (Settings → ConnectApps → Google). Once connected, I can send emails directly.';
+    const to      = str(args.to);
+    const subject = str(args.subject);
+    const body_   = str(args.body);
+    const cc      = str(args.cc);
+    const from    = (creds.google as Record<string, string> | undefined)?.email ?? (creds.gmail as Record<string, string> | undefined)?.email ?? 'me';
+    const lines   = [
+      `From: ${from}`,
+      `To: ${to}`,
+      ...(cc ? [`Cc: ${cc}`] : []),
+      `Subject: ${subject}`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset="UTF-8"',
+      '',
+      body_,
+    ];
+    const message = lines.join('\r\n');
+    const bytes   = new TextEncoder().encode(message);
+    let   binary  = '';
+    bytes.forEach(b => { binary += String.fromCharCode(b); });
+    const raw = btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return await invoke<string>('krew_http_call', {
+      method:  'POST',
+      url:     'https://gmail.googleapis.com/gmail/v1/users/me/messages/send',
+      headers: { ...authHeader, 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ raw }),
+    });
+  }
 
   if (toolName === 'gcal_list_events') {
     const days = num(args.days_ahead, 7);

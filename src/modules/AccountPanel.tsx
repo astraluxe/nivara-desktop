@@ -1,21 +1,25 @@
 import { useAuth } from "../contexts/AuthContext";
 
 const PLAN_LABEL: Record<string, string> = {
-  explore: "Explore",
-  solo:    "Solo",
-  growth:  "Growth",
-  builder: "Builder",
-  pro:     "Pro",
-  custom:  "Custom",
+  free:     "Free",
+  explore:  "Explore",
+  solo:     "Solo",
+  growth:   "Growth",
+  builder:  "Builder",
+  business: "Team",
+  pro:      "Pro",
+  custom:   "Custom",
 };
 
 const PLAN_COLOR: Record<string, string> = {
-  explore: "text-nv-muted  bg-nv-surface2",
-  solo:    "text-nv-green  bg-nv-green/10",
-  growth:  "text-nv-green  bg-nv-green/10",
-  builder: "text-accent    bg-accent/10",
-  pro:     "text-nv-yellow bg-nv-yellow/10",
-  custom:  "text-nv-yellow bg-nv-yellow/10",
+  free:     "text-nv-muted  bg-nv-surface2",
+  explore:  "text-nv-muted  bg-nv-surface2",
+  solo:     "text-nv-green  bg-nv-green/10",
+  growth:   "text-nv-green  bg-nv-green/10",
+  builder:  "text-accent    bg-accent/10",
+  business: "text-accent    bg-accent/10",
+  pro:      "text-nv-yellow bg-nv-yellow/10",
+  custom:   "text-nv-yellow bg-nv-yellow/10",
 };
 
 export default function AccountPanel() {
