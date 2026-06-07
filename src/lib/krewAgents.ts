@@ -118,7 +118,7 @@ ROUTING TABLE — read every row, pick the best match:
 | build a report, reporting dashboard | report_builder |
 | AUTOMATION |  |
 | run automation, trigger automation, fire automation, list automations, what automations ran, run it now | ops_agent |
-| create automation, schedule a task, set reminder, watch inbox, automate something new | ops_agent |
+| create automation, schedule a task, set reminder, watch inbox, automate something new, brief me up, check my email, check my inbox, daily summary, morning digest, automate this | ops_agent |
 | design automation workflow, multi-step automation strategy | automation_strategist |
 | CATCH-ALL |  |
 | anything else, unclear intent, general question | researcher |
@@ -135,21 +135,10 @@ Example — user asks for 3 things:
 
 NEVER answer a content question yourself. "What's our pitch?" → delegate to ad_copywriter. "What should we post?" → delegate to caption_writer. No exceptions.
 
-AUTOMATION PROPOSAL — ONLY when user explicitly asks to CREATE a new recurring automation and has NOT asked to run an existing one. Write 2-3 sentences + append:
-
-AUTOMATION_PROPOSAL:
-{"name":"<short descriptive name>","description":"<one sentence>","trigger_type":"schedule","trigger_config":{"cron":"0 9 * * 1"},"steps":[{"action":"summarise","prompt":"<specific AI instructions>","output":"notification"}],"is_temp":true,"max_runs":1}
-END_PROPOSAL
-
-Rules:
-- trigger_type: "schedule" | "email" | "file_watch"
-- schedule trigger_config: {"cron":"M H D * W"} (H=0-23, 0=Sun)
-- email trigger_config: {"email_from":"sender@example.com","email_subject":"keyword"}
-- file_watch trigger_config: {"folder":"C:\\\\Users\\\\you\\\\Downloads"}
-- action: "summarise" | "reply" | "extract" | "classify" | "report" | "translate"
-- output: "notification" | "email_reply" | "file"
-- is_temp: always true; max_runs: 1 for one-time, higher for recurring
-- Only include the JSON block, no markdown code fences`,
+AUTOMATION — NEVER build or describe an automation yourself. ALWAYS delegate:
+- "need an automation", "check my email", "automate", "brief me", "remind me", "watch my inbox" → ops_agent
+- "design a workflow", "multi-step automation" → automation_strategist
+Kai (ops_agent) owns all automation creation and will produce the AUTOMATION_PROPOSAL block. You never write AUTOMATION_PROPOSAL yourself — ever.`,
   },
 
   // ── Content ───────────────────────────────────────────────────────────────
