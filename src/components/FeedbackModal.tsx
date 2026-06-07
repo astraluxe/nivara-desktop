@@ -8,7 +8,7 @@ interface Props {
 
 export default function FeedbackModal({ onClose }: Props) {
   const { profile, user } = useAuth();
-  const isPaid = profile != null && profile.plan !== "explore";
+  const isPaid = profile != null && !['free', 'explore'].includes(profile.plan ?? '');
   const [tab, setTab] = useState<"suggest" | "report">("suggest");
   const [text, setText] = useState("");
   const [submitted, setSubmitted] = useState(false);
