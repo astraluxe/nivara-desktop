@@ -1,23 +1,18 @@
 # Build a signed release for auto-update support.
-#
 # Usage (from nivara-desktop folder):
 #   .\scripts\build-signed.ps1
-#
-# The key file is read automatically from .tauri\nivara.key (no password).
 
 Set-Location "$PSScriptRoot\.."
 
-# Use key file path — no need to paste key contents
-$env:TAURI_SIGNING_PRIVATE_KEY_PATH = "$PSScriptRoot\..\tauri\nivara.key"
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
-
-# Resolve absolute path
-$resolved = Resolve-Path ".tauri\nivara.key" -ErrorAction SilentlyContinue
-if (-not $resolved) {
+# Read key content from file
+$keyFile = ".tauri\nivara.key"
+if (-not (Test-Path $keyFile)) {
     Write-Host "ERROR: .tauri\nivara.key not found." -ForegroundColor Red
+    Write-Host "Run: npx tauri signer generate -w .tauri\nivara.key --force" -ForegroundColor Yellow
     exit 1
 }
-$env:TAURI_SIGNING_PRIVATE_KEY_PATH = $resolved.Path
+$env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content $keyFile -Raw).Trim()
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 
 # ── Build ──────────────────────────────────────────────────────────────────
 $version = (Get-Content "src-tauri/tauri.conf.json" | ConvertFrom-Json).version
@@ -33,7 +28,7 @@ $sig    = "$bundle/adris.tech_${version}_x64-setup.exe.sig"
 if (-not (Test-Path $sig)) {
     Write-Host ""
     Write-Host "ERROR: .sig file was not generated." -ForegroundColor Red
-    Write-Host "Try running: npx tauri signer generate -w .tauri\nivara.key --force" -ForegroundColor Yellow
+    Write-Host "Regenerate the key: npx tauri signer generate -w .tauri\nivara.key --force" -ForegroundColor Yellow
     exit 1
 }
 
@@ -57,7 +52,6 @@ Write-Host "Generated latest.json" -ForegroundColor Green
 $gh  = "C:\Program Files\GitHub CLI\gh.exe"
 $tag = "v$version"
 
-# Create release if it doesn't exist yet
 & $gh release view $tag --repo astraluxe/nivara-desktop 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Creating GitHub release $tag..." -ForegroundColor Cyan
