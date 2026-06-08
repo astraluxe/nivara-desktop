@@ -50,7 +50,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYxMDgwMkRERTY2NjU2MDEKUldRQlZtYm0zUUlJOFVUUTMreWpJNlhnT0d5VVY2YXlvK3Noc09KUXQyTEEzS2I4bFZvNlZYNDkK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI5RDA0QjY1ODhDMDcxRDAKUldUUWNjQ0laVXZRdVdHR2UyU3huWjdnSjN0TzhQVWdXWVB0TnZrYzBNMUhMQlRQeHpGdGNSd3AK",
       "endpoints": [
         "https://github.com/astraluxe/nivara-desktop/releases/latest/download/latest.json"
       ],
