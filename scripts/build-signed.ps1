@@ -27,10 +27,14 @@ if (-not (Test-Path $exe)) {
     exit 1
 }
 
-# Sign the installer
+# Sign the installer (clear any stale env vars that would conflict)
+Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
+Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PATH -ErrorAction SilentlyContinue
+Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
+
 Write-Host "Signing installer..." -ForegroundColor Cyan
-$keyContent = (Get-Content $keyFile -Raw).Trim()
-npx tauri signer sign -k $keyContent -p "" $exe
+$absKeyFile = (Resolve-Path $keyFile).Path
+npx tauri signer sign --private-key-path $absKeyFile --password "" $exe
 
 if (-not (Test-Path $sig)) {
     Write-Host "ERROR: Signing failed. .sig not produced." -ForegroundColor Red
