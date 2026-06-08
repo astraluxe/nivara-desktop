@@ -7,9 +7,12 @@ Set-Location "$PSScriptRoot\.."
 $keyFile = ".tauri\nivara.key"
 if (-not (Test-Path $keyFile)) {
     Write-Host "ERROR: .tauri\nivara.key not found." -ForegroundColor Red
-    Write-Host "Run: npx tauri signer generate -w .tauri\nivara.key --force" -ForegroundColor Yellow
     exit 1
 }
+
+# Set signing env vars — Tauri reads these during build and auto-generates .sig
+$env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content $keyFile -Raw).Trim()
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 
 # Build
 $version = (Get-Content "src-tauri/tauri.conf.json" | ConvertFrom-Json).version
@@ -18,23 +21,17 @@ npm run tauri build
 if ($LASTEXITCODE -ne 0) { Write-Host "Build failed." -ForegroundColor Red; exit 1 }
 
 # Paths
-$bundle = "src-tauri/target/release/bundle/nsis"
-$exe    = "$bundle/adris.tech_${version}_x64-setup.exe"
-$sig    = "$bundle/adris.tech_${version}_x64-setup.exe.sig"
+$bundle = "src-tauri\target\release\bundle\nsis"
+$exe    = "$bundle\adris.tech_${version}_x64-setup.exe"
+$sig    = "$bundle\adris.tech_${version}_x64-setup.exe.sig"
 
-if (-not (Test-Path $exe)) {
-    Write-Host "ERROR: Installer not found at $exe" -ForegroundColor Red
-    exit 1
+# If Tauri didn't auto-sign (createUpdaterArtifacts), sign manually
+if (-not (Test-Path $sig)) {
+    Write-Host "Auto-sign not detected — signing manually..." -ForegroundColor Yellow
+    $absKey = (Resolve-Path $keyFile).Path
+    $absExe = (Resolve-Path $exe).Path
+    npx tauri signer sign -f $absKey -p "" $absExe
 }
-
-# Sign the installer (clear any stale env vars that would conflict)
-Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
-Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PATH -ErrorAction SilentlyContinue
-Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
-
-Write-Host "Signing installer..." -ForegroundColor Cyan
-$absKeyFile = (Resolve-Path $keyFile).Path
-npx tauri signer sign --private-key-path $absKeyFile --password "" $exe
 
 if (-not (Test-Path $sig)) {
     Write-Host "ERROR: Signing failed. .sig not produced." -ForegroundColor Red
@@ -58,7 +55,7 @@ $latest = [ordered]@{
 $latest | ConvertTo-Json -Depth 5 | Set-Content "latest.json" -Encoding UTF8
 Write-Host "Generated latest.json" -ForegroundColor Green
 
-# Create GitHub release if needed, then upload
+# Create release if needed, then upload
 $gh  = "C:\Program Files\GitHub CLI\gh.exe"
 $tag = "v$version"
 
@@ -73,9 +70,7 @@ Write-Host "Uploading assets to $tag..." -ForegroundColor Cyan
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Upload failed. Upload these manually to the $tag release:" -ForegroundColor Yellow
-    Write-Host "  $exe"
-    Write-Host "  $sig"
-    Write-Host "  latest.json"
+    Write-Host "  $exe"; Write-Host "  $sig"; Write-Host "  latest.json"
     exit 1
 }
 
