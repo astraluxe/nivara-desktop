@@ -2,6 +2,7 @@
 import { listen, emit } from '@tauri-apps/api/event';
 import { credentialStore } from './krewDb';
 import { buildTwitterOAuthHeader } from './krewTools';
+import { supabase } from './supabase';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -102,7 +103,19 @@ export async function callAutomationAI(userMessage: string, systemPrompt: string
         }
       }
     }
-  } catch (_e) { /* no credentials — fall back to local */ }
+  } catch (_e) { /* no credentials — fall back below */ }
+
+  // No BYOK key found — use adris.tech AI if user is logged in
+  let sessionToken: string | null = null;
+  if (mode === 'local') {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.access_token) {
+        mode = 'nivara';
+        sessionToken = session.access_token;
+      }
+    } catch (_e) { /* not logged in — stay on local */ }
+  }
 
   return new Promise<string>(async (resolve, reject) => {
     let fullText = '';
@@ -127,7 +140,7 @@ export async function callAutomationAI(userMessage: string, systemPrompt: string
       messages: [{ role: 'user', content: userMessage }],
       apiKey, provider, modelName,
       localModel: mode === 'local' ? 'llama3' : null,
-      baseUrl: null, sessionToken: null,
+      baseUrl: null, sessionToken,
     }).catch(e => { cleanup(); reject(e); });
   });
 }
