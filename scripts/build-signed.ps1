@@ -10,7 +10,7 @@ if (-not (Test-Path $keyFile)) {
     exit 1
 }
 
-# Set signing env vars — Tauri reads these during build and auto-generates .sig
+# Set signing env vars - Tauri reads these during build and auto-generates .sig
 $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content $keyFile -Raw).Trim()
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 
@@ -27,7 +27,7 @@ $sig    = "$bundle\adris.tech_${version}_x64-setup.exe.sig"
 
 # If Tauri didn't auto-sign (createUpdaterArtifacts), sign manually
 if (-not (Test-Path $sig)) {
-    Write-Host "Auto-sign not detected — signing manually..." -ForegroundColor Yellow
+    Write-Host "Auto-sign not detected - signing manually..." -ForegroundColor Yellow
     $absKey = (Resolve-Path $keyFile).Path
     $absExe = (Resolve-Path $exe).Path
     npx tauri signer sign -f $absKey -p "" $absExe
@@ -70,10 +70,12 @@ Write-Host "Uploading assets to $tag..." -ForegroundColor Cyan
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Upload failed. Upload these manually to the $tag release:" -ForegroundColor Yellow
-    Write-Host "  $exe"; Write-Host "  $sig"; Write-Host "  latest.json"
+    Write-Host "  $exe"
+    Write-Host "  $sig"
+    Write-Host "  latest.json"
     exit 1
 }
 
 Write-Host ""
 Write-Host "Done! v$version is live with auto-update support." -ForegroundColor Green
-Write-Host "Existing users will see an update prompt on next launch." -ForegroundColor Green
+Write-Host "Users will see an update prompt on next launch." -ForegroundColor Green

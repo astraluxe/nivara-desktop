@@ -29,3 +29,6 @@ src-tauri/resources/mesh/*.exe
 
 # One-off patch scripts (already applied, kept locally for reference)
 fix_*.cjs
+
+# Build artifacts uploaded to GitHub releases
+latest.json
