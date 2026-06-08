@@ -4,33 +4,36 @@
 
 Set-Location "$PSScriptRoot\.."
 
-# Read key content from file
 $keyFile = ".tauri\nivara.key"
 if (-not (Test-Path $keyFile)) {
     Write-Host "ERROR: .tauri\nivara.key not found." -ForegroundColor Red
     Write-Host "Run: npx tauri signer generate -w .tauri\nivara.key --force" -ForegroundColor Yellow
     exit 1
 }
-$env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content $keyFile -Raw).Trim()
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 
-# ── Build ──────────────────────────────────────────────────────────────────
+# ── Build (no signing env needed here) ────────────────────────────────────
 $version = (Get-Content "src-tauri/tauri.conf.json" | ConvertFrom-Json).version
 Write-Host "Building v$version..." -ForegroundColor Cyan
 npm run tauri build
 if ($LASTEXITCODE -ne 0) { Write-Host "Build failed." -ForegroundColor Red; exit 1 }
 
-# ── Paths ──────────────────────────────────────────────────────────────────
+# ── Sign the installer separately ─────────────────────────────────────────
 $bundle = "src-tauri/target/release/bundle/nsis"
 $exe    = "$bundle/adris.tech_${version}_x64-setup.exe"
 $sig    = "$bundle/adris.tech_${version}_x64-setup.exe.sig"
 
-if (-not (Test-Path $sig)) {
-    Write-Host ""
-    Write-Host "ERROR: .sig file was not generated." -ForegroundColor Red
-    Write-Host "Regenerate the key: npx tauri signer generate -w .tauri\nivara.key --force" -ForegroundColor Yellow
-    exit 1
+if (-not (Test-Path $exe)) {
+    Write-Host "ERROR: Installer not found at $exe" -ForegroundColor Red; exit 1
 }
+
+Write-Host "Signing installer..." -ForegroundColor Cyan
+$keyContent = (Get-Content $keyFile -Raw).Trim()
+npx tauri signer sign -k $keyContent -p "" $exe
+
+if (-not (Test-Path $sig)) {
+    Write-Host "ERROR: Signing failed — .sig not produced." -ForegroundColor Red; exit 1
+}
+Write-Host "Signed OK" -ForegroundColor Green
 
 # ── Generate latest.json ───────────────────────────────────────────────────
 $sigText = (Get-Content $sig -Raw).Trim()
