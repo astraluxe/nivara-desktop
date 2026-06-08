@@ -156,7 +156,7 @@ export default function ConnectionBar(props: Props) {
             {popup === 'nivara' && (
               <div className="space-y-3">
                 <p className="text-nv-muted text-[12px] leading-relaxed">
-                  Powered by <span className="text-nv-text font-semibold">Nivara AI</span> — runs securely on adris.tech servers. No API key needed.
+                  Powered by <span className="text-nv-text font-semibold">adris.tech AI</span> — runs securely on adris.tech servers. No API key needed.
                 </p>
                 <div className="rounded-lg border border-nv-border bg-nv-bg px-3 py-2 space-y-1">
                   <p className="text-[10px] text-nv-faint font-mono uppercase tracking-wide">Task limits</p>

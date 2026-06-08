@@ -1826,7 +1826,7 @@ Rules:
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `nivara-video-${Date.now()}.webm`;
+      a.download = `adris-video-${Date.now()}.webm`;
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       URL.revokeObjectURL(url);
     };
@@ -1906,6 +1906,17 @@ Rules:
   return (
     <div className="flex flex-col h-full overflow-hidden bg-nv-bg">
 
+      {/* Studio quality warning banner */}
+      <div className="shrink-0 flex items-center gap-2.5 px-4 py-2 border-b border-amber-500/20 bg-amber-500/5">
+        <svg viewBox="0 0 16 16" fill="none" className="w-3.5 h-3.5 shrink-0 text-amber-400">
+          <path d="M8 2L14 13H2L8 2Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/>
+          <path d="M8 6.5V9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+          <circle cx="8" cy="11" r="0.6" fill="currentColor"/>
+        </svg>
+        <p className="text-[11px] text-amber-400/90 leading-snug">
+          Studio is actively being improved — outputs may vary in quality. We're working on better results.
+        </p>
+      </div>
 
       <div className="flex flex-1 overflow-hidden">
 

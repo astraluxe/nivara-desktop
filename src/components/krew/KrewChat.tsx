@@ -1057,7 +1057,7 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
     if (/500|502|503|504|server.?error|internal.?error/i.test(msg))
       return 'The AI service is temporarily unavailable. Please try again shortly.';
     if (/is not found for API version|not supported for generateContent|"code": ?404|model.*not found/i.test(msg))
-      return 'Nivara AI is temporarily unavailable. Please try again in a moment, or switch to Own Key mode.';
+      return 'adris.tech AI is temporarily unavailable. Please try again in a moment, or switch to Own Key mode.';
     // Strip any URL or API key that leaked through
     return msg.replace(/https?:\/\/[^\s)]+/g, '[service]').replace(/key=[A-Za-z0-9_-]{20,}/g, 'key=[hidden]');
   }

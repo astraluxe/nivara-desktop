@@ -14,7 +14,7 @@ static OAUTH_CODE: Mutex<Option<String>> = Mutex::new(None);
 // Served at /callback — JS extracts both query params and hash fragment, then POSTs to /code.
 // This covers PKCE flow (?code=) and implicit flow (#access_token=) equally.
 const CALLBACK_HTML: &str = r##"<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Nivara</title>
+<html lang="en"><head><meta charset="UTF-8"><title>adris.tech</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:system-ui,-apple-system,sans-serif;background:#09090b;color:#fafafa;
@@ -56,7 +56,7 @@ h2{font-size:1rem;font-weight:500}
   });
   fetch('http://localhost:54321/code',{method:'POST',headers:{'Content-Type':'application/json'},body:payload})
     .then(function(){
-      document.getElementById('m').textContent='Signed in to Nivara.';
+      document.getElementById('m').textContent='Signed in to adris.tech.';
       document.getElementById('s').textContent='You can close this tab and return to the app.';
     })
     .catch(function(){
@@ -620,13 +620,13 @@ async fn ai_stream(
         "nivara" => {
             let token = session_token.unwrap_or_default();
             if token.is_empty() {
-                emit_error("Sign in to Nivara to use Nivara Cloud mode.".to_string());
+                emit_error("Sign in to adris.tech to use adris.tech AI.".to_string());
                 return Ok(());
             }
             let fn_url = "https://xkkqcqsacgdrfwbwdqsp.supabase.co/functions/v1/krew-stream";
             let mut all_msgs: Vec<serde_json::Value> = Vec::new();
             for m in &messages { all_msgs.push(serde_json::json!({"role": m.role, "content": m.content})); }
-            let body = serde_json::json!({ "messages": all_msgs });
+            let body = serde_json::json!({ "messages": all_msgs, "systemPrompt": "" });
             let resp = reqwest::Client::new()
                 .post(fn_url)
                 .header("Authorization", format!("Bearer {}", token))
@@ -635,13 +635,23 @@ async fn ai_stream(
                 .send()
                 .await
                 .map_err(|e| { let s = e.to_string(); emit_error(s.clone()); s })?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body_text = resp.text().await.unwrap_or_default();
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body_text) {
+                    if let Some(e) = v["error"].as_str() { emit_error(e.to_string()); return Ok(()); }
+                }
+                emit_error(format!("{} — {}", status, body_text.chars().take(300).collect::<String>()));
+                return Ok(());
+            }
             let mut stream = resp.bytes_stream();
             while let Some(chunk) = stream.next().await {
                 for line in String::from_utf8_lossy(&chunk.map_err(|e| e.to_string())?).lines() {
                     if let Some(data) = line.strip_prefix("data: ") {
-                        if data.trim() == "[DONE]" { emit_done(); return Ok(()); }
+                        if data == "[DONE]" { emit_done(); return Ok(()); }
+                        if data == "[TRUNCATED]" { continue; }
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
-                            if let Some(t) = v["choices"][0]["delta"]["content"].as_str() {
+                            if let Some(t) = v["text"].as_str() {
                                 if !t.is_empty() { emit_chunk(t.to_string()); }
                             }
                         }
@@ -2000,7 +2010,7 @@ fn start_google_oauth_server() -> Result<(), String> {
                     for param in qs.split('&') {
                         if let Some(code) = param.strip_prefix("code=") {
                             *GOOGLE_AUTH_CODE.lock().unwrap() = Some(format!("{{\"code\":\"{}\"}}", code));
-                            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 72\r\n\r\n<html><body><p>Connected to Nivara. You can close this tab.</p></body></html>");
+                            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 81\r\n\r\n<html><body><p>Connected to adris.tech. You can close this tab.</p></body></html>");
                             return;
                         }
                     }
@@ -2092,7 +2102,7 @@ fn start_linkedin_oauth_server() -> Result<(), String> {
                     for param in qs.split('&') {
                         if let Some(code) = param.strip_prefix("code=") {
                             *LINKEDIN_AUTH_CODE.lock().unwrap() = Some(format!("{{\"code\":\"{}\"}}", code));
-                            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 80\r\n\r\n<html><body><p>LinkedIn connected to Nivara. You can close this tab.</p></body></html>");
+                            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 90\r\n\r\n<html><body><p>LinkedIn connected to adris.tech. You can close this tab.</p></body></html>");
                             return;
                         }
                     }
@@ -2163,7 +2173,7 @@ fn start_notion_oauth_server() -> Result<(), String> {
                     for param in qs.split('&') {
                         if let Some(code) = param.strip_prefix("code=") {
                             *NOTION_AUTH_CODE.lock().unwrap() = Some(format!("{{\"code\":\"{}\"}}", code));
-                            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 72\r\n\r\n<html><body><p>Connected to Nivara. You can close this tab.</p></body></html>");
+                            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 81\r\n\r\n<html><body><p>Connected to adris.tech. You can close this tab.</p></body></html>");
                             return;
                         }
                     }
@@ -2368,7 +2378,7 @@ async fn krew_ai_stream(
         "nivara" => {
             let token = session_token.unwrap_or_default();
             if token.is_empty() {
-                emit_error("Sign in to Nivara to use Nivara Cloud mode.".to_string());
+                emit_error("Sign in to adris.tech to use adris.tech AI.".to_string());
                 return Ok(());
             }
             let fn_url = "https://xkkqcqsacgdrfwbwdqsp.supabase.co/functions/v1/krew-stream";
@@ -2414,12 +2424,12 @@ async fn krew_ai_stream(
 // ─── Tray + window ───────────────────────────────────────────────────────────
 
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
-    let open         = MenuItem::with_id(app, "open",         "Open Nivara",    true,  None::<&str>)?;
+    let open         = MenuItem::with_id(app, "open",         "Open adris.tech",    true,  None::<&str>)?;
     let sep1         = tauri::menu::PredefinedMenuItem::separator(app)?;
     let vault_info   = MenuItem::with_id(app, "vault_info",   "Vault: Off",     false, None::<&str>)?;
     let vault_toggle = MenuItem::with_id(app, "vault_toggle", "Enable Vault DNS", true, None::<&str>)?;
     let sep2         = tauri::menu::PredefinedMenuItem::separator(app)?;
-    let quit         = MenuItem::with_id(app, "quit",         "Quit Nivara",    true,  None::<&str>)?;
+    let quit         = MenuItem::with_id(app, "quit",         "Quit adris.tech",    true,  None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &sep1, &vault_info, &vault_toggle, &sep2, &quit])?;
 
     // Store vault_toggle so update_tray_vault can update its text without rebuilding the menu
@@ -2429,7 +2439,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         .unwrap_or_else(|| tauri::include_image!("icons/32x32.png"));
     TrayIconBuilder::with_id("main-tray")
         .icon(icon).menu(&menu).show_menu_on_left_click(false)
-        .tooltip("Vault: Off · Nivara")
+        .tooltip("Vault: Off · adris.tech")
         .on_menu_event(|app, event| match event.id.as_ref() {
             "quit" => app.exit(0),
             "open" => show_main_window(app),
@@ -3331,7 +3341,7 @@ async fn voice_download_setup(app: tauri::AppHandle) -> Result<(), String> {
     }
 
     // Step 1: fetch latest release info from GitHub
-    progress!("Fetching Nivara voice engine…", 5u32);
+    progress!("Fetching voice engine…", 5u32);
     let release: serde_json::Value = client
         .get("https://api.github.com/repos/ggerganov/whisper.cpp/releases/latest")
         .send().await.map_err(|e| format!("Could not reach release server: {e}"))?
@@ -3351,7 +3361,7 @@ async fn voice_download_setup(app: tauri::AppHandle) -> Result<(), String> {
         .ok_or("No Windows binary found in latest release")?;
 
     // Step 2: download the zip (~30 MB)
-    progress!("Downloading Nivara voice engine…", 10u32);
+    progress!("Downloading voice engine…", 10u32);
     let zip_path = dir.join("whisper-win.zip");
     let resp = client.get(&asset_url).send().await.map_err(|e| e.to_string())?;
     let total = resp.content_length().unwrap_or(1).max(1);
@@ -3398,7 +3408,7 @@ async fn voice_download_setup(app: tauri::AppHandle) -> Result<(), String> {
 
     // Step 4: download voice model (~148 MB) — shown as "Nivara voice model"
     // HuggingFace URL never exposed to the frontend
-    progress!("Downloading Nivara voice model (148 MB)…", 65u32);
+    progress!("Downloading voice model (148 MB)…", 65u32);
     let model_path = dir.join("ggml-base.en.bin");
     let model_resp = client
         .get("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin")
@@ -3414,7 +3424,7 @@ async fn voice_download_setup(app: tauri::AppHandle) -> Result<(), String> {
         model_downloaded += chunk.len() as u64;
         let pct = 65 + (model_downloaded as f64 / model_total as f64 * 30.0) as u32;
         let _ = app.emit("voice_setup_progress", serde_json::json!({
-            "step": format!("Downloading Nivara voice model… {:.0} MB / 148 MB", model_downloaded as f64 / 1_048_576.0),
+            "step": format!("Downloading voice model… {:.0} MB / 148 MB", model_downloaded as f64 / 1_048_576.0),
             "pct": pct.min(95),
         }));
     }
@@ -3858,9 +3868,9 @@ fn update_tray_vault(app: &tauri::AppHandle, enabled: bool, mode: &str) {
     // Update tooltip
     let Some(tray) = app.tray_by_id("main-tray") else { return };
     let tooltip = if enabled {
-        format!("Vault: Protected · {} · Nivara", capitalize_first(mode))
+        format!("Vault: Protected · {} · adris.tech", capitalize_first(mode))
     } else {
-        "Vault: Off · Nivara".to_string()
+        "Vault: Off · adris.tech".to_string()
     };
     let _ = tray.set_tooltip(Some(&tooltip));
 }
