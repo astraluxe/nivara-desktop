@@ -33,7 +33,7 @@ const PLANS: Plan[] = [
     paise:    499900,
     sub:      "/ month",
     tokens:   "~8,000 tasks / month",
-    features: ["Everything in Solo", "8M tokens/mo", "5,000 cloud automations", "25 Mesh devices + relay nodes", "Voice to Code"],
+    features: ["Everything in Solo", "8M tokens/mo", "5,000 cloud automations", "25 Mesh devices + relay nodes", "Guard security scanner", "Voice to Code"],
     accent:   true,
   },
   {

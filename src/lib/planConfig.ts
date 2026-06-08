@@ -61,8 +61,8 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     canCreateMesh:    true,        // relay nodes unlocked
     canJoinMesh:      true,
     meshDevices:      25,
-    guardAccess:      false,       // Guard is Team-only
-    contractScanning: false,
+    guardAccess:      true,        // Guard unlocked for Builder+
+    contractScanning: true,
     auditExport:      false,
     voiceToCode:      true,
     cloudAutomations: 5_000,

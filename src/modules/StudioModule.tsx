@@ -5,6 +5,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { credentialStore } from '../lib/krewDb';
 import type { Provider } from '../lib/ai';
+import { trackTokenUsage } from '../lib/tokenTracker';
 
 // ─── Project types & formats ────────────────────────────────────────────────
 
@@ -1397,7 +1398,11 @@ export default function StudioModule({ initialRequest, onRequestConsumed }: Stud
       });
       const u2 = await listen<{ id: string }>('krew-done', (e) => {
         if (e.payload.id !== callId) return;
-        done.cleanup(); resolve(full);
+        done.cleanup();
+        if (mode === 'nivara' && full.length > 0) {
+          trackTokenUsage('studio', systemPrompt.length + userMessage.length + full.length);
+        }
+        resolve(full);
       });
       const u3 = await listen<{ id: string; error: string }>('krew-error', (e) => {
         if (e.payload.id !== callId) return;

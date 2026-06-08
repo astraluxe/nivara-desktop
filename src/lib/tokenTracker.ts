@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { supabase } from './supabase';
 import { charsToTokens } from './planConfig';
 
-export type TokenModule = 'coder' | 'krew' | 'automation' | 'guard';
+export type TokenModule = 'coder' | 'krew' | 'automation' | 'guard' | 'studio';
 
 async function getSupabaseCreds() {
   const { data: { session } } = await supabase.auth.getSession();

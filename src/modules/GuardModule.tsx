@@ -3,6 +3,8 @@ import ThreatDashboard  from '../components/guard/ThreatDashboard';
 import ContractScanner  from '../components/guard/ContractScanner';
 import VulnBriefing     from '../components/guard/VulnBriefing';
 import ComplianceChecker from '../components/guard/ComplianceChecker';
+import { useAuth } from '../contexts/AuthContext';
+import { getPlanConfig } from '../lib/planConfig';
 
 type Tab = 'dashboard' | 'contract' | 'vulns' | 'compliance';
 
@@ -45,6 +47,36 @@ const TABS: { id: Tab; label: string; sub: string; icon: React.ReactNode }[] = [
 
 export default function GuardModule() {
   const [tab, setTab] = useState<Tab>('dashboard');
+  const { profile } = useAuth();
+  const planCfg = getPlanConfig(profile?.plan ?? 'free');
+
+  if (!planCfg.guardAccess) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-5 p-8 text-center">
+        <div className="w-14 h-14 rounded-2xl flex items-center justify-center bg-accent/10">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-accent">
+            <path d="M12 2 3 6v7c0 5 3.9 9.3 9 10 5.1-.7 9-5 9-10V6z"/>
+            <path d="M9 12l2 2 4-4"/>
+          </svg>
+        </div>
+        <div>
+          <p className="text-[16px] font-semibold text-nv-text tracking-tight">Guard is on Builder+</p>
+          <p className="text-[12px] text-nv-muted mt-1.5 max-w-xs leading-relaxed">
+            Contract scanning, threat monitoring, and compliance checks are available on the Builder plan and above.
+          </p>
+        </div>
+        <a
+          href="https://adris.tech/pricing"
+          target="_blank"
+          rel="noreferrer"
+          className="px-5 py-2.5 rounded-xl text-[13px] font-semibold text-white transition-opacity hover:opacity-90"
+          style={{ background: 'var(--accent)' }}
+        >
+          Upgrade to Builder →
+        </a>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-full bg-nv-bg">
