@@ -12,12 +12,12 @@ $env:TAURI_SIGNING_PRIVATE_KEY_PATH = "$PSScriptRoot\..\tauri\nivara.key"
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 
 # Resolve absolute path
-$keyPath = (Resolve-Path ".tauri\nivara.key" -ErrorAction SilentlyContinue)?.Path
-if (-not $keyPath) {
+$resolved = Resolve-Path ".tauri\nivara.key" -ErrorAction SilentlyContinue
+if (-not $resolved) {
     Write-Host "ERROR: .tauri\nivara.key not found." -ForegroundColor Red
     exit 1
 }
-$env:TAURI_SIGNING_PRIVATE_KEY_PATH = $keyPath
+$env:TAURI_SIGNING_PRIVATE_KEY_PATH = $resolved.Path
 
 # ── Build ──────────────────────────────────────────────────────────────────
 $version = (Get-Content "src-tauri/tauri.conf.json" | ConvertFrom-Json).version
