@@ -11,33 +11,36 @@ if (-not (Test-Path $keyFile)) {
     exit 1
 }
 
-# ── Build (no signing env needed here) ────────────────────────────────────
+# Build
 $version = (Get-Content "src-tauri/tauri.conf.json" | ConvertFrom-Json).version
 Write-Host "Building v$version..." -ForegroundColor Cyan
 npm run tauri build
 if ($LASTEXITCODE -ne 0) { Write-Host "Build failed." -ForegroundColor Red; exit 1 }
 
-# ── Sign the installer separately ─────────────────────────────────────────
+# Paths
 $bundle = "src-tauri/target/release/bundle/nsis"
 $exe    = "$bundle/adris.tech_${version}_x64-setup.exe"
 $sig    = "$bundle/adris.tech_${version}_x64-setup.exe.sig"
 
 if (-not (Test-Path $exe)) {
-    Write-Host "ERROR: Installer not found at $exe" -ForegroundColor Red; exit 1
+    Write-Host "ERROR: Installer not found at $exe" -ForegroundColor Red
+    exit 1
 }
 
+# Sign the installer
 Write-Host "Signing installer..." -ForegroundColor Cyan
 $keyContent = (Get-Content $keyFile -Raw).Trim()
 npx tauri signer sign -k $keyContent -p "" $exe
 
 if (-not (Test-Path $sig)) {
-    Write-Host "ERROR: Signing failed — .sig not produced." -ForegroundColor Red; exit 1
+    Write-Host "ERROR: Signing failed. .sig not produced." -ForegroundColor Red
+    exit 1
 }
 Write-Host "Signed OK" -ForegroundColor Green
 
-# ── Generate latest.json ───────────────────────────────────────────────────
+# Generate latest.json
 $sigText = (Get-Content $sig -Raw).Trim()
-$latest  = [ordered]@{
+$latest = [ordered]@{
     version  = $version
     notes    = "Bug fixes and improvements"
     pub_date = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
@@ -51,7 +54,7 @@ $latest  = [ordered]@{
 $latest | ConvertTo-Json -Depth 5 | Set-Content "latest.json" -Encoding UTF8
 Write-Host "Generated latest.json" -ForegroundColor Green
 
-# ── Create GitHub release if needed + upload ───────────────────────────────
+# Create GitHub release if needed, then upload
 $gh  = "C:\Program Files\GitHub CLI\gh.exe"
 $tag = "v$version"
 
@@ -66,7 +69,9 @@ Write-Host "Uploading assets to $tag..." -ForegroundColor Cyan
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Upload failed. Upload these manually to the $tag release:" -ForegroundColor Yellow
-    Write-Host "  $exe"; Write-Host "  $sig"; Write-Host "  latest.json"
+    Write-Host "  $exe"
+    Write-Host "  $sig"
+    Write-Host "  latest.json"
     exit 1
 }
 
