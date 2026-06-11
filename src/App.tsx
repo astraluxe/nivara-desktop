@@ -136,7 +136,8 @@ function AppShell() {
   }
 
   useEffect(() => {
-    if (session && !isTourDone()) {
+    // Don't start tour while FirstRunSetup is showing — wait until it finishes
+    if (session && !isTourDone() && !needsFirstRun()) {
       setShowTour(true);
     }
   }, [session]);
@@ -284,7 +285,10 @@ function AppShell() {
         </main>
       </div>
       {showTour && <TourOverlay onDone={() => setShowTour(false)} />}
-      {showFirstRun && <FirstRunSetup onDone={() => setShowFirstRun(false)} />}
+      {showFirstRun && <FirstRunSetup onDone={() => {
+        setShowFirstRun(false);
+        if (!isTourDone()) setShowTour(true);
+      }} />}
       {announcement && (
         <AnnouncementModal
           ann={announcement}

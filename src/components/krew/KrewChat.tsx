@@ -1113,7 +1113,9 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
       const u3 = await listen<{ id: string; error: string }>('krew-error', (e) => {
         if (e.payload.id !== callId) return;
         if (stallTimer) clearTimeout(stallTimer);
-        done.cleanup(); reject(new Error(sanitiseError(e.payload.error)));
+        // Keep raw error so the catch block can distinguish krew-stream quota errors
+        // from Gemini API rate-limits (sanitiseError would make both look like quota errors)
+        done.cleanup(); reject(new Error(e.payload.error));
       });
       const u4 = await listen<{ id: string }>('krew-truncated', (e) => {
         if (e.payload.id !== callId) return;
