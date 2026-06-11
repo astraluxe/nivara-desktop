@@ -1,6 +1,7 @@
 ﻿import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getVersion } from '@tauri-apps/api/app';
 
 interface NvSettings {
   automationAutoRun: boolean;
@@ -61,11 +62,14 @@ type VoiceStatus = 'checking' | 'ready' | 'downloading' | 'idle' | 'error';
 
 export default function SettingsModule() {
   const [settings, setSettings] = useState<NvSettings>(loadSettings);
+  const [appVersion, setAppVersion]   = useState<string>('');
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('idle');
   const [updateInfo, setUpdateInfo] = useState<{ version?: string; body?: string }>({});
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>('checking');
   const [voicePct, setVoicePct]       = useState(0);
   const [voiceStep, setVoiceStep]     = useState('');
+
+  useEffect(() => { getVersion().then(setAppVersion).catch(() => {}); }, []);
 
   useEffect(() => {
     invoke<{ ready: boolean }>('voice_check_setup')
@@ -259,7 +263,7 @@ export default function SettingsModule() {
           <div className="space-y-1.5 mb-4">
             <div className="flex justify-between text-[11px]">
               <span className="text-nv-muted">Version</span>
-              <span className="text-nv-text font-mono">1.0.0</span>
+              <span className="text-nv-text font-mono">{appVersion || '—'}</span>
             </div>
             <div className="flex justify-between text-[11px]">
               <span className="text-nv-muted">Platform</span>
