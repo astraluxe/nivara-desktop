@@ -1026,8 +1026,8 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
 
   // Build active toolkit based on connected services
   const getActiveTools = useCallback((): ToolDef[] => {
-    // Boss is delegation-only — giving it service tools (gmail, etc.) causes it to act directly
-    // instead of delegating. Only expose delegate_to_agent + memory tools.
+    // Boss is delegation-only — service tools live on the specialist agents, not boss.
+    // Each specialist accumulates their own memory about the user's patterns over time.
     if (agent.key === 'boss') {
       return [
         ...SYSTEM_TOOLS.filter(t => ['save_memory', 'recall_memory', 'forget_memory'].includes(t.name)),
@@ -1135,6 +1135,23 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
         sessionToken: session?.access_token ?? null,
       }).catch((e) => { done.cleanup(); reject(e); });
     });
+  }
+
+  // One silent retry on transient network/connection errors
+  async function streamTurnWithRetry(
+    msgs: { role: string; content: string }[],
+    systemPrompt: string,
+    onChunk: (t: string) => void,
+  ): Promise<{ text: string; truncated: boolean }> {
+    try {
+      return await streamTurn(msgs, systemPrompt, onChunk);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const isTransient = /sending request|connect(ion)?|network|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|failed to fetch/i.test(msg);
+      if (!isTransient) throw e;
+      await new Promise(r => setTimeout(r, 1500));
+      return await streamTurn(msgs, systemPrompt, onChunk);
+    }
   }
 
   // Compress conversation if too long
@@ -1309,7 +1326,7 @@ The prompt must be production-ready — specific enough for a motion designer to
 
         let stepText = '';
 
-        const { text: fullResponse, truncated: wasTruncated } = await streamTurn(
+        const { text: fullResponse, truncated: wasTruncated } = await streamTurnWithRetry(
           history,
           systemPrt,
           (chunk) => {
@@ -1417,7 +1434,7 @@ The prompt must be production-ready — specific enough for a motion designer to
         const args: Record<string, unknown> = (parsed!.args && typeof parsed!.args === 'object')
           ? { ...rootParams, ...(parsed!.args as Record<string, unknown>) }
           : rootParams;
-        setAgentStep(`Running…`);
+        setAgentStep(`${agentHandle(agent)} · ${tool.replace(/_/g, ' ')}…`);
         setAgentTool(tool);
 
         // Show tool call bubble (hidden for delegation — DelegationBubble handles it)
@@ -1466,7 +1483,7 @@ The prompt must be production-ready — specific enough for a motion designer to
               const DELEGATE_MAX = 8;
               for (let ds = 0; ds < DELEGATE_MAX; ds++) {
                 let stepText = '';
-                const { text: delegateRaw, truncated: delegateTruncated } = await streamTurn(delegateMsgsHist, delegateSystem, (chunk) => {
+                const { text: delegateRaw, truncated: delegateTruncated } = await streamTurnWithRetry(delegateMsgsHist, delegateSystem, (chunk) => {
                   stepText += chunk;
                   const cleanStep = stepText
                     .replace(/<tool_call>[\s\S]*/g, '')
@@ -1520,12 +1537,16 @@ The prompt must be production-ready — specific enough for a motion designer to
                 const dRoot = { ...dParsed } as Record<string, unknown>; delete dRoot.tool;
                 const dArgs = (dParsed.args && typeof dParsed.args === 'object')
                   ? { ...dRoot, ...(dParsed.args as Record<string, unknown>) } : dRoot;
-                updateLastMsg((delegateAccum || '') + '\n\n*Searching…*');
+                const toolDisplayName = dTool.replace(/_/g, ' ');
+                const agentDisplayName = agentHandle(targetAgent);
+                setAgentStep(`${agentDisplayName} · ${toolDisplayName}…`);
+                updateLastMsg((delegateAccum || '') + `\n\n*${agentDisplayName} is using ${toolDisplayName}…*`);
                 let dResult = '';
                 try {
                   dResult = await executeTool(dTool, dArgs, creds, requestTerminalApproval, targetKey, user?.id ?? '');
                   if (dTool === 'web_search' && !creds.brave?.api_key) setBraveNudge(true);
                 } catch (e) { dResult = `Error: ${e}`; }
+                setAgentStep(`${agentDisplayName} · thinking…`);
                 delegateMsgsHist.push({ role: 'assistant', content: delegateFinalResp });
                 delegateMsgsHist.push({ role: 'user', content: `<tool_result>${dResult}</tool_result>` });
               }

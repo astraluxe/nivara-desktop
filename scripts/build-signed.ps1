@@ -52,7 +52,8 @@ $latest = [ordered]@{
         }
     }
 }
-$latest | ConvertTo-Json -Depth 5 | Set-Content "latest.json" -Encoding UTF8
+$json = $latest | ConvertTo-Json -Depth 5
+[System.IO.File]::WriteAllText((Join-Path (Get-Location).Path "latest.json"), $json, (New-Object System.Text.UTF8Encoding $false))
 Write-Host "Generated latest.json" -ForegroundColor Green
 
 # Create release if needed, then upload
@@ -66,16 +67,25 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "Uploading assets to $tag..." -ForegroundColor Cyan
-& $gh release upload $tag $exe $sig latest.json --repo astraluxe/nivara-desktop --clobber
+
+# Also copy to a fixed filename so the download page URL never needs changing
+$fixedExe = "$bundle\adris-setup.exe"
+Copy-Item $exe $fixedExe
+
+& $gh release upload $tag $exe $sig latest.json $fixedExe --repo astraluxe/nivara-desktop --clobber
+
+Remove-Item $fixedExe -ErrorAction SilentlyContinue
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Upload failed. Upload these manually to the $tag release:" -ForegroundColor Yellow
     Write-Host "  $exe"
     Write-Host "  $sig"
     Write-Host "  latest.json"
+    Write-Host "  (also re-run to upload adris-setup.exe for the download page)"
     exit 1
 }
 
 Write-Host ""
 Write-Host "Done! v$version is live with auto-update support." -ForegroundColor Green
 Write-Host "Users will see an update prompt on next launch." -ForegroundColor Green
+Write-Host "Download page URL (permanent): https://github.com/astraluxe/nivara-desktop/releases/latest/download/adris-setup.exe" -ForegroundColor Cyan

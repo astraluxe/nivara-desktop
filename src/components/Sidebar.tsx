@@ -119,7 +119,7 @@ const MODULES: { id: Module; label: string; icon: React.ReactNode; status: "acti
   {
     id: "mesh",
     label: "Mesh · RAM pooling",
-    status: "off",
+    status: "active",
     icon: (
       <svg viewBox="0 0 28 28" fill="none" className="w-5 h-5">
         <circle cx="4"  cy="14" r="2.5" fill="currentColor" />

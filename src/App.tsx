@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import LoginScreen from "./components/LoginScreen";
 import TitleBar from "./components/TitleBar";
@@ -136,15 +137,18 @@ function AppShell() {
   }
 
   useEffect(() => {
+    if (!session) return;
+    const uid = session.user.id;
     // Don't start tour while FirstRunSetup is showing — wait until it finishes
-    if (session && !isTourDone() && !needsFirstRun()) {
+    if (!isTourDone(uid) && !needsFirstRun(uid)) {
       setShowTour(true);
     }
   }, [session]);
 
-  // First-run setup — show once after first install, after user is logged in
+  // First-run setup — show once per user (new install or new Google account)
   useEffect(() => {
-    if (session && needsFirstRun()) {
+    if (!session) return;
+    if (needsFirstRun(session.user.id)) {
       setShowFirstRun(true);
     }
   }, [session]);
@@ -188,23 +192,49 @@ function AppShell() {
       });
   }, [session]);
 
-  // Auto-update check on startup — silent, shows banner only if update available
+  // Auto-update check on startup — tries Tauri plugin first, falls back to direct fetch
   useEffect(() => {
     if (!session) return;
+
+    function showUpdateBanner(version: string) {
+      setAnnouncement({
+        id: `update-${version}`,
+        title: `Update available — v${version}`,
+        body: 'A new version of adris.tech is ready. Install it now and restart to get the latest features and fixes.',
+        type: 'update',
+        cta_label: 'Install & restart',
+        cta_url: undefined,
+      });
+    }
+
+    function newerThan(remote: string, local: string): boolean {
+      const r = remote.split('.').map(Number);
+      const l = local.split('.').map(Number);
+      for (let i = 0; i < Math.max(r.length, l.length); i++) {
+        const rv = r[i] ?? 0, lv = l[i] ?? 0;
+        if (rv > lv) return true;
+        if (rv < lv) return false;
+      }
+      return false;
+    }
+
     invoke<{ available: boolean; version?: string }>('check_for_update')
       .then(res => {
-        if (res.available) {
-          setAnnouncement({
-            id: `update-${res.version ?? 'new'}`,
-            title: `Update available — v${res.version ?? 'new'}`,
-            body: 'A new version of adris.tech is ready. Install it now and restart to get the latest features and fixes.',
-            type: 'update',
-            cta_label: 'Install & restart',
-            cta_url: undefined,
-          });
-        }
+        if (res.available && res.version) showUpdateBanner(res.version);
       })
-      .catch(() => {/* no network or no update — silent */});
+      .catch(() => {
+        // Tauri plugin failed — fallback: fetch latest.json directly
+        Promise.all([
+          fetch('https://github.com/astraluxe/nivara-desktop/releases/latest/download/latest.json')
+            .then(r => r.json()),
+          getVersion(),
+        ])
+          .then(([json, current]) => {
+            const remote = (json as { version?: string }).version ?? '';
+            if (remote && newerThan(remote, current)) showUpdateBanner(remote);
+          })
+          .catch(() => {/* no network — silent */});
+      });
   }, [session]);
 
   // Global automation trigger listener — active regardless of which module is open
@@ -284,10 +314,10 @@ function AppShell() {
           {activeModule === "settings" && <SettingsModule />}
         </main>
       </div>
-      {showTour && <TourOverlay onDone={() => setShowTour(false)} />}
-      {showFirstRun && <FirstRunSetup onDone={() => {
+      {showTour && <TourOverlay userId={session.user.id} onDone={() => setShowTour(false)} />}
+      {showFirstRun && <FirstRunSetup userId={session.user.id} onDone={() => {
         setShowFirstRun(false);
-        if (!isTourDone()) setShowTour(true);
+        if (!isTourDone(session.user.id)) setShowTour(true);
       }} />}
       {announcement && (
         <AnnouncementModal

@@ -273,10 +273,10 @@ const AIRTABLE_TOOLS: ToolDef[] = [
 const GMAIL_TOOLS: ToolDef[] = [
   {
     name: 'gmail_search',
-    description: 'Search Gmail inbox using IMAP search syntax.',
+    description: 'Search Gmail inbox and return the most recent matching emails. Results are always sorted newest-first by arrival order. To get the last N emails use query="ALL" with the desired limit. To filter use IMAP criteria e.g. "FROM boss@co.com", "SUBJECT invoice", "SINCE 1-Jun-2026". Never use "RECENT" or "UNSEEN" when the user asks for latest/last emails — use "ALL" instead.',
     parameters: {
-      query:    { type: 'string', description: 'IMAP search criteria e.g. "UNSEEN", "FROM boss@co.com SINCE 1-Jan-2025".', required: true },
-      limit:    { type: 'number', description: 'Max emails to return. Default 10.', required: false },
+      query:    { type: 'string', description: 'IMAP search criteria. Use "ALL" to get the most recent emails by date. Other examples: "FROM boss@co.com", "SUBJECT report", "SINCE 1-Jun-2026 FROM noreply@bank.com".', required: true },
+      limit:    { type: 'number', description: 'Max emails to return (newest first). Default 10.', required: false },
     },
   },
   {

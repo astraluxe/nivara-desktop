@@ -2,6 +2,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getVersion } from '@tauri-apps/api/app';
+import { useAuth } from '../contexts/AuthContext';
 
 interface NvSettings {
   automationAutoRun: boolean;
@@ -61,6 +62,8 @@ type UpdateStatus = 'idle' | 'checking' | 'available' | 'latest' | 'installing' 
 type VoiceStatus = 'checking' | 'ready' | 'downloading' | 'idle' | 'error';
 
 export default function SettingsModule() {
+  const { session } = useAuth();
+  const uid = session?.user?.id;
   const [settings, setSettings] = useState<NvSettings>(loadSettings);
   const [appVersion, setAppVersion]   = useState<string>('');
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('idle');
@@ -107,7 +110,8 @@ export default function SettingsModule() {
       } else {
         setUpdateStatus('latest');
       }
-    } catch {
+    } catch (e) {
+      console.error('check_for_update failed:', e);
       setUpdateStatus('error');
     }
   }
@@ -208,7 +212,13 @@ export default function SettingsModule() {
                 className="text-[10px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:border-nv-red hover:text-nv-red transition-fast"
               >Clear Coder state</button>
               <button
-                onClick={() => { localStorage.removeItem('nv-tour-done'); alert('Tour reset. It will show on next login.'); }}
+                onClick={() => {
+                  const key = uid ? `nv-tour-done-${uid}` : 'nv-tour-done';
+                  const setupKey = uid ? `nv-first-run-done-v1-${uid}` : 'nv-first-run-done-v1';
+                  localStorage.removeItem(key);
+                  localStorage.removeItem(setupKey);
+                  alert('Onboarding reset. Relaunch the app to see it again.');
+                }}
                 className="text-[10px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:border-accent hover:text-accent transition-fast"
               >Reset onboarding tour</button>
             </div>

@@ -2,17 +2,17 @@ import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
-const SETUP_KEY = 'nv-first-run-done-v1';
+const setupKey = (uid?: string) => uid ? `nv-first-run-done-v1-${uid}` : 'nv-first-run-done-v1';
 
-interface Props { onDone: () => void; }
+interface Props { onDone: () => void; userId?: string; }
 
 interface ProgressEvent { step: string; pct: number; }
 
-export function needsFirstRun(): boolean {
-  return !localStorage.getItem(SETUP_KEY);
+export function needsFirstRun(userId?: string): boolean {
+  return !localStorage.getItem(setupKey(userId));
 }
 
-export default function FirstRunSetup({ onDone }: Props) {
+export default function FirstRunSetup({ onDone, userId }: Props) {
   const [voiceStatus, setVoiceStatus] = useState<'idle' | 'downloading' | 'done' | 'skip'>('idle');
   const [voicePct,    setVoicePct]    = useState(0);
   const [voiceStep,   setVoiceStep]   = useState('');
@@ -39,7 +39,7 @@ export default function FirstRunSetup({ onDone }: Props) {
   }
 
   function finish() {
-    localStorage.setItem(SETUP_KEY, '1');
+    localStorage.setItem(setupKey(userId), '1');
     onDone();
   }
 

@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 
-const TOUR_KEY = 'nv-tour-done';
+const tourKey = (uid?: string) => uid ? `nv-tour-done-${uid}` : 'nv-tour-done';
 
-export function isTourDone() {
-  return localStorage.getItem(TOUR_KEY) === '1';
+export function isTourDone(userId?: string) {
+  return localStorage.getItem(tourKey(userId)) === '1';
 }
 
-export function markTourDone() {
-  localStorage.setItem(TOUR_KEY, '1');
+export function markTourDone(userId?: string) {
+  localStorage.setItem(tourKey(userId), '1');
 }
 
 interface Step {
@@ -72,9 +72,10 @@ interface SpotlightRect {
 
 interface Props {
   onDone: () => void;
+  userId?: string;
 }
 
-export default function TourOverlay({ onDone }: Props) {
+export default function TourOverlay({ onDone, userId }: Props) {
   const [step, setStep] = useState(0);
   const [spotRect, setSpotRect] = useState<SpotlightRect | null>(null);
 
@@ -106,7 +107,7 @@ export default function TourOverlay({ onDone }: Props) {
   }, [updateRect]);
 
   function finish() {
-    markTourDone();
+    markTourDone(userId);
     onDone();
   }
 

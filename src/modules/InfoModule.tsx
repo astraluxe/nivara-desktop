@@ -264,7 +264,7 @@ const MODULES: ModuleInfo[] = [
       'Zero-config local discovery — no server needed',
       'Works alongside Ollama for distributed inference',
     ],
-    tip: 'Mesh requires adris.tech installed on at least two devices on the same Wi-Fi. Currently in planned phase — relay server coming in a future update.',
+    tip: 'Mesh requires adris.tech installed on at least two devices on the same Wi-Fi. Open Mesh on both devices — they will auto-discover each other and start pooling RAM.',
   },
 ];
 
