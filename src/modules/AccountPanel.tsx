@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useAuth } from "../contexts/AuthContext";
 
 const PLAN_LABEL: Record<string, string> = {
@@ -24,6 +26,20 @@ const PLAN_COLOR: Record<string, string> = {
 
 export default function AccountPanel() {
   const { profile, user, signOut } = useAuth();
+  const [diagResult, setDiagResult] = useState<string | null>(null);
+  const [diagRunning, setDiagRunning] = useState(false);
+
+  async function runDiag() {
+    setDiagRunning(true);
+    setDiagResult(null);
+    try {
+      const result = await invoke<string>('test_krew_connection');
+      setDiagResult(result);
+    } catch (e) {
+      setDiagResult(`invoke error: ${e}`);
+    }
+    setDiagRunning(false);
+  }
 
   const email      = profile?.email ?? user?.email ?? "—";
   const firstName  = profile?.first_name ?? "";
@@ -81,6 +97,22 @@ export default function AccountPanel() {
         >
           Sign out
         </button>
+
+        {/* Connection diagnostic */}
+        <div className="border border-nv-border rounded-xl overflow-hidden">
+          <button
+            onClick={runDiag}
+            disabled={diagRunning}
+            className="w-full px-5 py-3 text-left text-xs text-nv-muted hover:bg-nv-surface2 transition-fast disabled:opacity-50"
+          >
+            {diagRunning ? "Testing connection…" : "Test adris.tech AI connection"}
+          </button>
+          {diagResult && (
+            <pre className="px-5 py-3 text-[11px] text-nv-text bg-nv-surface whitespace-pre-wrap border-t border-nv-border font-mono leading-relaxed">
+              {diagResult}
+            </pre>
+          )}
+        </div>
 
       </div>
     </div>

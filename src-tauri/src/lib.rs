@@ -627,7 +627,12 @@ async fn ai_stream(
             let mut all_msgs: Vec<serde_json::Value> = Vec::new();
             for m in &messages { all_msgs.push(serde_json::json!({"role": m.role, "content": m.content})); }
             let body = serde_json::json!({ "messages": all_msgs, "systemPrompt": "" });
-            let resp = reqwest::Client::new()
+            let client = reqwest::Client::builder()
+                .http1_only()
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new());
+            let resp = client
                 .post(fn_url)
                 .header("Authorization", format!("Bearer {}", token))
                 .header(header::CONTENT_TYPE, "application/json")
@@ -2384,7 +2389,14 @@ async fn krew_ai_stream(
             }
             let fn_url = "https://xkkqcqsacgdrfwbwdqsp.supabase.co/functions/v1/krew-stream";
             let body = serde_json::json!({ "messages": messages, "systemPrompt": sys });
-            let resp = reqwest::Client::new()
+            // Use HTTP/1.1 explicitly — prevents HTTP/2 ALPN negotiation issues
+            // that cause silent connection failures on some Windows TLS configurations.
+            let client = reqwest::Client::builder()
+                .http1_only()
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new());
+            let resp = client
                 .post(fn_url)
                 .header("Authorization", format!("Bearer {}", token))
                 .header(header::CONTENT_TYPE, "application/json")
@@ -4113,6 +4125,39 @@ if ($sd -notmatch 'BU') {{ $t.SetSecurityDescriptor($sd + '(A;;GRGX;;;BU)', 0) }
 // ─── Auto-update ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
+async fn test_krew_connection() -> String {
+    let health  = "https://xkkqcqsacgdrfwbwdqsp.supabase.co/health";
+    let krew    = "https://xkkqcqsacgdrfwbwdqsp.supabase.co/functions/v1/krew-stream";
+    let payload = serde_json::json!({"messages":[],"systemPrompt":""});
+    let mut out = String::new();
+
+    // Test 1 — plain HTTPS GET (default client)
+    match reqwest::Client::new().get(health).timeout(std::time::Duration::from_secs(8)).send().await {
+        Ok(r)  => out.push_str(&format!("1. Health GET: {} {}\n", r.status().as_u16(), r.status().canonical_reason().unwrap_or(""))),
+        Err(e) => out.push_str(&format!("1. Health GET FAILED: {}\n", e)),
+    }
+
+    // Test 2 — POST to krew-stream (default HTTP/2 client, no auth — expect 401)
+    match reqwest::Client::new().post(krew)
+        .header("Content-Type","application/json").json(&payload)
+        .timeout(std::time::Duration::from_secs(10)).send().await {
+        Ok(r)  => { let s = r.status(); let b = r.text().await.unwrap_or_default();
+                    out.push_str(&format!("2. krew POST (h2): {} — {}\n", s.as_u16(), b.chars().take(120).collect::<String>())); }
+        Err(e) => out.push_str(&format!("2. krew POST (h2) FAILED: {}\n", e)),
+    }
+
+    // Test 3 — POST to krew-stream (HTTP/1.1 forced, no auth — expect 401)
+    let c1 = reqwest::Client::builder().http1_only().timeout(std::time::Duration::from_secs(10)).build().unwrap_or_else(|_| reqwest::Client::new());
+    match c1.post(krew).header("Content-Type","application/json").json(&payload).send().await {
+        Ok(r)  => { let s = r.status(); let b = r.text().await.unwrap_or_default();
+                    out.push_str(&format!("3. krew POST (h1): {} — {}\n", s.as_u16(), b.chars().take(120).collect::<String>())); }
+        Err(e) => out.push_str(&format!("3. krew POST (h1) FAILED: {}\n", e)),
+    }
+
+    out
+}
+
+#[tauri::command]
 async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     use tauri_plugin_updater::UpdaterExt;
     match app.updater().map_err(|e| e.to_string())?.check().await {
@@ -4365,6 +4410,7 @@ pub fn run() {
             guard_delete_event,
             guard_clear_events,
             // Updater
+            test_krew_connection,
             check_for_update,
             install_update,
         ])
