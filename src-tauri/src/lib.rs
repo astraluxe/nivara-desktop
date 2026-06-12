@@ -646,7 +646,8 @@ async fn ai_stream(
             }
             let mut stream = resp.bytes_stream();
             while let Some(chunk) = stream.next().await {
-                for line in String::from_utf8_lossy(&chunk.map_err(|e| e.to_string())?).lines() {
+                let bytes = chunk.map_err(|e| { let s = format!("Stream interrupted: {}", e); emit_error(s.clone()); s })?;
+                for line in String::from_utf8_lossy(&bytes).lines() {
                     if let Some(data) = line.strip_prefix("data: ") {
                         if data == "[DONE]" { emit_done(); return Ok(()); }
                         if data == "[TRUNCATED]" { continue; }
@@ -2403,7 +2404,7 @@ async fn krew_ai_stream(
             let emit_truncated = { let app = app.clone(); let cid = call_id.clone(); move || { let _ = app.emit("krew-truncated", serde_json::json!({ "id": cid })); } };
             let mut stream = resp.bytes_stream();
             while let Some(chunk) = stream.next().await {
-                let bytes = chunk.map_err(|e| e.to_string())?;
+                let bytes = chunk.map_err(|e| { let s = format!("Stream interrupted: {}", e); emit_error(s.clone()); s })?;
                 for line in String::from_utf8_lossy(&bytes).lines() {
                     if let Some(data) = line.strip_prefix("data: ") {
                         if data == "[DONE]" { emit_done(); return Ok(()); }

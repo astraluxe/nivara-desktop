@@ -331,6 +331,30 @@ function proposalToFlow(proposal: AutomationProposal): { nodes: Node[]; edges: E
   return { nodes, edges };
 }
 
+// ─── Boss fast-path router ─────────────────────────────────────────────────────
+// Skips the boss LLM call for high-confidence patterns and routes directly to
+// the correct specialist, saving ~5s per turn.
+function classifyBossMessage(text: string): { agentKey: string; task: string } | null {
+  // Email READING tasks → ops_agent (not compose/send/reply tasks)
+  const isEmailRead  = /\b(read|check|fetch|show|get|see|view|open|list|browse)\b[^.]*\bemail|\bemail[^.]*\b(brief|summary|digest|update|recent|latest|last|unread|inbox)\b|\binbox\b|\blast\s+\d+\s+email|recent.*email/i.test(text);
+  const isEmailWrite = /\b(send|compose|draft|write\s+an?\s+email|reply\s+to)\b/i.test(text);
+  if (isEmailRead && !isEmailWrite) {
+    return {
+      agentKey: 'ops_agent',
+      task: `User request: ${text}\n\nUse gmail_search to fetch the requested emails, read their content, and give a clear brief/summary as requested.`,
+    };
+  }
+  // Calendar / schedule reading tasks → ops_agent
+  const isCalRead = /\b(check|show|list|get|see|what.*on)\b[^.]*\b(calendar|schedule|meetings?|events?)\b|\btoday.*meeting|meeting.*today|\bupcoming\s+meeting/i.test(text);
+  if (isCalRead) {
+    return {
+      agentKey: 'ops_agent',
+      task: `User request: ${text}\n\nCheck the calendar and provide the requested meeting/event information.`,
+    };
+  }
+  return null;
+}
+
 // ─── DelegationBubble ─────────────────────────────────────────────────────────
 
 function DelegationBubble({ agentKey, content, streaming }: { agentKey: string; content: string; streaming?: boolean }) {
@@ -1044,6 +1068,9 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
 
   function sanitiseError(raw: unknown): string {
     const msg = raw instanceof Error ? raw.message : String(raw);
+    // Stream dropped mid-response (distinct from "never connected")
+    if (/stream interrupted/i.test(msg))
+      return 'Response was interrupted mid-stream. Please try again.';
     // Network / connectivity errors — hide URL, API key, provider name
     if (/sending request|connect(ion)?|network|timeout|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|failed to fetch/i.test(msg))
       return 'Connection failed. Please check your internet connection and try again.';
@@ -1318,6 +1345,9 @@ The prompt must be production-ready — specific enough for a motion designer to
     // Add placeholder assistant message for streaming
     addMsg({ role: 'assistant', content: '', streaming: true });
 
+    // Fast-path: skip boss LLM for recognisable patterns (saves ~5s per turn)
+    const fastBoss = agent.key === 'boss' ? classifyBossMessage(apiText) : null;
+
     try {
       while (steps < MAX_STEPS && !stopRef.current) {
         steps++;
@@ -1325,22 +1355,34 @@ The prompt must be production-ready — specific enough for a motion designer to
         setAgentTool(null);
 
         let stepText = '';
+        let fullResponse: string;
+        let wasTruncated: boolean;
 
-        const { text: fullResponse, truncated: wasTruncated } = await streamTurnWithRetry(
-          history,
-          systemPrt,
-          (chunk) => {
-            stepText += chunk;
-            totalChars += chunk.length;
-            // Strip raw XML blocks from streaming display (handle both <tool_call> and <tool_code>)
-            const displayText = stepText
-              .replace(/<tool_call>[\s\S]*/g, '')
-              .replace(/<tool_code>[\s\S]*/g, '')
-              .replace(/CHOICES_BLOCK:[\s\S]*/g, '')
-              .trim();
-            updateLastMsg(displayText);
-          },
-        );
+        if (steps === 1 && fastBoss) {
+          // Bypass boss LLM — inject synthetic delegation directly
+          const targetAgent = AGENT_BY_KEY[fastBoss.agentKey];
+          setAgentStep(`Routing to ${targetAgent ? agentHandle(targetAgent) : fastBoss.agentKey}…`);
+          fullResponse = `<tool_call>{"tool":"delegate_to_agent","agent_key":"${fastBoss.agentKey}","task":${JSON.stringify(fastBoss.task)}}</tool_call>`;
+          wasTruncated = false;
+        } else {
+          const _r = await streamTurnWithRetry(
+            history,
+            systemPrt,
+            (chunk) => {
+              stepText += chunk;
+              totalChars += chunk.length;
+              // Strip raw XML blocks from streaming display (handle both <tool_call> and <tool_code>)
+              const displayText = stepText
+                .replace(/<tool_call>[\s\S]*/g, '')
+                .replace(/<tool_code>[\s\S]*/g, '')
+                .replace(/CHOICES_BLOCK:[\s\S]*/g, '')
+                .trim();
+              updateLastMsg(displayText);
+            },
+          );
+          fullResponse = _r.text;
+          wasTruncated = _r.truncated;
+        }
 
         if (stopRef.current) break;
 
