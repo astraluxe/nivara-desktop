@@ -301,7 +301,10 @@ function AppShell() {
           {activeModule === "home"       && <HomeModule onNavigate={setActiveModule} onStartTour={() => setShowTour(true)} />}
           {activeModule === "automation" && <AutomationModule canvasFlow={canvasFlow} onCanvasFlowConsumed={() => setCanvasFlow(null)} />}
           {activeModule === "coder"      && <CoderModule />}
-          {activeModule === "krew"    && <KrewModule onViewOnCanvas={handleViewOnCanvas} onOpenAutomations={() => setActiveModule('automation')} onOpenStudio={handleOpenStudio} />}
+          {/* Krew stays mounted so messages/session survive tab switches */}
+          <div className={activeModule === "krew" ? "contents" : "hidden"}>
+            <KrewModule onViewOnCanvas={handleViewOnCanvas} onOpenAutomations={() => setActiveModule('automation')} onOpenStudio={handleOpenStudio} />
+          </div>
           {activeModule === "connect" && <ConnectApps />}
           {activeModule === "models"  && <ModelsModule />}
           {activeModule === "vault"   && <VaultModule />}
