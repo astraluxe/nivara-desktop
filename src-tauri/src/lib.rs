@@ -1298,7 +1298,14 @@ async fn track_token_usage(
         .header("Authorization", format!("Bearer {}", session_token))
         .header("Content-Type", "application/json")
         .header("Prefer", "return=minimal")
-        .json(&serde_json::json!({ "user_id": user_id, "task_type": module, "tokens_consumed": tokens_used }))
+        .json(&serde_json::json!({
+            "user_id":         user_id,
+            "task_type":       module,
+            "tokens_consumed": tokens_used,
+            "model_used":      "gemini-3-flash-preview",
+            "model_tier":      "flash-3-direct",
+            "credits_consumed": 0,
+        }))
         .send()
         .await;
     Ok(())
@@ -1464,6 +1471,9 @@ async fn sync_token_usage_direct(
             "user_id":         user_id,
             "task_type":       "krew_direct",
             "tokens_consumed": pending,
+            "model_used":      "gemini-3-flash-preview",
+            "model_tier":      "flash-3-direct",
+            "credits_consumed": 0,
         }))
         .send().await;
     Ok(())
