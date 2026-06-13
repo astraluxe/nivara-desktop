@@ -161,6 +161,24 @@ function AppShell() {
     invoke('fetch_session_key', { sessionToken: token }).catch(() => {/* silent — falls back to krew-stream */});
   }, [session]);
 
+  // Log tokens immediately after every direct Gemini message — no batching delay
+  useEffect(() => {
+    if (!session) return;
+    const supabaseUrl  = import.meta.env.VITE_SUPABASE_URL as string;
+    const supabaseAnon = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+    const unlisten = listen<{ tokens: number }>('nivara-tokens', (e) => {
+      invoke('track_token_usage', {
+        supabaseUrl,
+        supabaseAnonKey: supabaseAnon,
+        sessionToken: session.access_token,
+        userId: session.user.id,
+        module: 'krew_direct',
+        tokensUsed: e.payload.tokens,
+      }).catch(() => {});
+    });
+    return () => { unlisten.then(f => f()); };
+  }, [session]);
+
   // Offline automation notification — check for runs since last open
   useEffect(() => {
     if (!session) return;
@@ -178,16 +196,7 @@ function AppShell() {
   // Desktop heartbeat — lets Supabase cloud runner know the PC is on and skip duplicate execution
   useEffect(() => {
     if (!session) return;
-    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
-    const supabaseAnon = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
-    const ping = () => {
-      supabase.from('users').update({ last_desktop_ping: new Date().toISOString() }).eq('id', session.user.id);
-      invoke('sync_token_usage_direct', {
-        supabaseUrl,
-        supabaseAnonKey: supabaseAnon,
-        sessionToken: session.access_token,
-      }).catch(() => {/* silent */});
-    };
+    const ping = () => supabase.from('users').update({ last_desktop_ping: new Date().toISOString() }).eq('id', session.user.id);
     ping();
     const id = setInterval(ping, 5 * 60 * 1000); // every 5 minutes
     return () => clearInterval(id);

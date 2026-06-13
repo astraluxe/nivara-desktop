@@ -672,8 +672,8 @@ async fn ai_stream(
                                 let fin = v["candidates"][0]["finishReason"].as_str().unwrap_or("");
                                 if fin == "STOP" || fin == "MAX_TOKENS" {
                                     let toks = (chars / 4).max(1);
-                                    sk.pending_usage.fetch_add(toks, std::sync::atomic::Ordering::Relaxed);
                                     sk.remaining.fetch_sub(toks, std::sync::atomic::Ordering::Relaxed);
+                                    let _ = app.emit("nivara-tokens", serde_json::json!({ "tokens": toks }));
                                     emit_done(); return Ok(());
                                 }
                                 if v["candidates"][0]["finishReason"].is_string() { break 'outer_ai; }
@@ -682,8 +682,8 @@ async fn ai_stream(
                     }
                 }
                 let toks = (chars / 4).max(1);
-                sk.pending_usage.fetch_add(toks, std::sync::atomic::Ordering::Relaxed);
                 sk.remaining.fetch_sub(toks, std::sync::atomic::Ordering::Relaxed);
+                let _ = app.emit("nivara-tokens", serde_json::json!({ "tokens": toks }));
                 emit_done();
             } else {
                 // Fallback: route via krew-stream Edge Function
@@ -2754,8 +2754,8 @@ async fn krew_ai_stream(
                                 if fin == "MAX_TOKENS" { emit_truncated(); }
                                 if fin == "STOP" || fin == "MAX_TOKENS" {
                                     let toks = (chars / 4).max(1);
-                                    sk.pending_usage.fetch_add(toks, std::sync::atomic::Ordering::Relaxed);
                                     sk.remaining.fetch_sub(toks, std::sync::atomic::Ordering::Relaxed);
+                                    let _ = app.emit("nivara-tokens", serde_json::json!({ "tokens": toks }));
                                     emit_done(); return Ok(());
                                 }
                                 if v["candidates"][0]["finishReason"].is_string() { break 'outer_krew; }
@@ -2764,8 +2764,8 @@ async fn krew_ai_stream(
                     }
                 }
                 let toks = (chars / 4).max(1);
-                sk.pending_usage.fetch_add(toks, std::sync::atomic::Ordering::Relaxed);
                 sk.remaining.fetch_sub(toks, std::sync::atomic::Ordering::Relaxed);
+                let _ = app.emit("nivara-tokens", serde_json::json!({ "tokens": toks }));
                 emit_done();
             } else {
                 // Fallback: route via krew-stream Edge Function
