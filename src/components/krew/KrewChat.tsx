@@ -332,26 +332,40 @@ function proposalToFlow(proposal: AutomationProposal): { nodes: Node[]; edges: E
 }
 
 // ─── Boss fast-path router ─────────────────────────────────────────────────────
-// Skips the boss LLM call for high-confidence patterns and routes directly to
-// the correct specialist, saving ~5s per turn.
-function classifyBossMessage(text: string): { agentKey: string; task: string } | null {
+// Skips the boss LLM call for high-confidence patterns.
+// 'reply'    → answer directly without any LLM call (e.g. greetings)
+// 'delegate' → inject a synthetic tool_call without calling the boss LLM
+type FastBossResult =
+  | { type: 'reply';    text: string }
+  | { type: 'delegate'; agentKey: string; task: string };
+
+function classifyBossMessage(text: string): FastBossResult | null {
+  const trimmed = text.trim();
+
+  // Greeting-only fast-path — no LLM call at all
+  if (/^(hi+|hey+|hello+|howdy|hiya|sup|what'?s up|greetings|good\s*(morning|afternoon|evening|day))[!.,?🙂]*\s*$/i.test(trimmed)) {
+    return { type: 'reply', text: "Hey! What would you like to work on today?" };
+  }
+
   // Email READING tasks → ops_agent (not compose/send/reply tasks)
-  const isEmailRead  = /\b(read|check|fetch|show|get|see|view|open|list|browse)\b[^.]*\bemail|\bemail[^.]*\b(brief|summary|digest|update|recent|latest|last|unread|inbox)\b|\binbox\b|\blast\s+\d+\s+email|recent.*email/i.test(text);
-  const isEmailWrite = /\b(send|compose|draft|write\s+an?\s+email|reply\s+to)\b/i.test(text);
+  const isEmailRead  = /\b(read|check|fetch|show|get|see|view|open|list|browse)\b[^.]*\bemail|\bemail[^.]*\b(brief|summary|digest|update|recent|latest|last|unread|inbox)\b|\binbox\b|\blast\s+\d+\s+email|recent.*email/i.test(trimmed);
+  const isEmailWrite = /\b(send|compose|draft|write\s+an?\s+email|reply\s+to)\b/i.test(trimmed);
   if (isEmailRead && !isEmailWrite) {
     return {
-      agentKey: 'ops_agent',
-      task: `User request: ${text}\n\nUse gmail_search to fetch the requested emails, read their content, and give a clear brief/summary as requested.`,
+      type: 'delegate', agentKey: 'ops_agent',
+      task: `User request: ${trimmed}\n\nUse gmail_search to fetch the requested emails, read their content, and give a clear brief/summary as requested.`,
     };
   }
+
   // Calendar / schedule reading tasks → ops_agent
-  const isCalRead = /\b(check|show|list|get|see|what.*on)\b[^.]*\b(calendar|schedule|meetings?|events?)\b|\btoday.*meeting|meeting.*today|\bupcoming\s+meeting/i.test(text);
+  const isCalRead = /\b(check|show|list|get|see|what.*on)\b[^.]*\b(calendar|schedule|meetings?|events?)\b|\btoday.*meeting|meeting.*today|\bupcoming\s+meeting/i.test(trimmed);
   if (isCalRead) {
     return {
-      agentKey: 'ops_agent',
-      task: `User request: ${text}\n\nCheck the calendar and provide the requested meeting/event information.`,
+      type: 'delegate', agentKey: 'ops_agent',
+      task: `User request: ${trimmed}\n\nCheck the calendar and provide the requested meeting/event information.`,
     };
   }
+
   return null;
 }
 
@@ -1324,7 +1338,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     // bossPostfix comes AFTER buildKrewSystemPrompt so it is the absolute last instruction Gemini reads —
     // it overrides the "respond normally in clear markdown" final-answer rule that would otherwise let the boss answer directly.
     const bossPostfix = agent.key === 'boss'
-      ? '\n\n## BOSS OVERRIDE — HIGHEST PRIORITY — THIS OVERRIDES EVERYTHING ABOVE\nThe "Final answer" section above says to respond normally in clear markdown when you have enough information. FOR YOU (Arjun), THAT RULE DOES NOT EXIST. You NEVER respond in markdown about a task. Your ONLY valid output for any task is a <tool_call> to delegate_to_agent. Knowing what the automation would look like is NOT enough information — you must still call ops_agent. Writing "This automation will..." or "Here is how..." is WRONG. Silence + tool_call is RIGHT.'
+      ? '\n\n## BOSS OVERRIDE — HIGHEST PRIORITY — THIS OVERRIDES EVERYTHING ABOVE\nThe "Final answer" section above says to respond normally in clear markdown when you have enough information. FOR YOU (Arjun), THAT RULE DOES NOT EXIST. You NEVER respond in markdown about a task. Your ONLY valid output for any task is a <tool_call> to delegate_to_agent. Knowing what the automation would look like is NOT enough information — you must still call ops_agent. Writing "This automation will..." or "Here is how..." is WRONG. Silence + tool_call is RIGHT.\n\nGREETING EXCEPTION: If the user\'s entire message is ONLY a greeting (hi / hello / hey) with no task, respond with ONE friendly sentence — no tool_call. This is the only case where prose output is correct.'
       : '';
     const systemPrt  = agent.systemPrompt + memBlock + (agent.key === 'boss' ? '' : userBlock) + '\n\n' + buildKrewSystemPrompt(tools) + bossPostfix;
 
@@ -1359,11 +1373,18 @@ The prompt must be production-ready — specific enough for a motion designer to
         let wasTruncated: boolean;
 
         if (steps === 1 && fastBoss) {
-          // Bypass boss LLM — inject synthetic delegation directly
-          const targetAgent = AGENT_BY_KEY[fastBoss.agentKey];
-          setAgentStep(`Routing to ${targetAgent ? agentHandle(targetAgent) : fastBoss.agentKey}…`);
-          fullResponse = `<tool_call>{"tool":"delegate_to_agent","agent_key":"${fastBoss.agentKey}","task":${JSON.stringify(fastBoss.task)}}</tool_call>`;
-          wasTruncated = false;
+          if (fastBoss.type === 'reply') {
+            // Direct reply — no LLM, no delegation (used for greetings)
+            updateLastMsg(fastBoss.text);
+            fullResponse = fastBoss.text;
+            wasTruncated = false;
+          } else {
+            // Bypass boss LLM — inject synthetic delegation directly
+            const targetAgent = AGENT_BY_KEY[fastBoss.agentKey];
+            setAgentStep(`Routing to ${targetAgent ? agentHandle(targetAgent) : fastBoss.agentKey}…`);
+            fullResponse = `<tool_call>{"tool":"delegate_to_agent","agent_key":"${fastBoss.agentKey}","task":${JSON.stringify(fastBoss.task)}}</tool_call>`;
+            wasTruncated = false;
+          }
         } else {
           const _r = await streamTurnWithRetry(
             history,

@@ -623,48 +623,110 @@ async fn ai_stream(
                 emit_error("Sign in to adris.tech to use adris.tech AI.".to_string());
                 return Ok(());
             }
-            let fn_url = "https://xkkqcqsacgdrfwbwdqsp.supabase.co/functions/v1/krew-stream";
-            let mut all_msgs: Vec<serde_json::Value> = Vec::new();
-            for m in &messages { all_msgs.push(serde_json::json!({"role": m.role, "content": m.content})); }
-            let body = serde_json::json!({ "messages": all_msgs, "systemPrompt": "" });
-            let client = reqwest::Client::builder()
-                .http1_only()
-                .timeout(std::time::Duration::from_secs(120))
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new());
-            let resp = client
-                .post(fn_url)
-                .header("Authorization", format!("Bearer {}", token))
-                .header(header::CONTENT_TYPE, "application/json")
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| { let s = e.to_string(); emit_error(s.clone()); s })?;
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body_text = resp.text().await.unwrap_or_default();
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body_text) {
-                    if let Some(e) = v["error"].as_str() { emit_error(e.to_string()); return Ok(()); }
+            // Fast path: use session key for direct Gemini call (no Edge Function overhead)
+            let sk_arc = {
+                let st = app.state::<SessionKeyState>();
+                let g = st.0.lock().unwrap();
+                g.as_ref().and_then(|a| {
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default().as_millis() as i64;
+                    if a.expires_at > now_ms && a.remaining.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+                        Some(a.clone())
+                    } else { None }
+                })
+            };
+            if let Some(sk) = sk_arc {
+                let gkey = sk.key.get();
+                let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:streamGenerateContent?key={}&alt=sse", gkey);
+                let contents: Vec<serde_json::Value> = messages.iter().map(|m| serde_json::json!({
+                    "role": if m.role == "assistant" { "model" } else { "user" },
+                    "parts": [{ "text": m.content }]
+                })).collect();
+                let body = serde_json::json!({ "contents": contents, "generationConfig": { "maxOutputTokens": 32768 } });
+                let client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(120))
+                    .build().unwrap_or_else(|_| reqwest::Client::new());
+                let resp = client.post(&url).json(&body).send().await
+                    .map_err(|e| { let s = e.to_string(); emit_error(s.clone()); s })?;
+                if !resp.status().is_success() {
+                    let st = resp.status(); let eb = resp.text().await.unwrap_or_default();
+                    emit_error(format!("{} — {}", st, eb.chars().take(300).collect::<String>()));
+                    return Ok(());
                 }
-                emit_error(format!("{} — {}", status, body_text.chars().take(300).collect::<String>()));
-                return Ok(());
-            }
-            let mut stream = resp.bytes_stream();
-            while let Some(chunk) = stream.next().await {
-                let bytes = chunk.map_err(|e| { let s = format!("Stream interrupted: {}", e); emit_error(s.clone()); s })?;
-                for line in String::from_utf8_lossy(&bytes).lines() {
-                    if let Some(data) = line.strip_prefix("data: ") {
-                        if data == "[DONE]" { emit_done(); return Ok(()); }
-                        if data == "[TRUNCATED]" { continue; }
-                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
-                            if let Some(t) = v["text"].as_str() {
-                                if !t.is_empty() { emit_chunk(t.to_string()); }
+                let mut chars = 0i64;
+                let mut stream = resp.bytes_stream();
+                'outer_ai: while let Some(chunk) = stream.next().await {
+                    let bytes = chunk.map_err(|e| { let s = format!("Stream interrupted: {}", e); emit_error(s.clone()); s })?;
+                    for line in String::from_utf8_lossy(&bytes).lines() {
+                        if let Some(data) = line.strip_prefix("data: ") {
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+                                if let Some(parts) = v["candidates"][0]["content"]["parts"].as_array() {
+                                    for part in parts {
+                                        if part["thought"].as_bool() == Some(true) { continue; }
+                                        if let Some(t) = part["text"].as_str() {
+                                            if !t.is_empty() { chars += t.len() as i64; emit_chunk(t.to_string()); }
+                                        }
+                                    }
+                                }
+                                let fin = v["candidates"][0]["finishReason"].as_str().unwrap_or("");
+                                if fin == "STOP" || fin == "MAX_TOKENS" {
+                                    let toks = (chars / 4).max(1);
+                                    sk.pending_usage.fetch_add(toks, std::sync::atomic::Ordering::Relaxed);
+                                    sk.remaining.fetch_sub(toks, std::sync::atomic::Ordering::Relaxed);
+                                    emit_done(); return Ok(());
+                                }
+                                if v["candidates"][0]["finishReason"].is_string() { break 'outer_ai; }
                             }
                         }
                     }
                 }
+                let toks = (chars / 4).max(1);
+                sk.pending_usage.fetch_add(toks, std::sync::atomic::Ordering::Relaxed);
+                sk.remaining.fetch_sub(toks, std::sync::atomic::Ordering::Relaxed);
+                emit_done();
+            } else {
+                // Fallback: route via krew-stream Edge Function
+                let fn_url = "https://xkkqcqsacgdrfwbwdqsp.supabase.co/functions/v1/krew-stream";
+                let mut all_msgs: Vec<serde_json::Value> = Vec::new();
+                for m in &messages { all_msgs.push(serde_json::json!({"role": m.role, "content": m.content})); }
+                let body = serde_json::json!({ "messages": all_msgs, "systemPrompt": "" });
+                let client = reqwest::Client::builder()
+                    .http1_only()
+                    .timeout(std::time::Duration::from_secs(120))
+                    .build().unwrap_or_else(|_| reqwest::Client::new());
+                let resp = client
+                    .post(fn_url)
+                    .header("Authorization", format!("Bearer {}", token))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .json(&body).send().await
+                    .map_err(|e| { let s = e.to_string(); emit_error(s.clone()); s })?;
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let body_text = resp.text().await.unwrap_or_default();
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body_text) {
+                        if let Some(e) = v["error"].as_str() { emit_error(e.to_string()); return Ok(()); }
+                    }
+                    emit_error(format!("{} — {}", status, body_text.chars().take(300).collect::<String>()));
+                    return Ok(());
+                }
+                let mut stream = resp.bytes_stream();
+                while let Some(chunk) = stream.next().await {
+                    let bytes = chunk.map_err(|e| { let s = format!("Stream interrupted: {}", e); emit_error(s.clone()); s })?;
+                    for line in String::from_utf8_lossy(&bytes).lines() {
+                        if let Some(data) = line.strip_prefix("data: ") {
+                            if data == "[DONE]" { emit_done(); return Ok(()); }
+                            if data == "[TRUNCATED]" { continue; }
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+                                if let Some(t) = v["text"].as_str() {
+                                    if !t.is_empty() { emit_chunk(t.to_string()); }
+                                }
+                            }
+                        }
+                    }
+                }
+                emit_done();
             }
-            emit_done();
         }
 
         _ => emit_error(format!("Unknown mode: {}", mode)),
@@ -1264,6 +1326,147 @@ async fn get_token_usage_this_month(
         .filter_map(|r| r["tokens_consumed"].as_i64())
         .sum();
     Ok(sum)
+}
+
+// ─── Session key (adris.tech AI direct-call path) ─────────────────────────────
+
+const CLIENT_PEPPER: &str = "nv-adris-2026-k7X9mP3q";
+
+struct ObfuscatedKey { data: Vec<u8>, salt: Vec<u8> }
+impl ObfuscatedKey {
+    fn new(plain: &str) -> Self {
+        let bytes = plain.as_bytes();
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().subsec_nanos();
+        let pid = std::process::id();
+        let len = bytes.len().max(32);
+        let mut salt = vec![0u8; len];
+        for (i, b) in salt.iter_mut().enumerate() {
+            *b = (t.wrapping_add(pid).wrapping_add(i as u32 * 7).wrapping_mul(0x6B) ^ 0xA5) as u8;
+        }
+        let data: Vec<u8> = bytes.iter().enumerate().map(|(i, b)| b ^ salt[i % len]).collect();
+        Self { data, salt }
+    }
+    fn get(&self) -> String {
+        let plain: Vec<u8> = self.data.iter().enumerate()
+            .map(|(i, b)| b ^ self.salt[i % self.salt.len()]).collect();
+        String::from_utf8(plain).unwrap_or_default()
+    }
+}
+
+struct SessionKeyInner {
+    key:           ObfuscatedKey,
+    plan:          String,
+    remaining:     std::sync::atomic::AtomicI64,
+    pending_usage: std::sync::atomic::AtomicI64,
+    expires_at:    i64,
+    user_id:       String,
+}
+
+struct SessionKeyState(Mutex<Option<Arc<SessionKeyInner>>>);
+impl SessionKeyState { fn new() -> Self { Self(Mutex::new(None)) } }
+
+fn sk_xor_mask(user_id: &str, nonce: &str) -> [u8; 32] {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    type H = Hmac<Sha256>;
+    let mut mac = H::new_from_slice(CLIENT_PEPPER.as_bytes()).expect("HMAC any key");
+    mac.update(format!("{}:{}", user_id, nonce).as_bytes());
+    mac.finalize().into_bytes().into()
+}
+
+fn sk_decrypt(enc_hex: &str, nonce: &str, user_id: &str) -> Option<String> {
+    let mask = sk_xor_mask(user_id, nonce);
+    let enc: Vec<u8> = (0..enc_hex.len()).step_by(2)
+        .filter_map(|i| u8::from_str_radix(&enc_hex[i..i+2], 16).ok())
+        .collect();
+    String::from_utf8(enc.iter().enumerate().map(|(i, b)| b ^ mask[i % 32]).collect()).ok()
+}
+
+fn sk_decode_sub(token: &str) -> Option<String> {
+    use base64::{Engine as _, engine::general_purpose};
+    let parts: Vec<&str> = token.splitn(3, '.').collect();
+    if parts.len() < 2 { return None; }
+    let p = parts[1];
+    let padded = format!("{}{}", p, "=".repeat((4 - p.len() % 4) % 4));
+    let decoded = general_purpose::URL_SAFE.decode(&padded)
+        .or_else(|_| general_purpose::URL_SAFE_NO_PAD.decode(p)).ok()?;
+    serde_json::from_slice::<serde_json::Value>(&decoded).ok()
+        .and_then(|v| v["sub"].as_str().map(|s| s.to_string()))
+}
+
+#[tauri::command]
+async fn fetch_session_key(
+    state: tauri::State<'_, SessionKeyState>,
+    session_token: String,
+) -> Result<serde_json::Value, String> {
+    if session_token.is_empty() { return Err("No session token".to_string()); }
+    let user_id = sk_decode_sub(&session_token).ok_or_else(|| "Invalid JWT".to_string())?;
+    let client = reqwest::Client::builder()
+        .http1_only()
+        .timeout(std::time::Duration::from_secs(15))
+        .build().unwrap_or_else(|_| reqwest::Client::new());
+    let resp = client
+        .post("https://xkkqcqsacgdrfwbwdqsp.supabase.co/functions/v1/get-session-key")
+        .header("Authorization", format!("Bearer {}", session_token))
+        .header("Content-Type", "application/json")
+        .body("{}").send().await
+        .map_err(|e| format!("Network error: {}", e))?;
+    let status = resp.status();
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(json["error"].as_str().unwrap_or("Key fetch failed").to_string());
+    }
+    let enc        = json["enc"].as_str().ok_or("missing enc")?;
+    let nonce      = json["nonce"].as_str().ok_or("missing nonce")?;
+    let plan       = json["plan"].as_str().unwrap_or("free").to_string();
+    let remaining  = json["remaining"].as_i64().unwrap_or(100_000);
+    let expires_at = json["expires_at"].as_i64().unwrap_or(0);
+    let plain = sk_decrypt(enc, nonce, &user_id).ok_or_else(|| "Decryption failed".to_string())?;
+    if !plain.starts_with("AIza") { return Err("Key validation failed".to_string()); }
+    *state.0.lock().unwrap() = Some(Arc::new(SessionKeyInner {
+        key:           ObfuscatedKey::new(&plain),
+        plan:          plan.clone(),
+        remaining:     std::sync::atomic::AtomicI64::new(remaining),
+        pending_usage: std::sync::atomic::AtomicI64::new(0),
+        expires_at,
+        user_id,
+    }));
+    Ok(serde_json::json!({ "ok": true, "plan": plan, "remaining": remaining }))
+}
+
+#[tauri::command]
+async fn sync_token_usage_direct(
+    state: tauri::State<'_, SessionKeyState>,
+    supabase_url: String,
+    supabase_anon_key: String,
+    session_token: String,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    let (user_id, pending) = {
+        let g = state.0.lock().unwrap();
+        match g.as_ref() {
+            None => return Ok(()),
+            Some(sk) => {
+                let p = sk.pending_usage.swap(0, Ordering::SeqCst);
+                if p == 0 { return Ok(()); }
+                (sk.user_id.clone(), p)
+            }
+        }
+    };
+    let _ = reqwest::Client::new()
+        .post(format!("{}/rest/v1/token_usage", supabase_url))
+        .header("apikey", &supabase_anon_key)
+        .header("Authorization", format!("Bearer {}", session_token))
+        .header("Content-Type", "application/json")
+        .header("Prefer", "return=minimal")
+        .json(&serde_json::json!({
+            "user_id":         user_id,
+            "task_type":       "krew_direct",
+            "tokens_consumed": pending,
+        }))
+        .send().await;
+    Ok(())
 }
 
 fn chrono_month_start() -> String {
@@ -1891,6 +2094,117 @@ struct EmailSummary {
     preview: String,
 }
 
+// ─── MIME / email body decoding ──────────────────────────────────────────────
+
+fn qp_decode(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        if input[i] == b'=' {
+            if i + 1 < input.len() && input[i+1] == b'\n' {
+                i += 2; // soft line break
+            } else if i + 2 < input.len() && input[i+1] != b'\r' {
+                let h = format!("{}{}", input[i+1] as char, input[i+2] as char);
+                if let Ok(b) = u8::from_str_radix(&h, 16) {
+                    out.push(b); i += 3;
+                } else { out.push(b'='); i += 1; }
+            } else if i + 3 < input.len() && input[i+1] == b'\r' && input[i+2] == b'\n' {
+                i += 3; // soft line break \r\n
+            } else { out.push(b'='); i += 1; }
+        } else { out.push(input[i]); i += 1; }
+    }
+    out
+}
+
+fn b64_decode_body(input: &str) -> String {
+    use base64::{Engine as _, engine::general_purpose};
+    let clean: String = input.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    general_purpose::STANDARD.decode(&clean).ok()
+        .and_then(|b| String::from_utf8(b).ok())
+        .unwrap_or_else(|| input.to_string())
+}
+
+fn strip_html(s: &str) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => { in_tag = false; out.push(' '); }
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+       .replace("&nbsp;", " ").replace("&quot;", "\"").replace("&#39;", "'")
+}
+
+fn decode_mime_body(raw: &str) -> String {
+    let norm = raw.replace("\r\n", "\n");
+    let lower = norm.to_lowercase();
+
+    // Multipart: find boundary and extract text/plain
+    if lower.contains("content-type: multipart/") || lower.contains("content-type:multipart/") {
+        if let Some(bp) = lower.find("boundary=") {
+            let bsrc = &norm[bp + 9..];
+            let boundary = if bsrc.starts_with('"') {
+                bsrc[1..].split('"').next().unwrap_or("").to_string()
+            } else {
+                bsrc.split(|c: char| c == ';' || c == '\n' || c == '\r')
+                    .next().unwrap_or("").trim().to_string()
+            };
+            if !boundary.is_empty() {
+                let delim = format!("--{}", boundary);
+                let parts: Vec<&str> = norm.splitn(50, delim.as_str()).collect();
+                // First pass: prefer text/plain
+                for part in parts.iter().skip(1) {
+                    if part.starts_with("--") { continue; }
+                    let pl = part.to_lowercase();
+                    if pl.contains("content-type: text/plain") || pl.contains("content-type:text/plain") {
+                        let body_start = part.find("\n\n").map(|p| p + 2).unwrap_or(0);
+                        let body = &part[body_start..];
+                        let decoded = if pl.contains("quoted-printable") {
+                            String::from_utf8_lossy(&qp_decode(body.as_bytes())).to_string()
+                        } else if pl.contains("base64") {
+                            b64_decode_body(body)
+                        } else { body.to_string() };
+                        return decoded;
+                    }
+                }
+                // Second pass: fall back to text/html
+                for part in parts.iter().skip(1) {
+                    if part.starts_with("--") { continue; }
+                    let pl = part.to_lowercase();
+                    if pl.contains("content-type: text/html") || pl.contains("content-type:text/html") {
+                        let body_start = part.find("\n\n").map(|p| p + 2).unwrap_or(0);
+                        let body = &part[body_start..];
+                        let decoded = if pl.contains("quoted-printable") {
+                            String::from_utf8_lossy(&qp_decode(body.as_bytes())).to_string()
+                        } else if pl.contains("base64") {
+                            b64_decode_body(body)
+                        } else { body.to_string() };
+                        return strip_html(&decoded);
+                    }
+                }
+            }
+        }
+    }
+
+    // Simple (non-multipart): find body after header block
+    let header_end = norm.find("\n\n").map(|p| p + 2).unwrap_or(0);
+    let headers = &lower[..header_end.min(lower.len())];
+    let body = norm[header_end..].trim_start();
+    let decoded = if headers.contains("quoted-printable") {
+        String::from_utf8_lossy(&qp_decode(body.as_bytes())).to_string()
+    } else if headers.contains("content-transfer-encoding: base64") || headers.contains("content-transfer-encoding:base64") {
+        b64_decode_body(body)
+    } else { body.to_string() };
+
+    if decoded.trim_start().starts_with('<') || decoded.to_lowercase().contains("<html") {
+        strip_html(&decoded)
+    } else { decoded }
+}
+
 #[tauri::command]
 async fn gmail_fetch_emails(
     email:       String,
@@ -1919,7 +2233,7 @@ async fn gmail_fetch_emails(
         if uids.is_empty() { return Ok(vec![]); }
 
         let fetch_seq = uids.iter().map(|u| u.to_string()).collect::<Vec<_>>().join(",");
-        let messages = sess.fetch(&fetch_seq, "(UID RFC822.HEADER BODY[TEXT]<0.200>)")
+        let messages = sess.fetch(&fetch_seq, "(UID RFC822.HEADER BODY[TEXT]<0.800>)")
             .map_err(|e| e.to_string())?;
 
         let mut summaries = Vec::new();
@@ -1928,9 +2242,9 @@ async fn gmail_fetch_emails(
             let headers_raw = msg.header().unwrap_or(b"");
             let headers_str = String::from_utf8_lossy(headers_raw);
             let preview_raw = msg.text().unwrap_or(b"");
-            let preview = String::from_utf8_lossy(preview_raw)
-                .chars().take(150).collect::<String>()
-                .replace('\n', " ");
+            let preview_decoded = decode_mime_body(&String::from_utf8_lossy(preview_raw));
+            let preview = preview_decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+                .chars().take(200).collect::<String>();
 
             let from    = extract_header(&headers_str, "From:");
             let subject = extract_header(&headers_str, "Subject:");
@@ -1964,14 +2278,15 @@ async fn gmail_fetch_email_body(
         let mut sess = client.login(&email, &app_password)
             .map_err(|(e, _)| e.to_string())?;
         sess.select("INBOX").map_err(|e| e.to_string())?;
-        let messages = sess.uid_fetch(&uid_num.to_string(), "RFC822.TEXT")
+        let messages = sess.uid_fetch(&uid_num.to_string(), "RFC822")
             .map_err(|e| e.to_string())?;
-        let body = messages.iter().next()
-            .and_then(|m| m.text())
-            .map(|b| String::from_utf8_lossy(b).chars().take(5000).collect::<String>())
+        let raw = messages.iter().next()
+            .and_then(|m| m.body())
+            .map(|b| String::from_utf8_lossy(b).to_string())
             .unwrap_or_else(|| "Email body not found.".to_string());
         let _ = sess.logout();
-        Ok(body)
+        let decoded = decode_mime_body(&raw);
+        Ok(decoded.chars().take(6000).collect())
     }).await.map_err(|e| e.to_string())?;
     result
 }
@@ -2387,47 +2702,110 @@ async fn krew_ai_stream(
                 emit_error("Sign in to adris.tech to use adris.tech AI.".to_string());
                 return Ok(());
             }
-            let fn_url = "https://xkkqcqsacgdrfwbwdqsp.supabase.co/functions/v1/krew-stream";
-            let body = serde_json::json!({ "messages": messages, "systemPrompt": sys });
-            // Use HTTP/1.1 explicitly — prevents HTTP/2 ALPN negotiation issues
-            // that cause silent connection failures on some Windows TLS configurations.
-            let client = reqwest::Client::builder()
-                .http1_only()
-                .timeout(std::time::Duration::from_secs(120))
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new());
-            let resp = client
-                .post(fn_url)
-                .header("Authorization", format!("Bearer {}", token))
-                .header(header::CONTENT_TYPE, "application/json")
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| { let s = e.to_string(); emit_error(s.clone()); s })?;
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                    if let Some(e) = v["error"].as_str() { emit_error(e.to_string()); return Ok(()); }
-                }
-                emit_error(format!("{} — {}", status, body.chars().take(300).collect::<String>()));
-                return Ok(());
-            }
             let emit_truncated = { let app = app.clone(); let cid = call_id.clone(); move || { let _ = app.emit("krew-truncated", serde_json::json!({ "id": cid })); } };
-            let mut stream = resp.bytes_stream();
-            while let Some(chunk) = stream.next().await {
-                let bytes = chunk.map_err(|e| { let s = format!("Stream interrupted: {}", e); emit_error(s.clone()); s })?;
-                for line in String::from_utf8_lossy(&bytes).lines() {
-                    if let Some(data) = line.strip_prefix("data: ") {
-                        if data == "[DONE]" { emit_done(); return Ok(()); }
-                        if data == "[TRUNCATED]" { emit_truncated(); continue; }
-                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
-                            if let Some(t) = v["text"].as_str() { if !t.is_empty() { emit_chunk(t.to_string()); } }
+            // Fast path: use session key for direct Gemini call (no Edge Function overhead)
+            let sk_arc = {
+                let st = app.state::<SessionKeyState>();
+                let g = st.0.lock().unwrap();
+                g.as_ref().and_then(|a| {
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default().as_millis() as i64;
+                    if a.expires_at > now_ms && a.remaining.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+                        Some(a.clone())
+                    } else { None }
+                })
+            };
+            if let Some(sk) = sk_arc {
+                let gkey = sk.key.get();
+                let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:streamGenerateContent?key={}&alt=sse", gkey);
+                let contents: Vec<serde_json::Value> = messages.iter().map(|m| serde_json::json!({
+                    "role": if m.role == "assistant" { "model" } else { "user" },
+                    "parts": [{ "text": m.content }]
+                })).collect();
+                let mut body = serde_json::json!({ "contents": contents, "generationConfig": { "maxOutputTokens": 32768 } });
+                if !sys.is_empty() { body["systemInstruction"] = serde_json::json!({"parts":[{"text": sys}]}); }
+                let client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(120))
+                    .build().unwrap_or_else(|_| reqwest::Client::new());
+                let resp = client.post(&url).json(&body).send().await
+                    .map_err(|e| { let s = e.to_string(); emit_error(s.clone()); s })?;
+                if !resp.status().is_success() {
+                    let st = resp.status(); let eb = resp.text().await.unwrap_or_default();
+                    emit_error(format!("{} — {}", st, eb.chars().take(300).collect::<String>()));
+                    return Ok(());
+                }
+                let mut chars = 0i64;
+                let mut stream = resp.bytes_stream();
+                'outer_krew: while let Some(chunk) = stream.next().await {
+                    let bytes = chunk.map_err(|e| { let s = format!("Stream interrupted: {}", e); emit_error(s.clone()); s })?;
+                    for line in String::from_utf8_lossy(&bytes).lines() {
+                        if let Some(data) = line.strip_prefix("data: ") {
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+                                if let Some(parts) = v["candidates"][0]["content"]["parts"].as_array() {
+                                    for part in parts {
+                                        if part["thought"].as_bool() == Some(true) { continue; }
+                                        if let Some(t) = part["text"].as_str() {
+                                            if !t.is_empty() { chars += t.len() as i64; emit_chunk(t.to_string()); }
+                                        }
+                                    }
+                                }
+                                let fin = v["candidates"][0]["finishReason"].as_str().unwrap_or("");
+                                if fin == "MAX_TOKENS" { emit_truncated(); }
+                                if fin == "STOP" || fin == "MAX_TOKENS" {
+                                    let toks = (chars / 4).max(1);
+                                    sk.pending_usage.fetch_add(toks, std::sync::atomic::Ordering::Relaxed);
+                                    sk.remaining.fetch_sub(toks, std::sync::atomic::Ordering::Relaxed);
+                                    emit_done(); return Ok(());
+                                }
+                                if v["candidates"][0]["finishReason"].is_string() { break 'outer_krew; }
+                            }
                         }
                     }
                 }
+                let toks = (chars / 4).max(1);
+                sk.pending_usage.fetch_add(toks, std::sync::atomic::Ordering::Relaxed);
+                sk.remaining.fetch_sub(toks, std::sync::atomic::Ordering::Relaxed);
+                emit_done();
+            } else {
+                // Fallback: route via krew-stream Edge Function
+                let fn_url = "https://xkkqcqsacgdrfwbwdqsp.supabase.co/functions/v1/krew-stream";
+                let body = serde_json::json!({ "messages": messages, "systemPrompt": sys });
+                // HTTP/1.1 only — avoids HTTP/2 ALPN negotiation issues on some Windows TLS configs
+                let client = reqwest::Client::builder()
+                    .http1_only()
+                    .timeout(std::time::Duration::from_secs(120))
+                    .build().unwrap_or_else(|_| reqwest::Client::new());
+                let resp = client
+                    .post(fn_url)
+                    .header("Authorization", format!("Bearer {}", token))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .json(&body).send().await
+                    .map_err(|e| { let s = e.to_string(); emit_error(s.clone()); s })?;
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let body_text = resp.text().await.unwrap_or_default();
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body_text) {
+                        if let Some(e) = v["error"].as_str() { emit_error(e.to_string()); return Ok(()); }
+                    }
+                    emit_error(format!("{} — {}", status, body_text.chars().take(300).collect::<String>()));
+                    return Ok(());
+                }
+                let mut stream = resp.bytes_stream();
+                while let Some(chunk) = stream.next().await {
+                    let bytes = chunk.map_err(|e| { let s = format!("Stream interrupted: {}", e); emit_error(s.clone()); s })?;
+                    for line in String::from_utf8_lossy(&bytes).lines() {
+                        if let Some(data) = line.strip_prefix("data: ") {
+                            if data == "[DONE]" { emit_done(); return Ok(()); }
+                            if data == "[TRUNCATED]" { emit_truncated(); continue; }
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+                                if let Some(t) = v["text"].as_str() { if !t.is_empty() { emit_chunk(t.to_string()); } }
+                            }
+                        }
+                    }
+                }
+                emit_done();
             }
-            emit_done();
         }
         _ => emit_error(format!("Unknown mode: {}", mode)),
     }
@@ -4205,6 +4583,7 @@ pub fn run() {
             app.manage(MeshExoProcess(Mutex::new(None)));
             app.manage(LlamaEngineProcess(Mutex::new(None)));
             app.manage(VoiceState::new());
+            app.manage(SessionKeyState::new());
             setup_tray(app)?;
 
             // Start background triggers for all currently-enabled automations
@@ -4348,6 +4727,8 @@ pub fn run() {
             // Token tracking
             track_token_usage,
             get_token_usage_this_month,
+            fetch_session_key,
+            sync_token_usage_direct,
             // Krew tools
             ping_service,
             reddit_post,

@@ -153,6 +153,14 @@ function AppShell() {
     }
   }, [session]);
 
+  // Fetch session key for direct Gemini calls (adris.tech AI fast path)
+  useEffect(() => {
+    if (!session) return;
+    const token = session.access_token;
+    if (!token) return;
+    invoke('fetch_session_key', { sessionToken: token }).catch(() => {/* silent — falls back to krew-stream */});
+  }, [session]);
+
   // Offline automation notification — check for runs since last open
   useEffect(() => {
     if (!session) return;
@@ -170,7 +178,16 @@ function AppShell() {
   // Desktop heartbeat — lets Supabase cloud runner know the PC is on and skip duplicate execution
   useEffect(() => {
     if (!session) return;
-    const ping = () => supabase.from('users').update({ last_desktop_ping: new Date().toISOString() }).eq('id', session.user.id);
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
+    const supabaseAnon = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+    const ping = () => {
+      supabase.from('users').update({ last_desktop_ping: new Date().toISOString() }).eq('id', session.user.id);
+      invoke('sync_token_usage_direct', {
+        supabaseUrl,
+        supabaseAnonKey: supabaseAnon,
+        sessionToken: session.access_token,
+      }).catch(() => {/* silent */});
+    };
     ping();
     const id = setInterval(ping, 5 * 60 * 1000); // every 5 minutes
     return () => clearInterval(id);
