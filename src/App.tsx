@@ -196,7 +196,7 @@ function AppShell() {
   // Desktop heartbeat — fires immediately on login, then every 60s
   useEffect(() => {
     if (!session) return;
-    const ping = () => supabase.from('users').update({ last_desktop_ping: new Date().toISOString() }).eq('id', session.user.id).then(() => {}).catch(() => {});
+    const ping = async () => { try { await supabase.from('users').update({ last_desktop_ping: new Date().toISOString() }).eq('id', session.user.id); } catch {} };
     ping();
     const id = setInterval(ping, 60_000);
     return () => clearInterval(id);
