@@ -193,12 +193,12 @@ function AppShell() {
       .catch(() => {/* silent */});
   }, [session]);
 
-  // Desktop heartbeat — lets Supabase cloud runner know the PC is on and skip duplicate execution
+  // Desktop heartbeat — fires immediately on login, then every 60s
   useEffect(() => {
     if (!session) return;
-    const ping = () => supabase.from('users').update({ last_desktop_ping: new Date().toISOString() }).eq('id', session.user.id);
+    const ping = () => supabase.from('users').update({ last_desktop_ping: new Date().toISOString() }).eq('id', session.user.id).then(() => {}).catch(() => {});
     ping();
-    const id = setInterval(ping, 5 * 60 * 1000); // every 5 minutes
+    const id = setInterval(ping, 60_000);
     return () => clearInterval(id);
   }, [session]);
 
