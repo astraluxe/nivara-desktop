@@ -53,7 +53,7 @@ export const SYSTEM_TOOLS: ToolDef[] = [
   },
   {
     name: 'execute_terminal',
-    description: 'Run a shell command on the user\'s machine and return stdout + stderr. User must approve each command.',
+    description: 'Run a shell command on the user\'s machine and return stdout + stderr. Runs silently in the background — no window opens.',
     parameters: {
       command: { type: 'string', description: 'Shell command to execute.', required: true },
     },

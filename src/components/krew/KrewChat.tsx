@@ -57,24 +57,6 @@ interface Props {
 
 // ─── Terminal approval modal ──────────────────────────────────────────────────
 
-function TerminalApprovalModal({ command, onApprove, onDeny }: { command: string; onApprove: () => void; onDeny: () => void }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="bg-nv-surface border border-nv-border rounded-2xl w-[400px] p-5 shadow-2xl">
-        <p className="text-[13px] font-semibold text-nv-text mb-1">Allow terminal command?</p>
-        <p className="text-[11px] text-nv-faint mb-3">Krew wants to run:</p>
-        <pre className="text-[11px] font-mono text-nv-text bg-nv-bg border border-nv-border rounded-lg px-3 py-2 mb-4 overflow-x-auto">
-          {command}
-        </pre>
-        <div className="flex gap-2 justify-end">
-          <button onClick={onDeny}    className="text-[12px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text transition-fast">Deny</button>
-          <button onClick={onApprove} className="text-[12px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast">Allow</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ─── Message renderers ────────────────────────────────────────────────────────
 
 function ToolCallBubble({ name, args }: { name: string; args: string }) {
@@ -973,8 +955,7 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
   const [creds,         setCreds]         = useState<Record<string, Record<string, string>>>({});
   const [agentMemories, setAgentMemories] = useState<KrewMemory[]>([]);
 
-  const [termApproval, setTermApproval] = useState<{ command: string; resolve: (ok: boolean) => void } | null>(null);
-  const [studioExtracting, setStudioExtracting] = useState(false);
+const [studioExtracting, setStudioExtracting] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<{ name: string; content: string }[]>([]);
   const [braveNudge, setBraveNudge] = useState(false);
 
@@ -1217,10 +1198,8 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
   }
 
   // Terminal approval helper
-  async function requestTerminalApproval(command: string): Promise<boolean> {
-    return new Promise((resolve) => {
-      setTermApproval({ command, resolve });
-    });
+  async function requestTerminalApproval(_command: string): Promise<boolean> {
+    return true; // runs silently in background, no modal
   }
 
   // ── Main send / ReAct loop ─────────────────────────────────────────────────
@@ -1752,13 +1731,7 @@ The prompt must be production-ready — specific enough for a motion designer to
 
   return (
     <>
-      {termApproval && (
-        <TerminalApprovalModal
-          command={termApproval.command}
-          onApprove={() => { termApproval.resolve(true);  setTermApproval(null); }}
-          onDeny=   {() => { termApproval.resolve(false); setTermApproval(null); }}
-        />
-      )}
+      {/* terminal approval modal removed — commands run silently */}
 
 
       <div className="flex flex-col h-full">
@@ -1996,7 +1969,7 @@ The prompt must be production-ready — specific enough for a motion designer to
             <input
               type="file"
               multiple
-              accept=".txt,.md,.csv,.json,.ts,.tsx,.js,.jsx,.py,.rs,.go,.java,.html,.css,.xml,.yaml,.yml,.toml,.sh,.sql,.log"
+              accept=".txt,.md,.csv,.json,.ts,.tsx,.js,.jsx,.py,.rs,.go,.java,.html,.css,.xml,.yaml,.yml,.toml,.sh,.sql,.log,.pdf"
               style={{ display: 'none' }}
               id="krew-file-attach"
               onChange={(e) => {
@@ -2006,11 +1979,38 @@ The prompt must be production-ready — specific enough for a motion designer to
                 const results: { name: string; content: string }[] = new Array(files.length);
                 files.forEach((file, i) => {
                   const reader = new FileReader();
-                  reader.onload = (ev) => {
-                    results[i] = { name: file.name, content: ev.target?.result as string ?? '' };
-                    if (--pending === 0) setAttachedFiles(prev => [...prev, ...results]);
-                  };
-                  reader.readAsText(file);
+                  if (file.name.toLowerCase().endsWith('.pdf')) {
+                    reader.onload = (ev) => {
+                      const buf = ev.target?.result as ArrayBuffer;
+                      const bytes = new Uint8Array(buf);
+                      const raw = Array.from(bytes).map(b => String.fromCharCode(b)).join('');
+                      const texts: string[] = [];
+                      const btEt = /BT([\s\S]*?)ET/g;
+                      let m: RegExpExecArray | null;
+                      while ((m = btEt.exec(raw)) !== null) {
+                        const block = m[1];
+                        const tj = /\(([^)]*)\)\s*Tj/g;
+                        let t: RegExpExecArray | null;
+                        while ((t = tj.exec(block)) !== null) texts.push(t[1].replace(/\\n/g,'\n').replace(/\\/g,''));
+                        const tjArr = /\[([^\]]*)\]\s*TJ/g;
+                        let a: RegExpExecArray | null;
+                        while ((a = tjArr.exec(block)) !== null) {
+                          const sp = /\(([^)]*)\)/g; let s: RegExpExecArray | null;
+                          while ((s = sp.exec(a[1])) !== null) if (s[1].trim()) texts.push(s[1].replace(/\\/g,''));
+                        }
+                      }
+                      const extracted = texts.length ? texts.join(' ').replace(/\s+/g,' ').trim() : '[Scanned/image PDF — no text layer found]';
+                      results[i] = { name: file.name, content: extracted };
+                      if (--pending === 0) setAttachedFiles(prev => [...prev, ...results]);
+                    };
+                    reader.readAsArrayBuffer(file);
+                  } else {
+                    reader.onload = (ev) => {
+                      results[i] = { name: file.name, content: ev.target?.result as string ?? '' };
+                      if (--pending === 0) setAttachedFiles(prev => [...prev, ...results]);
+                    };
+                    reader.readAsText(file);
+                  }
                 });
                 e.target.value = '';
               }}

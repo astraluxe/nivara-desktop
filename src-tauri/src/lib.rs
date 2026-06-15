@@ -2045,7 +2045,10 @@ async fn krew_execute_command(command: String) -> Result<String, String> {
     use std::process::Command;
     let output = {
         #[cfg(target_os = "windows")]
-        { Command::new("cmd").args(["/C", &command]).output() }
+        {
+            use std::os::windows::process::CommandExt;
+            Command::new("cmd").args(["/C", &command]).creation_flags(0x08000000).output() // CREATE_NO_WINDOW
+        }
         #[cfg(not(target_os = "windows"))]
         { Command::new("sh").args(["-c", &command]).output() }
     };
