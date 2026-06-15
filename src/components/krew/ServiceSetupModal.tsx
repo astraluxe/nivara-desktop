@@ -283,6 +283,103 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
       },
     ],
   },
+  telegram: {
+    title: 'Connect Telegram Bot',
+    icon: '✈',
+    steps: [
+      {
+        title: 'Create a Telegram bot',
+        body: 'Open Telegram and search for @BotFather. Start a chat and send the command below. BotFather will ask for a name and a username for your bot.',
+        copyItems: [{ label: 'Command to send', text: '/newbot' }],
+      },
+      {
+        title: 'Copy your Bot Token',
+        body: 'BotFather will reply with a message containing your bot token — a long string like 123456789:ABC-DEF... Copy it and paste it below. Keep this token private.',
+        field: 'bot_token',
+        fieldLabel: 'Bot Token',
+        fieldPlaceholder: '123456789:ABC-DEF1234ghIkl...',
+        secret: true,
+      },
+      {
+        title: 'Get your Chat ID',
+        body: '1. Send any message to your new bot in Telegram.\n2. Open the link below (replace YOUR_TOKEN with your bot token) in your browser — it shows recent messages.\n3. Find the "chat" → "id" field in the JSON response — it looks like a number (e.g. 987654321). Negative numbers mean it\'s a group chat.\n\nAlternatively, add @userinfobot to a group and it will tell you the group chat ID.',
+        link: 'https://api.telegram.org/botYOUR_TOKEN/getUpdates',
+        field: 'chat_id',
+        fieldLabel: 'Chat ID',
+        fieldPlaceholder: '987654321',
+      },
+    ],
+  },
+  twilio: {
+    title: 'Connect Twilio (SMS)',
+    icon: '📱',
+    steps: [
+      {
+        title: 'Create a free Twilio account',
+        body: 'Go to twilio.com and sign up for a free account. The free trial gives you enough credit to test. After signing up you\'ll land in the Twilio Console.',
+        link: 'https://www.twilio.com/try-twilio',
+      },
+      {
+        title: 'Get a phone number',
+        body: 'In the Twilio Console, go to Phone Numbers → Manage → Buy a Number. Get a number with SMS capability. Free trial accounts get a Twilio number at no cost.',
+        link: 'https://console.twilio.com/us1/develop/phone-numbers/manage/search',
+        copyItems: [{ label: 'Capability needed', text: 'SMS' }],
+      },
+      {
+        title: 'Copy your Account SID',
+        body: 'On the Twilio Console home page, find "Account SID" — it starts with "AC". Copy it and paste it below.',
+        link: 'https://console.twilio.com/',
+        field: 'account_sid',
+        fieldLabel: 'Account SID',
+        fieldPlaceholder: 'ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+      },
+      {
+        title: 'Copy your Auth Token',
+        body: 'On the same Console home page, click the eye icon next to "Auth Token" to reveal it, then copy it.',
+        field: 'auth_token',
+        fieldLabel: 'Auth Token',
+        fieldPlaceholder: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+        secret: true,
+      },
+      {
+        title: 'Enter your Twilio phone number',
+        body: 'Enter the Twilio phone number you just bought. Use international format with the + prefix.',
+        field: 'from_number',
+        fieldLabel: 'Twilio From Number',
+        fieldPlaceholder: '+15551234567',
+      },
+    ],
+  },
+  hubspot: {
+    title: 'Connect HubSpot CRM',
+    icon: '🏷',
+    steps: [
+      {
+        title: 'Open HubSpot Private Apps',
+        body: 'Log in to HubSpot and click the link below to go to Private Apps. Click "Create a private app" to start.',
+        link: 'https://app.hubspot.com/private-apps',
+      },
+      {
+        title: 'Name and configure the app',
+        body: 'Give your private app a name (copy from below). In the "Scopes" tab, search for and add each scope below — these are the minimum permissions needed for Automation to create contacts, deals, and notes.',
+        copyItems: [
+          { label: 'App name', text: 'adris' },
+          { label: 'Scope 1', text: 'crm.objects.contacts.write' },
+          { label: 'Scope 2', text: 'crm.objects.contacts.read' },
+          { label: 'Scope 3', text: 'crm.objects.deals.write' },
+          { label: 'Scope 4', text: 'crm.objects.notes.write' },
+        ],
+      },
+      {
+        title: 'Copy your access token',
+        body: 'Click "Create app". On the confirmation dialog, click "Continue creating". On the next page, find the "Access token" section, click "Show token", then copy it. It starts with "pat-".',
+        field: 'api_key',
+        fieldLabel: 'Access Token',
+        fieldPlaceholder: 'pat-eu1-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
+        secret: true,
+      },
+    ],
+  },
   linkedin: {
     title: 'Connect LinkedIn',
     icon:  'in',

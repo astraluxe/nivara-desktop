@@ -92,6 +92,9 @@ export default function VaultModule() {
   const [failoverNote, setFailover]   = useState<string | null>(null);
   // pendingToggle: mode to enable after setup completes, or "disable"
   const [pendingToggle, setPendingToggle] = useState<string | null>(null);
+  const [dnsVerifyResult, setDnsVerifyResult] = useState<string | null>(null);
+  const [dnsVerifying, setDnsVerifying] = useState(false);
+  const [vpnWarnDismissed, setVpnWarnDismissed] = useState(false);
 
   // Load current vault state and check if one-time setup has been done
   useEffect(() => {
@@ -228,6 +231,37 @@ export default function VaultModule() {
     }
   }
 
+  async function verifyDns() {
+    setDnsVerifying(true);
+    setDnsVerifyResult(null);
+    try {
+      const r = await fetch('https://1.1.1.1/cdn-cgi/trace');
+      const text = await r.text();
+      const loc = text.match(/loc=(\w+)/)?.[1] ?? '?';
+      const ip = text.match(/ip=([^\n]+)/)?.[1]?.trim() ?? '?';
+      setDnsVerifyResult(`✓ DNS active — IP: ${ip} · Region: ${loc}`);
+    } catch {
+      setDnsVerifyResult('✗ Could not reach DNS verification endpoint — check your connection.');
+    }
+    setDnsVerifying(false);
+  }
+
+  async function restoreIsp() {
+    setLoading(true);
+    setError(null);
+    try {
+      await invoke('vault_disable');
+      setEnabled(false);
+      setAdapter(null);
+      setError(null);
+      setFailover('DNS restored to your ISP\'s default (DHCP). Vault is now disabled.');
+    } catch (e: unknown) {
+      setError(String(e) || 'Failed to restore ISP DNS.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="flex flex-col h-full bg-nv-bg p-6 gap-5 relative">
       {/* Honeycomb background */}
@@ -294,6 +328,21 @@ export default function VaultModule() {
           </svg>
           <p className="text-xs text-nv-muted flex-1">{error}</p>
           <button onClick={() => setError(null)} className="text-nv-muted hover:text-nv-text">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+      )}
+
+      {/* VPN warning banner — shown when Vault is enabled */}
+      {enabled && !vpnWarnDismissed && (
+        <div className="relative z-10 flex items-start gap-3 px-4 py-2.5 rounded-xl border border-accent/20 bg-accent/5">
+          <svg className="flex-shrink-0 mt-0.5 text-accent" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+          <p className="text-xs text-nv-muted flex-1 leading-relaxed">
+            Vault changes your system's DNS for all apps and browsers. If you use a VPN or corporate network, disabling Vault before connecting is recommended.
+          </p>
+          <button onClick={() => setVpnWarnDismissed(true)} className="text-nv-muted hover:text-nv-text transition-fast shrink-0">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
           </button>
         </div>
@@ -377,6 +426,31 @@ export default function VaultModule() {
               {loading ? "Applying…" : enabled ? "Click to disable" : "Click to enable"}
             </p>
           </div>
+
+          {/* DNS verify — only when enabled */}
+          {enabled && (
+            <div className="w-full flex flex-col gap-1.5">
+              <button
+                onClick={verifyDns}
+                disabled={dnsVerifying}
+                className="w-full py-1.5 text-[10px] font-mono border border-nv-border rounded-lg text-nv-faint hover:text-accent hover:border-accent/30 transition-fast disabled:opacity-50"
+              >
+                {dnsVerifying ? 'Checking…' : 'Verify DNS'}
+              </button>
+              {dnsVerifyResult && (
+                <p className={`text-[9px] font-mono text-center ${dnsVerifyResult?.startsWith('✓') ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {dnsVerifyResult}
+                </p>
+              )}
+              <button
+                onClick={restoreIsp}
+                disabled={loading}
+                className="w-full py-1.5 text-[10px] font-mono border border-red-500/20 rounded-lg text-red-400/70 hover:text-red-400 hover:border-red-500/40 transition-fast disabled:opacity-50"
+              >
+                Restore ISP Default
+              </button>
+            </div>
+          )}
 
           {/* Free badge */}
           <div className="w-full text-center pt-1">

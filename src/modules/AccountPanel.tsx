@@ -1,15 +1,14 @@
-import { useState } from "react";
+﻿import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAuth } from "../contexts/AuthContext";
+import { getMonthlyUsage } from "../lib/tokenTracker";
 
 const PLAN_LABEL: Record<string, string> = {
   free:     "Free",
   explore:  "Explore",
   solo:     "Solo",
-  growth:   "Growth",
   builder:  "Builder",
   business: "Team",
-  pro:      "Pro",
   custom:   "Custom",
 };
 
@@ -17,17 +16,29 @@ const PLAN_COLOR: Record<string, string> = {
   free:     "text-nv-muted  bg-nv-surface2",
   explore:  "text-nv-muted  bg-nv-surface2",
   solo:     "text-nv-green  bg-nv-green/10",
-  growth:   "text-nv-green  bg-nv-green/10",
   builder:  "text-accent    bg-accent/10",
   business: "text-accent    bg-accent/10",
-  pro:      "text-nv-yellow bg-nv-yellow/10",
   custom:   "text-nv-yellow bg-nv-yellow/10",
+};
+
+const PLAN_LIMIT: Record<string, number> = {
+  free:     100_000,
+  explore:  100_000,
+  solo:     2_000_000,
+  builder:  8_000_000,
+  business: 30_000_000,
+  custom:   0,
 };
 
 export default function AccountPanel() {
   const { profile, user, signOut } = useAuth();
   const [diagResult, setDiagResult] = useState<string | null>(null);
   const [diagRunning, setDiagRunning] = useState(false);
+  const [tokenUsed, setTokenUsed] = useState<number | null>(null);
+
+  useEffect(() => {
+    getMonthlyUsage().then((used) => setTokenUsed(used)).catch(() => {});
+  }, []);
 
   async function runDiag() {
     setDiagRunning(true);
@@ -50,6 +61,9 @@ export default function AccountPanel() {
   const initial    = (fullName ?? email)[0]?.toUpperCase() ?? "N";
   const planLabel  = PLAN_LABEL[plan] ?? plan;
   const planColor  = PLAN_COLOR[plan] ?? PLAN_COLOR.explore;
+  const tokenLimit   = PLAN_LIMIT[plan] ?? 100_000;
+  const isUnlimited  = tokenLimit === 0;
+  const tokenFmt     = (n: number) => n.toLocaleString();
 
   return (
     <div className="flex-1 flex items-center justify-center bg-nv-bg">
@@ -80,6 +94,16 @@ export default function AccountPanel() {
             <span className="text-nv-muted text-sm">Plan</span>
             <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${planColor}`}>
               {planLabel}
+            </span>
+          </div>
+          <div className="flex items-center justify-between px-5 py-4">
+            <span className="text-nv-muted text-sm">Tokens</span>
+            <span className="text-nv-text text-sm font-mono">
+              {tokenUsed !== null
+                ? isUnlimited
+                  ? `${tokenFmt(tokenUsed)} / ∞`
+                  : `${tokenFmt(tokenUsed)} / ${tokenFmt(tokenLimit)}`
+                : '—'}
             </span>
           </div>
           <div className="flex items-center justify-between px-5 py-4">

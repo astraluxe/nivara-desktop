@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+﻿import { useState, useRef } from 'react';
 import { guardDb } from '../../lib/guardDb';
 import { callAutomationAI } from '../../lib/automationRunner';
 
@@ -118,10 +118,19 @@ export default function ContractScanner() {
     setScanning(true);
     try {
       const raw = await callAutomationAI(`Analyze this contract:\n\n${contractText.slice(0, 12000)}`, SYSTEM_PROMPT);
-      const cleaned = raw.replace(/```json|```/g, '').trim();
+      const cleaned = raw
+        .replace(/^```json\s*/i, '')
+        .replace(/^```\s*/i, '')
+        .replace(/```\s*$/i, '')
+        .trim();
       const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error('No JSON in response — try again');
-      const parsed: ScanResult = JSON.parse(jsonMatch[0]);
+      let parsed: ScanResult;
+      try {
+        parsed = JSON.parse(jsonMatch[0]) as ScanResult;
+      } catch {
+        throw new Error('Could not parse AI response as JSON — the model may have returned malformed output. Try again.');
+      }
 
       const topSev = parsed.findings.find(f => f.severity === 'high') ? 'high'
         : parsed.findings.find(f => f.severity === 'med') ? 'med' : 'low';

@@ -1231,7 +1231,7 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
     setStudioExtracting(true);
 
     const EXTRACT_SYS = `You are a creative director. Extract a marketing video brief from the given content and return ONLY valid JSON (no markdown fences, no explanation):
-{"prompt":"<detailed cinematic video prompt — include: hero headline with gradient white-to-purple text, 3 key features with emoji icons (⚡🤖🚀), brand color palette, CTA button text, animation style, multi-scene structure with scene descriptions>","formatId":"<wide|story|square>","duration":<15|30|45|60>}
+{"prompt":"<detailed cinematic video prompt — include: hero headline, 3 key features with monoline SVG icons (no emoji), brand color palette from the DESIGN SYSTEM, CTA button text, animation style, multi-scene structure with unique visuals per scene>","formatId":"<wide|story|square>","duration":<15|30|45|60>}
 formatId: story=portrait 9:16 (Instagram/TikTok/Reels), wide=landscape 16:9 (YouTube/landing page), square=1:1 (Instagram feed).
 duration: 15=short snappy brand moment, 30=standard product showcase, 45=detailed story, 60=full narrative.
 The prompt must be production-ready — specific enough for a motion designer to execute without questions.`;

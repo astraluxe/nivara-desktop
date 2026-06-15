@@ -6,6 +6,7 @@ import { supabase } from '../lib/supabase';
 import { credentialStore } from '../lib/krewDb';
 import type { Provider } from '../lib/ai';
 import { trackTokenUsage } from '../lib/tokenTracker';
+import { callAutomationAI } from '../lib/automationRunner';
 
 // ─── Project types & formats ────────────────────────────────────────────────
 
@@ -44,13 +45,218 @@ const FORMATS: Record<ProjectType, Format[]> = {
 
 const DURATIONS = [5, 10, 15, 20, 30, 45, 60];
 
+// ─── Design Systems (9-section schema per style) ──────────────────────────────
+
+const DESIGN_SYSTEMS: Record<string, string> = {
+  minimal: `## DESIGN SYSTEM: Minimal (Apple-inspired)
+### Color
+- Background: #ffffff | Surface: #f5f5f7 | Border: #d2d2d7
+- Foreground: #1d1d1f | Secondary: #6e6e73 | Accent: #0071e3
+- Dark mode bg: #000000 | Dark surface: #1c1c1e
+### Typography
+- Font: SF Pro Display / Inter Tight — weights 300/400/600/700
+- Hero: 72-96px weight 700 letter-spacing -0.04em
+- Body: 17px weight 400 line-height 1.6
+- Label: 12px weight 600 uppercase letter-spacing 0.08em
+### Spacing
+- Base unit: 8px | Section padding: 80px | Card gap: 24px
+- Border radius: 18px (cards) 999px (pills)
+### Components
+- Cards: white bg, 1px #d2d2d7 border, 18px radius, 32px padding, subtle drop-shadow
+- Buttons: solid #0071e3, white text, 999px radius, 16px 32px padding
+- Pills: #f5f5f7 bg, no border, 999px radius, 12px 20px padding
+### Motion
+- Duration: 0.4-0.6s | Easing: cubic-bezier(0.25,0.1,0.25,1) (iOS standard)
+- Fade + subtle translateY(20px) → 0 for entrances
+- No bounce. No spring. Ultra-smooth.
+### Anti-patterns
+- NEVER use purple. NEVER use gradient backgrounds. NEVER use glassmorphism.
+- NEVER use more than 2 font weights per scene. NEVER add shadows heavier than box-shadow:0 2px 12px rgba(0,0,0,0.08)`,
+
+  bold: `## DESIGN SYSTEM: Bold (Vercel/Next.js inspired)
+### Color
+- Background: #000000 | Surface: #111111 | Border: #333333
+- Foreground: #ffffff | Secondary: #888888 | Accent: #ffffff
+- Highlight: use white with opacity for depth (rgba(255,255,255,0.06))
+### Typography
+- Font: Inter Tight — weights 700/800/900 ONLY
+- Hero: 96-144px weight 900 letter-spacing -0.06em line-height 0.92
+- Secondary: 18-24px weight 400 color #888888
+- Mono: JetBrains Mono for code/stats
+### Spacing
+- Ultra generous: 120px section margins, 48px card padding
+- Thin hairline borders (1px #333)
+### Components
+- Cards: near-black bg (#111), 1px #333 border, 12px radius, monochrome
+- Buttons: white bg, black text, OR inverse: black bg white border
+- Dividers: 1px #222 horizontal lines used as visual rhythm
+### Motion
+- Fast and decisive: 0.2-0.35s | Easing: cubic-bezier(0.16,1,0.3,1)
+- Prefer slideInL, slideInR over fade. Strong directional movement.
+- Stagger: 0.08s between elements
+### Anti-patterns
+- NEVER use color except pure white/black/grey. NEVER use drop shadows.
+- NEVER use rounded corners > 12px. NEVER use gradients.`,
+
+  dark: `## DESIGN SYSTEM: Dark Premium (Linear/Notion inspired)
+### Color
+- Background: #0c0c14 | Surface: #14141f | Border: rgba(255,255,255,0.08)
+- Foreground: #e8e8f0 | Secondary: rgba(255,255,255,0.45) | Accent: #7c5cff
+- Glow: color-mix(in srgb, #7c5cff 20%, transparent)
+- Surface2: rgba(255,255,255,0.04)
+### Typography
+- Font: Inter Tight weights 400/600/700/800
+- Hero: 80-100px weight 800 letter-spacing -0.04em
+- Body: 16px weight 400 color rgba(255,255,255,0.65) line-height 1.7
+### Spacing
+- Base: 8px | Card padding: 28-40px | Section gap: 64px | Border radius: 20px
+### Components
+- Cards: rgba(255,255,255,0.04) bg, 1px rgba(255,255,255,0.08) border, 20px radius
+- Glassmorphism: backdrop-filter:blur(20px) bg:rgba(255,255,255,0.06) — use sparingly
+- Buttons: linear-gradient(135deg,#7c5cff,#a78bfa), white text, 999px radius
+- Glow elements: box-shadow: 0 0 40px color-mix(in srgb,#7c5cff 30%,transparent)
+### Motion
+- Smooth and cinematic: 0.5-0.7s | Easing: cubic-bezier(0.16,1,0.3,1)
+- blurIn for hero reveals, fadeUp for cards, scaleIn for badges
+- Stagger: 0.12-0.15s
+### Anti-patterns
+- NEVER use pure white backgrounds. NEVER use harsh color contrast.
+- NEVER use more than one accent color. NEVER use Comic Sans or system fonts.`,
+
+  vibrant: `## DESIGN SYSTEM: Vibrant (TikTok/Instagram energy)
+### Color
+- Background: gradient from #1a0533 to #0d0829 | Accent: #c724ff
+- Secondary accent: #ff6b35 | Tertiary: #00d9ff
+- Use bold color blocking — each scene gets its OWN accent, not always purple
+- Suggested per-scene palette: Scene1=#6d4cff Scene2=#ff6b35 Scene3=#00d9ff Scene4=#c724ff Scene5=#10b981
+### Typography
+- Font: Inter Tight weights 800/900 ONLY for headlines
+- Hero: 100-130px weight 900 letter-spacing -0.05em — BIG AND LOUD
+- Body: 20px weight 500 high contrast
+### Spacing
+- Tight and energetic: 16px gaps, less whitespace than minimal
+- Full-bleed color fills, no subtle surfaces
+### Components
+- Cards: filled with the scene accent color at 15% opacity, 2px solid border at 40% opacity
+- Gradient text: -webkit-background-clip:text with 2-3 color gradient
+- Pills: colored bg matching accent, bold text, no border
+### Motion
+- FAST: 0.15-0.3s | Easing: cubic-bezier(0.34,1.56,0.64,1) — bouncy spring
+- scaleIn with overshoot (scale 0.7→1), slideInL/R fast
+- Stagger: 0.06s — rapid-fire appearance
+### Anti-patterns
+- NEVER use the same color in 2+ consecutive scenes. NEVER be subtle.
+- NEVER use thin fonts. NEVER use whitespace > 48px between elements.`,
+
+  corporate: `## DESIGN SYSTEM: Corporate (Stripe/McKinsey inspired)
+### Color
+- Background: #ffffff | Surface: #f6f9fc | Border: #e3e8ef
+- Foreground: #0a2540 | Secondary: #425466 | Accent: #635bff
+- Dark mode: #0a2540 bg, #1a3a5c surface
+- Success: #09825d | Warning: #a17f00 | Danger: #d0021b
+### Typography
+- Font: Inter Tight | Hierarchy strict: 48px/36px/24px/16px/12px
+- Hero: 56px weight 700 letter-spacing -0.025em color #0a2540
+- Body: 18px weight 400 color #425466 line-height 1.8
+### Spacing
+- 12px base unit | 64px sections | 40px card padding | 12px radius
+### Components
+- Cards: white, 1px #e3e8ef border, 12px radius, hover: box-shadow 0 8px 30px rgba(0,0,0,0.12)
+- Buttons: #635bff bg, white text, 6px radius — professional, not pill
+- Tables: zebra striping #f6f9fc / white, 1px borders, monospace numbers
+- Badges: 4px radius, small 11px font, category-colored
+### Motion
+- Conservative: 0.2-0.3s | Easing: ease-out | NO bounce
+- fadeUp only. No slides. No scale. Authoritative.
+### Anti-patterns
+- NEVER use emojis in corporate context. NEVER use gradient backgrounds on cards.
+- NEVER use rounded corners > 16px. NEVER use bold colors for backgrounds.`,
+
+  editorial: `## DESIGN SYSTEM: Editorial (NYT/Monocle inspired)
+### Color
+- Background: #faf9f6 (warm off-white) | Surface: #f2f0eb | Accent: #c8102e (editorial red)
+- Foreground: #1a1a1a | Secondary: #5c5c5c | Rule: #1a1a1a (black rules/dividers)
+- Dark version: #0f0f0f bg, #1a1a1a surface
+### Typography — THIS IS THE STAR
+- Headline font: Georgia, "Times New Roman", serif — editorial REQUIRES serif for headlines
+- Body: Inter or system-ui sans-serif
+- Hero: 80-110px SERIF weight 700 letter-spacing -0.02em line-height 0.95
+- Deck: 24-32px serif italic color #5c5c5c
+- Label: 10px SANS weight 700 uppercase letter-spacing 0.12em color #c8102e
+### Spacing
+- 4px base, 8-column grid, 1px black rules as dividers — structural, magazine feel
+### Components
+- Pull quote: large serif italic text, 4px left border in accent red
+- Photo caption: 11px sans, #5c5c5c, italic
+- Column layout: 2-3 column text, tight gutters (16px)
+- Rules: 1px solid #1a1a1a used as structural dividers
+### Motion
+- Elegant and slow: 0.6-0.9s | Easing: ease — NO cubic-bezier spring
+- Only fade. Serif fonts in motion should move gently.
+### Anti-patterns
+- NEVER use sans-serif for headlines. NEVER use rounded corners > 4px.
+- NEVER use bright accent colors beyond the editorial red. NEVER use glassmorphism.`,
+
+  saas: `## DESIGN SYSTEM: SaaS Product (Figma/Loom inspired)
+### Color
+- Background: #ffffff | Surface: #f5f4ff | Border: #e6e1ff
+- Foreground: #1e1e2d | Secondary: #6c6c89 | Accent: #7c3aed
+- Dark surfaces: #1e1e2d | Hover: #7c3aed at 8% opacity
+### Typography
+- Font: Inter weight 400/500/600/700 (standard SaaS feel)
+- Hero: 56-72px weight 700 letter-spacing -0.03em
+- UI text: 14px weight 500 (buttons, labels, nav)
+- Mono: JetBrains Mono for code snippets, API keys, version numbers
+### Spacing
+- 4px base | 8px/16px/24px/32px/48px scale | Border radius: 8px (standard), 16px (cards)
+### Components
+- Sidebar navigation style: icon + label, 40px height per item, 8px radius hover state
+- Feature cards: white bg, 1px #e6e1ff border, 16px radius, 24px padding, icon top-left
+- Toggle switches, checkboxes, progress bars as visual props
+- Code blocks: #1e1e2d bg, monospace, syntax-colored
+- Pricing cards: featured card has #7c3aed border and 4px top accent line
+### Motion
+- Product-quality: 0.15-0.25s | Easing: cubic-bezier(0.4,0,0.2,1) (Material standard)
+- Micro-interactions: button press scale(0.98), hover translateY(-2px)
+- Stagger: 0.07s
+### Anti-patterns
+- NEVER use serif fonts. NEVER make cards feel heavy/dark.
+- NEVER use animation durations > 0.4s for UI elements.`,
+
+  neon: `## DESIGN SYSTEM: Neon Cyber (Cyberpunk/tech aesthetic)
+### Color
+- Background: #050510 | Surface: #0a0a1a | Border: rgba(0,255,180,0.2)
+- Primary neon: #00ffb4 (cyan-green) | Secondary: #ff006e (hot pink) | Tertiary: #7700ff
+- Glow: use filter:drop-shadow(0 0 20px #00ffb4) or box-shadow with neon color
+### Typography
+- Font: JetBrains Mono for ALL text (monospace gives cyber feel)
+- Hero: 80px weight 700 color #00ffb4 letter-spacing 0.04em (slightly wide)
+- Secondary: white/rgba(255,255,255,0.7) mono font
+### Spacing
+- Compact: 8px base | Thin borders everywhere (1px neon color)
+- Grid lines: subtle 1px #ffffff0a lines as background texture
+### Components
+- Cards: #0a0a1a bg, 1px #00ffb440 border, 0px radius (sharp corners), neon glow
+- Terminal windows: #000 bg, green text, blinking cursor, monospace
+- Progress bars: thin (4px), neon color fill with glow
+- Scanline effect: repeating-linear-gradient overlay for CRT feel
+### Motion
+- Glitch: brief translateX(-2px) then (2px) over 0.1s for reveal
+- Fast: 0.15-0.2s eases | Blink animations for UI elements
+### Anti-patterns
+- NEVER use rounded corners > 4px. NEVER use serif or soft fonts.
+- NEVER use warm colors (orange/red) — this is cold neon only.`,
+};
+
 const STYLES = [
-  { id: 'minimal',   label: 'Minimal',    desc: 'Clean white background, generous whitespace, sharp modern typography' },
-  { id: 'bold',      label: 'Bold',       desc: 'High contrast black/white, dominant oversized typography, strong shapes' },
-  { id: 'dark',      label: 'Dark',       desc: 'Deep dark background (#0c0b14), glassmorphism panels, glowing purple accents' },
-  { id: 'vibrant',   label: 'Vibrant',    desc: 'Colorful purple-to-violet gradients, energetic, high-impact social-first' },
-  { id: 'corporate', label: 'Corporate',  desc: 'Professional navy/blue, trustworthy, clean layout, suitable for LinkedIn' },
-  { id: 'editorial', label: 'Editorial',  desc: 'Magazine-style, large type, strong grid, editorial photography-like feel' },
+  { id: 'minimal',   label: 'Minimal',    desc: 'Clean white background, generous whitespace, sharp modern typography', systemId: 'minimal' },
+  { id: 'bold',      label: 'Bold',       desc: 'High contrast black/white, dominant oversized typography, strong shapes', systemId: 'bold' },
+  { id: 'dark',      label: 'Dark',       desc: 'Deep dark background, glassmorphism panels, glowing purple accents', systemId: 'dark' },
+  { id: 'vibrant',   label: 'Vibrant',    desc: 'Colorful per-scene palettes, energetic, high-impact social-first', systemId: 'vibrant' },
+  { id: 'corporate', label: 'Corporate',  desc: 'Professional navy/blue, trustworthy, clean layout, LinkedIn-ready', systemId: 'corporate' },
+  { id: 'editorial', label: 'Editorial',  desc: 'Magazine-style, serif headlines, strong grid, typography-forward', systemId: 'editorial' },
+  { id: 'saas',      label: 'SaaS',       desc: 'Figma/Loom product aesthetic, feature cards, sidebar nav feel', systemId: 'saas' },
+  { id: 'neon',      label: 'Neon',       desc: 'Cyberpunk dark, neon accent glows, monospace everywhere, CRT feel', systemId: 'neon' },
 ];
 
 // ─── Accent color palette ─────────────────────────────────────────────────────
@@ -137,6 +343,46 @@ Assess: CTA button size, color contrast, and copy (is it action-oriented?), valu
 Return ONLY valid JSON (no markdown): {"score":<1-10>,"verdict":"approved"|"needs_work"|"rejected","issues":["specific issue"],"fixes":["exact fix instruction"]}
 Max 3 issues.`,
   },
+  {
+    id: 'gsap_check',
+    name: 'Tara',
+    role: 'Animation Auditor',
+    emoji: '⚡',
+    prompt: `You are a GSAP and CSS animation expert auditing a marketing video's HTML.
+Check: (1) Is GSAP being used for content animations or is it all CSS @keyframes? (2) Does each scene have a gsap.timeline() stored on clip._gsapTl? (3) Are animation durations appropriate (0.3-0.7s for content)? (4) Is there good stagger between elements? (5) Are there any animation performance issues (animating width/height instead of transform)?
+Return ONLY valid JSON: {"score":<1-10>,"verdict":"approved"|"needs_work"|"rejected","issues":["issue1"],"fixes":["fix1"]}
+Max 3 issues.`,
+  },
+  {
+    id: 'design_system',
+    name: 'Marco',
+    role: 'Design System Auditor',
+    emoji: '🎨',
+    prompt: `You are a design system expert auditing HTML for brand consistency.
+Check: (1) Are CSS variables (--bg, --fg, --acc) used consistently? (2) Is the typography scale consistent (not random font sizes)? (3) Are spacing values consistent (multiples of 8px)? (4) Are border-radius values consistent? (5) Does the color usage follow a clear palette or is it random?
+Return ONLY valid JSON: {"score":<1-10>,"verdict":"approved"|"needs_work"|"rejected","issues":["issue1"],"fixes":["fix1"]}
+Max 3 issues.`,
+  },
+  {
+    id: 'accessibility',
+    name: 'Nia',
+    role: 'Accessibility Checker',
+    emoji: '♿',
+    prompt: `You are an accessibility expert reviewing HTML for basic a11y compliance.
+Check: (1) Is text contrast sufficient (light text on dark bg or vice versa — never grey on grey)? (2) Are interactive elements keyboard-accessible? (3) Are images/SVGs missing alt text? (4) Is font size readable (minimum 14px for body, 48px+ for video text)? (5) Are animations too fast (under 0.1s flicker)?
+Return ONLY valid JSON: {"score":<1-10>,"verdict":"approved"|"needs_work"|"rejected","issues":["issue1"],"fixes":["fix1"]}
+Max 3 issues.`,
+  },
+  {
+    id: 'performance',
+    name: 'Raj',
+    role: 'Performance Engineer',
+    emoji: '🚀',
+    prompt: `You are a web performance engineer reviewing HTML rendering efficiency.
+Check: (1) Are there too many DOM elements (> 200 visible at once is bad)? (2) Are expensive CSS properties being animated (width/height/top/left instead of transform/opacity)? (3) Are there unnecessary re-paints caused by animating layout properties? (4) Is the HTML file size reasonable (< 100KB for inline HTML)? (5) Are there any infinite requestAnimationFrame loops that could spike CPU?
+Return ONLY valid JSON: {"score":<1-10>,"verdict":"approved"|"needs_work"|"rejected","issues":["issue1"],"fixes":["fix1"]}
+Max 3 issues.`,
+  },
 ];
 
 const STUDIO_AGENTS: StudioAgent[] = [
@@ -156,7 +402,7 @@ const STUDIO_AGENTS: StudioAgent[] = [
     emoji: '📱',
     defaultFormatId: 'story',
     defaultDuration: 15,
-    bias: 'You are a viral social media expert designing for Instagram Reels and TikTok. Hook viewers in the first 0.5 seconds. Use bold typography, fast stagger (0.2s between elements), energetic vibrant colors (purple gradients), and make the CTA impossible to ignore. Optimize for mobile portrait viewing — stack elements vertically, high-contrast minimal shapes, NO emojis (they render badly on canvas).',
+    bias: 'You are a viral social media expert designing for Instagram Reels and TikTok. Hook viewers in the first 0.5 seconds. Use bold typography, fast stagger (0.15s), energetic vibrant colors, and make the CTA impossible to ignore. Optimize for mobile portrait — stack vertically, high contrast, NO emojis.',
   },
   {
     id: 'launch',
@@ -165,7 +411,7 @@ const STUDIO_AGENTS: StudioAgent[] = [
     emoji: '🚀',
     defaultFormatId: 'wide',
     defaultDuration: 45,
-    bias: 'You are a product launch strategist. Structure the video as a conversion narrative: Scene 1 — attention-grabbing brand moment, Scene 2 — 3 key features with proof points, Scene 3 — social proof stats (animate numbers counting up), Scene 4 — urgent CTA with offer. Every scene has a single job. Drive action.',
+    bias: 'You are a product launch strategist. Structure: Scene 1 — attention-grabbing stat, Scene 2 — 3 key features with proof points, Scene 3 — social proof numbers (count-up animation), Scene 4 — urgent CTA. Every scene has a single job. Drive action.',
   },
   {
     id: 'data',
@@ -174,7 +420,43 @@ const STUDIO_AGENTS: StudioAgent[] = [
     emoji: '📊',
     defaultFormatId: 'wide',
     defaultDuration: 30,
-    bias: 'You are a data storyteller. Lead with numbers — animate 3–4 key metrics using countUp animation (e.g., "10×", "99%", "2M+ users"). Use a professional corporate palette, clean grid layouts, and credibility-first copy. Investors and decision-makers are the audience. Every claim needs a number behind it.',
+    bias: 'You are a data storyteller. Lead with numbers — animate 3-4 key metrics using GSAP countUp. Use a professional corporate palette, clean grid layouts, credibility-first copy. Investors are the audience. Every claim needs a number.',
+  },
+  {
+    id: 'ux',
+    name: 'Dev',
+    role: 'UX Designer',
+    emoji: '🖥️',
+    defaultFormatId: 'desktop',
+    defaultDuration: 20,
+    bias: 'You are a senior UX designer creating product screen mockups. Build realistic, detailed UI — navigation bars, sidebars, data tables, form inputs, modal dialogs. Use real UI patterns from Linear, Figma, Notion. Show actual product workflows, not just landing page marketing. Every screen should look like a real shipping product.',
+  },
+  {
+    id: 'motion',
+    name: 'Alex',
+    role: 'Motion Designer',
+    emoji: '✨',
+    defaultFormatId: 'story',
+    defaultDuration: 15,
+    bias: 'You are a motion design specialist who creates stunning micro-animations. Use GSAP timelines extensively — layered reveals, morphing shapes, particle systems via CSS, kinetic typography where letters animate individually. Every element should be in motion at all times. Think Apple product reveal video meets motion graphics reel. Push the boundaries of what CSS+GSAP can do.',
+  },
+  {
+    id: 'saas_designer',
+    name: 'Priya',
+    role: 'SaaS Designer',
+    emoji: '⚡',
+    defaultFormatId: 'wide',
+    defaultDuration: 30,
+    bias: 'You are a product designer who lives inside Figma and ships SaaS products. Build feature demos showing the product UI in action: typing in search bars, clicking buttons, watching data load. Use the SaaS design system — inter font, 8px grid, product-quality spacing. Make it look like a real Loom-style demo video.',
+  },
+  {
+    id: 'editorial_dir',
+    name: 'Sofia',
+    role: 'Editorial Director',
+    emoji: '📰',
+    defaultFormatId: 'wide',
+    defaultDuration: 45,
+    bias: 'You are an editorial director from a premium magazine. Use the editorial design system: serif headlines (Georgia/Times), editorial red accents, magazine-column layouts, pull quotes, photo captions, horizontal rules as structural dividers. Every scene should feel like it could be a page in Monocle or Fast Company. Typography IS the design.',
   },
 ];
 
@@ -199,15 +481,21 @@ function assembleVideoHtml(stripped: string, fmt: Format, dur: number): string {
 function applyEmojiStyle(html: string, style: 'color' | 'infill' | 'outline'): string {
   if (style === 'color') return html;
   const emojiRe = /\p{Emoji_Presentation}/gu;
-  return html.replace(/(<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>|>[^<]*<)/gi, (m) => {
-    if (/^<style/i.test(m) || /^<script/i.test(m)) return m;
-    return m.replace(emojiRe, (e) => {
-      if (style === 'outline') {
-        return `<span style="display:inline-block;-webkit-text-stroke:3px var(--acc);color:transparent;filter:drop-shadow(0 0 8px color-mix(in srgb,var(--acc) 40%,transparent));">${e}</span>`;
-      }
-      return `<span style="display:inline-block;position:relative;line-height:1;vertical-align:middle;"><span style="filter:grayscale(1) brightness(0);">${e}</span><span style="position:absolute;inset:0;background:var(--acc);mix-blend-mode:screen;pointer-events:none;"></span></span>`;
+  // Split out <script> and <style> blocks — never transform those
+  const parts = html.split(/(<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>)/gi);
+  return parts.map((part, i) => {
+    // Odd-indexed parts are the matched script/style blocks — leave untouched
+    if (i % 2 === 1) return part;
+    // Only transform emoji in text content between tags
+    return part.replace(/>[^<]*</g, (textNode) => {
+      return textNode.replace(emojiRe, (e) => {
+        if (style === 'outline') {
+          return `<span style="display:inline-block;-webkit-text-stroke:3px var(--acc);color:transparent;filter:drop-shadow(0 0 8px color-mix(in srgb,var(--acc) 40%,transparent));">${e}</span>`;
+        }
+        return `<span style="display:inline-block;position:relative;line-height:1;vertical-align:middle;"><span style="filter:grayscale(1) brightness(0);">${e}</span><span style="position:absolute;inset:0;background:var(--acc);mix-blend-mode:screen;pointer-events:none;"></span></span>`;
+      });
     });
-  });
+  }).join('');
 }
 
 // ─── AI helpers ──────────────────────────────────────────────────────────────
@@ -242,7 +530,7 @@ function buildVideoHtml(fmt: Format, duration: number, snippet: string): string 
   function curT(){return _paused?_pausedAt:rawT()%DUR;}
   Object.defineProperty(window,'_T',{get:curT,set:function(v){start=performance.now()-v*1000;_pausedAt=v;}});
   var _clips=null;
-  function _tick(){if(!_clips)_clips=[].slice.call(document.querySelectorAll('.clip'));var t=curT();for(var i=0;i<_clips.length;i++){var el=_clips[i],s=parseFloat(el.dataset.start)||0,d=parseFloat(el.dataset.duration)||DUR,on=t>=s&&t<(s+d);if(on!==el._nvOn){el._nvOn=on;el.style.display=on?'block':'none';}}requestAnimationFrame(_tick);}
+  function _tick(){if(!_clips)_clips=[].slice.call(document.querySelectorAll('.clip'));var t=curT();for(var i=0;i<_clips.length;i++){var el=_clips[i],s=parseFloat(el.dataset.start)||0,d=parseFloat(el.dataset.duration)||DUR,on=t>=s&&t<(s+d);if(on!==el._nvOn){el._nvOn=on;el.style.display=on?'block':'none';if(on&&el._gsapTl){try{el._gsapTl.restart();}catch(e){}}}}requestAnimationFrame(_tick);}
   requestAnimationFrame(_tick);
   setInterval(function(){var anims=document.getAnimations?document.getAnimations():[];if(window._PAUSED!==_paused){_paused=window._PAUSED;if(_paused){_pausedAt=rawT()%DUR;anims.forEach(function(a){try{a.pause();}catch(e){}});}else{start=performance.now()-_pausedAt*1000;anims.forEach(function(a){try{a.play();}catch(e){}});}}},60);
   window.addEventListener('message',function(e){if(!e||!e.data)return;var r=document.documentElement;if(e.data.__nv_acc)r.style.setProperty('--acc',e.data.__nv_acc);if(e.data.__nv_bg)r.style.setProperty('--bg',e.data.__nv_bg);if(e.data.__nv_fg)r.style.setProperty('--fg',e.data.__nv_fg);if(e.data.__nv_restart){start=performance.now();_paused=false;window._PAUSED=false;_pausedAt=0;_clips=null;document.getAnimations&&document.getAnimations().forEach(function(a){try{a.cancel();a.play();}catch(e){}});}});
@@ -251,6 +539,7 @@ function buildVideoHtml(fmt: Format, duration: number, snippet: string): string 
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"><\/script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;600;700;800;900&family=JetBrains+Mono:wght@400;700&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -272,11 +561,45 @@ ${playbackJs}
 </html>`;
 }
 
+const CRAFT_RULES = `
+━━━ CRAFT RULES — MANDATORY (open-design quality gate) ━━━
+Violating any of these = rejected output. No exceptions.
+
+7 CARDINAL ANTI-SLOP SINS (never do these):
+1. DEFAULT INDIGO — never use Tailwind #6366f1 or any default purple as accent. Derive accent from the brand.
+2. PURPLE→BLUE HERO GRADIENT — two-stop purple-to-blue gradients are banned. Use single-hue depth or brand-derived colors.
+3. EMOJI AS FEATURE ICONS — never use emoji as feature/benefit icons. Use coded CSS visuals (staggered card lists, grids, terminal windows) or inline SVG.
+4. INVENTED METRICS — never write "10x faster", "99% uptime", or any stat not in the user brief.
+5. ROUNDED CARD + LEFT COLOR BORDER — the "colored 4px left border on a rounded card" pattern = AI-slop tell. Use proper card variants instead.
+6. FILLER COPY — every word must come from the brief. "Transform your workflow" and "Unlock the power of" are banned phrases.
+7. REPEATED LAYOUT — no two scenes/sections may use the same visual structure. Force layout variety.
+
+TYPOGRAPHY CRAFT — mandatory:
+• ALL CAPS text → letter-spacing ≥ 0.06em ALWAYS. text-transform:uppercase without letter-spacing:0.06em = invalid.
+• Display text ≥ 48px → letter-spacing -0.02em (tighter), font-weight ≥ 700.
+• Body text → letter-spacing: 0 (never add letter-spacing to body copy).
+• Monospaced numbers → font-family:'JetBrains Mono',monospace and font-variant-numeric:tabular-nums.
+
+COLOR DISCIPLINE — mandatory:
+• --accent appears MAXIMUM 2 times visibly per screen. Use it sparingly — more appearances = less impact.
+• Dark backgrounds: #0d0d1a, #0c0c14, or #0f0f0f only. NEVER #000000 (too harsh) or plain #111111 (too generic).
+• Neutral text = 3 opacity stops: 1.0 (headings), 0.7 (body), 0.45 (labels/captions). Never full opacity on body copy.
+• One accent color per design. Use its 12% opacity tint (color-mix in srgb, var(--acc) 12%, transparent) for subtle fills.
+
+ANIMATION DISCIPLINE — mandatory:
+• Micro (button hover, badge): 150–250ms
+• Entrance (card, heading slide-in): 400–650ms
+• Scene transition: 600–900ms
+• Ambient loops (float, shimmer, pulse): 3000ms+
+• NEVER exceed 900ms for any entrance animation.
+• Easing: power3.out for slides, back.out(1.7) for pop/bounce, linear for ambient loops.
+`;
+
 function getSceneCount(duration: number): number {
   return duration <= 8 ? 3 : duration <= 15 ? 5 : duration <= 22 ? 7 : duration <= 32 ? 9 : duration <= 45 ? 12 : duration <= 60 ? 15 : 18;
 }
 
-function buildVideoPrompt(fmt: Format, duration: number, agentBias?: string, emojiStyle: 'color' | 'infill' | 'outline' = 'infill'): string {
+function buildVideoPrompt(fmt: Format, duration: number, agentBias?: string, emojiStyle: 'color' | 'infill' | 'outline' = 'infill', designSystem?: string): string {
   const W = fmt.w;
   const H = fmt.h;
 
@@ -306,7 +629,11 @@ function buildVideoPrompt(fmt: Format, duration: number, agentBias?: string, emo
     var t=curT();
     for(var i=0;i<_clips.length;i++){
       var el=_clips[i],s=parseFloat(el.dataset.start)||0,d=parseFloat(el.dataset.duration)||DUR,on=t>=s&&t<(s+d);
-      if(on!==el._nvOn){el._nvOn=on;el.style.display=on?'block':'none';}
+      if(on!==el._nvOn){
+        el._nvOn=on;
+        el.style.display=on?'block':'none';
+        if(on&&el._gsapTl){try{el._gsapTl.restart();}catch(e){}}
+      }
     }
     requestAnimationFrame(_tick);
   }
@@ -330,7 +657,7 @@ function buildVideoPrompt(fmt: Format, duration: number, agentBias?: string, emo
 })()`;
 
   return `You are a professional motion designer and frontend developer. Create a stunning, polished animated marketing video as a single self-contained HTML file.
-${agentBias ? `\nDIRECTION: ${agentBias}\n` : ''}
+${designSystem ? `\n━━━ ACTIVE DESIGN SYSTEM ━━━\nFollow these brand rules STRICTLY. They override any defaults.\n${designSystem}\n` : ''}${CRAFT_RULES}${agentBias ? `\nDIRECTION: ${agentBias}\n` : ''}
 VIEWPORT: ${W}x${H}px fixed · ${duration}s loop · Fonts: Inter Tight + JetBrains Mono (Google Fonts)
 SAFE ZONE: ${Math.round(W*0.05)}px from left/right edges, ${Math.round(H*0.04)}px from bottom. No content may touch the canvas border. The 3-zone template already encodes these — do not set left:0 or right:0 on any content div.
 
@@ -493,7 +820,47 @@ Element stagger example:
   #scene-hook .visual   { animation: scaleIn 0.6s cubic-bezier(0.34,1.56,0.64,1) 0.5s both; }
   #scene-hook .cta      { animation: fadeUp 0.5s ease-out 0.7s both, pulse 2s ease 1.4s infinite; }
 
-━━━ STEP 4: COLORS + NARRATIVE ━━━
+━━━ STEP 4: USE GSAP FOR ALL ANIMATIONS (REQUIRED) ━━━
+GSAP is loaded via CDN. Use it — do NOT use CSS animation: properties for content animations.
+
+CSS keyframe animations (@keyframes) are BANNED for content. Use them ONLY for:
+- Background effects (floating particles, gradient shifts)
+- Looping ambient effects (pulse rings, shimmer)
+
+FOR ALL CONTENT ANIMATIONS — use GSAP inside a <script> at the bottom:
+
+SCENE TIMELINE PATTERN — one timeline per scene, stored on the clip element:
+document.querySelectorAll('.clip').forEach(function(clip) {
+  var tl = gsap.timeline({ paused: true });
+  var id = clip.id;
+
+  if(id === 'scene-hook') {
+    tl.from('#hook-headline', { duration: 0.6, y: 60, opacity: 0, ease: 'power3.out' })
+      .from('#hook-badge', { duration: 0.4, scale: 0.7, opacity: 0, ease: 'back.out(1.7)' }, '-=0.2')
+      .from('.hook-card', { duration: 0.5, y: 40, opacity: 0, stagger: 0.1, ease: 'power2.out' }, '-=0.1');
+  }
+  // ... one if-block per scene
+
+  clip._gsapTl = tl;
+});
+
+The runtime calls clip._gsapTl.restart() when each clip becomes visible. Your timelines run automatically.
+
+GSAP ANIMATION ARSENAL:
+- gsap.from(el, {y:60, opacity:0, duration:0.5, ease:'power3.out'}) — slide up fade in
+- gsap.from(el, {scale:0.7, opacity:0, duration:0.4, ease:'back.out(1.7)'}) — pop in with bounce
+- gsap.from(el, {x:-60, opacity:0, duration:0.4, ease:'power2.out'}) — slide from left
+- gsap.from('.cards', {y:40, opacity:0, duration:0.4, stagger:0.1, ease:'power2.out'}) — staggered cards
+- gsap.to('#counter', {textContent:100, duration:1.5, ease:'power2.out', snap:{textContent:1}, roundProps:'textContent'}) — count up
+- gsap.from(el, {filter:'blur(20px)', opacity:0, duration:0.7, ease:'power2.out'}) — blur reveal
+- tl.add('labelName') — add labels for readable positioning
+- tl.from(el, opts, '<') — start at same time as previous
+- tl.from(el, opts, '-=0.2') — overlap with previous by 0.2s
+- tl.from(el, opts, '+=0.1') — 0.1s after previous ends
+
+GIVE EVERY ANIMATED ELEMENT A UNIQUE id OR class. Never animate by tagName alone.
+
+━━━ STEP 5: COLORS + NARRATIVE ━━━
 FIRST — scan the user's prompt for these signals BEFORE picking colors or scene order:
   • Color signal: "white", "light", "clean" → LIGHT THEME.  "dark", "black", "deep" or no mention → DARK THEME.
   • Narrative arc: "pain then solution", "problem first", "before → after" → open with 3-4 pain scenes, then pivot to solution.
@@ -520,7 +887,7 @@ Sizes:
   Body:     font-size:${fsBody}px;    font-weight:400; opacity:0.7;
   CTA:      font-size:${fsCta}px;     font-weight:700; background:var(--acc); color:#fff; border-radius:100px; padding:18px 48px;
 
-━━━ STEP 5: VISUAL PROPS TOOLKIT (text alone = rejected) ━━━
+━━━ STEP 6: VISUAL PROPS TOOLKIT (text alone = rejected) ━━━
 TEXT BUDGET PER SCENE:
   Main content area: max 1 headline (≤5 words) + EITHER a subline OR a visual — not both
   .sub subtitle: carries all narrative (max 10 words)
@@ -856,6 +1223,7 @@ Subtitle bar (REQUIRED on every clip — write real voice-over copy from the con
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"><\/script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;700&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -1019,11 +1387,11 @@ Script writing rules:
 - Output ONLY valid JSON array, no explanation`;
 }
 
-function buildScreenPrompt(fmt: Format, desc: string, styleName: string, context: string): string {
+function buildScreenPrompt(fmt: Format, desc: string, styleName: string, context: string, designSystem?: string): string {
   const W = fmt.w;
   const H = fmt.h;
   return `You are an expert UI designer. Create a pixel-perfect ${fmt.label} UI mockup (${W}×${H}px).
-${context ? `\nBrand/product context (use for copy, colors, and data):\n${context}\n` : ''}
+${designSystem ? `\n━━━ ACTIVE DESIGN SYSTEM ━━━\nFollow these brand rules STRICTLY. They override any defaults.\n${designSystem}\n` : ''}${CRAFT_RULES}${context ? `\nBrand/product context (use for copy, colors, and data):\n${context}\n` : ''}
 Purpose: ${desc}
 Style: ${styleName}
 
@@ -1047,7 +1415,7 @@ ${context ? '- If brand colors are specified in the context above, use them. Oth
 Output ONLY the complete HTML starting with <!DOCTYPE html>. No markdown fences.`;
 }
 
-function buildBannerPrompt(fmt: Format, desc: string, styleName: string, context: string): string {
+function buildBannerPrompt(fmt: Format, desc: string, styleName: string, context: string, designSystem?: string): string {
   const W = fmt.w;
   const H = fmt.h;
   const sidePad  = Math.round(W * 0.08);
@@ -1086,7 +1454,7 @@ function buildBannerPrompt(fmt: Format, desc: string, styleName: string, context
   const ctaBtnW    = Math.round(Math.min(usableW * 0.55, 320));
 
   return `You are an elite creative director and front-end engineer. Create a ${fmt.label} graphic (${W}×${H}px) — scroll-stopping, publication-quality, social-media-ready.
-
+${designSystem ? `\n━━━ ACTIVE DESIGN SYSTEM ━━━\nFollow these brand rules STRICTLY. They override any defaults.\n${designSystem}\n` : ''}${CRAFT_RULES}
 ${context ? `━━━ BRAND BRIEF ━━━\n${context}\n━━━━━━━━━━━━━━━━━\n` : ''}VISUAL INTENT: ${desc}
 STYLE: ${styleName}
 CANVAS: ${W}×${H}px
@@ -1167,11 +1535,11 @@ html,body{width:${W}px;height:${H}px;overflow:hidden;font-family:'Inter Tight',s
 Output ONLY the filled complete HTML starting with <!DOCTYPE html>. No markdown, no explanation.`;
 }
 
-function buildComponentPrompt(fmt: Format, desc: string, styleName: string, context: string): string {
+function buildComponentPrompt(fmt: Format, desc: string, styleName: string, context: string, designSystem?: string): string {
   const W = fmt.w;
   const H = fmt.h;
   return `You are a senior UI engineer. Build a polished, production-ready interactive UI component.
-${context ? `\nProduct context (use for real copy, data, and brand colors):\n${context}\n` : ''}
+${designSystem ? `\n━━━ ACTIVE DESIGN SYSTEM ━━━\nFollow these brand rules STRICTLY. They override any defaults.\n${designSystem}\n` : ''}${CRAFT_RULES}${context ? `\nProduct context (use for real copy, data, and brand colors):\n${context}\n` : ''}
 Component: ${desc}
 Style: ${styleName}
 Viewport: ${W}×${H}px
@@ -1328,9 +1696,12 @@ export default function StudioModule({ initialRequest, onRequestConsumed }: Stud
   const [activeAgent,    setActiveAgent]    = useState<StudioAgent | null>(null);
   const [briefing,       setBriefing]       = useState(false);
   const [rightTab,       setRightTab]       = useState<'prompt' | 'reviews'>('prompt');
-  const [reviews,        setReviews]        = useState<Record<string, ReviewResult>>({});
+  const [reviews,        setReviews]        = useState<Record<string, ReviewResult | null>>({});
+  const [reviewLoading,  setReviewLoading]  = useState<Record<string, boolean>>({});
+  const [activeReviewAgent, setActiveReviewAgent] = useState<string>(REVIEW_AGENTS[0].id);
   const [reviewing,      setReviewing]      = useState(false);
   const [recording,      setRecording]      = useState(false);
+  const [recordError,    setRecordError]    = useState<string | null>(null);
   const [recordSecs,     setRecordSecs]     = useState(0);
   const [previewKey,     setPreviewKey]     = useState(0);
   const [currentTime,    setCurrentTime]    = useState(0);
@@ -1473,7 +1844,9 @@ export default function StudioModule({ initialRequest, onRequestConsumed }: Stud
         krewUserMsg = ctx ? `Brand context:\n${ctx}\n\nCreate:\n${p}` : `Create:\n${p}`;
       }
       setStreamLog('Building scenes…');
-      const sysPrompt = buildVideoPrompt(fmt, dur, activeAgent?.bias, emojiStyle);
+      const krewSelectedStyle = STYLES.find((s) => s.id === style) ?? STYLES[0];
+      const krewDesignSystem = DESIGN_SYSTEMS[(krewSelectedStyle as { systemId?: string }).systemId ?? ''] ?? '';
+      const sysPrompt = buildVideoPrompt(fmt, dur, activeAgent?.bias, emojiStyle, krewDesignSystem);
       await streamAI(sysPrompt, krewUserMsg, (chunk) => { raw += chunk; setStreamLog(getStreamPhase(raw, 'video')); });
       const stripped = stripFences(raw);
       const finalHtml = applyEmojiStyle(assembleVideoHtml(stripped, fmt, dur), emojiStyle);
@@ -1539,61 +1912,109 @@ The prompt must be specific enough for a motion designer to execute without ques
     finally { setBriefing(false); }
   }
 
+  // Lazy review runner — called when user clicks on a specific agent tab
+  async function runSingleReview(agent: ReviewAgent, targetHtml: string) {
+    if (reviewLoading[agent.id] || reviews[agent.id] !== null && reviews[agent.id] !== undefined) return;
+    setReviewLoading(prev => ({ ...prev, [agent.id]: true }));
+
+    const isVideoTarget = type === 'video';
+    const codeSnippet = isVideoTarget
+      ? (extractSceneSection(targetHtml) || targetHtml).slice(0, 9000)
+      : targetHtml.slice(0, 7000);
+
+    const callId = `rev-${agent.id}-${Date.now()}`;
+    let full = '';
+    const done = { cleanup: () => {} };
+    try {
+      await new Promise<void>((resolve, reject) => {
+        (async () => {
+          const u1 = await listen<{ id: string; text: string }>('krew-chunk', (e) => {
+            if (e.payload.id === callId) full += e.payload.text;
+          });
+          const u2 = await listen<{ id: string }>('krew-done', (e) => {
+            if (e.payload.id !== callId) return;
+            done.cleanup(); resolve();
+          });
+          const u3 = await listen<{ id: string; error: string }>('krew-error', (e) => {
+            if (e.payload.id !== callId) return;
+            done.cleanup(); reject(new Error(e.payload.error));
+          });
+          done.cleanup = () => { u1(); u2(); u3(); };
+          const { mode, apiKey, provider } = await resolveMode();
+          invoke('krew_ai_stream', {
+            callId, mode, systemPrompt: agent.prompt,
+            messages: [{ role: 'user', content: `Review this marketing video scene code:\n\`\`\`js\n${codeSnippet}\n\`\`\`` }],
+            apiKey, provider, localModel: null, modelName: null, baseUrl: null,
+            sessionToken: session?.access_token ?? null,
+          }).catch((e: unknown) => { done.cleanup(); reject(e); });
+        })();
+      });
+
+      try {
+        const parsed = JSON.parse(full.trim().replace(/```[\w]*\n?|```/g, '').trim()) as ReviewResult;
+        setReviews((prev) => ({ ...prev, [agent.id]: parsed }));
+      } catch {
+        setReviews((prev) => ({ ...prev, [agent.id]: { score: 0, verdict: 'needs_work', issues: ['Could not parse review'], fixes: [] } }));
+      }
+    } catch {
+      setReviews((prev) => ({ ...prev, [agent.id]: { score: 0, verdict: 'needs_work', issues: ['Review failed — check your AI connection'], fixes: [] } }));
+    } finally {
+      setReviewLoading(prev => ({ ...prev, [agent.id]: false }));
+    }
+  }
+
+  // Trigger all reviews (used by "Run Reviews" button) — marks all as null to trigger lazy load on tab open
   async function runReviews(override?: string) {
     const target = override ?? html;
     if (!target || reviewing) return;
-    setReviewing(true);
+    // Reset all reviews to null (uncomputed), then run them lazily as user clicks each tab
     setReviews({});
+    setReviewLoading({});
     setRightTab('reviews');
-
-    // For video: agents review scene code only (not the runtime boilerplate)
-    const isVideoTarget = type === 'video';
-    const codeSnippet = isVideoTarget
-      ? (extractSceneSection(target) || target).slice(0, 9000)
-      : target.slice(0, 7000);
-
-    for (const agent of REVIEW_AGENTS) {
-      const callId = `rev-${agent.id}-${Date.now()}`;
-      let full = '';
-      const done = { cleanup: () => {} };
-      try {
-        await new Promise<void>((resolve, reject) => {
-          (async () => {
-            const u1 = await listen<{ id: string; text: string }>('krew-chunk', (e) => {
-              if (e.payload.id === callId) full += e.payload.text;
-            });
-            const u2 = await listen<{ id: string }>('krew-done', (e) => {
-              if (e.payload.id !== callId) return;
-              done.cleanup(); resolve();
-            });
-            const u3 = await listen<{ id: string; error: string }>('krew-error', (e) => {
-              if (e.payload.id !== callId) return;
-              done.cleanup(); reject(new Error(e.payload.error));
-            });
-            done.cleanup = () => { u1(); u2(); u3(); };
-            const { mode, apiKey, provider } = await resolveMode();
-            invoke('krew_ai_stream', {
-              callId, mode, systemPrompt: agent.prompt,
-              messages: [{ role: 'user', content: `Review this marketing video scene code:\n\`\`\`js\n${codeSnippet}\n\`\`\`` }],
-              apiKey, provider, localModel: null, modelName: null, baseUrl: null,
-              sessionToken: session?.access_token ?? null,
-            }).catch((e: unknown) => { done.cleanup(); reject(e); });
-          })();
-        });
-
-        try {
-          const parsed = JSON.parse(full.trim().replace(/```[\w]*\n?|```/g, '').trim()) as ReviewResult;
-          setReviews((prev) => ({ ...prev, [agent.id]: parsed }));
-        } catch {
-          setReviews((prev) => ({ ...prev, [agent.id]: { score: 0, verdict: 'needs_work', issues: ['Could not parse review'], fixes: [] } }));
-        }
-      } catch {
-        setReviews((prev) => ({ ...prev, [agent.id]: { score: 0, verdict: 'needs_work', issues: ['Review failed — check your AI connection'], fixes: [] } }));
-      }
-    }
-
+    setReviewing(true);
+    // Auto-run the first agent immediately so the user sees something fast
+    const firstAgent = REVIEW_AGENTS[0];
+    setActiveReviewAgent(firstAgent.id);
+    await runSingleReview(firstAgent, target);
     setReviewing(false);
   }
+
+  async function critiqueOutput(outputHtml: string, projectType: ProjectType, attempt: number): Promise<{ ok: boolean; score: number; issues: string[] }> {
+    if (attempt >= 2) return { ok: true, score: 7, issues: [] }; // max 2 retries
+    const critiqueSystem = `You are a ruthless design quality gatekeeper. Evaluate the HTML artifact on 5 dimensions.
+Return ONLY valid JSON — no markdown: {"score":<1-10>,"ok":<true if score>=7>,"issues":["specific issue 1","specific issue 2"]}`;
+
+    const critiqueMsg = projectType === 'video'
+      ? `Check this video HTML on 5 dimensions:
+1. Scene visual variety — are ALL scene visuals DIFFERENT? (fail if same emoji or same layout repeated)
+2. Color variety — does each scene have its own background/accent? (fail if same #bg every scene)
+3. CSS specificity — are CSS animations being used for CONTENT? (should be GSAP timeline calls instead)
+4. Brand quality — does it look polished and professional? Any amateur patterns?
+5. GSAP usage — is there a <script> with gsap.timeline() calls for each scene?
+HTML (first 8000 chars): ${outputHtml.slice(0, 8000)}`
+      : `Check this design HTML:
+1. Visual hierarchy — is there a clear dominant element?
+2. Spacing — is whitespace consistent and generous?
+3. Color — does it follow a coherent palette?
+4. Typography — are font sizes creating proper hierarchy?
+5. Polish — does it look production-ready or amateur?
+HTML (first 6000 chars): ${outputHtml.slice(0, 6000)}`;
+
+    try {
+      const result = await callAutomationAI(critiqueMsg, critiqueSystem);
+      const cleaned = result.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
+      const parsed = JSON.parse(cleaned.match(/\{[\s\S]*\}/)?.[0] ?? '{}') as { score?: number; ok?: boolean; issues?: string[] };
+      return {
+        ok: parsed.ok ?? (parsed.score ?? 0) >= 7,
+        score: parsed.score ?? 5,
+        issues: parsed.issues ?? [],
+      };
+    } catch {
+      return { ok: true, score: 7, issues: [] }; // on parse error, allow through
+    }
+  }
+
+  const generateAttemptRef = useRef(0);
 
   async function handleGenerate() {
     if (!prompt.trim() || generating) return;
@@ -1606,8 +2027,10 @@ The prompt must be specific enough for a motion designer to execute without ques
     setStreamLog('Preparing…');
     setShowCode(false);
     setReviews({});
+    generateAttemptRef.current = 0;
 
     const selectedStyle = STYLES.find((s) => s.id === style)!;
+    const designSystem = DESIGN_SYSTEMS[(selectedStyle as { systemId?: string }).systemId ?? ''] ?? '';
     const ctx = contextFile?.content ?? '';
     let raw = '';
 
@@ -1644,13 +2067,35 @@ The prompt must be specific enough for a motion designer to execute without ques
         }
         // ── Stage 3: Generate HTML/CSS video from script ──────────────────
         setStreamLog('Building scenes…');
-        const sysPrompt = buildVideoPrompt(format, effectiveDur, activeAgent?.bias, emojiStyle);
+        const sysPrompt = buildVideoPrompt(format, effectiveDur, activeAgent?.bias, emojiStyle, designSystem);
         await streamAI(sysPrompt, videoUserMsg, (chunk) => {
           raw += chunk;
           setStreamLog(getStreamPhase(raw, 'video'));
         });
         const stripped = stripFences(raw);
-        const finalHtml = applyEmojiStyle(assembleVideoHtml(stripped, format, effectiveDur), emojiStyle);
+        let finalHtml = applyEmojiStyle(assembleVideoHtml(stripped, format, effectiveDur), emojiStyle);
+
+        // ── Pre-emit critique gate ────────────────────────────────────────
+        setStreamLog('Quality check…');
+        const critique = await critiqueOutput(finalHtml, type, generateAttemptRef.current);
+        if (!critique.ok && generateAttemptRef.current < 1) {
+          generateAttemptRef.current++;
+          const fixPrompt = `Fix these specific issues in the video:\n${critique.issues.map((issue, n) => `${n + 1}. ${issue}`).join('\n')}\n\nReturn the COMPLETE fixed HTML starting with <!DOCTYPE html>.`;
+          setStreamLog(`Refining (${critique.issues[0] ?? 'quality check failed'})…`);
+          let fixRaw = '';
+          try {
+            await streamAI(
+              `You are fixing a CSS-animated marketing video. Return the COMPLETE updated HTML. Fix ONLY the listed issues — keep everything else identical.`,
+              buildRefinePrompt(finalHtml, fixPrompt, true),
+              (chunk) => { fixRaw += chunk; setStreamLog('Fixing…'); }
+            );
+            const fixedHtml = applyEmojiStyle(assembleVideoHtml(stripFences(fixRaw), format, effectiveDur), emojiStyle);
+            if (fixedHtml.length > finalHtml.length * 0.5) {
+              finalHtml = fixedHtml;
+            }
+          } catch { /* keep original if fix fails */ }
+        }
+
         setHtml(finalHtml);
         setPreviewKey(k => k + 1);
         setEditedHtml(finalHtml);
@@ -1660,9 +2105,9 @@ The prompt must be specific enough for a motion designer to execute without ques
       } else {
         const styleDesc = `${selectedStyle.label} — ${selectedStyle.desc}`;
         const sysPrompt =
-          type === 'screen'    ? buildScreenPrompt(format, prompt, styleDesc, ctx) :
-          type === 'banner'    ? buildBannerPrompt(format, prompt, styleDesc, ctx) :
-                                 buildComponentPrompt(format, prompt, styleDesc, ctx);
+          type === 'screen'    ? buildScreenPrompt(format, prompt, styleDesc, ctx, designSystem) :
+          type === 'banner'    ? buildBannerPrompt(format, prompt, styleDesc, ctx, designSystem) :
+                                 buildComponentPrompt(format, prompt, styleDesc, ctx, designSystem);
         const userMsg = ctx ? `Brand/product context:\n${ctx}\n\n${prompt}` : prompt;
         await streamAI(sysPrompt, userMsg, (chunk) => {
           raw += chunk;
@@ -1820,6 +2265,10 @@ Rules:
     }
     const chunks: BlobPart[] = [];
     const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8_000_000 });
+    recorder.onerror = () => {
+      setRecordError('Recording failed — your browser may not support WebM encoding on this device. Try a different format.');
+      setRecording(false);
+    };
     recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
     recorder.onstop = () => {
       const blob = new Blob(chunks, { type: mimeType });
@@ -1862,6 +2311,7 @@ Rules:
     if (generating) return;
     const allFixes: string[] = [];
     for (const result of Object.values(reviews)) {
+      if (!result) continue;
       result.fixes.forEach(fix => { if (fix) allFixes.push(fix); });
     }
     if (allFixes.length === 0) return;
@@ -2179,6 +2629,12 @@ Rules:
             </>
           )}
         </div>
+        {recordError && (
+          <div className="shrink-0 px-4 py-2 border-b border-red-500/20 bg-red-500/8 flex items-center justify-between gap-2">
+            <p className="text-[11px] text-red-400 font-mono flex-1">{recordError}</p>
+            <button onClick={() => setRecordError(null)} className="text-nv-faint hover:text-nv-text transition-fast text-xs">x</button>
+          </div>
+        )}
 
         {/* Preview / Code area */}
         <div
@@ -2455,69 +2911,102 @@ Rules:
         {/* Reviews tab / Suggestions tab */}
         {rightTab === 'reviews' && html ? (
           <div className="flex-1 overflow-y-auto p-2.5 space-y-2">
-            {/* Initial state */}
-            {!reviewing && Object.keys(reviews).length === 0 && (
+            {/* Agent selector tabs */}
+            <div className="flex gap-1 mb-2 flex-wrap">
+              {REVIEW_AGENTS.map((agent) => {
+                const result = reviews[agent.id];
+                const isActive = activeReviewAgent === agent.id;
+                const isLoading = reviewLoading[agent.id];
+                return (
+                  <button
+                    key={agent.id}
+                    onClick={async () => {
+                      setActiveReviewAgent(agent.id);
+                      if (result === undefined || result === null) {
+                        await runSingleReview(agent, html!);
+                      }
+                    }}
+                    className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[9px] font-mono border transition-fast ${
+                      isActive
+                        ? 'bg-accent/15 border-accent/40 text-accent'
+                        : 'border-nv-border text-nv-faint hover:border-nv-muted hover:text-nv-muted'
+                    }`}
+                  >
+                    {isLoading ? (
+                      <span className="w-2 h-2 rounded-full border border-accent/30 border-t-accent animate-spin" />
+                    ) : result ? (
+                      <span className={`text-[8px] font-bold ${
+                        result.verdict === 'approved' ? 'text-green-400' :
+                        result.verdict === 'rejected' ? 'text-red-400' : 'text-yellow-400'
+                      }`}>{result.score}</span>
+                    ) : null}
+                    <span>{agent.emoji} {agent.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Initial state — no reviews run yet */}
+            {!reviewing && Object.keys(reviews).length === 0 && !reviewLoading[activeReviewAgent] && (
               <div className="flex flex-col items-center justify-center gap-3 py-10 text-center">
                 <svg viewBox="0 0 32 32" fill="none" className="w-8 h-8 text-nv-faint/25">
                   <circle cx="16" cy="16" r="11" stroke="currentColor" strokeWidth="1.5"/>
                   <path d="M10.5 16h11M16 10.5v11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
                 </svg>
                 <p className="text-[10px] text-nv-faint font-mono">No reviews yet</p>
-                <p className="text-[9px] text-nv-faint/50 leading-relaxed">Get brutally honest feedback<br/>from the marketing team</p>
+                <p className="text-[9px] text-nv-faint/50 leading-relaxed">Click an agent tab above<br/>or run all reviews at once</p>
                 <button
                   onClick={() => runReviews()}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-mono bg-accent/10 text-accent border border-accent/30 rounded-lg hover:bg-accent/20 transition-fast"
                 >
-                  ✦ Run Reviews
+                  ✦ Run All Reviews
                 </button>
               </div>
             )}
-            {/* Loading first result */}
-            {reviewing && Object.keys(reviews).length === 0 && (
-              <div className="flex flex-col items-center justify-center gap-2 py-10">
+
+            {/* Loading spinner for active agent */}
+            {reviewLoading[activeReviewAgent] && (
+              <div className="flex flex-col items-center justify-center gap-2 py-6">
                 <div className="w-5 h-5 rounded-full border-2 border-nv-border border-t-accent animate-spin" />
-                <p className="text-[10px] text-nv-faint font-mono">Asking the team…</p>
+                <p className="text-[10px] text-nv-faint font-mono">
+                  {REVIEW_AGENTS.find(a => a.id === activeReviewAgent)?.name} is reviewing…
+                </p>
               </div>
             )}
-            {/* Agent cards */}
-            {REVIEW_AGENTS.map((agent) => {
-              const result = reviews[agent.id];
-              const isPending = reviewing && !result;
+
+            {/* Active agent result */}
+            {(() => {
+              const agent = REVIEW_AGENTS.find(a => a.id === activeReviewAgent);
+              const result = reviews[activeReviewAgent];
+              if (!agent || !result || reviewLoading[activeReviewAgent]) return null;
               return (
-                <div
-                  key={agent.id}
-                  className={`border rounded-xl p-2.5 transition-fast ${
-                    result?.verdict === 'approved'   ? 'border-green-500/25 bg-green-500/5' :
-                    result?.verdict === 'rejected'   ? 'border-red-500/25 bg-red-500/5' :
-                    result?.verdict === 'needs_work' ? 'border-yellow-500/25 bg-yellow-500/5' :
-                                                       'border-nv-border bg-nv-surface/50'
-                  }`}
-                >
+                <div className={`border rounded-xl p-2.5 transition-fast ${
+                  result.verdict === 'approved'   ? 'border-green-500/25 bg-green-500/5' :
+                  result.verdict === 'rejected'   ? 'border-red-500/25 bg-red-500/5' :
+                  result.verdict === 'needs_work' ? 'border-yellow-500/25 bg-yellow-500/5' :
+                                                     'border-nv-border bg-nv-surface/50'
+                }`}>
                   <div className="flex items-center gap-2 mb-1.5">
                     <AgentIcon id={agent.id} className="w-4 h-4" />
                     <div className="flex-1 min-w-0">
                       <p className="text-[10px] font-semibold text-nv-text leading-tight">{agent.name}</p>
                       <p className="text-[8px] text-nv-faint font-mono leading-tight">{agent.role}</p>
                     </div>
-                    {result ? (
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <span className={`text-[12px] font-bold font-mono leading-none ${
-                          result.score >= 8 ? 'text-green-400' :
-                          result.score >= 6 ? 'text-yellow-400' : 'text-red-400'
-                        }`}>{result.score}/10</span>
-                        <span className={`text-[8px] px-1.5 py-0.5 rounded-full font-mono border leading-none ${
-                          result.verdict === 'approved'   ? 'bg-green-500/10 text-green-400 border-green-500/25' :
-                          result.verdict === 'needs_work' ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/25' :
-                                                            'bg-red-500/10 text-red-400 border-red-500/25'
-                        }`}>
-                          {result.verdict === 'approved' ? '✓ OK' : result.verdict === 'needs_work' ? '⚠ Fix' : '✕ Fail'}
-                        </span>
-                      </div>
-                    ) : isPending ? (
-                      <span className="w-3 h-3 rounded-full border border-nv-border border-t-accent animate-spin shrink-0" />
-                    ) : null}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className={`text-[12px] font-bold font-mono leading-none ${
+                        result.score >= 8 ? 'text-green-400' :
+                        result.score >= 6 ? 'text-yellow-400' : 'text-red-400'
+                      }`}>{result.score}/10</span>
+                      <span className={`text-[8px] px-1.5 py-0.5 rounded-full font-mono border leading-none ${
+                        result.verdict === 'approved'   ? 'bg-green-500/10 text-green-400 border-green-500/25' :
+                        result.verdict === 'needs_work' ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/25' :
+                                                          'bg-red-500/10 text-red-400 border-red-500/25'
+                      }`}>
+                        {result.verdict === 'approved' ? '✓ OK' : result.verdict === 'needs_work' ? '⚠ Fix' : '✕ Fail'}
+                      </span>
+                    </div>
                   </div>
-                  {result && result.issues.map((issue, idx) => (
+                  {result.issues.map((issue, idx) => (
                     <div key={idx} className="mt-1.5 p-1.5 bg-nv-bg/50 rounded-lg">
                       <p className="text-[9px] text-nv-muted leading-relaxed mb-1">{issue}</p>
                       {result.fixes[idx] && (
@@ -2531,15 +3020,16 @@ Rules:
                       )}
                     </div>
                   ))}
-                  {result && result.issues.length === 0 && (
+                  {result.issues.length === 0 && (
                     <p className="text-[9px] text-green-400/80 font-mono mt-1">No issues — looks great!</p>
                   )}
                 </div>
               );
-            })}
-            {/* Apply All — shown when 2+ fixes remain */}
+            })()}
+
+            {/* Apply All — shown when 2+ fixes remain across all reviewed agents */}
             {(() => {
-              const total = Object.values(reviews).reduce((s, r) => s + r.fixes.filter(Boolean).length, 0);
+              const total = Object.values(reviews).reduce((s, r) => s + (r?.fixes.filter(Boolean).length ?? 0), 0);
               return total >= 2 && !reviewing && (
                 <button
                   onClick={applyAllFixes}
@@ -2552,14 +3042,13 @@ Rules:
             })()}
             {Object.keys(reviews).length === REVIEW_AGENTS.length && !reviewing && (
               <button
-                onClick={() => runReviews()}
+                onClick={() => { setReviews({}); setReviewLoading({}); }}
                 className="w-full py-1.5 text-[10px] font-mono text-nv-faint border border-nv-border rounded-lg hover:text-nv-text hover:border-nv-muted transition-fast"
               >
                 ↺ Re-run reviews
               </button>
             )}
-          </div>
-        ) : (
+          </div>        ) : (
           <div className="flex-1 overflow-y-auto p-2.5">
             <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-2 px-1">
               {html ? 'Quick edits' : 'Examples'}

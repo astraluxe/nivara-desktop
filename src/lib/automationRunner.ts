@@ -358,11 +358,20 @@ export async function executeAutomation(
             appPassword: gmailCred.app_password,
             query, limit: 3,
           }).catch(() => null);
-          if (emails && !emails.startsWith('No emails')) triggerContent = emails;
+          if (emails && !emails.startsWith('No emails')) {
+            const emailKey = `nv-email-seen-${automation.id}`;
+            const emailFingerprint = emails.slice(0, 200);
+            const lastSeen = localStorage.getItem(emailKey) ?? '';
+            if (emailFingerprint === lastSeen) {
+              // Same emails as last run — skip
+            } else {
+              triggerContent = emails;
+              try { localStorage.setItem(emailKey, emailFingerprint); } catch { /* quota */ }
+            }
+          }
         }
       } catch (_e) { /* Gmail not connected */ }
     }
-
     // ── Schedule + Gmail data source (fetch emails on a schedule) ────────────
     if (!overrideContext && automation.trigger_type === 'schedule' && cfg.data_source === 'gmail') {
       try {
@@ -537,6 +546,8 @@ export async function executeAutomation(
               }
             }
           }
+        } else {
+          triggerContent = `X/Twitter not connected — no credentials found. Connect X in Connect Apps to use this trigger.`;
         }
       } catch (_e) { /* X not connected */ }
     }
@@ -552,22 +563,31 @@ export async function executeAutomation(
           // Extract multiple <item> or <entry> blocks
           const clean = (s: string) => s.replace(/<!\[CDATA\[|\]\]>/g, '').replace(/<[^>]+>/g, '').trim();
           const itemRegex = /<(?:item|entry)[\s>]([\s\S]*?)<\/(?:item|entry)>/gi;
-          const items: string[] = [];
+          const seenKey = `nv-rss-seen-${automation.id}`;
+          let seenIds: string[] = [];
+          try { seenIds = JSON.parse(localStorage.getItem(seenKey) ?? '[]'); } catch { seenIds = []; }
+          const allItems: { id: string; text: string }[] = [];
           let itemMatch: RegExpExecArray | null;
-          while ((itemMatch = itemRegex.exec(rssRaw)) && items.length < 5) {
+          while ((itemMatch = itemRegex.exec(rssRaw)) && allItems.length < 10) {
             const block = itemMatch[1];
             const t = clean((block.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? ''));
             const l = (block.match(/<link[^>]*>(https?:[^<]*)<\/link>/i)?.[1] ?? '').trim();
             const d = clean((block.match(/<(?:description|summary|content)[^>]*>([\s\S]*?)<\/(?:description|summary|content)>/i)?.[1] ?? '')).slice(0, 300);
-            if (t) items.push(`${items.length + 1}. ${t}${l ? `\n   ${l}` : ''}${d ? `\n   ${d}` : ''}`);
+            if (t) {
+              const itemId = (t + l).slice(0, 50);
+              const itemText = `${allItems.length + 1}. ${t}${l ? `\n   ${l}` : ''}${d ? `\n   ${d}` : ''}`;
+              allItems.push({ id: itemId, text: itemText });
+            }
           }
-          if (items.length) {
-            triggerContent = `RSS Feed: ${cfg.rss_url}\nLatest ${items.length} item(s):\n\n${items.join('\n\n')}`;
+          const newItems = allItems.filter(item => !seenIds.includes(item.id));
+          if (newItems.length) {
+            triggerContent = `RSS Feed: ${cfg.rss_url}\nLatest ${newItems.length} new item(s):\n\n${newItems.map(i => i.text).join('\n\n')}`;
+            const updatedSeen = [...seenIds, ...newItems.map(i => i.id)].slice(-50);
+            try { localStorage.setItem(seenKey, JSON.stringify(updatedSeen)); } catch { /* quota */ }
           }
         }
       } catch (_e) { /* RSS fetch failed */ }
     }
-
     // ── GitHub trigger ────────────────────────────────────────────────────────
     if (!overrideContext && automation.trigger_type === 'github' && cfg.github_repo) {
       try {
@@ -595,28 +615,16 @@ export async function executeAutomation(
       } catch (_e) { /* GitHub fetch failed */ }
     }
 
-    // ── Stripe trigger ────────────────────────────────────────────────────────
-    if (!overrideContext && automation.trigger_type === 'stripe') {
-      try {
-        const stripeCred = await credentialStore.get('stripe').catch(() => null);
-        if (stripeCred?.api_key) {
-          const eventType = cfg.stripe_event ?? 'payment_intent.succeeded';
-          const stripeRaw = await invoke<string>('krew_http_call', {
-            method: 'GET',
-            url: `https://api.stripe.com/v1/events?type=${eventType}&limit=3`,
-            headers: { 'Authorization': `Bearer ${stripeCred.api_key}` },
-            body: null,
-          }).catch(() => '{}');
-          const stripeData = JSON.parse(stripeRaw) as { data?: { object?: Record<string, unknown> }[] };
-          if (stripeData.data?.length) {
-            const event = stripeData.data[0].object ?? {};
-            triggerContent = `Stripe ${eventType}:\n${JSON.stringify(event, null, 2).slice(0, 1000)}`;
-          }
-        }
-      } catch (_e) { /* Stripe fetch failed */ }
+    // ── Canvas flow trigger ──────────────────────────────────────────────────
+    if (automation.trigger_type === 'canvas_flow') {
+      triggerContent = overrideContext || `Canvas flow triggered at ${new Date().toLocaleString()}. Run your automation steps on the canvas data provided by the user.`;
     }
 
-    // ── Google Calendar trigger ───────────────────────────────────────────────
+    // ── Stripe trigger (server-side only — throws) ───────────────────────────
+    if (!overrideContext && automation.trigger_type === 'stripe') {
+      throw new Error('Stripe triggers require a server-side webhook endpoint and cannot run from the desktop app. Remove this automation or switch to a schedule trigger that checks Stripe via API.');
+    }
+        // ── Google Calendar trigger ───────────────────────────────────────────────
     if (!overrideContext && automation.trigger_type === 'google_calendar') {
       try {
         const gcalCred = await credentialStore.get('google_calendar').catch(() => null);
@@ -701,6 +709,9 @@ export async function executeAutomation(
         }
       } catch (_e) { /* Notion not connected or search failed */ }
     }
+
+    // Guard: if triggerContent is empty (dedup skipped this run), bail early
+    if (!triggerContent.trim()) return;
 
     // Chain steps: output of step N → input of step N+1
     const fullTriggerContext = triggerContent + crmContext;
@@ -853,25 +864,6 @@ export async function executeAutomation(
           }).catch(() => {});
         }
       } catch (_e) { /* Slack not connected */ }
-    }
-
-    if (lastStep?.output === 'reddit_post' && oc.reddit_subreddit && finalOutput) {
-      try {
-        const rd = await credentialStore.get('reddit').catch(() => null);
-        if (rd?.client_id && rd?.client_secret && rd?.username && rd?.password) {
-          const title = oc.reddit_post_title || finalOutput.split('\n')[0].slice(0, 300);
-          const text  = oc.reddit_post_title ? finalOutput : finalOutput.split('\n').slice(1).join('\n').trim() || finalOutput;
-          await invoke('reddit_post', {
-            subreddit:    oc.reddit_subreddit,
-            title,
-            text:         text.slice(0, 40000),
-            clientId:     rd.client_id,
-            clientSecret: rd.client_secret,
-            username:     rd.username,
-            password:     rd.password,
-          }).catch(() => {});
-        }
-      } catch (_e) { /* Reddit not connected */ }
     }
 
     if (lastStep?.output === 'discord' && oc.discord_webhook && finalOutput) {

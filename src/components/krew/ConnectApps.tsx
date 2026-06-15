@@ -67,6 +67,9 @@ const BRAND_COLOR: Record<string, string> = {
   twitter:  'text-nv-text',
   linkedin: 'text-blue-500',
   reddit:   'text-orange-500',
+  telegram: 'text-sky-400',
+  twilio:   'text-red-400',
+  hubspot:  'text-orange-400',
 };
 
 // ─── Service definitions ──────────────────────────────────────────────────────
@@ -88,6 +91,10 @@ const SERVICES: ServiceDef[] = [
   // Social / Marketing
   { id: 'twitter',  name: 'X (Twitter)',         desc: 'Post tweets, read timeline, search mentions. Used by Krew and Automation.',             tags: ['social','twitter','x','marketing'],      usedBy: ['Krew','Automation'] },
   { id: 'linkedin', name: 'LinkedIn',            desc: 'Post to your feed, read your profile. Used by Krew for content publishing.',            tags: ['social','linkedin','marketing'],          usedBy: ['Krew','Automation'] },
+  // Automation outputs
+  { id: 'telegram', name: 'Telegram',            desc: 'Send messages via a Telegram bot. Used by Automation → Telegram output.',               tags: ['chat','messaging','automation'],          usedBy: ['Automation'] },
+  { id: 'twilio',   name: 'Twilio (SMS)',        desc: 'Send SMS messages via Twilio. Used by Automation → SMS output.',                         tags: ['sms','messaging','automation'],           usedBy: ['Automation'] },
+  { id: 'hubspot',  name: 'HubSpot CRM',         desc: 'Create contacts, deals, and notes in HubSpot. Used by Automation → HubSpot output.',     tags: ['crm','sales','automation'],              usedBy: ['Automation'] },
 ];
 
 interface Props { onClose?: () => void }

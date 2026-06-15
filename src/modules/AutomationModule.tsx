@@ -13,7 +13,7 @@ import { useResize } from '../hooks/useResize';
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type TriggerType = 'schedule' | 'file_watch' | 'email' | 'webhook' | 'twitter_mention' | 'rss' | 'github' | 'stripe' | 'google_calendar' | 'canvas_flow';
-type OutputType  = 'notification' | 'file' | 'email_reply' | 'notion' | 'slack' | 'twitter_post' | 'twitter_reply' | 'linkedin_post' | 'reddit_post' | 'discord' | 'google_sheets' | 'twilio_sms' | 'telegram' | 'hubspot';
+type OutputType  = 'notification' | 'file' | 'email_reply' | 'notion' | 'slack' | 'twitter_post' | 'twitter_reply' | 'linkedin_post' | 'discord' | 'google_sheets' | 'twilio_sms' | 'telegram' | 'hubspot';
 type ActionType  = 'summarise' | 'reply' | 'extract' | 'classify' | 'report' | 'translate';
 
 interface TriggerConfig {
@@ -60,8 +60,6 @@ interface OutputConfig {
   sms_to?: string;
   telegram_chat_id?: string;
   hubspot_action?: string;
-  reddit_subreddit?: string;
-  reddit_post_title?: string;
 }
 
 interface Step {
@@ -291,7 +289,7 @@ function buildFlow(
     const outLabels: Record<OutputType, string> = {
       notification: 'Notification', file: 'Save to file',
       email_reply: 'Send email', notion: 'Notion page', slack: 'Slack post',
-      twitter_post: 'X post', twitter_reply: 'X reply', linkedin_post: 'LinkedIn post', reddit_post: 'Reddit post',
+      twitter_post: 'X post', twitter_reply: 'X reply', linkedin_post: 'LinkedIn post',
       discord: 'Discord', google_sheets: 'Google Sheets', twilio_sms: 'SMS',
       telegram: 'Telegram', hubspot: 'HubSpot CRM',
     };
@@ -356,7 +354,6 @@ OUTPUTS — ONLY these exist:
 - twitter_post: Post a new tweet on the connected X account
 - twitter_reply: Reply to the tweet that triggered the automation
 - linkedin_post: Publish a new post on the user's own LinkedIn profile (OUTPUT only — cannot read or monitor LinkedIn)
-- reddit_post: Submit to a subreddit
 - discord: Send to a Discord webhook
 - google_sheets: Append a row to Google Sheets
 - twilio_sms: Send SMS via Twilio
@@ -855,7 +852,6 @@ const OUTPUT_OPTIONS = [
   { type: 'twitter_post'  as OutputType, icon: '𝕏',  label: 'X post',         desc: 'Tweet from your X account' },
   { type: 'twitter_reply' as OutputType, icon: '𝕏↩', label: 'X reply',        desc: 'Reply to a specific tweet' },
   { type: 'linkedin_post' as OutputType, icon: 'in', label: 'LinkedIn post',  desc: 'Publish to LinkedIn' },
-  { type: 'reddit_post'   as OutputType, icon: '👽', label: 'Reddit post',    desc: 'Submit a text post to a subreddit' },
   { type: 'discord'       as OutputType, icon: '💬', label: 'Discord',        desc: 'Post to a Discord channel' },
   { type: 'google_sheets' as OutputType, icon: '📊', label: 'Google Sheets',  desc: 'Append a row to a spreadsheet' },
   { type: 'twilio_sms'    as OutputType, icon: '📱', label: 'SMS (Twilio)',    desc: 'Send an SMS message' },
@@ -1618,31 +1614,6 @@ function WorkflowBuilder({
                       </div>
                     )}
 
-                    {/* Reddit post */}
-                    {s.output === 'reddit_post' && (
-                      <div className="space-y-2">
-                        <div className="space-y-1.5">
-                          <label className={lCls}>Subreddit</label>
-                          <input value={s.output_config?.reddit_subreddit ?? ''}
-                            onChange={e => patchOC(s.id, { reddit_subreddit: e.target.value })}
-                            placeholder="e.g. startups or r/IndieHackers"
-                            className={iCls(false)} />
-                          <p className="text-[10px] text-nv-muted">Enter the subreddit name (with or without r/). Always check the subreddit rules before automating.</p>
-                        </div>
-                        <div className="space-y-1.5">
-                          <label className={lCls}>Post title (optional)</label>
-                          <input value={s.output_config?.reddit_post_title ?? ''}
-                            onChange={e => patchOC(s.id, { reddit_post_title: e.target.value })}
-                            placeholder="Leave blank to use first line of AI output as title"
-                            className={iCls(false)} />
-                        </div>
-                        <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-orange-500/8 border border-orange-500/20">
-                          <span className="text-base mt-0.5">👽</span>
-                          <p className="text-[11px] text-nv-muted leading-relaxed">Reddit allows 60 req/min via OAuth. Repeated identical posts = ban. Always follow subreddit rules. Connect Reddit in Connect Apps.</p>
-                        </div>
-                      </div>
-                    )}
-
                     {/* Discord */}
                     {s.output === 'discord' && (
                       <div className="space-y-1.5">
@@ -1686,35 +1657,73 @@ function WorkflowBuilder({
 
                     {/* Twilio SMS */}
                     {s.output === 'twilio_sms' && (
-                      <div className="space-y-1.5">
-                        <label className={lCls}>Send SMS to</label>
-                        <input value={s.output_config?.sms_to ?? ''} onChange={e => patchOC(s.id, { sms_to: e.target.value })}
-                          placeholder="+15551234567" className={iCls(false)} />
-                        <p className="text-[10px] text-nv-muted">Connect Twilio (Account SID + Auth Token) in Connect Apps.</p>
+                      <div className="space-y-2">
+                        {connectedServices.includes('twilio') ? (
+                          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                            <p className="text-[11px] text-emerald-400 font-medium">Twilio connected</p>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-nv-yellow/10 border border-nv-yellow/20">
+                            <span className="w-1.5 h-1.5 rounded-full bg-nv-yellow shrink-0" />
+                            <p className="text-[11px] text-nv-yellow">Not connected — go to <span className="font-semibold">Connect Apps → Twilio (SMS)</span> to set up your Account SID, Auth Token, and From number.</p>
+                          </div>
+                        )}
+                        <div className="space-y-1.5">
+                          <label className={lCls}>Send SMS to</label>
+                          <input value={s.output_config?.sms_to ?? ''} onChange={e => patchOC(s.id, { sms_to: e.target.value })}
+                            placeholder="+15551234567" className={iCls(false)} />
+                          <p className="text-[10px] text-nv-muted">International format — e.g. +919876543210 for India, +15551234567 for US.</p>
+                        </div>
                       </div>
                     )}
 
                     {/* Telegram */}
                     {s.output === 'telegram' && (
-                      <div className="space-y-1.5">
-                        <label className={lCls}>Chat ID</label>
-                        <input value={s.output_config?.telegram_chat_id ?? ''} onChange={e => patchOC(s.id, { telegram_chat_id: e.target.value })}
-                          placeholder="-100123456789" className={`${iCls(false)} font-mono`} />
-                        <p className="text-[10px] text-nv-muted">Connect your Telegram bot token in Connect Apps.</p>
+                      <div className="space-y-2">
+                        {connectedServices.includes('telegram') ? (
+                          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                            <p className="text-[11px] text-emerald-400 font-medium">Telegram bot connected</p>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-nv-yellow/10 border border-nv-yellow/20">
+                            <span className="w-1.5 h-1.5 rounded-full bg-nv-yellow shrink-0" />
+                            <p className="text-[11px] text-nv-yellow">Not connected — go to <span className="font-semibold">Connect Apps → Telegram</span> to create a bot and get your token.</p>
+                          </div>
+                        )}
+                        <div className="space-y-1.5">
+                          <label className={lCls}>Chat ID</label>
+                          <input value={s.output_config?.telegram_chat_id ?? ''} onChange={e => patchOC(s.id, { telegram_chat_id: e.target.value })}
+                            placeholder="-100123456789" className={`${iCls(false)} font-mono`} />
+                          <p className="text-[10px] text-nv-muted">Your personal chat ID (positive number) or group chat ID (negative number). Found during Connect Apps setup.</p>
+                        </div>
                       </div>
                     )}
 
                     {/* HubSpot */}
                     {s.output === 'hubspot' && (
-                      <div className="space-y-1.5">
-                        <label className={lCls}>Action</label>
-                        <select value={s.output_config?.hubspot_action ?? 'create_contact'} onChange={e => patchOC(s.id, { hubspot_action: e.target.value })}
-                          className={iCls(false)}>
-                          <option value="create_contact">Create / update contact</option>
-                          <option value="create_deal">Create deal</option>
-                          <option value="add_note">Add note to contact</option>
-                        </select>
-                        <p className="text-[10px] text-nv-muted">Connect HubSpot in Connect Apps.</p>
+                      <div className="space-y-2">
+                        {connectedServices.includes('hubspot') ? (
+                          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                            <p className="text-[11px] text-emerald-400 font-medium">HubSpot connected</p>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-nv-yellow/10 border border-nv-yellow/20">
+                            <span className="w-1.5 h-1.5 rounded-full bg-nv-yellow shrink-0" />
+                            <p className="text-[11px] text-nv-yellow">Not connected — go to <span className="font-semibold">Connect Apps → HubSpot CRM</span> to create a Private App and get your access token.</p>
+                          </div>
+                        )}
+                        <div className="space-y-1.5">
+                          <label className={lCls}>Action</label>
+                          <select value={s.output_config?.hubspot_action ?? 'create_contact'} onChange={e => patchOC(s.id, { hubspot_action: e.target.value })}
+                            className={iCls(false)}>
+                            <option value="create_contact">Create / update contact</option>
+                            <option value="create_deal">Create deal</option>
+                            <option value="add_note">Add note to contact</option>
+                          </select>
+                        </div>
                       </div>
                     )}
                   </div>
