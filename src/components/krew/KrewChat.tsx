@@ -1319,7 +1319,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     // bossPostfix comes AFTER buildKrewSystemPrompt so it is the absolute last instruction Gemini reads —
     // it overrides the "respond normally in clear markdown" final-answer rule that would otherwise let the boss answer directly.
     const bossPostfix = agent.key === 'boss'
-      ? '\n\n## BOSS OVERRIDE — HIGHEST PRIORITY — THIS OVERRIDES EVERYTHING ABOVE\nThe "Final answer" section above says to respond normally in clear markdown when you have enough information. FOR YOU (Arjun), THAT RULE DOES NOT EXIST. You NEVER respond in markdown about a task. Your ONLY valid output for any task is a <tool_call> to delegate_to_agent. Knowing what the automation would look like is NOT enough information — you must still call ops_agent. Writing "This automation will..." or "Here is how..." is WRONG. Silence + tool_call is RIGHT.\n\nGREETING EXCEPTION: If the user\'s entire message is ONLY a greeting (hi / hello / hey) with no task, respond with ONE friendly sentence — no tool_call. This is the only case where prose output is correct.'
+      ? '\n\n## BOSS OVERRIDE — HIGHEST PRIORITY — THIS OVERRIDES EVERYTHING ABOVE\nYou have TWO tools: delegate_to_agent (single agent) and plan_workflow (multi-agent, one shot). Your ONLY valid output for any task is a <tool_call>. NEVER write prose about a task.\n\nWHEN TO USE EACH:\n- Single agent needed → delegate_to_agent\n- Task needs 2-4 specialists → plan_workflow (list ALL agents at once — faster, no back-and-forth)\n- Do NOT call researcher unless the task genuinely requires current facts/research\n\nGREETING EXCEPTION: If the user\'s entire message is ONLY a greeting (hi / hello / hey) with no task, respond with ONE friendly sentence — no tool_call.'
       : '';
     const systemPrt  = agent.systemPrompt + memBlock + (agent.key === 'boss' ? '' : userBlock) + '\n\n' + buildKrewSystemPrompt(tools) + bossPostfix;
 
@@ -1617,6 +1617,70 @@ The prompt must be production-ready — specific enough for a motion designer to
                 addMsg({ role: 'choices', content: '', choices: delegateChoices });
                 if (sid) krewDb.saveMessage(sid, 'tool_result', JSON.stringify(delegateChoices), '__choices__').catch(() => {});
               }
+            }
+          } else if (tool === 'plan_workflow') {
+            // Multi-agent workflow: run all delegations in sequence, boss synthesizes once at end
+            let wfDelegations: Array<{ agent_key: string; task: string }> = [];
+            try { wfDelegations = JSON.parse(String(args.delegations ?? '[]')); } catch { toolResult = 'Could not parse workflow plan — invalid JSON.'; }
+            if (wfDelegations.length > 0) {
+              isDelegation = true;
+              const wfResults: string[] = [];
+              for (const del of wfDelegations) {
+                const wfKey  = String(del.agent_key ?? '');
+                const wfRawTask = String(del.task ?? '');
+                const wfTask = wfResults.length > 0 ? wfRawTask.replace(/\{\{prev\}\}/g, wfResults[wfResults.length - 1]) : wfRawTask;
+                const wfAgent = AGENT_BY_KEY[wfKey];
+                if (!wfAgent || delegatedAgents.has(wfKey)) continue;
+                delegatedAgents.add(wfKey);
+                setAgentStep(`Delegating to ${agentHandle(wfAgent)}…`);
+                addMsg({ role: 'delegation', content: '', toolName: wfKey, streaming: true });
+                const wfMems = await krewMemoryDb.getAll(wfKey).catch(() => [] as KrewMemory[]);
+                const wfMemBlock = wfMems.length > 0 ? '\n\n## Your memory\n' + wfMems.map((m) => `- ${m.key}: ${m.value}`).join('\n') : '';
+                const wfTools: ToolDef[] = [...SYSTEM_TOOLS];
+                for (const svc of Object.keys(creds)) { if (SERVICE_TOOLS[svc]) wfTools.push(...SERVICE_TOOLS[svc]); }
+                if (wfAgent.category === 'Ops') wfTools.push(...AUTOMATION_TOOLS);
+                const wfSys = wfAgent.systemPrompt + wfMemBlock + '\n\nCRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.' + userBlock + '\n\n' + buildKrewSystemPrompt(wfTools);
+                const wfHist = [{ role: 'user', content: wfTask }];
+                let wfAccum = ''; let wfFinal = '';
+                for (let ds = 0; ds < 8; ds++) {
+                  let stepTxt = '';
+                  const { text: wfRaw, truncated: wfTrunc } = await streamTurnWithRetry(wfHist, wfSys, (chunk) => {
+                    stepTxt += chunk;
+                    const clean = stepTxt.replace(/<tool_call>[\s\S]*/g, '').replace(/<tool_code>[\s\S]*/g, '').replace(/CHOICES_BLOCK:[\s\S]*/g, '').trim();
+                    updateLastMsg(wfAccum ? wfAccum + '\n\n' + clean : clean);
+                  });
+                  wfFinal = wfRaw;
+                  if (wfTrunc && !wfRaw.includes('<tool_call>') && !wfRaw.includes('<tool_code>')) {
+                    wfHist.push({ role: 'assistant', content: wfRaw }); wfHist.push({ role: 'user', content: 'continue' });
+                    const prose = wfRaw.replace(/<tool_call>[\s\S]*/g, '').replace(/<tool_code>[\s\S]*/g, '').replace(/CHOICES_BLOCK:[\s\S]*/g, '').trim();
+                    if (prose) wfAccum = wfAccum ? wfAccum + '\n\n' + prose : prose;
+                    continue;
+                  }
+                  const prose = wfFinal.replace(/<tool_call>[\s\S]*/g, '').replace(/<tool_code>[\s\S]*/g, '').replace(/CHOICES_BLOCK:[\s\S]*/g, '').trim();
+                  if (prose) wfAccum = wfAccum ? wfAccum + '\n\n' + prose : prose;
+                  let dm = wfFinal.match(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/) ?? wfFinal.match(/<tool_code>\s*([\s\S]*?)\s*<\/tool_code>/);
+                  if (!dm) { const ot = ['<tool_call>','<tool_code>'].find(t => wfFinal.includes(t)); if (ot) { const after = wfFinal.slice(wfFinal.indexOf(ot) + ot.length).trim(); const cl = ['</tool_call>','</tool_code>'].reduce((s,t) => s.split(t).join(''), after).trim(); if (cl.startsWith('{')) dm = ['', cl] as unknown as RegExpMatchArray; } }
+                  if (!dm) break;
+                  let dParsed: Record<string, unknown> | null = null;
+                  try { dParsed = (() => { try { return JSON.parse(dm![1]) as Record<string, unknown>; } catch {} const s = dm![1].replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'').trim(); try { return JSON.parse(s) as Record<string, unknown>; } catch {} const m2 = s.match(/\{[\s\S]*\}/); if (m2) { try { return JSON.parse(m2[0]) as Record<string, unknown>; } catch {} } return null; })(); } catch {}
+                  if (!dParsed) break;
+                  const dTool = String(dParsed.tool ?? ''); const dRoot = { ...dParsed } as Record<string, unknown>; delete dRoot.tool;
+                  const dArgs = (dParsed.args && typeof dParsed.args === 'object') ? { ...dRoot, ...(dParsed.args as Record<string, unknown>) } : dRoot;
+                  setAgentStep(`${agentHandle(wfAgent)} · ${dTool.replace(/_/g,' ')}…`); updateLastMsg((wfAccum || '') + `\n\n*${agentHandle(wfAgent)} is using ${dTool.replace(/_/g,' ')}…*`);
+                  let dRes = ''; try { dRes = await executeTool(dTool, dArgs, creds, requestTerminalApproval, wfKey, user?.id ?? ''); if (dTool === 'web_search' && !creds.brave?.api_key) setBraveNudge(true); } catch (e) { dRes = `Error: ${e}`; }
+                  setAgentStep(`${agentHandle(wfAgent)} · thinking…`); wfHist.push({ role: 'assistant', content: wfFinal }); wfHist.push({ role: 'user', content: `<tool_result>${dRes}</tool_result>` });
+                }
+                const { cleanContent: wfAfterProp, proposal: wfProp } = extractProposal(wfAccum || wfFinal);
+                const { cleanContent: wfClean, choices: wfChoices } = extractChoices(wfAfterProp);
+                const wfBubble = wfClean.trim() || (wfChoices ? `Here are ${wfChoices.choices.length} variants.` : wfProp ? 'Automation plan ready.' : '(no response)');
+                setMessages(prev => { const c = [...prev]; const l = c[c.length - 1]; if (l?.role === 'delegation') c[c.length - 1] = { ...l, content: wfBubble, streaming: false }; return c; });
+                if (wfProp) { addMsg({ role: 'proposal', content: '', proposal: wfProp }); if (sid) { sessionStorage.setItem(`krew-proposal-${sid}`, JSON.stringify(wfProp)); krewDb.saveMessage(sid, 'tool_result', JSON.stringify(wfProp), '__proposal__').catch(() => {}); } }
+                if (wfChoices) { addMsg({ role: 'choices', content: '', choices: wfChoices }); if (sid) krewDb.saveMessage(sid, 'tool_result', JSON.stringify(wfChoices), '__choices__').catch(() => {}); }
+                if (sid) krewDb.saveMessage(sid, 'delegation', wfClean, wfKey).catch(() => {});
+                wfResults.push(wfClean);
+              }
+              toolResult = wfResults.map((r, i) => `[${wfDelegations[i]?.agent_key ?? `Step ${i + 1}`}]\n${r}`).join('\n\n---\n\n');
+              delegationKey = 'plan_workflow';
             }
           } else {
             toolResult = await executeTool(tool, args, creds, requestTerminalApproval, agent.key, user?.id ?? '');
