@@ -1,6 +1,9 @@
 ﻿import { useState, useRef, useEffect, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 import type { Node, Edge } from '@xyflow/react';
 import { krewDb, credentialStore, krewMemoryDb, type KrewMemory } from '../../lib/krewDb';
 import { SYSTEM_TOOLS, AUTOMATION_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, buildKrewSystemPrompt, executeTool, needsCompression, type ToolDef } from '../../lib/krewTools';
@@ -1978,33 +1981,23 @@ The prompt must be production-ready — specific enough for a motion designer to
                 let pending = files.length;
                 const results: { name: string; content: string }[] = new Array(files.length);
                 files.forEach((file, i) => {
-                  const reader = new FileReader();
                   if (file.name.toLowerCase().endsWith('.pdf')) {
-                    reader.onload = (ev) => {
-                      const buf = ev.target?.result as ArrayBuffer;
-                      const bytes = new Uint8Array(buf);
-                      const raw = Array.from(bytes).map(b => String.fromCharCode(b)).join('');
-                      const texts: string[] = [];
-                      const btEt = /BT([\s\S]*?)ET/g;
-                      let m: RegExpExecArray | null;
-                      while ((m = btEt.exec(raw)) !== null) {
-                        const block = m[1];
-                        const tj = /\(([^)]*)\)\s*Tj/g;
-                        let t: RegExpExecArray | null;
-                        while ((t = tj.exec(block)) !== null) texts.push(t[1].replace(/\\n/g,'\n').replace(/\\/g,''));
-                        const tjArr = /\[([^\]]*)\]\s*TJ/g;
-                        let a: RegExpExecArray | null;
-                        while ((a = tjArr.exec(block)) !== null) {
-                          const sp = /\(([^)]*)\)/g; let s: RegExpExecArray | null;
-                          while ((s = sp.exec(a[1])) !== null) if (s[1].trim()) texts.push(s[1].replace(/\\/g,''));
-                        }
+                    file.arrayBuffer().then(buf => pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise).then(async (pdf) => {
+                      const pageTexts: string[] = [];
+                      for (let p = 1; p <= pdf.numPages; p++) {
+                        const page = await pdf.getPage(p);
+                        const content = await page.getTextContent();
+                        pageTexts.push(content.items.map((item: any) => ('str' in item ? item.str : '')).join(' '));
                       }
-                      const extracted = texts.length ? texts.join(' ').replace(/\s+/g,' ').trim() : '[Scanned/image PDF — no text layer found]';
+                      const extracted = pageTexts.join('\n').trim() || '[Scanned/image PDF — no text layer found]';
                       results[i] = { name: file.name, content: extracted };
                       if (--pending === 0) setAttachedFiles(prev => [...prev, ...results]);
-                    };
-                    reader.readAsArrayBuffer(file);
+                    }).catch(() => {
+                      results[i] = { name: file.name, content: '[Could not read PDF]' };
+                      if (--pending === 0) setAttachedFiles(prev => [...prev, ...results]);
+                    });
                   } else {
+                    const reader = new FileReader();
                     reader.onload = (ev) => {
                       results[i] = { name: file.name, content: ev.target?.result as string ?? '' };
                       if (--pending === 0) setAttachedFiles(prev => [...prev, ...results]);
