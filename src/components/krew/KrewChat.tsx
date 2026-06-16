@@ -2,8 +2,7 @@
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import * as pdfjsLib from 'pdfjs-dist';
-import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
 import type { Node, Edge } from '@xyflow/react';
 import { krewDb, credentialStore, krewMemoryDb, type KrewMemory } from '../../lib/krewDb';
 import { SYSTEM_TOOLS, AUTOMATION_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, buildKrewSystemPrompt, executeTool, needsCompression, type ToolDef } from '../../lib/krewTools';
@@ -1982,7 +1981,7 @@ The prompt must be production-ready — specific enough for a motion designer to
                 const results: { name: string; content: string }[] = new Array(files.length);
                 files.forEach((file, i) => {
                   if (file.name.toLowerCase().endsWith('.pdf')) {
-                    file.arrayBuffer().then(buf => pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise).then(async (pdf) => {
+                    file.arrayBuffer().then(buf => pdfjsLib.getDocument({ data: new Uint8Array(buf), cMapUrl: '/cmaps/', cMapPacked: true }).promise).then(async (pdf) => {
                       const pageTexts: string[] = [];
                       for (let p = 1; p <= pdf.numPages; p++) {
                         const page = await pdf.getPage(p);

@@ -21,6 +21,7 @@ export default defineConfig(async () => ({
   envPrefix: ["VITE_", "TAURI_ENV_*"],
   optimizeDeps: {
     include: ['pdfjs-dist'],
+    exclude: ['pdfjs-dist/build/pdf.worker.mjs', 'pdfjs-dist/build/pdf.worker.min.mjs'],
   },
   build: {
     target:
