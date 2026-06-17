@@ -1708,14 +1708,6 @@ The prompt must be production-ready — specific enough for a motion designer to
         addMsg({ role: 'assistant', content: '', streaming: true });
       }
 
-      // Flush token usage to DB (fast-path: Rust tracked via usageMetadata, krew-stream: server handles it)
-      if (mode === 'nivara') {
-        invoke('sync_token_usage_direct', {
-          supabaseUrl: import.meta.env.VITE_SUPABASE_URL as string,
-          supabaseAnonKey: import.meta.env.VITE_SUPABASE_ANON_KEY as string,
-          sessionToken: session?.access_token ?? '',
-        }).catch(() => {});
-      }
     } catch (e: unknown) {
       const raw = e instanceof Error ? e.message : String(e);
       if (/monthly.*token|reached.*monthly|token.*limit|upgrade.*plan|adris\.tech\/pricing/i.test(raw)) {
@@ -1730,6 +1722,15 @@ The prompt must be production-ready — specific enough for a motion designer to
         finaliseLastMsg(sanitiseError(e));
       }
     } finally {
+      // Flush token usage to DB regardless of success/error
+      // Fast-path: Rust queued tokens via pending_usage; krew-stream fallback: server already tracked
+      if (mode === 'nivara' && session?.access_token) {
+        invoke('sync_token_usage_direct', {
+          supabaseUrl: import.meta.env.VITE_SUPABASE_URL as string,
+          supabaseAnonKey: import.meta.env.VITE_SUPABASE_ANON_KEY as string,
+          sessionToken: session.access_token,
+        }).catch(() => {});
+      }
       setBusy(false);
       setAgentStep(null);
       setAgentTool(null);
