@@ -6,7 +6,6 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
 import type { Node, Edge } from '@xyflow/react';
 import { krewDb, credentialStore, krewMemoryDb, type KrewMemory } from '../../lib/krewDb';
 import { SYSTEM_TOOLS, AUTOMATION_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, buildKrewSystemPrompt, executeTool, needsCompression, type ToolDef } from '../../lib/krewTools';
-import { trackTokenUsage } from '../../lib/tokenTracker';
 import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, type KrewAgent } from '../../lib/krewAgents';
 import { useAuth } from '../../contexts/AuthContext';
 import { getPlanConfig } from '../../lib/planConfig';
@@ -1334,7 +1333,6 @@ The prompt must be production-ready — specific enough for a motion designer to
 
     const MAX_STEPS = 10;
     let steps       = 0;
-    let totalChars  = 0;
     const delegatedAgents = new Set<string>();
 
     // Add placeholder assistant message for streaming
@@ -1372,7 +1370,6 @@ The prompt must be production-ready — specific enough for a motion designer to
             systemPrt,
             (chunk) => {
               stepText += chunk;
-              totalChars += chunk.length;
               // Strip raw XML blocks from streaming display (handle both <tool_call> and <tool_code>)
               const displayText = stepText
                 .replace(/<tool_call>[\s\S]*/g, '')
@@ -1711,9 +1708,13 @@ The prompt must be production-ready — specific enough for a motion designer to
         addMsg({ role: 'assistant', content: '', streaming: true });
       }
 
-      // Track tokens for adris.tech mode
-      if (mode === 'nivara' && totalChars > 0) {
-        trackTokenUsage('krew', totalChars);
+      // Flush token usage to DB (fast-path: Rust tracked via usageMetadata, krew-stream: server handles it)
+      if (mode === 'nivara') {
+        invoke('sync_token_usage_direct', {
+          supabaseUrl: import.meta.env.VITE_SUPABASE_URL as string,
+          supabaseAnonKey: import.meta.env.VITE_SUPABASE_ANON_KEY as string,
+          sessionToken: session?.access_token ?? '',
+        }).catch(() => {});
       }
     } catch (e: unknown) {
       const raw = e instanceof Error ? e.message : String(e);
@@ -2050,7 +2051,16 @@ The prompt must be production-ready — specific enough for a motion designer to
                       for (let p = 1; p <= pdf.numPages; p++) {
                         const page = await pdf.getPage(p);
                         const content = await page.getTextContent();
-                        pageTexts.push(content.items.map((item: any) => ('str' in item ? item.str : '')).join(' '));
+                        // Sort by Y descending (top of page first), then X ascending (left-to-right)
+                        // This reconstructs reading order for tables and multi-column layouts
+                        const sorted = content.items
+                          .filter((item: any) => 'str' in item && item.str)
+                          .map((item: any) => ({ str: item.str as string, x: item.transform[4] as number, y: item.transform[5] as number }))
+                          .sort((a: any, b: any) => {
+                            const dy = b.y - a.y;
+                            return Math.abs(dy) > 3 ? dy : a.x - b.x;
+                          });
+                        pageTexts.push(sorted.map((i: any) => i.str).join(' '));
                       }
                       const extracted = pageTexts.join('\n').trim() || '[Scanned/image PDF — no text layer found]';
                       results[i] = { name: file.name, content: extracted };

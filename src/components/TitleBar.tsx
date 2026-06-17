@@ -1,6 +1,11 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAuth } from "../contexts/AuthContext";
 
+const PLAN_LABEL: Record<string, string> = {
+  free: "Free", explore: "Free", solo: "Solo",
+  builder: "Builder", business: "Team", custom: "Custom",
+};
+
 const MODULES: Record<string, string> = {
   coder:    "Coder · dev terminal",
   connect:  "Connect Apps · integrations",
@@ -38,7 +43,7 @@ export default function TitleBar({ activeModule }: { activeModule: string }) {
       <div className="flex items-center gap-3 pr-2">
         {profile && (
           <span className="text-xs font-mono px-2 py-0.5 rounded border border-nv-border text-nv-muted uppercase tracking-widest pointer-events-none">
-            {profile.plan}
+            {PLAN_LABEL[profile.plan ?? 'free'] ?? profile.plan}
           </span>
         )}
 

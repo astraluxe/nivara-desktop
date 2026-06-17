@@ -2749,12 +2749,17 @@ async fn krew_ai_stream(
                     return Ok(());
                 }
                 let mut chars = 0i64;
+                let mut api_total_tokens: Option<i64> = None; // usageMetadata.totalTokenCount (input + output)
                 let mut stream = resp.bytes_stream();
                 'outer_krew: while let Some(chunk) = stream.next().await {
                     let bytes = chunk.map_err(|e| { let s = format!("Stream interrupted: {}", e); emit_error(s.clone()); s })?;
                     for line in String::from_utf8_lossy(&bytes).lines() {
                         if let Some(data) = line.strip_prefix("data: ") {
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+                                // Capture accurate total token count (input + output) from Gemini metadata
+                                if let Some(t) = v["usageMetadata"]["totalTokenCount"].as_i64() {
+                                    api_total_tokens = Some(t);
+                                }
                                 if let Some(parts) = v["candidates"][0]["content"]["parts"].as_array() {
                                     for part in parts {
                                         if part["thought"].as_bool() == Some(true) { continue; }
@@ -2766,7 +2771,8 @@ async fn krew_ai_stream(
                                 let fin = v["candidates"][0]["finishReason"].as_str().unwrap_or("");
                                 if fin == "MAX_TOKENS" { emit_truncated(); }
                                 if fin == "STOP" || fin == "MAX_TOKENS" {
-                                    let toks = (chars / 4).max(1);
+                                    let toks = api_total_tokens.unwrap_or_else(|| (chars / 4).max(1));
+                                    sk.pending_usage.fetch_add(toks, std::sync::atomic::Ordering::Relaxed);
                                     sk.remaining.fetch_sub(toks, std::sync::atomic::Ordering::Relaxed);
                                     let _ = app.emit("nivara-tokens", serde_json::json!({ "tokens": toks }));
                                     emit_done(); return Ok(());
@@ -2776,7 +2782,8 @@ async fn krew_ai_stream(
                         }
                     }
                 }
-                let toks = (chars / 4).max(1);
+                let toks = api_total_tokens.unwrap_or_else(|| (chars / 4).max(1));
+                sk.pending_usage.fetch_add(toks, std::sync::atomic::Ordering::Relaxed);
                 sk.remaining.fetch_sub(toks, std::sync::atomic::Ordering::Relaxed);
                 let _ = app.emit("nivara-tokens", serde_json::json!({ "tokens": toks }));
                 emit_done();
