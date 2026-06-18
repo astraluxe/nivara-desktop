@@ -1,4 +1,4 @@
-﻿import { useState, useRef } from 'react';
+﻿import { useState, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useAuth } from '../../contexts/AuthContext';
@@ -94,11 +94,15 @@ function ReportView({ text, streaming }: { text: string; streaming: boolean }) {
 
 // ─── Main component ─────────────────────────────────────────────────────────────
 
-export default function ResearchScreen() {
+export default function ResearchScreen({ initialQuery }: { initialQuery?: string }) {
   const { session } = useAuth();
   const callIdRef = useRef(0);
 
   const [businessName, setBusinessName] = useState('');
+
+  useEffect(() => {
+    if (initialQuery) setBusinessName(initialQuery);
+  }, [initialQuery]);
   const [description,  setDescription]  = useState('');
   const [geo,          setGeo]          = useState<'india' | 'global'>('india');
   const [focus,        setFocus]        = useState<string[]>([]);

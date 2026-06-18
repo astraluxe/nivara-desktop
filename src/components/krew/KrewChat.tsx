@@ -56,6 +56,7 @@ interface Props {
   onAgentChange?: (a: KrewAgent) => void;
   onViewOnCanvas?: (nodes: Node[], edges: Edge[]) => void;
   onOpenStudio?: (req: StudioRequest) => void;
+  onOpenResearch?: (query: string) => void;
 }
 
 // ─── Terminal approval modal ──────────────────────────────────────────────────
@@ -911,7 +912,7 @@ function getStarterPrompts(agent: KrewAgent): string[] {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenConnectApps, onBrowseAgents, onViewOnCanvas, onOpenStudio }: Props) {
+export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenConnectApps, onBrowseAgents, onViewOnCanvas, onOpenStudio, onOpenResearch }: Props) {
   const { user, session, profile } = useAuth();
   const planCfg = getPlanConfig(profile?.plan ?? 'explore');
   type VoiceStatus = 'idle' | 'recording' | 'transcribing' | 'error';
@@ -2175,6 +2176,19 @@ The prompt must be production-ready — specific enough for a motion designer to
                 text-[11px] text-nv-text outline-none focus:border-accent transition-fast
                 resize-none placeholder:text-nv-faint"
             />
+            {onOpenResearch && !busy && input.trim() && (
+              <button
+                onClick={() => onOpenResearch(input.trim())}
+                title="Open in Research tab"
+                className="flex items-center gap-1 text-[10px] px-2 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40 transition-fast shrink-0 font-mono"
+              >
+                <svg viewBox="0 0 10 10" fill="none" className="w-2.5 h-2.5">
+                  <circle cx="4.2" cy="4.2" r="2.8" stroke="currentColor" strokeWidth="1.2"/>
+                  <path d="M6.5 6.5l2 2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                </svg>
+                Research
+              </button>
+            )}
             {onOpenStudio && !busy && input.trim() && (
               <button
                 onClick={openInStudio}
