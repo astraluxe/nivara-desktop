@@ -5,7 +5,9 @@ import * as pdfjsLib from 'pdfjs-dist';
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
 import type { Node, Edge } from '@xyflow/react';
 import { krewDb, credentialStore, krewMemoryDb, type KrewMemory } from '../../lib/krewDb';
-import { SYSTEM_TOOLS, AUTOMATION_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, buildKrewSystemPrompt, executeTool, needsCompression, type ToolDef } from '../../lib/krewTools';
+import { SYSTEM_TOOLS, AUTOMATION_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, buildKrewSystemPrompt, executeTool, needsCompression, type ToolDef } from '../../lib/krewTools';
+import { TaskProgress, type TaskPhase } from './TaskProgress';
+import { runParallelResearch } from '../../lib/researchSources';
 import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, type KrewAgent } from '../../lib/krewAgents';
 import { useAuth } from '../../contexts/AuthContext';
 import { getPlanConfig } from '../../lib/planConfig';
@@ -958,6 +960,8 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
 
 const [studioExtracting, setStudioExtracting] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<{ name: string; content: string }[]>([]);
+  const [taskPhases,    setTaskPhases]    = useState<TaskPhase[]>([]);
+  const [connectRec,    setConnectRec]    = useState<string[]>([]);
   const [braveNudge, setBraveNudge] = useState(false);
 
   const stopRef            = useRef(false);
@@ -1059,6 +1063,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
       if (SERVICE_TOOLS[service]) tools.push(...SERVICE_TOOLS[service]);
     }
     if (agent.category === 'Ops') tools.push(...AUTOMATION_TOOLS);
+    if (agent.key === 'research_agent') tools.push(...RESEARCH_TOOLS);
     return tools;
   }, [creds, agent.key, agent.category]);
 
@@ -1515,6 +1520,7 @@ The prompt must be production-ready — specific enough for a motion designer to
                 if (SERVICE_TOOLS[service]) delegateTools.push(...SERVICE_TOOLS[service]);
               }
               if (targetAgent.category === 'Ops') delegateTools.push(...AUTOMATION_TOOLS);
+              if (targetKey === 'research_agent') delegateTools.push(...RESEARCH_TOOLS);
               const pipelineRule = '\n\nCRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.';
               const delegateSystem = targetAgent.systemPrompt + delegateMemBlock + pipelineRule + userBlock + '\n\n' + buildKrewSystemPrompt(delegateTools);
               // Mini ReAct loop — lets delegated agents call web_search and other tools
@@ -1621,10 +1627,20 @@ The prompt must be production-ready — specific enough for a motion designer to
             try { wfDelegations = JSON.parse(String(args.delegations ?? '[]')); } catch { toolResult = 'Could not parse workflow plan — invalid JSON.'; }
             if (wfDelegations.length > 0) {
               isDelegation = true;
+              // Set up task phases for the progress strip
+              const phases: TaskPhase[] = wfDelegations.map((d, phIdx) => ({
+                id:     String(phIdx),
+                label:  (d.task?.slice(0, 60) ?? '') + ((d.task?.length ?? 0) > 60 ? '...' : '') || ('Step ' + (phIdx + 1).toString()),
+                status: 'pending' as const,
+              }));
+              setTaskPhases(phases);
               const wfResults: string[] = [];
+              let wfPhaseIdx = 0;
               for (const del of wfDelegations) {
                 const wfKey  = String(del.agent_key ?? '');
                 const wfRawTask = String(del.task ?? '');
+                // Mark current phase as running
+                setTaskPhases((prev) => prev.map((p, i) => i === wfPhaseIdx ? { ...p, status: 'running' as const } : p));
                 const wfTask = wfResults.length > 0 ? wfRawTask.replace(/\{\{prev\}\}/g, wfResults[wfResults.length - 1]) : wfRawTask;
                 const wfAgent = AGENT_BY_KEY[wfKey];
                 if (!wfAgent || delegatedAgents.has(wfKey)) continue;
@@ -1636,6 +1652,7 @@ The prompt must be production-ready — specific enough for a motion designer to
                 const wfTools: ToolDef[] = [...SYSTEM_TOOLS];
                 for (const svc of Object.keys(creds)) { if (SERVICE_TOOLS[svc]) wfTools.push(...SERVICE_TOOLS[svc]); }
                 if (wfAgent.category === 'Ops') wfTools.push(...AUTOMATION_TOOLS);
+                if (wfKey === 'research_agent') wfTools.push(...RESEARCH_TOOLS);
                 const wfSys = wfAgent.systemPrompt + wfMemBlock + '\n\nCRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.' + userBlock + '\n\n' + buildKrewSystemPrompt(wfTools);
                 const wfHist = [{ role: 'user', content: wfTask }];
                 let wfAccum = ''; let wfFinal = '';
@@ -1675,9 +1692,49 @@ The prompt must be production-ready — specific enough for a motion designer to
                 if (wfChoices) { addMsg({ role: 'choices', content: '', choices: wfChoices }); if (sid) krewDb.saveMessage(sid, 'tool_result', JSON.stringify(wfChoices), '__choices__').catch(() => {}); }
                 if (sid) krewDb.saveMessage(sid, 'delegation', wfClean, wfKey).catch(() => {});
                 wfResults.push(wfClean);
+                // Mark phase done and advance index
+                setTaskPhases((prev) => prev.map((p, i) => i === wfPhaseIdx ? { ...p, status: 'done' as const } : p));
+                wfPhaseIdx++;
               }
               toolResult = wfResults.map((r, i) => `[${wfDelegations[i]?.agent_key ?? `Step ${i + 1}`}]\n${r}`).join('\n\n---\n\n');
               delegationKey = 'plan_workflow';
+            }
+          } else if (tool === 'research_companies') {
+            const rawQueries = String(args.queries ?? '');
+            const queries    = rawQueries.split(';').map((q) => q.trim()).filter(Boolean);
+            setTaskPhases([{ id: '0', label: 'Searching open data sources…', status: 'running' }]);
+            try {
+              const { results, sourcesCovered, total } = await runParallelResearch(
+                queries,
+                planCfg.researchParallelism,
+              );
+              setTaskPhases([{ id: '0', label: 'Searching open data sources…', status: 'done' }]);
+              const top20 = results.slice(0, 20);
+              const rows  = top20.map((r) => `| ${r.name} | ${r.sector ?? "—"} | ${r.source} |`).join('\n');
+              toolResult = [
+                `**Found: ${total} companies** across ${sourcesCovered.join(", ")}`, 
+                '',
+                '| Company | Sector | Source |',
+                '|---------|--------|--------|',
+                rows,
+                '',
+                total < 20 ? `_Note: Only ${total} results found. Consider connecting Serper or Crunchbase for more data._` : "",
+              ].join('\n');
+              if (total < 200) {
+                setConnectRec(['Serper (web search)', 'Crunchbase (startup data)']);
+              }
+            } catch (e) {
+              setTaskPhases([{ id: '0', label: 'Searching open data sources…', status: 'error' }]);
+              toolResult = `Research failed: ${e}`;
+            }
+          } else if (tool === 'fetch_open_data') {
+            try {
+              const fetchUrl = String(args.url ?? '');
+              const res  = await fetch(fetchUrl, { headers: { 'User-Agent': 'adris.tech Krew/1.0' } });
+              const text = await res.text();
+              toolResult = text.slice(0, 8000); // cap to avoid huge payloads
+            } catch (e) {
+              toolResult = `fetch_open_data failed: ${e}`;
             }
           } else {
             toolResult = await executeTool(tool, args, creds, requestTerminalApproval, agent.key, user?.id ?? '');
@@ -1984,6 +2041,16 @@ The prompt must be production-ready — specific enough for a motion designer to
               Scroll to bottom
             </button>
           </div>
+        )}
+
+        {/* Task Progress strip */}
+        {taskPhases.length > 0 && (
+          <TaskProgress
+            phases={taskPhases}
+            onDismiss={() => { setTaskPhases([]); setConnectRec([]); }}
+            recommendConnect={connectRec}
+            onConnectApp={() => { onOpenConnectApps?.(); }}
+          />
         )}
 
         {/* Input */}

@@ -1,9 +1,10 @@
-export type Plan = 'explore' | 'free' | 'solo' | 'builder' | 'business' | 'custom';
+﻿export type Plan = 'explore' | 'free' | 'solo' | 'builder' | 'business' | 'custom';
 
 export interface PlanConfig {
-  monthlyTokens:    number | null; // null = unlimited; free plan uses as lifetime cap
-  label:            string;
-  mcpConnections:   number;
+  monthlyTokens:      number | null; // null = unlimited; free plan uses as lifetime cap
+  label:              string;
+  mcpConnections:     number;
+  researchParallelism: number;
   canCreateMesh:    boolean;       // relay nodes available (Builder+)
   canJoinMesh:      boolean;
   meshDevices:      number;        // max devices in a Mesh session
@@ -27,6 +28,7 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     auditExport:      false,
     voiceToCode:      false,
     cloudAutomations: 0,
+    researchParallelism: 5,
   },
   free: {
     monthlyTokens:    100_000,     // ~50 tasks at ~2K tokens each (lifetime cap)
@@ -40,6 +42,7 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     auditExport:      false,
     voiceToCode:      false,
     cloudAutomations: 0,
+    researchParallelism: 5,
   },
   solo: {
     monthlyTokens:    2_000_000,   // ~2,000 tasks/month
@@ -53,6 +56,7 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     auditExport:      false,
     voiceToCode:      false,
     cloudAutomations: 500,
+    researchParallelism: 15,
   },
   builder: {
     monthlyTokens:    8_000_000,   // ~8,000 tasks/month
@@ -66,6 +70,7 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     auditExport:      false,
     voiceToCode:      true,
     cloudAutomations: 5_000,
+    researchParallelism: 40,
   },
   business: {
     monthlyTokens:    30_000_000,  // ~30,000 tasks/month
@@ -79,6 +84,7 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     auditExport:      true,
     voiceToCode:      true,
     cloudAutomations: 999_999,
+    researchParallelism: 100,
   },
   custom: {
     monthlyTokens:    null,
@@ -92,6 +98,7 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     auditExport:      true,
     voiceToCode:      true,
     cloudAutomations: 999_999,
+    researchParallelism: 200,
   },
 };
 

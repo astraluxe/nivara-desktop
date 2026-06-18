@@ -97,12 +97,33 @@ export const SYSTEM_TOOLS: ToolDef[] = [
   },
 ];
 
+// ─── Research tools (open data sources, no auth required) ────────────────────
+
+export const RESEARCH_TOOLS: ToolDef[] = [
+  {
+    name: 'research_companies',
+    description: 'Search for companies/startups/businesses using multiple open data sources (Wikidata, Wikipedia, Yahoo Finance, GitHub) in parallel. Use this when user asks for a company list, startup database, market research, or wants to find target companies. Returns structured list with names, sectors, and sources.',
+    parameters: {
+      queries: { type: 'string', description: 'Semicolon-separated search queries to run in parallel. Example: "Indian SaaS startups;B2B software India;fintech startups India"', required: true },
+      focus:   { type: 'string', description: 'Research focus: startups, listed, tech, saas, or all', required: false },
+    },
+  },
+  {
+    name: 'fetch_open_data',
+    description: 'Fetch structured data from a public open API endpoint (no auth required). Use for government data, Wikipedia, financial data.',
+    parameters: {
+      url:         { type: 'string', description: 'Full URL to fetch', required: true },
+      description: { type: 'string', description: 'What this data is for', required: true },
+    },
+  },
+];
+
 // ─── Boss-only delegation tool ────────────────────────────────────────────────
 
 export const BOSS_TOOLS: ToolDef[] = [
   {
     name: 'delegate_to_agent',
-    description: 'Delegate a task to ONE specialist agent. Use this when the request clearly maps to a single specialist. Valid agent_key values:\n- caption_writer → social media captions (LinkedIn, Instagram, Twitter)\n- email_marketer → email campaigns, drip sequences, subject lines\n- cold_outreach → cold email/DM templates for sales prospecting\n- blog_writer → blog posts and articles\n- content_planner → content strategy, content calendars, growth content planning, organic marketing plan\n- seo_agent → SEO copy, keywords, meta descriptions\n- ad_copywriter → ad copy, paid acquisition strategy (Facebook, Google, LinkedIn ads)\n- social_scheduler → posting schedules and platform strategy\n- researcher → market research, growth strategy research, user acquisition research, competitor analysis, data gathering\n- competitor_watcher → deep competitor breakdowns, what competitors are doing for marketing, pricing and differentiation analysis\n- product_describer → product descriptions and landing page copy\n- coder → code writing, scripts, technical implementation\n- bug_hunter → debugging and error fixing\n- docs_writer → documentation and READMEs\n- data_analyst → data analysis and insights\n- proposal_writer → business proposals and pitches\n- cfo → ALL financial work: pricing strategy, revenue modelling, P&L, unit economics, affiliate commission structures, cost analysis, financial projections, profit breakdowns, budget planning — the dedicated CFO agent\n- translator → language translation\n- ops_agent → automation setup, listing automations, running/pausing automations, workflow management\n- automation_strategist → designing complex multi-step automation workflows\n- visual_creator → HTML/CSS visual assets: social banners, animated graphics, thumbnails, promo cards',
+    description: 'Delegate a task to ONE specialist agent. Use this when the request clearly maps to a single specialist. Valid agent_key values:\n- caption_writer → social media captions (LinkedIn, Instagram, Twitter)\n- email_marketer → email campaigns, drip sequences, subject lines\n- cold_outreach → cold email/DM templates for sales prospecting\n- blog_writer → blog posts and articles\n- content_planner → content strategy, content calendars, growth content planning, organic marketing plan\n- seo_agent → SEO copy, keywords, meta descriptions\n- ad_copywriter → ad copy, paid acquisition strategy (Facebook, Google, LinkedIn ads)\n- social_scheduler → posting schedules and platform strategy\n- researcher → market research, growth strategy research, user acquisition research, competitor analysis, data gathering\n- competitor_watcher → deep competitor breakdowns, what competitors are doing for marketing, pricing and differentiation analysis\n- product_describer → product descriptions and landing page copy\n- coder → code writing, scripts, technical implementation\n- bug_hunter → debugging and error fixing\n- docs_writer → documentation and READMEs\n- data_analyst → data analysis and insights\n- proposal_writer → business proposals and pitches\n- cfo → ALL financial work: pricing strategy, revenue modelling, P&L, unit economics, affiliate commission structures, cost analysis, financial projections, profit breakdowns, budget planning — the dedicated CFO agent\n- translator → language translation\n- ops_agent → automation setup, listing automations, running/pausing automations, workflow management\n- automation_strategist → designing complex multi-step automation workflows\n- visual_creator → HTML/CSS visual assets: social banners, animated graphics, thumbnails, promo cards\n- research_agent → find companies, startup lists, market research, ICP research, lead generation',
     parameters: {
       agent_key: { type: 'string', description: 'Exact agent key from the list above (e.g. "cold_outreach", "caption_writer").', required: true },
       task:      { type: 'string', description: 'A clear, self-contained task description with all context the specialist needs.', required: true },
