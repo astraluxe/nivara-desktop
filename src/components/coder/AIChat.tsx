@@ -139,7 +139,7 @@ export default function AIChat({
   const cleanupRef = useRef<(() => void) | null>(null);
 
   // Plan / voice gate
-  const { profile }  = useAuth();
+  const { profile, session } = useAuth();
   const planCfg      = getPlanConfig(profile?.plan ?? 'explore');
   const [showVoiceUpgrade, setShowVoiceUpgrade] = useState(false);
 
@@ -238,6 +238,7 @@ export default function AIChat({
 
     const cleanup = await streamAI({
       mode, messages: history, apiKey, provider, localModel, modelName, baseUrl,
+      sessionToken: session?.access_token ?? undefined,
       onChunk: (chunk) => {
         assistantText += chunk;
         setMessages((prev) => {
