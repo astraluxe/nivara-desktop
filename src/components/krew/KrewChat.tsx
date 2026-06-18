@@ -128,18 +128,83 @@ function SearchResultBubble({ content }: { content: string }) {
 
 // ─── Markdown renderer ───────────────────────────────────────────────────────
 
+function openLink(url: string) {
+  import('@tauri-apps/plugin-shell').then(({ open }) => open(url)).catch(() => window.open(url, '_blank'));
+}
+
 function renderInline(text: string): React.ReactNode[] {
   const result: React.ReactNode[] = [];
-  const re = /\*\*(.+?)\*\*|\*(.+?)\*/g;
+  // Groups: 1=bold, 2=italic, 3=link-text, 4=link-url, 5=bare-url
+  const re = /\*\*(.+?)\*\*|\*(.+?)\*|\[([^\]]+)\]\((https?:\/\/[^)]+)\)|(https?:\/\/[^\s"'<>)\]]+)/g;
   let last = 0, m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) result.push(text.slice(last, m.index));
-    if (m[1] !== undefined) result.push(<strong key={m.index} className="font-semibold text-nv-text">{m[1]}</strong>);
-    else if (m[2] !== undefined) result.push(<em key={m.index}>{m[2]}</em>);
+    if (m[1] !== undefined) {
+      result.push(<strong key={m.index} className="font-semibold text-nv-text">{m[1]}</strong>);
+    } else if (m[2] !== undefined) {
+      result.push(<em key={m.index}>{m[2]}</em>);
+    } else if (m[3] !== undefined && m[4] !== undefined) {
+      const url = m[4];
+      result.push(
+        <button key={m.index} onClick={() => openLink(url)}
+          className="text-accent underline underline-offset-2 hover:text-accent/80 transition-fast">
+          {m[3]}
+        </button>
+      );
+    } else if (m[5] !== undefined) {
+      const url = m[5];
+      result.push(
+        <button key={m.index} onClick={() => openLink(url)}
+          className="text-accent/80 underline underline-offset-2 hover:text-accent transition-fast break-all font-mono text-[11px]">
+          {url}
+        </button>
+      );
+    }
     last = re.lastIndex;
   }
   if (last < text.length) result.push(text.slice(last));
   return result;
+}
+
+function VideoLinkCard({ url }: { url: string }) {
+  const [playing, setPlaying] = useState(false);
+  const isStreamable = /\.(mp4|webm)(\?|$)/i.test(url);
+  return (
+    <div className="my-2 rounded-xl border border-nv-border bg-nv-surface overflow-hidden">
+      {isStreamable && playing ? (
+        <video controls autoPlay className="w-full max-h-64 bg-black" src={url} />
+      ) : (
+        <div className="flex items-center gap-3 px-3 py-2.5">
+          <div className="w-9 h-9 rounded-lg bg-nv-bg border border-nv-border flex items-center justify-center shrink-0 text-accent">
+            <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
+              <rect x="2" y="4" width="20" height="16" rx="2" stroke="currentColor" strokeWidth="1.5"/>
+              <path d="M9 8.5l7 3.5-7 3.5V8.5z" fill="currentColor"/>
+            </svg>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-[11px] font-semibold text-nv-text truncate">Generated Video</p>
+            <p className="text-[10px] text-nv-faint font-mono truncate">{url}</p>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {isStreamable && (
+              <button onClick={() => setPlaying(true)}
+                className="text-[10px] px-2 py-1 rounded-lg bg-accent text-white font-mono hover:bg-accent/85 transition-fast">
+                Play
+              </button>
+            )}
+            <button onClick={() => openLink(url)}
+              className="text-[10px] px-2 py-1 rounded-lg border border-nv-border text-nv-muted font-mono hover:border-accent/40 hover:text-accent transition-fast">
+              Open
+            </button>
+            <button onClick={() => navigator.clipboard.writeText(url)}
+              className="text-[10px] px-2 py-1 rounded-lg border border-nv-border text-nv-muted font-mono hover:border-accent/40 hover:text-accent transition-fast">
+              Copy URL
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function TableBlock({ mdTable, headers, aligns, rows }: {
@@ -626,6 +691,13 @@ function StudioAssetBubble({ html }: { html: string }) {
   );
 }
 
+function extractVideoUrls(text: string): string[] {
+  const videoRe = /(https?:\/\/[^\s"'<>)\]]+\.(?:mp4|webm|mov|m3u8)(?:\?[^\s"'<>)\]]*)?)/gi;
+  const cdnRe   = /(https?:\/\/(?:cdn\.higgsfield\.ai|storage\.higgsfield\.ai|[^\s"'<>)\]]+higgsfield[^\s"'<>)\]]*|[^\s"'<>)\]]+runway[^\s"'<>)\]]*\.(?:mp4|webm)))/gi;
+  const all = [...(text.match(videoRe) ?? []), ...(text.match(cdnRe) ?? [])];
+  return [...new Set(all)];
+}
+
 function AssistantBubble({ content, streaming }: { content: string; streaming?: boolean }) {
   const [copied, setCopied] = useState(false);
 
@@ -692,6 +764,9 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
         </span>
       )}
       {streaming && content && <span className="inline-block w-1.5 h-3.5 bg-accent animate-pulse ml-0.5 rounded-sm" />}
+      {!streaming && extractVideoUrls(content).map(url => (
+        <VideoLinkCard key={url} url={url} />
+      ))}
       {!streaming && content.length > 0 && (
         <button
           onClick={copyAll}
@@ -1326,7 +1401,21 @@ The prompt must be production-ready — specific enough for a motion designer to
     const bossPostfix = agent.key === 'boss'
       ? '\n\n## BOSS OVERRIDE — HIGHEST PRIORITY — THIS OVERRIDES EVERYTHING ABOVE\nYou have TWO tools: delegate_to_agent (single agent) and plan_workflow (multi-agent, one shot). For CLEAR tasks: output a <tool_call> immediately. For VAGUE engineering/creative tasks: ask 2-3 focused questions first, then delegate.\n\nWHEN TO USE EACH:\n- Single agent needed → delegate_to_agent\n- Task needs 2-4 specialists → plan_workflow (list ALL agents at once — faster, no back-and-forth)\n- Do NOT call researcher unless the task genuinely requires current facts/research\n\nGREETING EXCEPTION: If the user\'s entire message is ONLY a greeting (hi / hello / hey) with no task, respond with ONE friendly sentence — no tool_call.\n\nCLARIFICATION EXCEPTION: For vague engineering/coding/creative tasks missing key details (e.g. "build me a website", "write some code", "create a banner"), ask 2-3 focused questions as plain text. Delegate ONLY after the user provides the details.'
       : '';
-    const systemPrt  = agent.systemPrompt + memBlock + (agent.key === 'boss' ? '' : userBlock) + '\n\n' + buildKrewSystemPrompt(tools) + bossPostfix;
+    // Inject connected services so every agent knows what's available and can recommend missing ones
+    const connectedList = Object.keys(creds);
+    const videoMcps     = ['runway','heygen','elevenlabs','did','higgsfield'].filter(s => connectedList.includes(s));
+    const videoPlatforms = ['twitter','linkedin','instagram'].filter(s => connectedList.includes(s));
+    const notVideoMcps  = ['runway','heygen','elevenlabs','did','higgsfield'].filter(s => !connectedList.includes(s));
+    const notSocial     = ['twitter','linkedin','instagram'].filter(s => !connectedList.includes(s));
+    const connectedAppsBlock = connectedList.length > 0 ? `\n\n## Connected Services (live state)\n` +
+      `All connected: ${connectedList.join(', ')}\n` +
+      (videoMcps.length > 0 ? `VIDEO GENERATION MCPs connected: ${videoMcps.join(', ')} — real video generation is available\n` : '') +
+      (videoPlatforms.length > 0 ? `VIDEO UPLOAD PLATFORMS connected: ${videoPlatforms.join(', ')} — can publish videos here via video_publisher agent\n` : '') +
+      (notVideoMcps.length > 0 ? `NOT connected for video: ${notVideoMcps.join(', ')} — if user wants real video, recommend connecting these in Connect Apps\n` : '') +
+      (notSocial.length > 0 ? `NOT connected for social posting: ${notSocial.join(', ')} — recommend connecting to enable auto-publishing\n` : '') +
+      `\nMCP RECOMMENDATION RULE: When a task needs a service that is NOT connected, proactively tell the user: "To do this, connect [service] in the Connect Apps tab (Krew → top-right). Higgsfield AI (https://mcp.higgsfield.ai/mcp) is the best single MCP for video generation with 30+ models." Be specific.\n`
+      : '';
+    const systemPrt  = agent.systemPrompt + memBlock + (agent.key === 'boss' ? '' : userBlock) + connectedAppsBlock + '\n\n' + buildKrewSystemPrompt(tools) + bossPostfix;
 
     // Build history from display messages (user + assistant only, not tool calls/results)
     let history: { role: string; content: string }[] = messages
@@ -1523,7 +1612,7 @@ The prompt must be production-ready — specific enough for a motion designer to
               if (targetAgent.category === 'Ops') delegateTools.push(...AUTOMATION_TOOLS);
               if (targetKey === 'research_agent') delegateTools.push(...RESEARCH_TOOLS);
               const pipelineRule = '\n\nCRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.';
-              const delegateSystem = targetAgent.systemPrompt + delegateMemBlock + pipelineRule + userBlock + '\n\n' + buildKrewSystemPrompt(delegateTools);
+              const delegateSystem = targetAgent.systemPrompt + delegateMemBlock + pipelineRule + userBlock + connectedAppsBlock + '\n\n' + buildKrewSystemPrompt(delegateTools);
               // Mini ReAct loop — lets delegated agents call web_search and other tools
               const delegateMsgsHist = [{ role: 'user', content: task }];
               let delegateAccum = '';   // clean prose accumulated across turns
@@ -1659,7 +1748,7 @@ The prompt must be production-ready — specific enough for a motion designer to
                 for (const svc of Object.keys(creds)) { if (SERVICE_TOOLS[svc]) wfTools.push(...SERVICE_TOOLS[svc]); }
                 if (wfAgent.category === 'Ops') wfTools.push(...AUTOMATION_TOOLS);
                 if (wfKey === 'research_agent') wfTools.push(...RESEARCH_TOOLS);
-                const wfSys = wfAgent.systemPrompt + wfMemBlock + '\n\nCRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.' + userBlock + '\n\n' + buildKrewSystemPrompt(wfTools);
+                const wfSys = wfAgent.systemPrompt + wfMemBlock + '\n\nCRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.' + userBlock + connectedAppsBlock + '\n\n' + buildKrewSystemPrompt(wfTools);
                 const wfHist = [{ role: 'user', content: wfTask }];
                 let wfAccum = ''; let wfFinal = '';
                 for (let ds = 0; ds < 8; ds++) {
