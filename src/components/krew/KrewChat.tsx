@@ -1323,7 +1323,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     // bossPostfix comes AFTER buildKrewSystemPrompt so it is the absolute last instruction Gemini reads —
     // it overrides the "respond normally in clear markdown" final-answer rule that would otherwise let the boss answer directly.
     const bossPostfix = agent.key === 'boss'
-      ? '\n\n## BOSS OVERRIDE — HIGHEST PRIORITY — THIS OVERRIDES EVERYTHING ABOVE\nYou have TWO tools: delegate_to_agent (single agent) and plan_workflow (multi-agent, one shot). Your ONLY valid output for any task is a <tool_call>. NEVER write prose about a task.\n\nWHEN TO USE EACH:\n- Single agent needed → delegate_to_agent\n- Task needs 2-4 specialists → plan_workflow (list ALL agents at once — faster, no back-and-forth)\n- Do NOT call researcher unless the task genuinely requires current facts/research\n\nGREETING EXCEPTION: If the user\'s entire message is ONLY a greeting (hi / hello / hey) with no task, respond with ONE friendly sentence — no tool_call.'
+      ? '\n\n## BOSS OVERRIDE — HIGHEST PRIORITY — THIS OVERRIDES EVERYTHING ABOVE\nYou have TWO tools: delegate_to_agent (single agent) and plan_workflow (multi-agent, one shot). For CLEAR tasks: output a <tool_call> immediately. For VAGUE engineering/creative tasks: ask 2-3 focused questions first, then delegate.\n\nWHEN TO USE EACH:\n- Single agent needed → delegate_to_agent\n- Task needs 2-4 specialists → plan_workflow (list ALL agents at once — faster, no back-and-forth)\n- Do NOT call researcher unless the task genuinely requires current facts/research\n\nGREETING EXCEPTION: If the user\'s entire message is ONLY a greeting (hi / hello / hey) with no task, respond with ONE friendly sentence — no tool_call.\n\nCLARIFICATION EXCEPTION: For vague engineering/coding/creative tasks missing key details (e.g. "build me a website", "write some code", "create a banner"), ask 2-3 focused questions as plain text. Delegate ONLY after the user provides the details.'
       : '';
     const systemPrt  = agent.systemPrompt + memBlock + (agent.key === 'boss' ? '' : userBlock) + '\n\n' + buildKrewSystemPrompt(tools) + bossPostfix;
 
@@ -1628,11 +1628,16 @@ The prompt must be production-ready — specific enough for a motion designer to
             if (wfDelegations.length > 0) {
               isDelegation = true;
               // Set up task phases for the progress strip
-              const phases: TaskPhase[] = wfDelegations.map((d, phIdx) => ({
-                id:     String(phIdx),
-                label:  (d.task?.slice(0, 60) ?? '') + ((d.task?.length ?? 0) > 60 ? '...' : '') || ('Step ' + (phIdx + 1).toString()),
-                status: 'pending' as const,
-              }));
+              const phases: TaskPhase[] = wfDelegations.map((d, phIdx) => {
+                const ag = AGENT_BY_KEY[d.agent_key ?? ''];
+                const agLabel = ag ? `${ag.humanName}.${ag.role}` : (d.agent_key ?? `Step ${phIdx + 1}`);
+                const taskSnippet = (d.task ?? '').slice(0, 35) + ((d.task?.length ?? 0) > 35 ? '…' : '');
+                return {
+                  id:     String(phIdx),
+                  label:  taskSnippet ? `${agLabel}: ${taskSnippet}` : agLabel,
+                  status: 'pending' as const,
+                };
+              });
               setTaskPhases(phases);
               const wfResults: string[] = [];
               let wfPhaseIdx = 0;

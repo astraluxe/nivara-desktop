@@ -259,6 +259,28 @@ Content/theme: ${description}`;
         </div>
       </div>
 
+      {/* MCP video integrations banner */}
+      <div className="mx-4 mt-3 mb-1 rounded-xl border border-accent/20 bg-accent/5 px-4 py-3 shrink-0">
+        <div className="flex items-start gap-2.5">
+          <svg viewBox="0 0 16 16" fill="none" className="w-3.5 h-3.5 text-accent shrink-0 mt-0.5">
+            <path d="M8 1l1.5 4.5H14l-3.5 2.5L12 13 8 10.5 4 13l1.5-5L2 5.5h4.5z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/>
+          </svg>
+          <div>
+            <p className="text-[11px] font-semibold text-nv-text">Real video generation — coming via MCP</p>
+            <p className="text-[10px] text-nv-muted mt-0.5 leading-relaxed">
+              Krew will connect to video MCPs for AI-generated motion content:
+            </p>
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {['Runway ML', 'HeyGen', 'ElevenLabs', 'Creatomate', 'D-ID'].map((tool) => (
+                <span key={tool} className="text-[9px] font-mono px-2 py-0.5 rounded border border-nv-border text-nv-faint bg-nv-surface">
+                  {tool}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div className="flex flex-1 overflow-hidden">
         {/* Left: controls */}
         <div className="w-72 shrink-0 flex flex-col border-r border-nv-border overflow-y-auto">

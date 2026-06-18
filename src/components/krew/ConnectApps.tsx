@@ -45,6 +45,16 @@ function PlatformLogo({ id, className = 'w-5 h-5' }: { id: string; className?: s
       return <svg {...base} viewBox="0 0 24 24"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 0 1-2.063-2.065 2.064 2.064 0 1 1 2.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>;
     case 'reddit':
       return <svg {...base} viewBox="0 0 24 24"><path d="M12 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0zm5.01 4.744c.688 0 1.25.561 1.25 1.249a1.25 1.25 0 0 1-2.498.056l-2.597-.547-.8 3.747c1.824.07 3.48.632 4.674 1.488.308-.309.73-.491 1.207-.491.968 0 1.754.786 1.754 1.754 0 .716-.435 1.333-1.01 1.614a3.111 3.111 0 0 1 .042.52c0 2.694-3.13 4.87-7.004 4.87-3.874 0-7.004-2.176-7.004-4.87 0-.183.015-.366.043-.534A1.748 1.748 0 0 1 4.028 12c0-.968.786-1.754 1.754-1.754.463 0 .898.196 1.207.49 1.207-.883 2.878-1.43 4.744-1.487l.885-4.182a.342.342 0 0 1 .14-.197.35.35 0 0 1 .238-.042l2.906.617a1.214 1.214 0 0 1 1.108-.701zM9.25 12C8.561 12 8 12.562 8 13.25c0 .687.561 1.248 1.25 1.248.687 0 1.248-.561 1.248-1.249 0-.688-.561-1.249-1.249-1.249zm5.5 0c-.687 0-1.248.561-1.248 1.25 0 .687.561 1.248 1.249 1.248.688 0 1.249-.561 1.249-1.249 0-.687-.562-1.249-1.25-1.249zm-5.466 3.99a.327.327 0 0 0-.231.094.33.33 0 0 0 0 .463c.842.842 2.484.913 2.961.913.477 0 2.105-.056 2.961-.913a.361.361 0 0 0 .029-.463.33.33 0 0 0-.464 0c-.547.533-1.684.73-2.512.73-.828 0-1.979-.196-2.512-.73a.326.326 0 0 0-.232-.095z"/></svg>;
+    case 'stripe':
+      return <svg {...base} viewBox="0 0 24 24"><path d="M13.976 9.15c-2.172-.806-3.356-1.426-3.356-2.409 0-.831.683-1.305 1.901-1.305 2.227 0 4.515.858 6.09 1.631l.89-5.494C18.252.975 15.697 0 12.165 0 9.667 0 7.589.654 6.104 1.872 4.56 3.147 3.757 4.992 3.757 7.218c0 4.039 2.467 5.76 6.476 7.219 2.585.92 3.445 1.574 3.445 2.583 0 .98-.84 1.545-2.354 1.545-1.875 0-4.965-.921-6.99-2.109l-.9 5.555C5.175 22.99 8.385 24 11.714 24c2.641 0 4.843-.624 6.328-1.813 1.664-1.305 2.525-3.236 2.525-5.732 0-4.128-2.524-5.851-6.594-7.305h.003z"/></svg>;
+    case 'discord':
+      return <svg {...base} viewBox="0 0 24 24"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057.1 18.09.12 18.12.143 18.14a19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>;
+    case 'figma':
+      return <svg {...base} viewBox="0 0 24 24"><path d="M15.852 8.981h-4.588V0h4.588c2.476 0 4.49 2.014 4.49 4.49s-2.014 4.491-4.49 4.491zM12.735 7.51h3.117c1.665 0 3.019-1.355 3.019-3.019s-1.354-3.019-3.019-3.019h-3.117V7.51zm0 1.471H8.148c-2.476 0-4.49-2.014-4.49-4.49S5.672 0 8.148 0h4.588v8.981zm-4.587-7.51c-1.665 0-3.019 1.355-3.019 3.019s1.354 3.019 3.019 3.019h3.117V1.471H8.148zm4.587 15.019H8.148c-2.476 0-4.49-2.014-4.49-4.49s2.014-4.49 4.49-4.49h4.588v8.98zM8.148 8.981c-1.665 0-3.019 1.355-3.019 3.019s1.354 3.019 3.019 3.019h3.117V8.981H8.148zM8.172 24c-2.489 0-4.515-2.014-4.515-4.49s2.026-4.49 4.515-4.49h4.563v4.49c0 2.476-2.014 4.49-4.563 4.49zm0-7.509c-1.665 0-3.019 1.355-3.019 3.019 0 1.663 1.354 2.985 3.019 2.985 1.663 0 3.092-1.322 3.092-3.009V16.49l-3.092.001zm7.704 0h-.001c-2.476 0-4.49-2.014-4.49-4.49s2.014-4.49 4.49-4.49 4.49 2.014 4.49 4.49-2.014 4.49-4.49 4.49zm0-7.509c-1.665 0-3.019 1.355-3.019 3.019s1.354 3.019 3.019 3.019 3.019-1.355 3.019-3.019-1.354-3.019-3.019-3.019z"/></svg>;
+    case 'shopify':
+      return <svg {...base} viewBox="0 0 24 24"><path d="M15.337 2.585c-.013-.073-.077-.11-.14-.11-.063 0-1.292-.024-1.292-.024s-1.035-.997-1.14-1.1c-.037-.036-.086-.054-.136-.058l-.745 15.23 4.723-1.02s-1.257-12.844-1.27-12.918zM12.69.805l-.59.183a3.52 3.52 0 0 0-.228-.555C11.515.005 11.11-.18 10.646-.18c-.031 0-.063.003-.095.007A1.46 1.46 0 0 0 9.905-.6c-.698.096-1.386.78-1.948 2.12-.393.944-.69 2.13-.775 3.049L5.05 5.28c-.522.164-.538.18-.606.665C4.38 6.37 2.87 18.55 2.87 18.55l10.14 1.9.704-19.65A.27.27 0 0 0 13.6.74l-.91.065zM10.43 1.88c-.463 1.123-.769 2.432-.86 3.262L7.536 5.7c.393-1.5 1.094-2.97 1.985-3.65.252-.19.519-.305.775-.32a.93.93 0 0 1 .134.15zm-.994-.48c.12 0 .225.03.316.085-.247.13-.491.328-.72.575-.648.712-1.148 1.82-1.439 2.98l-1.51.468c.37-1.696 1.282-4.005 3.353-4.108zm.598 9.648l-2.08-.502c.083-.45.356-.855.71-1.02.173-.083.354-.11.53-.075.405.079.688.558.733 1.18a3.78 3.78 0 0 1 .107.417zm4.463 7.483l-9.15-2.193L9.01 6.78l2.31-.715a.09.09 0 0 1 .113.065l.01.04 2.067 12.36z"/></svg>;
+    case 'serper':
+      return <svg {...base} viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="7" stroke="currentColor" strokeWidth="2" fill="none"/><path d="M21 21l-4.35-4.35" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><path d="M7.5 10.5h6M10.5 7.5v6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>;
     default:
       return <span className="text-sm font-bold leading-none">{id[0].toUpperCase()}</span>;
   }
@@ -67,9 +77,16 @@ const BRAND_COLOR: Record<string, string> = {
   twitter:  'text-nv-text',
   linkedin: 'text-blue-500',
   reddit:   'text-orange-500',
-  telegram: 'text-sky-400',
-  twilio:   'text-red-400',
-  hubspot:  'text-orange-400',
+  telegram:   'text-sky-400',
+  twilio:     'text-red-400',
+  hubspot:    'text-orange-400',
+  stripe:     'text-violet-400',
+  discord:    'text-indigo-400',
+  figma:      'text-pink-400',
+  shopify:    'text-emerald-400',
+  serper:     'text-blue-400',
+  crunchbase: 'text-orange-400',
+  jira:       'text-blue-500',
 };
 
 // ─── Service definitions ──────────────────────────────────────────────────────
@@ -95,6 +112,18 @@ const SERVICES: ServiceDef[] = [
   { id: 'telegram', name: 'Telegram',            desc: 'Send messages via a Telegram bot. Used by Automation → Telegram output.',               tags: ['chat','messaging','automation'],          usedBy: ['Automation'] },
   { id: 'twilio',   name: 'Twilio (SMS)',        desc: 'Send SMS messages via Twilio. Used by Automation → SMS output.',                         tags: ['sms','messaging','automation'],           usedBy: ['Automation'] },
   { id: 'hubspot',  name: 'HubSpot CRM',         desc: 'Create contacts, deals, and notes in HubSpot. Used by Automation → HubSpot output.',     tags: ['crm','sales','automation'],              usedBy: ['Automation'] },
+  // Payments & E-commerce
+  { id: 'stripe',   name: 'Stripe',              desc: 'Payment triggers — fire automations on payment success, failure, refund, or churn events.',  tags: ['payments','automation'],                 usedBy: ['Automation'] },
+  { id: 'shopify',  name: 'Shopify',             desc: 'Read products, orders, and customer data from your Shopify store.',                           tags: ['ecommerce','sales'],                     usedBy: ['Krew'] },
+  // Communication
+  { id: 'discord',  name: 'Discord',             desc: 'Post to a Discord channel via webhook. Used by Automation → Discord output.',                tags: ['chat','messaging','automation'],          usedBy: ['Automation'] },
+  // Design
+  { id: 'figma',    name: 'Figma',               desc: 'Read design files, inspect components, and export assets from your Figma workspace.',         tags: ['design','ui'],                           usedBy: ['Krew'] },
+  // Project management
+  { id: 'jira',     name: 'Jira (Atlassian)',    desc: 'Create and read issues, update sprint tickets, and track bugs in Jira Cloud.',                tags: ['issues','project','engineering'],         usedBy: ['Krew'] },
+  // Search & Data
+  { id: 'serper',   name: 'Serper (Google Search)', desc: 'Google Search API — better results for Research agent. 2.5K free searches/month.',      note: 'Improves research quality over the default DuckDuckGo fallback.', tags: ['search'],  usedBy: ['Krew','Research'] },
+  { id: 'crunchbase', name: 'Crunchbase',        desc: 'Startup and company data — funding rounds, investors, headcount. Used by Research agent.',   tags: ['data','research','startups'],            usedBy: ['Research'] },
 ];
 
 interface Props { onClose?: () => void }

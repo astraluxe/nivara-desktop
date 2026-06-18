@@ -132,23 +132,26 @@ export default function KrewModule({ onViewOnCanvas, onOpenAutomations, onOpenSt
         )}
 
         {/* ── Views ──────────────────────────────────────────────────── */}
-        <div className="flex-1 overflow-hidden">
-          {view === 'apps' ? (
-            <ConnectApps onClose={() => setView('chat')} />
-          ) : view === 'grid' ? (
-            <AgentGrid onSelect={handleSelectAgent} onClose={() => setView('chat')} />
-          ) : view === 'office' ? (
+        <div className="flex-1 overflow-hidden relative">
+          {/* Persistent views — stay mounted across tab switches to preserve state */}
+          <div className={`absolute inset-0 overflow-hidden ${view === 'research' ? '' : 'hidden'}`}>
+            <ResearchScreen />
+          </div>
+          <div className={`absolute inset-0 overflow-hidden ${view === 'creator' ? '' : 'hidden'}`}>
+            <CreatorScreen />
+          </div>
+          {/* Transient views — remount on switch */}
+          {view === 'apps' && <ConnectApps onClose={() => setView('chat')} />}
+          {view === 'grid' && <AgentGrid onSelect={handleSelectAgent} onClose={() => setView('chat')} />}
+          {view === 'office' && (
             <OfficeView
               userId={user?.id ?? ''}
               onSelectAgent={handleSelectAgent}
               onClose={() => setView('chat')}
               onOpenAutomations={onOpenAutomations}
             />
-          ) : view === 'research' ? (
-            <ResearchScreen />
-          ) : view === 'creator' ? (
-            <CreatorScreen />
-          ) : (
+          )}
+          {view === 'chat' && (
             <KrewChat
               sessionId={sessionId}
               agent={agent}
