@@ -18,7 +18,6 @@ import MeshModule from "./modules/MeshModule";
 import AccountPanel from "./modules/AccountPanel";
 import SettingsModule, { loadSettings } from "./modules/SettingsModule";
 import InfoModule from "./modules/InfoModule";
-import StudioModule from "./modules/StudioModule";
 import HeadModule from "./modules/HeadModule";
 import { AppSkeleton } from "./components/Skeleton";
 import TourOverlay, { isTourDone } from "./components/TourOverlay";
@@ -28,13 +27,6 @@ import { executeAutomation, type AutomationRow } from "./lib/automationRunner";
 import { supabase } from "./lib/supabase";
 
 const LAST_OPEN_KEY = "nv-last-open";
-
-interface StudioRequest {
-  prompt: string;
-  formatId: string;
-  duration: number;
-  context: string;
-}
 
 interface MissedRun {
   id: string;
@@ -122,14 +114,8 @@ function AppShell() {
   const [canvasFlow, setCanvasFlow] = useState<{ nodes: Node[]; edges: Edge[] } | null>(null);
   const [missedRuns, setMissedRuns] = useState<MissedRun[]>([]);
   const [meshActive, setMeshActive] = useState(false);
-  const [studioRequest, setStudioRequest] = useState<StudioRequest | null>(null);
   const [announcement, setAnnouncement] = useState<Announcement | null>(null);
   const [showFirstRun, setShowFirstRun] = useState(false);
-
-  function handleOpenStudio(req: StudioRequest) {
-    setStudioRequest(req);
-    setActiveModule('studio');
-  }
 
   function handleViewOnCanvas(nodes: Node[], edges: Edge[]) {
     setCanvasFlow({ nodes, edges });
@@ -329,14 +315,13 @@ function AppShell() {
           {activeModule === "coder"      && <CoderModule />}
           {/* Krew stays mounted so messages/session survive tab switches */}
           <div className={activeModule === "krew" ? "contents" : "hidden"}>
-            <KrewModule onViewOnCanvas={handleViewOnCanvas} onOpenAutomations={() => setActiveModule('automation')} onOpenStudio={handleOpenStudio} />
+            <KrewModule onViewOnCanvas={handleViewOnCanvas} onOpenAutomations={() => setActiveModule('automation')} />
           </div>
           {activeModule === "connect" && <ConnectApps />}
           {activeModule === "models"  && <ModelsModule />}
           {activeModule === "vault"   && <VaultModule />}
           {activeModule === "guard"   && <GuardModule />}
           {activeModule === "mesh"    && <MeshModule onSessionChange={setMeshActive} />}
-          {activeModule === "studio"  && <StudioModule initialRequest={studioRequest} onRequestConsumed={() => setStudioRequest(null)} />}
           {activeModule === "head"    && <HeadModule />}
           {activeModule === "info"     && <InfoModule />}
           {activeModule === "account"  && <AccountPanel />}

@@ -55,6 +55,16 @@ function PlatformLogo({ id, className = 'w-5 h-5' }: { id: string; className?: s
       return <svg {...base} viewBox="0 0 24 24"><path d="M15.337 2.585c-.013-.073-.077-.11-.14-.11-.063 0-1.292-.024-1.292-.024s-1.035-.997-1.14-1.1c-.037-.036-.086-.054-.136-.058l-.745 15.23 4.723-1.02s-1.257-12.844-1.27-12.918zM12.69.805l-.59.183a3.52 3.52 0 0 0-.228-.555C11.515.005 11.11-.18 10.646-.18c-.031 0-.063.003-.095.007A1.46 1.46 0 0 0 9.905-.6c-.698.096-1.386.78-1.948 2.12-.393.944-.69 2.13-.775 3.049L5.05 5.28c-.522.164-.538.18-.606.665C4.38 6.37 2.87 18.55 2.87 18.55l10.14 1.9.704-19.65A.27.27 0 0 0 13.6.74l-.91.065zM10.43 1.88c-.463 1.123-.769 2.432-.86 3.262L7.536 5.7c.393-1.5 1.094-2.97 1.985-3.65.252-.19.519-.305.775-.32a.93.93 0 0 1 .134.15zm-.994-.48c.12 0 .225.03.316.085-.247.13-.491.328-.72.575-.648.712-1.148 1.82-1.439 2.98l-1.51.468c.37-1.696 1.282-4.005 3.353-4.108zm.598 9.648l-2.08-.502c.083-.45.356-.855.71-1.02.173-.083.354-.11.53-.075.405.079.688.558.733 1.18a3.78 3.78 0 0 1 .107.417zm4.463 7.483l-9.15-2.193L9.01 6.78l2.31-.715a.09.09 0 0 1 .113.065l.01.04 2.067 12.36z"/></svg>;
     case 'serper':
       return <svg {...base} viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="7" stroke="currentColor" strokeWidth="2" fill="none"/><path d="M21 21l-4.35-4.35" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><path d="M7.5 10.5h6M10.5 7.5v6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>;
+    case 'vercel':
+      return <svg {...base} viewBox="0 0 24 24"><path d="M24 22.525H0l12-21.05 12 21.05z"/></svg>;
+    case 'runway':
+      return <svg {...base} viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2" stroke="currentColor" strokeWidth="1.5" fill="none"/><path d="M8 9l5 3-5 3V9z" fill="currentColor"/></svg>;
+    case 'elevenlabs':
+      return <svg {...base} viewBox="0 0 24 24"><rect x="4" y="4" width="3" height="16" rx="1" fill="currentColor"/><rect x="10.5" y="2" width="3" height="20" rx="1" fill="currentColor"/><rect x="17" y="6" width="3" height="12" rx="1" fill="currentColor"/></svg>;
+    case 'heygen':
+      return <svg {...base} viewBox="0 0 24 24"><circle cx="12" cy="7" r="4" stroke="currentColor" strokeWidth="1.5" fill="none"/><path d="M4 21c0-4.418 3.582-8 8-8s8 3.582 8 8" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round"/><path d="M16 10l3.5 2-3.5 2V10z" fill="currentColor"/></svg>;
+    case 'did':
+      return <svg {...base} viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" strokeWidth="1.5" fill="none"/><circle cx="12" cy="10" r="3" stroke="currentColor" strokeWidth="1.2" fill="none"/><path d="M7 19c0-2.761 2.239-5 5-5s5 2.239 5 5" stroke="currentColor" strokeWidth="1.2" fill="none" strokeLinecap="round"/></svg>;
     default:
       return <span className="text-sm font-bold leading-none">{id[0].toUpperCase()}</span>;
   }
@@ -87,6 +97,11 @@ const BRAND_COLOR: Record<string, string> = {
   serper:     'text-blue-400',
   crunchbase: 'text-orange-400',
   jira:       'text-blue-500',
+  vercel:     'text-nv-text',
+  runway:     'text-sky-400',
+  heygen:     'text-violet-400',
+  elevenlabs: 'text-amber-400',
+  did:        'text-pink-400',
 };
 
 // ─── Service definitions ──────────────────────────────────────────────────────
@@ -124,6 +139,13 @@ const SERVICES: ServiceDef[] = [
   // Search & Data
   { id: 'serper',   name: 'Serper (Google Search)', desc: 'Google Search API — better results for Research agent. 2.5K free searches/month.',      note: 'Improves research quality over the default DuckDuckGo fallback.', tags: ['search'],  usedBy: ['Krew','Research'] },
   { id: 'crunchbase', name: 'Crunchbase',        desc: 'Startup and company data — funding rounds, investors, headcount. Used by Research agent.',   tags: ['data','research','startups'],            usedBy: ['Research'] },
+  // Deployment
+  { id: 'vercel',    name: 'Vercel',             desc: 'Deploy websites to a live URL in seconds. Krew\'s deploy agent pushes your site and returns a real vercel.app link.', note: 'Required for "deploy my website" tasks.', tags: ['deploy','hosting','website'],            usedBy: ['Krew'] },
+  // Video AI MCPs
+  { id: 'runway',    name: 'Runway ML',          desc: 'AI video generation — turn images or text into cinematic video clips. Used by Krew to create marketing videos.',      tags: ['video','ai','marketing','creative'],     usedBy: ['Krew'] },
+  { id: 'heygen',    name: 'HeyGen',             desc: 'AI avatar video creation — generate talking-head marketing videos with a digital spokesperson using your brand.',     tags: ['video','ai','avatar','marketing'],        usedBy: ['Krew'] },
+  { id: 'elevenlabs', name: 'ElevenLabs',        desc: 'AI voice synthesis — generate professional voiceovers for marketing videos, product demos, and ads.',                  tags: ['audio','voice','ai','marketing'],         usedBy: ['Krew'] },
+  { id: 'did',       name: 'D-ID',               desc: 'Talking avatar videos — upload a photo and generate a realistic video with lip-sync audio. Great for product promos.', tags: ['video','ai','avatar','marketing'],        usedBy: ['Krew'] },
 ];
 
 interface Props { onClose?: () => void }

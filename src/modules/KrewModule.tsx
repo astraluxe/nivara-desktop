@@ -13,20 +13,12 @@ const DEFAULT_AGENT = KREW_AGENTS[0]; // Arjun.Boss
 
 type View = 'chat' | 'office' | 'grid' | 'apps' | 'research';
 
-interface StudioRequest {
-  prompt: string;
-  formatId: string;
-  duration: number;
-  context: string;
-}
-
 interface KrewModuleProps {
   onViewOnCanvas?: (nodes: Node[], edges: Edge[]) => void;
   onOpenAutomations?: () => void;
-  onOpenStudio?: (req: StudioRequest) => void;
 }
 
-export default function KrewModule({ onViewOnCanvas, onOpenAutomations, onOpenStudio }: KrewModuleProps) {
+export default function KrewModule({ onViewOnCanvas, onOpenAutomations }: KrewModuleProps) {
   const { user } = useAuth();
   const [sessionId,    setSessionId]    = useState<string | null>(null);
   const [agent,        setAgent]        = useState<KrewAgent>(DEFAULT_AGENT);
@@ -146,7 +138,6 @@ export default function KrewModule({ onViewOnCanvas, onOpenAutomations, onOpenSt
               onBrowseAgents={() => setView('grid')}
               onAgentChange={setAgent}
               onViewOnCanvas={onViewOnCanvas}
-              onOpenStudio={onOpenStudio}
               onOpenResearch={(q) => { setResearchQuery(q); setView('research'); }}
             />
           )}
