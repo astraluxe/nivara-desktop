@@ -1739,7 +1739,7 @@ The prompt must be production-ready — specific enough for a motion designer to
                 try {
                   dResult = await executeTool(dTool, dArgs, creds, requestTerminalApproval, targetKey, user?.id ?? '');
                   if (dTool === 'web_search' && !creds.brave?.api_key) setBraveNudge(true);
-                  if (dTool.startsWith('browser_') && dResult.includes('[agent-browser not installed')) setBrowserNudge(true);
+                  if (dTool.startsWith('browser_') && dResult.includes('[agent-browser not installed]')) setBrowserNudge(true);
                 } catch (e) { dResult = `Error: ${e}`; }
                 setAgentStep(`${agentDisplayName} · thinking…`);
                 const cappedResult = dResult.length > 3000 ? dResult.slice(0, 3000) + '\n…[truncated for context]' : dResult;
@@ -1904,7 +1904,7 @@ The prompt must be production-ready — specific enough for a motion designer to
             }
             // Show Brave nudge when web search runs without a Brave key (DuckDuckGo fallback gives stale data)
             if (tool === 'web_search' && !creds.brave?.api_key) setBraveNudge(true);
-            if (tool.startsWith('browser_') && toolResult.includes('[agent-browser not installed')) setBrowserNudge(true);
+            if (tool.startsWith('browser_') && toolResult.includes('[agent-browser not installed]')) setBrowserNudge(true);
           }
         } catch (e) {
           toolResult = `Error: ${e}`;

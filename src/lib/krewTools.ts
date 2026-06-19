@@ -766,52 +766,48 @@ export async function executeTool(
     }
   }
 
-  // ── Browser tools (agent-browser CLI) ────────────────────────────────────
-  const runBrowserCmd = async (cmd: string): Promise<string> => {
+  // ── Browser tools (agent-browser CLI — silent install via setup_agent_browser) ─
+  const runBrowser = async (browserArgs: string): Promise<string> => {
     try {
-      return await invoke<string>('krew_execute_command', { command: cmd });
+      return await invoke<string>('run_agent_browser', { args: browserArgs });
     } catch (e) {
-      const msg = String(e);
-      if (/not found|not recognized|No such file|ENOENT/i.test(msg)) {
-        return '[agent-browser not installed. Ask user to run: npm install -g agent-browser && agent-browser install]';
-      }
-      return `Browser error: ${msg}`;
+      return `Browser error: ${String(e)}`;
     }
   };
 
   if (toolName === 'browser_open') {
     const url = str(args.url).replace(/"/g, '%22');
-    return await runBrowserCmd(`agent-browser open "${url}"`);
+    return await runBrowser(`open "${url}"`);
   }
   if (toolName === 'browser_search') {
     const q = encodeURIComponent(str(args.query));
-    await runBrowserCmd(`agent-browser open "https://lite.duckduckgo.com/lite/?q=${q}"`);
-    const text = await runBrowserCmd('agent-browser get text body');
+    await runBrowser(`open "https://lite.duckduckgo.com/lite/?q=${q}"`);
+    const text = await runBrowser('get text body');
     if (text.startsWith('[agent-browser not installed')) return text;
     return text.length > 5000 ? text.slice(0, 5000) + '\n…[truncated]' : text;
   }
   if (toolName === 'browser_snapshot') {
-    return await runBrowserCmd('agent-browser snapshot');
+    return await runBrowser('snapshot');
   }
   if (toolName === 'browser_click') {
     const sel = str(args.selector);
-    return await runBrowserCmd(`agent-browser click "${sel}"`);
+    return await runBrowser(`click "${sel}"`);
   }
   if (toolName === 'browser_fill') {
     const sel = str(args.selector);
     const text = str(args.text).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    return await runBrowserCmd(`agent-browser fill "${sel}" "${text}"`);
+    return await runBrowser(`fill "${sel}" "${text}"`);
   }
   if (toolName === 'browser_get_text') {
     const sel = str(args.selector) || 'body';
-    const text = await runBrowserCmd(`agent-browser get text "${sel}"`);
+    const text = await runBrowser(`get text "${sel}"`);
     return text.length > 5000 ? text.slice(0, 5000) + '\n…[truncated]' : text;
   }
   if (toolName === 'browser_screenshot') {
-    return await runBrowserCmd('agent-browser screenshot');
+    return await runBrowser('screenshot');
   }
   if (toolName === 'browser_close') {
-    return await runBrowserCmd('agent-browser close');
+    return await runBrowser('close');
   }
 
   // ── Notion ────────────────────────────────────────────────────────────────

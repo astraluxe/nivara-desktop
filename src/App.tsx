@@ -131,6 +131,14 @@ function AppShell() {
     }
   }, [session]);
 
+  // Silently install agent-browser in background on first launch (no user prompt)
+  useEffect(() => {
+    const SETUP_KEY = 'nv-agent-browser-setup-v1';
+    if (localStorage.getItem(SETUP_KEY)) return;
+    localStorage.setItem(SETUP_KEY, '1');
+    invoke('setup_agent_browser').catch(() => {});
+  }, []);
+
   // First-run setup — show once per user (new install or new Google account)
   useEffect(() => {
     if (!session) return;

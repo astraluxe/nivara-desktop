@@ -2066,6 +2066,92 @@ async fn krew_execute_command(command: String) -> Result<String, String> {
     Ok(result)
 }
 
+// ── agent-browser: local binary path ─────────────────────────────────────────
+fn get_agent_browser_local_path(app: &tauri::AppHandle) -> std::path::PathBuf {
+    let data_dir = app.path().app_local_data_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let bin_name = if cfg!(windows) { "agent-browser.exe" } else { "agent-browser" };
+    data_dir.join("tools").join(bin_name)
+}
+
+// ── agent-browser: silent background setup ────────────────────────────────────
+#[tauri::command]
+async fn setup_agent_browser(app: tauri::AppHandle) -> Result<(), String> {
+    tokio::task::spawn(async move {
+        // If already in PATH — just ensure Chrome is set up, then return
+        let in_path = {
+            #[cfg(target_os = "windows")]
+            { use std::os::windows::process::CommandExt; std::process::Command::new("agent-browser").arg("--version").creation_flags(0x08000000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false) }
+            #[cfg(not(target_os = "windows"))]
+            { std::process::Command::new("agent-browser").arg("--version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false) }
+        };
+
+        let local_bin = get_agent_browser_local_path(&app);
+
+        if !in_path && !local_bin.exists() {
+            // Download binary from GitHub releases (no Node.js required)
+            let url = if cfg!(windows) {
+                "https://github.com/vercel-labs/agent-browser/releases/latest/download/agent-browser-win32-x64.exe"
+            } else if cfg!(target_arch = "aarch64") {
+                "https://github.com/vercel-labs/agent-browser/releases/latest/download/agent-browser-darwin-arm64"
+            } else {
+                "https://github.com/vercel-labs/agent-browser/releases/latest/download/agent-browser-darwin-x64"
+            };
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(180))
+                .build().unwrap_or_else(|_| reqwest::Client::new());
+            let Ok(resp) = client.get(url).send().await else { return; };
+            if !resp.status().is_success() { return; }
+            let Ok(bytes) = resp.bytes().await else { return; };
+            if let Some(p) = local_bin.parent() { let _ = std::fs::create_dir_all(p); }
+            if std::fs::write(&local_bin, &bytes).is_err() { return; }
+            #[cfg(unix)] {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&local_bin, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+
+        // Run 'agent-browser install' to detect/download Chrome (silent, one-time)
+        let bin = if in_path { std::path::PathBuf::from("agent-browser") } else { local_bin };
+        #[cfg(target_os = "windows")]
+        { use std::os::windows::process::CommandExt; let _ = std::process::Command::new(&bin).arg("install").creation_flags(0x08000000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
+        #[cfg(not(target_os = "windows"))]
+        { let _ = std::process::Command::new(&bin).arg("install").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
+    });
+    Ok(())
+}
+
+// ── agent-browser: run a command, trying PATH then local binary ───────────────
+#[tauri::command]
+async fn run_agent_browser(app: tauri::AppHandle, args: String) -> Result<String, String> {
+    use std::process::Command;
+
+    let run_cmd = |bin: &str| -> Option<String> {
+        let full = format!("{} {}", bin, args);
+        let out = {
+            #[cfg(target_os = "windows")]
+            { use std::os::windows::process::CommandExt; Command::new("cmd").args(["/C", &full]).creation_flags(0x08000000).output().ok()? }
+            #[cfg(not(target_os = "windows"))]
+            { Command::new("sh").args(["-c", &full]).output().ok()? }
+        };
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        // If command wasn't found, return None so we try the local binary
+        if stderr.contains("is not recognized") || stderr.contains("not found") || stderr.contains("No such file") { return None; }
+        let combined = format!("{}{}", stdout, stderr).trim().to_string();
+        Some(if combined.is_empty() { "(done)".to_string() } else { combined })
+    };
+
+    if let Some(r) = run_cmd("agent-browser") { return Ok(r); }
+
+    let local_bin = get_agent_browser_local_path(&app);
+    if local_bin.exists() {
+        if let Some(r) = run_cmd(&format!("\"{}\"", local_bin.display())) { return Ok(r); }
+    }
+
+    Ok("[agent-browser not installed]".to_string())
+}
+
 #[tauri::command]
 async fn krew_http_call(
     method:  String,
@@ -4754,6 +4840,8 @@ pub fn run() {
             reddit_post,
             krew_web_search,
             krew_execute_command,
+            setup_agent_browser,
+            run_agent_browser,
             krew_http_call,
             gmail_fetch_emails,
             gmail_fetch_email_body,
