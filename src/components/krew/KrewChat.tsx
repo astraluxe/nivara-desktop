@@ -418,6 +418,42 @@ function classifyBossMessage(text: string): FastBossResult | null {
     };
   }
 
+  // GTM / sales strategy → researcher
+  const isGTM = /\b(go[\s-]?to[\s-]?market|gtm|how\s+(do\s+i|to)\s+(sell|market|pitch|grow|get\s+(users?|customers?|clients?))|product[\s-]market[\s-]fit|b2b|b2c|icp|ideal\s+customer|target\s+(market|audience|customers?)|sell\s+(my|this|the)\s+product|customer\s+acquisition|sales\s+strategy|marketing\s+strategy|growth\s+strategy|user\s+acquisition|get\s+my\s+first|launch\s+(plan|strategy)|how\s+to\s+grow)\b/i.test(trimmed);
+  if (isGTM) {
+    return {
+      type: 'delegate', agentKey: 'researcher',
+      task: `User request: ${trimmed}\n\nResearch and deliver a practical go-to-market / sales strategy. Cover: (1) ideal customer profile, (2) positioning and messaging, (3) acquisition channels (organic + paid), (4) B2B vs B2C approach if relevant, (5) 30-day action plan. Be specific and actionable.`,
+    };
+  }
+
+  // Cold outreach / email sequences → cold_outreach
+  const isColdOutreach = /\b(cold\s+(email|outreach|dm|message|pitch)|outreach\s+(sequence|campaign|template)|sales\s+email|prospecting|linkedin\s+(outreach|message)|reach\s+out\s+to|pitch\s+email)\b/i.test(trimmed);
+  if (isColdOutreach) {
+    return {
+      type: 'delegate', agentKey: 'cold_outreach',
+      task: `User request: ${trimmed}\n\nWrite high-converting cold outreach copy as requested. Include subject lines, opening hooks, value proposition, and CTA.`,
+    };
+  }
+
+  // Pricing / revenue / financial strategy → cfo
+  const isPricing = /\b(pric(e|ing|ed)|revenue\s+model|monetis|monetiz|subscription\s+(model|pricing)|how\s+(much\s+to\s+charge|to\s+price)|freemium|tier(ed)?\s+pricing|profit\s+margin|unit\s+economics|arr|mrr|ltv|cac)\b/i.test(trimmed);
+  if (isPricing) {
+    return {
+      type: 'delegate', agentKey: 'cfo',
+      task: `User request: ${trimmed}\n\nProvide financial strategy and pricing recommendations as requested. Be specific with numbers, models, and rationale.`,
+    };
+  }
+
+  // Competitor research → competitor_watcher
+  const isCompetitor = /\b(competitor|competition|alternative(s)?|vs\.?\s+\w+|compare\s+(to|with)|market\s+landscape|who\s+(else|are\s+the\s+competitors?)|competitive\s+analysis)\b/i.test(trimmed);
+  if (isCompetitor) {
+    return {
+      type: 'delegate', agentKey: 'competitor_watcher',
+      task: `User request: ${trimmed}\n\nResearch and analyse the competitive landscape as requested.`,
+    };
+  }
+
   return null;
 }
 
@@ -1373,9 +1409,13 @@ The prompt must be production-ready — specific enough for a motion designer to
     const currentFiles = attachedFiles;
     setAttachedFiles([]);
 
-    // Build file block injected into the API — no size limit, full content
+    // Build file block — cap each file at 8000 chars to avoid token explosion
+    const FILE_CAP = 8000;
     const fileBlock = currentFiles.length > 0
-      ? currentFiles.map(f => `[File: ${f.name}]\n\`\`\`\n${f.content}\n\`\`\`\n\n`).join('')
+      ? currentFiles.map(f => {
+          const body = f.content.length > FILE_CAP ? f.content.slice(0, FILE_CAP) + `\n…[truncated — ${f.content.length - FILE_CAP} chars omitted]` : f.content;
+          return `[File: ${f.name}]\n\`\`\`\n${body}\n\`\`\`\n\n`;
+        }).join('')
       : '';
     const apiText = fileBlock + text;
 
@@ -1439,7 +1479,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     // Compress if needed
     if (sid) history = await compressIfNeeded(history, sid);
 
-    const MAX_STEPS = 10;
+    const MAX_STEPS = agent.key === 'boss' ? 4 : 8;
     let steps       = 0;
     const delegatedAgents = new Set<string>();
 
