@@ -265,11 +265,12 @@ function renderMarkdown(text: string): React.ReactNode {
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
-    const hm = line.match(/^(#{1,3})\s+(.+)/);
+    const hm = line.match(/^(#{1,6})\s+(.+)/);
     if (hm) {
       const cls = hm[1].length === 1 ? 'text-[14px] font-bold text-nv-text mt-3 mb-1'
                 : hm[1].length === 2 ? 'text-[13px] font-semibold text-nv-text mt-2 mb-1'
-                :                      'text-[12px] font-semibold text-nv-text mt-1.5 mb-0.5';
+                : hm[1].length === 3 ? 'text-[12px] font-semibold text-nv-text mt-1.5 mb-0.5'
+                :                      'text-[11px] font-semibold text-nv-muted mt-1 mb-0.5';
       els.push(<p key={i} className={cls}>{renderInline(hm[2])}</p>);
       i++; continue;
     }
@@ -1671,7 +1672,7 @@ The prompt must be production-ready — specific enough for a motion designer to
               let delegateAccum = '';   // clean prose accumulated across turns
               let delegateFinalResp = '';
               const DELEGATE_MAX = 8;
-              for (let ds = 0; ds < DELEGATE_MAX; ds++) {
+              for (let ds = 0; ds < DELEGATE_MAX && !stopRef.current; ds++) {
                 let stepText = '';
                 const { text: delegateRaw, truncated: delegateTruncated } = await streamTurnWithRetry(delegateMsgsHist, delegateSystem, (chunk) => {
                   stepText += chunk;
@@ -1788,6 +1789,7 @@ The prompt must be production-ready — specific enough for a motion designer to
               const wfResults: string[] = [];
               let wfPhaseIdx = 0;
               for (const del of wfDelegations) {
+                if (stopRef.current) break;
                 const wfKey  = String(del.agent_key ?? '');
                 const wfRawTask = String(del.task ?? '');
                 // Mark current phase as running
@@ -1807,7 +1809,7 @@ The prompt must be production-ready — specific enough for a motion designer to
                 const wfSys = wfAgent.systemPrompt + wfMemBlock + '\n\nCRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.' + userBlock + connectedAppsBlock + '\n\n' + buildKrewSystemPrompt(wfTools);
                 const wfHist = [{ role: 'user', content: wfTask }];
                 let wfAccum = ''; let wfFinal = '';
-                for (let ds = 0; ds < 8; ds++) {
+                for (let ds = 0; ds < 8 && !stopRef.current; ds++) {
                   let stepTxt = '';
                   const { text: wfRaw, truncated: wfTrunc } = await streamTurnWithRetry(wfHist, wfSys, (chunk) => {
                     stepTxt += chunk;
