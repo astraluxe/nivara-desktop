@@ -60,7 +60,7 @@ export const SYSTEM_TOOLS: ToolDef[] = [
   },
   {
     name: 'web_search',
-    description: 'Search the web with Brave Search. Returns top 10 results with title, URL and snippet.',
+    description: 'Search the web with Brave Search API. Returns top 10 results with title, URL and snippet. If Brave is not connected, use browser_search instead for live results via visible browser.',
     parameters: {
       query: { type: 'string', description: 'Search query.', required: true },
     },
@@ -115,6 +115,62 @@ export const RESEARCH_TOOLS: ToolDef[] = [
       url:         { type: 'string', description: 'Full URL to fetch', required: true },
       description: { type: 'string', description: 'What this data is for', required: true },
     },
+  },
+];
+
+// ─── Browser tools (via agent-browser CLI — opens visible Chrome window) ─────
+
+export const BROWSER_TOOLS: ToolDef[] = [
+  {
+    name: 'browser_open',
+    description: 'Open a URL in a visible Chrome browser window on the user\'s screen. They can watch everything happen live. After opening, call browser_snapshot to see what\'s on the page.',
+    parameters: {
+      url: { type: 'string', description: 'Full URL to open, e.g. "https://linkedin.com/search/results/people/?keywords=CTO+Mumbai"', required: true },
+    },
+  },
+  {
+    name: 'browser_search',
+    description: 'Search the web by opening a visible Chrome browser to DuckDuckGo — no API key needed, user watches the search happen live. Returns the search results page text. Use this instead of web_search when Brave is not connected.',
+    parameters: {
+      query: { type: 'string', description: 'What to search for', required: true },
+    },
+  },
+  {
+    name: 'browser_snapshot',
+    description: 'Get the accessibility tree of the current browser page — all visible elements with their refs (like @e1, @e2) for clicking, filling, and reading. Always snapshot before clicking to get fresh refs.',
+    parameters: {},
+  },
+  {
+    name: 'browser_click',
+    description: 'Click an element in the browser. Use a ref from browser_snapshot (e.g. "@e2") or a CSS selector like "#submit-btn". User sees the click happen live.',
+    parameters: {
+      selector: { type: 'string', description: 'Element ref from snapshot (e.g. "@e2") or CSS selector', required: true },
+    },
+  },
+  {
+    name: 'browser_fill',
+    description: 'Clear an input field and type text into it in the visible browser. User watches it typing in real time.',
+    parameters: {
+      selector: { type: 'string', description: 'Element ref or CSS selector for the input field', required: true },
+      text:     { type: 'string', description: 'Text to type into the field', required: true },
+    },
+  },
+  {
+    name: 'browser_get_text',
+    description: 'Get visible text content from the current browser page or a specific element.',
+    parameters: {
+      selector: { type: 'string', description: 'CSS selector or element ref. Omit for full page text.', required: false },
+    },
+  },
+  {
+    name: 'browser_screenshot',
+    description: 'Take a screenshot of the current browser page and save it to a file. Returns the saved file path.',
+    parameters: {},
+  },
+  {
+    name: 'browser_close',
+    description: 'Close the browser session.',
+    parameters: {},
   },
 ];
 
@@ -708,6 +764,54 @@ export async function executeTool(
     } catch {
       return `[No live web results — Brave Search API key not connected. Use your training knowledge to answer this query as accurately as possible, and note that your information may not reflect the very latest developments.]`;
     }
+  }
+
+  // ── Browser tools (agent-browser CLI) ────────────────────────────────────
+  const runBrowserCmd = async (cmd: string): Promise<string> => {
+    try {
+      return await invoke<string>('krew_execute_command', { command: cmd });
+    } catch (e) {
+      const msg = String(e);
+      if (/not found|not recognized|No such file|ENOENT/i.test(msg)) {
+        return '[agent-browser not installed. Ask user to run: npm install -g agent-browser && agent-browser install]';
+      }
+      return `Browser error: ${msg}`;
+    }
+  };
+
+  if (toolName === 'browser_open') {
+    const url = str(args.url).replace(/"/g, '%22');
+    return await runBrowserCmd(`agent-browser open "${url}"`);
+  }
+  if (toolName === 'browser_search') {
+    const q = encodeURIComponent(str(args.query));
+    await runBrowserCmd(`agent-browser open "https://lite.duckduckgo.com/lite/?q=${q}"`);
+    const text = await runBrowserCmd('agent-browser get text body');
+    if (text.startsWith('[agent-browser not installed')) return text;
+    return text.length > 5000 ? text.slice(0, 5000) + '\n…[truncated]' : text;
+  }
+  if (toolName === 'browser_snapshot') {
+    return await runBrowserCmd('agent-browser snapshot');
+  }
+  if (toolName === 'browser_click') {
+    const sel = str(args.selector);
+    return await runBrowserCmd(`agent-browser click "${sel}"`);
+  }
+  if (toolName === 'browser_fill') {
+    const sel = str(args.selector);
+    const text = str(args.text).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return await runBrowserCmd(`agent-browser fill "${sel}" "${text}"`);
+  }
+  if (toolName === 'browser_get_text') {
+    const sel = str(args.selector) || 'body';
+    const text = await runBrowserCmd(`agent-browser get text "${sel}"`);
+    return text.length > 5000 ? text.slice(0, 5000) + '\n…[truncated]' : text;
+  }
+  if (toolName === 'browser_screenshot') {
+    return await runBrowserCmd('agent-browser screenshot');
+  }
+  if (toolName === 'browser_close') {
+    return await runBrowserCmd('agent-browser close');
   }
 
   // ── Notion ────────────────────────────────────────────────────────────────

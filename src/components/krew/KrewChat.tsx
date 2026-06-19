@@ -5,7 +5,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
 import type { Node, Edge } from '@xyflow/react';
 import { krewDb, credentialStore, krewMemoryDb, type KrewMemory } from '../../lib/krewDb';
-import { SYSTEM_TOOLS, AUTOMATION_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, buildKrewSystemPrompt, executeTool, needsCompression, type ToolDef } from '../../lib/krewTools';
+import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, buildKrewSystemPrompt, executeTool, needsCompression, type ToolDef } from '../../lib/krewTools';
 import { TaskProgress, type TaskPhase } from './TaskProgress';
 import { runParallelResearch } from '../../lib/researchSources';
 import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, type KrewAgent } from '../../lib/krewAgents';
@@ -1084,6 +1084,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
   const [taskPhases,    setTaskPhases]    = useState<TaskPhase[]>([]);
   const [connectRec,    setConnectRec]    = useState<string[]>([]);
   const [braveNudge, setBraveNudge] = useState(false);
+  const [browserNudge, setBrowserNudge] = useState(false);
 
   const stopRef            = useRef(false);
   const bottomRef          = useRef<HTMLDivElement>(null);
@@ -1184,6 +1185,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
       if (SERVICE_TOOLS[service]) tools.push(...SERVICE_TOOLS[service]);
     }
     if (agent.category === 'Ops') tools.push(...AUTOMATION_TOOLS);
+    if (agent.category === 'Ops' || agent.key === 'research_agent' || agent.key === 'researcher') tools.push(...BROWSER_TOOLS);
     if (agent.key === 'research_agent') tools.push(...RESEARCH_TOOLS);
     return tools;
   }, [creds, agent.key, agent.category]);
@@ -1664,6 +1666,7 @@ The prompt must be production-ready — specific enough for a motion designer to
                 if (SERVICE_TOOLS[service]) delegateTools.push(...SERVICE_TOOLS[service]);
               }
               if (targetAgent.category === 'Ops') delegateTools.push(...AUTOMATION_TOOLS);
+              if (targetAgent.category === 'Ops' || targetKey === 'research_agent' || targetKey === 'researcher') delegateTools.push(...BROWSER_TOOLS);
               if (targetKey === 'research_agent') delegateTools.push(...RESEARCH_TOOLS);
               const pipelineRule = '\n\nCRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.';
               const delegateSystem = targetAgent.systemPrompt + delegateMemBlock + pipelineRule + userBlock + connectedAppsBlock + '\n\n' + buildKrewSystemPrompt(delegateTools);
@@ -1736,6 +1739,7 @@ The prompt must be production-ready — specific enough for a motion designer to
                 try {
                   dResult = await executeTool(dTool, dArgs, creds, requestTerminalApproval, targetKey, user?.id ?? '');
                   if (dTool === 'web_search' && !creds.brave?.api_key) setBraveNudge(true);
+                  if (dTool.startsWith('browser_') && dResult.includes('[agent-browser not installed')) setBrowserNudge(true);
                 } catch (e) { dResult = `Error: ${e}`; }
                 setAgentStep(`${agentDisplayName} · thinking…`);
                 const cappedResult = dResult.length > 3000 ? dResult.slice(0, 3000) + '\n…[truncated for context]' : dResult;
@@ -1805,6 +1809,7 @@ The prompt must be production-ready — specific enough for a motion designer to
                 const wfTools: ToolDef[] = [...SYSTEM_TOOLS];
                 for (const svc of Object.keys(creds)) { if (SERVICE_TOOLS[svc]) wfTools.push(...SERVICE_TOOLS[svc]); }
                 if (wfAgent.category === 'Ops') wfTools.push(...AUTOMATION_TOOLS);
+                if (wfAgent.category === 'Ops' || wfKey === 'research_agent' || wfKey === 'researcher') wfTools.push(...BROWSER_TOOLS);
                 if (wfKey === 'research_agent') wfTools.push(...RESEARCH_TOOLS);
                 const wfSys = wfAgent.systemPrompt + wfMemBlock + '\n\nCRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.' + userBlock + connectedAppsBlock + '\n\n' + buildKrewSystemPrompt(wfTools);
                 const wfHist = [{ role: 'user', content: wfTask }];
@@ -1834,7 +1839,7 @@ The prompt must be production-ready — specific enough for a motion designer to
                   const dTool = String(dParsed.tool ?? ''); const dRoot = { ...dParsed } as Record<string, unknown>; delete dRoot.tool;
                   const dArgs = (dParsed.args && typeof dParsed.args === 'object') ? { ...dRoot, ...(dParsed.args as Record<string, unknown>) } : dRoot;
                   setAgentStep(`${agentHandle(wfAgent)} · ${dTool.replace(/_/g,' ')}…`); updateLastMsg((wfAccum || '') + `\n\n*${agentHandle(wfAgent)} is using ${dTool.replace(/_/g,' ')}…*`);
-                  let dRes = ''; try { dRes = await executeTool(dTool, dArgs, creds, requestTerminalApproval, wfKey, user?.id ?? ''); if (dTool === 'web_search' && !creds.brave?.api_key) setBraveNudge(true); } catch (e) { dRes = `Error: ${e}`; }
+                  let dRes = ''; try { dRes = await executeTool(dTool, dArgs, creds, requestTerminalApproval, wfKey, user?.id ?? ''); if (dTool === 'web_search' && !creds.brave?.api_key) setBraveNudge(true); if (dTool.startsWith('browser_') && dRes.includes('[agent-browser not installed')) setBrowserNudge(true); } catch (e) { dRes = `Error: ${e}`; }
                   const cappedWfRes = dRes.length > 3000 ? dRes.slice(0, 3000) + '\n…[truncated for context]' : dRes;
                   setAgentStep(`${agentHandle(wfAgent)} · thinking…`); wfHist.push({ role: 'assistant', content: wfFinal }); wfHist.push({ role: 'user', content: `<tool_result>${cappedWfRes}</tool_result>` });
                   // Keep context bounded: preserve initial task + last 6 messages
@@ -1899,6 +1904,7 @@ The prompt must be production-ready — specific enough for a motion designer to
             }
             // Show Brave nudge when web search runs without a Brave key (DuckDuckGo fallback gives stale data)
             if (tool === 'web_search' && !creds.brave?.api_key) setBraveNudge(true);
+            if (tool.startsWith('browser_') && toolResult.includes('[agent-browser not installed')) setBrowserNudge(true);
           }
         } catch (e) {
           toolResult = `Error: ${e}`;
@@ -2108,6 +2114,19 @@ The prompt must be production-ready — specific enough for a motion designer to
               onClick={() => { setBraveNudge(false); onOpenConnectApps?.(); }}
               className="shrink-0 text-[10px] font-mono px-2.5 py-1 rounded-lg bg-orange-500/20 text-orange-300 hover:bg-orange-500/30 border border-orange-500/30 transition-fast whitespace-nowrap"
             >Connect Brave →</button>
+          </div>
+        )}
+
+        {browserNudge && (
+          <div className="mx-3 mb-1 flex items-start gap-2.5 px-3 py-2.5 rounded-xl border border-accent/25 bg-accent/8">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-accent shrink-0 mt-0.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+            </svg>
+            <div className="flex-1 min-w-0">
+              <p className="text-[11px] font-semibold text-accent leading-tight">Browser Agent not installed</p>
+              <p className="text-[10px] text-nv-faint mt-0.5 leading-relaxed">Run in your terminal: <span className="font-mono text-nv-muted">npm install -g agent-browser</span> then <span className="font-mono text-nv-muted">agent-browser install</span> — Chrome downloads automatically.</p>
+            </div>
+            <button onClick={() => setBrowserNudge(false)} className="shrink-0 text-[10px] font-mono px-2 py-1 rounded-lg bg-nv-surface2 text-nv-faint hover:text-nv-muted border border-nv-border transition-fast">✕</button>
           </div>
         )}
 
