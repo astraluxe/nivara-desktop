@@ -82,16 +82,95 @@ function CopyBtn({ text }: { text: string }) {
 
 function renderInline(text: string): React.ReactNode[] {
   const result: React.ReactNode[] = [];
-  const regex = /\*\*(.+?)\*\*|\*(.+?)\*/g;
+  const regex = /\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+)`/g;
   let last = 0; let key = 0; let m: RegExpExecArray | null;
   while ((m = regex.exec(text)) !== null) {
     if (m.index > last) result.push(text.slice(last, m.index));
-    if (m[1] !== undefined) result.push(<strong key={key++} className="text-nv-text font-semibold">{m[1]}</strong>);
-    else result.push(<em key={key++} className="italic">{m[2]}</em>);
+    if      (m[1] !== undefined) result.push(<strong key={key++} className="text-nv-text font-semibold">{m[1]}</strong>);
+    else if (m[2] !== undefined) result.push(<em key={key++} className="italic text-nv-text/80">{m[2]}</em>);
+    else                         result.push(<code key={key++} className="bg-nv-surface2 px-1 rounded text-[10px] font-mono text-accent">{m[3]}</code>);
     last = m.index + m[0].length;
   }
   if (last < text.length) result.push(text.slice(last));
   return result;
+}
+
+function renderMarkdown(
+  content: string,
+  onRun: (c: string) => void,
+  onInsert: (c: string) => void
+): React.ReactNode[] {
+  const segments = content.split(/(```[\s\S]*?```)/g);
+  const nodes: React.ReactNode[] = [];
+  let key = 0;
+
+  for (const seg of segments) {
+    if (seg.startsWith('```')) {
+      const match = seg.match(/^```(\w*)\n?([\s\S]*?)```$/);
+      const lang  = match?.[1] ?? '';
+      const code  = match?.[2] ?? seg.slice(3, -3);
+      nodes.push(<CodeBlock key={key++} code={code.trim()} lang={lang} onRun={onRun} onInsert={onInsert} />);
+      continue;
+    }
+    if (!seg.trim()) continue;
+
+    const lines = seg.split('\n');
+    let bullets:  string[] = [];
+    let numbered: string[] = [];
+
+    const flushBullets = () => {
+      if (!bullets.length) return;
+      nodes.push(
+        <ul key={key++} className="list-disc pl-4 mb-1.5 space-y-0.5">
+          {bullets.map((b, i) => (
+            <li key={i} className="text-nv-muted text-[12px] leading-relaxed">{renderInline(b)}</li>
+          ))}
+        </ul>
+      );
+      bullets = [];
+    };
+    const flushNumbered = () => {
+      if (!numbered.length) return;
+      nodes.push(
+        <ol key={key++} className="list-decimal pl-4 mb-1.5 space-y-0.5">
+          {numbered.map((n, i) => (
+            <li key={i} className="text-nv-muted text-[12px] leading-relaxed">{renderInline(n)}</li>
+          ))}
+        </ol>
+      );
+      numbered = [];
+    };
+
+    for (const line of lines) {
+      const hm = line.match(/^(#{1,6})\s+(.*)/);
+      if (hm) {
+        flushBullets(); flushNumbered();
+        const lvl = hm[1].length;
+        const cls = lvl <= 2 ? 'text-[14px] font-bold text-nv-text mt-2 mb-1'
+                  : lvl <= 4 ? 'text-[13px] font-semibold text-nv-text mt-1.5 mb-0.5'
+                  :            'text-[12px] font-semibold text-nv-text mt-1 mb-0.5';
+        nodes.push(<p key={key++} className={cls}>{renderInline(hm[2])}</p>);
+        continue;
+      }
+      const bm = line.match(/^[*\-+]\s+(.*)/);
+      if (bm) { flushNumbered(); bullets.push(bm[1]); continue; }
+      const nm = line.match(/^\d+[.)]\s+(.*)/);
+      if (nm) { flushBullets(); numbered.push(nm[1]); continue; }
+      const qm = line.match(/^>\s*(.*)/);
+      if (qm) {
+        flushBullets(); flushNumbered();
+        nodes.push(<p key={key++} className="border-l-2 border-accent/30 pl-2 text-[12px] text-nv-faint italic mb-1">{renderInline(qm[1])}</p>);
+        continue;
+      }
+      if (!line.trim()) { flushBullets(); flushNumbered(); continue; }
+      flushBullets(); flushNumbered();
+      nodes.push(<p key={key++} className="text-nv-muted text-[12px] mb-1 leading-relaxed">{renderInline(line)}</p>);
+    }
+    flushBullets();
+    flushNumbered();
+  }
+
+  return nodes;
 }
 
 function MessageBubble({ msg, onRun, onInsert }: {
@@ -100,8 +179,6 @@ function MessageBubble({ msg, onRun, onInsert }: {
   onInsert: (c: string) => void;
 }) {
   const isUser = msg.role === 'user';
-  const parts = msg.content.split(/(```[\s\S]*?```)/g);
-
   return (
     <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} mb-2`}>
       <div className={`max-w-[85%] ${isUser
@@ -111,17 +188,7 @@ function MessageBubble({ msg, onRun, onInsert }: {
           <p className="text-[12px] text-nv-text">{msg.content}</p>
         ) : (
           <div className="text-[12px] leading-relaxed">
-            {parts.map((part, i) => {
-              if (part.startsWith('```')) {
-                const match = part.match(/^```(\w*)\n?([\s\S]*?)```$/);
-                const lang = match?.[1] ?? '';
-                const code = match?.[2] ?? part.slice(3, -3);
-                return <CodeBlock key={i} code={code.trim()} lang={lang} onRun={onRun} onInsert={onInsert} />;
-              }
-              return part ? (
-                <p key={i} className="text-nv-muted whitespace-pre-wrap mb-1">{renderInline(part)}</p>
-              ) : null;
-            })}
+            {renderMarkdown(msg.content, onRun, onInsert)}
             {msg.streaming && (
               <span className="inline-block w-1.5 h-3.5 bg-accent animate-pulse ml-0.5 rounded-sm" />
             )}
