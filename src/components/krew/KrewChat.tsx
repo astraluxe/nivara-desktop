@@ -1697,12 +1697,15 @@ The prompt must be production-ready — specific enough for a motion designer to
                   if (dTool === 'web_search' && !creds.brave?.api_key) setBraveNudge(true);
                 } catch (e) { dResult = `Error: ${e}`; }
                 setAgentStep(`${agentDisplayName} · thinking…`);
+                const cappedResult = dResult.length > 3000 ? dResult.slice(0, 3000) + '\n…[truncated for context]' : dResult;
                 delegateMsgsHist.push({ role: 'assistant', content: delegateFinalResp });
-                delegateMsgsHist.push({ role: 'user', content: `<tool_result>${dResult}</tool_result>` });
+                delegateMsgsHist.push({ role: 'user', content: `<tool_result>${cappedResult}</tool_result>` });
+                // Keep context bounded: preserve initial task + last 6 messages
+                if (delegateMsgsHist.length > 7) delegateMsgsHist.splice(1, delegateMsgsHist.length - 7);
               }
               const { cleanContent: afterPropExtract, proposal: delegateProposal } = extractProposal(delegateAccum || delegateFinalResp);
               const { cleanContent: delegateClean, choices: delegateChoices } = extractChoices(afterPropExtract);
-              toolResult = delegateClean;
+              toolResult = delegateClean.length > 2000 ? delegateClean.slice(0, 2000) + '\n…[summary continues]' : delegateClean;
               const bubbleContent = delegateClean.trim() ||
                 (delegateChoices ? `Here are ${delegateChoices.choices.length} variants — pick the one you want:` :
                  delegateProposal ? 'Automation plan ready — review the card below.' : '(no response)');
@@ -1790,7 +1793,10 @@ The prompt must be production-ready — specific enough for a motion designer to
                   const dArgs = (dParsed.args && typeof dParsed.args === 'object') ? { ...dRoot, ...(dParsed.args as Record<string, unknown>) } : dRoot;
                   setAgentStep(`${agentHandle(wfAgent)} · ${dTool.replace(/_/g,' ')}…`); updateLastMsg((wfAccum || '') + `\n\n*${agentHandle(wfAgent)} is using ${dTool.replace(/_/g,' ')}…*`);
                   let dRes = ''; try { dRes = await executeTool(dTool, dArgs, creds, requestTerminalApproval, wfKey, user?.id ?? ''); if (dTool === 'web_search' && !creds.brave?.api_key) setBraveNudge(true); } catch (e) { dRes = `Error: ${e}`; }
-                  setAgentStep(`${agentHandle(wfAgent)} · thinking…`); wfHist.push({ role: 'assistant', content: wfFinal }); wfHist.push({ role: 'user', content: `<tool_result>${dRes}</tool_result>` });
+                  const cappedWfRes = dRes.length > 3000 ? dRes.slice(0, 3000) + '\n…[truncated for context]' : dRes;
+                  setAgentStep(`${agentHandle(wfAgent)} · thinking…`); wfHist.push({ role: 'assistant', content: wfFinal }); wfHist.push({ role: 'user', content: `<tool_result>${cappedWfRes}</tool_result>` });
+                  // Keep context bounded: preserve initial task + last 6 messages
+                  if (wfHist.length > 7) wfHist.splice(1, wfHist.length - 7);
                 }
                 const { cleanContent: wfAfterProp, proposal: wfProp } = extractProposal(wfAccum || wfFinal);
                 const { cleanContent: wfClean, choices: wfChoices } = extractChoices(wfAfterProp);
@@ -1804,7 +1810,7 @@ The prompt must be production-ready — specific enough for a motion designer to
                 setTaskPhases((prev) => prev.map((p, i) => i === wfPhaseIdx ? { ...p, status: 'done' as const } : p));
                 wfPhaseIdx++;
               }
-              toolResult = wfResults.map((r, i) => `[${wfDelegations[i]?.agent_key ?? `Step ${i + 1}`}]\n${r}`).join('\n\n---\n\n');
+              toolResult = wfResults.map((r, i) => { const cap = r.length > 800 ? r.slice(0, 800) + '…' : r; return `[${wfDelegations[i]?.agent_key ?? `Step ${i + 1}`}]\n${cap}`; }).join('\n\n---\n\n');
               delegationKey = 'plan_workflow';
             }
           } else if (tool === 'research_companies') {
