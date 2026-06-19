@@ -217,7 +217,6 @@ export default function HomeModule({ onNavigate, onStartTour }: Props) {
     : 0;
   const planCfg      = getPlanConfig(plan);
   const tokenCap     = planCfg.monthlyTokens;
-  const tokenPct     = tokenCap ? Math.min(100, (monthlyUsed / tokenCap) * 100) : 0;
 
   return (
     <div className="h-full overflow-hidden bg-nv-bg flex flex-col">
@@ -278,23 +277,34 @@ export default function HomeModule({ onNavigate, onStartTour }: Props) {
             )}
           </div>
 
-          {/* Tokens */}
+          {/* Tasks */}
           <div className="bg-nv-surface border border-nv-border rounded-xl p-4 shrink-0">
             <div className="flex items-center justify-between mb-2">
-              <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono">Tokens</p>
+              <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono">Tasks</p>
               <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${PLAN_STYLE[plan] ?? PLAN_STYLE.explore}`}>{plan}</span>
             </div>
-            {tokenCap === null ? (
-              <p className="text-nv-text text-[13px] font-semibold mb-1.5">{planMeta.label}</p>
-            ) : (
-              <p className="text-nv-text text-[13px] font-semibold mb-1.5">{(tokenCap - monthlyUsed).toLocaleString()} left</p>
-            )}
-            <ProgressBar pct={tokenCap === null ? 100 : tokenPct} color={tokenPct > 85 ? 'bg-nv-red' : 'bg-accent'} />
-            <p className="text-[9px] text-nv-muted mt-1.5">
-              {tokenCap === null
-                ? (plan === 'custom' ? 'Unlimited' : planMeta.label)
-                : `${monthlyUsed.toLocaleString()} / ${tokenCap.toLocaleString()} used`}
-            </p>
+            {(() => {
+              const tokPerTask = (plan === 'free' || plan === 'explore') ? 2000 : 1000;
+              const totalTasks = tokenCap === null ? null : Math.floor(tokenCap / tokPerTask);
+              const tasksUsed  = Math.floor(monthlyUsed / tokPerTask);
+              const tasksLeft  = totalTasks === null ? null : Math.max(0, totalTasks - tasksUsed);
+              const taskPct    = totalTasks ? Math.min(100, (tasksUsed / totalTasks) * 100) : 0;
+              return (
+                <>
+                  {tasksLeft === null ? (
+                    <p className="text-nv-text text-[13px] font-semibold mb-1.5">Unlimited</p>
+                  ) : (
+                    <p className="text-nv-text text-[13px] font-semibold mb-1.5">{tasksLeft.toLocaleString()} tasks left</p>
+                  )}
+                  <ProgressBar pct={tasksLeft === null ? 5 : taskPct} color={taskPct > 85 ? 'bg-nv-red' : 'bg-accent'} />
+                  <p className="text-[9px] text-nv-muted mt-1.5">
+                    {tasksLeft === null
+                      ? planMeta.label
+                      : `${tasksUsed.toLocaleString()} / ${totalTasks!.toLocaleString()} done${planMeta.lifetime ? ' (lifetime)' : '/mo'}`}
+                  </p>
+                </>
+              );
+            })()}
           </div>
 
           {/* Recent sessions */}

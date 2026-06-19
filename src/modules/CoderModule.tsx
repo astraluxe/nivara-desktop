@@ -6,6 +6,8 @@ import TerminalPanel, { type TerminalHandle } from '../components/coder/Terminal
 import AIChat from '../components/coder/AIChat';
 import { useResize } from '../hooks/useResize';
 
+interface FileEntry { name: string; path: string; is_dir: boolean; }
+
 const STORAGE_KEY = 'nv-coder-state';
 
 function loadState() {
@@ -47,11 +49,13 @@ function Divider({ direction, onPointerDown }: {
 export default function CoderModule() {
   const saved = loadState();
 
-  const [projectPath, setProjectPath] = useState<string>(saved.projectPath ?? '');
-  const [openFile, setOpenFile]       = useState<string | null>(saved.openFile ?? null);
-  const [fileContent, setFileContent] = useState('');
-  const [chatOpen, setChatOpen]       = useState(true);
+  const [projectPath, setProjectPath]   = useState<string>(saved.projectPath ?? '');
+  const [openFile, setOpenFile]         = useState<string | null>(saved.openFile ?? null);
+  const [fileContent, setFileContent]   = useState('');
+  const [chatOpen, setChatOpen]         = useState(true);
   const [terminalOpen, setTerminalOpen] = useState(true);
+  const [dirContext, setDirContext]      = useState('');
+  const [fileHistory, setFileHistory]   = useState<{ path: string; content: string }[]>([]);
 
   const terminalRef = useRef<TerminalHandle>(null);
 
@@ -63,6 +67,18 @@ export default function CoderModule() {
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ projectPath, openFile }));
   }, [projectPath, openFile]);
+
+  useEffect(() => {
+    if (!projectPath) { setDirContext(''); return; }
+    async function buildDirContext() {
+      try {
+        const entries = await invoke<FileEntry[]>('list_dir', { path: projectPath });
+        const lines = entries.map(e => `${e.is_dir ? '📁' : '📄'} ${e.name}`);
+        setDirContext(lines.join('\n'));
+      } catch { setDirContext(''); }
+    }
+    buildDirContext();
+  }, [projectPath]);
 
   useEffect(() => {
     if (!openFile) { setFileContent(''); return; }
@@ -87,7 +103,26 @@ export default function CoderModule() {
 
   const getTerminalContext = useCallback(() => terminalRef.current?.getLastLines(20) ?? '', []);
   const runInTerminal      = useCallback((cmd: string) => { terminalRef.current?.writeCommand(cmd); }, []);
-  function handleInsertAtCursor(text: string) { setFileContent((prev) => prev + '\n' + text); }
+
+  function handleInsertAtCursor(text: string) {
+    setFileHistory((prev) => {
+      const snap = { path: openFile ?? '', content: fileContent };
+      return [...prev.slice(-9), snap];
+    });
+    const newContent = fileContent + '\n' + text;
+    setFileContent(newContent);
+    if (openFile) invoke('write_file', { path: openFile, content: newContent }).catch(() => {});
+  }
+
+  function handleRevert() {
+    setFileHistory((prev) => {
+      if (prev.length === 0) return prev;
+      const snap = prev[prev.length - 1];
+      setFileContent(snap.content);
+      if (snap.path) invoke('write_file', { path: snap.path, content: snap.content }).catch(() => {});
+      return prev.slice(0, -1);
+    });
+  }
 
   return (
     <div className="flex flex-col h-full bg-nv-bg overflow-hidden">
@@ -105,6 +140,13 @@ export default function CoderModule() {
           </>
         )}
         <div className="flex-1" />
+        {fileHistory.length > 0 && (
+          <button
+            onClick={handleRevert}
+            title={`Revert last AI insert (${fileHistory.length} snapshot${fileHistory.length > 1 ? 's' : ''} available)`}
+            className="text-[10px] px-2 py-0.5 rounded border border-nv-red/40 text-nv-red/70 hover:border-nv-red hover:text-nv-red transition-fast"
+          >↩ Revert</button>
+        )}
         <button
           onClick={() => setTerminalOpen((v) => !v)}
           title="Toggle terminal (Ctrl+`)"
@@ -178,6 +220,7 @@ export default function CoderModule() {
               projectPath={projectPath}
               currentFileContent={fileContent}
               currentFilePath={openFile}
+              dirContext={dirContext}
               getTerminalContext={getTerminalContext}
               onRunInTerminal={runInTerminal}
               onInsertAtCursor={handleInsertAtCursor}

@@ -13,6 +13,7 @@ interface Props {
   projectPath: string;
   currentFileContent: string;
   currentFilePath: string | null;
+  dirContext?: string;
   getTerminalContext: () => string;
   onRunInTerminal: (cmd: string) => void;
   onInsertAtCursor: (text: string) => void;
@@ -79,6 +80,20 @@ function CopyBtn({ text }: { text: string }) {
   );
 }
 
+function renderInline(text: string): React.ReactNode[] {
+  const result: React.ReactNode[] = [];
+  const regex = /\*\*(.+?)\*\*|\*(.+?)\*/g;
+  let last = 0; let key = 0; let m: RegExpExecArray | null;
+  while ((m = regex.exec(text)) !== null) {
+    if (m.index > last) result.push(text.slice(last, m.index));
+    if (m[1] !== undefined) result.push(<strong key={key++} className="text-nv-text font-semibold">{m[1]}</strong>);
+    else result.push(<em key={key++} className="italic">{m[2]}</em>);
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) result.push(text.slice(last));
+  return result;
+}
+
 function MessageBubble({ msg, onRun, onInsert }: {
   msg: DisplayMessage;
   onRun: (c: string) => void;
@@ -104,7 +119,7 @@ function MessageBubble({ msg, onRun, onInsert }: {
                 return <CodeBlock key={i} code={code.trim()} lang={lang} onRun={onRun} onInsert={onInsert} />;
               }
               return part ? (
-                <p key={i} className="text-nv-muted whitespace-pre-wrap mb-1">{part}</p>
+                <p key={i} className="text-nv-muted whitespace-pre-wrap mb-1">{renderInline(part)}</p>
               ) : null;
             })}
             {msg.streaming && (
@@ -119,10 +134,10 @@ function MessageBubble({ msg, onRun, onInsert }: {
 }
 
 export default function AIChat({
-  projectPath, currentFileContent, currentFilePath,
+  projectPath, currentFileContent, currentFilePath, dirContext,
   getTerminalContext, onRunInTerminal, onInsertAtCursor,
 }: Props) {
-  const [mode, setMode]               = useState<ConnectionMode>('local');
+  const [mode, setMode]               = useState<ConnectionMode>('nivara');
   const [apiKey, setApiKey]           = useState('');
   const [provider, setProvider]       = useState<Provider>('openai');
   const [modelName, setModelName]     = useState('gpt-4o');
@@ -198,8 +213,16 @@ export default function AIChat({
 
   function buildContext(): string {
     const parts: string[] = [];
+    parts.push(
+      `You are an expert coding assistant embedded in the adris.tech desktop IDE.\n` +
+      `You have full access to the user's project folder. When asked to edit or create files, ` +
+      `output the complete file content inside a fenced code block and the user will insert it.\n` +
+      `Always use the project structure below to reference correct paths.`
+    );
+    if (projectPath) parts.push(`Project root: ${projectPath}`);
+    if (dirContext)  parts.push(`Project structure:\n${dirContext}`);
     if (currentFilePath) {
-      parts.push(`Current file: ${currentFilePath}\n\`\`\`\n${currentFileContent.slice(0, 6000)}\n\`\`\``);
+      parts.push(`Currently open file: ${currentFilePath}\n\`\`\`\n${currentFileContent.slice(0, 6000)}\n\`\`\``);
     }
     const term = getTerminalContext();
     if (term.trim()) parts.push(`Last terminal output:\n\`\`\`\n${term}\n\`\`\``);

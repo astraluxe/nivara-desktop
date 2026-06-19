@@ -1019,7 +1019,7 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
     }
   }
 
-  const [mode,       setMode]       = useState<ConnectionMode>('own_key');
+  const [mode,       setMode]       = useState<ConnectionMode>('nivara');
   const [apiKey,     setApiKey]     = useState('');
   const [provider,   setProvider]   = useState<Provider>('openai');
   const [modelName,  setModelName]  = useState('gpt-4o');

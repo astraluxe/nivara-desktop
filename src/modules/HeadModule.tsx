@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
+import { getMonthlyUsage } from '../lib/tokenTracker';
 
 interface FeedbackRow {
   id: string;
@@ -26,20 +27,22 @@ const PLAN_STYLE: Record<string, string> = {
 };
 
 export default function HeadModule() {
-  const [rows, setRows]       = useState<FeedbackRow[]>([]);
-  const [filter, setFilter]   = useState<'all' | 'suggestion' | 'error'>('all');
-  const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState<string | null>(null);
+  const [rows, setRows]         = useState<FeedbackRow[]>([]);
+  const [filter, setFilter]     = useState<'all' | 'suggestion' | 'error'>('all');
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState<string | null>(null);
+  const [tokenUsed, setTokenUsed] = useState<number | null>(null);
 
   async function load() {
     setLoading(true);
     setError(null);
-    const { data, error: err } = await supabase
-      .from('feedback')
-      .select('*')
-      .order('created_at', { ascending: false });
+    const [{ data, error: err }, usage] = await Promise.all([
+      supabase.from('feedback').select('*').order('created_at', { ascending: false }),
+      getMonthlyUsage(),
+    ]);
     if (err) setError(err.message);
     else setRows(data ?? []);
+    setTokenUsed(usage);
     setLoading(false);
   }
 
@@ -77,6 +80,20 @@ export default function HeadModule() {
           }
         </button>
       </div>
+
+      {/* Token usage */}
+      {tokenUsed !== null && (
+        <div className="flex items-center gap-4 px-4 py-2 border-b border-nv-border shrink-0 bg-nv-surface/40">
+          <div className="flex flex-col">
+            <span className="text-[9px] font-mono text-nv-faint uppercase tracking-widest">My token usage (this month)</span>
+            <span className="text-[13px] font-semibold text-nv-text font-mono">{tokenUsed.toLocaleString()}</span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-[9px] font-mono text-nv-faint uppercase tracking-widest">Tasks completed</span>
+            <span className="text-[13px] font-semibold text-accent font-mono">{Math.floor(tokenUsed / 1000).toLocaleString()}</span>
+          </div>
+        </div>
+      )}
 
       {/* Filter tabs */}
       <div className="flex gap-1 px-4 py-2 border-b border-nv-border shrink-0">
