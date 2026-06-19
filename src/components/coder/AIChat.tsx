@@ -5,7 +5,7 @@ import { getPlanConfig } from '../../lib/planConfig';
 import UpgradeModal from '../UpgradeModal';
 import { streamAI, type ConnectionMode, type Provider, type AiMessage } from '../../lib/ai';
 import { chatDb, type ChatSession, type ChatMessage } from '../../lib/chatDb';
-import { trackTokenUsage } from '../../lib/tokenTracker';
+import { trackTokenUsage, getMonthlyUsage } from '../../lib/tokenTracker';
 import ConnectionBar from './ConnectionBar';
 import PromptLibrary from './PromptLibrary';
 
@@ -210,13 +210,15 @@ export default function AIChat({
   const [modelName, setModelName]     = useState('gpt-4o');
   const [baseUrl, setBaseUrl]         = useState('');
   const [localModel, setLocalModel]   = useState('llama3');
-  const [messages, setMessages]       = useState<DisplayMessage[]>([]);
-  const [input, setInput]             = useState('');
-  const [busy, setBusy]               = useState(false);
-  const [sessionId, setSessionId]     = useState<string | null>(null);
-  const [showHistory, setShowHistory] = useState(false);
-  const [sessions, setSessions]       = useState<ChatSession[]>([]);
-  const [showPrompts, setShowPrompts] = useState(false);
+  const [messages, setMessages]           = useState<DisplayMessage[]>([]);
+  const [input, setInput]                 = useState('');
+  const [busy, setBusy]                   = useState(false);
+  const [sessionId, setSessionId]         = useState<string | null>(null);
+  const [showHistory, setShowHistory]     = useState(false);
+  const [sessions, setSessions]           = useState<ChatSession[]>([]);
+  const [showPrompts, setShowPrompts]     = useState(false);
+  const [monthlyUsed, setMonthlyUsed]     = useState(0);
+  const [showQuotaUpgrade, setShowQuotaUpgrade] = useState(false);
   const bottomRef  = useRef<HTMLDivElement>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
 
@@ -224,6 +226,12 @@ export default function AIChat({
   const { profile, session } = useAuth();
   const planCfg      = getPlanConfig(profile?.plan ?? 'explore');
   const [showVoiceUpgrade, setShowVoiceUpgrade] = useState(false);
+
+  useEffect(() => {
+    const plan = profile?.plan ?? 'explore';
+    const isLifetime = plan === 'free' || plan === 'explore';
+    getMonthlyUsage(isLifetime).then(setMonthlyUsed).catch(() => {});
+  }, [profile?.plan]);
 
   // Voice state
   type VoiceStatus = 'idle' | 'recording' | 'transcribing' | 'error';
@@ -306,6 +314,11 @@ export default function AIChat({
   async function send() {
     const text = input.trim();
     if (!text || busy) return;
+    const tokenCap = planCfg.monthlyTokens;
+    if (tokenCap !== null && monthlyUsed >= tokenCap) {
+      setShowQuotaUpgrade(true);
+      return;
+    }
     setInput('');
     setBusy(true);
 
@@ -317,7 +330,7 @@ export default function AIChat({
     const sid = await ensureSession().catch(() => null);
     if (sid) chatDb.saveMessage(sid, 'user', text).catch(() => {});
 
-    const history: AiMessage[] = messages.slice(-20).map((m) => ({
+    const history: AiMessage[] = messages.slice(-10).map((m) => ({
       role: m.role,
       content: m.content,
     }));
@@ -345,7 +358,9 @@ export default function AIChat({
         });
         if (sid) chatDb.saveMessage(sid, 'assistant', assistantText).catch(() => {});
         if (mode === 'nivara') {
-          trackTokenUsage('coder', userContent.length + assistantText.length);
+          const chars = userContent.length + assistantText.length;
+          trackTokenUsage('coder', chars);
+          setMonthlyUsed(prev => prev + Math.ceil(chars / 4));
         }
         setBusy(false);
         cleanupRef.current = null;
@@ -390,7 +405,7 @@ export default function AIChat({
   }
 
   async function openHistory() {
-    const list = await chatDb.getSessions(projectPath || '/').catch(() => [] as ChatSession[]);
+    const list = await chatDb.getRecentSessions(30).catch(() => [] as ChatSession[]);
     setSessions(list);
     setShowHistory(true);
   }
@@ -598,6 +613,14 @@ export default function AIChat({
         currentPlan={profile?.plan ?? 'explore'}
         highlightPlan="builder"
         reason="Voice to Code requires Builder plan or higher."
+      />
+    )}
+    {showQuotaUpgrade && (
+      <UpgradeModal
+        onClose={() => setShowQuotaUpgrade(false)}
+        currentPlan={profile?.plan ?? 'explore'}
+        highlightPlan="solo"
+        reason="You've used all your AI tasks for this period. Upgrade to continue."
       />
     )}
     </>

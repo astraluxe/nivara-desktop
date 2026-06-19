@@ -94,6 +94,20 @@ function ReportView({ text, streaming }: { text: string; streaming: boolean }) {
 
 // ─── Main component ─────────────────────────────────────────────────────────────
 
+interface SavedResearch {
+  id: string;
+  name: string;
+  report: string;
+  ts: number;
+}
+
+const HISTORY_KEY = 'nv-research-history';
+
+function loadHistory(): SavedResearch[] {
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]'); }
+  catch { return []; }
+}
+
 export default function ResearchScreen({ initialQuery }: { initialQuery?: string }) {
   const { session } = useAuth();
   const callIdRef = useRef(0);
@@ -103,14 +117,15 @@ export default function ResearchScreen({ initialQuery }: { initialQuery?: string
   useEffect(() => {
     if (initialQuery) setBusinessName(initialQuery);
   }, [initialQuery]);
-  const [description,  setDescription]  = useState('');
-  const [geo,          setGeo]          = useState<'india' | 'global'>('india');
-  const [focus,        setFocus]        = useState<string[]>([]);
-  const [stage,        setStage]        = useState<Stage>('idle');
-  const [searches,     setSearches]     = useState<SearchResult[]>([]);
-  const [report,       setReport]       = useState('');
-  const [error,        setError]        = useState<string | null>(null);
-  const [planStatus,   setPlanStatus]   = useState('');
+  const [description,      setDescription]      = useState('');
+  const [geo,              setGeo]              = useState<'india' | 'global'>('india');
+  const [focus,            setFocus]            = useState<string[]>([]);
+  const [stage,            setStage]            = useState<Stage>('idle');
+  const [searches,         setSearches]         = useState<SearchResult[]>([]);
+  const [report,           setReport]           = useState('');
+  const [error,            setError]            = useState<string | null>(null);
+  const [planStatus,       setPlanStatus]       = useState('');
+  const [savedResearches,  setSavedResearches]  = useState<SavedResearch[]>(loadHistory);
 
   function toggleFocus(id: string) {
     setFocus(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
@@ -355,10 +370,20 @@ ${searchContext}
 Write the competitive intelligence report now.`;
 
     try {
-      await streamAI(systemPrompt, [{ role: 'user', content: userMsg }], chunk => {
+      const finalReport = await streamAI(systemPrompt, [{ role: 'user', content: userMsg }], chunk => {
         setReport(prev => prev + chunk);
       });
       setStage('done');
+      // Persist to history
+      const item: SavedResearch = {
+        id: Date.now().toString(),
+        name: businessName.trim() || description.trim().slice(0, 50),
+        report: finalReport,
+        ts: Date.now(),
+      };
+      const updated = [item, ...loadHistory()].slice(0, 15);
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+      setSavedResearches(updated);
     } catch (err) {
       setError(String(err));
       setStage('error');
@@ -371,6 +396,20 @@ Write the competitive intelligence report now.`;
     setReport('');
     setError(null);
     setPlanStatus('');
+  }
+
+  function loadSaved(item: SavedResearch) {
+    setBusinessName(item.name);
+    setReport(item.report);
+    setStage('done');
+    setSearches([]);
+    setError(null);
+  }
+
+  function deleteSaved(id: string) {
+    const updated = savedResearches.filter(r => r.id !== id);
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+    setSavedResearches(updated);
   }
 
   const isRunning = stage === 'planning' || stage === 'searching' || stage === 'analyzing';
@@ -490,6 +529,32 @@ Write the competitive intelligence report now.`;
               </svg>
               Research my market
             </button>
+
+            {savedResearches.length > 0 && (
+              <div className="mt-8">
+                <p className="text-[10px] text-nv-faint uppercase tracking-widest font-mono mb-2">Previous research</p>
+                <div className="space-y-1.5">
+                  {savedResearches.map(item => (
+                    <div key={item.id} className="flex items-center gap-2 group">
+                      <button
+                        onClick={() => loadSaved(item)}
+                        className="flex-1 text-left px-3 py-2 rounded-lg bg-nv-surface border border-nv-border hover:border-accent/40 transition-fast"
+                      >
+                        <p className="text-[12px] text-nv-text truncate">{item.name}</p>
+                        <p className="text-[10px] text-nv-faint font-mono">
+                          {new Date(item.ts).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                        </p>
+                      </button>
+                      <button
+                        onClick={() => deleteSaved(item.id)}
+                        className="opacity-0 group-hover:opacity-100 text-nv-faint hover:text-nv-red text-[12px] transition-fast px-1"
+                        title="Delete"
+                      >×</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

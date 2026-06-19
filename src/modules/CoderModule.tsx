@@ -73,7 +73,8 @@ export default function CoderModule() {
     async function buildDirContext() {
       try {
         const entries = await invoke<FileEntry[]>('list_dir', { path: projectPath });
-        const lines = entries.map(e => `${e.is_dir ? '📁' : '📄'} ${e.name}`);
+        const lines = entries.slice(0, 50).map(e => `${e.is_dir ? '📁' : '📄'} ${e.name}`);
+        if (entries.length > 50) lines.push(`… and ${entries.length - 50} more`);
         setDirContext(lines.join('\n'));
       } catch { setDirContext(''); }
     }

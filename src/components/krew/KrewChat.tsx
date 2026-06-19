@@ -16,6 +16,7 @@ import { type AutomationProposal } from './AutomationProposalModal';
 import AgentStatus from './AgentStatus';
 import { type ConnectionMode, type Provider } from '../../lib/ai';
 import ConnectionBar from '../coder/ConnectionBar';
+import { getMonthlyUsage } from '../../lib/tokenTracker';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -995,6 +996,13 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
   const [voiceErr,          setVoiceErr]           = useState<string | null>(null);
   const [showVoiceUpgrade,  setShowVoiceUpgrade]   = useState(false);
   const [showQuotaUpgrade,  setShowQuotaUpgrade]   = useState(false);
+  const [monthlyUsed,       setMonthlyUsed]         = useState(0);
+
+  useEffect(() => {
+    const plan = profile?.plan ?? 'explore';
+    const isLifetime = plan === 'free' || plan === 'explore';
+    getMonthlyUsage(isLifetime).then(setMonthlyUsed).catch(() => {});
+  }, [profile?.plan]);
 
   async function handleMicClick() {
     setVoiceErr(null);
@@ -1352,6 +1360,11 @@ The prompt must be production-ready — specific enough for a motion designer to
   async function send() {
     const text = input.trim();
     if ((!text && attachedFiles.length === 0) || busy) return;
+    const tokenCap = planCfg.monthlyTokens;
+    if (tokenCap !== null && monthlyUsed >= tokenCap) {
+      setShowQuotaUpgrade(true);
+      return;
+    }
     setInput('');
     setBusy(true);
     stopRef.current = false;
@@ -2214,18 +2227,26 @@ The prompt must be production-ready — specific enough for a motion designer to
                       for (let p = 1; p <= pdf.numPages; p++) {
                         const page = await pdf.getPage(p);
                         const content = await page.getTextContent();
-                        // Sort by Y descending (top of page first), then X ascending (left-to-right)
-                        // This reconstructs reading order for tables and multi-column layouts
-                        const sorted = content.items
-                          .filter((item: any) => 'str' in item && item.str)
-                          .map((item: any) => ({ str: item.str as string, x: item.transform[4] as number, y: item.transform[5] as number }))
-                          .sort((a: any, b: any) => {
-                            const dy = b.y - a.y;
-                            return Math.abs(dy) > 3 ? dy : a.x - b.x;
-                          });
-                        pageTexts.push(sorted.map((i: any) => i.str).join(' '));
+                        const rawItems = content.items
+                          .filter((item: any) => 'str' in item && item.str.trim())
+                          .map((item: any) => ({ str: item.str as string, x: item.transform[4] as number, y: item.transform[5] as number }));
+                        // Group items into rows by Y proximity (within 6px = same line)
+                        const rowMap = new Map<number, { str: string; x: number }[]>();
+                        for (const item of rawItems) {
+                          let rowKey = item.y;
+                          for (const k of rowMap.keys()) {
+                            if (Math.abs(k - item.y) <= 6) { rowKey = k; break; }
+                          }
+                          if (!rowMap.has(rowKey)) rowMap.set(rowKey, []);
+                          rowMap.get(rowKey)!.push({ str: item.str, x: item.x });
+                        }
+                        // Sort rows top→bottom; within each row sort left→right, join with spacing
+                        const lines = Array.from(rowMap.entries())
+                          .sort(([ya], [yb]) => yb - ya)
+                          .map(([, items]) => items.sort((a, b) => a.x - b.x).map(i => i.str).join('  '));
+                        pageTexts.push(lines.join('\n'));
                       }
-                      const extracted = pageTexts.join('\n').trim() || '[Scanned/image PDF — no text layer found]';
+                      const extracted = pageTexts.join('\n\n').trim() || '[Scanned/image PDF — no text layer found]';
                       results[i] = { name: file.name, content: extracted };
                       if (--pending === 0) setAttachedFiles(prev => [...prev, ...results]);
                     }).catch(() => {
