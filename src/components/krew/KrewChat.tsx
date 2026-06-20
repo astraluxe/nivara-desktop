@@ -1,5 +1,5 @@
 ﻿import { useState, useRef, useEffect, useCallback } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen, emit } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import * as pdfjsLib from 'pdfjs-dist';
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
@@ -17,6 +17,8 @@ import AgentStatus from './AgentStatus';
 import { type ConnectionMode, type Provider } from '../../lib/ai';
 import ConnectionBar from '../coder/ConnectionBar';
 import { getMonthlyUsage } from '../../lib/tokenTracker';
+import { getActiveSkillsContext } from '../../lib/skills';
+import SkillsPanel from './SkillsPanel';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1080,11 +1082,15 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
   const [agentMemories, setAgentMemories] = useState<KrewMemory[]>([]);
 
 const [studioExtracting, setStudioExtracting] = useState(false);
-  const [attachedFiles, setAttachedFiles] = useState<{ name: string; content: string }[]>([]);
+  const [attachedFiles, setAttachedFiles] = useState<{ name: string; content: string; isImage?: boolean; mimeType?: string }[]>([]);
   const [taskPhases,    setTaskPhases]    = useState<TaskPhase[]>([]);
   const [connectRec,    setConnectRec]    = useState<string[]>([]);
   const [braveNudge, setBraveNudge] = useState(false);
   const [browserNudge, setBrowserNudge] = useState(false);
+  const [showSkills, setShowSkills] = useState(false);
+  const [browserApproval, setBrowserApproval] = useState<{
+    id: string; actionType: string; description: string;
+  } | null>(null);
 
   const stopRef            = useRef(false);
   const bottomRef          = useRef<HTMLDivElement>(null);
@@ -1118,6 +1124,21 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     }
   }, [messages]);
 
+  // Listen for browser action approval requests from tool executor
+  useEffect(() => {
+    const ul = listen<{ id: string; actionType: string; description: string }>(
+      'nv-browser-approval-request',
+      (event) => setBrowserApproval(event.payload),
+    );
+    return () => { ul.then((f) => f()); };
+  }, []);
+
+  // Navigate to Connect Apps when a tool requests it
+  useEffect(() => {
+    const ul = listen('nv-open-connect-apps', () => { onOpenConnectApps?.(); });
+    return () => { ul.then((f) => f()); };
+  }, [onOpenConnectApps]);
+
   // Load session messages when sessionId changes
   useEffect(() => {
     // Skip wipe+reload if we just created this session in send() — messages are already in state
@@ -1136,9 +1157,12 @@ const [studioExtracting, setStudioExtracting] = useState(false);
             return { role: 'choices' as const, content: '', choices };
           } catch { return null; }
         }
+        const rawContent = r.role === 'assistant'
+          ? r.content.replace(/<tool_call>[\s\S]*/g, '').replace(/<tool_code>[\s\S]*/g, '').replace(/CHOICES_BLOCK:[\s\S]*/g, '').trim()
+          : r.content;
         return {
           role:     r.role as DisplayMsg['role'],
-          content:  r.content,
+          content:  rawContent,
           toolName: r.tool_name ?? undefined,
         };
       });
@@ -1178,6 +1202,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
       return [
         ...SYSTEM_TOOLS.filter(t => ['save_memory', 'recall_memory', 'forget_memory'].includes(t.name)),
         ...BOSS_TOOLS,
+        ...BROWSER_TOOLS,
       ];
     }
     const tools: ToolDef[] = [...SYSTEM_TOOLS];
@@ -1185,7 +1210,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
       if (SERVICE_TOOLS[service]) tools.push(...SERVICE_TOOLS[service]);
     }
     if (agent.category === 'Ops') tools.push(...AUTOMATION_TOOLS);
-    if (agent.category === 'Ops' || agent.key === 'research_agent' || agent.key === 'researcher') tools.push(...BROWSER_TOOLS);
+    tools.push(...BROWSER_TOOLS); // every agent can open the browser
     if (agent.key === 'research_agent') tools.push(...RESEARCH_TOOLS);
     return tools;
   }, [creds, agent.key, agent.category]);
@@ -1414,17 +1439,20 @@ The prompt must be production-ready — specific enough for a motion designer to
 
     // Build file block — cap each file at 8000 chars to avoid token explosion
     const FILE_CAP = 8000;
-    const fileBlock = currentFiles.length > 0
-      ? currentFiles.map(f => {
+    const nonImageFiles = currentFiles.filter(f => !f.isImage);
+    const imageFiles    = currentFiles.filter(f => f.isImage);
+    const fileBlock = nonImageFiles.length > 0
+      ? nonImageFiles.map(f => {
           const body = f.content.length > FILE_CAP ? f.content.slice(0, FILE_CAP) + `\n…[truncated — ${f.content.length - FILE_CAP} chars omitted]` : f.content;
           return `[File: ${f.name}]\n\`\`\`\n${body}\n\`\`\`\n\n`;
         }).join('')
       : '';
-    const apiText = fileBlock + text;
+    const imageBlock = imageFiles.map(f => `[IMAGE:${f.mimeType ?? 'image/png'}:${f.content}]`).join('\n');
+    const apiText = fileBlock + (imageBlock ? imageBlock + '\n' : '') + text;
 
-    // Chat bubble shows typed text + file name chips (not raw content)
+    // Chat bubble shows typed text + file/image name chips (not raw content)
     const displayText = currentFiles.length > 0
-      ? (text ? text + '\n' : '') + currentFiles.map(f => `📎 ${f.name}`).join('  ')
+      ? (text ? text + '\n' : '') + currentFiles.map(f => f.isImage ? `🖼 ${f.name}` : `📎 ${f.name}`).join('  ')
       : text;
 
     // Ensure session exists
@@ -1455,7 +1483,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     // bossPostfix comes AFTER buildKrewSystemPrompt so it is the absolute last instruction Gemini reads —
     // it overrides the "respond normally in clear markdown" final-answer rule that would otherwise let the boss answer directly.
     const bossPostfix = agent.key === 'boss'
-      ? '\n\n## BOSS OVERRIDE — HIGHEST PRIORITY — THIS OVERRIDES EVERYTHING ABOVE\nYou have TWO tools: delegate_to_agent (single agent) and plan_workflow (multi-agent, one shot). For CLEAR tasks: output a <tool_call> immediately. For VAGUE engineering/creative tasks: ask 2-3 focused questions first, then delegate.\n\nWHEN TO USE EACH:\n- Single agent needed → delegate_to_agent\n- Task needs 2-4 specialists → plan_workflow (list ALL agents at once — faster, no back-and-forth)\n- Do NOT call researcher unless the task genuinely requires current facts/research\n\nGREETING EXCEPTION: If the user\'s entire message is ONLY a greeting (hi / hello / hey) with no task, respond with ONE friendly sentence — no tool_call.\n\nCLARIFICATION EXCEPTION: For vague engineering/coding/creative tasks missing key details (e.g. "build me a website", "write some code", "create a banner"), ask 2-3 focused questions as plain text. Delegate ONLY after the user provides the details.'
+      ? '\n\n## BOSS OVERRIDE — HIGHEST PRIORITY — THIS OVERRIDES EVERYTHING ABOVE\nYou have tools: delegate_to_agent, plan_workflow, browser_open, AND browser_navigate. For CLEAR tasks: output a <tool_call> immediately. For VAGUE engineering/creative tasks: ask 2-3 focused questions first, then delegate.\n\nWHEN TO USE EACH:\n- Single agent needed → delegate_to_agent\n- Task needs 2-4 specialists → plan_workflow (list ALL agents at once — faster, no back-and-forth)\n- Do NOT call researcher unless the task genuinely requires current facts/research\n\nBROWSER RULE — CRITICAL:\n• To SHOW a website to the user (they want to see/visit it) → call browser_open directly with the URL. The user is logged in to all their accounts in Chrome.\n• To READ content from a website (notifications, feed, articles, inbox, etc.) → call browser_navigate directly with the URL. It returns the page text. First use of private sites (LinkedIn, Gmail) may need a one-time login in the browser window that opens.\n• NEVER delegate browser tasks. NEVER suggest "connect in Connect Apps" for browsing. Example: "check my LinkedIn notifications" → browser_navigate("https://www.linkedin.com/notifications/").\n\nGREETING EXCEPTION: If the user\'s entire message is ONLY a greeting (hi / hello / hey) with no task, respond with ONE friendly sentence — no tool_call.\n\nCLARIFICATION EXCEPTION: For vague engineering/coding/creative tasks missing key details (e.g. "build me a website", "write some code", "create a banner"), ask 2-3 focused questions as plain text. Delegate ONLY after the user provides the details.'
       : '';
     // Inject connected services so every agent knows what's available and can recommend missing ones
     const connectedList = Object.keys(creds);
@@ -1468,10 +1496,12 @@ The prompt must be production-ready — specific enough for a motion designer to
       (videoMcps.length > 0 ? `VIDEO GENERATION MCPs connected: ${videoMcps.join(', ')} — real video generation is available\n` : '') +
       (videoPlatforms.length > 0 ? `VIDEO UPLOAD PLATFORMS connected: ${videoPlatforms.join(', ')} — can publish videos here via video_publisher agent\n` : '') +
       (notVideoMcps.length > 0 ? `NOT connected for video: ${notVideoMcps.join(', ')} — if user wants real video, recommend connecting these in Connect Apps\n` : '') +
-      (notSocial.length > 0 ? `NOT connected for social posting: ${notSocial.join(', ')} — recommend connecting to enable auto-publishing\n` : '') +
-      `\nMCP RECOMMENDATION RULE: When a task needs a service that is NOT connected, proactively tell the user: "To do this, connect [service] in the Connect Apps tab (Krew → top-right). Higgsfield AI (https://mcp.higgsfield.ai/mcp) is the best single MCP for video generation with 30+ models." Be specific.\n`
+      (notSocial.length > 0 ? `NOT connected for API auto-posting: ${notSocial.join(', ')} — recommend connecting ONLY when the task needs automated posting/publishing via API (NOT for browser navigation — browser_open works for any website without credentials)\n` : '') +
+      `\nBROWSER NOTE: Browsing any website NEVER requires Connected Apps. Use browser_open to SHOW any website to the user (they are logged in to everything in Chrome). Use browser_navigate to READ page content (notifications, inbox, articles, etc.) — sessions persist so user logs in once per site. Connected apps are only needed for API actions like auto-posting or automation.\n` +
+      `\nMCP RECOMMENDATION RULE: When a task needs a service that is NOT connected AND the task specifically requires API access (sending messages, posting content, reading private data via API), proactively tell the user: "To do this, connect [service] in the Connect Apps tab (Krew → top-right). Higgsfield AI (https://mcp.higgsfield.ai/mcp) is the best single MCP for video generation with 30+ models." Be specific.\n`
       : '';
-    const systemPrt  = agent.systemPrompt + memBlock + (agent.key === 'boss' ? '' : userBlock) + connectedAppsBlock + '\n\n' + buildKrewSystemPrompt(tools) + bossPostfix;
+    const skillsBlock = getActiveSkillsContext(agent.key);
+    const systemPrt  = agent.systemPrompt + memBlock + (agent.key === 'boss' ? '' : userBlock) + connectedAppsBlock + skillsBlock + '\n\n' + buildKrewSystemPrompt(tools) + bossPostfix;
 
     // Build history from display messages (user + assistant only, not tool calls/results)
     let history: { role: string; content: string }[] = messages
@@ -1495,7 +1525,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     try {
       while (steps < MAX_STEPS && !stopRef.current) {
         steps++;
-        setAgentStep(`Reasoning… (step ${steps})`);
+        setAgentStep(`Thinking… ${Math.round((steps / MAX_STEPS) * 100)}%`);
         setAgentTool(null);
 
         let stepText = '';
@@ -1666,7 +1696,7 @@ The prompt must be production-ready — specific enough for a motion designer to
                 if (SERVICE_TOOLS[service]) delegateTools.push(...SERVICE_TOOLS[service]);
               }
               if (targetAgent.category === 'Ops') delegateTools.push(...AUTOMATION_TOOLS);
-              if (targetAgent.category === 'Ops' || targetKey === 'research_agent' || targetKey === 'researcher') delegateTools.push(...BROWSER_TOOLS);
+              delegateTools.push(...BROWSER_TOOLS); // every agent can open the browser
               if (targetKey === 'research_agent') delegateTools.push(...RESEARCH_TOOLS);
               const pipelineRule = '\n\nCRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.';
               const delegateSystem = targetAgent.systemPrompt + delegateMemBlock + pipelineRule + userBlock + connectedAppsBlock + '\n\n' + buildKrewSystemPrompt(delegateTools);
@@ -1737,8 +1767,7 @@ The prompt must be production-ready — specific enough for a motion designer to
                 updateLastMsg((delegateAccum || '') + `\n\n*${agentDisplayName} is using ${toolDisplayName}…*`);
                 let dResult = '';
                 try {
-                  dResult = await executeTool(dTool, dArgs, creds, requestTerminalApproval, targetKey, user?.id ?? '');
-                  if (dTool === 'web_search' && !creds.brave?.api_key) setBraveNudge(true);
+                  dResult = await executeTool(dTool, dArgs, creds, requestTerminalApproval, targetKey, user?.id ?? '', `${sidRef.current ?? 'main'}-${targetKey}`);
                   if (dTool.startsWith('browser_') && dResult.includes('[agent-browser not installed]')) setBrowserNudge(true);
                 } catch (e) { dResult = `Error: ${e}`; }
                 setAgentStep(`${agentDisplayName} · thinking…`);
@@ -1809,7 +1838,7 @@ The prompt must be production-ready — specific enough for a motion designer to
                 const wfTools: ToolDef[] = [...SYSTEM_TOOLS];
                 for (const svc of Object.keys(creds)) { if (SERVICE_TOOLS[svc]) wfTools.push(...SERVICE_TOOLS[svc]); }
                 if (wfAgent.category === 'Ops') wfTools.push(...AUTOMATION_TOOLS);
-                if (wfAgent.category === 'Ops' || wfKey === 'research_agent' || wfKey === 'researcher') wfTools.push(...BROWSER_TOOLS);
+                wfTools.push(...BROWSER_TOOLS); // every agent can open the browser
                 if (wfKey === 'research_agent') wfTools.push(...RESEARCH_TOOLS);
                 const wfSys = wfAgent.systemPrompt + wfMemBlock + '\n\nCRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.' + userBlock + connectedAppsBlock + '\n\n' + buildKrewSystemPrompt(wfTools);
                 const wfHist = [{ role: 'user', content: wfTask }];
@@ -1839,7 +1868,7 @@ The prompt must be production-ready — specific enough for a motion designer to
                   const dTool = String(dParsed.tool ?? ''); const dRoot = { ...dParsed } as Record<string, unknown>; delete dRoot.tool;
                   const dArgs = (dParsed.args && typeof dParsed.args === 'object') ? { ...dRoot, ...(dParsed.args as Record<string, unknown>) } : dRoot;
                   setAgentStep(`${agentHandle(wfAgent)} · ${dTool.replace(/_/g,' ')}…`); updateLastMsg((wfAccum || '') + `\n\n*${agentHandle(wfAgent)} is using ${dTool.replace(/_/g,' ')}…*`);
-                  let dRes = ''; try { dRes = await executeTool(dTool, dArgs, creds, requestTerminalApproval, wfKey, user?.id ?? ''); if (dTool === 'web_search' && !creds.brave?.api_key) setBraveNudge(true); if (dTool.startsWith('browser_') && dRes.includes('[agent-browser not installed')) setBrowserNudge(true); } catch (e) { dRes = `Error: ${e}`; }
+                  let dRes = ''; try { dRes = await executeTool(dTool, dArgs, creds, requestTerminalApproval, wfKey, user?.id ?? '', `${sidRef.current ?? 'main'}-${wfKey}`); if (dTool.startsWith('browser_') && dRes.includes('[agent-browser not installed')) setBrowserNudge(true); } catch (e) { dRes = `Error: ${e}`; }
                   const cappedWfRes = dRes.length > 3000 ? dRes.slice(0, 3000) + '\n…[truncated for context]' : dRes;
                   setAgentStep(`${agentHandle(wfAgent)} · thinking…`); wfHist.push({ role: 'assistant', content: wfFinal }); wfHist.push({ role: 'user', content: `<tool_result>${cappedWfRes}</tool_result>` });
                   // Keep context bounded: preserve initial task + last 6 messages
@@ -1898,12 +1927,10 @@ The prompt must be production-ready — specific enough for a motion designer to
               toolResult = `fetch_open_data failed: ${e}`;
             }
           } else {
-            toolResult = await executeTool(tool, args, creds, requestTerminalApproval, agent.key, user?.id ?? '');
+            toolResult = await executeTool(tool, args, creds, requestTerminalApproval, agent.key, user?.id ?? '', `${sidRef.current ?? 'main'}-${agent.key}`);
             if (tool === 'save_memory' || tool === 'forget_memory') {
               krewMemoryDb.getAll(agent.key).then(setAgentMemories).catch(() => {});
             }
-            // Show Brave nudge when web search runs without a Brave key (DuckDuckGo fallback gives stale data)
-            if (tool === 'web_search' && !creds.brave?.api_key) setBraveNudge(true);
             if (tool.startsWith('browser_') && toolResult.includes('[agent-browser not installed]')) setBrowserNudge(true);
           }
         } catch (e) {
@@ -2021,7 +2048,70 @@ The prompt must be production-ready — specific enough for a motion designer to
       {/* terminal approval modal removed — commands run silently */}
 
 
-      <div className="flex flex-col h-full">
+      <div className="flex flex-col h-full relative">
+        {/* Skills panel overlay */}
+        {showSkills && <SkillsPanel onClose={() => setShowSkills(false)} />}
+
+        {/* Browser action approval modal */}
+        {browserApproval && (
+          <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+            <div className="w-[340px] mx-4 bg-nv-bg border border-nv-border rounded-2xl shadow-2xl overflow-hidden">
+              {/* Header */}
+              <div className="flex items-center gap-2.5 px-4 py-3 border-b border-nv-border bg-nv-surface">
+                <div className="w-7 h-7 rounded-lg bg-orange-500/15 flex items-center justify-center shrink-0">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f97316" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                    <line x1="12" y1="9" x2="12" y2="13"/><circle cx="12" cy="17" r=".5" fill="currentColor"/>
+                  </svg>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[12px] font-semibold text-nv-text">Agent wants permission</p>
+                  <p className="text-[10px] text-nv-faint capitalize">
+                    {browserApproval.actionType.replace(/_/g, ' ')}
+                  </p>
+                </div>
+              </div>
+
+              {/* Description */}
+              <div className="px-4 py-3">
+                <p className="text-[12px] text-nv-text leading-relaxed">{browserApproval.description}</p>
+              </div>
+
+              {/* Actions */}
+              <div className="flex flex-col gap-1.5 px-4 pb-4">
+                <button
+                  onClick={() => {
+                    emit('nv-browser-approval-response', { id: browserApproval.id, approved: true, always: false });
+                    setBrowserApproval(null);
+                  }}
+                  className="w-full py-2 rounded-xl bg-accent text-white text-[12px] font-semibold hover:bg-accent/85 transition-fast"
+                >
+                  Allow
+                </button>
+                <button
+                  onClick={() => {
+                    emit('nv-browser-approval-response', { id: browserApproval.id, approved: true, always: true });
+                    setBrowserApproval(null);
+                  }}
+                  className="w-full py-2 rounded-xl bg-nv-surface border border-nv-border text-nv-text text-[12px] font-medium hover:bg-nv-surface2 transition-fast"
+                >
+                  Always Allow
+                  <span className="text-nv-faint text-[10px] ml-1 font-normal">(for this action type)</span>
+                </button>
+                <button
+                  onClick={() => {
+                    emit('nv-browser-approval-response', { id: browserApproval.id, approved: false, always: false });
+                    setBrowserApproval(null);
+                  }}
+                  className="w-full py-2 rounded-xl text-nv-faint text-[12px] font-medium hover:text-nv-text hover:bg-nv-surface transition-fast"
+                >
+                  Deny
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Agent identity header */}
         <div
           className={`flex items-center gap-2.5 px-3 py-2 border-b border-nv-border shrink-0 bg-nv-bg ${onBrowseAgents ? 'cursor-pointer hover:bg-nv-surface transition-fast' : ''}`}
@@ -2047,6 +2137,15 @@ The prompt must be production-ready — specific enough for a motion designer to
               Switch
             </span>
           )}
+          <button
+            onClick={(e) => { e.stopPropagation(); setShowSkills((v) => !v); }}
+            title="Skills Library"
+            className={`w-5 h-5 flex items-center justify-center rounded transition-fast shrink-0 ${showSkills ? 'text-accent bg-accent/10' : 'text-nv-faint hover:text-nv-muted hover:bg-nv-surface'}`}
+          >
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M8 1l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 10.7l-3.8 2.1.7-4.3-3.1-3 4.3-.6z"/>
+            </svg>
+          </button>
         </div>
 
         {/* Agent status bar */}
@@ -2239,10 +2338,18 @@ The prompt must be production-ready — specific enough for a motion designer to
             <div className="flex flex-wrap gap-1.5 mb-2">
               {attachedFiles.map((f, i) => (
                 <div key={i} className="flex items-center gap-1.5 px-2 py-1 bg-accent/10 border border-accent/25 rounded-lg">
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-accent shrink-0">
-                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
-                  </svg>
-                  <span className="text-[10px] font-mono text-accent max-w-[150px] truncate">{f.name}</span>
+                  {f.isImage ? (
+                    <img
+                      src={`data:${f.mimeType ?? 'image/png'};base64,${f.content}`}
+                      className="w-10 h-7 object-cover rounded"
+                      alt={f.name}
+                    />
+                  ) : (
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-accent shrink-0">
+                      <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+                    </svg>
+                  )}
+                  <span className="text-[10px] font-mono text-accent max-w-[120px] truncate">{f.name}</span>
                   <button
                     onClick={() => setAttachedFiles(prev => prev.filter((_, j) => j !== i))}
                     className="text-accent/50 hover:text-accent transition-fast text-[12px] leading-none ml-0.5"
@@ -2347,7 +2454,30 @@ The prompt must be production-ready — specific enough for a motion designer to
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
-              placeholder={`Ask ${agent.humanName} anything… (Shift+Enter for newline)`}
+              onPaste={(e) => {
+                const items = Array.from(e.clipboardData?.items ?? []);
+                const imageItem = items.find(item => item.type.startsWith('image/'));
+                if (imageItem) {
+                  e.preventDefault();
+                  const blob = imageItem.getAsFile();
+                  if (!blob) return;
+                  const mimeType = blob.type || 'image/png';
+                  const reader = new FileReader();
+                  reader.onload = (ev) => {
+                    const dataUrl = ev.target?.result as string;
+                    const base64 = dataUrl.split(',')[1] ?? '';
+                    const ext = mimeType.split('/')[1] ?? 'png';
+                    setAttachedFiles(prev => [...prev, {
+                      name: `pasted-image.${ext}`,
+                      content: base64,
+                      isImage: true,
+                      mimeType,
+                    }]);
+                  };
+                  reader.readAsDataURL(blob);
+                }
+              }}
+              placeholder={`Ask ${agent.humanName} anything… (Shift+Enter for newline, paste image)`}
               rows={2}
               className="flex-1 bg-nv-bg border border-nv-border rounded-lg px-2.5 py-1.5
                 text-[11px] text-nv-text outline-none focus:border-accent transition-fast
@@ -2392,7 +2522,7 @@ The prompt must be production-ready — specific enough for a motion designer to
             ) : (
               <button
                 onClick={send}
-                disabled={!input.trim()}
+                disabled={!input.trim() && attachedFiles.length === 0}
                 className="text-[11px] px-2.5 py-1.5 rounded-lg bg-accent text-white
                   hover:bg-accent-dim transition-fast disabled:opacity-40 shrink-0"
               >Send</button>

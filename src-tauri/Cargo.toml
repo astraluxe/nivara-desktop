@@ -1,8 +1,8 @@
 [package]
 name = "nivara-desktop"
-version = "1.0.22"
-description = "adris.tech Desktop — India's AI operating system"
-authors = ["adris.tech"]
+version = "1.0.56"
+description = "adris.tech — AI workspace for founders and teams"
+authors = ["adris.tech <hello@adris.tech>"]
 edition = "2021"
 default-run = "nivara-desktop"
 

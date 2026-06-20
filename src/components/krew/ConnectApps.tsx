@@ -2,6 +2,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { credentialStore } from '../../lib/krewDb';
 import ServiceSetupModal from './ServiceSetupModal';
+import { consumeServiceRequest } from '../../lib/connectAppsRequest';
 
 interface ServiceDef {
   id:     string;
@@ -169,6 +170,12 @@ export default function ConnectApps({ onClose }: Props) {
   }, []);
 
   useEffect(() => { reload(); }, [reload]);
+
+  // Auto-open setup modal if a tool pre-selected a service
+  useEffect(() => {
+    const pending = consumeServiceRequest();
+    if (pending) setSetup(pending);
+  }, []);
 
   async function disconnect(service: string) {
     await credentialStore.delete(service).catch(() => {});
