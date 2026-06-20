@@ -1049,14 +1049,13 @@ fn models_delete(app: tauri::AppHandle, model_id: String) -> Result<(), String> 
 struct LlamaEngineProcess(Mutex<Option<tokio::process::Child>>);
 
 fn llama_engine_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
-    // 1. Bundled in app resources
+    let exe_name = if cfg!(target_os = "windows") { "adris-engine.exe" } else { "adris-engine" };
     if let Ok(res) = app.path().resource_dir() {
-        let p = res.join("adris-engine.exe");
+        let p = res.join(exe_name);
         if p.exists() { return Some(p); }
     }
-    // 2. Downloaded at runtime into app data
     if let Ok(data) = app.path().app_data_dir() {
-        let p = data.join("adris-ai").join("adris-engine.exe");
+        let p = data.join("adris-ai").join(exe_name);
         if p.exists() { return Some(p); }
     }
     None
@@ -1128,7 +1127,8 @@ async fn models_download_engine(app: tauri::AppHandle) -> Result<(), String> {
     let dest_dir = app.path().app_data_dir()
         .map_err(|e| e.to_string())?.join("adris-ai");
     tokio::fs::create_dir_all(&dest_dir).await.map_err(|e| e.to_string())?;
-    let dest_exe = dest_dir.join("adris-engine.exe");
+    let exe_name = if cfg!(target_os = "windows") { "adris-engine.exe" } else { "adris-engine" };
+    let dest_exe = dest_dir.join(exe_name);
     if dest_exe.exists() { return Ok(()); }
 
     let _ = app.emit("engine_download_progress",
@@ -2090,8 +2090,12 @@ async fn setup_agent_browser(app: tauri::AppHandle) -> Result<(), String> {
 
         if !in_path && !local_bin.exists() {
             // Download binary from GitHub releases (no Node.js required)
-            let url = if cfg!(windows) {
+            let url = if cfg!(target_os = "windows") {
                 "https://github.com/vercel-labs/agent-browser/releases/latest/download/agent-browser-win32-x64.exe"
+            } else if cfg!(target_os = "linux") && cfg!(target_arch = "aarch64") {
+                "https://github.com/vercel-labs/agent-browser/releases/latest/download/agent-browser-linux-arm64"
+            } else if cfg!(target_os = "linux") {
+                "https://github.com/vercel-labs/agent-browser/releases/latest/download/agent-browser-linux-x64"
             } else if cfg!(target_arch = "aarch64") {
                 "https://github.com/vercel-labs/agent-browser/releases/latest/download/agent-browser-darwin-arm64"
             } else {
@@ -2138,6 +2142,186 @@ async fn run_agent_browser(app: tauri::AppHandle, args: String) -> Result<String
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
         // If command wasn't found, return None so we try the local binary
         if stderr.contains("is not recognized") || stderr.contains("not found") || stderr.contains("No such file") { return None; }
+        let combined = format!("{}{}", stdout, stderr).trim().to_string();
+        Some(if combined.is_empty() { "(done)".to_string() } else { combined })
+    };
+
+    if let Some(r) = run_cmd("agent-browser") { return Ok(r); }
+
+    let local_bin = get_agent_browser_local_path(&app);
+    if local_bin.exists() {
+        if let Some(r) = run_cmd(&format!("\"{}\"", local_bin.display())) { return Ok(r); }
+    }
+
+    Ok("[agent-browser not installed]".to_string())
+}
+
+// ── Open a URL in the user's actual Chrome/default browser (with their profile & sessions) ──
+#[tauri::command]
+async fn open_in_system_browser(url: String) -> Result<String, String> {
+    use std::process::Command;
+    // Sanitise URL — must start with http/https
+    let safe_url = if url.starts_with("http://") || url.starts_with("https://") {
+        url.clone()
+    } else {
+        format!("https://{}", url.trim_start_matches('/'))
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        // Try user's Chrome first (opens with their profile/sessions)
+        let chrome_paths = [
+            format!("{}\\Google\\Chrome\\Application\\chrome.exe",
+                std::env::var("PROGRAMFILES").unwrap_or_default()),
+            format!("{}\\Google\\Chrome\\Application\\chrome.exe",
+                std::env::var("PROGRAMFILES(X86)").unwrap_or_default()),
+            format!("{}\\Google\\Chrome\\Application\\chrome.exe",
+                std::env::var("LOCALAPPDATA").unwrap_or_default()),
+        ];
+        for chrome in &chrome_paths {
+            if std::path::Path::new(chrome).exists() {
+                let _ = Command::new(chrome)
+                    .args(["--new-window", &safe_url])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .spawn();
+                return Ok(format!("Opened {} in Chrome", safe_url));
+            }
+        }
+        // Fall back to system default browser
+        let _ = Command::new("cmd")
+            .args(["/C", "start", "", &safe_url])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("open").arg(&safe_url).spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Try Chrome / Chromium first (keeps user's login sessions), then fall back to xdg-open
+        let linux_chrome_paths = [
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/chromium",
+        ];
+        for chrome in &linux_chrome_paths {
+            if std::path::Path::new(chrome).exists() {
+                let _ = Command::new(chrome).args(["--new-window", &safe_url]).spawn();
+                return Ok(format!("Opened {} in Chrome", safe_url));
+            }
+        }
+        let _ = Command::new("xdg-open").arg(&safe_url).spawn();
+    }
+    Ok(format!("Opened {} in your browser", safe_url))
+}
+
+// ── agent-browser with per-session isolation (each agent/conversation gets its own Playwright state) ──
+#[tauri::command]
+async fn run_agent_browser_session(app: tauri::AppHandle, session_id: String, args: String) -> Result<String, String> {
+    use std::process::Command;
+
+    // Sanitise session_id for use in path
+    let safe_id: String = session_id.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .take(64)
+        .collect();
+    let session_dir = std::env::temp_dir().join(format!("adris-browser-{}", safe_id));
+    let _ = std::fs::create_dir_all(&session_dir);
+
+    let run_cmd = |bin: &str| -> Option<String> {
+        let full = format!("{} {}", bin, args);
+        let out = {
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                Command::new("cmd")
+                    .args(["/C", &full])
+                    .env("TEMP", &session_dir)
+                    .env("TMP",  &session_dir)
+                    .creation_flags(0x08000000)
+                    .output().ok()?
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Command::new("sh")
+                    .args(["-c", &full])
+                    .env("TMPDIR", &session_dir)
+                    .output().ok()?
+            }
+        };
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        if stderr.contains("is not recognized") || stderr.contains("not found") || stderr.contains("No such file") {
+            return None;
+        }
+        let combined = format!("{}{}", stdout, stderr).trim().to_string();
+        Some(if combined.is_empty() { "(done)".to_string() } else { combined })
+    };
+
+    if let Some(r) = run_cmd("agent-browser") { return Ok(r); }
+
+    let local_bin = get_agent_browser_local_path(&app);
+    if local_bin.exists() {
+        if let Some(r) = run_cmd(&format!("\"{}\"", local_bin.display())) { return Ok(r); }
+    }
+
+    Ok("[agent-browser not installed]".to_string())
+}
+
+// ── agent-browser with persistent profile (sessions saved across tasks — user logs in once) ──
+#[tauri::command]
+async fn run_browser_persistent(app: tauri::AppHandle, args: String) -> Result<String, String> {
+    use std::process::Command;
+
+    let persistent_dir = {
+        #[cfg(target_os = "windows")]
+        {
+            let local_app = std::env::var("LOCALAPPDATA")
+                .unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().into_owned());
+            std::path::PathBuf::from(local_app).join("adris.tech").join("browser-session")
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            std::path::PathBuf::from(home).join(".local").join("share").join("adris-tech").join("browser-session")
+        }
+    };
+    let _ = std::fs::create_dir_all(&persistent_dir);
+
+    let run_cmd = |bin: &str| -> Option<String> {
+        let full = format!("{} {}", bin, args);
+        let out = {
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                Command::new("cmd")
+                    .args(["/C", &full])
+                    .env("TEMP", &persistent_dir)
+                    .env("TMP",  &persistent_dir)
+                    .creation_flags(0x08000000)
+                    .output().ok()?
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Command::new("sh")
+                    .args(["-c", &full])
+                    .env("TMPDIR", &persistent_dir)
+                    .output().ok()?
+            }
+        };
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        if stderr.contains("is not recognized") || stderr.contains("not found") || stderr.contains("No such file") {
+            return None;
+        }
+        // Detect Chrome crash / conflict
+        if stderr.contains("Chrome exited") || stderr.contains("DevToolsActivePort") || stderr.contains("failed to launch") {
+            return Some("[browser-crash]".to_string());
+        }
         let combined = format!("{}{}", stdout, stderr).trim().to_string();
         Some(if combined.is_empty() { "(done)".to_string() } else { combined })
     };
@@ -2638,6 +2822,62 @@ async fn notion_exchange_code(
     resp.text().await.map_err(|e| e.to_string())
 }
 
+// ─── Gemini vision: parse [IMAGE:mimeType:base64] markers in message content ──
+fn parse_gemini_parts(content: &str) -> Vec<serde_json::Value> {
+    let mut parts: Vec<serde_json::Value> = Vec::new();
+    let marker = "[IMAGE:";
+    let mut pos = 0;
+    while pos < content.len() {
+        if let Some(rel) = content[pos..].find(marker) {
+            let start = pos + rel;
+            let text_before = content[pos..start].trim();
+            if !text_before.is_empty() {
+                parts.push(serde_json::json!({ "text": text_before }));
+            }
+            let after = start + marker.len();
+            if let Some(colon) = content[after..].find(':') {
+                let mime = &content[after..after + colon];
+                let data_start = after + colon + 1;
+                if let Some(end_bracket) = content[data_start..].find(']') {
+                    let base64_data = &content[data_start..data_start + end_bracket];
+                    parts.push(serde_json::json!({
+                        "inline_data": { "mime_type": mime, "data": base64_data }
+                    }));
+                    pos = data_start + end_bracket + 1;
+                    continue;
+                }
+            }
+            // Malformed marker — include remaining as text
+            let tail = content[start..].trim();
+            if !tail.is_empty() { parts.push(serde_json::json!({ "text": tail })); }
+            break;
+        } else {
+            let tail = content[pos..].trim();
+            if !tail.is_empty() { parts.push(serde_json::json!({ "text": tail })); }
+            break;
+        }
+    }
+    if parts.is_empty() { parts.push(serde_json::json!({ "text": content })); }
+    parts
+}
+
+// Strip [IMAGE:...] markers for providers that don't support vision
+fn strip_image_markers(content: &str) -> String {
+    let mut result = String::new();
+    let mut remaining = content;
+    while let Some(start) = remaining.find("[IMAGE:") {
+        result.push_str(&remaining[..start]);
+        result.push_str("[image attached]");
+        if let Some(end) = remaining[start..].find(']') {
+            remaining = &remaining[start + end + 1..];
+        } else {
+            break;
+        }
+    }
+    result.push_str(remaining);
+    result
+}
+
 // ─── Extended ai_stream with system_prompt support ────────────────────────────
 
 #[tauri::command]
@@ -2697,7 +2937,10 @@ async fn krew_ai_stream(
             let prov = provider.unwrap_or_else(|| "openai".to_string());
             if prov == "claude" {
                 let model = model_name.unwrap_or_else(|| "claude-3-5-haiku-20241022".to_string());
-                let mut body = serde_json::json!({ "model": model, "max_tokens": 4096, "stream": true, "messages": messages });
+                let clean_msgs: Vec<serde_json::Value> = messages.iter().map(|m| serde_json::json!({
+                    "role": m.role, "content": strip_image_markers(&m.content)
+                })).collect();
+                let mut body = serde_json::json!({ "model": model, "max_tokens": 4096, "stream": true, "messages": clean_msgs });
                 if !sys.is_empty() { body["system"] = serde_json::Value::String(sys); }
                 let resp = reqwest::Client::new().post("https://api.anthropic.com/v1/messages")
                     .header("x-api-key", &key).header("anthropic-version", "2023-06-01")
@@ -2722,7 +2965,7 @@ async fn krew_ai_stream(
                 let url = format!("https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?key={}&alt=sse", model, key);
                 let gemini_msgs: Vec<serde_json::Value> = messages.iter().map(|m| serde_json::json!({
                     "role": if m.role == "assistant" { "model" } else { "user" },
-                    "parts": [{ "text": m.content }]
+                    "parts": parse_gemini_parts(&m.content)
                 })).collect();
                 let mut body = serde_json::json!({ "contents": gemini_msgs });
                 if !sys.is_empty() { body["systemInstruction"] = serde_json::json!({"parts":[{"text":sys}]}); }
@@ -2771,7 +3014,7 @@ async fn krew_ai_stream(
                 let model = model_name.unwrap_or_else(|| "gpt-4o".to_string());
                 let mut all_msgs: Vec<serde_json::Value> = Vec::new();
                 if !sys.is_empty() { all_msgs.push(serde_json::json!({"role":"system","content":sys})); }
-                for m in &messages { all_msgs.push(serde_json::json!({"role":m.role,"content":m.content})); }
+                for m in &messages { all_msgs.push(serde_json::json!({"role":m.role,"content":strip_image_markers(&m.content)})); }
                 let body = serde_json::json!({ "model": model, "messages": all_msgs, "stream": true });
                 let resp = reqwest::Client::new().post(&endpoint)
                     .header(header::AUTHORIZATION, format!("Bearer {}", key))
@@ -2820,7 +3063,7 @@ async fn krew_ai_stream(
                 let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:streamGenerateContent?key={}&alt=sse", gkey);
                 let contents: Vec<serde_json::Value> = messages.iter().map(|m| serde_json::json!({
                     "role": if m.role == "assistant" { "model" } else { "user" },
-                    "parts": [{ "text": m.content }]
+                    "parts": parse_gemini_parts(&m.content)
                 })).collect();
                 let mut body = serde_json::json!({ "contents": contents, "generationConfig": { "maxOutputTokens": 32768 } });
                 if !sys.is_empty() { body["systemInstruction"] = serde_json::json!({"parts":[{"text": sys}]}); }
@@ -2892,7 +3135,11 @@ async fn krew_ai_stream(
                     let status = resp.status();
                     let body_text = resp.text().await.unwrap_or_default();
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body_text) {
-                        if let Some(e) = v["error"].as_str() { emit_error(e.to_string()); return Ok(()); }
+                        // krew-stream returns {"error":"..."}, Supabase gateway returns {"message":"..."}
+                        let err_msg = v["error"].as_str()
+                            .or_else(|| v["message"].as_str())
+                            .or_else(|| v["msg"].as_str());
+                        if let Some(e) = err_msg { emit_error(e.to_string()); return Ok(()); }
                     }
                     emit_error(format!("{} — {}", status, body_text.chars().take(300).collect::<String>()));
                     return Ok(());
@@ -3625,14 +3872,13 @@ struct MeshMachineInfo {
 }
 
 fn mesh_exe_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
-    // 1. Bundled in installer (production)
+    let bin = if cfg!(target_os = "windows") { "exo-node.exe" } else { "exo-node" };
     if let Ok(res) = app.path().resource_dir() {
-        let p = res.join("mesh").join("exo-node.exe");
+        let p = res.join("mesh").join(bin);
         if p.exists() { return Some(p); }
     }
-    // 2. Downloaded at runtime (fallback / dev mode)
     if let Ok(data) = app.path().app_data_dir() {
-        let p = data.join("mesh").join("exo-node.exe");
+        let p = data.join("mesh").join(bin);
         if p.exists() { return Some(p); }
     }
     None
@@ -3653,7 +3899,8 @@ async fn mesh_download_extension(app: tauri::AppHandle) -> Result<(), String> {
         .join("mesh");
     tokio::fs::create_dir_all(&dest_dir).await.map_err(|e| e.to_string())?;
 
-    let dest = dest_dir.join("exo-node.exe");
+    let bin_name = if cfg!(target_os = "windows") { "exo-node.exe" } else { "exo-node" };
+    let dest = dest_dir.join(bin_name);
 
     let macro_emit = {
         let app = app.clone();
@@ -3665,7 +3912,13 @@ async fn mesh_download_extension(app: tauri::AppHandle) -> Result<(), String> {
     macro_emit("Fetching Mesh engine…", 5);
 
     // URL is hidden from frontend — only lives in compiled binary
-    let url = "https://github.com/astraluxe/nivara-desktop/releases/latest/download/exo-node.exe";
+    let url = if cfg!(target_os = "windows") {
+        "https://github.com/astraluxe/nivara-desktop/releases/latest/download/exo-node.exe"
+    } else if cfg!(target_arch = "aarch64") {
+        "https://github.com/astraluxe/nivara-desktop/releases/latest/download/exo-node-linux-arm64"
+    } else {
+        "https://github.com/astraluxe/nivara-desktop/releases/latest/download/exo-node-linux-x64"
+    };
 
     let client = reqwest::Client::builder()
         .user_agent("NivaraDesktop/1.0")
@@ -3695,6 +3948,14 @@ async fn mesh_download_extension(app: tauri::AppHandle) -> Result<(), String> {
         }));
     }
     file.flush().await.map_err(|e| e.to_string())?;
+    drop(file);
+
+    // On Linux/macOS make the binary executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
+    }
 
     macro_emit("Mesh engine installed!", 100);
     Ok(())
@@ -3790,7 +4051,7 @@ fn voice_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
 #[tauri::command]
 fn voice_check_setup(app: tauri::AppHandle) -> serde_json::Value {
     let dir = voice_dir(&app);
-    let has_binary = dir.join("whisper-cli.exe").exists() || dir.join("whisper-main.exe").exists();
+    let has_binary = find_whisper_exe(&dir).is_some();
     let has_model  = dir.join("ggml-base.en.bin").exists();
     serde_json::json!({
         "ready":      has_binary && has_model,
@@ -3800,7 +4061,8 @@ fn voice_check_setup(app: tauri::AppHandle) -> serde_json::Value {
 }
 
 fn find_whisper_exe(dir: &std::path::Path) -> Option<std::path::PathBuf> {
-    let candidates = ["whisper-cli.exe", "main.exe", "whisper.exe"];
+    // Windows binaries first, then Linux/macOS binaries (no extension)
+    let candidates = ["whisper-cli.exe", "main.exe", "whisper.exe", "whisper-cli", "whisper-main", "main"];
     // Check dir itself
     for name in &candidates {
         let p = dir.join(name);
@@ -3844,6 +4106,7 @@ async fn voice_download_setup(app: tauri::AppHandle) -> Result<(), String> {
         .send().await.map_err(|e| format!("Could not reach release server: {e}"))?
         .json().await.map_err(|e| e.to_string())?;
 
+    #[cfg(target_os = "windows")]
     let asset_url = release["assets"]
         .as_array()
         .and_then(|assets| {
@@ -3857,9 +4120,25 @@ async fn voice_download_setup(app: tauri::AppHandle) -> Result<(), String> {
         .map(|s| s.to_string())
         .ok_or("No Windows binary found in latest release")?;
 
-    // Step 2: download the zip (~30 MB)
+    #[cfg(not(target_os = "windows"))]
+    let asset_url = release["assets"]
+        .as_array()
+        .and_then(|assets| {
+            assets.iter().find(|a| {
+                let name = a["name"].as_str().unwrap_or("").to_lowercase();
+                (name.contains("ubuntu") || name.contains("linux") || name.contains("macos"))
+                    && (name.ends_with(".tar.gz") || name.ends_with(".zip"))
+            })
+        })
+        .and_then(|a| a["browser_download_url"].as_str())
+        .map(|s| s.to_string())
+        .ok_or("No Linux/macOS binary found in latest release")?;
+
+    // Step 2: download the archive (~30 MB)
     progress!("Downloading voice engine…", 10u32);
-    let zip_path = dir.join("whisper-win.zip");
+    let is_zip = asset_url.ends_with(".zip");
+    let archive_name = if is_zip { "whisper-archive.zip" } else { "whisper-archive.tar.gz" };
+    let zip_path = dir.join(archive_name);
     let resp = client.get(&asset_url).send().await.map_err(|e| e.to_string())?;
     let total = resp.content_length().unwrap_or(1).max(1);
     let mut downloaded = 0u64;
@@ -3876,29 +4155,59 @@ async fn voice_download_setup(app: tauri::AppHandle) -> Result<(), String> {
         }));
     }
     file.flush().await.map_err(|e| e.to_string())?;
+    drop(file);
 
-    // Step 3: extract using PowerShell Expand-Archive (built into Windows 10/11)
+    // Step 3: extract archive
     progress!("Installing voice engine…", 62u32);
     let extract_dir = dir.join("whisper-bin");
     let _ = std::fs::remove_dir_all(&extract_dir);
-    let ps_cmd = format!(
-        "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
-        zip_path.display(), extract_dir.display()
-    );
-    let out = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &ps_cmd])
-        .output()
-        .map_err(|e| format!("Extraction failed to start: {e}"))?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        return Err(format!("Extraction error: {}", err.chars().take(200).collect::<String>()));
+
+    #[cfg(target_os = "windows")]
+    {
+        let ps_cmd = format!(
+            "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+            zip_path.display(), extract_dir.display()
+        );
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &ps_cmd])
+            .output()
+            .map_err(|e| format!("Extraction failed to start: {e}"))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Err(format!("Extraction error: {}", err.chars().take(200).collect::<String>()));
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = std::fs::create_dir_all(&extract_dir);
+        let out = if is_zip {
+            std::process::Command::new("unzip")
+                .args(["-o", &zip_path.to_string_lossy(), "-d", &extract_dir.to_string_lossy()])
+                .output()
+        } else {
+            std::process::Command::new("tar")
+                .args(["xzf", &zip_path.to_string_lossy(), "-C", &extract_dir.to_string_lossy(), "--strip-components=1"])
+                .output()
+        }.map_err(|e| format!("Extraction failed: {e}"))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Err(format!("Extraction error: {}", err.chars().take(200).collect::<String>()));
+        }
     }
 
     let binary = find_whisper_exe(&extract_dir)
         .ok_or("Could not find whisper executable in archive — please try again")?;
-    let dest_bin = dir.join("whisper-cli.exe");
+    let dest_bin_name = if cfg!(target_os = "windows") { "whisper-cli.exe" } else { "whisper-cli" };
+    let dest_bin = dir.join(dest_bin_name);
     std::fs::copy(&binary, &dest_bin)
         .map_err(|e| format!("Could not install binary: {e}"))?;
+
+    // Make executable on Linux/macOS
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dest_bin, std::fs::Permissions::from_mode(0o755));
+    }
 
     let _ = std::fs::remove_file(&zip_path);
     let _ = std::fs::remove_dir_all(&extract_dir);
@@ -4064,8 +4373,8 @@ async fn voice_stop_and_transcribe(
     }
 
     let dir        = voice_dir(&app);
-    let bin_path   = if dir.join("whisper-cli.exe").exists() { dir.join("whisper-cli.exe") }
-                     else { dir.join("whisper-main.exe") };
+    let bin_path   = find_whisper_exe(&dir)
+        .ok_or_else(|| "Voice binary not found. Use the mic button to set up voice first.".to_string())?;
     let model_path = dir.join("ggml-base.en.bin");
 
     if !bin_path.exists() || !model_path.exists() {
@@ -4259,8 +4568,19 @@ fn get_active_adapter() -> String {
         }
         "Wi-Fi".to_string()
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     { "en0".to_string() }
+    #[cfg(target_os = "linux")]
+    {
+        // Try to find the active network interface via `ip route`
+        if let Ok(out) = std::process::Command::new("ip").args(["route", "get", "1.1.1.1"]).output() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            if let Some(dev) = s.split("dev ").nth(1).and_then(|r| r.split_whitespace().next()) {
+                return dev.to_string();
+            }
+        }
+        "eth0".to_string()
+    }
 }
 
 fn apply_dns(adapter: &str, primary: &str, secondary: &str) -> Result<(), String> {
@@ -4289,10 +4609,33 @@ fn apply_dns(adapter: &str, primary: &str, secondary: &str) -> Result<(), String
             .output();
         Ok(())
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
+    {
+        // Use resolvectl (systemd-resolved) — available on Ubuntu 20.04+, Fedora, Arch
+        let out = std::process::Command::new("resolvectl")
+            .args(["dns", adapter, primary, secondary])
+            .output();
+        match out {
+            Ok(o) if o.status.success() => {
+                // Also set the domain for this interface
+                let _ = std::process::Command::new("resolvectl").args(["domain", adapter, "~."]).output();
+                Ok(())
+            }
+            Ok(o) => {
+                let err = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+                if err.to_lowercase().contains("permission") || err.to_lowercase().contains("access denied") {
+                    Err("admin_required".to_string())
+                } else {
+                    Err(err.trim().to_string())
+                }
+            }
+            Err(e) => Err(format!("resolvectl not available: {e}. Install systemd-resolved.")),
+        }
+    }
+    #[cfg(target_os = "macos")]
     {
         let _ = (adapter, primary, secondary);
-        Err("DNS switching is only supported on Windows.".to_string())
+        Err("DNS switching is not supported on macOS via this method.".to_string())
     }
 }
 
@@ -4318,10 +4661,22 @@ fn revert_dns(adapter: &str) -> Result<(), String> {
         }
         Ok(())
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
+    {
+        // Revert to DHCP DNS by telling systemd-resolved to use automatic DNS
+        let out = std::process::Command::new("resolvectl")
+            .args(["revert", adapter])
+            .output();
+        match out {
+            Ok(o) if o.status.success() => Ok(()),
+            Ok(o) => Err(format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)).trim().to_string()),
+            Err(e) => Err(format!("resolvectl not available: {e}")),
+        }
+    }
+    #[cfg(target_os = "macos")]
     {
         let _ = adapter;
-        Err("DNS switching is only supported on Windows.".to_string())
+        Err("DNS switching is not supported on macOS.".to_string())
     }
 }
 
@@ -4842,6 +5197,9 @@ pub fn run() {
             krew_execute_command,
             setup_agent_browser,
             run_agent_browser,
+            run_agent_browser_session,
+            run_browser_persistent,
+            open_in_system_browser,
             krew_http_call,
             gmail_fetch_emails,
             gmail_fetch_email_body,
