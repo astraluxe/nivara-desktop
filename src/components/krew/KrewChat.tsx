@@ -1223,7 +1223,11 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     // Network / connectivity errors — hide URL, API key, provider name
     if (/sending request|connect(ion)?|network|timeout|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|failed to fetch/i.test(msg))
       return 'Connection failed. Please check your internet connection and try again.';
-    if (/401|unauthori[sz]ed|invalid.*key|api.?key/i.test(msg))
+    if (/not signed in|session expired|jwt expired|invalid jwt|sign in again/i.test(msg))
+      return 'Session expired — please sign out and sign back in to adris.tech.';
+    if (/401/i.test(msg))
+      return 'Session expired — please sign out and sign back in to adris.tech.';
+    if (/unauthori[sz]ed|invalid.*key/i.test(msg))
       return 'Invalid API key. Go to Connect Apps and check your key.';
     if (/429|rate.?limit|quota/i.test(msg)) {
       // Check if it's our own token-limit message from krew-stream (passes through unmodified)

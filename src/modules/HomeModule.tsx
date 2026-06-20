@@ -294,7 +294,10 @@ export default function HomeModule({ onNavigate, onStartTour }: Props) {
                   {tasksLeft === null ? (
                     <p className="text-nv-text text-[13px] font-semibold mb-1.5">Unlimited</p>
                   ) : (
-                    <p className="text-nv-text text-[13px] font-semibold mb-1.5">{tasksLeft.toLocaleString()} tasks left</p>
+                    <p className="text-nv-text text-[13px] font-semibold mb-1.5">
+                      <span className="text-accent">{Math.round(100 - taskPct)}%</span>
+                      <span className="text-nv-muted text-[10px] font-normal ml-1">remaining</span>
+                    </p>
                   )}
                   <ProgressBar pct={tasksLeft === null ? 5 : taskPct} color={taskPct > 85 ? 'bg-nv-red' : 'bg-accent'} />
                   <p className="text-[9px] text-nv-muted mt-1.5">

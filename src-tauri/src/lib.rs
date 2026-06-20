@@ -3135,7 +3135,11 @@ async fn krew_ai_stream(
                     let status = resp.status();
                     let body_text = resp.text().await.unwrap_or_default();
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body_text) {
-                        if let Some(e) = v["error"].as_str() { emit_error(e.to_string()); return Ok(()); }
+                        // krew-stream returns {"error":"..."}, Supabase gateway returns {"message":"..."}
+                        let err_msg = v["error"].as_str()
+                            .or_else(|| v["message"].as_str())
+                            .or_else(|| v["msg"].as_str());
+                        if let Some(e) = err_msg { emit_error(e.to_string()); return Ok(()); }
                     }
                     emit_error(format!("{} — {}", status, body_text.chars().take(300).collect::<String>()));
                     return Ok(());
