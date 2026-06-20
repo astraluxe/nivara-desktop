@@ -761,6 +761,7 @@ NEVER say "connect an API", "link a service", "I can't access that", or "go to C
 
 **Examples (ALWAYS use browser tools — NEVER say "connect API"):**
 - "Check my LinkedIn notifications" → browser_navigate "https://www.linkedin.com/notifications/" (reads + returns content)
+- "Check my LinkedIn posts / recent activity" → browser_navigate "https://www.linkedin.com/in/[their-username]/recent-activity/all/" (reads posts — must include profile slug)
 - "Show me LinkedIn" → browser_open "https://www.linkedin.com" (opens in their Chrome)
 - "What emails do I have?" → browser_navigate "https://mail.google.com" (reads inbox)
 - "Open my Gmail" → browser_open "https://mail.google.com" (shows to user)
@@ -969,8 +970,17 @@ export async function executeTool(
     // Read the page text (persistent session — logged in if user previously authenticated)
     const raw = await invoke<string>('run_browser_persistent', { args: 'get text body' }).catch(e => String(e));
     const text = cleanBrowserText(raw);
-    if (!text || text.length < 30) {
-      return `Opened ${url} in the agent browser. The page appears empty or requires login.\n\nIf this is a private page (LinkedIn, Gmail, etc.): a browser window should have opened — please log in there. After logging in, try this request again — sessions are saved permanently so you only need to do this once per site.`;
+
+    // Detect login / auth-wall pages — don't feed them to the agent as real content
+    const snippet = text.slice(0, 1000).toLowerCase();
+    const isLoginPage = (
+      (snippet.includes('sign in') || snippet.includes('log in') || snippet.includes('join now')) &&
+      (snippet.includes('password') || snippet.includes('email') || snippet.includes('phone'))
+    ) || snippet.includes('authwall') || snippet.includes('auth-wall');
+
+    if (!text || text.length < 30 || isLoginPage) {
+      const host = (() => { try { return new URL(url).hostname; } catch { return url; } })();
+      return `[Login required] The agent browser is not logged in to ${host}. A browser window has opened — please log in there with your account. Sessions are saved permanently, so this is a one-time step.\n\nAfter logging in, ask me again and I will read the page successfully.`;
     }
     const content = text.length > 6000 ? text.slice(0, 6000) + '\n…[page continues — truncated for length]' : text;
     return `Content from ${url}:\n\n${content}`;
