@@ -1,6 +1,6 @@
 [package]
 name = "nivara-desktop"
-version = "1.0.56"
+version = "1.0.57"
 description = "adris.tech — AI workspace for founders and teams"
 authors = ["adris.tech <hello@adris.tech>"]
 edition = "2021"
