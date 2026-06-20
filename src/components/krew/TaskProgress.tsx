@@ -91,9 +91,9 @@ export function TaskProgress({ phases, onDismiss, recommendConnect, onConnectApp
     >
       {/* Top row — progress bar + dismiss */}
       <div className="flex items-center gap-2.5 px-3 py-2 border-b border-nv-border/60">
-        <span className="text-[10px] font-mono text-nv-muted shrink-0">Task Progress</span>
+        <span className="text-[10px] font-mono text-nv-muted shrink-0">Working…</span>
         <span className="text-[10px] font-mono text-accent shrink-0">
-          {doneCount} / {totalCount}
+          {progressPct}%
         </span>
         {/* Progress bar */}
         <div className="flex-1 h-1.5 rounded-full bg-nv-bg overflow-hidden">

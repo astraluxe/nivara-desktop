@@ -81,6 +81,11 @@ interface VaultEnableResult {
   failover_used: boolean;
 }
 
+// Detect Linux via userAgent (Tauri webview reports the host OS)
+const IS_LINUX = typeof navigator !== 'undefined'
+  && /linux/i.test(navigator.userAgent)
+  && !/android/i.test(navigator.userAgent);
+
 export default function VaultModule() {
   const [enabled, setEnabled]         = useState(false);
   const [mode, setMode]               = useState("swift");
@@ -280,8 +285,23 @@ export default function VaultModule() {
         </svg>
       </div>
 
+      {/* Linux info banner — systemd-resolved, no scheduled task needed */}
+      {IS_LINUX && (
+        <div className="relative z-10 flex items-start gap-3 px-4 py-3 rounded-xl border border-accent/30 bg-accent/6">
+          <svg className="flex-shrink-0 mt-0.5 text-accent" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>
+          </svg>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm text-nv-text font-medium">Vault on Linux</p>
+            <p className="text-xs text-nv-muted mt-0.5">
+              Vault uses <span className="font-mono text-accent">systemd-resolved</span> to apply DNS — fully supported on Ubuntu 20.04+, Fedora, and Arch. No extra setup needed.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* One-time setup banner — shown until NivaraVaultDNS scheduled task is installed */}
-      {setupNeeded && (
+      {setupNeeded && !IS_LINUX && (
         <div className="relative z-10 flex items-start gap-3 px-4 py-3 rounded-xl border border-accent/30 bg-accent/6">
           <svg className="flex-shrink-0 mt-0.5 text-accent" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M12 2L2 7v10l10 5 10-5V7L12 2z"/><path d="M12 22V12"/><path d="M12 12L2 7"/><path d="M12 12l10-5"/>

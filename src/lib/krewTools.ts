@@ -1,6 +1,94 @@
 ﻿import { invoke } from '@tauri-apps/api/core';
-import { emit } from '@tauri-apps/api/event';
+import { emit, listen } from '@tauri-apps/api/event';
 import { krewMemoryDb } from './krewDb';
+
+// ─── Browser text cleaner (strips JSON-LD blobs, ads, cookie banners, nav noise) ─
+function cleanBrowserText(text: string): string {
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let blanks = 0;
+
+  const skipPatterns = [
+    /\b(advertisement|sponsored content?|promoted|ad choices|ad by)\b/i,
+    /^(accept\s+(all\s+)?(cookies?|tracking)|decline\s+(all|cookies?)|manage\s+(cookie\s+)?preferences?|cookie\s+(policy|settings?|consent|notice|banner)|this\s+site\s+uses\s+cookies?|we\s+(value\s+your\s+privacy|use\s+cookies?))/i,
+    /^(subscribe\s+to\s+(our|the)\s+(newsletter|updates?|news)|sign\s+up\s+for\s+(our|the|free)\s+(newsletter|updates?)|join\s+[\d,]+\s*(million|thousand|k\+)?\s*(users?|members?|subscribers?|readers?))/i,
+    /^\s*©\s*\d{4}/,
+    /^(privacy\s+policy|terms\s+of\s+(service|use)|cookie\s+policy|accessibility\s+statement|do\s+not\s+sell(\s+my\s+data)?)\s*$/i,
+    /^(click\s+here|read\s+more|show\s+more|load\s+more|see\s+all|view\s+all|see\s+more)\s*$/i,
+    /^(share\s+this\s+(article|post|story)|follow\s+us\s+on|trending\s+now|you\s+may\s+also\s+like|recommended\s+for\s+you|related\s+articles?)\s*$/i,
+    /^\s*\[?skip\s+(to\s+)?(main\s+)?(content|navigation|footer)\]?\s*$/i,
+    /^(back\s+to\s+top|scroll\s+to\s+top)\s*$/i,
+    /^(enable\s+(javascript|js)|your\s+browser\s+does\s+not\s+support)\s*/i,
+  ];
+
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t) { blanks++; if (blanks <= 1) out.push(''); continue; }
+    blanks = 0;
+    if (t.startsWith('{') || t.startsWith('[{')) continue;
+    if (t.includes('"@type"') || t.includes('"@context"')) continue;
+    if (t.length < 4 && !/^\d/.test(t)) continue;
+    if (skipPatterns.some(p => p.test(t))) continue;
+    out.push(line);
+  }
+  return out.join('\n').trim();
+}
+
+// ─── Browser action permissions ───────────────────────────────────────────────
+const BROWSER_PERMS_KEY = 'nv-browser-perms-v1';
+
+function getBrowserPerms(): Record<string, boolean> {
+  try { return JSON.parse(localStorage.getItem(BROWSER_PERMS_KEY) ?? '{}'); }
+  catch { return {}; }
+}
+
+export function setBrowserAlwaysAllow(actionType: string): void {
+  const p = getBrowserPerms(); p[actionType] = true;
+  localStorage.setItem(BROWSER_PERMS_KEY, JSON.stringify(p));
+}
+
+export function clearBrowserPermissions(): void {
+  localStorage.removeItem(BROWSER_PERMS_KEY);
+}
+
+function hasAlwaysAllow(actionType: string): boolean {
+  return !!getBrowserPerms()[actionType];
+}
+
+async function requestBrowserApproval(actionType: string, description: string): Promise<boolean> {
+  if (hasAlwaysAllow(actionType)) return true;
+
+  const reqId = Math.random().toString(36).slice(2, 9);
+  let resolveApproval!: (v: boolean) => void;
+  const approvalPromise = new Promise<boolean>((r) => { resolveApproval = r; });
+
+  const unlisten = await listen<{ id: string; approved: boolean; always: boolean }>(
+    'nv-browser-approval-response',
+    (event) => {
+      if (event.payload.id !== reqId) return;
+      unlisten();
+      if (event.payload.always && event.payload.approved) setBrowserAlwaysAllow(actionType);
+      resolveApproval(event.payload.approved);
+    },
+  );
+
+  const timeout = setTimeout(() => { unlisten(); resolveApproval(false); }, 90_000);
+  await emit('nv-browser-approval-request', { id: reqId, actionType, description });
+  const result = await approvalPromise;
+  clearTimeout(timeout);
+  return result;
+}
+
+const CONSEQUENTIAL_RE = /\b(send|submit|post|publish|tweet|buy|purchase|pay|checkout|delete|remove|trash|book\s+now|place\s+order|confirm\s+payment)\b/i;
+
+function classifyAction(text: string): string {
+  const t = text.toLowerCase();
+  if (/send|reply|forward/.test(t)) return 'send_email';
+  if (/post|tweet|publish|share/.test(t)) return 'post_content';
+  if (/buy|purchase|pay|checkout|order|book/.test(t)) return 'make_purchase';
+  if (/delete|remove|trash/.test(t)) return 'delete_content';
+  return 'submit_form';
+}
 
 // ─── Tool definition schema (sent to LLM in system prompt) ───────────────────
 
@@ -60,7 +148,7 @@ export const SYSTEM_TOOLS: ToolDef[] = [
   },
   {
     name: 'web_search',
-    description: 'Search the web with Brave Search API. Returns top 10 results with title, URL and snippet. If Brave is not connected, use browser_search instead for live results via visible browser.',
+    description: 'Search the web for information, news, prices, facts. Uses Brave API if connected (fastest). Otherwise opens DuckDuckGo silently — no key needed. Use this for gathering information only, NOT for doing tasks on websites.',
     parameters: {
       query: { type: 'string', description: 'Search query.', required: true },
     },
@@ -95,6 +183,18 @@ export const SYSTEM_TOOLS: ToolDef[] = [
       key: { type: 'string', description: 'The memory key to delete.', required: true },
     },
   },
+  {
+    name: 'open_connect_apps',
+    description: 'Open the Connect Apps panel in adris.tech so the user can link services. Use this when the user wants to connect any service or MCP server, or when a task fails because a service is not connected.',
+    parameters: {},
+  },
+  {
+    name: 'open_service_setup',
+    description: 'Open the step-by-step setup guide for a specific service inside adris.tech — the app will navigate directly to that service\'s connection wizard. Use this to help users connect a specific service. Supported service IDs: gemini, openai, claude, brave, gmail, google, notion, slack, github, linkedin, twitter, instagram, stripe, discord, figma, airtable, reddit, shopify, serper, elevenlabs, heygen, did, higgsfield, runway, linear.',
+    parameters: {
+      service: { type: 'string', description: 'Service ID from the supported list, e.g. "gmail", "notion", "github"', required: true },
+    },
+  },
 ];
 
 // ─── Research tools (open data sources, no auth required) ────────────────────
@@ -123,14 +223,21 @@ export const RESEARCH_TOOLS: ToolDef[] = [
 export const BROWSER_TOOLS: ToolDef[] = [
   {
     name: 'browser_open',
-    description: 'Open a URL in a visible Chrome browser window on the user\'s screen. They can watch everything happen live. After opening, call browser_snapshot to see what\'s on the page.',
+    description: 'Open ANY URL in the user\'s own Chrome browser (with all their saved login sessions). The page becomes VISIBLE to the user on screen — they are already logged in to LinkedIn, Gmail, Twitter, Instagram, Notion, etc. Use this to SHOW websites to the user or for interactive tasks (clicking, filling forms). To also READ the page content as an agent, call browser_navigate with the same URL.',
     parameters: {
-      url: { type: 'string', description: 'Full URL to open, e.g. "https://linkedin.com/search/results/people/?keywords=CTO+Mumbai"', required: true },
+      url: { type: 'string', description: 'Full URL to open, e.g. "https://linkedin.com/notifications/"', required: true },
+    },
+  },
+  {
+    name: 'browser_navigate',
+    description: 'Navigate to a URL in the agent\'s persistent browser and return the full page content as text (with ads and cookie banners removed). Uses a saved session — user logs in once per site, stays logged in forever. Use this to READ content from any page: LinkedIn notifications, Gmail inbox, news articles, Reddit posts, product pages, etc. Works for ANY website. Returns the page text directly — no need to call browser_get_text after.',
+    parameters: {
+      url: { type: 'string', description: 'Full URL to read, e.g. "https://linkedin.com/notifications/"', required: true },
     },
   },
   {
     name: 'browser_search',
-    description: 'Search the web by opening a visible Chrome browser to DuckDuckGo — no API key needed, user watches the search happen live. Returns the search results page text. Use this instead of web_search when Brave is not connected.',
+    description: 'Search Google in a visible Chrome browser so the user can watch it happen live. Use when the user explicitly wants to see a search, or for complex queries that need Google specifically.',
     parameters: {
       query: { type: 'string', description: 'What to search for', required: true },
     },
@@ -171,6 +278,22 @@ export const BROWSER_TOOLS: ToolDef[] = [
     name: 'browser_close',
     description: 'Close the browser session.',
     parameters: {},
+  },
+  {
+    name: 'browser_confirm',
+    description: 'Request user permission before taking a consequential browser action — sending an email, submitting a form, posting content, making a purchase, or deleting anything. ALWAYS call this before such actions. Describe exactly what you are about to do, including the recipient, subject, or content so the user can make an informed decision.',
+    parameters: {
+      action_type: {
+        type: 'string',
+        description: 'Category: send_email | post_content | make_purchase | delete_content | submit_form',
+        required: true,
+      },
+      description: {
+        type: 'string',
+        description: 'What you are about to do. Be specific — e.g. "Send email to rahul@example.com with subject \'Partnership opportunity\'"',
+        required: true,
+      },
+    },
   },
 ];
 
@@ -616,6 +739,41 @@ For live figures: use the right tool once, then answer — never loop.
 - Be concise but thorough
 - All data you access stays on the user's machine — privacy is guaranteed
 
+## Browser-first rule (ABSOLUTE — no exceptions)
+
+NEVER say "connect an API", "link a service", "I can't access that", or "go to Connect Apps". The browser is ALWAYS available. Use it.
+
+### Which tool for which task:
+
+**Getting quick public information (news, prices, facts, research):**
+→ web_search — fastest, silent, returns clean text results
+
+**READING page content / extracting information from any website:**
+→ browser_navigate with the exact URL — loads page in agent's persistent browser, returns full cleaned text
+→ Works for ANY site: LinkedIn, Gmail, Twitter, Reddit, news sites, product pages, documentation, etc.
+→ Sessions are SAVED permanently — user logs in once per site, stays logged in forever
+→ First time on a private site (LinkedIn, Gmail, etc.): a browser window opens; user logs in there once; all future reads work automatically
+
+**SHOWING a website to the user (they want to see it / interact with it):**
+→ browser_open with any URL — opens in user's actual Chrome (they are already logged in to everything)
+→ Use this when the user says "open", "show me", "go to" a website
+→ After opening, use browser_click / browser_fill to interact
+
+**Examples (ALWAYS use browser tools — NEVER say "connect API"):**
+- "Check my LinkedIn notifications" → browser_navigate "https://www.linkedin.com/notifications/" (reads + returns content)
+- "Show me LinkedIn" → browser_open "https://www.linkedin.com" (opens in their Chrome)
+- "What emails do I have?" → browser_navigate "https://mail.google.com" (reads inbox)
+- "Open my Gmail" → browser_open "https://mail.google.com" (shows to user)
+- "What's trending on Reddit?" → browser_navigate "https://www.reddit.com" (reads feed)
+- "Write a post on X/Twitter" → browser_open "https://twitter.com/compose/tweet" → browser_fill → submit
+- "Summarize this article [URL]" → browser_navigate "[URL]" (reads article text)
+- "Check my Notion" → browser_open "https://www.notion.so"
+
+**Showing the user a live Google search:**
+→ browser_search — opens Google visually
+
+The browser is ALWAYS available. NEVER say "I can't access that" or suggest Connect Apps for navigation.
+
 ## Platform & Content Compliance
 When generating content intended for any platform (LinkedIn, Twitter/X, Instagram, email, Slack, Notion, etc.):
 - Write exactly as the user would write it themselves — first person, their voice, their tone
@@ -678,6 +836,7 @@ export async function executeTool(
   onTerminalApprovalNeeded: (command: string) => Promise<boolean>,
   agentKey: string = 'boss',
   userId = '',
+  sessionId = 'default',
 ): Promise<string> {
   const str = (v: unknown) => String(v ?? '');
   const num = (v: unknown, def: number) => typeof v === 'number' ? v : def;
@@ -695,6 +854,18 @@ export async function executeTool(
   if (toolName === 'forget_memory') {
     await krewMemoryDb.delete(agentKey, str(args.key));
     return `Memory "${str(args.key)}" deleted.`;
+  }
+
+  // ── Connect Apps navigation ───────────────────────────────────────────────
+  if (toolName === 'open_connect_apps') {
+    await emit('nv-open-connect-apps', {});
+    return 'Connect Apps panel opened. Ask the user to select the service they want to connect.';
+  }
+  if (toolName === 'open_service_setup') {
+    const { requestServiceSetup } = await import('./connectAppsRequest');
+    requestServiceSetup(str(args.service));
+    await emit('nv-open-connect-apps', {});
+    return `Opening setup guide for "${str(args.service)}" — the user will see the step-by-step connection wizard now. Guide them through any steps you know (e.g. where to find their API key).`;
   }
 
   // ── System tools ──────────────────────────────────────────────────────────
@@ -735,55 +906,82 @@ export async function executeTool(
     if (braveKey) {
       return await invoke<string>('krew_web_search', { query: str(args.query), apiKey: braveKey });
     }
-    // Fallback: DuckDuckGo Instant Answer API — free, no key required
+    // No Brave key — use DDG HTML via session-isolated browser (plain HTML, no GPU/JS issues)
     try {
-      const raw = await invoke<string>('krew_http_call', {
-        method:  'GET',
-        url:     `https://api.duckduckgo.com/?q=${encodeURIComponent(str(args.query))}&format=json&no_html=1&skip_disambig=1`,
-        headers: { 'Accept': 'application/json' },
-        body:    null,
-      });
-      const data = JSON.parse(raw) as {
-        AbstractText?: string;
-        Answer?: string;
-        AbstractURL?: string;
-        RelatedTopics?: { Text?: string; FirstURL?: string }[];
-      };
-      const TRAINING_FALLBACK = `[No live web results — Brave Search API key not connected. Use your training knowledge to answer this query as accurately as possible, and note that your information may not reflect the very latest developments.]`;
-      const parts: string[] = [];
-      if (data.Answer)        parts.push(`**Answer:** ${data.Answer}`);
-      if (data.AbstractText)  parts.push(`**Summary:** ${data.AbstractText}${data.AbstractURL ? `\nSource: ${data.AbstractURL}` : ''}`);
-      const topics = (data.RelatedTopics ?? []).filter((t) => t.Text).slice(0, 6);
-      if (topics.length > 0) {
-        parts.push('**Related:**\n' + topics.map((t) => `- ${t.Text}${t.FirstURL ? ` (${t.FirstURL})` : ''}`).join('\n'));
+      const q = encodeURIComponent(str(args.query));
+      const opened = await invoke<string>('run_agent_browser_session', { sessionId, args: `open "https://html.duckduckgo.com/html/?q=${q}"` });
+      if (opened.includes('[agent-browser not installed]')) {
+        return '[Browser not ready yet — agent-browser is still installing. Try again in a moment.]';
       }
-      const ddgData = parts.join('\n\n').trim();
-      return ddgData.length > 40
-        ? `[DuckDuckGo partial result — connect Brave Search for full results]\n\n${ddgData}`
-        : TRAINING_FALLBACK;
-    } catch {
-      return `[No live web results — Brave Search API key not connected. Use your training knowledge to answer this query as accurately as possible, and note that your information may not reflect the very latest developments.]`;
+      const raw = await invoke<string>('run_agent_browser_session', { sessionId, args: 'get text body' });
+      const text = cleanBrowserText(raw);
+      return text.length > 5000 ? text.slice(0, 5000) + '\n…[truncated]' : text;
+    } catch (e) {
+      return `[Search failed: ${String(e)}]`;
     }
   }
 
-  // ── Browser tools (agent-browser CLI — silent install via setup_agent_browser) ─
+  // ── Browser tools — session-isolated Playwright (each agent/conversation gets its own state) ─
+  // sessionId = chatSessionId-agentKey  →  no two agents share the same Playwright browser
   const runBrowser = async (browserArgs: string): Promise<string> => {
     try {
-      return await invoke<string>('run_agent_browser', { args: browserArgs });
+      const result = await invoke<string>('run_agent_browser_session', { sessionId, args: browserArgs });
+      // Chrome crash / conflict detection — return a clear stop message so AI doesn't retry
+      if (
+        result.includes('[agent-browser not installed]') ||
+        result.includes('Chrome exited') ||
+        result.includes('DevToolsActivePort') ||
+        result.includes('failed to launch') ||
+        result.includes('exited early') ||
+        result.includes('[browser-crash]')
+      ) {
+        return '[Browser automation unavailable] The interactive browser session failed. To read page content, use browser_navigate instead (it uses a persistent session). For public information, use web_search. STOP retrying browser_snapshot or browser_get_text.';
+      }
+      return result;
     } catch (e) {
-      return `Browser error: ${String(e)}`;
+      const msg = String(e);
+      if (msg.includes('Chrome') || msg.includes('browser') || msg.includes('Playwright')) {
+        return '[Browser automation unavailable] Cannot connect to browser session. Use browser_navigate to read page content, or web_search for public information.';
+      }
+      return `Browser error: ${msg}`;
     }
   };
 
   if (toolName === 'browser_open') {
-    const url = str(args.url).replace(/"/g, '%22');
-    return await runBrowser(`open "${url}"`);
+    const rawUrl = str(args.url);
+    const url = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl.replace(/^\/+/, '')}`;
+    // Open ONLY in user's actual Chrome — do NOT launch Playwright (causes Chrome conflict)
+    await invoke<string>('open_in_system_browser', { url }).catch(() => {});
+    return `Opened ${url} in the user's Chrome browser. The page is now visible on their screen (user is logged in to their accounts).\n\nNOTE: browser_snapshot and browser_get_text read from the AGENT browser (separate instance). To also read this page's content, call browser_navigate with the same URL — it loads the page in the agent's persistent browser and returns the text.`;
   }
+
+  if (toolName === 'browser_navigate') {
+    const rawUrl = str(args.url);
+    const url = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl.replace(/^\/+/, '')}`;
+    // Navigate using persistent browser (sessions saved to %LOCALAPPDATA%\adris.tech\browser-session\)
+    const navResult = await invoke<string>('run_browser_persistent', { args: `open "${url}"` }).catch(e => String(e));
+    if (navResult.includes('[agent-browser not installed]')) {
+      return `[Browser not available] Cannot read page content — agent-browser is not installed. Use web_search for public information, or call browser_open and ask the user to describe what they see.`;
+    }
+    if (navResult.includes('[browser-crash]') || navResult.includes('Chrome exited') || navResult.includes('DevToolsActivePort')) {
+      return `[Browser error] Could not load ${url}. Try web_search instead to find this information.`;
+    }
+    // Read the page text (persistent session — logged in if user previously authenticated)
+    const raw = await invoke<string>('run_browser_persistent', { args: 'get text body' }).catch(e => String(e));
+    const text = cleanBrowserText(raw);
+    if (!text || text.length < 30) {
+      return `Opened ${url} in the agent browser. The page appears empty or requires login.\n\nIf this is a private page (LinkedIn, Gmail, etc.): a browser window should have opened — please log in there. After logging in, try this request again — sessions are saved permanently so you only need to do this once per site.`;
+    }
+    const content = text.length > 6000 ? text.slice(0, 6000) + '\n…[page continues — truncated for length]' : text;
+    return `Content from ${url}:\n\n${content}`;
+  }
+
   if (toolName === 'browser_search') {
     const q = encodeURIComponent(str(args.query));
-    await runBrowser(`open "https://lite.duckduckgo.com/lite/?q=${q}"`);
-    const text = await runBrowser('get text body');
-    if (text.startsWith('[agent-browser not installed')) return text;
+    await runBrowser(`open "https://www.google.com/search?q=${q}"`);
+    const raw = await runBrowser('get text body');
+    if (raw.startsWith('[Browser automation unavailable]') || raw.startsWith('[agent-browser not installed')) return raw;
+    const text = cleanBrowserText(raw);
     return text.length > 5000 ? text.slice(0, 5000) + '\n…[truncated]' : text;
   }
   if (toolName === 'browser_snapshot') {
@@ -791,7 +989,21 @@ export async function executeTool(
   }
   if (toolName === 'browser_click') {
     const sel = str(args.selector);
+    // Auto-gate consequential clicks in case agent skipped browser_confirm
+    if (CONSEQUENTIAL_RE.test(sel)) {
+      const actionType = classifyAction(sel);
+      const approved = await requestBrowserApproval(actionType, `Clicking "${sel}" in the browser`);
+      if (!approved) return 'User denied: this action was not approved. Inform the user and ask what to do instead.';
+    }
     return await runBrowser(`click "${sel}"`);
+  }
+  if (toolName === 'browser_confirm') {
+    const actionType = str(args.action_type) || 'submit_form';
+    const description = str(args.description);
+    const approved = await requestBrowserApproval(actionType, description);
+    return approved
+      ? 'Approved by user. You may proceed with the action now.'
+      : 'Denied by user. Do NOT proceed. Tell the user their action was cancelled and ask what they would like to do instead.';
   }
   if (toolName === 'browser_fill') {
     const sel = str(args.selector);
@@ -800,7 +1012,9 @@ export async function executeTool(
   }
   if (toolName === 'browser_get_text') {
     const sel = str(args.selector) || 'body';
-    const text = await runBrowser(`get text "${sel}"`);
+    const raw = await runBrowser(`get text "${sel}"`);
+    if (raw.startsWith('[Browser automation unavailable]') || raw.startsWith('[Browser not ready')) return raw;
+    const text = cleanBrowserText(raw);
     return text.length > 5000 ? text.slice(0, 5000) + '\n…[truncated]' : text;
   }
   if (toolName === 'browser_screenshot') {

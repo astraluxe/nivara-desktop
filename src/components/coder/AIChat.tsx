@@ -8,6 +8,7 @@ import { chatDb, type ChatSession, type ChatMessage } from '../../lib/chatDb';
 import { trackTokenUsage, getMonthlyUsage } from '../../lib/tokenTracker';
 import ConnectionBar from './ConnectionBar';
 import PromptLibrary from './PromptLibrary';
+import { getActiveSkillsForCoder } from '../../lib/skills';
 
 interface Props {
   projectPath: string;
@@ -25,16 +26,25 @@ interface DisplayMessage {
   streaming?: boolean;
 }
 
-function CodeBlock({ code, lang, onRun, onInsert }: {
+function CodeBlock({ code, lang, onRun, onInsert, onApply, applyLabel }: {
   code: string; lang: string;
   onRun: (c: string) => void;
   onInsert: (c: string) => void;
+  onApply?: (c: string) => void;
+  applyLabel?: string;
 }) {
   const [copied, setCopied] = useState(false);
+  const [applied, setApplied] = useState(false);
   function copy() {
     navigator.clipboard.writeText(code);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
+  }
+  async function apply() {
+    if (!onApply) return;
+    onApply(code);
+    setApplied(true);
+    setTimeout(() => setApplied(false), 2000);
   }
   const isRunnable = ['bash','sh','shell','zsh','fish','cmd','powershell','ps1',''].includes(lang.toLowerCase());
   return (
@@ -47,6 +57,12 @@ function CodeBlock({ code, lang, onRun, onInsert }: {
               onClick={() => onRun(code)}
               className="text-[10px] text-nv-green hover:text-nv-green/80 transition-fast"
             >▶ Run</button>
+          )}
+          {onApply && (
+            <button
+              onClick={apply}
+              className={`text-[10px] transition-fast font-semibold ${applied ? 'text-emerald-400' : 'text-accent hover:text-accent/80'}`}
+            >{applied ? '✓ Applied' : `Apply${applyLabel ? ` to ${applyLabel}` : ''}`}</button>
           )}
           <button
             onClick={() => onInsert(code)}
@@ -98,7 +114,9 @@ function renderInline(text: string): React.ReactNode[] {
 function renderMarkdown(
   content: string,
   onRun: (c: string) => void,
-  onInsert: (c: string) => void
+  onInsert: (c: string) => void,
+  onApply?: (c: string) => void,
+  applyLabel?: string,
 ): React.ReactNode[] {
   const segments = content.split(/(```[\s\S]*?```)/g);
   const nodes: React.ReactNode[] = [];
@@ -109,7 +127,7 @@ function renderMarkdown(
       const match = seg.match(/^```(\w*)\n?([\s\S]*?)```$/);
       const lang  = match?.[1] ?? '';
       const code  = match?.[2] ?? seg.slice(3, -3);
-      nodes.push(<CodeBlock key={key++} code={code.trim()} lang={lang} onRun={onRun} onInsert={onInsert} />);
+      nodes.push(<CodeBlock key={key++} code={code.trim()} lang={lang} onRun={onRun} onInsert={onInsert} onApply={onApply} applyLabel={applyLabel} />);
       continue;
     }
     if (!seg.trim()) continue;
@@ -173,10 +191,12 @@ function renderMarkdown(
   return nodes;
 }
 
-function MessageBubble({ msg, onRun, onInsert }: {
+function MessageBubble({ msg, onRun, onInsert, onApply, applyLabel }: {
   msg: DisplayMessage;
   onRun: (c: string) => void;
   onInsert: (c: string) => void;
+  onApply?: (c: string) => void;
+  applyLabel?: string;
 }) {
   const isUser = msg.role === 'user';
   return (
@@ -188,7 +208,7 @@ function MessageBubble({ msg, onRun, onInsert }: {
           <p className="text-[12px] text-nv-text">{msg.content}</p>
         ) : (
           <div className="text-[12px] leading-relaxed">
-            {renderMarkdown(msg.content, onRun, onInsert)}
+            {renderMarkdown(msg.content, onRun, onInsert, onApply, applyLabel)}
             {msg.streaming && (
               <span className="inline-block w-1.5 h-3.5 bg-accent animate-pulse ml-0.5 rounded-sm" />
             )}
@@ -291,7 +311,8 @@ export default function AIChat({
     parts.push(
       `You are an expert coding assistant embedded in the adris.tech desktop IDE.\n` +
       `You have full access to the user's project folder. When asked to edit or create files, ` +
-      `output the complete file content inside a fenced code block and the user will insert it.\n` +
+      `output the COMPLETE updated file content inside a fenced code block — the user can click the Apply button to write it directly to disk in one click, no copy-pasting needed.\n` +
+      `Always output the full file, not just the changed section, so Apply can safely overwrite the file.\n` +
       `Always use the project structure below to reference correct paths.`
     );
     if (projectPath) parts.push(`Project root: ${projectPath}`);
@@ -301,6 +322,8 @@ export default function AIChat({
     }
     const term = getTerminalContext();
     if (term.trim()) parts.push(`Last terminal output:\n\`\`\`\n${term}\n\`\`\``);
+    const coderSkills = getActiveSkillsForCoder();
+    if (coderSkills) parts.push(coderSkills);
     return parts.join('\n\n');
   }
 
@@ -527,6 +550,8 @@ export default function AIChat({
                 key={i} msg={msg}
                 onRun={onRunInTerminal}
                 onInsert={onInsertAtCursor}
+                onApply={currentFilePath ? (code: string) => invoke('write_file', { path: currentFilePath, content: code }) : undefined}
+                applyLabel={currentFilePath ? currentFilePath.split(/[\\/]/).pop() : undefined}
               />
             ))}
             <div ref={bottomRef} />
