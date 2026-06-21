@@ -68,6 +68,20 @@ interface Props {
 
 function ToolCallBubble({ name, args }: { name: string; args: string }) {
   const [open, setOpen] = useState(false);
+
+  // For browser tools, extract a human-readable label so user knows what's being scanned
+  let inlineLabel: string | null = null;
+  if (name === 'browser_navigate' || name === 'browser_open') {
+    try {
+      const parsed = JSON.parse(args);
+      const rawUrl = parsed.url ?? parsed.args ?? '';
+      const host = (() => { try { return new URL(rawUrl).hostname.replace('www.', ''); } catch { return rawUrl; } })();
+      inlineLabel = name === 'browser_navigate' ? `Scanning ${host}` : `Opening ${host}`;
+    } catch { /* ignore */ }
+  } else if (name === 'web_search') {
+    try { inlineLabel = `Searching "${JSON.parse(args).query ?? ''}"`.slice(0, 60); } catch { /* ignore */ }
+  }
+
   return (
     <div className="flex items-start gap-2 my-1.5">
       <div className="w-5 h-5 rounded-md bg-accent/15 flex items-center justify-center shrink-0 mt-0.5">
@@ -77,6 +91,9 @@ function ToolCallBubble({ name, args }: { name: string; args: string }) {
         <button onClick={() => setOpen((o) => !o)} className="text-[11px] text-accent font-mono hover:underline">
           {name}() {open ? '▲' : '▼'}
         </button>
+        {inlineLabel && !open && (
+          <p className="text-[10px] text-nv-muted mt-0.5 font-mono">{inlineLabel}</p>
+        )}
         {open && (
           <pre className="text-[10px] text-nv-muted font-mono mt-1 bg-nv-bg border border-nv-border rounded-lg p-2 overflow-x-auto whitespace-pre-wrap">
             {args}
