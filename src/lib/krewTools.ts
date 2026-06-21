@@ -968,12 +968,15 @@ export async function executeTool(
   if (toolName === 'browser_navigate') {
     const rawUrl = str(args.url);
     const url = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl.replace(/^\/+/, '')}`;
-    // Open in user's visible Chrome so they can see what's being browsed
-    invoke('open_in_system_browser', { url }).catch(() => {});
-    // Also navigate in the persistent agent browser to extract page text
+
+    // Run the persistent browser (Playwright opens its own visible Chrome window).
+    // Do NOT call open_in_system_browser here — that would open a second Chrome window
+    // for the same URL. open_in_system_browser is only used as fallback below.
     const navResult = await invoke<string>('run_browser_persistent', { args: `open "${url}"` }).catch(e => String(e));
+
     if (navResult.includes('[agent-browser not installed]')) {
-      // Fallback: try plain HTTP fetch for public pages
+      // No browser automation — show user's Chrome so they can see activity, then HTTP fetch
+      invoke('open_in_system_browser', { url }).catch(() => {});
       try {
         const fetched = await invoke<string>('fetch_page_text', { url });
         const cleaned = cleanBrowserText(fetched);
@@ -985,29 +988,31 @@ export async function executeTool(
           ) || snippet.includes('authwall');
           if (isLoginPage) {
             const host = (() => { try { return new URL(url).hostname; } catch { return url; } })();
-            return `[Login required] ${host} requires you to be logged in. Please log in to ${host} in the browser window that just opened, then say **"continue"** — I will read the page once you are signed in.`;
+            return `[LOGIN REQUIRED — STOP] ${host} requires login. A browser window just opened. Ask the user to log in and say "continue". Do NOT call web_search or any other tool. Wait for the user.`;
           }
           const content = cleaned.length > 3000 ? cleaned.slice(0, 3000) + '\n…[truncated]' : cleaned;
           return `Content from ${url} (public read):\n\n${content}`;
         }
       } catch { /* fall through */ }
-      return `[Login required] This page needs you to be logged in. Please log in in the browser window that just opened, then say **"continue"** and I will read it.`;
+      return `[LOGIN REQUIRED — STOP] This page needs login. A browser window just opened. Ask the user to log in and say "continue". Do NOT call web_search or any other tool. Wait.`;
     }
+
     if (navResult.includes('[browser-timeout]')) {
-      return `[Browser timeout] ${url} took over 30 seconds to load. The page may require login or is loading slowly. Check the browser window that just opened — if you are logged in, please try the request again and I will retry.`;
+      return `[Browser timeout] ${url} took over 30 seconds to load. It may require login — check the browser window that just opened. If you are logged in, say "retry" and I will try again.`;
     }
     if (navResult.includes('[browser-crash]') || navResult.includes('Chrome exited') || navResult.includes('DevToolsActivePort')) {
-      return `[Browser error] Could not load ${url}. Try web_search instead to find this information.`;
+      return `[Browser error] Could not load ${url}. Try web_search instead.`;
     }
-    // If run_browser_persistent returned actual page content directly (Node.js/Playwright path),
-    // use it. Only call "get text body" if it returned the old "(done)" signal.
+
+    // If Playwright returned actual page content from the open command, use it directly.
+    // Only call "get text body" if it returned the old "(done)" signal (legacy binary path).
     const isDoneSignal = navResult.trim() === '(done)' || navResult.trim() === '';
     const raw = isDoneSignal
       ? await invoke<string>('run_browser_persistent', { args: 'get text body' }).catch(e => String(e))
       : navResult;
     const text = cleanBrowserText(raw);
 
-    // Detect login / auth-wall pages — don't feed them to the agent as real content
+    // Detect login / auth-wall — do not feed login pages to the agent as real content
     const snippet = text.slice(0, 1000).toLowerCase();
     const isLoginPage = (
       (snippet.includes('sign in') || snippet.includes('log in') || snippet.includes('join now')) &&
@@ -1016,8 +1021,9 @@ export async function executeTool(
 
     if (!text || text.length < 30 || isLoginPage) {
       const host = (() => { try { return new URL(url).hostname; } catch { return url; } })();
-      return `[Login required] ${host} needs a one-time login in the browser window that just opened on your screen. Once you are signed in, come back here and say **"continue"** — I will read the page and carry on with your task. Sessions are saved permanently so you only do this once per site.`;
+      return `[LOGIN REQUIRED — STOP ALL TOOL CALLS] ${host} needs a one-time login. A browser window is open on the user's screen. Tell the user: "Please log in to ${host} in the browser window that just opened, then say continue." Do NOT call web_search, do NOT proceed with the task. Sessions are saved permanently — this only needs to happen once.`;
     }
+
     const content = text.length > 3000 ? text.slice(0, 3000) + '\n…[truncated — call again for more]' : text;
     return `Content from ${url}:\n\n${content}`;
   }
