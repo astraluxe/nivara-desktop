@@ -310,10 +310,11 @@ export default function AIChat({
     const parts: string[] = [];
     parts.push(
       `You are an expert coding assistant embedded in the adris.tech desktop IDE.\n` +
-      `You have full access to the user's project folder. When asked to edit or create files, ` +
-      `output the COMPLETE updated file content inside a fenced code block — the user can click the Apply button to write it directly to disk in one click, no copy-pasting needed.\n` +
-      `Always output the full file, not just the changed section, so Apply can safely overwrite the file.\n` +
-      `Always use the project structure below to reference correct paths.`
+      `You have full access to the user's project folder. When asked to edit or modify a file, ` +
+      `output the COMPLETE updated file content inside a single fenced code block — it will be automatically written to disk immediately, no user action needed.\n` +
+      `ALWAYS output the full file (never just the changed section) so it can safely overwrite.\n` +
+      `Do NOT explain what you changed after the code block — the user can see the diff. Just output the code.\n` +
+      `Always use the project structure below for correct paths.`
     );
     if (projectPath) parts.push(`Project root: ${projectPath}`);
     if (dirContext)  parts.push(`Project structure:\n${dirContext}`);
@@ -384,6 +385,16 @@ export default function AIChat({
           const chars = userContent.length + assistantText.length;
           trackTokenUsage('coder', chars);
           setMonthlyUsed(prev => prev + Math.ceil(chars / 4));
+        }
+        // Auto-apply: if a file is open and AI returned exactly one code block, write it immediately
+        if (currentFilePath) {
+          const codeBlocks = [...assistantText.matchAll(/```(?:\w+)?\n?([\s\S]*?)```/g)];
+          if (codeBlocks.length === 1) {
+            const code = codeBlocks[0][1].trim();
+            if (code.length > 30) {
+              invoke('write_file', { path: currentFilePath, content: code }).catch(() => {});
+            }
+          }
         }
         setBusy(false);
         cleanupRef.current = null;

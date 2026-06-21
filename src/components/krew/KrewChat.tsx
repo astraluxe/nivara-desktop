@@ -1473,7 +1473,8 @@ The prompt must be production-ready — specific enough for a motion designer to
     const tools      = getActiveTools();
     // Inject cross-session memories into system prompt
     const memBlock   = agentMemories.length > 0
-      ? '\n\n## Your memory (from past sessions)\n' + agentMemories.map((m) => `- ${m.key}: ${m.value}`).join('\n')
+      ? '\n\n## Background context (from past sessions — reference only, do NOT continue old tasks unless user asks)\n' +
+        agentMemories.map((m) => `- ${m.key}: ${m.value.slice(0, 400)}`).join('\n')
       : '';
     // Inject user identity so agents sign content with the real user's name
     const userName   = (user?.user_metadata?.full_name as string | undefined)
