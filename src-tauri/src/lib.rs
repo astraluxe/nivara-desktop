@@ -2130,9 +2130,14 @@ async fn setup_agent_browser(app: tauri::AppHandle) -> Result<(), String> {
         }
 
         // Option B: Node.js + playwright-core (uses system Chrome — no separate browser download)
-        // Embedded at compile time from scripts/agent-browser/index.js
+        // Always re-write the script so updates deploy to existing installs.
         let script_path = get_playwright_script_path(&app);
-        if !script_path.exists() {
+        let script_src = include_str!("../../scripts/agent-browser/index.js");
+        let needs_setup = !script_path.exists() || {
+            // Re-write if the embedded version differs from what's on disk
+            std::fs::read_to_string(&script_path).map(|s| s != script_src).unwrap_or(true)
+        };
+        if needs_setup {
             let node_ok = {
                 #[cfg(target_os = "windows")]
                 { use std::os::windows::process::CommandExt; std::process::Command::new("node").arg("--version").creation_flags(0x08000000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false) }
@@ -2145,7 +2150,6 @@ async fn setup_agent_browser(app: tauri::AppHandle) -> Result<(), String> {
                 let _ = std::fs::create_dir_all(&playwright_dir);
 
                 // Write the Playwright wrapper script (embedded at compile time)
-                let script_src = include_str!("../../scripts/agent-browser/index.js");
                 let _ = std::fs::write(&script_path, script_src);
 
                 // Write package.json for playwright-core

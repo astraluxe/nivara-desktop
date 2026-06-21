@@ -982,10 +982,11 @@ export async function executeTool(
         const cleaned = cleanBrowserText(fetched);
         if (cleaned && cleaned.length > 50) {
           const snippet = cleaned.slice(0, 1000).toLowerCase();
-          const isLoginPage = (
-            (snippet.includes('sign in') || snippet.includes('log in') || snippet.includes('join now')) &&
-            (snippet.includes('password') || snippet.includes('email') || snippet.includes('phone'))
-          ) || snippet.includes('authwall');
+          const hasAuthwall = snippet.includes('authwall') || snippet.includes('auth-wall');
+          const isShort = cleaned.length < 400;
+          const hasLoginForm = (snippet.slice(0, 400).includes('sign in') || snippet.slice(0, 400).includes('log in')) &&
+            (snippet.slice(0, 400).includes('password') || snippet.slice(0, 400).includes('email'));
+          const isLoginPage = hasAuthwall || (isShort && hasLoginForm);
           if (isLoginPage) {
             const host = (() => { try { return new URL(url).hostname; } catch { return url; } })();
             return `[LOGIN REQUIRED — STOP] ${host} requires login. A browser window just opened. Ask the user to log in and say "continue". Do NOT call web_search or any other tool. Wait for the user.`;
@@ -1012,12 +1013,20 @@ export async function executeTool(
       : navResult;
     const text = cleanBrowserText(raw);
 
-    // Detect login / auth-wall — do not feed login pages to the agent as real content
+    // Detect login / auth-wall — do not feed login pages to the agent as real content.
+    // IMPORTANT: logged-in pages (LinkedIn, Gmail) still contain "sign in" in nav/footer.
+    // Only treat as login page if: explicit authwall marker, OR the page is very short
+    // (real content pages are always long). Never flag a page with >400 chars as a login page
+    // purely from footer keywords — that causes false positives on real logged-in content.
     const snippet = text.slice(0, 1000).toLowerCase();
-    const isLoginPage = (
-      (snippet.includes('sign in') || snippet.includes('log in') || snippet.includes('join now')) &&
-      (snippet.includes('password') || snippet.includes('email') || snippet.includes('phone'))
-    ) || snippet.includes('authwall') || snippet.includes('auth-wall');
+    const hasAuthwall = snippet.includes('authwall') || snippet.includes('auth-wall');
+    const isShortPage = text.length < 400;
+    const hasLoginFormSignals = (
+      (snippet.slice(0, 400).includes('sign in') || snippet.slice(0, 400).includes('log in')) &&
+      (snippet.slice(0, 400).includes('password') || snippet.slice(0, 400).includes('email'))
+    );
+    // A real login page: either an explicit authwall, or is short AND has login form at the top
+    const isLoginPage = hasAuthwall || (isShortPage && hasLoginFormSignals);
 
     if (!text || text.length < 30 || isLoginPage) {
       const host = (() => { try { return new URL(url).hostname; } catch { return url; } })();

@@ -8,7 +8,7 @@
 //   node index.js <other>           — returns "(done)" (no-op for compat)
 
 const path = require('path');
-const os   = require('fs') && require('os');
+const os   = require('os');
 const fs   = require('fs');
 
 const PROFILE_DIR = process.env.AGENT_BROWSER_PROFILE || (
@@ -60,10 +60,14 @@ async function main() {
 
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
 
-    // Give SPA/dynamic pages a moment to hydrate (LinkedIn, Gmail, Notion)
-    try {
-      await page.waitForLoadState('networkidle', { timeout: 4000 });
-    } catch { /* ignore — page may still have useful content */ }
+    // Wait for network to settle (SPA initial JS execution)
+    try { await page.waitForLoadState('networkidle', { timeout: 6000 }); } catch {}
+
+    // Scroll a third of the way down to trigger lazy-loaded content (LinkedIn posts, Gmail threads)
+    await page.evaluate(() => window.scrollTo(0, Math.floor(document.body.scrollHeight / 3)));
+
+    // Extra wait for JS-rendered content after scroll (LinkedIn needs ~2s to render posts)
+    await new Promise(r => setTimeout(r, 2500));
 
     const text = await page.evaluate(() =>
       (document.body.innerText || document.body.textContent || '').trim()
