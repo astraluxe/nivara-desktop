@@ -300,11 +300,7 @@ export default function HomeModule({ onNavigate, onStartTour }: Props) {
                     </p>
                   )}
                   <ProgressBar pct={tasksLeft === null ? 5 : taskPct} color={taskPct > 85 ? 'bg-nv-red' : 'bg-accent'} />
-                  <p className="text-[9px] text-nv-muted mt-1.5">
-                    {tasksLeft === null
-                      ? planMeta.label
-                      : `${tasksUsed.toLocaleString()} / ${totalTasks!.toLocaleString()} done${planMeta.lifetime ? ' (lifetime)' : '/mo'}`}
-                  </p>
+                  <p className="text-[9px] text-nv-muted mt-1.5">{planMeta.label}</p>
                 </>
               );
             })()}

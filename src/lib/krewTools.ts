@@ -749,6 +749,9 @@ NEVER say "I can't access that" or suggest Connect Apps for browsing. The browse
 - Notion: https://www.notion.so
 - GitHub: https://github.com
 
+**CRITICAL — personal account data:**
+If the user asks about THEIR OWN posts, notifications, emails, profile, or activity on any platform, you MUST use browser_navigate — web_search cannot see private account data. Do NOT use web_search to "research" personal tasks. Examples: "check my LinkedIn posts" → browser_navigate to LinkedIn. "my Gmail inbox" → browser_navigate to Gmail. "my Twitter activity" → browser_navigate to Twitter. Only use web_search for public facts, news, or research unrelated to the user's own accounts.
+
 ## Platform & Content Compliance
 When generating content intended for any platform (LinkedIn, Twitter/X, Instagram, email, Slack, Notion, etc.):
 - Write exactly as the user would write it themselves — first person, their voice, their tone
@@ -933,10 +936,15 @@ export async function executeTool(
   if (toolName === 'browser_navigate') {
     const rawUrl = str(args.url);
     const url = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl.replace(/^\/+/, '')}`;
-    // Navigate using persistent browser (sessions saved to %LOCALAPPDATA%\adris.tech\browser-session\)
+    // Open in user's visible Chrome so they can see what's being browsed
+    invoke('open_in_system_browser', { url }).catch(() => {});
+    // Also navigate in the persistent agent browser to extract page text
     const navResult = await invoke<string>('run_browser_persistent', { args: `open "${url}"` }).catch(e => String(e));
     if (navResult.includes('[agent-browser not installed]')) {
-      return `[Browser not available] Cannot read page content — agent-browser is not installed. Use web_search for public information, or call browser_open and ask the user to describe what they see.`;
+      return `[Reading ${url}] Opened in your browser. The agent browser is not installed so I cannot extract text automatically — please describe what you see on screen and I will help from there.`;
+    }
+    if (navResult.includes('[browser-timeout]')) {
+      return `[Browser timeout] ${url} took over 30 seconds to load. The page may require login or is loading slowly. Check the browser window that just opened — if you are logged in, please try the request again and I will retry.`;
     }
     if (navResult.includes('[browser-crash]') || navResult.includes('Chrome exited') || navResult.includes('DevToolsActivePort')) {
       return `[Browser error] Could not load ${url}. Try web_search instead to find this information.`;

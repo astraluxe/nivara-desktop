@@ -1951,9 +1951,12 @@ The prompt must be production-ready — specific enough for a motion designer to
           if (sid) krewDb.saveMessage(sid, 'tool_result', toolResult, tool).catch(() => {});
         }
 
-        // Add to history for next AI turn
+        // Add to history for next AI turn (cap result to prevent context bloat)
+        const cappedResult = toolResult.length > 2000 ? toolResult.slice(0, 2000) + '\n…[truncated]' : toolResult;
         history.push({ role: 'assistant', content: fullResponse });
-        history.push({ role: 'user', content: `<tool_result>${toolResult}</tool_result>` });
+        history.push({ role: 'user', content: `<tool_result>${cappedResult}</tool_result>` });
+        // Keep history bounded: first user message + last 8 entries (4 tool-call pairs)
+        if (history.length > 9) history.splice(1, history.length - 9);
 
         // Add next streaming placeholder
         addMsg({ role: 'assistant', content: '', streaming: true });

@@ -2276,6 +2276,7 @@ async fn run_agent_browser_session(app: tauri::AppHandle, session_id: String, ar
 #[tauri::command]
 async fn run_browser_persistent(app: tauri::AppHandle, args: String) -> Result<String, String> {
     use std::process::Command;
+    use std::time::Duration;
 
     let persistent_dir = {
         #[cfg(target_os = "windows")]
@@ -2292,45 +2293,58 @@ async fn run_browser_persistent(app: tauri::AppHandle, args: String) -> Result<S
     };
     let _ = std::fs::create_dir_all(&persistent_dir);
 
-    let run_cmd = |bin: &str| -> Option<String> {
-        let full = format!("{} {}", bin, args);
-        let out = {
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                Command::new("cmd")
-                    .args(["/C", &full])
-                    .env("TEMP", &persistent_dir)
-                    .env("TMP",  &persistent_dir)
-                    .creation_flags(0x08000000)
-                    .output().ok()?
+    // Run browser command in a blocking thread with 30s timeout so it never hangs forever
+    let run_with_timeout = |bin: String, args: String, dir: std::path::PathBuf| async move {
+        let task = tokio::task::spawn_blocking(move || -> Option<String> {
+            let full = format!("{} {}", bin, args);
+            let out = {
+                #[cfg(target_os = "windows")]
+                {
+                    use std::os::windows::process::CommandExt;
+                    Command::new("cmd")
+                        .args(["/C", &full])
+                        .env("TEMP", &dir)
+                        .env("TMP",  &dir)
+                        .creation_flags(0x08000000)
+                        .output().ok()?
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    Command::new("sh")
+                        .args(["-c", &full])
+                        .env("TMPDIR", &dir)
+                        .output().ok()?
+                }
+            };
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            if stderr.contains("is not recognized") || stderr.contains("not found") || stderr.contains("No such file") {
+                return None; // binary not in this location
             }
-            #[cfg(not(target_os = "windows"))]
-            {
-                Command::new("sh")
-                    .args(["-c", &full])
-                    .env("TMPDIR", &persistent_dir)
-                    .output().ok()?
+            if stderr.contains("Chrome exited") || stderr.contains("DevToolsActivePort") || stderr.contains("failed to launch") {
+                return Some("[browser-crash]".to_string());
             }
-        };
-        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        if stderr.contains("is not recognized") || stderr.contains("not found") || stderr.contains("No such file") {
-            return None;
+            let combined = format!("{}{}", stdout, stderr).trim().to_string();
+            Some(if combined.is_empty() { "(done)".to_string() } else { combined })
+        });
+        match tokio::time::timeout(Duration::from_secs(30), task).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(_)) => Some("[browser-crash]".to_string()),
+            Err(_) => Some("[browser-timeout]".to_string()), // 30s elapsed — browser hung
         }
-        // Detect Chrome crash / conflict
-        if stderr.contains("Chrome exited") || stderr.contains("DevToolsActivePort") || stderr.contains("failed to launch") {
-            return Some("[browser-crash]".to_string());
-        }
-        let combined = format!("{}{}", stdout, stderr).trim().to_string();
-        Some(if combined.is_empty() { "(done)".to_string() } else { combined })
     };
 
-    if let Some(r) = run_cmd("agent-browser") { return Ok(r); }
+    // Try system PATH first
+    if let Some(r) = run_with_timeout("agent-browser".to_string(), args.clone(), persistent_dir.clone()).await {
+        return Ok(r);
+    }
 
+    // Try local binary
     let local_bin = get_agent_browser_local_path(&app);
     if local_bin.exists() {
-        if let Some(r) = run_cmd(&format!("\"{}\"", local_bin.display())) { return Ok(r); }
+        if let Some(r) = run_with_timeout(format!("\"{}\"", local_bin.display()), args.clone(), persistent_dir.clone()).await {
+            return Ok(r);
+        }
     }
 
     Ok("[agent-browser not installed]".to_string())
