@@ -761,10 +761,21 @@ If the user asks about THEIR OWN posts, notifications, emails, profile, or activ
 
 **CRITICAL — finding the user's own social media profiles:**
 NEVER search Google or the web to find the user's own LinkedIn, Twitter, GitHub, or any other profile URL. Searching by name will find OTHER people with the same name — you will open the wrong profile. Instead follow this order:
-1. Check memories first — look for keys like linkedin_url, founder_profile, twitter_url, github_url, etc.
+1. Check memories first — keys saved automatically: linkedin_url, linkedin_activity_url, linkedin_notifications_url, gmail_url, twitter_url, github_url, notion_url, instagram_url. Use recall_memory to fetch the saved URL.
 2. If not in memory, use read_browser_history with the site name (e.g. "linkedin.com/in") — Chrome history has the exact URL they actually visit.
-3. Only if history has nothing, ask the user directly for their URL — then navigate and save to memory.
+3. Only if history has nothing, ask the user directly for their URL.
 Never guess or construct a URL from the user's name.
+
+**URLs are saved automatically** — every time browser_navigate successfully reads a page, the URL is saved to memory with the right key. So after the first visit, just recall_memory("linkedin_url") etc. and navigate directly.
+
+**Standard platform entry URLs** (use these when no personal URL is saved yet):
+- LinkedIn feed: https://www.linkedin.com/feed/
+- LinkedIn notifications: https://www.linkedin.com/notifications/
+- Gmail inbox: https://mail.google.com/mail/u/0/#inbox
+- Twitter/X home: https://twitter.com/home
+- GitHub: https://github.com
+- Notion: https://www.notion.so
+- Reddit: https://www.reddit.com
 
 ## Smart routing: API first, browser second
 If the user's request touches a service that has a **connected API tool**, ALWAYS use that tool — not browser_navigate. Direct API calls return structured data and use 4× fewer tokens than browser navigation.
@@ -833,6 +844,36 @@ export async function buildTwitterOAuthHeader(
 // ─── Tool executor (TypeScript orchestration layer) ───────────────────────────
 
 type Creds = Record<string, Record<string, string>>;
+
+// ─── Auto-save personal URLs to memory after a successful browser_navigate ────
+// Maps URL patterns → memory key names. Fires silently, never blocks the agent.
+const URL_MEMORY_MAP: Array<{ pattern: RegExp; key: string; label: string }> = [
+  { pattern: /linkedin\.com\/in\/([^/?#]+)/,           key: 'linkedin_url',           label: 'LinkedIn profile' },
+  { pattern: /linkedin\.com\/in\/([^/?#]+)\/recent-activity/, key: 'linkedin_activity_url', label: 'LinkedIn activity' },
+  { pattern: /linkedin\.com\/notifications/,            key: 'linkedin_notifications_url', label: 'LinkedIn notifications' },
+  { pattern: /mail\.google\.com/,                       key: 'gmail_url',              label: 'Gmail inbox' },
+  { pattern: /twitter\.com\/([^/?#]+)/,                 key: 'twitter_url',            label: 'Twitter/X profile' },
+  { pattern: /x\.com\/([^/?#]+)/,                       key: 'twitter_url',            label: 'Twitter/X profile' },
+  { pattern: /github\.com\/([^/?#]+)(?:\/)?$/,          key: 'github_url',             label: 'GitHub profile' },
+  { pattern: /notion\.so/,                              key: 'notion_url',             label: 'Notion workspace' },
+  { pattern: /instagram\.com\/([^/?#]+)/,               key: 'instagram_url',          label: 'Instagram profile' },
+  { pattern: /reddit\.com\/user\/([^/?#]+)/,            key: 'reddit_url',             label: 'Reddit profile' },
+];
+
+async function autoSaveUrlToMemory(url: string, agentKey: string): Promise<void> {
+  for (const { pattern, key } of URL_MEMORY_MAP) {
+    if (pattern.test(url)) {
+      const existing = await krewMemoryDb.getAll(agentKey)
+        .then(mems => mems.find(m => m.key === key)?.value)
+        .catch(() => undefined);
+      // Only save if not already stored (or if the URL changed)
+      if (existing !== url) {
+        await krewMemoryDb.save(agentKey, key, url);
+      }
+      break;
+    }
+  }
+}
 
 export async function executeTool(
   toolName: string,
@@ -1032,6 +1073,10 @@ export async function executeTool(
       const host = (() => { try { return new URL(url).hostname; } catch { return url; } })();
       return `[LOGIN REQUIRED — STOP ALL TOOL CALLS] ${host} needs a one-time login. A browser window is open on the user's screen. Tell the user: "Please log in to ${host} in the browser window that just opened, then say continue." Do NOT call web_search, do NOT proceed with the task. Sessions are saved permanently — this only needs to happen once.`;
     }
+
+    // Auto-save personal URLs to memory so the agent never needs to ask for them again.
+    // Fires silently in the background on every successful page read.
+    autoSaveUrlToMemory(url, agentKey).catch(() => {});
 
     const content = text.length > 3000 ? text.slice(0, 3000) + '\n…[truncated — call again for more]' : text;
     return `Content from ${url}:\n\n${content}`;
