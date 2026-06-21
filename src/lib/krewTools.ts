@@ -771,13 +771,13 @@ If the user's request touches a service that has a **connected API tool**, ALWAY
 
 | Service | If connected → use | If NOT connected → use |
 |---------|-------------------|----------------------|
-| Gmail / inbox | `gmail_search`, `gmail_read_email` | `browser_navigate` to Gmail |
-| LinkedIn posts/profile | `linkedin_get_posts`, `linkedin_get_profile` | `browser_navigate` to LinkedIn |
-| Notion pages | `notion_search`, `notion_get_page` | `browser_navigate` to Notion |
-| Slack messages | `slack_read_messages`, `slack_search_messages` | `browser_navigate` to Slack |
-| GitHub repos/files | `github_list_repos`, `github_get_file` | `browser_navigate` to GitHub |
+| Gmail / inbox | gmail_search, gmail_read_email | browser_navigate to Gmail |
+| LinkedIn posts/profile | linkedin_get_posts, linkedin_get_profile | browser_navigate to LinkedIn |
+| Notion pages | notion_search, notion_get_page | browser_navigate to Notion |
+| Slack messages | slack_read_messages, slack_search_messages | browser_navigate to Slack |
+| GitHub repos/files | github_list_repos, github_get_file | browser_navigate to GitHub |
 
-Check your available tools list. If `gmail_search` is listed, never use browser_navigate for Gmail. If `linkedin_get_posts` is listed, never use browser_navigate for LinkedIn. The connected tool is ALWAYS faster, cheaper, and more reliable.
+Check your available tools list. If gmail_search is listed, never use browser_navigate for Gmail. If linkedin_get_posts is listed, never use browser_navigate for LinkedIn. The connected tool is ALWAYS faster, cheaper, and more reliable.
 
 ## Platform & Content Compliance
 When generating content intended for any platform (LinkedIn, Twitter/X, Instagram, email, Slack, Notion, etc.):
