@@ -230,9 +230,16 @@ export const BROWSER_TOOLS: ToolDef[] = [
   },
   {
     name: 'browser_navigate',
-    description: 'Load a URL in the agent\'s persistent browser and return the page text (ads/banners stripped). Sessions are saved — user logs in once per site, stays logged in forever. Use to READ page content: notifications, inbox, articles, feeds. Returns text immediately.',
+    description: 'Load a URL and return the page text. For public pages works without any login. For private pages (LinkedIn feed, Gmail) opens a login window — user logs in once, sessions saved forever. Use to READ content: notifications, inbox, articles, feeds.',
     parameters: {
       url: { type: 'string', description: 'Full URL to read', required: true },
+    },
+  },
+  {
+    name: 'read_browser_history',
+    description: "Search the user's Chrome/Edge browsing history for URLs and page titles. Use this BEFORE asking the user for a URL or searching the web — e.g. to find their LinkedIn profile, GitHub, or any site they regularly visit. Much faster and always correct.",
+    parameters: {
+      query: { type: 'string', description: 'Keyword to search — site name, URL fragment, or topic (e.g. "linkedin", "github amogh", "notion workspace")', required: true },
     },
   },
   {
@@ -753,11 +760,11 @@ NEVER say "I can't access that" or suggest Connect Apps for browsing. The browse
 If the user asks about THEIR OWN posts, notifications, emails, profile, or activity on any platform, you MUST use browser_navigate — web_search cannot see private account data. Do NOT use web_search to "research" personal tasks. Examples: "check my LinkedIn posts" → browser_navigate to LinkedIn. "my Gmail inbox" → browser_navigate to Gmail. "my Twitter activity" → browser_navigate to Twitter. Only use web_search for public facts, news, or research unrelated to the user's own accounts.
 
 **CRITICAL — finding the user's own social media profiles:**
-NEVER search Google or the web to find the user's own LinkedIn, Twitter, GitHub, or any other profile URL. Searching by name will find OTHER people with the same name — you will open the wrong profile. Instead:
-1. Check your memories first — look for keys like linkedin_url, founder_profile, twitter_url, github_url, etc.
-2. If the URL is in memory, use it directly with browser_navigate.
-3. If NOT in memory, ask the user: "What's your LinkedIn URL?" — then navigate to it directly and save it to memory.
-Never guess or construct a URL from the user's name. Always use the exact URL the user has provided or confirmed.
+NEVER search Google or the web to find the user's own LinkedIn, Twitter, GitHub, or any other profile URL. Searching by name will find OTHER people with the same name — you will open the wrong profile. Instead follow this order:
+1. Check memories first — look for keys like linkedin_url, founder_profile, twitter_url, github_url, etc.
+2. If not in memory, use read_browser_history with the site name (e.g. "linkedin.com/in") — Chrome history has the exact URL they actually visit.
+3. Only if history has nothing, ask the user directly for their URL — then navigate and save to memory.
+Never guess or construct a URL from the user's name.
 
 ## Platform & Content Compliance
 When generating content intended for any platform (LinkedIn, Twitter/X, Instagram, email, Slack, Notion, etc.):
@@ -932,6 +939,11 @@ export async function executeTool(
     }
   };
 
+  if (toolName === 'read_browser_history') {
+    const query = str(args.query);
+    return await invoke<string>('read_browser_history', { query, limit: 15 }).catch(e => `History read failed: ${e}`);
+  }
+
   if (toolName === 'browser_open') {
     const rawUrl = str(args.url);
     const url = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl.replace(/^\/+/, '')}`;
@@ -948,7 +960,25 @@ export async function executeTool(
     // Also navigate in the persistent agent browser to extract page text
     const navResult = await invoke<string>('run_browser_persistent', { args: `open "${url}"` }).catch(e => String(e));
     if (navResult.includes('[agent-browser not installed]')) {
-      return `[Reading ${url}] Opened in your browser. The agent browser is not installed so I cannot extract text automatically — please describe what you see on screen and I will help from there.`;
+      // Fallback: try plain HTTP fetch for public pages
+      try {
+        const fetched = await invoke<string>('fetch_page_text', { url });
+        const cleaned = cleanBrowserText(fetched);
+        if (cleaned && cleaned.length > 50) {
+          const snippet = cleaned.slice(0, 1000).toLowerCase();
+          const isLoginPage = (
+            (snippet.includes('sign in') || snippet.includes('log in') || snippet.includes('join now')) &&
+            (snippet.includes('password') || snippet.includes('email') || snippet.includes('phone'))
+          ) || snippet.includes('authwall');
+          if (isLoginPage) {
+            const host = (() => { try { return new URL(url).hostname; } catch { return url; } })();
+            return `[Login required] ${host} requires you to be logged in. Please log in to ${host} in the browser window that just opened, then say **"continue"** — I will read the page once you are signed in.`;
+          }
+          const content = cleaned.length > 3000 ? cleaned.slice(0, 3000) + '\n…[truncated]' : cleaned;
+          return `Content from ${url} (public read):\n\n${content}`;
+        }
+      } catch { /* fall through */ }
+      return `[Login required] This page needs you to be logged in. Please log in in the browser window that just opened, then say **"continue"** and I will read it.`;
     }
     if (navResult.includes('[browser-timeout]')) {
       return `[Browser timeout] ${url} took over 30 seconds to load. The page may require login or is loading slowly. Check the browser window that just opened — if you are logged in, please try the request again and I will retry.`;
@@ -969,7 +999,7 @@ export async function executeTool(
 
     if (!text || text.length < 30 || isLoginPage) {
       const host = (() => { try { return new URL(url).hostname; } catch { return url; } })();
-      return `[Login required] The agent browser is not logged in to ${host}. A browser window has opened — please log in there with your account. Sessions are saved permanently, so this is a one-time step.\n\nAfter logging in, ask me again and I will read the page successfully.`;
+      return `[Login required] ${host} needs a one-time login in the browser window that just opened on your screen. Once you are signed in, come back here and say **"continue"** — I will read the page and carry on with your task. Sessions are saved permanently so you only do this once per site.`;
     }
     const content = text.length > 3000 ? text.slice(0, 3000) + '\n…[truncated — call again for more]' : text;
     return `Content from ${url}:\n\n${content}`;

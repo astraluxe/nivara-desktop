@@ -2350,6 +2350,132 @@ async fn run_browser_persistent(app: tauri::AppHandle, args: String) -> Result<S
     Ok("[agent-browser not installed]".to_string())
 }
 
+// ── Fetch a public web page and return readable text (no browser needed) ─────
+fn strip_html_to_text(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() / 2);
+    let mut in_tag = false;
+    let mut skip_content = false;
+    let mut tag_buf = String::new();
+    let chars: Vec<char> = html.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        if skip_content {
+            if ch == '<' {
+                let ahead: String = chars[i+1..].iter().take(8).collect::<String>().to_lowercase();
+                if ahead.starts_with("/script") || ahead.starts_with("/style") {
+                    skip_content = false; in_tag = true;
+                }
+            }
+            i += 1; continue;
+        }
+        match ch {
+            '<' => { in_tag = true; tag_buf.clear(); }
+            '>' => {
+                in_tag = false;
+                let tl = tag_buf.trim_start().to_lowercase();
+                let name = tl.split(|c: char| !c.is_alphabetic()).next().unwrap_or("");
+                if name == "script" || name == "style" { skip_content = true; }
+                else {
+                    match name {
+                        "p"|"div"|"br"|"h1"|"h2"|"h3"|"h4"|"h5"|"h6"
+                        |"li"|"tr"|"td"|"th"|"section"|"article"|"header"
+                        |"footer"|"nav"|"main"|"aside" => out.push('\n'),
+                        _ => out.push(' '),
+                    }
+                }
+                tag_buf.clear();
+            }
+            _ => { if in_tag { tag_buf.push(ch); } else { out.push(ch); } }
+        }
+        i += 1;
+    }
+    let mut result = String::new();
+    let mut prev_nl = false;
+    let mut prev_sp = false;
+    for ch in out.chars() {
+        match ch {
+            '\n' => { if !prev_nl { result.push('\n'); } prev_nl = true; prev_sp = false; }
+            c if c.is_ascii_whitespace() => { if !prev_sp && !prev_nl { result.push(' '); } prev_sp = true; }
+            c => { result.push(c); prev_nl = false; prev_sp = false; }
+        }
+    }
+    result.replace("&amp;","&").replace("&lt;","<").replace("&gt;",">")
+          .replace("&quot;","\"").replace("&nbsp;"," ").replace("&#39;","'")
+          .replace("&apos;","'").replace("&hellip;","...").trim().to_string()
+}
+
+#[tauri::command]
+async fn fetch_page_text(url: String) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build().map_err(|e| e.to_string())?;
+    let resp = client.get(&url).send().await.map_err(|e| format!("fetch_failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let html = resp.text().await.map_err(|e| e.to_string())?;
+    Ok(strip_html_to_text(&html))
+}
+
+// ── Read Chrome/Edge browser history (SQLite copy — safe while browser running) ─
+#[tauri::command]
+async fn read_browser_history(query: String, limit: Option<u32>) -> Result<String, String> {
+    let candidates: Vec<std::path::PathBuf> = {
+        #[cfg(target_os = "windows")]
+        {
+            let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+            vec![
+                std::path::PathBuf::from(&local).join("Google").join("Chrome").join("User Data").join("Default").join("History"),
+                std::path::PathBuf::from(&local).join("Microsoft").join("Edge").join("User Data").join("Default").join("History"),
+            ]
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let home = std::env::var("HOME").unwrap_or_default();
+            vec![
+                std::path::PathBuf::from(&home).join(".config").join("google-chrome").join("Default").join("History"),
+                std::path::PathBuf::from(&home).join(".config").join("chromium").join("Default").join("History"),
+            ]
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+        { vec![] }
+    };
+    let history_path = candidates.into_iter().find(|p| p.exists())
+        .ok_or_else(|| "No Chrome or Edge browser history found.".to_string())?;
+    // Copy file — Chrome holds a lock on the original while running
+    let tmp = std::env::temp_dir().join("adris-hist-tmp.db");
+    std::fs::copy(&history_path, &tmp).map_err(|e| format!("Cannot copy history: {e}"))?;
+    let lim = limit.unwrap_or(15) as i64;
+    let conn = rusqlite::Connection::open_with_flags(
+        &tmp, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ).map_err(|e| e.to_string())?;
+    let pattern = format!("%{}%", query.to_lowercase());
+    let mut stmt = conn.prepare(
+        "SELECT url, title, visit_count FROM urls \
+         WHERE (lower(url) LIKE ?1 OR lower(title) LIKE ?1) \
+         AND url NOT LIKE 'data:%' AND url NOT LIKE 'chrome:%' \
+         ORDER BY last_visit_time DESC LIMIT ?2"
+    ).map_err(|e| e.to_string())?;
+    let rows: Vec<String> = stmt.query_map(
+        rusqlite::params![pattern, lim],
+        |row| {
+            let url: String = row.get(0)?;
+            let title: String = row.get(1).unwrap_or_default();
+            let visits: i64 = row.get(2).unwrap_or(0);
+            Ok(format!("- {} | {} (visited {} times)", title.trim(), url, visits))
+        }
+    ).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    let _ = std::fs::remove_file(&tmp);
+    if rows.is_empty() {
+        Ok(format!("No browser history found matching '{}'. Try a different keyword.", query))
+    } else {
+        Ok(format!("Browser history for '{}':\n{}", query, rows.join("\n")))
+    }
+}
+
 #[tauri::command]
 async fn krew_http_call(
     method:  String,
@@ -5214,6 +5340,8 @@ pub fn run() {
             run_agent_browser_session,
             run_browser_persistent,
             open_in_system_browser,
+            fetch_page_text,
+            read_browser_history,
             krew_http_call,
             gmail_fetch_emails,
             gmail_fetch_email_body,
