@@ -1,0 +1,12 @@
+{
+  "name": "adris-agent-browser",
+  "version": "1.0.0",
+  "description": "Playwright wrapper for adris.tech desktop agent browser — uses system Chrome",
+  "main": "index.js",
+  "dependencies": {
+    "playwright-core": "1.48.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

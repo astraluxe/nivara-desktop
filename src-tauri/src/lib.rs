@@ -2074,6 +2074,17 @@ fn get_agent_browser_local_path(app: &tauri::AppHandle) -> std::path::PathBuf {
     data_dir.join("tools").join(bin_name)
 }
 
+// ── Option B: Node.js + playwright-core (system Chrome, no download needed) ──
+fn get_playwright_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
+    let data_dir = app.path().app_local_data_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    data_dir.join("tools").join("playwright")
+}
+
+fn get_playwright_script_path(app: &tauri::AppHandle) -> std::path::PathBuf {
+    get_playwright_dir(app).join("agent-browser.js")
+}
+
 // ── agent-browser: silent background setup ────────────────────────────────────
 #[tauri::command]
 async fn setup_agent_browser(app: tauri::AppHandle) -> Result<(), String> {
@@ -2089,8 +2100,8 @@ async fn setup_agent_browser(app: tauri::AppHandle) -> Result<(), String> {
         let local_bin = get_agent_browser_local_path(&app);
 
         if !in_path && !local_bin.exists() {
-            // Download binary from GitHub releases (no Node.js required)
-            let url = if cfg!(target_os = "windows") {
+            // Attempt binary download (kept for future; currently 404s)
+            let dl_url = if cfg!(target_os = "windows") {
                 "https://github.com/vercel-labs/agent-browser/releases/latest/download/agent-browser-win32-x64.exe"
             } else if cfg!(target_os = "linux") && cfg!(target_arch = "aarch64") {
                 "https://github.com/vercel-labs/agent-browser/releases/latest/download/agent-browser-linux-arm64"
@@ -2102,25 +2113,69 @@ async fn setup_agent_browser(app: tauri::AppHandle) -> Result<(), String> {
                 "https://github.com/vercel-labs/agent-browser/releases/latest/download/agent-browser-darwin-x64"
             };
             let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(180))
+                .timeout(std::time::Duration::from_secs(30))
                 .build().unwrap_or_else(|_| reqwest::Client::new());
-            let Ok(resp) = client.get(url).send().await else { return; };
-            if !resp.status().is_success() { return; }
-            let Ok(bytes) = resp.bytes().await else { return; };
-            if let Some(p) = local_bin.parent() { let _ = std::fs::create_dir_all(p); }
-            if std::fs::write(&local_bin, &bytes).is_err() { return; }
-            #[cfg(unix)] {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&local_bin, std::fs::Permissions::from_mode(0o755));
+            if let Ok(resp) = client.get(dl_url).send().await {
+                if resp.status().is_success() {
+                    if let Ok(bytes) = resp.bytes().await {
+                        if let Some(p) = local_bin.parent() { let _ = std::fs::create_dir_all(p); }
+                        let _ = std::fs::write(&local_bin, &bytes);
+                        #[cfg(unix)] {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = std::fs::set_permissions(&local_bin, std::fs::Permissions::from_mode(0o755));
+                        }
+                    }
+                }
             }
         }
 
-        // Run 'agent-browser install' to detect/download Chrome (silent, one-time)
-        let bin = if in_path { std::path::PathBuf::from("agent-browser") } else { local_bin };
-        #[cfg(target_os = "windows")]
-        { use std::os::windows::process::CommandExt; let _ = std::process::Command::new(&bin).arg("install").creation_flags(0x08000000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
-        #[cfg(not(target_os = "windows"))]
-        { let _ = std::process::Command::new(&bin).arg("install").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
+        // Option B: Node.js + playwright-core (uses system Chrome — no separate browser download)
+        // Embedded at compile time from scripts/agent-browser/index.js
+        let script_path = get_playwright_script_path(&app);
+        if !script_path.exists() {
+            let node_ok = {
+                #[cfg(target_os = "windows")]
+                { use std::os::windows::process::CommandExt; std::process::Command::new("node").arg("--version").creation_flags(0x08000000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false) }
+                #[cfg(not(target_os = "windows"))]
+                { std::process::Command::new("node").arg("--version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false) }
+            };
+
+            if node_ok {
+                let playwright_dir = get_playwright_dir(&app);
+                let _ = std::fs::create_dir_all(&playwright_dir);
+
+                // Write the Playwright wrapper script (embedded at compile time)
+                let script_src = include_str!("../../scripts/agent-browser/index.js");
+                let _ = std::fs::write(&script_path, script_src);
+
+                // Write package.json for playwright-core
+                let pkg_json = r#"{"name":"adris-agent-browser","version":"1.0.0","dependencies":{"playwright-core":"1.48.0"}}"#;
+                let _ = std::fs::write(playwright_dir.join("package.json"), pkg_json);
+
+                // npm install playwright-core (silent background install ~10 MB)
+                let dir_str = playwright_dir.to_string_lossy().to_string();
+                let already_installed = playwright_dir.join("node_modules").join("playwright-core").exists();
+                if !already_installed {
+                    #[cfg(target_os = "windows")]
+                    { use std::os::windows::process::CommandExt; let _ = std::process::Command::new("cmd").args(["/C", &format!("npm install --prefix \"{}\" playwright-core@1.48.0 --save-exact", dir_str)]).creation_flags(0x08000000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
+                    #[cfg(not(target_os = "windows"))]
+                    { let _ = std::process::Command::new("sh").args(["-c", &format!("npm install --prefix '{}' playwright-core@1.48.0 --save-exact", dir_str)]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
+                }
+            }
+        }
+
+        // Run 'install' to verify whichever browser backend is available
+        if in_path {
+            #[cfg(target_os = "windows")]
+            { use std::os::windows::process::CommandExt; let _ = std::process::Command::new("agent-browser").arg("install").creation_flags(0x08000000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
+            #[cfg(not(target_os = "windows"))]
+            { let _ = std::process::Command::new("agent-browser").arg("install").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
+        } else if local_bin.exists() {
+            #[cfg(target_os = "windows")]
+            { use std::os::windows::process::CommandExt; let _ = std::process::Command::new(&local_bin).arg("install").creation_flags(0x08000000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
+            #[cfg(not(target_os = "windows"))]
+            { let _ = std::process::Command::new(&local_bin).arg("install").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
+        }
     });
     Ok(())
 }
@@ -2344,6 +2399,51 @@ async fn run_browser_persistent(app: tauri::AppHandle, args: String) -> Result<S
     if local_bin.exists() {
         if let Some(r) = run_with_timeout(format!("\"{}\"", local_bin.display()), args.clone(), persistent_dir.clone()).await {
             return Ok(r);
+        }
+    }
+
+    // Option B: Node.js + playwright-core (system Chrome, persistent profile, visible window)
+    let script_path = get_playwright_script_path(&app);
+    if script_path.exists() {
+        // Parse args: "open \"https://url\"" → cmd="open", url="https://url"
+        // Use direct Command (not shell) to avoid quoting issues with paths/URLs
+        let args_str = args.trim().to_string();
+        let mut parts = args_str.splitn(2, ' ');
+        let cmd_part = parts.next().unwrap_or("").to_string();
+        let url_part = parts.next().unwrap_or("").trim().trim_matches('"').to_string();
+        let script_path_clone = script_path.clone();
+
+        let node_task = tokio::task::spawn_blocking(move || -> Option<String> {
+            let mut command = std::process::Command::new("node");
+            command.arg(&script_path_clone);
+            if !cmd_part.is_empty() { command.arg(&cmd_part); }
+            if !url_part.is_empty() { command.arg(&url_part); }
+
+            #[cfg(target_os = "windows")]
+            { use std::os::windows::process::CommandExt; command.creation_flags(0x08000000); }
+
+            let out = command.output().ok()?;
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
+            // If node binary not found, skip gracefully
+            if stderr.contains("is not recognized") || stderr.contains("not found") || stderr.contains("No such file") {
+                return None;
+            }
+            if stderr.contains("Chrome exited") || stderr.contains("DevToolsActivePort") || stderr.contains("failed to launch") || stderr.contains("Executable doesn't exist") {
+                return Some("[browser-crash]".to_string());
+            }
+            // playwright-core not installed yet
+            if stderr.contains("Cannot find module") || stderr.contains("playwright-core not installed") {
+                return None;
+            }
+            let combined = format!("{}{}", stdout, stderr).trim().to_string();
+            Some(if combined.is_empty() { "(done)".to_string() } else { combined })
+        });
+
+        match tokio::time::timeout(std::time::Duration::from_secs(45), node_task).await {
+            Ok(Ok(Some(r))) => return Ok(r),
+            _ => {}
         }
     }
 

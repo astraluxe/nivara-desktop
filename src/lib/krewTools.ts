@@ -766,6 +766,19 @@ NEVER search Google or the web to find the user's own LinkedIn, Twitter, GitHub,
 3. Only if history has nothing, ask the user directly for their URL — then navigate and save to memory.
 Never guess or construct a URL from the user's name.
 
+## Smart routing: API first, browser second
+If the user's request touches a service that has a **connected API tool**, ALWAYS use that tool — not browser_navigate. Direct API calls return structured data and use 4× fewer tokens than browser navigation.
+
+| Service | If connected → use | If NOT connected → use |
+|---------|-------------------|----------------------|
+| Gmail / inbox | `gmail_search`, `gmail_read_email` | `browser_navigate` to Gmail |
+| LinkedIn posts/profile | `linkedin_get_posts`, `linkedin_get_profile` | `browser_navigate` to LinkedIn |
+| Notion pages | `notion_search`, `notion_get_page` | `browser_navigate` to Notion |
+| Slack messages | `slack_read_messages`, `slack_search_messages` | `browser_navigate` to Slack |
+| GitHub repos/files | `github_list_repos`, `github_get_file` | `browser_navigate` to GitHub |
+
+Check your available tools list. If `gmail_search` is listed, never use browser_navigate for Gmail. If `linkedin_get_posts` is listed, never use browser_navigate for LinkedIn. The connected tool is ALWAYS faster, cheaper, and more reliable.
+
 ## Platform & Content Compliance
 When generating content intended for any platform (LinkedIn, Twitter/X, Instagram, email, Slack, Notion, etc.):
 - Write exactly as the user would write it themselves — first person, their voice, their tone
@@ -986,8 +999,12 @@ export async function executeTool(
     if (navResult.includes('[browser-crash]') || navResult.includes('Chrome exited') || navResult.includes('DevToolsActivePort')) {
       return `[Browser error] Could not load ${url}. Try web_search instead to find this information.`;
     }
-    // Read the page text (persistent session — logged in if user previously authenticated)
-    const raw = await invoke<string>('run_browser_persistent', { args: 'get text body' }).catch(e => String(e));
+    // If run_browser_persistent returned actual page content directly (Node.js/Playwright path),
+    // use it. Only call "get text body" if it returned the old "(done)" signal.
+    const isDoneSignal = navResult.trim() === '(done)' || navResult.trim() === '';
+    const raw = isDoneSignal
+      ? await invoke<string>('run_browser_persistent', { args: 'get text body' }).catch(e => String(e))
+      : navResult;
     const text = cleanBrowserText(raw);
 
     // Detect login / auth-wall pages — don't feed them to the agent as real content
