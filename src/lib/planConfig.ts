@@ -45,8 +45,8 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     researchParallelism: 5,
   },
   solo: {
-    monthlyTokens:    2_000_000,   // ~2,000 tasks/month
-    label:            '~2,000 tasks/mo',
+    monthlyTokens:    4_000_000,   // ~4,000 tasks/month
+    label:            '~4,000 tasks/mo',
     mcpConnections:   5,
     canCreateMesh:    false,
     canJoinMesh:      true,
@@ -59,8 +59,8 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     researchParallelism: 15,
   },
   builder: {
-    monthlyTokens:    8_000_000,   // ~8,000 tasks/month
-    label:            '~8,000 tasks/mo',
+    monthlyTokens:    16_000_000,  // ~16,000 tasks/month
+    label:            '~16,000 tasks/mo',
     mcpConnections:   25,
     canCreateMesh:    true,        // relay nodes unlocked
     canJoinMesh:      true,
@@ -73,8 +73,8 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     researchParallelism: 40,
   },
   business: {
-    monthlyTokens:    30_000_000,  // ~30,000 tasks/month
-    label:            '~30,000 tasks/mo',
+    monthlyTokens:    50_000_000,  // ~50,000 tasks/month
+    label:            '~50,000 tasks/mo',
     mcpConnections:   999,
     canCreateMesh:    true,
     canJoinMesh:      true,

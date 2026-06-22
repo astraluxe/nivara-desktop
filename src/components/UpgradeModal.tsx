@@ -5,46 +5,50 @@ import { useAuth } from "../contexts/AuthContext";
 const SUPABASE_URL = 'https://xkkqcqsacgdrfwbwdqsp.supabase.co';
 
 interface Plan {
-  key:      string;
-  label:    string;
-  price:    string;
-  paise:    number;  // price in paise — update when plan prices are decided
-  sub:      string;
-  tokens:   string;
-  features: string[];
-  accent:   boolean;
+  key:        string;
+  label:      string;
+  price:      string;
+  paise:      number;
+  sub:        string;
+  tokens:     string;
+  prevTokens?: string;  // old value — shown struck-through to highlight the increase
+  features:   string[];
+  accent:     boolean;
 }
 
 const PLANS: Plan[] = [
   {
-    key:      "solo",
-    label:    "Solo",
-    price:    "₹1,499",
-    paise:    149900,
-    sub:      "/ month",
-    tokens:   "~2,000 tasks / month",
-    features: ["All 6 modules", "2M tokens/mo", "500 cloud automations", "10 Mesh devices"],
-    accent:   false,
+    key:        "solo",
+    label:      "Solo",
+    price:      "₹1,499",
+    paise:      149900,
+    sub:        "/ month",
+    tokens:     "~4,000 tasks / month",
+    prevTokens: "~2,000 tasks / month",
+    features:   ["All 6 modules", "4M tokens/mo", "500 cloud automations", "10 Mesh devices"],
+    accent:     false,
   },
   {
-    key:      "builder",
-    label:    "Builder",
-    price:    "₹4,999",
-    paise:    499900,
-    sub:      "/ month",
-    tokens:   "~8,000 tasks / month",
-    features: ["Everything in Solo", "8M tokens/mo", "5,000 cloud automations", "25 Mesh devices + relay nodes", "Guard security scanner", "Voice to Code"],
-    accent:   true,
+    key:        "builder",
+    label:      "Builder",
+    price:      "₹4,999",
+    paise:      499900,
+    sub:        "/ month",
+    tokens:     "~16,000 tasks / month",
+    prevTokens: "~8,000 tasks / month",
+    features:   ["Everything in Solo", "16M tokens/mo", "5,000 cloud automations", "25 Mesh devices + relay nodes", "Guard security scanner", "Voice to Code"],
+    accent:     true,
   },
   {
-    key:      "business",
-    label:    "Business",
-    price:    "₹14,999",
-    paise:    1499900,
-    sub:      "/ month",
-    tokens:   "~30,000 tasks / month",
-    features: ["Everything in Builder", "30M tokens/mo", "Unlimited automations", "50 Mesh devices", "Guard + Audit export"],
-    accent:   false,
+    key:        "business",
+    label:      "Business",
+    price:      "₹14,999",
+    paise:      1499900,
+    sub:        "/ month",
+    tokens:     "~50,000 tasks / month",
+    prevTokens: "~30,000 tasks / month",
+    features:   ["Everything in Builder", "50M tokens/mo", "Unlimited automations", "50 Mesh devices", "Guard + Audit export"],
+    accent:     false,
   },
   {
     key:      "custom",
@@ -225,8 +229,11 @@ export default function UpgradeModal({ onClose, currentPlan, highlightPlan, reas
               <div className="text-[13px] font-semibold text-nv-text">{p.label}</div>
               <div className="font-mono text-[15px] font-bold mt-1" style={{ color: "#7C5CFF" }}>{p.price}</div>
               <div className="text-[9px] text-nv-faint">{p.sub}</div>
-              <div className="text-[9px] font-mono text-nv-muted mt-2 pb-2 border-b" style={{ borderColor: "var(--nv-rule)" }}>
-                {p.tokens}
+              <div className="text-[9px] font-mono mt-2 pb-2 border-b" style={{ borderColor: "var(--nv-rule)" }}>
+                {p.prevTokens && (
+                  <span className="line-through text-nv-faint mr-1.5">{p.prevTokens}</span>
+                )}
+                <span className={p.prevTokens ? "text-nv-green font-semibold" : "text-nv-muted"}>{p.tokens}</span>
               </div>
               <ul className="mt-2 space-y-1">
                 {p.features.map((f, i) => (
