@@ -2418,7 +2418,12 @@ The prompt must be production-ready — specific enough for a motion designer to
                 const files = Array.from(e.target.files ?? []);
                 if (!files.length) return;
                 let pending = files.length;
-                const results: { name: string; content: string }[] = new Array(files.length);
+                // Each file slot holds an array (scanned PDFs expand to one entry per page)
+                const results: { name: string; content: string; isImage?: boolean; mimeType?: string }[][] = new Array(files.length);
+                const flush = () => {
+                  const flat = results.filter(Boolean).flat();
+                  setAttachedFiles(prev => [...prev, ...flat]);
+                };
                 files.forEach((file, i) => {
                   if (file.name.toLowerCase().endsWith('.pdf')) {
                     file.arrayBuffer().then(buf => pdfjsLib.getDocument({ data: new Uint8Array(buf), cMapUrl: '/cmaps/', cMapPacked: true }).promise).then(async (pdf) => {
@@ -2429,7 +2434,6 @@ The prompt must be production-ready — specific enough for a motion designer to
                         const rawItems = content.items
                           .filter((item: any) => 'str' in item && item.str.trim())
                           .map((item: any) => ({ str: item.str as string, x: item.transform[4] as number, y: item.transform[5] as number }));
-                        // Group items into rows by Y proximity (within 6px = same line)
                         const rowMap = new Map<number, { str: string; x: number }[]>();
                         for (const item of rawItems) {
                           let rowKey = item.y;
@@ -2439,24 +2443,45 @@ The prompt must be production-ready — specific enough for a motion designer to
                           if (!rowMap.has(rowKey)) rowMap.set(rowKey, []);
                           rowMap.get(rowKey)!.push({ str: item.str, x: item.x });
                         }
-                        // Sort rows top→bottom; within each row sort left→right, join with spacing
                         const lines = Array.from(rowMap.entries())
                           .sort(([ya], [yb]) => yb - ya)
                           .map(([, items]) => items.sort((a, b) => a.x - b.x).map(i => i.str).join('  '));
                         pageTexts.push(lines.join('\n'));
                       }
-                      const extracted = pageTexts.join('\n\n').trim() || '[Scanned/image PDF — no text layer found]';
-                      results[i] = { name: file.name, content: extracted };
-                      if (--pending === 0) setAttachedFiles(prev => [...prev, ...results]);
+                      const extracted = pageTexts.join('\n\n').trim();
+                      if (extracted) {
+                        results[i] = [{ name: file.name, content: extracted }];
+                      } else {
+                        // Scanned/image PDF — render each page as JPEG for Gemini vision
+                        const pages: { name: string; content: string; isImage: boolean; mimeType: string }[] = [];
+                        for (let p = 1; p <= pdf.numPages; p++) {
+                          const page = await pdf.getPage(p);
+                          const viewport = page.getViewport({ scale: 1.5 });
+                          const canvas = document.createElement('canvas');
+                          const ctx = canvas.getContext('2d')!;
+                          canvas.width = viewport.width;
+                          canvas.height = viewport.height;
+                          await page.render({ canvasContext: ctx, viewport }).promise;
+                          const b64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+                          pages.push({
+                            name: pdf.numPages > 1 ? `${file.name} — p${p}` : file.name,
+                            content: b64,
+                            isImage: true,
+                            mimeType: 'image/jpeg',
+                          });
+                        }
+                        results[i] = pages;
+                      }
+                      if (--pending === 0) flush();
                     }).catch(() => {
-                      results[i] = { name: file.name, content: '[Could not read PDF]' };
-                      if (--pending === 0) setAttachedFiles(prev => [...prev, ...results]);
+                      results[i] = [{ name: file.name, content: '[Could not read PDF]' }];
+                      if (--pending === 0) flush();
                     });
                   } else {
                     const reader = new FileReader();
                     reader.onload = (ev) => {
-                      results[i] = { name: file.name, content: ev.target?.result as string ?? '' };
-                      if (--pending === 0) setAttachedFiles(prev => [...prev, ...results]);
+                      results[i] = [{ name: file.name, content: ev.target?.result as string ?? '' }];
+                      if (--pending === 0) flush();
                     };
                     reader.readAsText(file);
                   }
