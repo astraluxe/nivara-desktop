@@ -72,11 +72,6 @@ function AnnouncementModal({ ann, onClose }: { ann: Announcement; onClose: () =>
   };
 
   async function handleCta() {
-    if (ann.type === 'update' && !ann.cta_url) {
-      setInstalling(true);
-      try { await invoke('install_update'); } catch { setInstalling(false); }
-      return;
-    }
     if (ann.cta_url) window.open(ann.cta_url, '_blank');
   }
 
@@ -214,13 +209,15 @@ function AppShell() {
     if (!session) return;
 
     function showUpdateBanner(version: string) {
+      const dismissed = JSON.parse(localStorage.getItem(DISMISSED_KEY) ?? '[]') as string[];
+      if (dismissed.includes(`update-${version}`)) return;
       setAnnouncement({
         id: `update-${version}`,
         title: `Update available — v${version}`,
-        body: 'A new version of adris.tech is ready. Install it now and restart to get the latest features and fixes.',
+        body: 'A new version of adris.tech is ready. Download and install it to get the latest features and fixes.',
         type: 'update',
-        cta_label: 'Install & restart',
-        cta_url: undefined,
+        cta_label: 'Download update',
+        cta_url: 'https://adris.tech/download',
       });
     }
 
