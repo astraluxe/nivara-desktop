@@ -63,17 +63,12 @@ interface Announcement {
 }
 
 function AnnouncementModal({ ann, onClose }: { ann: Announcement; onClose: () => void }) {
-  const [installing, setInstalling] = useState(false);
   const icons: Record<string, string> = { info: 'ℹ', update: '↑', warning: '⚠' };
   const colours: Record<string, string> = {
     info:    'border-nv-info bg-nv-info/10',
     update:  'border-accent bg-accent/10',
     warning: 'border-nv-bad bg-nv-bad/10',
   };
-
-  async function handleCta() {
-    if (ann.cta_url) window.open(ann.cta_url, '_blank');
-  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
@@ -85,9 +80,9 @@ function AnnouncementModal({ ann, onClose }: { ann: Announcement; onClose: () =>
         <p className="text-sm text-nv-faint leading-relaxed mb-5">{ann.body}</p>
         <div className="flex gap-2">
           {ann.cta_label && (
-            <button onClick={handleCta} disabled={installing}
-              className="flex-1 px-4 py-2 bg-accent text-white text-sm font-semibold rounded-lg hover:bg-accent/80 transition-colors disabled:opacity-60">
-              {installing ? 'Installing…' : ann.cta_label}
+            <button onClick={() => { if (ann.cta_url) window.open(ann.cta_url, '_blank'); }}
+              className="flex-1 px-4 py-2 bg-accent text-white text-sm font-semibold rounded-lg hover:bg-accent/80 transition-colors">
+              {ann.cta_label}
             </button>
           )}
           <button onClick={onClose}
