@@ -93,6 +93,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          make_latest: false
           files: |
             adris-setup-linux-*.deb
             adris-setup-linux-*.AppImage
