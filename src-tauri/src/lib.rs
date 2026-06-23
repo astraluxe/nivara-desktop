@@ -5267,21 +5267,25 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 pub fn run() {
-    // Fix blank screen on Linux: WebKitGTK tries GPU compositing by default.
-    // Without a compositor (common on VMs, minimal DEs, Wayland-X11 hybrid), it renders nothing.
-    // WEBKIT_DISABLE_COMPOSITING_MODE forces software rendering → always shows content.
-    // WEBKIT_FORCE_SANDBOX=0 prevents sandbox restrictions that block rendering on some distros.
-    // GDK_BACKEND=x11 ensures GTK uses X11 backend (Wayland support in WebKitGTK is incomplete).
+    // Fix blank screen on Linux — multiple layers:
+    // WEBKIT_DISABLE_COMPOSITING_MODE: software rendering, works without a compositor.
+    // WEBKIT_FORCE_SANDBOX=0: sandbox restrictions block rendering on many distros.
+    // GDK_BACKEND=x11: Wayland WebKitGTK support is incomplete — force X11.
+    // LIBGL_ALWAYS_SOFTWARE=1: Mesa software renderer — avoids GPU driver blank screen.
+    // NO_AT_BRIDGE=1: prevents AT-SPI accessibility bridge from blocking GTK startup.
     #[cfg(target_os = "linux")]
     {
-        if std::env::var("WEBKIT_DISABLE_COMPOSITING_MODE").is_err() {
-            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
-        }
-        if std::env::var("WEBKIT_FORCE_SANDBOX").is_err() {
-            std::env::set_var("WEBKIT_FORCE_SANDBOX", "0");
-        }
-        if std::env::var("GDK_BACKEND").is_err() {
-            std::env::set_var("GDK_BACKEND", "x11");
+        let vars = [
+            ("WEBKIT_DISABLE_COMPOSITING_MODE", "1"),
+            ("WEBKIT_FORCE_SANDBOX", "0"),
+            ("GDK_BACKEND", "x11"),
+            ("LIBGL_ALWAYS_SOFTWARE", "1"),
+            ("NO_AT_BRIDGE", "1"),
+        ];
+        for (k, v) in &vars {
+            if std::env::var(k).is_err() {
+                std::env::set_var(k, v);
+            }
         }
     }
 
@@ -5313,6 +5317,9 @@ pub fn run() {
             { let _ = setup_tray(app); }
             #[cfg(not(target_os = "linux"))]
             { setup_tray(app)?; }
+            // Explicitly show the window on Linux — some WMs need this after decorations:false.
+            #[cfg(target_os = "linux")]
+            { if let Some(w) = app.get_webview_window("main") { let _ = w.show(); } }
 
             // Start background triggers for all currently-enabled automations
             let app_handle = app.handle().clone();
