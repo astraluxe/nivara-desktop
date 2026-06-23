@@ -2458,10 +2458,9 @@ The prompt must be production-ready — specific enough for a motion designer to
                           const page = await pdf.getPage(p);
                           const viewport = page.getViewport({ scale: 1.5 });
                           const canvas = document.createElement('canvas');
-                          const ctx = canvas.getContext('2d')!;
                           canvas.width = viewport.width;
                           canvas.height = viewport.height;
-                          await page.render({ canvasContext: ctx, viewport }).promise;
+                          await page.render({ canvas, viewport }).promise;
                           const b64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
                           pages.push({
                             name: pdf.numPages > 1 ? `${file.name} — p${p}` : file.name,
