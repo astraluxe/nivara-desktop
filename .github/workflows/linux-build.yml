@@ -2,13 +2,12 @@ name: Linux Build & Release
 
 on:
   push:
+    branches:
+      - linux-dev
     tags:
+      - 'v*-linux'
       - 'v*'
   workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Version tag (e.g. v1.0.56)'
-        required: true
 
 jobs:
   build-linux:
@@ -18,6 +17,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: linux-dev
 
       - name: Install system dependencies
         run: |
@@ -53,7 +54,7 @@ jobs:
         run: npm ci
 
       - name: Build Tauri app (Linux)
-        run: npm run tauri build
+        run: npm run tauri build -- --config src-tauri/tauri.linux.conf.json
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
@@ -61,7 +62,7 @@ jobs:
       - name: Get version
         id: version
         run: |
-          VERSION=$(cat src-tauri/tauri.conf.json | python3 -c "import sys,json; print(json.load(sys.stdin)['version'])")
+          VERSION=$(python3 -c "import sys,json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Rename artifacts with consistent names
@@ -79,13 +80,13 @@ jobs:
       - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
         with:
-          name: linux-deb
+          name: linux-deb-${{ steps.version.outputs.version }}
           path: adris-setup-linux-*.deb
 
       - name: Upload .AppImage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: linux-appimage
+          name: linux-appimage-${{ steps.version.outputs.version }}
           path: adris-setup-linux-*.AppImage
 
       - name: Upload to GitHub Release

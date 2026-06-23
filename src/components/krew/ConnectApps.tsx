@@ -227,6 +227,17 @@ export default function ConnectApps({ onClose }: Props) {
           <span className="text-[10px] font-mono text-nv-faint shrink-0">{connected.length} connected</span>
         </div>
 
+        {/* Token savings banner */}
+        <div className="mx-5 mt-3 mb-1 flex items-start gap-3 rounded-xl bg-nv-surface border border-nv-border px-4 py-3 shrink-0">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-nv-green mt-0.5 shrink-0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+          </svg>
+          <p className="text-[11px] text-nv-muted leading-relaxed">
+            <span className="text-nv-text font-medium">Connected apps use up to 4× fewer AI tokens.</span>
+            {' '}Direct API calls are faster and more accurate than browser navigation — Gmail, LinkedIn, Notion, and Slack cost far less quota when connected.
+          </p>
+        </div>
+
         {/* Grid */}
         <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-5">
           {connectedServices.length > 0 && (

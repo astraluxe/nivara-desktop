@@ -223,55 +223,62 @@ export const RESEARCH_TOOLS: ToolDef[] = [
 export const BROWSER_TOOLS: ToolDef[] = [
   {
     name: 'browser_open',
-    description: 'Open ANY URL in the user\'s own Chrome browser (with all their saved login sessions). The page becomes VISIBLE to the user on screen — they are already logged in to LinkedIn, Gmail, Twitter, Instagram, Notion, etc. Use this to SHOW websites to the user or for interactive tasks (clicking, filling forms). To also READ the page content as an agent, call browser_navigate with the same URL.',
+    description: 'Open a URL in the user\'s own Chrome (they are already logged in to all accounts). Use to SHOW a website to the user or for interactive tasks.',
     parameters: {
-      url: { type: 'string', description: 'Full URL to open, e.g. "https://linkedin.com/notifications/"', required: true },
+      url: { type: 'string', description: 'Full URL', required: true },
     },
   },
   {
     name: 'browser_navigate',
-    description: 'Navigate to a URL in the agent\'s persistent browser and return the full page content as text (with ads and cookie banners removed). Uses a saved session — user logs in once per site, stays logged in forever. Use this to READ content from any page: LinkedIn notifications, Gmail inbox, news articles, Reddit posts, product pages, etc. Works for ANY website. Returns the page text directly — no need to call browser_get_text after.',
+    description: 'Load a URL and return the page text. For public pages works without any login. For private pages (LinkedIn feed, Gmail) opens a login window — user logs in once, sessions saved forever. Use to READ content: notifications, inbox, articles, feeds.',
     parameters: {
-      url: { type: 'string', description: 'Full URL to read, e.g. "https://linkedin.com/notifications/"', required: true },
+      url: { type: 'string', description: 'Full URL to read', required: true },
+    },
+  },
+  {
+    name: 'read_browser_history',
+    description: "Search the user's Chrome/Edge browsing history for URLs and page titles. Use this BEFORE asking the user for a URL or searching the web — e.g. to find their LinkedIn profile, GitHub, or any site they regularly visit. Much faster and always correct.",
+    parameters: {
+      query: { type: 'string', description: 'Keyword to search — site name, URL fragment, or topic (e.g. "linkedin", "github amogh", "notion workspace")', required: true },
     },
   },
   {
     name: 'browser_search',
-    description: 'Search Google in a visible Chrome browser so the user can watch it happen live. Use when the user explicitly wants to see a search, or for complex queries that need Google specifically.',
+    description: 'Search Google visually in a Chrome window the user can watch.',
     parameters: {
-      query: { type: 'string', description: 'What to search for', required: true },
+      query: { type: 'string', description: 'Search query', required: true },
     },
   },
   {
     name: 'browser_snapshot',
-    description: 'Get the accessibility tree of the current browser page — all visible elements with their refs (like @e1, @e2) for clicking, filling, and reading. Always snapshot before clicking to get fresh refs.',
+    description: 'Get the accessibility tree of the current page — element refs (@e1, @e2, …) for clicking and filling. Call before browser_click to get fresh refs.',
     parameters: {},
   },
   {
     name: 'browser_click',
-    description: 'Click an element in the browser. Use a ref from browser_snapshot (e.g. "@e2") or a CSS selector like "#submit-btn". User sees the click happen live.',
+    description: 'Click an element. Use a ref from browser_snapshot (@e2) or a CSS selector.',
     parameters: {
-      selector: { type: 'string', description: 'Element ref from snapshot (e.g. "@e2") or CSS selector', required: true },
+      selector: { type: 'string', description: 'Ref (@e2) or CSS selector', required: true },
     },
   },
   {
     name: 'browser_fill',
-    description: 'Clear an input field and type text into it in the visible browser. User watches it typing in real time.',
+    description: 'Clear a field and type text into it.',
     parameters: {
-      selector: { type: 'string', description: 'Element ref or CSS selector for the input field', required: true },
-      text:     { type: 'string', description: 'Text to type into the field', required: true },
+      selector: { type: 'string', description: 'Ref or CSS selector', required: true },
+      text:     { type: 'string', description: 'Text to type', required: true },
     },
   },
   {
     name: 'browser_get_text',
-    description: 'Get visible text content from the current browser page or a specific element.',
+    description: 'Get text from the current page or a specific element.',
     parameters: {
-      selector: { type: 'string', description: 'CSS selector or element ref. Omit for full page text.', required: false },
+      selector: { type: 'string', description: 'CSS selector or ref. Omit for full page.', required: false },
     },
   },
   {
     name: 'browser_screenshot',
-    description: 'Take a screenshot of the current browser page and save it to a file. Returns the saved file path.',
+    description: 'Screenshot the current page. Returns the saved file path.',
     parameters: {},
   },
   {
@@ -281,18 +288,10 @@ export const BROWSER_TOOLS: ToolDef[] = [
   },
   {
     name: 'browser_confirm',
-    description: 'Request user permission before taking a consequential browser action — sending an email, submitting a form, posting content, making a purchase, or deleting anything. ALWAYS call this before such actions. Describe exactly what you are about to do, including the recipient, subject, or content so the user can make an informed decision.',
+    description: 'Ask user permission before a consequential action (send email, post content, purchase, delete, submit form). ALWAYS call this first. Be specific about what will happen.',
     parameters: {
-      action_type: {
-        type: 'string',
-        description: 'Category: send_email | post_content | make_purchase | delete_content | submit_form',
-        required: true,
-      },
-      description: {
-        type: 'string',
-        description: 'What you are about to do. Be specific — e.g. "Send email to rahul@example.com with subject \'Partnership opportunity\'"',
-        required: true,
-      },
+      action_type: { type: 'string', description: 'send_email | post_content | make_purchase | delete_content | submit_form', required: true },
+      description: { type: 'string', description: 'Exactly what you will do, e.g. "Send email to X with subject Y"', required: true },
     },
   },
 ];
@@ -739,40 +738,57 @@ For live figures: use the right tool once, then answer — never loop.
 - Be concise but thorough
 - All data you access stays on the user's machine — privacy is guaranteed
 
-## Browser-first rule (ABSOLUTE — no exceptions)
+## Browser rules (no exceptions)
 
-NEVER say "connect an API", "link a service", "I can't access that", or "go to Connect Apps". The browser is ALWAYS available. Use it.
+NEVER say "I can't access that" or suggest Connect Apps for browsing. The browser is ALWAYS available.
 
-### Which tool for which task:
+- Read page content → browser_navigate (returns text; sessions saved permanently)
+- Show site to user / interact → browser_open then browser_click/browser_fill
+- Quick facts/news → web_search (faster, no browser needed)
+- Notifications/multi-item tasks → navigate to list page, read all items from the returned text in one go; only navigate to individual items if more detail is needed
 
-**Getting quick public information (news, prices, facts, research):**
-→ web_search — fastest, silent, returns clean text results
+**URL cheat-sheet (use exactly, replace [slug] with real username):**
+- LinkedIn notifications: https://www.linkedin.com/notifications/
+- LinkedIn posts: https://www.linkedin.com/in/[slug]/recent-activity/all/
+- Gmail inbox: https://mail.google.com/mail/u/0/#inbox
+- Twitter/X home: https://twitter.com/home
+- Reddit: https://www.reddit.com
+- Notion: https://www.notion.so
+- GitHub: https://github.com
 
-**READING page content / extracting information from any website:**
-→ browser_navigate with the exact URL — loads page in agent's persistent browser, returns full cleaned text
-→ Works for ANY site: LinkedIn, Gmail, Twitter, Reddit, news sites, product pages, documentation, etc.
-→ Sessions are SAVED permanently — user logs in once per site, stays logged in forever
-→ First time on a private site (LinkedIn, Gmail, etc.): a browser window opens; user logs in there once; all future reads work automatically
+**CRITICAL — personal account data:**
+If the user asks about THEIR OWN posts, notifications, emails, profile, or activity on any platform, you MUST use browser_navigate — web_search cannot see private account data. Do NOT use web_search to "research" personal tasks. Examples: "check my LinkedIn posts" → browser_navigate to LinkedIn. "my Gmail inbox" → browser_navigate to Gmail. "my Twitter activity" → browser_navigate to Twitter. Only use web_search for public facts, news, or research unrelated to the user's own accounts.
 
-**SHOWING a website to the user (they want to see it / interact with it):**
-→ browser_open with any URL — opens in user's actual Chrome (they are already logged in to everything)
-→ Use this when the user says "open", "show me", "go to" a website
-→ After opening, use browser_click / browser_fill to interact
+**CRITICAL — finding the user's own social media profiles:**
+NEVER search Google or the web to find the user's own LinkedIn, Twitter, GitHub, or any other profile URL. Searching by name will find OTHER people with the same name — you will open the wrong profile. Instead follow this order:
+1. Check memories first — keys saved automatically: linkedin_url, linkedin_activity_url, linkedin_notifications_url, gmail_url, twitter_url, github_url, notion_url, instagram_url. Use recall_memory to fetch the saved URL.
+2. If not in memory, use read_browser_history with the site name (e.g. "linkedin.com/in") — Chrome history has the exact URL they actually visit.
+3. Only if history has nothing, ask the user directly for their URL.
+Never guess or construct a URL from the user's name.
 
-**Examples (ALWAYS use browser tools — NEVER say "connect API"):**
-- "Check my LinkedIn notifications" → browser_navigate "https://www.linkedin.com/notifications/" (reads + returns content)
-- "Show me LinkedIn" → browser_open "https://www.linkedin.com" (opens in their Chrome)
-- "What emails do I have?" → browser_navigate "https://mail.google.com" (reads inbox)
-- "Open my Gmail" → browser_open "https://mail.google.com" (shows to user)
-- "What's trending on Reddit?" → browser_navigate "https://www.reddit.com" (reads feed)
-- "Write a post on X/Twitter" → browser_open "https://twitter.com/compose/tweet" → browser_fill → submit
-- "Summarize this article [URL]" → browser_navigate "[URL]" (reads article text)
-- "Check my Notion" → browser_open "https://www.notion.so"
+**URLs are saved automatically** — every time browser_navigate successfully reads a page, the URL is saved to memory with the right key. So after the first visit, just recall_memory("linkedin_url") etc. and navigate directly.
 
-**Showing the user a live Google search:**
-→ browser_search — opens Google visually
+**Standard platform entry URLs** (use these when no personal URL is saved yet):
+- LinkedIn feed: https://www.linkedin.com/feed/
+- LinkedIn notifications: https://www.linkedin.com/notifications/
+- Gmail inbox: https://mail.google.com/mail/u/0/#inbox
+- Twitter/X home: https://twitter.com/home
+- GitHub: https://github.com
+- Notion: https://www.notion.so
+- Reddit: https://www.reddit.com
 
-The browser is ALWAYS available. NEVER say "I can't access that" or suggest Connect Apps for navigation.
+## Smart routing: API first, browser second
+If the user's request touches a service that has a **connected API tool**, ALWAYS use that tool — not browser_navigate. Direct API calls return structured data and use 4× fewer tokens than browser navigation.
+
+| Service | If connected → use | If NOT connected → use |
+|---------|-------------------|----------------------|
+| Gmail / inbox | gmail_search, gmail_read_email | browser_navigate to Gmail |
+| LinkedIn posts/profile | linkedin_get_posts, linkedin_get_profile | browser_navigate to LinkedIn |
+| Notion pages | notion_search, notion_get_page | browser_navigate to Notion |
+| Slack messages | slack_read_messages, slack_search_messages | browser_navigate to Slack |
+| GitHub repos/files | github_list_repos, github_get_file | browser_navigate to GitHub |
+
+Check your available tools list. If gmail_search is listed, never use browser_navigate for Gmail. If linkedin_get_posts is listed, never use browser_navigate for LinkedIn. The connected tool is ALWAYS faster, cheaper, and more reliable.
 
 ## Platform & Content Compliance
 When generating content intended for any platform (LinkedIn, Twitter/X, Instagram, email, Slack, Notion, etc.):
@@ -828,6 +844,36 @@ export async function buildTwitterOAuthHeader(
 // ─── Tool executor (TypeScript orchestration layer) ───────────────────────────
 
 type Creds = Record<string, Record<string, string>>;
+
+// ─── Auto-save personal URLs to memory after a successful browser_navigate ────
+// Maps URL patterns → memory key names. Fires silently, never blocks the agent.
+const URL_MEMORY_MAP: Array<{ pattern: RegExp; key: string; label: string }> = [
+  { pattern: /linkedin\.com\/in\/([^/?#]+)/,           key: 'linkedin_url',           label: 'LinkedIn profile' },
+  { pattern: /linkedin\.com\/in\/([^/?#]+)\/recent-activity/, key: 'linkedin_activity_url', label: 'LinkedIn activity' },
+  { pattern: /linkedin\.com\/notifications/,            key: 'linkedin_notifications_url', label: 'LinkedIn notifications' },
+  { pattern: /mail\.google\.com/,                       key: 'gmail_url',              label: 'Gmail inbox' },
+  { pattern: /twitter\.com\/([^/?#]+)/,                 key: 'twitter_url',            label: 'Twitter/X profile' },
+  { pattern: /x\.com\/([^/?#]+)/,                       key: 'twitter_url',            label: 'Twitter/X profile' },
+  { pattern: /github\.com\/([^/?#]+)(?:\/)?$/,          key: 'github_url',             label: 'GitHub profile' },
+  { pattern: /notion\.so/,                              key: 'notion_url',             label: 'Notion workspace' },
+  { pattern: /instagram\.com\/([^/?#]+)/,               key: 'instagram_url',          label: 'Instagram profile' },
+  { pattern: /reddit\.com\/user\/([^/?#]+)/,            key: 'reddit_url',             label: 'Reddit profile' },
+];
+
+async function autoSaveUrlToMemory(url: string, agentKey: string): Promise<void> {
+  for (const { pattern, key } of URL_MEMORY_MAP) {
+    if (pattern.test(url)) {
+      const existing = await krewMemoryDb.getAll(agentKey)
+        .then(mems => mems.find(m => m.key === key)?.value)
+        .catch(() => undefined);
+      // Only save if not already stored (or if the URL changed)
+      if (existing !== url) {
+        await krewMemoryDb.save(agentKey, key, url);
+      }
+      break;
+    }
+  }
+}
 
 export async function executeTool(
   toolName: string,
@@ -947,6 +993,11 @@ export async function executeTool(
     }
   };
 
+  if (toolName === 'read_browser_history') {
+    const query = str(args.query);
+    return await invoke<string>('read_browser_history', { query, limit: 15 }).catch(e => `History read failed: ${e}`);
+  }
+
   if (toolName === 'browser_open') {
     const rawUrl = str(args.url);
     const url = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl.replace(/^\/+/, '')}`;
@@ -958,21 +1009,76 @@ export async function executeTool(
   if (toolName === 'browser_navigate') {
     const rawUrl = str(args.url);
     const url = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl.replace(/^\/+/, '')}`;
-    // Navigate using persistent browser (sessions saved to %LOCALAPPDATA%\adris.tech\browser-session\)
+
+    // Run the persistent browser (Playwright opens its own visible Chrome window).
+    // Do NOT call open_in_system_browser here — that would open a second Chrome window
+    // for the same URL. open_in_system_browser is only used as fallback below.
     const navResult = await invoke<string>('run_browser_persistent', { args: `open "${url}"` }).catch(e => String(e));
+
     if (navResult.includes('[agent-browser not installed]')) {
-      return `[Browser not available] Cannot read page content — agent-browser is not installed. Use web_search for public information, or call browser_open and ask the user to describe what they see.`;
+      // No browser automation — show user's Chrome so they can see activity, then HTTP fetch
+      invoke('open_in_system_browser', { url }).catch(() => {});
+      try {
+        const fetched = await invoke<string>('fetch_page_text', { url });
+        const cleaned = cleanBrowserText(fetched);
+        if (cleaned && cleaned.length > 50) {
+          const snippet = cleaned.slice(0, 1000).toLowerCase();
+          const hasAuthwall = snippet.includes('authwall') || snippet.includes('auth-wall');
+          const isShort = cleaned.length < 400;
+          const hasLoginForm = (snippet.slice(0, 400).includes('sign in') || snippet.slice(0, 400).includes('log in')) &&
+            (snippet.slice(0, 400).includes('password') || snippet.slice(0, 400).includes('email'));
+          const isLoginPage = hasAuthwall || (isShort && hasLoginForm);
+          if (isLoginPage) {
+            const host = (() => { try { return new URL(url).hostname; } catch { return url; } })();
+            return `[LOGIN REQUIRED — STOP] ${host} requires login. A browser window just opened. Ask the user to log in and say "continue". Do NOT call web_search or any other tool. Wait for the user.`;
+          }
+          const content = cleaned.length > 3000 ? cleaned.slice(0, 3000) + '\n…[truncated]' : cleaned;
+          return `Content from ${url} (public read):\n\n${content}`;
+        }
+      } catch { /* fall through */ }
+      return `[LOGIN REQUIRED — STOP] This page needs login. A browser window just opened. Ask the user to log in and say "continue". Do NOT call web_search or any other tool. Wait.`;
+    }
+
+    if (navResult.includes('[browser-timeout]')) {
+      return `[Browser timeout] ${url} took over 30 seconds to load. It may require login — check the browser window that just opened. If you are logged in, say "retry" and I will try again.`;
     }
     if (navResult.includes('[browser-crash]') || navResult.includes('Chrome exited') || navResult.includes('DevToolsActivePort')) {
-      return `[Browser error] Could not load ${url}. Try web_search instead to find this information.`;
+      return `[Browser error] Could not load ${url}. Try web_search instead.`;
     }
-    // Read the page text (persistent session — logged in if user previously authenticated)
-    const raw = await invoke<string>('run_browser_persistent', { args: 'get text body' }).catch(e => String(e));
+
+    // If Playwright returned actual page content from the open command, use it directly.
+    // Only call "get text body" if it returned the old "(done)" signal (legacy binary path).
+    const isDoneSignal = navResult.trim() === '(done)' || navResult.trim() === '';
+    const raw = isDoneSignal
+      ? await invoke<string>('run_browser_persistent', { args: 'get text body' }).catch(e => String(e))
+      : navResult;
     const text = cleanBrowserText(raw);
-    if (!text || text.length < 30) {
-      return `Opened ${url} in the agent browser. The page appears empty or requires login.\n\nIf this is a private page (LinkedIn, Gmail, etc.): a browser window should have opened — please log in there. After logging in, try this request again — sessions are saved permanently so you only need to do this once per site.`;
+
+    // Detect login / auth-wall — do not feed login pages to the agent as real content.
+    // IMPORTANT: logged-in pages (LinkedIn, Gmail) still contain "sign in" in nav/footer.
+    // Only treat as login page if: explicit authwall marker, OR the page is very short
+    // (real content pages are always long). Never flag a page with >400 chars as a login page
+    // purely from footer keywords — that causes false positives on real logged-in content.
+    const snippet = text.slice(0, 1000).toLowerCase();
+    const hasAuthwall = snippet.includes('authwall') || snippet.includes('auth-wall');
+    const isShortPage = text.length < 400;
+    const hasLoginFormSignals = (
+      (snippet.slice(0, 400).includes('sign in') || snippet.slice(0, 400).includes('log in')) &&
+      (snippet.slice(0, 400).includes('password') || snippet.slice(0, 400).includes('email'))
+    );
+    // A real login page: either an explicit authwall, or is short AND has login form at the top
+    const isLoginPage = hasAuthwall || (isShortPage && hasLoginFormSignals);
+
+    if (!text || text.length < 30 || isLoginPage) {
+      const host = (() => { try { return new URL(url).hostname; } catch { return url; } })();
+      return `[LOGIN REQUIRED — STOP ALL TOOL CALLS] ${host} needs a one-time login. A browser window is open on the user's screen. Tell the user: "Please log in to ${host} in the browser window that just opened, then say continue." Do NOT call web_search, do NOT proceed with the task. Sessions are saved permanently — this only needs to happen once.`;
     }
-    const content = text.length > 6000 ? text.slice(0, 6000) + '\n…[page continues — truncated for length]' : text;
+
+    // Auto-save personal URLs to memory so the agent never needs to ask for them again.
+    // Fires silently in the background on every successful page read.
+    autoSaveUrlToMemory(url, agentKey).catch(() => {});
+
+    const content = text.length > 3000 ? text.slice(0, 3000) + '\n…[truncated — call again for more]' : text;
     return `Content from ${url}:\n\n${content}`;
   }
 

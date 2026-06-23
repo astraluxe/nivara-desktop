@@ -68,6 +68,20 @@ interface Props {
 
 function ToolCallBubble({ name, args }: { name: string; args: string }) {
   const [open, setOpen] = useState(false);
+
+  // For browser tools, extract a human-readable label so user knows what's being scanned
+  let inlineLabel: string | null = null;
+  if (name === 'browser_navigate' || name === 'browser_open') {
+    try {
+      const parsed = JSON.parse(args);
+      const rawUrl = parsed.url ?? parsed.args ?? '';
+      const host = (() => { try { return new URL(rawUrl).hostname.replace('www.', ''); } catch { return rawUrl; } })();
+      inlineLabel = name === 'browser_navigate' ? `Scanning ${host}` : `Opening ${host}`;
+    } catch { /* ignore */ }
+  } else if (name === 'web_search') {
+    try { inlineLabel = `Searching "${JSON.parse(args).query ?? ''}"`.slice(0, 60); } catch { /* ignore */ }
+  }
+
   return (
     <div className="flex items-start gap-2 my-1.5">
       <div className="w-5 h-5 rounded-md bg-accent/15 flex items-center justify-center shrink-0 mt-0.5">
@@ -77,6 +91,9 @@ function ToolCallBubble({ name, args }: { name: string; args: string }) {
         <button onClick={() => setOpen((o) => !o)} className="text-[11px] text-accent font-mono hover:underline">
           {name}() {open ? '▲' : '▼'}
         </button>
+        {inlineLabel && !open && (
+          <p className="text-[10px] text-nv-muted mt-0.5 font-mono">{inlineLabel}</p>
+        )}
         {open && (
           <pre className="text-[10px] text-nv-muted font-mono mt-1 bg-nv-bg border border-nv-border rounded-lg p-2 overflow-x-auto whitespace-pre-wrap">
             {args}
@@ -1473,7 +1490,8 @@ The prompt must be production-ready — specific enough for a motion designer to
     const tools      = getActiveTools();
     // Inject cross-session memories into system prompt
     const memBlock   = agentMemories.length > 0
-      ? '\n\n## Your memory (from past sessions)\n' + agentMemories.map((m) => `- ${m.key}: ${m.value}`).join('\n')
+      ? '\n\n## Background context (from past sessions — reference only, do NOT continue old tasks unless user asks)\n' +
+        agentMemories.map((m) => `- ${m.key}: ${m.value.slice(0, 400)}`).join('\n')
       : '';
     // Inject user identity so agents sign content with the real user's name
     const userName   = (user?.user_metadata?.full_name as string | undefined)
@@ -1487,7 +1505,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     // bossPostfix comes AFTER buildKrewSystemPrompt so it is the absolute last instruction Gemini reads —
     // it overrides the "respond normally in clear markdown" final-answer rule that would otherwise let the boss answer directly.
     const bossPostfix = agent.key === 'boss'
-      ? '\n\n## BOSS OVERRIDE — HIGHEST PRIORITY — THIS OVERRIDES EVERYTHING ABOVE\nYou have tools: delegate_to_agent, plan_workflow, browser_open, AND browser_navigate. For CLEAR tasks: output a <tool_call> immediately. For VAGUE engineering/creative tasks: ask 2-3 focused questions first, then delegate.\n\nWHEN TO USE EACH:\n- Single agent needed → delegate_to_agent\n- Task needs 2-4 specialists → plan_workflow (list ALL agents at once — faster, no back-and-forth)\n- Do NOT call researcher unless the task genuinely requires current facts/research\n\nBROWSER RULE — CRITICAL:\n• To SHOW a website to the user (they want to see/visit it) → call browser_open directly with the URL. The user is logged in to all their accounts in Chrome.\n• To READ content from a website (notifications, feed, articles, inbox, etc.) → call browser_navigate directly with the URL. It returns the page text. First use of private sites (LinkedIn, Gmail) may need a one-time login in the browser window that opens.\n• NEVER delegate browser tasks. NEVER suggest "connect in Connect Apps" for browsing. Example: "check my LinkedIn notifications" → browser_navigate("https://www.linkedin.com/notifications/").\n\nGREETING EXCEPTION: If the user\'s entire message is ONLY a greeting (hi / hello / hey) with no task, respond with ONE friendly sentence — no tool_call.\n\nCLARIFICATION EXCEPTION: For vague engineering/coding/creative tasks missing key details (e.g. "build me a website", "write some code", "create a banner"), ask 2-3 focused questions as plain text. Delegate ONLY after the user provides the details.'
+      ? '\n\n## BOSS OVERRIDE — HIGHEST PRIORITY — THIS OVERRIDES EVERYTHING ABOVE\nYou have tools: delegate_to_agent, plan_workflow, browser_open, AND browser_navigate. For CLEAR tasks: output a <tool_call> immediately. For VAGUE engineering/creative tasks: ask 2-3 focused questions first, then delegate.\n\nWHEN TO USE EACH:\n- Single agent needed → delegate_to_agent\n- Task needs 2-4 specialists → plan_workflow (list ALL agents at once — faster, no back-and-forth)\n- Do NOT call researcher unless the task genuinely requires current facts/research\n\nBROWSER RULE — CRITICAL:\n• To SHOW a website to the user (they want to see/visit it) → call browser_open directly with the URL. The user is logged in to all their accounts in Chrome.\n• To READ content from a website (notifications, feed, articles, inbox, etc.) → call browser_navigate directly with the URL. It returns the page text. First use of private sites (LinkedIn, Gmail) may need a one-time login in the browser window that opens.\n• NEVER delegate browser tasks. NEVER suggest "connect in Connect Apps" for browsing. Example: "check my LinkedIn notifications" → browser_navigate("https://www.linkedin.com/notifications/").\n• PROFILE URL RULE: When user says "my LinkedIn / my Twitter / my GitHub" — NEVER search Google to find them. Many people share the same name. Always check memories first for a saved URL (keys: linkedin_url, founder_profile, twitter_url, etc.). If not in memory, ask the user for their exact URL, then navigate to it and save it to memory.\n\nGREETING EXCEPTION: If the user\'s entire message is ONLY a greeting (hi / hello / hey) with no task, respond with ONE friendly sentence — no tool_call.\n\nCLARIFICATION EXCEPTION: For vague engineering/coding/creative tasks missing key details (e.g. "build me a website", "write some code", "create a banner"), ask 2-3 focused questions as plain text. Delegate ONLY after the user provides the details.'
       : '';
     // Inject connected services so every agent knows what's available and can recommend missing ones
     const connectedList = Object.keys(creds);
@@ -1950,9 +1968,12 @@ The prompt must be production-ready — specific enough for a motion designer to
           if (sid) krewDb.saveMessage(sid, 'tool_result', toolResult, tool).catch(() => {});
         }
 
-        // Add to history for next AI turn
+        // Add to history for next AI turn (cap result to prevent context bloat)
+        const cappedResult = toolResult.length > 2000 ? toolResult.slice(0, 2000) + '\n…[truncated]' : toolResult;
         history.push({ role: 'assistant', content: fullResponse });
-        history.push({ role: 'user', content: `<tool_result>${toolResult}</tool_result>` });
+        history.push({ role: 'user', content: `<tool_result>${cappedResult}</tool_result>` });
+        // Keep history bounded: first user message + last 8 entries (4 tool-call pairs)
+        if (history.length > 9) history.splice(1, history.length - 9);
 
         // Add next streaming placeholder
         addMsg({ role: 'assistant', content: '', streaming: true });

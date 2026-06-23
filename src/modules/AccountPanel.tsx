@@ -24,9 +24,9 @@ const PLAN_COLOR: Record<string, string> = {
 const PLAN_LIMIT: Record<string, number> = {
   free:     100_000,
   explore:  100_000,
-  solo:     2_000_000,
-  builder:  8_000_000,
-  business: 30_000_000,
+  solo:     4_000_000,
+  builder:  16_000_000,
+  business: 50_000_000,
   custom:   0,
 };
 

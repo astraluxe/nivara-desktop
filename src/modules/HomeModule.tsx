@@ -46,9 +46,9 @@ const PLAN_STYLE: Record<string, string> = {
 const PLAN_TOKENS: Record<string, { monthly: number | null; label: string; lifetime?: boolean }> = {
   free:     { monthly: 100_000,    label: '50 tasks lifetime', lifetime: true },
   explore:  { monthly: 100_000,    label: '50 tasks lifetime', lifetime: true },
-  solo:     { monthly: 2_000_000,  label: '~2,000 tasks/mo'  },
-  builder:  { monthly: 8_000_000,  label: '~8,000 tasks/mo'  },
-  business: { monthly: 30_000_000, label: '~30,000 tasks/mo' },
+  solo:     { monthly: 4_000_000,  label: '~4,000 tasks/mo'  },
+  builder:  { monthly: 16_000_000, label: '~16,000 tasks/mo' },
+  business: { monthly: 50_000_000, label: '~50,000 tasks/mo' },
   custom:   { monthly: null,       label: 'Unlimited'        },
 };
 
@@ -300,11 +300,7 @@ export default function HomeModule({ onNavigate, onStartTour }: Props) {
                     </p>
                   )}
                   <ProgressBar pct={tasksLeft === null ? 5 : taskPct} color={taskPct > 85 ? 'bg-nv-red' : 'bg-accent'} />
-                  <p className="text-[9px] text-nv-muted mt-1.5">
-                    {tasksLeft === null
-                      ? planMeta.label
-                      : `${tasksUsed.toLocaleString()} / ${totalTasks!.toLocaleString()} done${planMeta.lifetime ? ' (lifetime)' : '/mo'}`}
-                  </p>
+                  <p className="text-[9px] text-nv-muted mt-1.5">{planMeta.label}</p>
                 </>
               );
             })()}

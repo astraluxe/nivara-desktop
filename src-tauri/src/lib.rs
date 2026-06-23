@@ -2074,6 +2074,17 @@ fn get_agent_browser_local_path(app: &tauri::AppHandle) -> std::path::PathBuf {
     data_dir.join("tools").join(bin_name)
 }
 
+// ── Option B: Node.js + playwright-core (system Chrome, no download needed) ──
+fn get_playwright_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
+    let data_dir = app.path().app_local_data_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    data_dir.join("tools").join("playwright")
+}
+
+fn get_playwright_script_path(app: &tauri::AppHandle) -> std::path::PathBuf {
+    get_playwright_dir(app).join("agent-browser.js")
+}
+
 // ── agent-browser: silent background setup ────────────────────────────────────
 #[tauri::command]
 async fn setup_agent_browser(app: tauri::AppHandle) -> Result<(), String> {
@@ -2089,8 +2100,8 @@ async fn setup_agent_browser(app: tauri::AppHandle) -> Result<(), String> {
         let local_bin = get_agent_browser_local_path(&app);
 
         if !in_path && !local_bin.exists() {
-            // Download binary from GitHub releases (no Node.js required)
-            let url = if cfg!(target_os = "windows") {
+            // Attempt binary download (kept for future; currently 404s)
+            let dl_url = if cfg!(target_os = "windows") {
                 "https://github.com/vercel-labs/agent-browser/releases/latest/download/agent-browser-win32-x64.exe"
             } else if cfg!(target_os = "linux") && cfg!(target_arch = "aarch64") {
                 "https://github.com/vercel-labs/agent-browser/releases/latest/download/agent-browser-linux-arm64"
@@ -2102,25 +2113,73 @@ async fn setup_agent_browser(app: tauri::AppHandle) -> Result<(), String> {
                 "https://github.com/vercel-labs/agent-browser/releases/latest/download/agent-browser-darwin-x64"
             };
             let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(180))
+                .timeout(std::time::Duration::from_secs(30))
                 .build().unwrap_or_else(|_| reqwest::Client::new());
-            let Ok(resp) = client.get(url).send().await else { return; };
-            if !resp.status().is_success() { return; }
-            let Ok(bytes) = resp.bytes().await else { return; };
-            if let Some(p) = local_bin.parent() { let _ = std::fs::create_dir_all(p); }
-            if std::fs::write(&local_bin, &bytes).is_err() { return; }
-            #[cfg(unix)] {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&local_bin, std::fs::Permissions::from_mode(0o755));
+            if let Ok(resp) = client.get(dl_url).send().await {
+                if resp.status().is_success() {
+                    if let Ok(bytes) = resp.bytes().await {
+                        if let Some(p) = local_bin.parent() { let _ = std::fs::create_dir_all(p); }
+                        let _ = std::fs::write(&local_bin, &bytes);
+                        #[cfg(unix)] {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = std::fs::set_permissions(&local_bin, std::fs::Permissions::from_mode(0o755));
+                        }
+                    }
+                }
             }
         }
 
-        // Run 'agent-browser install' to detect/download Chrome (silent, one-time)
-        let bin = if in_path { std::path::PathBuf::from("agent-browser") } else { local_bin };
-        #[cfg(target_os = "windows")]
-        { use std::os::windows::process::CommandExt; let _ = std::process::Command::new(&bin).arg("install").creation_flags(0x08000000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
-        #[cfg(not(target_os = "windows"))]
-        { let _ = std::process::Command::new(&bin).arg("install").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
+        // Option B: Node.js + playwright-core (uses system Chrome — no separate browser download)
+        // Always re-write the script so updates deploy to existing installs.
+        let script_path = get_playwright_script_path(&app);
+        let script_src = include_str!("../../scripts/agent-browser/index.js");
+        let needs_setup = !script_path.exists() || {
+            // Re-write if the embedded version differs from what's on disk
+            std::fs::read_to_string(&script_path).map(|s| s != script_src).unwrap_or(true)
+        };
+        if needs_setup {
+            let node_ok = {
+                #[cfg(target_os = "windows")]
+                { use std::os::windows::process::CommandExt; std::process::Command::new("node").arg("--version").creation_flags(0x08000000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false) }
+                #[cfg(not(target_os = "windows"))]
+                { std::process::Command::new("node").arg("--version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false) }
+            };
+
+            if node_ok {
+                let playwright_dir = get_playwright_dir(&app);
+                let _ = std::fs::create_dir_all(&playwright_dir);
+
+                // Write the Playwright wrapper script (embedded at compile time)
+                let _ = std::fs::write(&script_path, script_src);
+
+                // Write package.json for playwright-core
+                let pkg_json = r#"{"name":"adris-agent-browser","version":"1.0.0","dependencies":{"playwright-core":"1.48.0"}}"#;
+                let _ = std::fs::write(playwright_dir.join("package.json"), pkg_json);
+
+                // npm install playwright-core (silent background install ~10 MB)
+                let dir_str = playwright_dir.to_string_lossy().to_string();
+                let already_installed = playwright_dir.join("node_modules").join("playwright-core").exists();
+                if !already_installed {
+                    #[cfg(target_os = "windows")]
+                    { use std::os::windows::process::CommandExt; let _ = std::process::Command::new("cmd").args(["/C", &format!("npm install --prefix \"{}\" playwright-core@1.48.0 --save-exact", dir_str)]).creation_flags(0x08000000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
+                    #[cfg(not(target_os = "windows"))]
+                    { let _ = std::process::Command::new("sh").args(["-c", &format!("npm install --prefix '{}' playwright-core@1.48.0 --save-exact", dir_str)]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
+                }
+            }
+        }
+
+        // Run 'install' to verify whichever browser backend is available
+        if in_path {
+            #[cfg(target_os = "windows")]
+            { use std::os::windows::process::CommandExt; let _ = std::process::Command::new("agent-browser").arg("install").creation_flags(0x08000000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
+            #[cfg(not(target_os = "windows"))]
+            { let _ = std::process::Command::new("agent-browser").arg("install").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
+        } else if local_bin.exists() {
+            #[cfg(target_os = "windows")]
+            { use std::os::windows::process::CommandExt; let _ = std::process::Command::new(&local_bin).arg("install").creation_flags(0x08000000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
+            #[cfg(not(target_os = "windows"))]
+            { let _ = std::process::Command::new(&local_bin).arg("install").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
+        }
     });
     Ok(())
 }
@@ -2276,6 +2335,7 @@ async fn run_agent_browser_session(app: tauri::AppHandle, session_id: String, ar
 #[tauri::command]
 async fn run_browser_persistent(app: tauri::AppHandle, args: String) -> Result<String, String> {
     use std::process::Command;
+    use std::time::Duration;
 
     let persistent_dir = {
         #[cfg(target_os = "windows")]
@@ -2292,48 +2352,232 @@ async fn run_browser_persistent(app: tauri::AppHandle, args: String) -> Result<S
     };
     let _ = std::fs::create_dir_all(&persistent_dir);
 
-    let run_cmd = |bin: &str| -> Option<String> {
-        let full = format!("{} {}", bin, args);
-        let out = {
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                Command::new("cmd")
-                    .args(["/C", &full])
-                    .env("TEMP", &persistent_dir)
-                    .env("TMP",  &persistent_dir)
-                    .creation_flags(0x08000000)
-                    .output().ok()?
+    // Run browser command in a blocking thread with 30s timeout so it never hangs forever
+    let run_with_timeout = |bin: String, args: String, dir: std::path::PathBuf| async move {
+        let task = tokio::task::spawn_blocking(move || -> Option<String> {
+            let full = format!("{} {}", bin, args);
+            let out = {
+                #[cfg(target_os = "windows")]
+                {
+                    use std::os::windows::process::CommandExt;
+                    Command::new("cmd")
+                        .args(["/C", &full])
+                        .env("TEMP", &dir)
+                        .env("TMP",  &dir)
+                        .creation_flags(0x08000000)
+                        .output().ok()?
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    Command::new("sh")
+                        .args(["-c", &full])
+                        .env("TMPDIR", &dir)
+                        .output().ok()?
+                }
+            };
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            if stderr.contains("is not recognized") || stderr.contains("not found") || stderr.contains("No such file") {
+                return None; // binary not in this location
             }
-            #[cfg(not(target_os = "windows"))]
-            {
-                Command::new("sh")
-                    .args(["-c", &full])
-                    .env("TMPDIR", &persistent_dir)
-                    .output().ok()?
+            if stderr.contains("Chrome exited") || stderr.contains("DevToolsActivePort") || stderr.contains("failed to launch") {
+                return Some("[browser-crash]".to_string());
             }
-        };
-        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        if stderr.contains("is not recognized") || stderr.contains("not found") || stderr.contains("No such file") {
-            return None;
+            let combined = format!("{}{}", stdout, stderr).trim().to_string();
+            Some(if combined.is_empty() { "(done)".to_string() } else { combined })
+        });
+        match tokio::time::timeout(Duration::from_secs(30), task).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(_)) => Some("[browser-crash]".to_string()),
+            Err(_) => Some("[browser-timeout]".to_string()), // 30s elapsed — browser hung
         }
-        // Detect Chrome crash / conflict
-        if stderr.contains("Chrome exited") || stderr.contains("DevToolsActivePort") || stderr.contains("failed to launch") {
-            return Some("[browser-crash]".to_string());
-        }
-        let combined = format!("{}{}", stdout, stderr).trim().to_string();
-        Some(if combined.is_empty() { "(done)".to_string() } else { combined })
     };
 
-    if let Some(r) = run_cmd("agent-browser") { return Ok(r); }
+    // Try system PATH first
+    if let Some(r) = run_with_timeout("agent-browser".to_string(), args.clone(), persistent_dir.clone()).await {
+        return Ok(r);
+    }
 
+    // Try local binary
     let local_bin = get_agent_browser_local_path(&app);
     if local_bin.exists() {
-        if let Some(r) = run_cmd(&format!("\"{}\"", local_bin.display())) { return Ok(r); }
+        if let Some(r) = run_with_timeout(format!("\"{}\"", local_bin.display()), args.clone(), persistent_dir.clone()).await {
+            return Ok(r);
+        }
+    }
+
+    // Option B: Node.js + playwright-core (system Chrome, persistent profile, visible window)
+    let script_path = get_playwright_script_path(&app);
+    if script_path.exists() {
+        // Parse args: "open \"https://url\"" → cmd="open", url="https://url"
+        // Use direct Command (not shell) to avoid quoting issues with paths/URLs
+        let args_str = args.trim().to_string();
+        let mut parts = args_str.splitn(2, ' ');
+        let cmd_part = parts.next().unwrap_or("").to_string();
+        let url_part = parts.next().unwrap_or("").trim().trim_matches('"').to_string();
+        let script_path_clone = script_path.clone();
+
+        let node_task = tokio::task::spawn_blocking(move || -> Option<String> {
+            let mut command = std::process::Command::new("node");
+            command.arg(&script_path_clone);
+            if !cmd_part.is_empty() { command.arg(&cmd_part); }
+            if !url_part.is_empty() { command.arg(&url_part); }
+
+            #[cfg(target_os = "windows")]
+            { use std::os::windows::process::CommandExt; command.creation_flags(0x08000000); }
+
+            let out = command.output().ok()?;
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
+            // If node binary not found, skip gracefully
+            if stderr.contains("is not recognized") || stderr.contains("not found") || stderr.contains("No such file") {
+                return None;
+            }
+            if stderr.contains("Chrome exited") || stderr.contains("DevToolsActivePort") || stderr.contains("failed to launch") || stderr.contains("Executable doesn't exist") {
+                return Some("[browser-crash]".to_string());
+            }
+            // playwright-core not installed yet
+            if stderr.contains("Cannot find module") || stderr.contains("playwright-core not installed") {
+                return None;
+            }
+            let combined = format!("{}{}", stdout, stderr).trim().to_string();
+            Some(if combined.is_empty() { "(done)".to_string() } else { combined })
+        });
+
+        match tokio::time::timeout(std::time::Duration::from_secs(45), node_task).await {
+            Ok(Ok(Some(r))) => return Ok(r),
+            _ => {}
+        }
     }
 
     Ok("[agent-browser not installed]".to_string())
+}
+
+// ── Fetch a public web page and return readable text (no browser needed) ─────
+fn strip_html_to_text(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() / 2);
+    let mut in_tag = false;
+    let mut skip_content = false;
+    let mut tag_buf = String::new();
+    let chars: Vec<char> = html.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        if skip_content {
+            if ch == '<' {
+                let ahead: String = chars[i+1..].iter().take(8).collect::<String>().to_lowercase();
+                if ahead.starts_with("/script") || ahead.starts_with("/style") {
+                    skip_content = false; in_tag = true;
+                }
+            }
+            i += 1; continue;
+        }
+        match ch {
+            '<' => { in_tag = true; tag_buf.clear(); }
+            '>' => {
+                in_tag = false;
+                let tl = tag_buf.trim_start().to_lowercase();
+                let name = tl.split(|c: char| !c.is_alphabetic()).next().unwrap_or("");
+                if name == "script" || name == "style" { skip_content = true; }
+                else {
+                    match name {
+                        "p"|"div"|"br"|"h1"|"h2"|"h3"|"h4"|"h5"|"h6"
+                        |"li"|"tr"|"td"|"th"|"section"|"article"|"header"
+                        |"footer"|"nav"|"main"|"aside" => out.push('\n'),
+                        _ => out.push(' '),
+                    }
+                }
+                tag_buf.clear();
+            }
+            _ => { if in_tag { tag_buf.push(ch); } else { out.push(ch); } }
+        }
+        i += 1;
+    }
+    let mut result = String::new();
+    let mut prev_nl = false;
+    let mut prev_sp = false;
+    for ch in out.chars() {
+        match ch {
+            '\n' => { if !prev_nl { result.push('\n'); } prev_nl = true; prev_sp = false; }
+            c if c.is_ascii_whitespace() => { if !prev_sp && !prev_nl { result.push(' '); } prev_sp = true; }
+            c => { result.push(c); prev_nl = false; prev_sp = false; }
+        }
+    }
+    result.replace("&amp;","&").replace("&lt;","<").replace("&gt;",">")
+          .replace("&quot;","\"").replace("&nbsp;"," ").replace("&#39;","'")
+          .replace("&apos;","'").replace("&hellip;","...").trim().to_string()
+}
+
+#[tauri::command]
+async fn fetch_page_text(url: String) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build().map_err(|e| e.to_string())?;
+    let resp = client.get(&url).send().await.map_err(|e| format!("fetch_failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let html = resp.text().await.map_err(|e| e.to_string())?;
+    Ok(strip_html_to_text(&html))
+}
+
+// ── Read Chrome/Edge browser history (SQLite copy — safe while browser running) ─
+#[tauri::command]
+async fn read_browser_history(query: String, limit: Option<u32>) -> Result<String, String> {
+    let candidates: Vec<std::path::PathBuf> = {
+        #[cfg(target_os = "windows")]
+        {
+            let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+            vec![
+                std::path::PathBuf::from(&local).join("Google").join("Chrome").join("User Data").join("Default").join("History"),
+                std::path::PathBuf::from(&local).join("Microsoft").join("Edge").join("User Data").join("Default").join("History"),
+            ]
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let home = std::env::var("HOME").unwrap_or_default();
+            vec![
+                std::path::PathBuf::from(&home).join(".config").join("google-chrome").join("Default").join("History"),
+                std::path::PathBuf::from(&home).join(".config").join("chromium").join("Default").join("History"),
+            ]
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+        { vec![] }
+    };
+    let history_path = candidates.into_iter().find(|p| p.exists())
+        .ok_or_else(|| "No Chrome or Edge browser history found.".to_string())?;
+    // Copy file — Chrome holds a lock on the original while running
+    let tmp = std::env::temp_dir().join("adris-hist-tmp.db");
+    std::fs::copy(&history_path, &tmp).map_err(|e| format!("Cannot copy history: {e}"))?;
+    let lim = limit.unwrap_or(15) as i64;
+    let conn = rusqlite::Connection::open_with_flags(
+        &tmp, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ).map_err(|e| e.to_string())?;
+    let pattern = format!("%{}%", query.to_lowercase());
+    let mut stmt = conn.prepare(
+        "SELECT url, title, visit_count FROM urls \
+         WHERE (lower(url) LIKE ?1 OR lower(title) LIKE ?1) \
+         AND url NOT LIKE 'data:%' AND url NOT LIKE 'chrome:%' \
+         ORDER BY last_visit_time DESC LIMIT ?2"
+    ).map_err(|e| e.to_string())?;
+    let rows: Vec<String> = stmt.query_map(
+        rusqlite::params![pattern, lim],
+        |row| {
+            let url: String = row.get(0)?;
+            let title: String = row.get(1).unwrap_or_default();
+            let visits: i64 = row.get(2).unwrap_or(0);
+            Ok(format!("- {} | {} (visited {} times)", title.trim(), url, visits))
+        }
+    ).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    let _ = std::fs::remove_file(&tmp);
+    if rows.is_empty() {
+        Ok(format!("No browser history found matching '{}'. Try a different keyword.", query))
+    } else {
+        Ok(format!("Browser history for '{}':\n{}", query, rows.join("\n")))
+    }
 }
 
 #[tauri::command]
@@ -5023,6 +5267,24 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 pub fn run() {
+    // Fix blank screen on Linux: WebKitGTK tries GPU compositing by default.
+    // Without a compositor (common on VMs, minimal DEs, Wayland-X11 hybrid), it renders nothing.
+    // WEBKIT_DISABLE_COMPOSITING_MODE forces software rendering → always shows content.
+    // WEBKIT_FORCE_SANDBOX=0 prevents sandbox restrictions that block rendering on some distros.
+    // GDK_BACKEND=x11 ensures GTK uses X11 backend (Wayland support in WebKitGTK is incomplete).
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var("WEBKIT_DISABLE_COMPOSITING_MODE").is_err() {
+            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        }
+        if std::env::var("WEBKIT_FORCE_SANDBOX").is_err() {
+            std::env::set_var("WEBKIT_FORCE_SANDBOX", "0");
+        }
+        if std::env::var("GDK_BACKEND").is_err() {
+            std::env::set_var("GDK_BACKEND", "x11");
+        }
+    }
+
     let pty_map: PtyMap = pty_map_state();
 
     tauri::Builder::default()
@@ -5045,7 +5307,12 @@ pub fn run() {
             app.manage(LlamaEngineProcess(Mutex::new(None)));
             app.manage(VoiceState::new());
             app.manage(SessionKeyState::new());
-            setup_tray(app)?;
+            // On Linux, tray init can fail if libayatana-appindicator isn't running.
+            // Make it non-fatal so the app still opens and works without a tray icon.
+            #[cfg(target_os = "linux")]
+            { let _ = setup_tray(app); }
+            #[cfg(not(target_os = "linux"))]
+            { setup_tray(app)?; }
 
             // Start background triggers for all currently-enabled automations
             let app_handle = app.handle().clone();
@@ -5200,6 +5467,8 @@ pub fn run() {
             run_agent_browser_session,
             run_browser_persistent,
             open_in_system_browser,
+            fetch_page_text,
+            read_browser_history,
             krew_http_call,
             gmail_fetch_emails,
             gmail_fetch_email_body,
@@ -5263,8 +5532,12 @@ pub fn run() {
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                window.hide().unwrap();
-                api.prevent_close();
+                // On Linux: close the window for real (no system tray to restore from)
+                // On Windows/macOS: hide to tray so the process keeps running
+                #[cfg(target_os = "linux")]
+                { let _ = api; window.close().unwrap_or(()); }
+                #[cfg(not(target_os = "linux"))]
+                { window.hide().unwrap(); api.prevent_close(); }
             }
         })
         .run(tauri::generate_context!())

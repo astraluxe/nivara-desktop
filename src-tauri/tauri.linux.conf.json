@@ -1,0 +1,32 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "decorations": false,
+        "transparent": false,
+        "visible": true
+      }
+    ]
+  },
+  "bundle": {
+    "targets": ["deb", "appimage"],
+    "resources": {
+      "resources/adris-engine.zip": "adris-engine.zip"
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0",
+          "libayatana-appindicator3-1",
+          "libssl3",
+          "libasound2"
+        ]
+      },
+      "appimage": {
+        "bundleMediaFramework": true
+      }
+    }
+  }
+}

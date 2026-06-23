@@ -1,6 +1,8 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAuth } from "../contexts/AuthContext";
 
+const IS_LINUX = navigator.userAgent.toLowerCase().includes('linux');
+
 const PLAN_LABEL: Record<string, string> = {
   free: "Free", explore: "Free", solo: "Solo",
   builder: "Builder", business: "Team", custom: "Custom",
@@ -67,7 +69,13 @@ export default function TitleBar({ activeModule }: { activeModule: string }) {
             </svg>
           </WinBtn>
           <WinBtn
-            onClick={async () => { try { await getCurrentWindow().hide(); } catch {} }}
+            onClick={async () => {
+              try {
+                // On Linux there's no system tray to restore from — close for real
+                if (IS_LINUX) { await getCurrentWindow().close(); }
+                else { await getCurrentWindow().hide(); }
+              } catch {}
+            }}
             label="Close"
             className="hover:bg-nv-red hover:text-white"
           >
