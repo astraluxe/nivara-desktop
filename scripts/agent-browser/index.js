@@ -69,9 +69,55 @@ async function main() {
     // Extra wait for JS-rendered content after scroll (LinkedIn needs ~2s to render posts)
     await new Promise(r => setTimeout(r, 2500));
 
-    const text = await page.evaluate(() =>
-      (document.body.innerText || document.body.textContent || '').trim()
-    );
+    // Extract clean text — remove noise elements before grabbing innerText.
+    // Technique borrowed from Firecrawl (tag/class exclusion) + Crawl4AI (semantic element preference).
+    const text = await page.evaluate(() => {
+      // Tags to always remove
+      const REMOVE_TAGS = ['script', 'style', 'noscript', 'iframe', 'svg', 'canvas'];
+      // Semantic/class-based selectors for boilerplate regions
+      const REMOVE_SELECTORS = [
+        'header', 'footer', 'nav', 'aside',
+        '[class*="header"]', '[class*="footer"]', '[class*="navbar"]',
+        '[class*="nav-"]', '[class*="-nav"]', '[class*="sidebar"]',
+        '[class*="cookie"]', '[id*="cookie"]', '[class*="gdpr"]',
+        '[class*="banner"]', '[class*="popup"]', '[class*="modal"]',
+        '[class*="overlay"]', '[class*="toast"]',
+        '[class*="advertisement"]', '[class*=" ad"]', '[class*="ads-"]',
+        '[class*="social-"]', '[class*="share-"]', '[class*="breadcrumb"]',
+        '[class*="subscribe"]', '[class*="newsletter"]',
+        '[aria-label*="advertisement"]',
+        '[role="banner"]', '[role="navigation"]', '[role="complementary"]',
+        '.sr-only', '.visually-hidden', '[hidden]',
+      ];
+
+      // Clone body so we don't mutate the live page
+      const clone = document.body.cloneNode(true);
+      for (const tag of REMOVE_TAGS) {
+        clone.querySelectorAll(tag).forEach(el => el.remove());
+      }
+      for (const sel of REMOVE_SELECTORS) {
+        try { clone.querySelectorAll(sel).forEach(el => el.remove()); } catch (_) {}
+      }
+
+      // Prefer semantic main-content element (Crawl4AI approach)
+      const main = clone.querySelector('article')
+        || clone.querySelector('main')
+        || clone.querySelector('[role="main"]')
+        || clone.querySelector('#content')
+        || clone.querySelector('.content')
+        || clone.querySelector('#main')
+        || clone;
+
+      // Format headings for readability (browser-use markdown approach)
+      main.querySelectorAll('h1,h2,h3,h4').forEach(h => {
+        const prefix = '#'.repeat(parseInt(h.tagName[1])) + ' ';
+        if (!h.textContent.trim().startsWith('#')) {
+          h.textContent = prefix + h.textContent.trim();
+        }
+      });
+
+      return (main.innerText || main.textContent || '').trim();
+    });
 
     process.stdout.write(text || '(page loaded — no readable text)');
   } finally {

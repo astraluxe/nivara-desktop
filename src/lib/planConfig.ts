@@ -8,7 +8,8 @@ export interface PlanConfig {
   canCreateMesh:    boolean;       // relay nodes available (Builder+)
   canJoinMesh:      boolean;
   meshDevices:      number;        // max devices in a Mesh session
-  guardAccess:      boolean;       // Team plan only
+  guardAccess:      boolean;
+  guardLimit:       number | null; // null = unlimited; solo gets 10/month as a taste
   contractScanning: boolean;
   auditExport:      boolean;
   voiceToCode:      boolean;
@@ -24,6 +25,7 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     canJoinMesh:      true,
     meshDevices:      3,
     guardAccess:      false,
+    guardLimit:       null,
     contractScanning: false,
     auditExport:      false,
     voiceToCode:      false,
@@ -38,6 +40,7 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     canJoinMesh:      true,
     meshDevices:      3,
     guardAccess:      false,
+    guardLimit:       null,
     contractScanning: false,
     auditExport:      false,
     voiceToCode:      false,
@@ -51,7 +54,8 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     canCreateMesh:    false,
     canJoinMesh:      true,
     meshDevices:      10,
-    guardAccess:      false,
+    guardAccess:      true,        // Solo gets Guard as a taste — 10 scans/month
+    guardLimit:       10,
     contractScanning: false,
     auditExport:      false,
     voiceToCode:      false,
@@ -65,7 +69,8 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     canCreateMesh:    true,        // relay nodes unlocked
     canJoinMesh:      true,
     meshDevices:      25,
-    guardAccess:      true,        // Guard unlocked for Builder+
+    guardAccess:      true,
+    guardLimit:       null,        // unlimited
     contractScanning: true,
     auditExport:      false,
     voiceToCode:      true,
@@ -80,6 +85,7 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     canJoinMesh:      true,
     meshDevices:      50,
     guardAccess:      true,
+    guardLimit:       null,
     contractScanning: true,
     auditExport:      true,
     voiceToCode:      true,
@@ -94,6 +100,7 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     canJoinMesh:      true,
     meshDevices:      50,
     guardAccess:      true,
+    guardLimit:       null,
     contractScanning: true,
     auditExport:      true,
     voiceToCode:      true,

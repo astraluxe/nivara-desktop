@@ -111,7 +111,7 @@ function copyResult(result: ComplianceResult, fileName: string, bizType: string)
   navigator.clipboard.writeText(lines.join('\n'));
 }
 
-export default function ComplianceChecker() {
+export default function ComplianceChecker({ onScanRun }: { onScanRun?: () => void }) {
   const [bizType,  setBizType]  = useState(BUSINESS_TYPES[0]);
   const [dataType, setDataType] = useState(DATA_TYPES[1]);
   const [geo,      setGeo]      = useState(GEO_OPTIONS[0]);
@@ -187,6 +187,7 @@ export default function ComplianceChecker() {
       setError('Add a file or paste content to scan first.');
       return;
     }
+    onScanRun?.();
     setChecking(true);
     setError('');
     setResult(null);

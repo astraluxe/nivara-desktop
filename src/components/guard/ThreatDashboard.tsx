@@ -131,7 +131,7 @@ function StatCard({ value, label, color, icon }: { value: number; label: string;
   );
 }
 
-export default function ThreatDashboard() {
+export default function ThreatDashboard({ onScanRun }: { onScanRun?: () => void }) {
   const [stats,      setStats]      = useState<GuardStats | null>(null);
   const [events,     setEvents]     = useState<GuardEvent[]>([]);
   const [scanning,   setScanning]   = useState(false);
@@ -167,6 +167,7 @@ export default function ThreatDashboard() {
     : 0;
 
   async function scanInbox() {
+    onScanRun?.();
     setScanning(true);
     setScanMsg('');
     setScanErr('');

@@ -2,7 +2,9 @@
 import { emit, listen } from '@tauri-apps/api/event';
 import { krewMemoryDb } from './krewDb';
 
-// ─── Browser text cleaner (strips JSON-LD blobs, ads, cookie banners, nav noise) ─
+// ─── Browser text cleaner ─────────────────────────────────────────────────────
+// Strips JSON-LD, ads, cookie banners, nav noise, and low-density junk lines.
+// Technique: Firecrawl pattern exclusion + Crawl4AI text-density scoring.
 function cleanBrowserText(text: string): string {
   const lines = text.split('\n');
   const out: string[] = [];
@@ -19,7 +21,27 @@ function cleanBrowserText(text: string): string {
     /^\s*\[?skip\s+(to\s+)?(main\s+)?(content|navigation|footer)\]?\s*$/i,
     /^(back\s+to\s+top|scroll\s+to\s+top)\s*$/i,
     /^(enable\s+(javascript|js)|your\s+browser\s+does\s+not\s+support)\s*/i,
+    // Extra nav/menu noise (Firecrawl-inspired)
+    /^(home|about(\s+us)?|contact(\s+us)?|blog|news|careers?|faq|support|help)\s*$/i,
+    /^(login|log\s+in|sign\s+in|sign\s+up|register|get\s+started|try\s+for\s+free)\s*$/i,
+    /^(menu|close|open|toggle|expand|collapse)\s*$/i,
+    /^(previous|next|prev)\s*$/i,
+    /^\s*\|\s*$/,  // bare pipe separators from nav menus
+    /^[•\-–]\s*$/,  // bare bullet points
   ];
+
+  // Low-density line scoring (Crawl4AI's PruningContentFilter principle):
+  // A line that is very short but looks like a nav/menu link gets skipped.
+  // Words that look like isolated navigation items (short, title-case, no sentence structure).
+  function isNavLink(t: string): boolean {
+    if (t.length > 60) return false; // real sentences are longer
+    if (/[.!?;,]/.test(t)) return false; // punctuation = real content
+    if (/^\d/.test(t)) return false; // numbers = real content (prices, dates, stats)
+    if (t.startsWith('#')) return false; // heading marker we added
+    const wordCount = t.split(/\s+/).length;
+    // 1-3 title-case words with no sentence structure = likely nav link
+    return wordCount <= 3 && /^[A-Z]/.test(t) && !/\b(and|the|of|in|to|for|a|an)\b/i.test(t);
+  }
 
   for (const line of lines) {
     const t = line.trim();
@@ -29,6 +51,7 @@ function cleanBrowserText(text: string): string {
     if (t.includes('"@type"') || t.includes('"@context"')) continue;
     if (t.length < 4 && !/^\d/.test(t)) continue;
     if (skipPatterns.some(p => p.test(t))) continue;
+    if (isNavLink(t)) continue;
     out.push(line);
   }
   return out.join('\n').trim();
@@ -1032,7 +1055,7 @@ export async function executeTool(
             const host = (() => { try { return new URL(url).hostname; } catch { return url; } })();
             return `[LOGIN REQUIRED — STOP] ${host} requires login. A browser window just opened. Ask the user to log in and say "continue". Do NOT call web_search or any other tool. Wait for the user.`;
           }
-          const content = cleaned.length > 3000 ? cleaned.slice(0, 3000) + '\n…[truncated]' : cleaned;
+          const content = cleaned.length > 6000 ? cleaned.slice(0, 6000) + '\n…[truncated]' : cleaned;
           return `Content from ${url} (public read):\n\n${content}`;
         }
       } catch { /* fall through */ }
@@ -1078,7 +1101,7 @@ export async function executeTool(
     // Fires silently in the background on every successful page read.
     autoSaveUrlToMemory(url, agentKey).catch(() => {});
 
-    const content = text.length > 3000 ? text.slice(0, 3000) + '\n…[truncated — call again for more]' : text;
+    const content = text.length > 6000 ? text.slice(0, 6000) + '\n…[truncated — call again for more]' : text;
     return `Content from ${url}:\n\n${content}`;
   }
 

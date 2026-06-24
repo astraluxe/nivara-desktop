@@ -59,7 +59,7 @@ function RiskMeter({ score }: { score: number }) {
   );
 }
 
-export default function ContractScanner() {
+export default function ContractScanner({ onScanRun }: { onScanRun?: () => void }) {
   const [text, setText]         = useState('');
   const [scanning, setScanning] = useState(false);
   const [result, setResult]     = useState<ScanResult | null>(null);
@@ -113,6 +113,7 @@ export default function ContractScanner() {
   async function scan() {
     const contractText = text.trim();
     if (contractText.length < 100) { setError('Paste at least a paragraph of contract text to scan.'); return; }
+    onScanRun?.();
     setError('');
     setResult(null);
     setScanning(true);
