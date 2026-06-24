@@ -2328,6 +2328,41 @@ async fn run_agent_browser_session(app: tauri::AppHandle, session_id: String, ar
         if let Some(r) = run_cmd(&format!("\"{}\"", local_bin.display())) { return Ok(r); }
     }
 
+    // Option B: Node.js + playwright-core — same script used by run_browser_persistent.
+    // run_agent_browser_session previously had no Node.js fallback, so click/fill/snapshot
+    // silently returned "(done)" without doing anything. This adds the missing path.
+    let script_path = get_playwright_script_path(&app);
+    if script_path.exists() {
+        let full = format!("node \"{}\" {}", script_path.display(), args);
+        let out = {
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                Command::new("cmd")
+                    .args(["/C", &full])
+                    .env("TEMP", &session_dir)
+                    .env("TMP",  &session_dir)
+                    .creation_flags(0x08000000)
+                    .output().ok()
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Command::new("sh")
+                    .args(["-c", &full])
+                    .env("TMPDIR", &session_dir)
+                    .output().ok()
+            }
+        };
+        if let Some(out) = out {
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            if !stderr.contains("is not recognized") && !stderr.contains("not found") && !stderr.contains("No such file") {
+                let combined = format!("{}{}", stdout, stderr).trim().to_string();
+                return Ok(if combined.is_empty() { "(done)".to_string() } else { combined });
+            }
+        }
+    }
+
     Ok("[agent-browser not installed]".to_string())
 }
 
