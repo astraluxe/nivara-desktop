@@ -10,11 +10,8 @@ if (-not (Test-Path $keyFile)) {
     exit 1
 }
 
-# Set signing env vars - Tauri reads these during build and auto-generates .sig
-$env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content $keyFile -Raw).Trim()
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
-
-# Build
+# Build without auto-sign env vars (auto-sign with empty-string password is unreliable
+# across PowerShell contexts — we always sign manually after build instead).
 $version = (Get-Content "src-tauri/tauri.conf.json" | ConvertFrom-Json).version
 Write-Host "Building v$version..." -ForegroundColor Cyan
 npm run tauri build
@@ -25,13 +22,10 @@ $bundle = "src-tauri\target\release\bundle\nsis"
 $exe    = "$bundle\adris.tech_${version}_x64-setup.exe"
 $sig    = "$bundle\adris.tech_${version}_x64-setup.exe.sig"
 
-# If Tauri didn't auto-sign (createUpdaterArtifacts), sign manually
-if (-not (Test-Path $sig)) {
-    Write-Host "Auto-sign not detected - signing manually..." -ForegroundColor Yellow
-    $absKey = (Resolve-Path $keyFile).Path
-    $absExe = (Resolve-Path $exe).Path
-    npx tauri signer sign -f $absKey -p "" $absExe
-}
+# Always sign manually — empty-string password requires exact quoting
+Write-Host "Signing..." -ForegroundColor Cyan
+Remove-Item $sig -ErrorAction SilentlyContinue
+& npx tauri signer sign --private-key-path $keyFile --password "`"`"" $exe
 
 if (-not (Test-Path $sig)) {
     Write-Host "ERROR: Signing failed. .sig not produced." -ForegroundColor Red
