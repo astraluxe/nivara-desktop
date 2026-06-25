@@ -11,8 +11,6 @@ if (-not (Test-Path $keyFile)) {
 }
 
 # Set signing env vars in the CURRENT session so npm/cargo child processes inherit them.
-# TAURI_SIGNING_PRIVATE_KEY = content of the key file (Tauri reads it as the private key).
-# TAURI_SIGNING_PRIVATE_KEY_PASSWORD = empty string (key was generated with no password).
 $env:TAURI_SIGNING_PRIVATE_KEY          = (Get-Content $keyFile -Raw).Trim()
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 
@@ -27,7 +25,7 @@ $exe    = "$bundle\adris.tech_${version}_x64-setup.exe"
 $sig    = "$bundle\adris.tech_${version}_x64-setup.exe.sig"
 
 if (-not (Test-Path $sig)) {
-    Write-Host "WARNING: Tauri auto-sign did not produce .sig — attempting manual sign..." -ForegroundColor Yellow
+    Write-Host "WARNING: Tauri auto-sign did not produce .sig - attempting manual sign..." -ForegroundColor Yellow
     & npx tauri signer sign --private-key-path $keyFile --password "" $exe
     if (-not (Test-Path $sig)) {
         Write-Host "ERROR: Signing failed. .sig not produced." -ForegroundColor Red
@@ -84,4 +82,5 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host ""
 Write-Host "Done! v$version is live with auto-update support." -ForegroundColor Green
 Write-Host "Users will see an update prompt on next launch." -ForegroundColor Green
-Write-Host "Download page URL: https://github.com/astraluxe/nivara-desktop/releases/latest/download/adris-setup.exe" -ForegroundColor Cyan
+$dlUrl = "https://github.com/astraluxe/nivara-desktop/releases/latest/download/adris-setup.exe"
+Write-Host "Download page URL: $dlUrl" -ForegroundColor Cyan
