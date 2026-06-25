@@ -405,12 +405,35 @@ async function main() {
     }
 
     // ── fill ───────────────────────────────────────────────────────────────────
+    // Handles both regular inputs AND contenteditable elements (LinkedIn, X, Reddit
+    // post editors). page.fill() / el.value only works on real input/textarea.
+    // For contenteditable we must click to focus then use keyboard.type().
     if (cmd === 'fill') {
       var fillSel  = argv[1] || '';
       var fillText = argv.slice(2).join(' ');
       if (!fillSel) { process.stdout.write('fill: missing selector'); return; }
 
-      if (fillSel.startsWith('@')) {
+      // Resolve selector to an actual DOM element to detect contenteditable
+      var isContentEditable = await page.evaluate(function(args) {
+        var el = args.ref
+          ? document.querySelector('[data-aref="' + args.ref + '"]')
+          : document.querySelector(args.sel);
+        if (!el) return false;
+        return el.isContentEditable || el.getAttribute('contenteditable') === 'true';
+      }, { ref: fillSel.startsWith('@') ? fillSel.slice(1) : '', sel: fillSel }).catch(function() { return false; });
+
+      if (isContentEditable) {
+        // Click to focus, wipe existing content, then type naturally
+        var focusSel = fillSel.startsWith('@')
+          ? '[data-aref="' + fillSel.slice(1) + '"]'
+          : fillSel;
+        await page.click(focusSel, { timeout: 8000 }).catch(function() {});
+        // Select-all + delete to clear any placeholder / existing text
+        await page.keyboard.press('Control+a');
+        await page.keyboard.press('Delete');
+        await new Promise(function(r) { setTimeout(r, 200); });
+        await page.keyboard.type(fillText, { delay: 18 });
+      } else if (fillSel.startsWith('@')) {
         var fillRef = fillSel.slice(1);
         await page.evaluate(function(args) {
           var el = document.querySelector('[data-aref="' + args.r + '"]');
@@ -424,7 +447,16 @@ async function main() {
         await page.fill(fillSel, fillText, { timeout: 10000 });
       }
       writeState({ url: page.url() });
-      process.stdout.write('Filled "' + fillSel + '" with the provided text.');
+      process.stdout.write('Typed into "' + fillSel + '". Content set.');
+      return;
+    }
+
+    // ── press key ─────────────────────────────────────────────────────────────
+    if (cmd === 'press') {
+      var pressKey = argv.slice(1).join(' ').replace(/^"|"$/g, '').trim() || 'Enter';
+      await page.keyboard.press(pressKey);
+      try { await page.waitForLoadState('networkidle', { timeout: 3000 }); } catch (_) {}
+      process.stdout.write('Pressed ' + pressKey + '. Page: ' + page.url());
       return;
     }
 

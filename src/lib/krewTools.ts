@@ -297,10 +297,17 @@ export const BROWSER_TOOLS: ToolDef[] = [
   },
   {
     name: 'browser_fill',
-    description: 'Clear a field and type text into it.',
+    description: 'Type text into any field — works on regular inputs AND contenteditable editors (LinkedIn post box, X/Twitter compose, Reddit text editor). Automatically detects contenteditable and uses keyboard simulation so text appears correctly.',
     parameters: {
-      selector: { type: 'string', description: 'Ref or CSS selector', required: true },
-      text:     { type: 'string', description: 'Text to type', required: true },
+      selector: { type: 'string', description: 'Ref from browser_snapshot (@e3) or CSS selector', required: true },
+      text:     { type: 'string', description: 'Text to type into the field', required: true },
+    },
+  },
+  {
+    name: 'browser_press',
+    description: 'Press a keyboard key in the browser. Use after browser_fill to submit forms or trigger actions. Common keys: Enter, Tab, Escape, Control+Enter (submit on Reddit/Slack).',
+    parameters: {
+      key: { type: 'string', description: 'Key to press — Enter, Tab, Escape, Control+Enter, ArrowDown, etc.', required: true },
     },
   },
   {
@@ -781,6 +788,18 @@ NEVER say "I can't access that" or suggest Connect Apps for browsing. The browse
 - Quick facts/news → web_search (faster, no browser needed)
 - Notifications/multi-item tasks → navigate to list page, read all items from the returned text in one go; only navigate to individual items if more detail is needed
 
+**Posting / typing on social platforms (LinkedIn, X/Twitter, Reddit):**
+The browser can type and click on any site live, exactly like a human would. To post for the user:
+1. browser_navigate to the platform (LinkedIn feed, twitter.com/home, reddit.com/r/...) — one call, opens and logs in
+2. browser_snapshot → find the compose/post button ref
+3. browser_click on that ref → compose box opens
+4. browser_snapshot again → find the text editor ref (it will be a contenteditable element)
+5. browser_fill with the ref and the post text → types it into the editor live (works on contenteditable — no need for special handling)
+6. browser_snapshot → find the "Post" / "Tweet" / "Submit" button ref
+7. browser_confirm + browser_click → posts it (browser_confirm asks the user to approve before submitting)
+
+Always get user approval via browser_confirm before clicking any submit/post/send button. Show them what will be posted first.
+
 **URL cheat-sheet (use exactly, replace [slug] with real username):**
 - LinkedIn notifications: https://www.linkedin.com/notifications/
 - LinkedIn posts: https://www.linkedin.com/in/[slug]/recent-activity/all/
@@ -1155,6 +1174,10 @@ export async function executeTool(
     const sel = str(args.selector);
     const text = str(args.text).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     return await runBrowser(`fill "${sel}" "${text}"`);
+  }
+  if (toolName === 'browser_press') {
+    const key = str(args.key).replace(/"/g, '\\"');
+    return await runBrowser(`press "${key}"`);
   }
   if (toolName === 'browser_get_text') {
     const sel = str(args.selector) || 'body';
