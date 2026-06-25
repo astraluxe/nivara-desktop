@@ -10,8 +10,12 @@ if (-not (Test-Path $keyFile)) {
     exit 1
 }
 
-# Build without auto-sign env vars (auto-sign with empty-string password is unreliable
-# across PowerShell contexts — we always sign manually after build instead).
+# Set signing env vars in the CURRENT session so npm/cargo child processes inherit them.
+# TAURI_SIGNING_PRIVATE_KEY = content of the key file (Tauri reads it as the private key).
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD = empty string (key was generated with no password).
+$env:TAURI_SIGNING_PRIVATE_KEY          = (Get-Content $keyFile -Raw).Trim()
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
+
 $version = (Get-Content "src-tauri/tauri.conf.json" | ConvertFrom-Json).version
 Write-Host "Building v$version..." -ForegroundColor Cyan
 npm run tauri build
@@ -22,14 +26,13 @@ $bundle = "src-tauri\target\release\bundle\nsis"
 $exe    = "$bundle\adris.tech_${version}_x64-setup.exe"
 $sig    = "$bundle\adris.tech_${version}_x64-setup.exe.sig"
 
-# Always sign manually — empty-string password requires exact quoting
-Write-Host "Signing..." -ForegroundColor Cyan
-Remove-Item $sig -ErrorAction SilentlyContinue
-& npx tauri signer sign --private-key-path $keyFile --password "`"`"" $exe
-
 if (-not (Test-Path $sig)) {
-    Write-Host "ERROR: Signing failed. .sig not produced." -ForegroundColor Red
-    exit 1
+    Write-Host "WARNING: Tauri auto-sign did not produce .sig — attempting manual sign..." -ForegroundColor Yellow
+    & npx tauri signer sign --private-key-path $keyFile --password "" $exe
+    if (-not (Test-Path $sig)) {
+        Write-Host "ERROR: Signing failed. .sig not produced." -ForegroundColor Red
+        exit 1
+    }
 }
 Write-Host "Signed OK" -ForegroundColor Green
 
@@ -62,7 +65,6 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "Uploading assets to $tag..." -ForegroundColor Cyan
 
-# Also copy to a fixed filename so the download page URL never needs changing
 $fixedExe = "$bundle\adris-setup.exe"
 Copy-Item $exe $fixedExe
 
@@ -82,4 +84,4 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host ""
 Write-Host "Done! v$version is live with auto-update support." -ForegroundColor Green
 Write-Host "Users will see an update prompt on next launch." -ForegroundColor Green
-Write-Host "Download page URL (permanent): https://github.com/astraluxe/nivara-desktop/releases/latest/download/adris-setup.exe" -ForegroundColor Cyan
+Write-Host "Download page URL: https://github.com/astraluxe/nivara-desktop/releases/latest/download/adris-setup.exe" -ForegroundColor Cyan
