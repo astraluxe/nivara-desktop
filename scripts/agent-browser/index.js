@@ -18,7 +18,28 @@ const PROFILE_DIR = process.env.AGENT_BROWSER_PROFILE || (
 
 const CDP_PORT  = 9223;
 const CDP_URL   = 'http://localhost:' + CDP_PORT;
-const STATE_FILE = path.join(PROFILE_DIR, '.agent-state.json');
+const STATE_FILE  = path.join(PROFILE_DIR, '.agent-state.json');
+const LAUNCH_LOCK = path.join(PROFILE_DIR, '.launch.lock');
+
+// Atomic file-based lock — prevents concurrent node processes from all calling
+// launchPersistentContext simultaneously when none has started the browser yet.
+async function acquireLaunchLock(maxWaitMs) {
+  var deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    try {
+      fs.writeFileSync(LAUNCH_LOCK, String(process.pid), { flag: 'wx' });
+      return true; // acquired
+    } catch (_) {
+      await new Promise(function(r) { setTimeout(r, 200); });
+    }
+  }
+  // Timed out — stale lock, proceed anyway
+  try { fs.unlinkSync(LAUNCH_LOCK); } catch (_) {}
+  return false;
+}
+function releaseLaunchLock() {
+  try { fs.unlinkSync(LAUNCH_LOCK); } catch (_) {}
+}
 
 function readState() {
   try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); }
@@ -138,58 +159,82 @@ async function scrollForContent(page) {
   }).catch(function() {});
 }
 
-// LinkedIn-specific feed post extraction — tries platform DOM selectors before general extraction.
-// Returns structured post text or null if LinkedIn selectors aren't present.
+// LinkedIn-specific feed post extraction.
+// Returns structured JSON array — clean data the AI can parse directly.
 async function extractLinkedInFeed(page) {
-  return page.evaluate(function() {
-    var selectors = [
-      '.feed-shared-update-v2',
-      '.occludable-update',
-      '[data-urn*="activity"]',
-    ];
-    var posts = [];
+  var posts = await page.evaluate(function() {
+    var selectors = ['.feed-shared-update-v2', '.occludable-update', '[data-urn*="activity"]'];
+    var nodes = [];
     for (var si = 0; si < selectors.length; si++) {
-      posts = Array.from(document.querySelectorAll(selectors[si]));
-      if (posts.length > 0) break;
+      nodes = Array.from(document.querySelectorAll(selectors[si]));
+      if (nodes.length > 0) break;
     }
-    if (posts.length === 0) return null;
+    if (nodes.length === 0) return null;
 
-    return posts.slice(0, 12).map(function(post) {
-      var author = '';
+    return nodes.slice(0, 15).map(function(post) {
+      // Author name
       var authorEl = post.querySelector(
-        '.feed-shared-actor__name, .update-components-actor__name, ' +
-        '.feed-shared-actor__title, [class*="actor__name"]'
+        '.feed-shared-actor__name, .update-components-actor__name, [class*="actor__name"]'
       );
-      if (authorEl) author = (authorEl.innerText || authorEl.textContent || '').trim();
+      var author = authorEl ? (authorEl.innerText || '').trim().split('\n')[0].trim() : '';
 
-      var timeEl = post.querySelector(
-        '.feed-shared-actor__sub-description, time, [class*="actor__sub-description"]'
+      // Author role / headline
+      var roleEl = post.querySelector(
+        '.feed-shared-actor__description, .update-components-actor__description, [class*="actor__description"]'
       );
-      var timeStr = timeEl ? (timeEl.innerText || timeEl.textContent || '').trim() : '';
+      var role = roleEl ? (roleEl.innerText || '').trim().split('\n')[0].trim() : '';
 
-      var contentEl = post.querySelector(
-        '.feed-shared-text, .feed-shared-update-v2__description, ' +
-        '.feed-shared-inline-show-more-text, [class*="commentary"], ' +
-        '.update-components-text'
-      );
-      var content = contentEl ? (contentEl.innerText || contentEl.textContent || '').trim() : '';
-
-      if (!content) {
-        content = (post.innerText || post.textContent || '').trim()
-          .split('\n')
-          .filter(function(l) { return l.trim().length > 5; })
-          .slice(0, 8)
-          .join('\n');
+      // Post time
+      var timeEl = post.querySelector('time, [class*="actor__sub-description"]');
+      var posted = '';
+      if (timeEl) {
+        posted = timeEl.getAttribute('datetime') ||
+                 (timeEl.innerText || '').trim().replace(/·.*/g, '').trim();
       }
 
-      if (!author && !content) return null;
+      // Post content
+      var contentEl = post.querySelector(
+        '.feed-shared-text, .feed-shared-update-v2__description, ' +
+        '.feed-shared-inline-show-more-text, [class*="commentary"], .update-components-text'
+      );
+      var content = contentEl ? (contentEl.innerText || '').trim() : '';
+      if (!content || content.length < 10) {
+        content = (post.innerText || '').trim()
+          .split('\n').filter(function(l) { return l.trim().length > 5; })
+          .slice(0, 12).join('\n');
+      }
 
-      var header = author
-        ? ('**' + author + '**' + (timeStr ? '  ·  ' + timeStr : ''))
-        : '';
-      return (header ? header + '\n' : '') + content;
-    }).filter(function(t) { return t && t.length > 15; }).join('\n\n---\n\n');
+      // Engagement
+      var reactEl = post.querySelector('[aria-label*="reaction"], [class*="social-count"] span');
+      var reactions = reactEl ? (reactEl.getAttribute('aria-label') || reactEl.innerText || '').replace(/\s+/g,' ').trim() : '';
+      var cmtEl = post.querySelector('[aria-label*="comment"], [class*="social-count"] ~ span');
+      var comments_count = cmtEl ? (cmtEl.getAttribute('aria-label') || cmtEl.innerText || '').replace(/\s+/g,' ').trim() : '';
+
+      if (!content || content.length < 15) return null;
+      return {
+        author:    author   || 'Unknown',
+        role:      role,
+        posted:    posted,
+        content:   content,
+        reactions: reactions,
+        comments:  comments_count,
+      };
+    }).filter(Boolean);
   }).catch(function() { return null; });
+
+  if (!posts || posts.length === 0) return null;
+
+  // Format as readable feed for the AI
+  var formatted = '=== LinkedIn Feed — ' + posts.length + ' posts ===\n\n' +
+    posts.map(function(p, i) {
+      var header = (i + 1) + '. ' + p.author;
+      if (p.role)    header += ' (' + p.role + ')';
+      if (p.posted)  header += '  ·  ' + p.posted;
+      var engagement = [p.reactions, p.comments].filter(function(s) { return s && s.length > 0; }).join('  ·  ');
+      return header + (engagement ? '\n   ' + engagement : '') + '\n\n' + p.content;
+    }).join('\n\n---\n\n');
+
+  return formatted;
 }
 
 // Poll for auth-wall exit — waits for URL to change away from login page.
@@ -439,16 +484,31 @@ async function main() {
   }
 
   if (!openCtx) {
-    openCtx = await chromium.launchPersistentContext(PROFILE_DIR, {
-      channel: 'chrome', headless: false,
-      args: [
-        '--no-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-infobars',
-        '--remote-debugging-port=' + CDP_PORT,
-      ],
-      ignoreDefaultArgs: ['--enable-automation'],
-    });
+    // Acquire launch lock — if another concurrent process is mid-launch,
+    // wait for it to finish, then connect to the browser it started.
+    await acquireLaunchLock(12000);
+    // Double-check: another process may have started the browser while we waited.
+    openRunning = await isBrowserRunning();
+    if (openRunning) {
+      try {
+        var openBrowser2 = await chromium.connectOverCDP(CDP_URL, { timeout: 3000 });
+        var openCtxs2 = openBrowser2.contexts();
+        openCtx = openCtxs2.length > 0 ? openCtxs2[0] : null;
+      } catch (_) {}
+    }
+    if (!openCtx) {
+      openCtx = await chromium.launchPersistentContext(PROFILE_DIR, {
+        channel: 'chrome', headless: false,
+        args: [
+          '--no-sandbox',
+          '--disable-blink-features=AutomationControlled',
+          '--disable-infobars',
+          '--remote-debugging-port=' + CDP_PORT,
+        ],
+        ignoreDefaultArgs: ['--enable-automation'],
+      });
+    }
+    releaseLaunchLock();
   }
 
   var openPage = openCtx.pages().at(-1) || await openCtx.newPage();

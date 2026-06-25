@@ -57,6 +57,17 @@ function cleanBrowserText(text: string): string {
   return out.join('\n').trim();
 }
 
+// ─── Browser serialization lock ───────────────────────────────────────────────
+// Prevents 3 parallel browser_navigate calls from each spawning a node process
+// that all call launchPersistentContext simultaneously, opening 3 windows.
+// All browser_navigate calls queue up and execute one at a time.
+let _browserNavChain: Promise<unknown> = Promise.resolve();
+function withBrowserLock<T>(fn: () => Promise<T>): Promise<T> {
+  const result = _browserNavChain.then(() => fn(), () => fn());
+  _browserNavChain = result.then(() => {}, () => {});
+  return result;
+}
+
 // ─── Browser action permissions ───────────────────────────────────────────────
 const BROWSER_PERMS_KEY = 'nv-browser-perms-v1';
 
@@ -1030,6 +1041,7 @@ export async function executeTool(
   }
 
   if (toolName === 'browser_navigate') {
+    return withBrowserLock(async () => {
     const rawUrl = str(args.url);
     const url = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl.replace(/^\/+/, '')}`;
 
@@ -1107,6 +1119,7 @@ export async function executeTool(
 
     const content = text.length > 6000 ? text.slice(0, 6000) + '\n…[truncated — call again for more]' : text;
     return `Content from ${url}:\n\n${content}`;
+    }); // end withBrowserLock
   }
 
   if (toolName === 'browser_search') {
