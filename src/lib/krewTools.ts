@@ -1062,8 +1062,12 @@ export async function executeTool(
       return `[LOGIN REQUIRED — STOP] This page needs login. A browser window just opened. Ask the user to log in and say "continue". Do NOT call web_search or any other tool. Wait.`;
     }
 
+    if (navResult.includes('[SIGN_IN_REQUIRED]')) {
+      const host = (() => { try { return new URL(url).hostname; } catch { return url; } })();
+      return `[LOGIN REQUIRED — STOP ALL TOOL CALLS] The ADRIS agent browser needs a one-time login for ${host}. A Chrome window just opened on the user's screen — it is a SEPARATE browser with a separate profile, NOT their regular Chrome. Tell the user: "Please log in to ${host} in the **ADRIS agent browser window** that just appeared (it says 'Chrome is being controlled by automated test software' at the top). Once you are logged in, say **continue** and I will read the page for you. This only needs to happen once — your session is saved permanently." Do NOT use web_search or any other tool. Wait for the user to say continue.`;
+    }
     if (navResult.includes('[browser-timeout]')) {
-      return `[Browser timeout] ${url} took over 30 seconds to load. It may require login — check the browser window that just opened. If you are logged in, say "retry" and I will try again.`;
+      return `[Browser timeout] ${url} took over 30 seconds to load. It may require login — check the ADRIS agent browser window that just opened (a Chrome window separate from your regular Chrome). If you are logged in there, say "retry" and I will try again.`;
     }
     if (navResult.includes('[browser-crash]') || navResult.includes('Chrome exited') || navResult.includes('DevToolsActivePort')) {
       return `[Browser error] Could not load ${url}. Try web_search instead.`;

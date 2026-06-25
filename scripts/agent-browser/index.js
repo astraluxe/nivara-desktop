@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // adris.tech agent-browser — Playwright wrapper using system Chrome.
-// Techniques from: browser-use (CDP element detection, post-click nav wait),
-//   firecrawl (Markdown conversion preserving structure), crawl4ai (multi-metric scoring).
+// Techniques from: browser-use (CDP element detection, accessibility tree),
+//   firecrawl (Markdown conversion, content-type detection, wait strategies),
+//   crawl4ai (multi-metric scoring, word-threshold filtering, content stability),
+//   crawlee (progressive infinite scroll, network-idle detection, cookie handling).
 
 const path = require('path');
 const os   = require('os');
@@ -26,6 +28,11 @@ function writeState(data) {
   try { fs.writeFileSync(STATE_FILE, JSON.stringify(data)); } catch {}
 }
 
+// Detect login / auth-wall pages so the LLM gets a clear structured signal.
+function isAuthWall(url) {
+  return /\/(login|signin|checkpoint|authwall|challenge|uas\/login|session-redirect|sso\/login)|\/login\?|accounts\.google\.com|appleid\.apple\.com\/auth|auth\.linkedin\.com/.test(url);
+}
+
 async function isBrowserRunning() {
   return new Promise(function(resolve) {
     http.get(CDP_URL + '/json/version', function(res) {
@@ -33,6 +40,171 @@ async function isBrowserRunning() {
       res.resume();
     }).on('error', function() { resolve(false); }).setTimeout(1500, function() { resolve(false); });
   });
+}
+
+// Wait until the page body has at least minChars of text, polling every 500 ms.
+async function waitForContent(page, minChars, maxWait) {
+  var deadline = Date.now() + maxWait;
+  while (Date.now() < deadline) {
+    var len = await page.evaluate(function() {
+      return (document.body && document.body.innerText || '').length;
+    }).catch(function() { return 0; });
+    if (len >= minChars) return true;
+    await new Promise(function(r) { setTimeout(r, 500); });
+  }
+  return false;
+}
+
+// Wait until body text length stops growing — content is stable (crawl4ai pattern).
+async function waitForContentStability(page, minChars, maxWait) {
+  var deadline = Date.now() + maxWait;
+  var lastLen = 0;
+  var stableCount = 0;
+  while (Date.now() < deadline) {
+    var len = await page.evaluate(function() {
+      return (document.body && document.body.innerText || '').length;
+    }).catch(function() { return 0; });
+    if (len >= minChars && len === lastLen) {
+      stableCount++;
+      if (stableCount >= 2) return true;
+    } else {
+      stableCount = 0;
+    }
+    lastLen = len;
+    await new Promise(function(r) { setTimeout(r, 600); });
+  }
+  return lastLen >= minChars;
+}
+
+// Platform-specific element waiting — wait until real content elements appear (firecrawl pattern).
+async function waitForPlatformContent(page, hostname) {
+  try {
+    if (hostname.includes('linkedin.com')) {
+      // LinkedIn feed posts or profile content
+      await page.waitForSelector(
+        '.feed-shared-update-v2, .occludable-update, .scaffold-layout__main, [data-urn], .artdeco-card',
+        { timeout: 8000 }
+      );
+    } else if (hostname.includes('twitter.com') || hostname.includes('x.com')) {
+      await page.waitForSelector('[data-testid="tweet"], [data-testid="tweetText"]', { timeout: 8000 });
+    } else if (hostname.includes('mail.google.com')) {
+      await page.waitForSelector('.zA, [role="main"]', { timeout: 8000 });
+    } else if (hostname.includes('reddit.com')) {
+      await page.waitForSelector('[data-testid="post-container"], .Post, shreddit-post', { timeout: 8000 });
+    } else if (hostname.includes('github.com')) {
+      await page.waitForSelector('.repository-content, .js-repo-nav, main', { timeout: 8000 });
+    } else {
+      await page.waitForSelector('main, article, [role="main"], body', { timeout: 5000 });
+    }
+  } catch (_) {
+    // Selector not found within timeout — page may still have content, continue
+  }
+}
+
+// Progressive multi-step scroll (crawlee infinite scroll pattern).
+// Scrolls the window AND the platform's main scroll container in 4 steps.
+async function progressiveScroll(page) {
+  var steps = 4;
+  for (var i = 1; i <= steps; i++) {
+    var ratio = (i / steps) * 0.8;
+    await page.evaluate(function(r) {
+      var scrollTargets = [
+        document.querySelector('.scaffold-layout__main'),  // LinkedIn
+        document.querySelector('[data-finite-scroll-hotkey-context]'),  // LinkedIn alt
+        document.querySelector('main') || document.querySelector('[role="main"]'),
+        document.querySelector('#main-content'),
+        document.body,
+      ].filter(Boolean);
+      scrollTargets.forEach(function(el) {
+        el.scrollTop = Math.floor(el.scrollHeight * r);
+      });
+      window.scrollTo(0, Math.floor(document.body.scrollHeight * r));
+    }, ratio).catch(function() {});
+    await new Promise(function(r) { setTimeout(r, 700); });
+  }
+}
+
+// Legacy single-scroll kept for backwards compat (used by navigate command).
+async function scrollForContent(page) {
+  await page.evaluate(function() {
+    var main = document.querySelector('main') ||
+               document.querySelector('[role="main"]') ||
+               document.querySelector('.scaffold-layout__main') ||
+               document.querySelector('#main-content') ||
+               document.body;
+    var target = Math.floor(main.scrollHeight * 0.4);
+    main.scrollTop = target;
+    window.scrollTo(0, Math.floor(document.body.scrollHeight * 0.4));
+  }).catch(function() {});
+}
+
+// LinkedIn-specific feed post extraction — tries platform DOM selectors before general extraction.
+// Returns structured post text or null if LinkedIn selectors aren't present.
+async function extractLinkedInFeed(page) {
+  return page.evaluate(function() {
+    var selectors = [
+      '.feed-shared-update-v2',
+      '.occludable-update',
+      '[data-urn*="activity"]',
+    ];
+    var posts = [];
+    for (var si = 0; si < selectors.length; si++) {
+      posts = Array.from(document.querySelectorAll(selectors[si]));
+      if (posts.length > 0) break;
+    }
+    if (posts.length === 0) return null;
+
+    return posts.slice(0, 12).map(function(post) {
+      var author = '';
+      var authorEl = post.querySelector(
+        '.feed-shared-actor__name, .update-components-actor__name, ' +
+        '.feed-shared-actor__title, [class*="actor__name"]'
+      );
+      if (authorEl) author = (authorEl.innerText || authorEl.textContent || '').trim();
+
+      var timeEl = post.querySelector(
+        '.feed-shared-actor__sub-description, time, [class*="actor__sub-description"]'
+      );
+      var timeStr = timeEl ? (timeEl.innerText || timeEl.textContent || '').trim() : '';
+
+      var contentEl = post.querySelector(
+        '.feed-shared-text, .feed-shared-update-v2__description, ' +
+        '.feed-shared-inline-show-more-text, [class*="commentary"], ' +
+        '.update-components-text'
+      );
+      var content = contentEl ? (contentEl.innerText || contentEl.textContent || '').trim() : '';
+
+      if (!content) {
+        content = (post.innerText || post.textContent || '').trim()
+          .split('\n')
+          .filter(function(l) { return l.trim().length > 5; })
+          .slice(0, 8)
+          .join('\n');
+      }
+
+      if (!author && !content) return null;
+
+      var header = author
+        ? ('**' + author + '**' + (timeStr ? '  ·  ' + timeStr : ''))
+        : '';
+      return (header ? header + '\n' : '') + content;
+    }).filter(function(t) { return t && t.length > 15; }).join('\n\n---\n\n');
+  }).catch(function() { return null; });
+}
+
+// Poll for auth-wall exit — waits for URL to change away from login page.
+// Used after authwall is detected so the agent browser can auto-recover after user logs in.
+// maxWait should be ≤ 38000 to stay within Rust's 45-second process timeout.
+async function pollForLoginCompletion(page, maxWait) {
+  var deadline = Date.now() + maxWait;
+  while (Date.now() < deadline) {
+    await new Promise(function(r) { setTimeout(r, 2500); });
+    try {
+      var cur = page.url();
+      if (!isAuthWall(cur)) return true;
+    } catch (_) { return false; }
+  }
+  return false;
 }
 
 async function main() {
@@ -83,9 +255,30 @@ async function main() {
       try { await page.waitForLoadState('networkidle', { timeout: 5000 }); } catch (_) {}
     }
 
+    // ── navigate ─────────────────────────────────────────────────────────────
+    if (cmd === 'navigate') {
+      var navRaw = argv.slice(1).join(' ').replace(/^"|"$/g, '').trim();
+      var navUrl = navRaw.startsWith('http') ? navRaw : 'https://' + navRaw;
+      await page.goto(navUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
+      try { await page.waitForLoadState('networkidle', { timeout: 6000 }); } catch (_) {}
+
+      var navHostname = '';
+      try { navHostname = new URL(navUrl).hostname; } catch (_) {}
+      await waitForPlatformContent(page, navHostname);
+      await progressiveScroll(page);
+      await new Promise(function(r) { setTimeout(r, 1500); });
+
+      var navFinal = page.url();
+      writeState({ url: navFinal });
+      if (isAuthWall(navFinal)) {
+        process.stdout.write('[SIGN_IN_REQUIRED] Redirected to a login page at ' + navFinal + '. The user needs to sign in in the ADRIS agent browser window (separate from their regular Chrome). Once signed in, retry the request — the session will be saved automatically.');
+        return;
+      }
+      process.stdout.write('Navigated to: ' + navFinal);
+      return;
+    }
+
     // ── snapshot ─────────────────────────────────────────────────────────────
-    // browser-use technique: check tabindex, onclick, broader ARIA roles,
-    // aria-label — catches React/Vue/custom components that plain tag checks miss.
     if (cmd === 'snapshot') {
       var tree = await page.evaluate(function() {
         var idx = 0;
@@ -102,9 +295,7 @@ async function main() {
           if (INTERACTIVE_TAGS.includes(tag)) return true;
           var role = el.getAttribute('role') || '';
           if (role && INTERACTIVE_ROLES.includes(role)) return true;
-          // tabindex="0" = developer intentionally made it keyboard-focusable
           if (el.getAttribute('tabindex') === '0') return true;
-          // onclick attr — catches legacy React / jQuery handlers
           if (el.getAttribute('onclick')) return true;
           if (el.getAttribute('contenteditable') === 'true') return true;
           return false;
@@ -146,7 +337,6 @@ async function main() {
     }
 
     // ── click ─────────────────────────────────────────────────────────────────
-    // browser-use technique: wait for networkidle post-click to detect navigation.
     if (cmd === 'click') {
       var sel = (argv[1] || '').replace(/^"|"$/g, '').trim();
       if (!sel) { process.stdout.write('click: missing selector'); return; }
@@ -235,6 +425,9 @@ async function main() {
   var rawUrl = argv.slice(1).join(' ').replace(/^"|"$/g, '').trim();
   var url    = rawUrl.startsWith('http') ? rawUrl : 'https://' + rawUrl;
 
+  var hostname = '';
+  try { hostname = new URL(url).hostname; } catch (_) {}
+
   var openCtx;
   var openRunning = await isBrowserRunning();
   if (openRunning) {
@@ -258,160 +451,203 @@ async function main() {
     });
   }
 
-  var openPage = openCtx.pages()[0] || await openCtx.newPage();
+  var openPage = openCtx.pages().at(-1) || await openCtx.newPage();
   await openPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
   try { await openPage.waitForLoadState('networkidle', { timeout: 6000 }); } catch (_) {}
-  await openPage.evaluate(function() { window.scrollTo(0, Math.floor(document.body.scrollHeight / 3)); });
-  await new Promise(function(r) { setTimeout(r, 2000); });
 
-  // Extract content as Markdown — firecrawl selector removal + crawl4ai multi-metric scoring
-  // + markdown conversion preserving links, tables, lists, code blocks.
-  var markdown = await openPage.evaluate(function() {
-    // ── 1. Remove known noise selectors (firecrawl approach) ─────────────────
-    var REMOVE_TAGS = ['script','style','noscript','iframe','svg','canvas','template'];
-    var REMOVE_SELECTORS = [
-      'header', 'footer', 'nav', 'aside',
-      '[class*="header"]', '[class*="footer"]', '[class*="navbar"]',
-      '[class*="nav-"]', '[class*="-nav"]', '[class*="sidebar"]',
-      '[class*="cookie"]', '[id*="cookie"]', '[class*="gdpr"]',
-      '[class*="banner"]', '[class*="popup"]', '[class*="modal"]',
-      '[class*="overlay"]', '[class*="toast"]',
-      '[class*="advertisement"]', '[id*="advertisement"]', '[class*="ads-"]',
-      '[class*="ad-"]', '[id*="ad-"]',
-      '[class*="social-"]', '[class*="share-"]', '[class*="breadcrumb"]',
-      '[class*="subscribe"]', '[class*="newsletter"]', '[class*="signup"]',
-      '[class*="promo"]', '[class*="widget"]',
-      '[aria-label*="advertisement"]',
-      '[role="banner"]', '[role="navigation"]', '[role="complementary"]',
-      '.sr-only', '.visually-hidden', '[hidden]', '[aria-hidden="true"]',
-    ];
-    var clone = document.body.cloneNode(true);
-    REMOVE_TAGS.forEach(function(t) {
-      clone.querySelectorAll(t).forEach(function(el) { el.remove(); });
-    });
-    REMOVE_SELECTORS.forEach(function(s) {
-      try { clone.querySelectorAll(s).forEach(function(el) { el.remove(); }); } catch (_) {}
-    });
-
-    // ── 2. Multi-metric block scoring (crawl4ai approach) ────────────────────
-    function scoreBlock(el) {
-      var text    = el.innerText || el.textContent || '';
-      var textLen = text.trim().length;
-      if (textLen < 30) return 0;
-
-      var htmlLen     = el.innerHTML.length;
-      var textDensity = htmlLen > 0 ? textLen / htmlLen : 0;
-
-      var linkText = Array.from(el.querySelectorAll('a')).reduce(function(s, a) {
-        return s + (a.innerText || a.textContent || '').length;
-      }, 0);
-      var linkDensity = textLen > 0 ? Math.max(0, 1 - linkText / textLen) : 0.5;
-
-      var TAG_W = { article: 1.5, main: 1.4, section: 1.1, p: 1.2, div: 0.8, span: 0.5 };
-      var tagWeight = TAG_W[el.tagName.toLowerCase()] || 0.8;
-
-      var classStr = ((el.className || '') + ' ' + (el.id || '')).toLowerCase();
-      var BAD = ['nav','footer','sidebar','header','menu','ad','promo','widget','banner','cookie','social','share'];
-      var classWeight = BAD.some(function(w) { return classStr.indexOf(w) !== -1; }) ? 0.2 : 1.0;
-
-      return 0.35 * textDensity + 0.25 * linkDensity + 0.2 * tagWeight + 0.1 * classWeight + 0.1 * (Math.log(textLen + 1) / 10);
+  // Check for auth-wall redirect.
+  var finalUrl = openPage.url();
+  if (isAuthWall(finalUrl)) {
+    // Poll for up to 38s for the user to log in (stays within 45s Rust timeout).
+    // The browser window is already visible — user can log in while we wait.
+    var loggedIn = await pollForLoginCompletion(openPage, 38000);
+    if (!loggedIn) {
+      writeState({ url: finalUrl });
+      process.stdout.write(
+        '[SIGN_IN_REQUIRED] The ADRIS agent browser (the Chrome window that just opened with a separate profile) ' +
+        'was redirected to a login page at ' + finalUrl + '. ' +
+        'Please sign in to ' + hostname + ' in THAT browser window — not your regular Chrome. ' +
+        'Your session will be saved permanently so this only happens once. ' +
+        'After signing in, say "continue" or "retry" and I will read the page for you.'
+      );
+      return;
     }
+    // User logged in — give the page a moment to fully load the post-login content
+    finalUrl = openPage.url();
+    try { await openPage.waitForLoadState('networkidle', { timeout: 5000 }); } catch (_) {}
+    await new Promise(function(r) { setTimeout(r, 1000); });
+  }
 
-    // ── 3. DOM → Markdown (firecrawl approach) ───────────────────────────────
-    // Converts HTML to Markdown-ish text preserving links, lists, tables, code.
-    function domToMd(el, depth) {
-      if (!el) return '';
-      // Text node
-      if (el.nodeType === 3) return (el.textContent || '').replace(/\s+/g, ' ');
-      if (el.nodeType !== 1) return '';
-      var tag = el.tagName.toLowerCase();
-      if (['script','style','noscript','iframe','svg','canvas','template'].includes(tag)) return '';
+  // Wait for platform-specific content elements to appear (firecrawl pattern).
+  await waitForPlatformContent(openPage, hostname);
 
-      function kids() {
-        return Array.from(el.childNodes).map(function(c) { return domToMd(c, depth + 1); }).join('').trim();
+  // Progressive multi-step scroll to trigger lazy-loaded content (crawlee pattern).
+  await progressiveScroll(openPage);
+
+  // Wait for content to stabilize — text length stops growing (crawl4ai pattern).
+  await waitForContentStability(openPage, 300, 3000);
+
+  // If still sparse after progressive scroll, do one more pass.
+  var bodyLen = await openPage.evaluate(function() {
+    return (document.body && document.body.innerText || '').length;
+  }).catch(function() { return 0; });
+  if (bodyLen < 300) {
+    await progressiveScroll(openPage);
+    await new Promise(function(r) { setTimeout(r, 1500); });
+  }
+
+  // ── LinkedIn-specific post extraction (firecrawl platform-specific pattern) ─
+  var markdown = null;
+  if (hostname.includes('linkedin.com')) {
+    markdown = await extractLinkedInFeed(openPage);
+  }
+
+  // ── General content extraction (firecrawl selector removal + crawl4ai scoring) ─
+  if (!markdown) {
+    markdown = await openPage.evaluate(function() {
+      // 1. Remove known noise selectors
+      var REMOVE_TAGS = ['script','style','noscript','iframe','svg','canvas','template'];
+      var REMOVE_SELECTORS = [
+        'header', 'footer', 'nav', 'aside',
+        '[class*="header"]', '[class*="footer"]', '[class*="navbar"]',
+        '[class*="nav-"]', '[class*="-nav"]', '[class*="sidebar"]',
+        '[class*="cookie"]', '[id*="cookie"]', '[class*="gdpr"]',
+        '[class*="banner"]', '[class*="popup"]', '[class*="modal"]',
+        '[class*="overlay"]', '[class*="toast"]',
+        '[class*="advertisement"]', '[id*="advertisement"]', '[class*="ads-"]',
+        '[class*="ad-"]', '[id*="ad-"]',
+        '[class*="social-"]', '[class*="share-"]', '[class*="breadcrumb"]',
+        '[class*="subscribe"]', '[class*="newsletter"]', '[class*="signup"]',
+        '[class*="promo"]', '[class*="widget"]',
+        '[aria-label*="advertisement"]',
+        '[role="banner"]', '[role="navigation"]', '[role="complementary"]',
+        '.sr-only', '.visually-hidden', '[hidden]', '[aria-hidden="true"]',
+      ];
+      var clone = document.body.cloneNode(true);
+      REMOVE_TAGS.forEach(function(t) {
+        clone.querySelectorAll(t).forEach(function(el) { el.remove(); });
+      });
+      REMOVE_SELECTORS.forEach(function(s) {
+        try { clone.querySelectorAll(s).forEach(function(el) { el.remove(); }); } catch (_) {}
+      });
+
+      // 2. Multi-metric block scoring (crawl4ai approach)
+      function scoreBlock(el) {
+        var text    = el.innerText || el.textContent || '';
+        var textLen = text.trim().length;
+        if (textLen < 30) return 0;
+
+        var htmlLen     = el.innerHTML.length;
+        var textDensity = htmlLen > 0 ? textLen / htmlLen : 0;
+
+        var linkText = Array.from(el.querySelectorAll('a')).reduce(function(s, a) {
+          return s + (a.innerText || a.textContent || '').length;
+        }, 0);
+        var linkDensity = textLen > 0 ? Math.max(0, 1 - linkText / textLen) : 0.5;
+
+        var TAG_W = { article: 1.5, main: 1.4, section: 1.1, p: 1.2, div: 0.8, span: 0.5 };
+        var tagWeight = TAG_W[el.tagName.toLowerCase()] || 0.8;
+
+        var classStr = ((el.className || '') + ' ' + (el.id || '')).toLowerCase();
+        var BAD = ['nav','footer','sidebar','header','menu','ad','promo','widget','banner','cookie','social','share'];
+        var classWeight = BAD.some(function(w) { return classStr.indexOf(w) !== -1; }) ? 0.2 : 1.0;
+
+        return 0.35 * textDensity + 0.25 * linkDensity + 0.2 * tagWeight + 0.1 * classWeight + 0.1 * (Math.log(textLen + 1) / 10);
       }
 
-      switch (tag) {
-        case 'h1': return '\n# '    + (el.textContent || '').trim() + '\n';
-        case 'h2': return '\n## '   + (el.textContent || '').trim() + '\n';
-        case 'h3': return '\n### '  + (el.textContent || '').trim() + '\n';
-        case 'h4': return '\n#### ' + (el.textContent || '').trim() + '\n';
-        case 'h5': return '\n##### '+ (el.textContent || '').trim() + '\n';
-        case 'br': return '\n';
-        case 'hr': return '\n---\n';
-        case 'p':  { var pt = kids(); return pt ? '\n' + pt + '\n' : ''; }
-        case 'li': return '\n- ' + (el.textContent || '').trim();
-        case 'ul':
-        case 'ol': return '\n' + kids() + '\n';
-        case 'a': {
-          var href = el.getAttribute('href') || '';
-          var lt   = (el.textContent || '').trim();
-          if (!lt) return '';
-          if (!href || href.startsWith('#') || href.startsWith('javascript')) return lt;
-          return '[' + lt + '](' + href + ')';
+      // 3. DOM → Markdown (firecrawl approach)
+      function domToMd(el, depth) {
+        if (!el) return '';
+        if (el.nodeType === 3) return (el.textContent || '').replace(/\s+/g, ' ');
+        if (el.nodeType !== 1) return '';
+        var tag = el.tagName.toLowerCase();
+        if (['script','style','noscript','iframe','svg','canvas','template'].includes(tag)) return '';
+
+        function kids() {
+          return Array.from(el.childNodes).map(function(c) { return domToMd(c, depth + 1); }).join('').trim();
         }
-        case 'strong':
-        case 'b': { var bt = kids(); return bt ? '**' + bt + '**' : ''; }
-        case 'em':
-        case 'i':  { var it = kids(); return it ? '_' + it + '_' : ''; }
-        case 'code': {
-          var ct = (el.textContent || '').trim();
-          return ct ? ('`' + ct + '`') : '';
-        }
-        case 'pre': {
-          var pret = (el.textContent || '').trim();
-          return pret ? ('\n```\n' + pret + '\n```\n') : '';
-        }
-        case 'blockquote': return '\n> ' + kids().replace(/\n/g, '\n> ') + '\n';
-        case 'table': {
-          var rows = Array.from(el.querySelectorAll('tr'));
-          if (!rows.length) return '';
-          var tdata = rows.map(function(r) {
-            return Array.from(r.querySelectorAll('td,th')).map(function(c) {
-              return (c.textContent || '').trim().replace(/\|/g, '\\|');
+
+        switch (tag) {
+          case 'h1': return '\n# '    + (el.textContent || '').trim() + '\n';
+          case 'h2': return '\n## '   + (el.textContent || '').trim() + '\n';
+          case 'h3': return '\n### '  + (el.textContent || '').trim() + '\n';
+          case 'h4': return '\n#### ' + (el.textContent || '').trim() + '\n';
+          case 'h5': return '\n##### '+ (el.textContent || '').trim() + '\n';
+          case 'br': return '\n';
+          case 'hr': return '\n---\n';
+          case 'p':  { var pt = kids(); return pt ? '\n' + pt + '\n' : ''; }
+          case 'li': return '\n- ' + (el.textContent || '').trim();
+          case 'ul':
+          case 'ol': return '\n' + kids() + '\n';
+          case 'a': {
+            var href = el.getAttribute('href') || '';
+            var lt   = (el.textContent || '').trim();
+            if (!lt) return '';
+            if (!href || href.startsWith('#') || href.startsWith('javascript')) return lt;
+            return '[' + lt + '](' + href + ')';
+          }
+          case 'strong':
+          case 'b': { var bt = kids(); return bt ? '**' + bt + '**' : ''; }
+          case 'em':
+          case 'i':  { var it = kids(); return it ? '_' + it + '_' : ''; }
+          case 'code': {
+            var ct = (el.textContent || '').trim();
+            return ct ? ('`' + ct + '`') : '';
+          }
+          case 'pre': {
+            var pret = (el.textContent || '').trim();
+            return pret ? ('\n```\n' + pret + '\n```\n') : '';
+          }
+          case 'blockquote': return '\n> ' + kids().replace(/\n/g, '\n> ') + '\n';
+          case 'table': {
+            var rows = Array.from(el.querySelectorAll('tr'));
+            if (!rows.length) return '';
+            var tdata = rows.map(function(r) {
+              return Array.from(r.querySelectorAll('td,th')).map(function(c) {
+                return (c.textContent || '').trim().replace(/\|/g, '\\|');
+              });
             });
-          });
-          var maxC = Math.max.apply(null, tdata.map(function(r) { return r.length; }));
-          var tlines = tdata.map(function(r) {
-            while (r.length < maxC) r.push('');
-            return '| ' + r.join(' | ') + ' |';
-          });
-          if (tlines.length > 1) tlines.splice(1, 0, '| ' + Array(maxC).fill('---').join(' | ') + ' |');
-          return '\n' + tlines.join('\n') + '\n';
+            var maxC = Math.max.apply(null, tdata.map(function(r) { return r.length; }));
+            var tlines = tdata.map(function(r) {
+              while (r.length < maxC) r.push('');
+              return '| ' + r.join(' | ') + ' |';
+            });
+            if (tlines.length > 1) tlines.splice(1, 0, '| ' + Array(maxC).fill('---').join(' | ') + ' |');
+            return '\n' + tlines.join('\n') + '\n';
+          }
+          case 'img': {
+            var alt = el.getAttribute('alt') || '';
+            return alt ? '[Image: ' + alt + ']' : '';
+          }
+          default: return kids();
         }
-        case 'img': {
-          var alt = el.getAttribute('alt') || '';
-          return alt ? '[Image: ' + alt + ']' : '';
-        }
-        default: return kids();
       }
-    }
 
-    // ── 4. Pick best content area ─────────────────────────────────────────────
-    var preferred = clone.querySelector('article') || clone.querySelector('main')
-      || clone.querySelector('[role="main"]') || clone.querySelector('#content')
-      || clone.querySelector('.content') || clone.querySelector('#main');
-    var container = preferred || clone;
+      // 4. Pick best content area
+      var preferred = clone.querySelector('article') || clone.querySelector('main')
+        || clone.querySelector('[role="main"]') || clone.querySelector('#content')
+        || clone.querySelector('.content') || clone.querySelector('#main');
+      var container = preferred || clone;
 
-    // Score top-level blocks to find best content areas
-    var blocks = Array.from(container.children).filter(function(el) {
-      return ['div','article','section','main','p'].includes(el.tagName.toLowerCase());
+      var blocks = Array.from(container.children).filter(function(el) {
+        return ['div','article','section','main','p'].includes(el.tagName.toLowerCase());
+      });
+      var scored = blocks
+        .map(function(el) { return { el: el, s: scoreBlock(el) }; })
+        .filter(function(b) { return b.s > 0.15; })
+        .sort(function(a, b) { return b.s - a.s; });
+
+      var topN    = scored.slice(0, Math.max(3, Math.ceil(scored.length * 0.6)));
+      var topText = topN.reduce(function(s, b) { return s + (b.el.innerText || b.el.textContent || ''); }, '').trim();
+      var useBlocks = topText.length > 200 && topN.length > 0;
+
+      var md = useBlocks
+        ? topN.map(function(b) { return domToMd(b.el, 0); }).join('\n')
+        : domToMd(container, 0);
+
+      return md.replace(/\n{3,}/g, '\n\n').trim();
     });
-    var scored = blocks
-      .map(function(el) { return { el: el, s: scoreBlock(el) }; })
-      .filter(function(b) { return b.s > 0.15; })
-      .sort(function(a, b) { return b.s - a.s; });
-
-    var topN    = scored.slice(0, Math.max(3, Math.ceil(scored.length * 0.6)));
-    var topText = topN.reduce(function(s, b) { return s + (b.el.innerText || b.el.textContent || ''); }, '').trim();
-    var useBlocks = topText.length > 200 && topN.length > 0;
-
-    var md = useBlocks
-      ? topN.map(function(b) { return domToMd(b.el, 0); }).join('\n')
-      : domToMd(container, 0);
-
-    return md.replace(/\n{3,}/g, '\n\n').trim();
-  });
+  }
 
   writeState({ url: url });
   // DON'T close context — Chrome stays open so click/fill/snapshot work on this page
