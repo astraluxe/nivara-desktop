@@ -5518,6 +5518,17 @@ pub fn run() {
     let pty_map: PtyMap = pty_map_state();
 
     tauri::Builder::default()
+        // MUST be the first plugin. Without it, opening the exe while the
+        // autostarted (--quickbar) instance is already running spawns a SECOND
+        // full process — two tray icons, two bars, two badges. Instead, the
+        // second launch just surfaces the existing instance's main window.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.show();
+                let _ = main.unminimize();
+                let _ = main.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())

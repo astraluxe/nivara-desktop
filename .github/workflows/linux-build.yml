@@ -96,3 +96,8 @@ jobs:
             adris-setup-linux-*.deb
             adris-setup-linux-*.AppImage
           fail_on_unmatched_files: false
+          # NEVER take the "latest release" slot — the Windows auto-updater and the
+          # website download button resolve releases/latest/download/latest.json and
+          # adris-setup.exe, which only Windows releases carry. A -linux release
+          # marked latest 404s the updater ("could not check for updates").
+          make_latest: false
