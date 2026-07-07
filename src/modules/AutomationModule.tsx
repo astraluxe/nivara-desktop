@@ -99,6 +99,32 @@ interface AutomationRun {
 
 function uuid() { return crypto.randomUUID(); }
 
+// Lift a canvas flow's trigger node into a top-level trigger spec so the Rust
+// background scheduler can fire it automatically (schedule → cron, etc.).
+const CANVAS_DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+function canvasSubtitleToCron(subtitle: string): string {
+  const hm = subtitle.match(/at (\d{1,2}):/);
+  const hour = hm ? parseInt(hm[1]) : 9;
+  let dow = '*';
+  if (/weekday/i.test(subtitle)) dow = '1-5';
+  else if (/every day/i.test(subtitle)) dow = '*';
+  else for (let i = 0; i < CANVAS_DAY_NAMES.length; i++) if (subtitle.includes(CANVAS_DAY_NAMES[i])) dow = String(i);
+  return `0 ${hour} * * ${dow}`; // min hour dom month dow
+}
+function deriveCanvasTrigger(nodes: Node[]): Record<string, unknown> {
+  const trig = nodes.find(n => n.type === 'trigger');
+  if (!trig) return {};
+  const d = (trig.data ?? {}) as Record<string, unknown>;
+  const tt = String(d.triggerType ?? 'schedule');
+  const sub = String(d.subtitle ?? '');
+  const out: Record<string, unknown> = { triggerType: tt };
+  if (tt === 'schedule')        out.cron = canvasSubtitleToCron(sub);
+  else if (tt === 'file_watch') out.folder = sub;
+  else if (tt === 'webhook')    out.webhook_path = sub || '/webhook';
+  else if (tt === 'email')      out.email_from = sub;
+  return out;
+}
+
 function fmtTs(ts: number | null) {
   if (!ts) return 'Never';
   return new Date(ts * 1000).toLocaleString();
@@ -365,11 +391,11 @@ STRUCTURAL RULES:
 - Canvas flows support condition/loop/approval/subagent nodes for branching and parallel logic within a single trigger's flow.
 - Multi-step chaining: output of step N feeds into step N+1.
 
-CANVAS FLOWS vs FORM AUTOMATIONS — critical distinction:
-- Canvas flows (built via drag-and-drop or the AI builder) are VISUAL DESIGN ONLY. They do not execute automatically. They are for planning and visualising a flow.
-- Form-based automations (created via the workflow builder form) are the ones that ACTUALLY RUN on a schedule or trigger, execute AI steps, and send outputs.
-- If a user wants something to actually run and do work automatically, they need a form-based automation, not a canvas flow.
-- When discussing an automation the user wants to actually run, make this clear.
+CANVAS FLOWS vs FORM AUTOMATIONS:
+- Canvas flows (built via drag-and-drop or the AI builder) now EXECUTE their full node graph: AI actions, If/Else branches, Loops (run per item), multi-agent fan-out, HTTP calls, transforms, and MULTIPLE outputs at once (e.g. post to Slack AND save to file AND email). Run a canvas flow with the "Run now" button on its card; it can also run when its trigger fires.
+- A Loop node runs the steps on its "each" branch once per item, then continues from "done" — this is how you do "for every lead/email/row, do X".
+- A Human Approval node pauses that branch and surfaces the content for review instead of auto-sending — nothing risky is sent without approval.
+- Form-based automations are the simplest path for a single scheduled trigger → linear AI steps → one output. Use a canvas flow when the user needs branching, loops, parallel work, or several outputs at once.
 
 SCHEDULE + DATA SOURCE — critical rule: schedule trigger alone = AI only sees the time. Add data_source to fetch real content.
 
@@ -2356,7 +2382,7 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
           try { list = await invoke<Automation[]>('automation_list', { userId }); } catch { return; }
           setAutomations(list);
           const auto = list.find(a => a.id === payload.id);
-          if (!auto || !auto.enabled || auto.trigger_type === 'canvas_flow') return;
+          if (!auto || !auto.enabled) return;
           setRunningId(payload.id);
           try {
             await executeAutomation(auto as unknown as AutomationRow, userId, payload.context);
@@ -2392,10 +2418,13 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
   async function confirmCanvasSave() {
     if (!userId || !canvasPending) return;
     const name = canvasName.trim() || 'Untitled flow';
+    // Lift the trigger node's intent (cron / folder / webhook path) to the top
+    // level so the background scheduler can fire this flow automatically.
+    const derived = deriveCanvasTrigger(canvasPending.nodes);
     await invoke('automation_create', {
       id: uuid(), userId, name,
       triggerType: 'canvas_flow',
-      triggerConfig: JSON.stringify({ nodes: canvasPending.nodes, edges: canvasPending.edges }),
+      triggerConfig: JSON.stringify({ nodes: canvasPending.nodes, edges: canvasPending.edges, ...derived }),
       steps: '[]',
     });
     setCanvasPending(null);

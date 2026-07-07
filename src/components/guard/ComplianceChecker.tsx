@@ -2,6 +2,7 @@ import { useState, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { guardDb } from '../../lib/guardDb';
 import { callAutomationAI } from '../../lib/automationRunner';
+import { extractDocument, GuardExtractError, type ExtractProgress } from '../../lib/guardOcr';
 
 interface ComplianceRow {
   standard: string;
@@ -121,6 +122,8 @@ export default function ComplianceChecker({ onScanRun }: { onScanRun?: () => voi
   const [folderStats,   setFolderStats]   = useState('');
   const [pickingFolder, setPickingFolder] = useState(false);
   const [dragOver,      setDragOver]      = useState(false);
+  const [extracting,    setExtracting]    = useState(false);
+  const [extractProg,   setExtractProg]   = useState<ExtractProgress | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [checking,   setChecking]   = useState(false);
@@ -133,19 +136,18 @@ export default function ComplianceChecker({ onScanRun }: { onScanRun?: () => voi
     setFileName(file.name);
     setError('');
     if (file.name.endsWith('.pdf')) {
+      setExtracting(true);
+      setExtractProg(null);
       try {
-        const { getDocument, GlobalWorkerOptions } = await import('pdfjs-dist');
-        GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
-        const pdf = await getDocument({ data: await file.arrayBuffer() }).promise;
-        let out = '';
-        for (let i = 1; i <= pdf.numPages; i++) {
-          const page = await pdf.getPage(i);
-          const content = await page.getTextContent();
-          out += content.items.map((it: unknown) => (it as { str: string }).str).join(' ') + '\n';
-        }
-        setFileContent(out.trim());
-      } catch {
-        setError('Could not extract PDF text. Paste content directly.');
+        // OCR-aware extraction: handles scanned PDFs and Hindi/regional docs.
+        const res = await extractDocument(file, p => setExtractProg(p));
+        setFileContent(res.text);
+        if (!res.text.trim()) setError('No readable text found in that PDF. Paste content directly.');
+      } catch (e) {
+        setError(e instanceof GuardExtractError ? e.message : 'Could not extract PDF text. Paste content directly.');
+      } finally {
+        setExtracting(false);
+        setExtractProg(null);
       }
       return;
     }
@@ -194,7 +196,9 @@ export default function ComplianceChecker({ onScanRun }: { onScanRun?: () => voi
     try {
       const userMessage =
         `Business context:\n- Type: ${bizType}\n- Data handled: ${dataType}\n- Geography: ${geo}\n\n` +
-        `File: ${fileName || 'pasted content'}\n\nContent to scan:\n\`\`\`\n${fileContent.slice(0, 14000)}\n\`\`\``;
+        // ~60k chars ≈ 15k tokens — covers most policy/code inputs while staying
+        // token-bounded so one scan can't drain the monthly budget.
+        `File: ${fileName || 'pasted content'}${fileContent.length > 60000 ? ` (large input — analysing the first ~24 pages of ${Math.round(fileContent.length / 2500)})` : ''}\n\nContent to scan:\n\`\`\`\n${fileContent.slice(0, 60000)}\n\`\`\``;
       const raw = await callAutomationAI(userMessage, SYSTEM_PROMPT);
       const cleaned = raw.replace(/```json|```/g, '').trim();
       const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
@@ -266,6 +270,25 @@ export default function ComplianceChecker({ onScanRun }: { onScanRun?: () => voi
         <div className="mx-5 mt-4 flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/8 border border-red-500/20 text-nv-bad text-[11px] font-mono shrink-0">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
           {error}
+        </div>
+      )}
+
+      {extracting && (
+        <div className="mx-5 mt-4 px-3 py-2.5 rounded-lg bg-accent/8 border border-accent/30 shrink-0">
+          <div className="flex items-center gap-2">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin text-accent"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+            <span className="text-[11px] font-mono text-accent">
+              {extractProg?.ocr ? 'Reading scanned document (OCR)…' : 'Reading document…'}
+            </span>
+            {extractProg && extractProg.total > 1 && (
+              <span className="text-[10px] font-mono text-nv-faint ml-auto">{extractProg.current}/{extractProg.total}</span>
+            )}
+          </div>
+          {extractProg?.ocr && (
+            <p className="text-[10px] text-nv-muted leading-relaxed mt-1.5">
+              Scanned PDF detected — reading page-by-page with OCR and translating any Hindi/regional text. Large documents can take a minute or two; keep this window open.
+            </p>
+          )}
         </div>
       )}
 

@@ -117,6 +117,15 @@ function deduplicateByName(records: CompanyRecord[]): CompanyRecord[] {
 
 // ─── Master parallel research function ───────────────────────────────────────
 
+// Bound any source fetch so a single slow/hanging endpoint can't stall the whole
+// research call (this was causing 100s+ hangs). Each source resolves to [] on timeout.
+function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([
+    p.catch(() => fallback),
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ]);
+}
+
 export async function runParallelResearch(
   queries: string[],
   planLimit: number,
@@ -124,11 +133,12 @@ export async function runParallelResearch(
   // Cap queries to plan limit
   const cappedQueries = queries.slice(0, Math.min(queries.length, Math.ceil(planLimit / 10)));
 
-  // Build a set of fetch tasks
+  const SRC_TIMEOUT = 7000; // per source
+  // Build a set of fetch tasks, each individually time-boxed
   const tasks: Promise<CompanyRecord[]>[] = [];
 
   // Always run Wikidata once
-  tasks.push(wikidataIndianCompanies(Math.min(planLimit, 100)).catch(() => []));
+  tasks.push(withTimeout(wikidataIndianCompanies(Math.min(planLimit, 100)), SRC_TIMEOUT, []));
 
   // Wikipedia categories for common Indian company categories
   const wikiCategories = [
@@ -137,18 +147,23 @@ export async function runParallelResearch(
     'Indian_technology_companies',
   ];
   for (const cat of wikiCategories.slice(0, Math.ceil(planLimit / 30))) {
-    tasks.push(wikipediaCategoryCompanies(cat).catch(() => []));
+    tasks.push(withTimeout(wikipediaCategoryCompanies(cat), SRC_TIMEOUT, []));
   }
 
   // Yahoo Finance + GitHub per query
   for (const q of cappedQueries) {
-    tasks.push(yahooFinanceSearch(q).catch(() => []));
+    tasks.push(withTimeout(yahooFinanceSearch(q), SRC_TIMEOUT, []));
     if (planLimit >= 40) {
-      tasks.push(githubTechCompanies('India', q).catch(() => []));
+      tasks.push(withTimeout(githubTechCompanies('India', q), SRC_TIMEOUT, []));
     }
   }
 
-  const settled = await Promise.allSettled(tasks);
+  // Hard overall cap so research_companies always returns within ~10s.
+  const settled = await withTimeout(
+    Promise.allSettled(tasks),
+    10000,
+    tasks.map(() => ({ status: 'fulfilled', value: [] as CompanyRecord[] }) as PromiseSettledResult<CompanyRecord[]>),
+  );
   const allRecords: CompanyRecord[] = [];
   const sourcesCovered = new Set<string>();
 

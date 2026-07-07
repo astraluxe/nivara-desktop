@@ -307,6 +307,462 @@ function passesConditions(cfg: TriggerConfig, lastRunAt: number | null): boolean
   return true;
 }
 
+// ─── Shared output delivery ───────────────────────────────────────────────────
+// Sends finalOutput to ONE destination. Reused by both the linear step runner and
+// the canvas flow executor (where a single flow can have many output nodes).
+type OutputConfig = NonNullable<AutomationStep['output_config']>;
+
+export async function deliverOutput(
+  output: string,
+  finalOutput: string,
+  oc: OutputConfig,
+  automationName: string,
+  senderSource = '',
+): Promise<void> {
+  if (!output || !finalOutput) return;
+
+  if (output === 'notification') {
+    const title = oc.notif_title || automationName;
+    const body  = finalOutput.slice(0, 300);
+    try {
+      if (typeof Notification !== 'undefined') {
+        const perm = Notification.permission === 'default'
+          ? await Notification.requestPermission()
+          : Notification.permission;
+        if (perm === 'granted') new Notification(title, { body, silent: false });
+      }
+    } catch (_e) { /* Notification API not available */ }
+    try { await emit('automation-notification', { title, body }); } catch (_e) { /* ignore */ }
+  }
+
+  if (output === 'email_reply') {
+    try {
+      const goCred = await credentialStore.get('google').catch(() => null);
+      const accessToken = goCred?.access_token ?? '';
+      if (accessToken) {
+        let toAddr = oc.email_to ?? '';
+        if (!toAddr || toAddr === 'sender') {
+          const fromMatch = senderSource.match(/From:\s*([^\s<]+@[^\s>]+)/i);
+          toAddr = fromMatch ? fromMatch[1].replace(/[<>]/g, '') : '';
+        }
+        if (toAddr && toAddr !== 'sender') {
+          const rawEmail = [
+            `To: ${toAddr}`,
+            `Subject: Re: ${automationName}`,
+            `Content-Type: text/plain; charset=utf-8`,
+            '',
+            finalOutput.slice(0, 2000),
+          ].join('\r\n');
+          const encoded = btoa(unescape(encodeURIComponent(rawEmail)))
+            .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+          await invoke('krew_http_call', {
+            method: 'POST',
+            url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send',
+            headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ raw: encoded }),
+          }).catch(e => emitDeliveryError('Gmail', e));
+        }
+      }
+    } catch (_e) { /* Google not connected */ }
+  }
+
+  if (output === 'file' && oc.file_path) {
+    const separator = `\n\n---\n${new Date().toLocaleString()}\n\n`;
+    const content   = oc.file_append ? separator + finalOutput : finalOutput;
+    await invoke('write_file', { path: oc.file_path, content }).catch(() => {});
+  }
+
+  if (output === 'twitter_post' || output === 'twitter_reply') {
+    try {
+      const tw = await credentialStore.get('twitter').catch(() => null);
+      if (tw?.api_key && tw?.api_secret && tw?.access_token && tw?.access_token_secret) {
+        const text: string = finalOutput.slice(0, 280);
+        const body: Record<string, unknown> = { text };
+        if (output === 'twitter_reply' && oc.twitter_reply_to_id) {
+          body.reply = { in_reply_to_tweet_id: oc.twitter_reply_to_id };
+        }
+        const url     = 'https://api.twitter.com/2/tweets';
+        const authHdr = await buildTwitterOAuthHeader('POST', url, {}, tw.api_key, tw.api_secret, tw.access_token, tw.access_token_secret);
+        await invoke('krew_http_call', {
+          method: 'POST', url,
+          headers: { Authorization: authHdr, 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }).catch(() => {});
+      }
+    } catch (_e) { /* credentials missing or API error */ }
+  }
+
+  if (output === 'linkedin_post') {
+    try {
+      const li = await credentialStore.get('linkedin').catch(() => null);
+      if (li?.access_token) {
+        const liHeaders = {
+          'Authorization':             `Bearer ${li.access_token}`,
+          'Content-Type':              'application/json',
+          'X-Restli-Protocol-Version': '2.0.0',
+        };
+        const meRaw  = await invoke<string>('krew_http_call', { method: 'GET', url: 'https://api.linkedin.com/v2/me', headers: liHeaders, body: null })
+          .catch(async (e) => { await emitDeliveryError('LinkedIn', e); return '{}'; });
+        const meData = JSON.parse(meRaw) as { id?: string; message?: string; status?: number };
+        if (meData.status === 401 || meData.status === 403 || meData.message?.toLowerCase().includes('expired')) {
+          await emitDeliveryError('LinkedIn', `${meData.status} ${meData.message ?? ''}`);
+        } else {
+          const personUrn = oc.linkedin_person_urn ?? `urn:li:person:${meData.id ?? ''}`;
+          const vis       = oc.linkedin_visibility ?? 'PUBLIC';
+          await invoke('krew_http_call', {
+            method: 'POST', url: 'https://api.linkedin.com/v2/ugcPosts', headers: liHeaders,
+            body: JSON.stringify({
+              author: personUrn,
+              lifecycleState: 'PUBLISHED',
+              specificContent: { 'com.linkedin.ugc.ShareContent': { shareCommentary: { text: finalOutput }, shareMediaCategory: 'NONE' } },
+              visibility: { 'com.linkedin.ugc.MemberNetworkVisibility': vis },
+            }),
+          }).catch(e => emitDeliveryError('LinkedIn', e));
+        }
+      }
+    } catch (_e) { /* credentials missing */ }
+  }
+
+  if (output === 'slack' && oc.slack_channel) {
+    try {
+      const sl = await credentialStore.get('slack').catch(() => null);
+      if (sl?.bot_token) {
+        await invoke('krew_http_call', {
+          method: 'POST', url: 'https://slack.com/api/chat.postMessage',
+          headers: { 'Authorization': `Bearer ${sl.bot_token}`, 'Content-Type': 'application/json; charset=utf-8' },
+          body: JSON.stringify({ channel: oc.slack_channel, text: finalOutput }),
+        }).catch(() => {});
+      }
+    } catch (_e) { /* Slack not connected */ }
+  }
+
+  if (output === 'discord' && oc.discord_webhook) {
+    await invoke('krew_http_call', {
+      method: 'POST', url: oc.discord_webhook,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: finalOutput.slice(0, 2000) }),
+    }).catch(() => {});
+  }
+
+  if (output === 'google_sheets') {
+    try {
+      const gsCred = await credentialStore.get('google_drive').catch(() => null);
+      if (gsCred?.access_token) {
+        let sheetId = oc.sheet_id ?? '';
+        if (!sheetId) sheetId = await ensureGoogleSheet(gsCred.access_token, automationName).catch(() => '');
+        if (sheetId) {
+          const sheetName = oc.sheet_name ?? automationName.slice(0, 100);
+          await invoke('krew_http_call', {
+            method: 'POST',
+            url: `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(sheetName)}!A1:append?valueInputOption=USER_ENTERED`,
+            headers: { 'Authorization': `Bearer ${gsCred.access_token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ values: [[new Date().toLocaleString(), automationName, finalOutput.slice(0, 500)]] }),
+          }).catch(e => emitDeliveryError('Google Sheets', e));
+        }
+      }
+    } catch (_e) { /* Google Sheets not connected */ }
+  }
+
+  if (output === 'twilio_sms' && oc.sms_to) {
+    try {
+      const twilioCred = await credentialStore.get('twilio').catch(() => null);
+      if (twilioCred?.account_sid && twilioCred?.auth_token && twilioCred?.from_number) {
+        const auth = btoa(`${twilioCred.account_sid}:${twilioCred.auth_token}`);
+        const body = new URLSearchParams({ To: oc.sms_to, From: twilioCred.from_number, Body: finalOutput.slice(0, 1600) }).toString();
+        await invoke('krew_http_call', {
+          method: 'POST',
+          url: `https://api.twilio.com/2010-04-01/Accounts/${twilioCred.account_sid}/Messages.json`,
+          headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+          body,
+        }).catch(() => {});
+      }
+    } catch (_e) { /* Twilio not connected */ }
+  }
+
+  if (output === 'telegram' && oc.telegram_chat_id) {
+    try {
+      const tgCred = await credentialStore.get('telegram').catch(() => null);
+      if (tgCred?.bot_token) {
+        await invoke('krew_http_call', {
+          method: 'POST', url: `https://api.telegram.org/bot${tgCred.bot_token}/sendMessage`,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: oc.telegram_chat_id, text: finalOutput.slice(0, 4096) }),
+        }).catch(() => {});
+      }
+    } catch (_e) { /* Telegram not connected */ }
+  }
+
+  if (output === 'hubspot') {
+    try {
+      const hubCred = await credentialStore.get('hubspot').catch(() => null);
+      if (hubCred?.api_key) {
+        const action = oc.hubspot_action ?? 'create_contact';
+        const headers = { 'Authorization': `Bearer ${hubCred.api_key}`, 'Content-Type': 'application/json' };
+        if (action === 'create_contact') {
+          const emailMatch = finalOutput.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
+          const email = emailMatch ? emailMatch[0] : `auto-${Date.now()}@unknown.com`;
+          await invoke('krew_http_call', {
+            method: 'POST', url: 'https://api.hubapi.com/crm/v3/objects/contacts', headers,
+            body: JSON.stringify({ properties: { email, notes_last_activity: finalOutput.slice(0, 500) } }),
+          }).catch(() => {});
+        } else if (action === 'add_note') {
+          await invoke('krew_http_call', {
+            method: 'POST', url: 'https://api.hubapi.com/crm/v3/objects/notes', headers,
+            body: JSON.stringify({ properties: { hs_note_body: finalOutput.slice(0, 1000), hs_timestamp: Date.now().toString() } }),
+          }).catch(() => {});
+        }
+      }
+    } catch (_e) { /* HubSpot not connected */ }
+  }
+
+  if (output === 'notion') {
+    try {
+      const no = await credentialStore.get('notion').catch(() => null);
+      const notionToken = no?.access_token ?? no?.token ?? '';
+      if (notionToken) {
+        const isOAuth = no?.token_type === 'oauth';
+        const notionHeaders = { 'Authorization': `Bearer ${notionToken}`, 'Notion-Version': '2022-06-28', 'Content-Type': 'application/json' };
+        let dbId = oc.notion_db_url?.match(/([a-f0-9]{32})/i)?.[1] ?? '';
+        if (!dbId) dbId = await ensureNotionDatabase(notionToken, automationName, isOAuth).catch(() => '');
+        if (dbId) {
+          await invoke('krew_http_call', {
+            method: 'POST', url: 'https://api.notion.com/v1/pages', headers: notionHeaders,
+            body: JSON.stringify({
+              parent: { database_id: dbId },
+              properties: {
+                Name:   { title: [{ text: { content: automationName + ' — ' + new Date().toLocaleDateString() } }] },
+                Source: { select: { name: automationName } },
+                Date:   { date: { start: new Date().toISOString().slice(0, 10) } },
+                Status: { select: { name: 'New' } },
+              },
+              children: [{ object: 'block', type: 'paragraph', paragraph: { rich_text: [{ type: 'text', text: { content: finalOutput.slice(0, 2000) } }] } }],
+            }),
+          }).catch(() => {});
+        }
+      }
+    } catch (_e) { /* Notion not connected */ }
+  }
+}
+
+// ─── Canvas flow executor ─────────────────────────────────────────────────────
+// Walks the visual node graph and actually RUNS it: AI actions, branching
+// conditions, loops (per-item), HTTP, transforms, multi-agent fan-out, approvals
+// and multiple outputs (so several things really can happen at once).
+
+interface FlowNode { id: string; type: string; data: Record<string, unknown> }
+interface FlowEdge { source: string; target: string; sourceHandle?: string }
+
+const S = (v: unknown) => String(v ?? '');
+
+// Map a canvas output node's (camelCase) data → the snake_case OutputConfig.
+function nodeToOutputConfig(d: Record<string, unknown>, automationName: string): OutputConfig {
+  const folder = S(d.filePath).replace(/[\\/]+$/, '');
+  const ext = S(d.fileFormat) || 'md';
+  const safeName = automationName.replace(/[^\w-]+/g, '_').slice(0, 40) || 'output';
+  return {
+    notif_title:         S(d.notifTitle) || undefined,
+    file_path:           folder ? `${folder}/${safeName}.${ext}` : undefined,
+    file_append:         S(d.fileMode) !== 'overwrite',
+    email_to:            S(d.emailMode) === 'specific' ? S(d.emailAddr) : 'sender',
+    notion_db_url:       S(d.notionUrl) || undefined,
+    slack_channel:       S(d.slackChannel) || undefined,
+    twitter_reply_to_id: S(d.twitterReplyToId) || undefined,
+    linkedin_visibility: S(d.linkedinVisibility) || undefined,
+    discord_webhook:     S(d.discordWebhook) || undefined,
+    sheet_id:            S(d.sheetId) || undefined,
+    sheet_name:          S(d.sheetName) || undefined,
+    sms_to:              S(d.smsTo) || undefined,
+    telegram_chat_id:    S(d.telegramChatId) || undefined,
+    hubspot_action:      S(d.hubspotAction) || undefined,
+  };
+}
+
+function flowEvalCondition(d: Record<string, unknown>, input: string): boolean {
+  const filter = S(d.filter) || 'always';
+  const kw = S(d.keyword).toLowerCase();
+  const t = input.toLowerCase();
+  switch (filter) {
+    case 'always':       return true;
+    case 'not_empty':    return input.trim().length > 0;
+    case 'contains':     return !!kw && t.includes(kw);
+    case 'not_contains': return !kw || !t.includes(kw);
+    case 'starts_with':  return !!kw && t.trimStart().startsWith(kw);
+    case 'ends_with':    return !!kw && t.trimEnd().endsWith(kw);
+    default:             return true;
+  }
+}
+
+function flowParseLoopItems(d: Record<string, unknown>, input: string): string[] {
+  const src = S(d.loopSource) || 'previous step';
+  const cap = (arr: string[]) => arr.map(x => x.trim()).filter(Boolean);
+  if (src === 'lines' || src === 'csv_rows') return cap(input.split(/\r?\n/));
+  if (src === 'json_array') {
+    try {
+      let data: unknown = JSON.parse(input);
+      const path = S(d.loopField).trim();
+      if (path) for (const key of path.split('.')) data = (data as Record<string, unknown>)?.[key];
+      if (Array.isArray(data)) return data.map(x => typeof x === 'string' ? x : JSON.stringify(x));
+    } catch { /* fall through */ }
+    return cap(input.split(/\r?\n/));
+  }
+  // previous step: try JSON array, else split on lines
+  try { const j = JSON.parse(input); if (Array.isArray(j)) return j.map(x => typeof x === 'string' ? x : JSON.stringify(x)); } catch { /* not json */ }
+  return cap(input.split(/\r?\n/));
+}
+
+function flowTransform(d: Record<string, unknown>, input: string): string {
+  const t = S(d.transformType) || 'json_extract';
+  const expr = S(d.expression);
+  try {
+    switch (t) {
+      case 'json_extract': {
+        let data: unknown = JSON.parse(input);
+        for (const key of expr.split('.').filter(Boolean)) data = (data as Record<string, unknown>)?.[key];
+        return typeof data === 'string' ? data : JSON.stringify(data ?? '');
+      }
+      case 'regex':         { const m = input.match(new RegExp(expr)); return m ? (m[1] ?? m[0]) : ''; }
+      case 'text_trim':     return input.trim();
+      case 'to_lowercase':  return input.toLowerCase();
+      case 'to_uppercase':  return input.toUpperCase();
+      case 'number_round':  { const n = parseFloat(input); return Number.isFinite(n) ? String(Math.round(n)) : input; }
+      case 'split_lines':   return input.split(/\r?\n/).map(x => x.trim()).filter(Boolean).join('\n');
+      case 'first_n_chars': { const n = parseInt(expr) || 280; return input.slice(0, n); }
+      default:              return input;
+    }
+  } catch { return input; }
+}
+
+async function flowHttp(d: Record<string, unknown>, input: string): Promise<string> {
+  const inj = (s: string) => s.replace(/\{\{\s*previous_output\s*\}\}/g, input);
+  const url = inj(S(d.url)).trim();
+  if (!url) return '';
+  let headers: Record<string, string> = { 'User-Agent': 'adris.tech/1.0' };
+  try { if (S(d.headers).trim()) headers = { ...headers, ...JSON.parse(inj(S(d.headers))) }; } catch { /* ignore bad headers */ }
+  const method = (S(d.method) || 'GET').toUpperCase();
+  const body = ['POST', 'PUT', 'PATCH'].includes(method) && S(d.body).trim() ? inj(S(d.body)) : null;
+  return await invoke<string>('krew_http_call', { method, url, headers, body }).catch((e) => `[HTTP error: ${e}]`);
+}
+
+export async function executeCanvasFlow(
+  automation: AutomationRow,
+  triggerContent: string,
+  knowledgeBlock: string,
+  knowledgeRule: string,
+): Promise<{ delivered: number; lastOutput: string; tokens: number; error: string }> {
+  let nodes: FlowNode[] = [];
+  let edges: FlowEdge[] = [];
+  try {
+    const parsed = JSON.parse(automation.trigger_config) as { nodes?: FlowNode[]; edges?: FlowEdge[] };
+    nodes = parsed.nodes ?? [];
+    edges = parsed.edges ?? [];
+  } catch { return { delivered: 0, lastOutput: '', tokens: 0, error: 'Flow has no saved nodes.' }; }
+  if (!nodes.length) return { delivered: 0, lastOutput: '', tokens: 0, error: 'Flow is empty.' };
+
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  let delivered = 0;
+  let lastOutput = '';
+  let tokens = 0;
+  let execCount = 0;
+  const MAX_EXEC = 400;
+
+  const aiStep = async (prompt: string, input: string): Promise<string> => {
+    const userMsg = `${knowledgeBlock}Task: ${prompt}\n\nContent to process:\n${input}`;
+    const sys = `You are an AI automation assistant running the workflow "${automation.name}".${knowledgeRule} Return only the output — no explanations, no preamble.`;
+    const out = await withRetry(() => callAutomationAI(userMsg, sys), 2, 1200).catch(() => '');
+    tokens += Math.round((userMsg.length + out.length) / 4);
+    return out;
+  };
+
+  const runSubagents = async (d: Record<string, unknown>, input: string): Promise<string> => {
+    const goal = S(d.goal) || 'Complete the task.';
+    const count = Math.min(Math.max(parseInt(S(d.agentCount)) || 2, 1), 8);
+    const strategy = S(d.strategy) || 'parallel';
+    const base = `${goal}\n\nContext:\n${input}`;
+    if (strategy === 'sequential') {
+      let carry = input;
+      for (let i = 0; i < count; i++) carry = await aiStep(`${goal}\n(You are agent ${i + 1} of ${count}. Build on the previous result.)`, carry);
+      return carry;
+    }
+    if (strategy === 'debate') {
+      const drafts = await Promise.all(Array.from({ length: count }, (_, i) => aiStep(`${goal}\n(You are agent ${i + 1}. Give your best independent answer.)`, input)));
+      return await aiStep(`${goal}\n\nHere are ${count} independent expert answers. Critique them and merge into one best final answer.`, drafts.map((d2, i) => `--- Agent ${i + 1} ---\n${d2}`).join('\n\n'));
+    }
+    // parallel (default): fan out, then merge
+    const parts = await Promise.all(Array.from({ length: count }, (_, i) => aiStep(`${goal}\n(You are agent ${i + 1} of ${count}. Cover a distinct part of the goal.)`, base)));
+    if (count === 1) return parts[0];
+    return await aiStep('Merge these partial results into one coherent, de-duplicated final result.', parts.map((p, i) => `--- Part ${i + 1} ---\n${p}`).join('\n\n'));
+  };
+
+  const edgesFrom = (id: string) => edges.filter(e => e.source === id);
+
+  async function runFrom(nodeId: string, input: string): Promise<void> {
+    if (execCount++ > MAX_EXEC) return;
+    const node = byId.get(nodeId);
+    if (!node) return;
+    const d = node.data ?? {};
+
+    // Special control-flow nodes manage their own edges.
+    if (node.type === 'condition') {
+      const pass = flowEvalCondition(d, input);
+      for (const e of edgesFrom(nodeId)) {
+        const h = e.sourceHandle ?? 'yes';
+        if ((pass && h === 'yes') || (!pass && h === 'no')) await runFrom(e.target, input);
+      }
+      return;
+    }
+    if (node.type === 'loop') {
+      const items = flowParseLoopItems(d, input);
+      const max = Math.min(items.length, parseInt(S(d.maxIterations)) || 50);
+      let eachTargets = edgesFrom(nodeId).filter(e => (e.sourceHandle ?? '') === 'each').map(e => e.target);
+      // Forgiving fallback: if the graph didn't label the per-item branch, treat
+      // every non-"done" edge as the loop body so the loop still runs.
+      if (!eachTargets.length) eachTargets = edgesFrom(nodeId).filter(e => (e.sourceHandle ?? '') !== 'done').map(e => e.target);
+      for (let i = 0; i < max; i++) {
+        for (const t of eachTargets) await runFrom(t, items[i]);
+      }
+      for (const e of edgesFrom(nodeId)) {
+        if ((e.sourceHandle ?? '') === 'done') await runFrom(e.target, `Loop complete — processed ${max} item(s).`);
+      }
+      return;
+    }
+    if (node.type === 'approval') {
+      // Safe default: never auto-send unreviewed content. Surface it for review and stop this branch.
+      try {
+        await emit('automation-approval', { automation: automation.name, message: S(d.message), content: input.slice(0, 1000) });
+        await emit('automation-notification', { title: `Approval needed — ${automation.name}`, body: (S(d.message) || 'Review the AI output before it is sent.').slice(0, 200) });
+      } catch { /* ignore */ }
+      return;
+    }
+
+    // Data/work nodes: produce an output, then flow to every outgoing edge.
+    let output = input;
+    if (node.type === 'ai_action')      output = S(d.prompt) ? await aiStep(S(d.prompt), input) : input;
+    else if (node.type === 'subagent')  output = await runSubagents(d, input);
+    else if (node.type === 'transform') output = flowTransform(d, input);
+    else if (node.type === 'http')      output = await flowHttp(d, input);
+    else if (node.type === 'output') {
+      const outType = S(d.outputType) || 'notification';
+      const promptOverride = S(d.postPrompt);
+      const content = promptOverride ? await aiStep(promptOverride, input) : input;
+      if (content) {
+        await deliverOutput(outType, content, nodeToOutputConfig(d, automation.name), automation.name, triggerContent);
+        delivered++;
+        lastOutput = content;
+      }
+    }
+    if (output) lastOutput = output;
+    for (const e of edgesFrom(nodeId)) await runFrom(e.target, output);
+  }
+
+  // Entry points: the trigger node, else any node with no incoming edge.
+  const targets = new Set(edges.map(e => e.target));
+  const roots = nodes.filter(n => n.type === 'trigger');
+  const entries = roots.length ? roots : nodes.filter(n => !targets.has(n.id));
+  for (const entry of entries) await runFrom(entry.id, triggerContent);
+
+  return { delivered, lastOutput, tokens, error: '' };
+}
+
 // ─── Main execution function ──────────────────────────────────────────────────
 
 export async function executeAutomation(
@@ -713,6 +1169,25 @@ export async function executeAutomation(
     // Guard: if triggerContent is empty (dedup skipped this run), bail early
     if (!triggerContent.trim()) return;
 
+    // ── Canvas flow: execute the visual node graph (loops, branches, parallel) ─
+    if (automation.trigger_type === 'canvas_flow') {
+      const fullCtx = triggerContent + crmContext;
+      const res = await executeCanvasFlow(automation, fullCtx, knowledgeBlock, knowledgeRule);
+      await invoke('automation_log_run', {
+        runId,
+        automationId: automation.id,
+        userId,
+        status: res.delivered > 0 ? 'success' : 'failed',
+        tokensUsed: res.tokens,
+        outputSummary: res.lastOutput ? res.lastOutput.slice(0, 500) : null,
+        error: res.delivered > 0 ? null : (res.error || 'Flow produced no output. Add an Output node and connect it to your steps.'),
+      }).catch(() => {});
+      if (cfg.is_temp && automation.run_count + 1 >= (cfg.max_runs ?? 1)) {
+        setTimeout(async () => { await invoke('automation_delete', { id: automation.id }).catch(() => {}); }, 3000);
+      }
+      return;
+    }
+
     // Chain steps: output of step N → input of step N+1
     const fullTriggerContext = triggerContent + crmContext;
     let stepInput = fullTriggerContext;
@@ -728,264 +1203,10 @@ export async function executeAutomation(
       totalTokens += Math.round((userMsg.length + result.length) / 4);
     }
 
-    // ── Deliver output for the last step ──────────────────────────────────
+    // ── Deliver output for the last step (shared delivery) ─────────────────
     const lastStep = steps[steps.length - 1];
     const oc = lastStep?.output_config ?? {};
-
-    // ── Desktop notification ──────────────────────────────────────────────
-    if (lastStep?.output === 'notification' && finalOutput) {
-      const title = oc.notif_title || automation.name;
-      const body  = finalOutput.slice(0, 300);
-      try {
-        if (typeof Notification !== 'undefined') {
-          const perm = Notification.permission === 'default'
-            ? await Notification.requestPermission()
-            : Notification.permission;
-          if (perm === 'granted') {
-            new Notification(title, { body, silent: false });
-          }
-        }
-      } catch (_e) { /* Notification API not available */ }
-      // Also emit in-app event so AutomationModule can show a toast
-      try {
-        const { emit } = await import('@tauri-apps/api/event');
-        await emit('automation-notification', { title, body });
-      } catch (_e) { /* ignore */ }
-    }
-
-    // ── Email reply / send ────────────────────────────────────────────────────
-    if (lastStep?.output === 'email_reply' && finalOutput) {
-      try {
-        const goCred = await credentialStore.get('google').catch(() => null);
-        const accessToken = goCred?.access_token ?? '';
-        if (accessToken) {
-          // Resolve recipient: explicit address or extract sender from trigger content
-          let toAddr = oc.email_to ?? '';
-          if (!toAddr || toAddr === 'sender') {
-            const fromMatch = triggerContent.match(/From:\s*([^\s<]+@[^\s>]+)/i);
-            toAddr = fromMatch ? fromMatch[1].replace(/[<>]/g, '') : '';
-          }
-          if (toAddr && toAddr !== 'sender') {
-            const subject = `Re: ${automation.name}`;
-            const rawEmail = [
-              `To: ${toAddr}`,
-              `Subject: ${subject}`,
-              `Content-Type: text/plain; charset=utf-8`,
-              '',
-              finalOutput.slice(0, 2000),
-            ].join('\r\n');
-            const encoded = btoa(unescape(encodeURIComponent(rawEmail)))
-              .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-            await invoke('krew_http_call', {
-              method: 'POST',
-              url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send',
-              headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ raw: encoded }),
-            }).catch(e => emitDeliveryError('Gmail', e));
-          }
-        }
-      } catch (_e) { /* Google not connected */ }
-    }
-
-    if (lastStep?.output === 'file' && oc.file_path && finalOutput) {
-      const separator = `\n\n---\n${new Date().toLocaleString()}\n\n`;
-      const content   = oc.file_append ? separator + finalOutput : finalOutput;
-      await invoke('write_file', { path: oc.file_path, content }).catch(() => {});
-    }
-
-    if ((lastStep?.output === 'twitter_post' || lastStep?.output === 'twitter_reply') && finalOutput) {
-      try {
-        const tw = await credentialStore.get('twitter').catch(() => null);
-        if (tw?.api_key && tw?.api_secret && tw?.access_token && tw?.access_token_secret) {
-          const text: string = finalOutput.slice(0, 280);
-          const body: Record<string, unknown> = { text };
-          if (lastStep.output === 'twitter_reply' && oc.twitter_reply_to_id) {
-            body.reply = { in_reply_to_tweet_id: oc.twitter_reply_to_id };
-          }
-          const url     = 'https://api.twitter.com/2/tweets';
-          const authHdr = await buildTwitterOAuthHeader('POST', url, {}, tw.api_key, tw.api_secret, tw.access_token, tw.access_token_secret);
-          await invoke('krew_http_call', {
-            method:  'POST',
-            url,
-            headers: { Authorization: authHdr, 'Content-Type': 'application/json' },
-            body:    JSON.stringify(body),
-          }).catch(() => {});
-        }
-      } catch (_e) { /* credentials missing or API error — run still logged */ }
-    }
-
-    if (lastStep?.output === 'linkedin_post' && finalOutput) {
-      try {
-        const li = await credentialStore.get('linkedin').catch(() => null);
-        if (li?.access_token) {
-          const liHeaders = {
-            'Authorization':             `Bearer ${li.access_token}`,
-            'Content-Type':              'application/json',
-            'X-Restli-Protocol-Version': '2.0.0',
-          };
-          const meRaw     = await invoke<string>('krew_http_call', { method: 'GET', url: 'https://api.linkedin.com/v2/me', headers: liHeaders, body: null })
-            .catch(async (e) => { await emitDeliveryError('LinkedIn', e); return '{}'; });
-          const meData    = JSON.parse(meRaw) as { id?: string; message?: string; status?: number };
-          if (meData.status === 401 || meData.status === 403 || meData.message?.toLowerCase().includes('expired')) {
-            await emitDeliveryError('LinkedIn', `${meData.status} ${meData.message ?? ''}`);
-          } else {
-          const personUrn = oc.linkedin_person_urn ?? `urn:li:person:${meData.id ?? ''}`;
-          const vis       = oc.linkedin_visibility ?? 'PUBLIC';
-          await invoke('krew_http_call', {
-            method:  'POST',
-            url:     'https://api.linkedin.com/v2/ugcPosts',
-            headers: liHeaders,
-            body:    JSON.stringify({
-              author: personUrn,
-              lifecycleState: 'PUBLISHED',
-              specificContent: {
-                'com.linkedin.ugc.ShareContent': {
-                  shareCommentary:    { text: finalOutput },
-                  shareMediaCategory: 'NONE',
-                },
-              },
-              visibility: { 'com.linkedin.ugc.MemberNetworkVisibility': vis },
-            }),
-          }).catch(e => emitDeliveryError('LinkedIn', e));
-          }
-        }
-      } catch (_e) { /* credentials missing — run still logged */ }
-    }
-
-    if (lastStep?.output === 'slack' && oc.slack_channel && finalOutput) {
-      try {
-        const sl = await credentialStore.get('slack').catch(() => null);
-        if (sl?.bot_token) {
-          await invoke('krew_http_call', {
-            method:  'POST',
-            url:     'https://slack.com/api/chat.postMessage',
-            headers: { 'Authorization': `Bearer ${sl.bot_token}`, 'Content-Type': 'application/json; charset=utf-8' },
-            body:    JSON.stringify({ channel: oc.slack_channel, text: finalOutput }),
-          }).catch(() => {});
-        }
-      } catch (_e) { /* Slack not connected */ }
-    }
-
-    if (lastStep?.output === 'discord' && oc.discord_webhook && finalOutput) {
-      await invoke('krew_http_call', {
-        method: 'POST',
-        url: oc.discord_webhook,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: finalOutput.slice(0, 2000) }),
-      }).catch(() => {});
-    }
-
-    if (lastStep?.output === 'google_sheets' && finalOutput) {
-      try {
-        const gsCred = await credentialStore.get('google_drive').catch(() => null);
-        if (gsCred?.access_token) {
-          // Auto-provision spreadsheet if no sheet_id provided
-          let sheetId = oc.sheet_id ?? '';
-          if (!sheetId) sheetId = await ensureGoogleSheet(gsCred.access_token, automation.name).catch(() => '');
-          if (sheetId) {
-            const sheetName = oc.sheet_name ?? automation.name.slice(0, 100);
-            await invoke('krew_http_call', {
-              method: 'POST',
-              url: `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(sheetName)}!A1:append?valueInputOption=USER_ENTERED`,
-              headers: { 'Authorization': `Bearer ${gsCred.access_token}`, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ values: [[new Date().toLocaleString(), automation.name, finalOutput.slice(0, 500)]] }),
-            }).catch(e => emitDeliveryError('Google Sheets', e));
-          }
-        }
-      } catch (_e) { /* Google Sheets not connected */ }
-    }
-
-    if (lastStep?.output === 'twilio_sms' && oc.sms_to && finalOutput) {
-      try {
-        const twilioCred = await credentialStore.get('twilio').catch(() => null);
-        if (twilioCred?.account_sid && twilioCred?.auth_token && twilioCred?.from_number) {
-          const auth = btoa(`${twilioCred.account_sid}:${twilioCred.auth_token}`);
-          const body = new URLSearchParams({
-            To: oc.sms_to,
-            From: twilioCred.from_number,
-            Body: finalOutput.slice(0, 1600),
-          }).toString();
-          await invoke('krew_http_call', {
-            method: 'POST',
-            url: `https://api.twilio.com/2010-04-01/Accounts/${twilioCred.account_sid}/Messages.json`,
-            headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-            body,
-          }).catch(() => {});
-        }
-      } catch (_e) { /* Twilio not connected */ }
-    }
-
-    if (lastStep?.output === 'telegram' && oc.telegram_chat_id && finalOutput) {
-      try {
-        const tgCred = await credentialStore.get('telegram').catch(() => null);
-        if (tgCred?.bot_token) {
-          await invoke('krew_http_call', {
-            method: 'POST',
-            url: `https://api.telegram.org/bot${tgCred.bot_token}/sendMessage`,
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: oc.telegram_chat_id, text: finalOutput.slice(0, 4096) }),
-          }).catch(() => {});
-        }
-      } catch (_e) { /* Telegram not connected */ }
-    }
-
-    if (lastStep?.output === 'hubspot' && finalOutput) {
-      try {
-        const hubCred = await credentialStore.get('hubspot').catch(() => null);
-        if (hubCred?.api_key) {
-          const action = oc.hubspot_action ?? 'create_contact';
-          const headers = { 'Authorization': `Bearer ${hubCred.api_key}`, 'Content-Type': 'application/json' };
-          if (action === 'create_contact') {
-            const emailMatch = finalOutput.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
-            const email = emailMatch ? emailMatch[0] : `auto-${Date.now()}@unknown.com`;
-            await invoke('krew_http_call', {
-              method: 'POST',
-              url: 'https://api.hubapi.com/crm/v3/objects/contacts',
-              headers,
-              body: JSON.stringify({ properties: { email, notes_last_activity: finalOutput.slice(0, 500) } }),
-            }).catch(() => {});
-          } else if (action === 'add_note') {
-            await invoke('krew_http_call', {
-              method: 'POST',
-              url: 'https://api.hubapi.com/crm/v3/objects/notes',
-              headers,
-              body: JSON.stringify({ properties: { hs_note_body: finalOutput.slice(0, 1000), hs_timestamp: Date.now().toString() } }),
-            }).catch(() => {});
-          }
-        }
-      } catch (_e) { /* HubSpot not connected */ }
-    }
-
-    if (lastStep?.output === 'notion' && finalOutput) {
-      try {
-        const no = await credentialStore.get('notion').catch(() => null);
-        const notionToken = no?.access_token ?? no?.token ?? '';
-        if (notionToken) {
-          const isOAuth = no?.token_type === 'oauth';
-          const notionHeaders = { 'Authorization': `Bearer ${notionToken}`, 'Notion-Version': '2022-06-28', 'Content-Type': 'application/json' };
-          // Auto-provision DB if no URL provided
-          let dbId = oc.notion_db_url?.match(/([a-f0-9]{32})/i)?.[1] ?? '';
-          if (!dbId) dbId = await ensureNotionDatabase(notionToken, automation.name, isOAuth).catch(() => '');
-          if (dbId) {
-            await invoke('krew_http_call', {
-              method:  'POST',
-              url:     'https://api.notion.com/v1/pages',
-              headers: notionHeaders,
-              body:    JSON.stringify({
-                parent: { database_id: dbId },
-                properties: {
-                  Name:    { title: [{ text: { content: automation.name + ' — ' + new Date().toLocaleDateString() } }] },
-                  Source:  { select: { name: automation.name } },
-                  Date:    { date: { start: new Date().toISOString().slice(0, 10) } },
-                  Status:  { select: { name: 'New' } },
-                },
-                children: [{ object: 'block', type: 'paragraph', paragraph: { rich_text: [{ type: 'text', text: { content: finalOutput.slice(0, 2000) } }] } }],
-              }),
-            }).catch(() => {});
-          }
-        }
-      } catch (_e) { /* Notion not connected */ }
-    }
+    await deliverOutput(lastStep?.output ?? '', finalOutput, oc, automation.name, triggerContent);
 
     await invoke('automation_log_run', {
       runId,

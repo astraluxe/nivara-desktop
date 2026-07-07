@@ -1,19 +1,17 @@
 ﻿import { useState, useRef } from 'react';
 import { guardDb } from '../../lib/guardDb';
-import { callAutomationAI } from '../../lib/automationRunner';
+import { scanLargeDocument, estimateScan, type GuardScanResult } from '../../lib/guardScan';
+import { extractDocument, GuardExtractError, type ExtractProgress } from '../../lib/guardOcr';
 
-interface Finding {
-  severity: 'high' | 'med' | 'low';
-  title: string;
-  detail: string;
-  section?: string;
-}
+type ScanResult = GuardScanResult;
 
-interface ScanResult {
-  risk_score: number;
-  summary: string;
-  findings: Finding[];
-}
+const PHASE_LABEL: Record<ExtractProgress['phase'], string> = {
+  reading:   'Reading file…',
+  detecting: 'Checking document text…',
+  rendering: 'Rendering scanned pages…',
+  ocr:       'Reading scanned text (OCR)…',
+  done:      'Done',
+};
 
 const SEV: Record<string, { bar: string; text: string; bg: string; border: string; label: string }> = {
   high: { bar: 'bg-red-500',     text: 'text-nv-bad',  bg: 'bg-red-500/10',    border: 'border-red-500/30',   label: 'HIGH' },
@@ -22,6 +20,8 @@ const SEV: Record<string, { bar: string; text: string; bg: string; border: strin
 };
 
 const SYSTEM_PROMPT = `You are a contract risk analyst. Analyze the provided contract text.
+
+The text may be machine-extracted or OCR'd, and may contain Hindi, English, and/or regional Indian languages — sometimes mixed, sometimes with [bracketed] English translations inline. Read whichever language you understand, rely on the English translation where provided, and analyze the contract's actual meaning regardless of language. Always write your findings and summary in English.
 
 Return ONLY a valid JSON object:
 {
@@ -66,36 +66,44 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
   const [error, setError]       = useState('');
   const [fileName, setFileName] = useState('');
   const [dragOver, setDragOver] = useState(false);
+  const [progress, setProgress] = useState<{ cur: number; total: number } | null>(null);
+  const [extracting, setExtracting] = useState(false);
+  const [extractProg, setExtractProg] = useState<ExtractProgress | null>(null);
+  const [ocrNote, setOcrNote] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
+
+  const est = text.trim().length >= 100 ? estimateScan(text) : null;
 
   async function readFile(file: File) {
     setFileName(file.name);
     setError('');
-
-    if (file.type === 'text/plain' || file.name.endsWith('.txt') || file.name.endsWith('.md')) {
-      setText(await file.text());
-      return;
-    }
-
-    if (file.name.endsWith('.pdf')) {
-      try {
-        const { getDocument, GlobalWorkerOptions } = await import('pdfjs-dist');
-        GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
-        const pdf = await getDocument({ data: await file.arrayBuffer() }).promise;
-        let extracted = '';
-        for (let i = 1; i <= pdf.numPages; i++) {
-          const content = await (await pdf.getPage(i)).getTextContent();
-          extracted += content.items.map((it: unknown) => (it as { str: string }).str).join(' ') + '\n';
-        }
-        setText(extracted.trim());
-      } catch {
-        setError('Could not extract PDF text. Paste the contract text directly.');
-        setText('');
+    setOcrNote('');
+    setExtracting(true);
+    setExtractProg(null);
+    try {
+      const res = await extractDocument(file, p => setExtractProg(p));
+      setText(res.text);
+      if (res.ocrUsed) {
+        setOcrNote(
+          res.ocrTruncated
+            ? `Scanned PDF — read the first ${res.ocrPagesScanned} of ${res.pages} pages with OCR. Split the file to read the rest.`
+            : `Scanned PDF — read all ${res.ocrPagesScanned} page${res.ocrPagesScanned !== 1 ? 's' : ''} with OCR (any Hindi/regional text was translated).`,
+        );
       }
-      return;
+      if (!res.text.trim()) {
+        setError('No readable text found in that file. Try pasting the text directly.');
+      }
+    } catch (e) {
+      if (e instanceof GuardExtractError) {
+        setError(e.message);
+      } else {
+        setError('Could not read that file. Paste the contract text directly.');
+      }
+      setText('');
+    } finally {
+      setExtracting(false);
+      setExtractProg(null);
     }
-
-    setError('Unsupported format. Upload a .pdf or .txt file, or paste text directly.');
   }
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -117,27 +125,25 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
     setError('');
     setResult(null);
     setScanning(true);
+    setProgress(null);
     try {
-      const raw = await callAutomationAI(`Analyze this contract:\n\n${contractText.slice(0, 12000)}`, SYSTEM_PROMPT);
-      const cleaned = raw
-        .replace(/^```json\s*/i, '')
-        .replace(/^```\s*/i, '')
-        .replace(/```\s*$/i, '')
-        .trim();
-      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('No JSON in response — try again');
-      let parsed: ScanResult;
-      try {
-        parsed = JSON.parse(jsonMatch[0]) as ScanResult;
-      } catch {
-        throw new Error('Could not parse AI response as JSON — the model may have returned malformed output. Try again.');
-      }
+      // Scan the ENTIRE document in bounded chunks (handles 200+ page agreements),
+      // then merge + dedupe findings. The chunk cap bounds token spend per scan.
+      const parsed = await scanLargeDocument(
+        contractText,
+        SYSTEM_PROMPT,
+        (chunk, i, count) =>
+          count > 1
+            ? `Analyze section ${i + 1} of ${count} of this contract. Report only issues found in THIS section:\n\n${chunk}`
+            : `Analyze this contract:\n\n${chunk}`,
+        (cur, total) => setProgress({ cur, total }),
+      );
 
       const topSev = parsed.findings.find(f => f.severity === 'high') ? 'high'
         : parsed.findings.find(f => f.severity === 'med') ? 'med' : 'low';
       await guardDb.log('contract_scan', topSev,
-        `Contract scanned · score ${parsed.risk_score}/100 · ${parsed.findings.length} finding${parsed.findings.length !== 1 ? 's' : ''}`,
-        { risk_score: parsed.risk_score, findings_count: parsed.findings.length, file: fileName || 'pasted text' }
+        `Contract scanned · ${parsed.chunksScanned} section${parsed.chunksScanned !== 1 ? 's' : ''} · score ${parsed.risk_score}/100 · ${parsed.findings.length} finding${parsed.findings.length !== 1 ? 's' : ''}`,
+        { risk_score: parsed.risk_score, findings_count: parsed.findings.length, file: fileName || 'pasted text', sections: parsed.chunksScanned, truncated: parsed.truncated }
       );
       setResult(parsed);
     } catch (e) {
@@ -151,6 +157,7 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
       }
     } finally {
       setScanning(false);
+      setProgress(null);
     }
   }
 
@@ -165,7 +172,7 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
       <div className="flex flex-col w-[380px] shrink-0 border-r border-nv-border overflow-hidden">
         <div className="px-4 py-3 border-b border-nv-border bg-nv-surface shrink-0">
           <p className="text-[10px] font-mono text-nv-faint tracking-widest uppercase">Contract Input</p>
-          <p className="text-[11px] text-nv-muted mt-0.5">Paste text or upload a PDF / TXT file</p>
+          <p className="text-[11px] text-nv-muted mt-0.5">Paste text or upload a PDF / TXT — scanned & multi-language docs supported</p>
         </div>
 
         {/* Drop zone */}
@@ -195,6 +202,36 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
           <input ref={fileRef} type="file" accept=".pdf,.txt,.md" className="hidden" onChange={handleFile} />
         </div>
 
+        {/* Extraction status — shown while reading / OCR'ing a file */}
+        {extracting && (
+          <div className="mx-4 mt-3 shrink-0 rounded-xl border border-accent/30 bg-accent/8 px-3 py-2.5">
+            <div className="flex items-center gap-2">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin text-accent"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+              <span className="text-[11px] font-mono text-accent">{extractProg ? PHASE_LABEL[extractProg.phase] : 'Reading file…'}</span>
+              {extractProg && extractProg.total > 1 && (
+                <span className="text-[10px] font-mono text-nv-faint ml-auto">{extractProg.current}/{extractProg.total}</span>
+              )}
+            </div>
+            {extractProg?.ocr && (
+              <p className="text-[10px] text-nv-muted leading-relaxed mt-1.5">
+                This is a scanned document — Guard is reading it page-by-page with OCR and translating any Hindi/regional text. Large scans can take a minute or two; please keep this window open.
+              </p>
+            )}
+            {extractProg && extractProg.total > 1 && (
+              <div className="mt-2 h-1 rounded-full bg-nv-surface2 overflow-hidden">
+                <div className="h-full rounded-full bg-accent transition-all duration-300" style={{ width: `${Math.round((extractProg.current / extractProg.total) * 100)}%` }} />
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* OCR result note — shown after a scanned doc is read */}
+        {ocrNote && !extracting && (
+          <p className="mx-4 mt-3 shrink-0 text-[10px] font-mono text-nv-ok px-2.5 py-1.5 rounded-lg bg-emerald-500/8 border border-emerald-500/20 leading-relaxed">
+            ✓ {ocrNote}
+          </p>
+        )}
+
         {/* Divider */}
         <div className="flex items-center gap-3 px-4 py-2 shrink-0">
           <div className="flex-1 border-t border-nv-border" />
@@ -215,13 +252,19 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
           {error && (
             <p className="text-[10px] font-mono text-nv-bad px-2.5 py-1.5 rounded-lg bg-red-500/8 border border-red-500/20">{error}</p>
           )}
+          {est && (
+            <p className="text-[10px] font-mono text-nv-faint leading-relaxed">
+              ~{est.pages} page{est.pages !== 1 ? 's' : ''} · scans {est.truncated ? `first ${est.chunks} of ${est.totalChunks} sections` : 'the whole document'} · ≈{est.approxTokens.toLocaleString()} tokens
+              {est.truncated && <span className="text-nv-warn"> · very large file — only the first ~{est.chunks * 18} pages will be scanned</span>}
+            </p>
+          )}
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-mono text-nv-faint">
               {text.length > 0 ? `${text.length.toLocaleString()} chars` : 'No text yet'}
             </span>
             <button
               onClick={scan}
-              disabled={scanning || text.trim().length < 100}
+              disabled={scanning || extracting || text.trim().length < 100}
               className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-mono bg-accent text-white hover:bg-accent/85 disabled:opacity-40 transition-fast"
             >
               {scanning ? (
@@ -273,8 +316,15 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-accent"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
               </div>
             </div>
-            <p className="text-sm font-medium text-nv-text">Analyzing contract…</p>
+            <p className="text-sm font-medium text-nv-text">
+              {progress && progress.total > 1 ? `Analyzing section ${progress.cur} of ${progress.total}…` : 'Analyzing contract…'}
+            </p>
             <p className="text-xs text-nv-faint">Checking for risks, liability clauses, and compliance gaps</p>
+            {progress && progress.total > 1 && (
+              <div className="w-44 h-1 rounded-full bg-nv-surface2 overflow-hidden mt-1">
+                <div className="h-full rounded-full bg-accent transition-all duration-300" style={{ width: `${Math.round((progress.cur / progress.total) * 100)}%` }} />
+              </div>
+            )}
           </div>
         ) : result && (
           <div className="flex flex-col h-full overflow-y-auto p-5 gap-4">
@@ -284,6 +334,11 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
               <p className="text-[9px] font-mono text-nv-faint tracking-widest uppercase mb-3">Risk Assessment</p>
               <RiskMeter score={result.risk_score} />
               <p className="text-[12px] text-nv-muted leading-relaxed mt-3">{result.summary}</p>
+              <p className="text-[10px] font-mono text-nv-faint mt-2">
+                {result.truncated
+                  ? `⚠ Large document — scanned the first ${result.chunksScanned} of ${result.chunksTotal} sections (~${result.chunksScanned * 18} pages). Split the file to scan the rest.`
+                  : `✓ Scanned the entire document (${result.chunksScanned} section${result.chunksScanned !== 1 ? 's' : ''}) · ≈${result.approxTokens.toLocaleString()} tokens used`}
+              </p>
               {/* Severity breakdown */}
               <div className="flex gap-2 mt-3 flex-wrap">
                 {highCount > 0 && <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-red-500/12 text-nv-bad border border-red-500/25">{highCount} high</span>}

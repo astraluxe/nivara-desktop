@@ -8,7 +8,19 @@ import { useResize } from '../hooks/useResize';
 
 interface FileEntry { name: string; path: string; is_dir: boolean; }
 
-const STORAGE_KEY = 'nv-coder-state';
+const STORAGE_KEY    = 'nv-coder-state';
+const PROTECTED_KEY  = 'nv-coder-protected';
+const AUDIT_KEY      = 'nv-coder-audit';
+
+interface AuditEntry {
+  ts:      number;
+  path:    string;
+  action:  'applied' | 'allowed' | 'blocked';
+  prevLen: number;
+  newLen:  number;
+}
+
+function shortName(p: string): string { return p.split(/[/\\]/).pop() ?? p; }
 
 function loadState() {
   try { return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}'); }
@@ -46,6 +58,15 @@ function Divider({ direction, onPointerDown }: {
   );
 }
 
+// Compare two file paths tolerant of OS/format differences: backslash vs forward slash, trailing
+// slash, Windows case-insensitivity, and absolute-vs-relative (one ending with the other).
+function samePath(a: string | null, b: string | null): boolean {
+  if (!a || !b) return false;
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const na = norm(a), nb = norm(b);
+  return na === nb || na.endsWith('/' + nb) || nb.endsWith('/' + na);
+}
+
 export default function CoderModule() {
   const saved = loadState();
 
@@ -56,6 +77,25 @@ export default function CoderModule() {
   const [terminalOpen, setTerminalOpen] = useState(true);
   const [dirContext, setDirContext]      = useState('');
   const [fileHistory, setFileHistory]   = useState<{ path: string; content: string }[]>([]);
+
+  // ── Protected files + AI edit audit log ──────────────────────────────────────
+  const [protectedFiles, setProtectedFiles] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem(PROTECTED_KEY) ?? '[]'); } catch { return []; }
+  });
+  const [auditLog, setAuditLog] = useState<AuditEntry[]>(() => {
+    try { return JSON.parse(localStorage.getItem(AUDIT_KEY) ?? '[]'); } catch { return []; }
+  });
+  const [pendingEdit, setPendingEdit] = useState<{ path: string; code: string; prev: string } | null>(null);
+  const [showAudit,   setShowAudit]   = useState(false);
+
+  useEffect(() => { localStorage.setItem(PROTECTED_KEY, JSON.stringify(protectedFiles)); }, [protectedFiles]);
+  useEffect(() => { localStorage.setItem(AUDIT_KEY, JSON.stringify(auditLog.slice(-200))); }, [auditLog]);
+
+  const logAudit = useCallback((e: AuditEntry) => setAuditLog((l) => [...l.slice(-199), e]), []);
+  const isProtected = (p: string | null) => !!p && protectedFiles.includes(p);
+  function toggleProtect(path: string) {
+    setProtectedFiles((p) => p.includes(path) ? p.filter((x) => x !== path) : [...p, path]);
+  }
 
   const terminalRef = useRef<TerminalHandle>(null);
 
@@ -125,8 +165,40 @@ export default function CoderModule() {
     });
   }
 
+  // AI applied a code block to a file — snapshot the CURRENT content first so it can
+  // be reverted, then write the new content and refresh the editor if it's the open file.
+  // Protected files are NOT written automatically — they are held for explicit approval.
+  async function writeEdit(path: string, code: string, prev: string, action: AuditEntry['action']) {
+    setFileHistory((h) => [...h.slice(-9), { path, content: prev }]);
+    await invoke('write_file', { path, content: code }).catch(() => {});
+    // Refresh the editor LIVE if this is the open file. Normalise the comparison so a backslash vs
+    // forward-slash / trailing-slash / Windows case difference between the AI's path and openFile
+    // can't stop the update (which is what made applied edits only show after switching screens).
+    if (samePath(path, openFile)) setFileContent(code);
+    logAudit({ ts: Date.now(), path, action, prevLen: prev.length, newLen: code.length });
+  }
+
+  async function handleApplyFromAI(path: string, code: string) {
+    const prev = await invoke<string>('read_file', { path })
+      .catch(() => (path === openFile ? fileContent : ''));
+    if (isProtected(path)) {
+      // Hold the write — the user marked this file protected and must approve.
+      setPendingEdit({ path, code, prev });
+      return;
+    }
+    await writeEdit(path, code, prev, 'applied');
+  }
+
+  async function resolvePendingEdit(allow: boolean) {
+    const p = pendingEdit;
+    if (!p) return;
+    setPendingEdit(null);
+    if (allow) await writeEdit(p.path, p.code, p.prev, 'allowed');
+    else logAudit({ ts: Date.now(), path: p.path, action: 'blocked', prevLen: p.prev.length, newLen: p.code.length });
+  }
+
   return (
-    <div className="flex flex-col h-full bg-nv-bg overflow-hidden">
+    <div className="relative flex flex-col h-full bg-nv-bg overflow-hidden">
       {/* Toolbar */}
       <div className="flex items-center gap-2 px-3 h-9 border-b border-nv-border bg-nv-surface shrink-0 select-none">
         <span className="text-[10px] text-nv-faint font-mono truncate max-w-[200px]">
@@ -141,10 +213,28 @@ export default function CoderModule() {
           </>
         )}
         <div className="flex-1" />
+        {openFile && (
+          <button
+            onClick={() => toggleProtect(openFile)}
+            title={isProtected(openFile)
+              ? 'Protected — the AI must ask before editing this file. Click to unprotect.'
+              : 'Protect this file — the AI cannot change it without your approval.'}
+            className={`text-[10px] px-2 py-0.5 rounded border transition-fast ${
+              isProtected(openFile)
+                ? 'border-nv-yellow/50 text-nv-yellow'
+                : 'border-nv-border text-nv-faint hover:text-nv-muted'
+            }`}
+          >{isProtected(openFile) ? '🔒 Protected' : '🔓 Protect'}</button>
+        )}
+        <button
+          onClick={() => setShowAudit(true)}
+          title="AI edit history (what the AI changed)"
+          className="text-[10px] px-2 py-0.5 rounded border border-nv-border text-nv-faint hover:text-nv-muted transition-fast"
+        >History{auditLog.length ? ` · ${auditLog.length}` : ''}</button>
         {fileHistory.length > 0 && (
           <button
             onClick={handleRevert}
-            title={`Revert last AI insert (${fileHistory.length} snapshot${fileHistory.length > 1 ? 's' : ''} available)`}
+            title={`Revert last change (${fileHistory.length} snapshot${fileHistory.length > 1 ? 's' : ''} available)`}
             className="text-[10px] px-2 py-0.5 rounded border border-nv-red/40 text-nv-red/70 hover:border-nv-red hover:text-nv-red transition-fast"
           >↩ Revert</button>
         )}
@@ -225,10 +315,92 @@ export default function CoderModule() {
               getTerminalContext={getTerminalContext}
               onRunInTerminal={runInTerminal}
               onInsertAtCursor={handleInsertAtCursor}
+              onApplyToFile={handleApplyFromAI}
+              onRevert={handleRevert}
+              canRevert={fileHistory.length > 0}
+              protectedFiles={protectedFiles}
             />
           </div>
         )}
       </div>
+
+      {/* Protected-file approval modal */}
+      {pendingEdit && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => resolvePendingEdit(false)}>
+          <div className="bg-nv-surface border border-nv-yellow/40 rounded-xl w-[460px] max-w-[90%] p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-nv-yellow text-base">🔒</span>
+              <h3 className="text-[13px] font-semibold text-nv-text">Approve change to a protected file?</h3>
+            </div>
+            <p className="text-[11px] text-nv-muted leading-relaxed mb-1">
+              The AI wants to overwrite <span className="font-mono text-nv-text">{shortName(pendingEdit.path)}</span>, which you marked as protected.
+            </p>
+            <p className="text-[10px] text-nv-faint font-mono mb-3 break-all">{pendingEdit.path}</p>
+            <p className="text-[10px] text-nv-faint mb-4">
+              {pendingEdit.prev.length.toLocaleString()} chars → {pendingEdit.code.length.toLocaleString()} chars.
+              This change is reverted-safe (a snapshot is kept if you allow it).
+            </p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => resolvePendingEdit(false)} className="text-[11px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text transition-fast">Block</button>
+              <button onClick={() => resolvePendingEdit(true)} className="text-[11px] px-3 py-1.5 rounded-lg bg-nv-yellow/90 text-black font-medium hover:bg-nv-yellow transition-fast">Allow this change</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AI edit history + protected-files manager */}
+      {showAudit && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setShowAudit(false)}>
+          <div className="bg-nv-surface border border-nv-border rounded-xl w-[560px] max-w-[92%] max-h-[80%] flex flex-col shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 h-12 border-b border-nv-border shrink-0">
+              <h3 className="text-[13px] font-semibold text-nv-text">AI edit history</h3>
+              <button onClick={() => setShowAudit(false)} className="text-nv-faint hover:text-nv-text text-lg">×</button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
+              {protectedFiles.length > 0 && (
+                <div>
+                  <p className="text-[10px] font-mono text-nv-faint uppercase tracking-widest mb-1.5">Protected files · {protectedFiles.length}</p>
+                  <div className="flex flex-col gap-1">
+                    {protectedFiles.map((p) => (
+                      <div key={p} className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-nv-bg border border-nv-border">
+                        <span className="text-nv-yellow text-[11px]">🔒</span>
+                        <span className="text-[11px] text-nv-text font-mono truncate flex-1" title={p}>{p}</span>
+                        <button onClick={() => toggleProtect(p)} className="text-[10px] px-2 py-0.5 rounded border border-nv-border text-nv-muted hover:border-nv-red hover:text-nv-red transition-fast shrink-0">Unprotect</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <p className="text-[10px] font-mono text-nv-faint uppercase tracking-widest">Changes · {auditLog.length}</p>
+                  {auditLog.length > 0 && (
+                    <button onClick={() => setAuditLog([])} className="text-[10px] font-mono text-nv-muted hover:text-nv-red transition-fast">Clear</button>
+                  )}
+                </div>
+                {auditLog.length === 0 ? (
+                  <p className="text-[11px] text-nv-faint">No AI edits recorded yet.</p>
+                ) : (
+                  <div className="flex flex-col gap-1">
+                    {[...auditLog].reverse().map((e, i) => (
+                      <div key={i} className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-nv-bg border border-nv-border text-[11px]">
+                        <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded shrink-0 ${
+                          e.action === 'blocked' ? 'bg-nv-red/15 text-nv-red'
+                          : e.action === 'allowed' ? 'bg-nv-yellow/15 text-nv-yellow'
+                          : 'bg-nv-green/15 text-nv-green'
+                        }`}>{e.action}</span>
+                        <span className="text-nv-text font-mono truncate flex-1" title={e.path}>{shortName(e.path)}</span>
+                        <span className="text-nv-faint shrink-0">{e.prevLen.toLocaleString()}→{e.newLen.toLocaleString()}</span>
+                        <span className="text-nv-faint shrink-0 w-[52px] text-right">{new Date(e.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

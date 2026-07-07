@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import FeedbackModal from "./FeedbackModal";
 
-export type Module = "home" | "automation" | "coder" | "krew" | "connect" | "models" | "vault" | "guard" | "mesh" | "head" | "info" | "account" | "settings";
+export type Module = "home" | "automation" | "coder" | "krew" | "connect" | "models" | "vault" | "guard" | "mesh" | "brain" | "head" | "info" | "account" | "settings";
 
 interface Props {
   activeModule: Module;
@@ -121,14 +121,23 @@ const MODULES: { id: Module; label: string; icon: React.ReactNode; status: "acti
     label: "Mesh · RAM pooling",
     status: "active",
     icon: (
-      <svg viewBox="0 0 28 28" fill="none" className="w-5 h-5">
-        <circle cx="4"  cy="14" r="2.5" fill="currentColor" />
-        <circle cx="14" cy="4"  r="2.5" fill="currentColor" />
-        <circle cx="24" cy="14" r="2.5" fill="currentColor" />
-        <circle cx="14" cy="24" r="2.5" fill="currentColor" />
-        <circle cx="14" cy="14" r="2"   fill="currentColor" opacity=".6" />
-        <path d="M6 14h5M17 14h5M14 6v5M14 17v5" stroke="currentColor" strokeWidth="1.4" opacity=".4" />
-        <path d="M6 6l5.5 5.5M16.5 16.5l5.5 5.5M22 6l-5.5 5.5M11.5 16.5L6 22" stroke="currentColor" strokeWidth="1" opacity=".2" />
+      <svg viewBox="0 0 28 28" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" className="w-5 h-5">
+        <path d="M4 10h20M4 16h20M4 22h20M4 4h20" opacity=".55" />
+        <path d="M9 3v22M15 3v22M21 3v22M3 3v22" opacity=".55" />
+        <circle cx="9" cy="10" r="1.4" fill="currentColor" stroke="none" />
+        <circle cx="15" cy="16" r="1.4" fill="currentColor" stroke="none" />
+        <circle cx="21" cy="10" r="1.4" fill="currentColor" stroke="none" />
+      </svg>
+    ),
+  },
+  {
+    id: "brain",
+    label: "Brain · knowledge graph",
+    status: "active",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
+        <path d="M12 5a2.5 2.5 0 0 0-2.5-2.5A2.5 2.5 0 0 0 7 4.7 2.5 2.5 0 0 0 4.5 8a2.6 2.6 0 0 0-.6 4.2A2.6 2.6 0 0 0 5 17a2.5 2.5 0 0 0 2.4 2.5A2.4 2.4 0 0 0 12 19V5z" />
+        <path d="M12 5a2.5 2.5 0 0 1 2.5-2.5A2.5 2.5 0 0 1 17 4.7 2.5 2.5 0 0 1 19.5 8a2.6 2.6 0 0 1 .6 4.2A2.6 2.6 0 0 1 19 17a2.5 2.5 0 0 1-2.4 2.5A2.4 2.4 0 0 1 12 19V5z" />
       </svg>
     ),
   },
@@ -173,6 +182,7 @@ const SHORT_LABEL: Record<string, string> = {
   vault:      "Vault",
   guard:      "Guard",
   mesh:       "Mesh",
+  brain:      "Brain",
   head:       "Head",
   info:       "Info",
 };

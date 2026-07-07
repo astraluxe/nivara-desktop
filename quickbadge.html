@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>adris badge</title>
+<style>
+  :root {
+    --qb-bg: #ffffff; --qb-border: #d4d4d8; --qb-text: #09090b;
+    --qb-muted: #6b6b74; --qb-accent: #7C5CFF;
+    --qb-shadow: 0 4px 18px rgba(0,0,0,.18), 0 1px 4px rgba(0,0,0,.12);
+  }
+  html.ink {
+    --qb-bg: #1b1b1b; --qb-border: #2a2a2a; --qb-text: #f2f2f2;
+    --qb-muted: #8a8a92;
+    --qb-shadow: 0 4px 18px rgba(0,0,0,.6), 0 1px 4px rgba(0,0,0,.45);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: transparent; overflow: hidden; height: 100%; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; -webkit-font-smoothing: antialiased; user-select: none; }
+
+  .badge {
+    position: absolute; top: 4px; right: 4px;
+    width: 44px; height: 44px; border-radius: 50%;
+    background: var(--qb-bg); border: 1px solid var(--qb-border);
+    box-shadow: var(--qb-shadow);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; transition: transform .15s, box-shadow .15s;
+  }
+  .badge:hover { transform: scale(1.08); }
+  .badge svg { color: var(--qb-accent); }
+
+  /* Snooze menu — shown by temporarily growing the window */
+  .menu {
+    position: absolute; top: 4px; right: 4px; width: 196px;
+    background: var(--qb-bg); border: 1px solid var(--qb-border);
+    border-radius: 12px; box-shadow: var(--qb-shadow);
+    padding: 6px; display: none;
+  }
+  .menu.open { display: block; }
+  .menu .mi {
+    display: flex; align-items: center; gap: 9px;
+    width: 100%; padding: 8px 10px; border: none; background: none;
+    border-radius: 8px; font-size: 12px; font-family: inherit;
+    color: var(--qb-text); cursor: pointer; text-align: left;
+  }
+  .menu .mi:hover { background: rgba(124,92,255,.09); }
+  .menu .mi svg { color: var(--qb-muted); flex-shrink: 0; }
+  .menu .sep { height: 1px; background: var(--qb-border); margin: 5px 8px; }
+  .menu .hint { padding: 6px 10px 4px; font-size: 9.5px; color: var(--qb-muted); }
+</style>
+</head>
+<body>
+  <div class="badge" id="badge" title="adris — click to chat · right-click for options">
+    <svg width="22" height="20" viewBox="0 0 26 24" fill="none" aria-hidden="true">
+      <path d="M2 4 L9 4 L15 12 L9 20 L2 20 L8 12 Z" fill="currentColor"/>
+      <path d="M12 4 L19 4 L25 12 L19 20 L12 20 L18 12 Z" fill="currentColor"/>
+    </svg>
+  </div>
+
+  <div class="menu" id="menu">
+    <div class="hint">adris quick access</div>
+    <button class="mi" id="miOpen">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      Open chat
+    </button>
+    <button class="mi" id="miApp">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17L17 7M17 7H9M17 7v8"/></svg>
+      Open adris app
+    </button>
+    <div class="sep"></div>
+    <button class="mi" id="miHour">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+      Hide for 1 hour
+    </button>
+    <button class="mi" id="miDay">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 4a2 2 0 0 1 2 2v14l-7-4-7 4V6a2 2 0 0 1 2-2z"/></svg>
+      Hide for 24 hours
+    </button>
+    <div class="sep"></div>
+    <button class="mi" id="miOff">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.4 5.6a9 9 0 1 1-12.8 0M12 2v8"/></svg>
+      Turn off (also in Settings)
+    </button>
+  </div>
+
+  <script type="module" src="/src/quickbadge.ts"></script>
+</body>
+</html>

@@ -161,7 +161,7 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
     title: 'Connect Web Search (Brave)',
     icon:  '⌕',
     steps: [
-      { title: 'Get a free Brave Search API key', body: 'Go to api.search.brave.com and sign up. The free tier gives you 2,000 searches/month — more than enough for daily use.', link: 'https://api.search.brave.com/' },
+      { title: 'Get a Brave Search API key', body: 'Go to api.search.brave.com and sign up for the Search API. It is a paid API — check their current pricing before subscribing. It makes web lookups and lead verification far more reliable than the built-in keyless search.', link: 'https://api.search.brave.com/' },
       { title: 'Paste the API key', body: 'After signing up, copy your subscription token from the dashboard and paste it below.', field: 'api_key', fieldLabel: 'Subscription Token', fieldPlaceholder: 'BSA...', secret: true },
     ],
   },

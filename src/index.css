@@ -29,7 +29,9 @@
   --nv-border:   #d4d4d8;
   --nv-text:     #09090b;
   --nv-muted:    #3f3f46;
-  --nv-faint:    #a1a1aa;
+  /* faint darkened from #a1a1aa → #6b6b74: the old value was ~2.3:1 on white (unreadable);
+     this is ~5:1 which passes WCAG AA for secondary/label text on the white desktop background. */
+  --nv-faint:    #6b6b74;
   --nv-red:      220 38 38;
   --scrollbar:   #d4d4d8;
   --scrollbar-h: #a1a1aa;

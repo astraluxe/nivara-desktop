@@ -13,6 +13,7 @@ import KrewModule from "./modules/KrewModule";
 import ConnectApps from "./components/krew/ConnectApps";
 import ModelsModule from "./modules/ModelsModule";
 import VaultModule from "./modules/VaultModule";
+import BrainModule from "./modules/BrainModule";
 import GuardModule from "./modules/GuardModule";
 import MeshModule from "./modules/MeshModule";
 import AccountPanel from "./modules/AccountPanel";
@@ -69,7 +70,40 @@ function AnnouncementModal({ ann, onClose }: { ann: Announcement; onClose: () =>
     update:  'border-accent bg-accent/10',
     warning: 'border-nv-bad bg-nv-bad/10',
   };
+  // In-app update flow with LIVE progress. The old CTA opened the WEBSITE download page
+  // in a browser — which read as "I clicked download and nothing happened". Now the
+  // button runs the same Tauri updater Settings uses, with a visible progress bar.
+  const [updState, setUpdState] = useState<'idle' | 'installing' | 'error'>('idle');
+  const [pct, setPct] = useState<number | null>(null);
 
+  // Bare window.open() is a DEAD call inside a Tauri webview (nothing opens, no error) —
+  // that was the original "clicked Download 3 times, popup just stays there" bug. External
+  // links must go through the shell plugin, same as everywhere else in the app.
+  function openExternal(url: string) {
+    import('@tauri-apps/plugin-shell').then(({ open }) => open(url)).catch(() => window.open(url, '_blank'));
+  }
+
+  async function runCta() {
+    if (ann.type !== 'update') {
+      if (ann.cta_url) openExternal(ann.cta_url);
+      return;
+    }
+    setUpdState('installing');
+    setPct(null);
+    const un = await listen<{ downloaded: number; total: number | null }>('update-progress', (e) => {
+      const { downloaded, total } = e.payload;
+      if (total && total > 0) setPct(Math.min(100, Math.round((downloaded / total) * 100)));
+    });
+    try {
+      await invoke('install_update'); // on success the installer takes over and the app restarts
+    } catch {
+      setUpdState('error');
+    } finally {
+      un();
+    }
+  }
+
+  const installing = updState === 'installing';
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div className={`w-full max-w-sm mx-4 bg-nv-bg border-2 rounded-xl p-6 shadow-2xl ${colours[ann.type] ?? colours.info}`}>
@@ -77,16 +111,41 @@ function AnnouncementModal({ ann, onClose }: { ann: Announcement; onClose: () =>
           <span className="text-2xl">{icons[ann.type] ?? icons.info}</span>
           <h2 className="text-base font-semibold text-nv-text leading-snug flex-1">{ann.title}</h2>
         </div>
-        <p className="text-sm text-nv-faint leading-relaxed mb-5">{ann.body}</p>
+        <p className="text-sm text-nv-faint leading-relaxed mb-5">
+          {updState === 'error'
+            ? 'The in-app update failed — you can download the installer directly from adris.tech/download instead.'
+            : installing
+            ? 'Downloading the update — the app will close and update itself automatically when it finishes. Don’t close it manually.'
+            : ann.body}
+        </p>
+        {installing && (
+          <div className="mb-5">
+            <div className="h-2 w-full rounded-full bg-nv-surface2 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-accent transition-all duration-300"
+                style={{ width: `${pct ?? 8}%`, opacity: pct === null ? 0.5 : 1 }}
+              />
+            </div>
+            <p className="text-[11px] text-nv-faint mt-1.5 font-mono">
+              {pct === null ? 'Contacting update server…' : `Downloading… ${pct}%`}
+            </p>
+          </div>
+        )}
         <div className="flex gap-2">
-          {ann.cta_label && (
-            <button onClick={() => { if (ann.cta_url) window.open(ann.cta_url, '_blank'); }}
-              className="flex-1 px-4 py-2 bg-accent text-white text-sm font-semibold rounded-lg hover:bg-accent/80 transition-colors">
-              {ann.cta_label}
+          {ann.cta_label && updState !== 'error' && (
+            <button onClick={runCta} disabled={installing}
+              className="flex-1 px-4 py-2 bg-accent text-white text-sm font-semibold rounded-lg hover:bg-accent/80 transition-colors disabled:opacity-60 disabled:cursor-default">
+              {installing ? (pct === null ? 'Preparing…' : `Downloading ${pct}%`) : ann.cta_label}
             </button>
           )}
-          <button onClick={onClose}
-            className="flex-1 px-4 py-2 border border-nv-border text-nv-faint text-sm rounded-lg hover:text-nv-text hover:border-nv-text transition-colors">
+          {updState === 'error' && (
+            <button onClick={() => openExternal('https://adris.tech/download')}
+              className="flex-1 px-4 py-2 bg-accent text-white text-sm font-semibold rounded-lg hover:bg-accent/80 transition-colors">
+              Get it from the website
+            </button>
+          )}
+          <button onClick={onClose} disabled={installing}
+            className="flex-1 px-4 py-2 border border-nv-border text-nv-faint text-sm rounded-lg hover:text-nv-text hover:border-nv-text transition-colors disabled:opacity-50">
             {ann.type === 'update' ? 'Later' : 'Got it'}
           </button>
         </div>
@@ -124,6 +183,75 @@ function AppShell() {
   // Ensure agent-browser is installed — runs every launch, skips if already present
   useEffect(() => {
     invoke('setup_agent_browser').catch(() => {});
+  }, []);
+
+  // SECOND, INDEPENDENT driver for the corner badge's visibility. The badge window is
+  // supposed to show itself, but if anything in its own boot fails (monitor detection,
+  // a script error, timing at cold start) the failure is INVISIBLE — the user just
+  // "never sees the badge" (exactly the .74/.75 report). The main app now also
+  // positions + shows + re-tops it, so one dead path can't hide the feature.
+  useEffect(() => {
+    async function driveBadge() {
+      try {
+        if (localStorage.getItem('nv-quickbar') === 'off') return;
+        const snooze = parseInt(localStorage.getItem('nv-quickbadge-snooze-until') || '0', 10);
+        if (snooze > Date.now()) return;
+        const [{ WebviewWindow }, { primaryMonitor, PhysicalPosition }] = await Promise.all([
+          import('@tauri-apps/api/webviewWindow'),
+          import('@tauri-apps/api/window'),
+        ]);
+        const badge = await WebviewWindow.getByLabel('quickbadge');
+        if (!badge) return;
+        const mon = await primaryMonitor().catch(() => null);
+        if (mon) {
+          const sf = mon.scaleFactor || 1;
+          const x = Math.round(mon.position.x + mon.size.width - 56 * sf - 10 * sf);
+          const y = Math.round(mon.position.y + mon.size.height * 0.32);
+          await badge.setPosition(new PhysicalPosition(x, y));
+        }
+        await badge.show();
+        await badge.setAlwaysOnTop(true);
+      } catch { /* best effort — the badge's own script is the primary path */ }
+    }
+    const t1 = setTimeout(driveBadge, 1500);
+    const t2 = setTimeout(driveBadge, 6000);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, []);
+
+  // Register the Quick Bar's autostart ONCE (launches at login with --quickbar, main
+  // window hidden — the bar is there without "opening the exe"). The Settings toggle
+  // owns it after this; users who turned the bar off are never re-enrolled.
+  useEffect(() => {
+    if (localStorage.getItem('nv-autostart-init')) return;
+    if (localStorage.getItem('nv-quickbar') === 'off') return;
+    import('@tauri-apps/plugin-autostart')
+      .then(async ({ enable, isEnabled }) => {
+        try {
+          if (!(await isEnabled())) await enable();
+          localStorage.setItem('nv-autostart-init', '1');
+        } catch { /* retry next launch */ }
+      })
+      .catch(() => {});
+  }, []);
+
+  // App-wide zoom with Ctrl +/- (and Ctrl+0 to reset), like a browser. Persisted.
+  useEffect(() => {
+    const apply = (z: number) => {
+      const clamped = Math.min(2, Math.max(0.5, z));
+      (document.documentElement.style as CSSStyleDeclaration & { zoom?: string }).zoom = String(clamped);
+      try { localStorage.setItem('app_zoom', String(clamped)); } catch { /* ignore */ }
+      return clamped;
+    };
+    let zoom = (() => { const v = parseFloat(localStorage.getItem('app_zoom') || '1'); return Number.isFinite(v) ? v : 1; })();
+    apply(zoom);
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.key === '=' || e.key === '+' || e.code === 'NumpadAdd')      { e.preventDefault(); zoom = apply(zoom + 0.1); }
+      else if (e.key === '-' || e.code === 'NumpadSubtract')             { e.preventDefault(); zoom = apply(zoom - 0.1); }
+      else if (e.key === '0' || e.code === 'Numpad0')                    { e.preventDefault(); zoom = apply(1); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, []);
 
   // First-run setup — show once per user (new install or new Google account)
@@ -199,7 +327,10 @@ function AppShell() {
       });
   }, [session]);
 
-  // Auto-update check on startup — tries Tauri plugin first, falls back to direct fetch
+  // Auto-update check — on startup AND every time the app is brought back to the
+  // foreground (opened from the quick bar / corner badge / tray while it was already
+  // running in the background). A check only at boot misses updates released while
+  // the app sat autostarted for days — the user opens the window and sees nothing.
   useEffect(() => {
     if (!session) return;
 
@@ -209,10 +340,9 @@ function AppShell() {
       setAnnouncement({
         id: `update-${version}`,
         title: `Update available — v${version}`,
-        body: 'A new version of adris.tech is ready. Download and install it to get the latest features and fixes.',
+        body: 'A new version of adris.tech is ready. It installs right here — one click, the app restarts itself when done.',
         type: 'update',
-        cta_label: 'Download update',
-        cta_url: 'https://adris.tech/download',
+        cta_label: 'Install update',
       });
     }
 
@@ -227,23 +357,38 @@ function AppShell() {
       return false;
     }
 
-    invoke<{ available: boolean; version?: string }>('check_for_update')
-      .then(res => {
-        if (res.available && res.version) showUpdateBanner(res.version);
-      })
-      .catch(() => {
-        // Tauri plugin failed — fallback: fetch latest.json directly
-        Promise.all([
-          fetch('https://github.com/astraluxe/nivara-desktop/releases/latest/download/latest.json')
-            .then(r => r.json()),
-          getVersion(),
-        ])
-          .then(([json, current]) => {
-            const remote = (json as { version?: string }).version ?? '';
-            if (remote && newerThan(remote, current)) showUpdateBanner(remote);
-          })
-          .catch(() => {/* no network — silent */});
-      });
+    let lastCheck = 0;
+    function runCheck(force = false) {
+      // Throttle focus-triggered re-checks so tabbing in and out doesn't hammer GitHub.
+      if (!force && Date.now() - lastCheck < 30 * 60_000) return;
+      lastCheck = Date.now();
+      invoke<{ available: boolean; version?: string }>('check_for_update')
+        .then(res => {
+          if (res.available && res.version) showUpdateBanner(res.version);
+        })
+        .catch(() => {
+          // Tauri plugin failed — fallback: fetch latest.json directly
+          Promise.all([
+            fetch('https://github.com/astraluxe/nivara-desktop/releases/latest/download/latest.json')
+              .then(r => r.json()),
+            getVersion(),
+          ])
+            .then(([json, current]) => {
+              const remote = (json as { version?: string }).version ?? '';
+              if (remote && newerThan(remote, current)) showUpdateBanner(remote);
+            })
+            .catch(() => {/* no network — silent */});
+        });
+    }
+
+    runCheck(true);
+    const onFocus = () => runCheck();
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
   }, [session]);
 
   // Global automation trigger listener — active regardless of which module is open
@@ -269,6 +414,17 @@ function AppShell() {
 
     return () => { unlisten?.(); };
   }, [session]);
+
+  // Global navigation event — lets any part of the app (e.g. Krew slash commands) open a module.
+  useEffect(() => {
+    const VALID: Module[] = ["home", "automation", "coder", "krew", "connect", "models", "vault", "guard", "mesh", "brain", "head", "info", "account", "settings"];
+    let un: (() => void) | null = null;
+    listen<{ module: string }>("nv-navigate", (e) => {
+      const m = e.payload?.module as Module;
+      if (m && VALID.includes(m)) setActiveModule(m);
+    }).then((fn) => { un = fn; });
+    return () => { un?.(); };
+  }, []);
 
   // Krew agent explicit run — bypasses automationAutoRun gate
   useEffect(() => {
@@ -319,6 +475,8 @@ function AppShell() {
           {activeModule === "vault"   && <VaultModule />}
           {activeModule === "guard"   && <GuardModule />}
           {activeModule === "mesh"    && <MeshModule onSessionChange={setMeshActive} />}
+          {activeModule === "brain"   && <BrainModule />}
+          <BrainToKrewBridge onGoKrew={() => setActiveModule("krew")} />
           {activeModule === "head"    && <HeadModule />}
           {activeModule === "info"     && <InfoModule />}
           {activeModule === "account"  && <AccountPanel />}
@@ -349,6 +507,16 @@ function AppShell() {
       )}
     </div>
   );
+}
+
+// Switches to the Krew tab when a Brain note is "Used in Krew chat".
+function BrainToKrewBridge({ onGoKrew }: { onGoKrew: () => void }) {
+  useEffect(() => {
+    const go = () => onGoKrew();
+    window.addEventListener("nv-goto-krew", go);
+    return () => window.removeEventListener("nv-goto-krew", go);
+  }, [onGoKrew]);
+  return null;
 }
 
 export default function App() {

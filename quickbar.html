@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>adris quick bar</title>
+<style>
+  /* Theme tokens mirror the app (index.css): Paper default, Ink dark. */
+  :root {
+    --qb-bg:      #ffffff;
+    --qb-surface: #f4f4f5;
+    --qb-border:  #d4d4d8;
+    --qb-text:    #09090b;
+    --qb-muted:   #3f3f46;
+    --qb-faint:   #6b6b74;
+    --qb-accent:  #7C5CFF;
+    --qb-shadow:  0 8px 32px rgba(0,0,0,.16), 0 1px 4px rgba(0,0,0,.10);
+  }
+  html.ink {
+    --qb-bg:      #141414;
+    --qb-surface: #1e1e1e;
+    --qb-border:  #2a2a2a;
+    --qb-text:    #f2f2f2;
+    --qb-muted:   #a1a1aa;
+    --qb-faint:   #8a8a92;
+    --qb-shadow:  0 8px 32px rgba(0,0,0,.55), 0 1px 4px rgba(0,0,0,.4);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: transparent; height: 100%; overflow: hidden; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+    color: var(--qb-text);
+  }
+  input { user-select: text; }
+
+  .qb {
+    display: flex; flex-direction: column;
+    height: 100vh; margin: 6px 10px 10px;
+    height: calc(100vh - 16px);
+    background: var(--qb-bg);
+    border: 1px solid var(--qb-border);
+    border-radius: 14px;
+    box-shadow: var(--qb-shadow);
+    overflow: hidden;
+  }
+
+  /* ── Top bar (always visible) ─────────────────────────── */
+  .qb-bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; flex-shrink: 0; }
+  .qb-brand {
+    display: flex; align-items: center; gap: 7px; padding: 4px 6px; border-radius: 8px;
+    cursor: default; flex-shrink: 0;
+  }
+  .qb-brand svg { display: block; color: var(--qb-accent); }
+  .qb-brand span { font-size: 12.5px; font-weight: 600; letter-spacing: -0.01em; }
+  .qb-brand span i { font-style: normal; color: var(--qb-faint); font-weight: 400; }
+
+  .qb-input {
+    flex: 1; min-width: 0; height: 34px;
+    background: var(--qb-surface);
+    border: 1px solid var(--qb-border);
+    border-radius: 9px;
+    padding: 0 12px;
+    font-size: 12.5px; font-family: inherit;
+    color: var(--qb-text);
+    outline: none;
+    transition: border-color .15s;
+  }
+  .qb-input:focus { border-color: var(--qb-accent); }
+  .qb-input::placeholder { color: var(--qb-faint); }
+  .qb-input:disabled { opacity: .55; }
+
+  .qb-btn {
+    width: 30px; height: 30px; border: none; background: transparent; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--qb-faint); cursor: pointer; flex-shrink: 0;
+    transition: all .13s;
+  }
+  .qb-btn:hover { background: var(--qb-surface); color: var(--qb-text); }
+  .qb-btn.send { color: #fff; background: var(--qb-accent); }
+  .qb-btn.send:hover { opacity: .85; background: var(--qb-accent); }
+  .qb-btn.send:disabled { opacity: .4; cursor: default; }
+  .qb-btn svg { display: block; }
+
+  /* ── Conversation area (visible when expanded) ─────────── */
+  .qb-body { flex: 1; display: none; flex-direction: column; min-height: 0; border-top: 1px solid var(--qb-border); }
+  .qb.expanded .qb-body { display: flex; }
+  .qb-msgs { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+  .qb-msgs::-webkit-scrollbar { width: 3px; }
+  .qb-msgs::-webkit-scrollbar-thumb { background: var(--qb-border); border-radius: 2px; }
+
+  .qb-m { max-width: 88%; font-size: 12.5px; line-height: 1.6; user-select: text; }
+  .qb-m.user {
+    align-self: flex-end; background: var(--qb-accent); color: #fff;
+    padding: 7px 12px; border-radius: 12px 12px 3px 12px;
+  }
+  .qb-m.ai { align-self: flex-start; color: var(--qb-text); }
+  .qb-m.ai b { font-weight: 600; }
+  .qb-m.ai code {
+    font-family: Consolas, 'Courier New', monospace; font-size: 11.5px;
+    background: var(--qb-surface); border: 1px solid var(--qb-border);
+    border-radius: 4px; padding: 1px 5px;
+  }
+  .qb-m.ai .thinking { display: inline-flex; gap: 4px; align-items: center; }
+  .qb-m.ai .thinking i {
+    width: 5px; height: 5px; border-radius: 50%; background: var(--qb-accent);
+    font-size: 0; animation: qb-pulse 1.1s ease-in-out infinite;
+  }
+  .qb-m.ai .thinking i:nth-child(2) { animation-delay: .18s; }
+  .qb-m.ai .thinking i:nth-child(3) { animation-delay: .36s; }
+  @keyframes qb-pulse { 0%,100% { opacity: .25; transform: scale(.85);} 50% { opacity: 1; transform: scale(1);} }
+
+  .qb-empty {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 8px; color: var(--qb-faint); font-size: 12px; text-align: center; padding: 0 40px;
+  }
+  .qb-empty svg { opacity: .5; }
+
+  .qb-foot {
+    flex-shrink: 0; padding: 7px 14px; border-top: 1px solid var(--qb-border);
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 10px; color: var(--qb-faint);
+  }
+  .qb-foot button {
+    border: none; background: none; color: var(--qb-accent); font-size: 10px;
+    font-family: inherit; cursor: pointer; padding: 0;
+  }
+  .qb-foot button:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+  <div class="qb" id="qbRoot">
+    <div class="qb-bar">
+      <!-- drag handle: brand -->
+      <div class="qb-brand" data-tauri-drag-region title="Drag to move">
+        <svg data-tauri-drag-region width="17" height="16" viewBox="0 0 26 24" fill="none" aria-hidden="true">
+          <path data-tauri-drag-region d="M2 4 L9 4 L15 12 L9 20 L2 20 L8 12 Z" fill="currentColor"/>
+          <path data-tauri-drag-region d="M12 4 L19 4 L25 12 L19 20 L12 20 L18 12 Z" fill="currentColor"/>
+        </svg>
+        <span data-tauri-drag-region>adris<i>.tech</i></span>
+      </div>
+
+      <input class="qb-input" id="qbInput" type="text" placeholder="Ask adris anything — press Enter" autocomplete="off" />
+
+      <button class="qb-btn send" id="qbSend" title="Send">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </button>
+      <button class="qb-btn" id="qbToggle" title="Expand / collapse">
+        <svg id="qbChevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <button class="qb-btn" id="qbOpenApp" title="Open the full app">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17L17 7M17 7H9M17 7v8"/></svg>
+      </button>
+      <button class="qb-btn" id="qbHide" title="Hide (turn back on in the app: Settings → Quick Bar)">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+
+    <div class="qb-body">
+      <div class="qb-msgs" id="qbMsgs">
+        <div class="qb-empty" id="qbEmpty">
+          <svg width="26" height="24" viewBox="0 0 26 24" fill="none" aria-hidden="true">
+            <path d="M2 4 L9 4 L15 12 L9 20 L2 20 L8 12 Z" fill="currentColor"/>
+            <path d="M12 4 L19 4 L25 12 L19 20 L12 20 L18 12 Z" fill="currentColor"/>
+          </svg>
+          <div>Quick answers, drafts, lookups — connected to your Brain.<br/>For heavy tasks (lead lists, automations), open the full app.</div>
+        </div>
+      </div>
+      <div class="qb-foot">
+        <span id="qbStatus">Connected to your Brain</span>
+        <button id="qbClear">Clear chat</button>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="/src/quickbar.ts"></script>
+</body>
+</html>

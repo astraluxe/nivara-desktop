@@ -27,6 +27,9 @@ export default {
       },
       fontFamily: {
         sans: ["Space Grotesk", "Inter", "-apple-system", "BlinkMacSystemFont", "Segoe UI", "sans-serif"],
+        // Serif reading font for assistant message prose — like a well-typeset web article. Falls
+        // back to system serifs (Georgia/Charter) so it still reads well if Google Fonts is offline.
+        serif: ["Source Serif 4", "Charter", "Georgia", "Cambria", "Times New Roman", "serif"],
         mono: ["JetBrains Mono", "Fira Code", "Consolas", "Monaco", "monospace"],
       },
     },

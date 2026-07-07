@@ -1,4 +1,5 @@
 import MonacoEditor, { type OnMount } from '@monaco-editor/react';
+import { useRef, useEffect } from 'react';
 
 interface Props {
   path: string | null;
@@ -23,9 +24,26 @@ function langFromPath(p: string | null) {
 }
 
 export default function Editor({ path, content, onChange, isDark }: Props) {
+  const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
+
   const handleMount: OnMount = (editor) => {
+    editorRef.current = editor;
     editor.focus();
   };
+
+  // Push EXTERNAL content changes (e.g. an AI-applied edit) into the live editor. Monaco's `value`
+  // prop alone did not reliably re-render the open file — the change only appeared after switching
+  // screens (which re-reads from disk on remount). This guarantees applied edits show immediately.
+  // The `getValue() !== content` guard means this never fights the user's own typing (their text is
+  // already === content), so the cursor/undo stack is preserved while typing.
+  useEffect(() => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    if (ed.getValue() === content) return;
+    const pos = ed.getPosition();
+    ed.setValue(content);
+    if (pos) ed.setPosition(pos);
+  }, [content]);
 
   if (!path) {
     return (
@@ -42,6 +60,7 @@ export default function Editor({ path, content, onChange, isDark }: Props) {
   return (
     <MonacoEditor
       height="100%"
+      path={path ?? undefined}
       language={langFromPath(path)}
       value={content}
       theme={isDark ? 'vs-dark' : 'vs'}

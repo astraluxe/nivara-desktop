@@ -6,6 +6,7 @@ import type { RealtimeChannel } from "@supabase/supabase-js";
 import { useAuth } from "../contexts/AuthContext";
 import { getPlanConfig } from "../lib/planConfig";
 import UpgradeModal from "../components/UpgradeModal";
+import MeshBuyModal from "../components/MeshBuyModal";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -113,6 +114,10 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
   const [downloading, setDownloading]         = useState(false);
   const [dlStep, setDlStep]                   = useState("Preparing…");
   const [dlPct, setDlPct]                     = useState(0);
+  const [showBuy, setShowBuy]                 = useState(false);
+  // Purchased Mesh pass (bought standalone) — overrides the plan's device limit while active.
+  // Held in a ref so the limit checks always read the current value without a re-render.
+  const purchasedRef = useRef(0);
 
   function showUpgradeFor(reason: string, plan: string) {
     setUpgradeReason(reason);
@@ -131,6 +136,26 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
   useEffect(() => {
     invoke<MachineInfo>("mesh_get_machine_info").then(setMachineInfo).catch(() => null);
     invoke<boolean>("mesh_check_extension").then(setExtensionReady).catch(() => setExtensionReady(false));
+  }, []);
+
+  // Load any active standalone Mesh pass (granted server-side after payment).
+  // The table may not exist yet — failures simply fall back to the plan allowance.
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+        const { data } = await supabase
+          .from("mesh_passes")
+          .select("devices, expires_at")
+          .eq("user_id", user.id)
+          .gt("expires_at", new Date().toISOString())
+          .order("devices", { ascending: false })
+          .limit(1);
+        const row = data?.[0];
+        if (row?.devices) purchasedRef.current = row.devices;
+      } catch { /* no pass / table absent — use plan allowance */ }
+    })();
   }, []);
 
   // ── Download extension ───────────────────────────────────────────────────────
@@ -198,7 +223,7 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
         if (status === "SUBSCRIBED") {
           const state   = ch.presenceState<Device>();
           const current = Object.keys(state).length;
-          const devLimit = planCfg.meshDevices;
+          const devLimit = Math.max(planCfg.meshDevices, purchasedRef.current);
           if (!isCentral && current >= devLimit) {
             await ch.unsubscribe();
             setErr(`Session is full (${devLimit} device limit on your plan).`);
@@ -244,7 +269,7 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
     if (ok) {
       setRoomCode(code);
       setSessionState("hosting");
-      invoke<void>("mesh_start_exo", { nodeCount: planCfg.meshDevices })
+      invoke<void>("mesh_start_exo", { nodeCount: Math.max(planCfg.meshDevices, purchasedRef.current) })
         .then(() => setExoRunning(true)).catch(() => null);
     } else {
       isCentralRef.current = false;
@@ -584,6 +609,21 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
           </div>
         </div>
 
+        {/* Buy a Mesh pass directly — no plan upgrade required */}
+        <div>
+          <SectionLabel>Get more devices</SectionLabel>
+          <div className="rounded-xl border p-4 flex items-center justify-between gap-4 flex-wrap" style={{ borderColor: "var(--nv-rule)", background: "var(--nv-surface)" }}>
+            <div className="min-w-0">
+              <div className="font-semibold text-[12px] text-nv-text">Buy a Mesh pass — no plan upgrade needed</div>
+              <div className="text-[11px] text-nv-muted mt-0.5 leading-relaxed">Pay for just the devices you need, by the hour / day / week / month. Same-network meshing stays free — this only lifts your device limit. Or upgrade your plan for everything else.</div>
+            </div>
+            <div className="flex gap-2 shrink-0">
+              <button onClick={() => setShowBuy(true)} className="px-4 py-2 rounded-lg text-[12px] font-semibold transition-opacity hover:opacity-85" style={{ background: "#7C5CFF", color: "#fff" }}>Buy Mesh pass</button>
+              <button onClick={() => showUpgradeFor("Upgrade your plan for more devices, tokens, and features across adris.tech.", "builder")} className="px-4 py-2 rounded-lg text-[12px] font-semibold border transition-fast hover:border-nv-text" style={{ borderColor: "var(--nv-rule)", color: "var(--nv-text)" }}>See plans</button>
+            </div>
+          </div>
+        </div>
+
         {/* Relay nodes — paid inter-mesh connections */}
         <div>
           <SectionLabel>Relay nodes</SectionLabel>
@@ -612,11 +652,11 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
                 </div>
               ) : (
                 <button
-                  onClick={() => showUpgradeFor("Relay nodes connect devices across networks. Available on Builder plan and above.", "builder")}
-                  className="w-full py-2 rounded-lg text-[12px] font-semibold transition-opacity hover:opacity-80"
-                  style={{ background: "#7C5CFF", color: "#fff", border: "none" }}
+                  disabled
+                  className="w-full py-2 rounded-lg text-[12px] font-semibold cursor-not-allowed border"
+                  style={{ background: "var(--nv-surface)", color: "var(--nv-faint)", borderColor: "var(--nv-rule)" }}
                 >
-                  Unlock relay nodes · Builder+
+                  Relay nodes · coming soon
                 </button>
               )}
             </div>
@@ -650,6 +690,13 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
           currentPlan={userPlan}
           highlightPlan={upgradePlan}
           reason={upgradeReason}
+        />
+      )}
+
+      {showBuy && (
+        <MeshBuyModal
+          onClose={() => setShowBuy(false)}
+          onPurchased={(d) => { purchasedRef.current = Math.max(purchasedRef.current, d); }}
         />
       )}
     </div>

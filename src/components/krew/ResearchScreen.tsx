@@ -384,6 +384,17 @@ Write the competitive intelligence report now.`;
       const updated = [item, ...loadHistory()].slice(0, 15);
       localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
       setSavedResearches(updated);
+      // ALSO save the report to the Brain so agents can recall it later instead of
+      // re-researching (this screen previously had zero Brain integration — reports
+      // vanished from the agents' perspective the moment you left the screen).
+      // One node per business name, updated in place — repeated research on the same
+      // business refreshes the note rather than piling up duplicates.
+      import('../../lib/knowledgeStore').then(({ brain }) => {
+        const title = `Research · ${item.name}`.slice(0, 80);
+        const existing = brain.findByTitle(title);
+        if (existing) brain.updateNode(existing.id, { body: finalReport.slice(0, 16000) });
+        else brain.addNode({ title, kind: 'note', body: finalReport.slice(0, 16000) });
+      }).catch(() => {});
     } catch (err) {
       setError(String(err));
       setStage('error');

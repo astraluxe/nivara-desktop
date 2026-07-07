@@ -28,5 +28,13 @@ export default defineConfig(async () => ({
       process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari13",
     minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
+    // Multi-page: the main app + the always-on-top Quick Bar window.
+    rollupOptions: {
+      input: {
+        main: "index.html",
+        quickbar: "quickbar.html",
+        quickbadge: "quickbadge.html",
+      },
+    },
   },
 }));

@@ -123,12 +123,16 @@ export default function VaultModule() {
   // Sync state when toggled from the system tray
   useEffect(() => {
     let unlisten: (() => void) | null = null;
-    listen<VaultStatus & { error?: string }>("vault_state_changed", event => {
+    listen<VaultStatus & { error?: string; failover_used?: boolean }>("vault_state_changed", event => {
       const p = event.payload;
       setEnabled(p.enabled);
       setMode(p.mode);
       setAdapter(p.adapter);
       if (p.error === "setup_required") setSetupNeeded(true);
+      else if (p.error === "no_dns_reachable") setError("Couldn't reach a private DNS server on this network — Vault stayed off so your internet keeps working. Try a different network.");
+      else if (p.error === "dns_error") setError("Couldn't apply DNS settings — Vault stayed off.");
+      else if (p.error) setError(String(p.error));
+      else { setError(null); if (p.failover_used) setFailover("Your chosen DNS wasn't reachable — switched to a reachable mode automatically."); }
     }).then(fn => { unlisten = fn; });
     return () => { unlisten?.(); };
   }, []);
@@ -157,6 +161,8 @@ export default function VaultModule() {
       if (msg.includes("setup_required")) {
         setSetupNeeded(true);
         setPendingToggle(enabled ? "disable" : mode);
+      } else if (msg.includes("no_dns_reachable")) {
+        setError("Couldn't reach a private DNS server on this network, so nothing was changed — your internet is untouched. Try again on a different network.");
       } else {
         setError(msg || "Failed to change DNS settings.");
       }
@@ -182,6 +188,7 @@ export default function VaultModule() {
     } catch (e: unknown) {
       const msg = String(e);
       if (msg.includes("setup_required")) setSetupNeeded(true);
+      else if (msg.includes("no_dns_reachable")) setError("Couldn't reach that mode's DNS on this network — nothing changed, your internet is untouched.");
       else setError(msg);
     } finally {
       setLoading(false);

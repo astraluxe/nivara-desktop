@@ -5,10 +5,13 @@
 //   crawl4ai (multi-metric scoring, word-threshold filtering, content stability),
 //   crawlee (progressive infinite scroll, network-idle detection, cookie handling).
 
-const path = require('path');
-const os   = require('os');
-const fs   = require('fs');
-const http = require('http');
+const path    = require('path');
+const os      = require('os');
+const fs      = require('fs');
+const http    = require('http');
+// chromium at module level so helper functions (launchChromeDetached, cdpConnect, ensureChrome)
+// can access it without being nested inside main().
+const chromium = (() => { try { return require('playwright-core').chromium; } catch (_) { return null; } })();
 
 const PROFILE_DIR = process.env.AGENT_BROWSER_PROFILE || (
   process.platform === 'win32'
@@ -63,6 +66,96 @@ async function isBrowserRunning() {
   });
 }
 
+// Launch Chrome as a fully DETACHED independent process — it will outlive this node process.
+// This is the core technique used by browser-use / crawl4ai / crawlee:
+// keep the browser running persistently across all agent commands.
+// We NEVER use launchPersistentContext (Playwright kills Chrome on node exit).
+// We always connectOverCDP to the running Chrome instead.
+async function launchChromeDetached() {
+  var spawn = require('child_process').spawn;
+
+  // Find the system Chrome executable
+  var chromePaths = [];
+  if (process.platform === 'win32') {
+    var pf   = process.env['ProgramFiles']      || 'C:\\Program Files';
+    var pf86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+    var la   = process.env['LOCALAPPDATA']       || '';
+    chromePaths = [
+      path.join(pf,   'Google', 'Chrome', 'Application', 'chrome.exe'),
+      path.join(pf86, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      la ? path.join(la, 'Google', 'Chrome', 'Application', 'chrome.exe') : '',
+    ].filter(Boolean);
+  } else if (process.platform === 'darwin') {
+    chromePaths = ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'];
+  } else {
+    chromePaths = [
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/google-chrome',
+      '/usr/bin/chromium-browser',
+      '/usr/bin/chromium',
+    ];
+  }
+
+  var chromeExe = null;
+  for (var i = 0; i < chromePaths.length; i++) {
+    try { if (chromePaths[i] && fs.existsSync(chromePaths[i])) { chromeExe = chromePaths[i]; break; } } catch (_) {}
+  }
+  if (!chromeExe) return false; // Chrome not found — caller falls back
+
+  var child = spawn(chromeExe, [
+    '--remote-debugging-port=' + CDP_PORT,
+    '--user-data-dir=' + PROFILE_DIR,
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--no-sandbox',
+    '--disable-blink-features=AutomationControlled',
+    '--disable-infobars',
+  ], {
+    detached: true, // Chrome runs in its OWN process group — node exit does NOT kill it
+    stdio:    'ignore',
+  });
+  child.unref(); // Node can exit freely without Chrome dying
+
+  // Wait up to 12 seconds for Chrome CDP endpoint to be ready
+  var deadline = Date.now() + 12000;
+  while (Date.now() < deadline) {
+    await new Promise(function(r) { setTimeout(r, 400); });
+    if (await isBrowserRunning()) return true;
+  }
+  return false; // Chrome didn't start in time
+}
+
+// Connect to the running Chrome via CDP and get its default browser context.
+// The default context has all the user's saved logins (LinkedIn, Gmail, etc.)
+// because Chrome loaded them from PROFILE_DIR on startup.
+async function cdpConnect() {
+  var browser = await chromium.connectOverCDP(CDP_URL, { timeout: 5000 });
+  var ctxs = browser.contexts();
+  // contexts()[0] is Chrome's default profile context — has all saved cookies/sessions
+  var ctx = ctxs.length > 0 ? ctxs[0] : null;
+  return { browser: browser, context: ctx };
+}
+
+// Ensure Chrome is running and return a connected context.
+// Launches Chrome as detached process if not already running.
+async function ensureChrome() {
+  if (await isBrowserRunning()) {
+    try { return await cdpConnect(); } catch (_) {}
+  }
+  // Not running — acquire lock so concurrent processes don't double-launch
+  await acquireLaunchLock(12000);
+  // Double check after lock (another process may have started it while we waited)
+  if (await isBrowserRunning()) {
+    releaseLaunchLock();
+    try { return await cdpConnect(); } catch (_) {}
+  }
+  // Launch Chrome as a detached process that outlives this node process
+  var ok = await launchChromeDetached();
+  releaseLaunchLock();
+  if (!ok) return { browser: null, context: null };
+  try { return await cdpConnect(); } catch (_) { return { browser: null, context: null }; }
+}
+
 // Wait until the page body has at least minChars of text, polling every 500 ms.
 async function waitForContent(page, minChars, maxWait) {
   var deadline = Date.now() + maxWait;
@@ -101,11 +194,9 @@ async function waitForContentStability(page, minChars, maxWait) {
 async function waitForPlatformContent(page, hostname) {
   try {
     if (hostname.includes('linkedin.com')) {
-      // LinkedIn feed posts or profile content
-      await page.waitForSelector(
-        '.feed-shared-update-v2, .occludable-update, .scaffold-layout__main, [data-urn], .artdeco-card',
-        { timeout: 8000 }
-      );
+      // LinkedIn uses obfuscated classes now — the stable signal that the feed loaded
+      // is author profile links appearing inside <main>. Wait for those.
+      await page.waitForSelector('main a[href*="/in/"], main a[href*="/company/"]', { timeout: 8000 });
     } else if (hostname.includes('twitter.com') || hostname.includes('x.com')) {
       await page.waitForSelector('[data-testid="tweet"], [data-testid="tweetText"]', { timeout: 8000 });
     } else if (hostname.includes('mail.google.com')) {
@@ -125,7 +216,7 @@ async function waitForPlatformContent(page, hostname) {
 // Progressive multi-step scroll (crawlee infinite scroll pattern).
 // Scrolls the window AND the platform's main scroll container in 4 steps.
 async function progressiveScroll(page) {
-  var steps = 4;
+  var steps = 3;
   for (var i = 1; i <= steps; i++) {
     var ratio = (i / steps) * 0.8;
     await page.evaluate(function(r) {
@@ -141,7 +232,7 @@ async function progressiveScroll(page) {
       });
       window.scrollTo(0, Math.floor(document.body.scrollHeight * r));
     }, ratio).catch(function() {});
-    await new Promise(function(r) { setTimeout(r, 700); });
+    await new Promise(function(r) { setTimeout(r, 500); });
   }
 }
 
@@ -161,80 +252,143 @@ async function scrollForContent(page) {
 
 // LinkedIn-specific feed post extraction.
 // Returns structured JSON array — clean data the AI can parse directly.
+// LinkedIn feed extraction — CLASS-INDEPENDENT.
+// LinkedIn now ships fully obfuscated/hashed CSS class names (e.g. "ee8092b5 _731d00bc")
+// and removed all data-urn attributes, so old selectors (.feed-shared-update-v2 etc.)
+// match NOTHING. The only stable anchors are author profile links (/in/ and /company/)
+// and post-signal text (degree markers • 1st/2nd/3rd, timestamps Nh/Nd/Nw, Like/Comment).
+// Strategy: for each author link inside <main>, walk up to the post-sized container,
+// filter out the profile/news rails, require a post signal, dedupe, clean and return.
+// Validated live 2026-06-25 against the real logged-in feed.
 async function extractLinkedInFeed(page) {
   var posts = await page.evaluate(function() {
-    var selectors = ['.feed-shared-update-v2', '.occludable-update', '[data-urn*="activity"]'];
-    var nodes = [];
-    for (var si = 0; si < selectors.length; si++) {
-      nodes = Array.from(document.querySelectorAll(selectors[si]));
-      if (nodes.length > 0) break;
+    var main = document.querySelector('main') || document.body;
+    // Rail/sidebar/ad noise we must never treat as a feed post.
+    var SKIP = [
+      'Profile viewers', 'Post impressions', 'Grow your business', 'Add to your feed',
+      'Try Premium', 'ad credits', 'visitor analytics', 'Who viewed', 'People you may know',
+      'Promoted', 'Saved items', 'Recent', 'Groups', 'Newsletters', 'Events'
+    ];
+    var authorLinks = Array.prototype.slice.call(
+      main.querySelectorAll('a[href*="/in/"], a[href*="/company/"]')
+    );
+    var chosenEls = [];
+    var chosenTxt = [];
+    for (var i = 0; i < authorLinks.length; i++) {
+      var el = authorLinks[i];
+      // Walk up to the FULL post container — one that includes the footer (impressions /
+      // reactions / Like+Comment actions), not just the post text. This is what lets us
+      // capture "N impressions" on the user's own activity page.
+      for (var d = 0; d < 14; d++) {
+        if (!el.parentElement || el === main) break;
+        el = el.parentElement;
+        var tt = (el.innerText || '').trim();
+        if (tt.length > 7000) break; // too big — would merge multiple posts
+        var hasFooter =
+          /[\d,]+\s+impressions/i.test(tt) ||
+          /reaction/i.test(tt) ||
+          (/\bLike\b/.test(tt) && /\bComment\b/.test(tt));
+        if (tt.length >= 120 && hasFooter) break;
+      }
+      var t = (el.innerText || '').trim();
+      if (t.length < 120 || t.length > 7000) continue;
+
+      var skip = false;
+      for (var s = 0; s < SKIP.length; s++) { if (t.indexOf(SKIP[s]) !== -1) { skip = true; break; } }
+      if (skip) continue;
+
+      // Must look like an actual post.
+      var hasSignal =
+        /•\s*(1st|2nd|3rd|Following)/.test(t) ||
+        /\b\d+\s*(h|d|w|mo|hour|day|week|month)s?\b/.test(t) ||
+        (/\bLike\b/.test(t) && /\bComment\b/.test(t));
+      if (!hasSignal) continue;
+
+      // Dedupe nested/overlapping containers.
+      var dup = false;
+      for (var c = 0; c < chosenEls.length; c++) {
+        if (chosenEls[c].contains(el) || el.contains(chosenEls[c])) { dup = true; break; }
+      }
+      if (dup) continue;
+
+      chosenEls.push(el);
+      chosenTxt.push(t);
+      if (chosenTxt.length >= 15) break;
     }
-    if (nodes.length === 0) return null;
 
-    return nodes.slice(0, 15).map(function(post) {
-      // Author name
-      var authorEl = post.querySelector(
-        '.feed-shared-actor__name, .update-components-actor__name, [class*="actor__name"]'
-      );
-      var author = authorEl ? (authorEl.innerText || '').trim().split('\n')[0].trim() : '';
+    // Clean each block into readable text the AI can brief from.
+    var UI = ['Like', 'Comment', 'Repost', 'Send', 'Follow', 'Following', 'Verified Profile',
+              'Feed post', '…more', 'See more', 'Play video', 'Activate to view larger image,',
+              'View analytics'];
+    return chosenTxt.map(function(raw) {
+      // Pull the impressions count (own-posts analytics) before cleaning.
+      var impMatch = raw.match(/([\d,]+)\s+impressions/i);
+      var impressions = impMatch ? impMatch[1].replace(/,/g, '') : '';
 
-      // Author role / headline
-      var roleEl = post.querySelector(
-        '.feed-shared-actor__description, .update-components-actor__description, [class*="actor__description"]'
-      );
-      var role = roleEl ? (roleEl.innerText || '').trim().split('\n')[0].trim() : '';
-
-      // Post time
-      var timeEl = post.querySelector('time, [class*="actor__sub-description"]');
-      var posted = '';
-      if (timeEl) {
-        posted = timeEl.getAttribute('datetime') ||
-                 (timeEl.innerText || '').trim().replace(/·.*/g, '').trim();
+      var lines = raw.split('\n').map(function(l) { return l.trim(); })
+        .filter(function(l) { return l.length > 0; });
+      // Author = first real name line, skipping accessibility/meta labels.
+      var META = /^(Feed post|Suggested|Promoted|Verified|You|Following|Feed post number)/i;
+      var author = 'Unknown';
+      for (var ai = 0; ai < lines.length; ai++) {
+        if (!META.test(lines[ai]) && !/^•/.test(lines[ai]) && lines[ai].length > 1) { author = lines[ai]; break; }
       }
-
-      // Post content
-      var contentEl = post.querySelector(
-        '.feed-shared-text, .feed-shared-update-v2__description, ' +
-        '.feed-shared-inline-show-more-text, [class*="commentary"], .update-components-text'
-      );
-      var content = contentEl ? (contentEl.innerText || '').trim() : '';
-      if (!content || content.length < 10) {
-        content = (post.innerText || '').trim()
-          .split('\n').filter(function(l) { return l.trim().length > 5; })
-          .slice(0, 12).join('\n');
+      var kept = [];
+      var prev = author; // seeded so the content's leading repeat of the author name is dropped
+      for (var li = 0; li < lines.length; li++) {
+        var ln = lines[li];
+        if (UI.indexOf(ln) !== -1) continue;     // drop pure UI words (Like/Comment/…)
+        if (/^•/.test(ln)) continue;             // drop "• 2nd" connector lines
+        if (ln === prev) continue;               // drop consecutive duplicate (repeated author/name)
+        kept.push(ln);
+        prev = ln;
       }
-
-      // Engagement
-      var reactEl = post.querySelector('[aria-label*="reaction"], [class*="social-count"] span');
-      var reactions = reactEl ? (reactEl.getAttribute('aria-label') || reactEl.innerText || '').replace(/\s+/g,' ').trim() : '';
-      var cmtEl = post.querySelector('[aria-label*="comment"], [class*="social-count"] ~ span');
-      var comments_count = cmtEl ? (cmtEl.getAttribute('aria-label') || cmtEl.innerText || '').replace(/\s+/g,' ').trim() : '';
-
-      if (!content || content.length < 15) return null;
-      return {
-        author:    author   || 'Unknown',
-        role:      role,
-        posted:    posted,
-        content:   content,
-        reactions: reactions,
-        comments:  comments_count,
-      };
-    }).filter(Boolean);
+      var text = kept.join('\n');
+      if (text.length > 1200) text = text.slice(0, 1200) + '…';
+      return { author: author, content: text, impressions: impressions };
+    }).filter(function(p) { return p.content && p.content.length > 40; });
   }).catch(function() { return null; });
 
   if (!posts || posts.length === 0) return null;
 
-  // Format as readable feed for the AI
   var formatted = '=== LinkedIn Feed — ' + posts.length + ' posts ===\n\n' +
     posts.map(function(p, i) {
-      var header = (i + 1) + '. ' + p.author;
-      if (p.role)    header += ' (' + p.role + ')';
-      if (p.posted)  header += '  ·  ' + p.posted;
-      var engagement = [p.reactions, p.comments].filter(function(s) { return s && s.length > 0; }).join('  ·  ');
-      return header + (engagement ? '\n   ' + engagement : '') + '\n\n' + p.content;
+      var head = (i + 1) + '. ' + p.author;
+      if (p.impressions) head += '  ·  ' + p.impressions + ' impressions';
+      return head + '\n' + p.content;
     }).join('\n\n---\n\n');
 
   return formatted;
+}
+
+// On-page "agent is controlling this window" banner. Injected onto the page the agent
+// is working on so the user — who is watching the Chrome window, not the app — gets a
+// clear, in-place signal not to scroll/close while automation runs. Appended to
+// <html> (not <body>) so it survives body re-renders and is never picked up by the
+// content extractors (LinkedIn extractor scopes to <main>; general extractor clones <body>).
+async function showBanner(page, text) {
+  await page.evaluate(function(msg) {
+    var id = 'adris-agent-banner';
+    var b = document.getElementById(id);
+    if (!b) {
+      b = document.createElement('div');
+      b.id = id;
+      b.style.cssText =
+        'position:fixed;top:0;left:0;right:0;z-index:2147483647;' +
+        'background:#7C5CFF;color:#fff;' +
+        'font:600 13px/1.4 system-ui,Segoe UI,Roboto,sans-serif;' +
+        'padding:9px 16px;text-align:center;letter-spacing:.02em;' +
+        'box-shadow:0 2px 10px rgba(0,0,0,.28);pointer-events:none;';
+      (document.documentElement || document.body).appendChild(b);
+    }
+    b.textContent = '🤖 ' + msg;
+  }, text).catch(function () {});
+}
+async function hideBanner(page) {
+  await page.evaluate(function () {
+    var b = document.getElementById('adris-agent-banner');
+    if (b && b.parentNode) b.parentNode.removeChild(b);
+  }).catch(function () {});
 }
 
 // Poll for auth-wall exit — waits for URL to change away from login page.
@@ -257,40 +411,155 @@ async function main() {
   var cmd  = argv[0] || '';
 
   if (cmd === 'install') {
-    try {
-      require('playwright-core');
+    if (chromium) {
       process.stdout.write('agent-browser ready (playwright-core + system Chrome)\n');
-    } catch (_) {
+    } else {
       process.stderr.write('playwright-core not installed\n');
       process.exit(1);
     }
     return;
   }
 
-  var chromium = require('playwright-core').chromium;
+  if (!chromium) {
+    process.stdout.write('[agent-browser not installed] playwright-core is missing. Run: npm install playwright-core');
+    return;
+  }
+
   fs.mkdirSync(PROFILE_DIR, { recursive: true });
+
+  // ── openmany <url1>|<url2>|<url3> ──────────────────────────────────────────
+  // Batch read: open several URLs as CONCURRENT tabs inside the ONE detached Chrome
+  // window (single node process → single CDP connection → many pages via newPage()),
+  // read each in parallel, then close the extra tabs. This is the fast path for the
+  // deterministic lead tools (verify/enrich), which otherwise open pages one-by-one at
+  // ~14s each. It is SAFE re: the old "multi-window mess" — that came from separate node
+  // PROCESSES each grabbing the last tab; here it's one process managing its own pages,
+  // and no second Chrome window is ever launched. URLs are '|'-joined (URLs never contain
+  // a raw '|' — it's %7C when encoded), so the Rust "rest of args as one string" passes
+  // through cleanly. Output: blocks delimited by ===SEP=== each starting with a
+  // ===URL:.===/===STATUS:.=== header, so the caller can map text back to each URL.
+  if (cmd === 'openmany') {
+    var joined = argv.slice(1).join(' ').replace(/^"|"$/g, '').trim();
+    var manyUrls = joined.split('|').map(function (u) { return u.trim(); }).filter(Boolean);
+    if (!manyUrls.length) { process.stdout.write('===BATCH==='); return; }
+
+    var mconn = await ensureChrome();
+    var mctx  = mconn.context;
+    if (!mctx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
+
+    var readOne = async function (raw) {
+      var url = raw.startsWith('http') ? raw : 'https://' + raw;
+      var host = ''; try { host = new URL(url).hostname; } catch (_) {}
+      var page = null;
+      try {
+        page = await mctx.newPage();
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 22000 });
+        try { await page.waitForLoadState('networkidle', { timeout: 2500 }); } catch (_) {}
+        var finalUrl = page.url();
+        if (isAuthWall(finalUrl)) return { url: raw, status: 'login', text: '' };
+        // Show the "agent is controlling this window" banner so the user sees it during the batch
+        // read too (it was only on the single-page `open` before). Sits on <documentElement>, so it
+        // never pollutes the <main>/<body> text we extract below.
+        await showBanner(page, 'ADRIS agent is using this window — please don’t close it. It will close automatically when the task finishes.');
+        await waitForPlatformContent(page, host);
+        await progressiveScroll(page);
+        await waitForContentStability(page, 300, 1800);
+        var isLinkedIn  = host.indexOf('linkedin.com') !== -1;
+        // A /company/ page (an organisation with no specific named contact — e.g. a "find
+        // internships" list, where each row IS a company) has the same shape problem as a /in/
+        // profile: its identity (name/about/industry) is at the TOP, not in a feed of posts.
+        var isLIProfile = isLinkedIn && /\/(?:in|company)\//i.test(url);
+        var text = null;
+        if (isLIProfile) {
+          // PROFILE/COMPANY page — identity (name/headline/company/experience, or company
+          // name/about/industry) is at the TOP, not in posts. Read the whole page via innerText:
+          // it reliably contains what matchLI/checkMatch look for. The feed extractor is for
+          // /feed/ & /recent-activity/ and can miss/mangle a profile or company page.
+          text = await page.evaluate(function () {
+            var m = document.querySelector('main') || document.body;
+            var t = (m.innerText || '').trim();
+            return t.length > 8000 ? t.slice(0, 8000) + '\n…[truncated]' : t;
+          }).catch(function () { return ''; });
+        } else if (isLinkedIn) {
+          text = await extractLinkedInFeed(page);
+          if (!text) {
+            text = await page.evaluate(function () {
+              var m = document.querySelector('main') || document.body;
+              var t = (m.innerText || '').trim();
+              return t.length > 6000 ? t.slice(0, 6000) + '\n…[truncated]' : t;
+            }).catch(function () { return ''; });
+          }
+        } else {
+          text = await page.evaluate(function () {
+            var m = document.querySelector('main') || document.body;
+            var t = (m.innerText || '').trim();
+            // Surface mailto:/tel: hrefs — company emails/phones are frequently ONLY in the link
+            // href, not in visible text. Appending them lets the caller's email/phone regex find
+            // them (the single-page `open` path keeps them via markdown; batch must too).
+            var links = [];
+            try {
+              document.querySelectorAll('a[href]').forEach(function (a) {
+                var h = a.getAttribute('href') || '';
+                // mailto:/tel: — company emails/phones often live only in the href.
+                if (/^mailto:/i.test(h) || /^tel:/i.test(h)) {
+                  var c = h.replace(/^mailto:/i, '').replace(/^tel:/i, '').split('?')[0].trim();
+                  if (c && links.indexOf(c) === -1) links.push(c);
+                  return;
+                }
+                // SEARCH-RESULT links to LinkedIn profiles OR company pages: the real URL is
+                // usually wrapped in a redirect (DuckDuckGo /l/?uddg=…, Google /url?q=…), so decode
+                // it. Surfacing these lets the browser-based LinkedIn search fallback pull profile/
+                // company URLs reliably even when the headless HTTP search engines are throttling.
+                var dec = h;
+                var mm = h.match(/[?&](?:uddg|url|q|u3)=([^&]+)/i);
+                if (mm) { try { dec = decodeURIComponent(mm[1]); } catch (_) {} }
+                if (/linkedin\.com\/(?:in|company)\//i.test(dec)) {
+                  var li = (dec.match(/https?:\/\/[a-z]{0,3}\.?linkedin\.com\/(?:in|company)\/[A-Za-z0-9\-_%]+/i) || [])[0];
+                  if (li) { li = li.split(/[?#]/)[0]; if (links.indexOf(li) === -1) links.push(li); }
+                }
+              });
+            } catch (_) {}
+            var full = links.length ? (t + '\n' + links.join('\n')) : t;
+            return full.length > 8000 ? full.slice(0, 8000) + '\n…[truncated]' : full;
+          }).catch(function () { return ''; });
+        }
+        return { url: raw, status: 'ok', text: text || '' };
+      } catch (e) {
+        return { url: raw, status: 'error', text: '' };
+      } finally {
+        // Close the tab we created — keeps the window tidy. Chrome stays alive because
+        // ensureChrome's original page (and any prior `open` page) remains.
+        if (page) { try { await page.close(); } catch (_) {} }
+      }
+    };
+
+    var mresults = await Promise.all(manyUrls.map(readOne));
+    process.stdout.write('===BATCH===\n' + mresults.map(function (r) {
+      return '===URL:' + r.url + '===\n===STATUS:' + r.status + '===\n' + r.text;
+    }).join('\n===SEP===\n'));
+    return;
+  }
+
+  // NOTE on process lifetime: we connect to Chrome via connectOverCDP, whose WebSocket
+  // keeps Node's event loop alive — so the process will NOT exit on its own after a
+  // command finishes. That made every command hang until the Rust 45s timeout, which
+  // surfaced as a false "browser timed out / please log in" message. The fix is the
+  // forced `process.exit(0)` in the main().then() handler at the bottom of this file.
+  // It is SAFE to force-exit: our Chrome is launched as a DETACHED, unref'd child
+  // process (launchChromeDetached) that Playwright does not own, so exiting Node never
+  // kills Chrome — the window stays open and logged in for the next command.
 
   // ── Interactive commands ───────────────────────────────────────────────────
   if (cmd !== 'open' && cmd !== 'close') {
-    var running = await isBrowserRunning();
     var state   = readState();
-    var context, browser;
 
-    if (running) {
-      try {
-        browser = await chromium.connectOverCDP(CDP_URL, { timeout: 3000 });
-        var ctxs = browser.contexts();
-        context = ctxs.length > 0 ? ctxs[0] : null;
-      } catch (_) { browser = null; }
-    }
+    var conn    = await ensureChrome();
+    var context = conn.context;
 
     if (!context) {
-      context = await chromium.launchPersistentContext(PROFILE_DIR, {
-        channel: 'chrome', headless: false,
-        args: ['--no-sandbox', '--disable-blink-features=AutomationControlled',
-               '--disable-infobars', '--remote-debugging-port=' + CDP_PORT],
-        ignoreDefaultArgs: ['--enable-automation'],
-      });
+      process.stderr.write('[agent-browser] Could not launch or connect to Chrome.\n');
+      process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.');
+      return;
     }
 
     var page = context.pages().at(-1) || await context.newPage();
@@ -490,7 +759,24 @@ async function main() {
     if (isRunning) {
       try {
         var closeBrowser = await chromium.connectOverCDP(CDP_URL, { timeout: 2000 });
-        await closeBrowser.close();
+        // IMPORTANT: connectOverCDP does NOT own our detached Chrome, so browser.close() only
+        // drops the CDP socket and LEAVES THE WINDOW OPEN (the user then has to close it by
+        // hand). Send the CDP `Browser.close` command to actually terminate the Chrome we
+        // launched. This targets only our port-9223 instance — never the user's own Chrome.
+        try {
+          var session = await closeBrowser.newBrowserCDPSession();
+          await session.send('Browser.close');
+        } catch (_) {
+          // Fallback: close every page/context so Chrome exits when the last one closes.
+          try {
+            var ctxs = closeBrowser.contexts();
+            for (var ci = 0; ci < ctxs.length; ci++) {
+              var pgs = ctxs[ci].pages();
+              for (var pi = 0; pi < pgs.length; pi++) { try { await pgs[pi].close(); } catch (_) {} }
+            }
+          } catch (_) {}
+        }
+        try { await closeBrowser.close(); } catch (_) {} // socket likely already gone — fine
       } catch (_) {}
     }
     writeState({ url: null });
@@ -505,47 +791,20 @@ async function main() {
   var hostname = '';
   try { hostname = new URL(url).hostname; } catch (_) {}
 
-  var openCtx;
-  var openRunning = await isBrowserRunning();
-  if (openRunning) {
-    try {
-      var openBrowser = await chromium.connectOverCDP(CDP_URL, { timeout: 3000 });
-      var openCtxs = openBrowser.contexts();
-      openCtx = openCtxs.length > 0 ? openCtxs[0] : null;
-    } catch (_) {}
-  }
+  var openConn = await ensureChrome();
+  var openCtx  = openConn.context;
 
   if (!openCtx) {
-    // Acquire launch lock — if another concurrent process is mid-launch,
-    // wait for it to finish, then connect to the browser it started.
-    await acquireLaunchLock(12000);
-    // Double-check: another process may have started the browser while we waited.
-    openRunning = await isBrowserRunning();
-    if (openRunning) {
-      try {
-        var openBrowser2 = await chromium.connectOverCDP(CDP_URL, { timeout: 3000 });
-        var openCtxs2 = openBrowser2.contexts();
-        openCtx = openCtxs2.length > 0 ? openCtxs2[0] : null;
-      } catch (_) {}
-    }
-    if (!openCtx) {
-      openCtx = await chromium.launchPersistentContext(PROFILE_DIR, {
-        channel: 'chrome', headless: false,
-        args: [
-          '--no-sandbox',
-          '--disable-blink-features=AutomationControlled',
-          '--disable-infobars',
-          '--remote-debugging-port=' + CDP_PORT,
-        ],
-        ignoreDefaultArgs: ['--enable-automation'],
-      });
-    }
-    releaseLaunchLock();
+    process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.');
+    return;
   }
 
   var openPage = openCtx.pages().at(-1) || await openCtx.newPage();
   await openPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
-  try { await openPage.waitForLoadState('networkidle', { timeout: 6000 }); } catch (_) {}
+  // SPA feeds (LinkedIn/Twitter/Reddit) never reach networkidle — capping this low
+  // avoids burning the full timeout on every navigation. Content readiness is ensured
+  // by waitForPlatformContent below, not by networkidle.
+  try { await openPage.waitForLoadState('networkidle', { timeout: 2500 }); } catch (_) {}
 
   // Check for auth-wall redirect.
   var finalUrl = openPage.url();
@@ -570,6 +829,9 @@ async function main() {
     await new Promise(function(r) { setTimeout(r, 1000); });
   }
 
+  // Show the "agent is controlling this window" banner during the active read phase.
+  await showBanner(openPage, 'ADRIS is reading this page — please don’t scroll or close this window');
+
   // Wait for platform-specific content elements to appear (firecrawl pattern).
   await waitForPlatformContent(openPage, hostname);
 
@@ -577,7 +839,10 @@ async function main() {
   await progressiveScroll(openPage);
 
   // Wait for content to stabilize — text length stops growing (crawl4ai pattern).
-  await waitForContentStability(openPage, 300, 3000);
+  await waitForContentStability(openPage, 300, 1800);
+
+  // Remove the banner before extraction so it is never captured in page text.
+  await hideBanner(openPage);
 
   // If still sparse after progressive scroll, do one more pass.
   var bodyLen = await openPage.evaluate(function() {
@@ -592,10 +857,21 @@ async function main() {
   var markdown = null;
   if (hostname.includes('linkedin.com')) {
     markdown = await extractLinkedInFeed(openPage);
+    // If structured extraction found nothing, fall back to a SIMPLE fast body read.
+    // Never run the heavy DOM-scoring/domToMd path on LinkedIn — its enormous feed DOM
+    // makes that recursion hang (this was the real cause of the "stuck / login screen" bug).
+    if (!markdown) {
+      markdown = await openPage.evaluate(function() {
+        var main = document.querySelector('main') || document.body;
+        var t = (main.innerText || '').trim();
+        return t.length > 6000 ? t.slice(0, 6000) + '\n…[truncated]' : t;
+      }).catch(function() { return null; });
+    }
   }
 
   // ── General content extraction (firecrawl selector removal + crawl4ai scoring) ─
-  if (!markdown) {
+  // Skipped for LinkedIn (handled above) to avoid the hanging DOM walk.
+  if (!markdown && !hostname.includes('linkedin.com')) {
     markdown = await openPage.evaluate(function() {
       // 1. Remove known noise selectors
       var REMOVE_TAGS = ['script','style','noscript','iframe','svg','canvas','template'];
@@ -741,12 +1017,31 @@ async function main() {
     });
   }
 
+  // Extraction is done — restore a PERSISTENT banner so the user always sees that
+  // ADRIS is controlling this window and shouldn't close it. It sits on
+  // <documentElement> (not <body>), so it never pollutes the text we extracted above,
+  // and it stays visible until the window is closed at the end of the task.
+  await showBanner(openPage, 'ADRIS agent is using this window — please don’t close it. It will close automatically when the task finishes.');
+
   writeState({ url: url });
   // DON'T close context — Chrome stays open so click/fill/snapshot work on this page
   process.stdout.write(markdown || '(page loaded — no readable text)');
 }
 
-main().catch(function(e) {
+// Force a clean exit after the command completes. The CDP WebSocket would otherwise
+// keep the event loop alive forever (hang). Our detached Chrome is NOT owned by
+// Playwright, so exiting Node does not close it. Small delay lets stdout flush first.
+function finishExit(code) {
+  // Drain stdout, then hard-exit so the open CDP socket can't keep us alive.
+  try {
+    if (process.stdout.writableLength === 0) { process.exit(code); return; }
+  } catch (_) {}
+  setTimeout(function () { process.exit(code); }, 60);
+}
+
+main().then(function () {
+  finishExit(0);
+}).catch(function (e) {
   process.stderr.write(String(e && e.message ? e.message : e));
-  process.exit(1);
+  finishExit(1);
 });

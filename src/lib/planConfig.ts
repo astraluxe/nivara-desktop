@@ -14,6 +14,7 @@ export interface PlanConfig {
   auditExport:      boolean;
   voiceToCode:      boolean;
   cloudAutomations: number;        // monthly cloud automation run quota
+  advancedSearches: number | null; // monthly "Advanced" (browser verify/enrich) task quota; null = unlimited
 }
 
 export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
@@ -30,6 +31,7 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     auditExport:      false,
     voiceToCode:      false,
     cloudAutomations: 0,
+    advancedSearches: 5,
     researchParallelism: 5,
   },
   free: {
@@ -45,6 +47,7 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     auditExport:      false,
     voiceToCode:      false,
     cloudAutomations: 0,
+    advancedSearches: 5,
     researchParallelism: 5,
   },
   solo: {
@@ -60,6 +63,7 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     auditExport:      false,
     voiceToCode:      false,
     cloudAutomations: 500,
+    advancedSearches: null,   // paid → unlimited Advanced (the upgrade incentive for Free users)
     researchParallelism: 15,
   },
   builder: {
@@ -75,12 +79,13 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     auditExport:      false,
     voiceToCode:      true,
     cloudAutomations: 5_000,
+    advancedSearches: null,   // paid → unlimited Advanced
     researchParallelism: 40,
   },
   business: {
     monthlyTokens:    50_000_000,  // ~50,000 tasks/month
     label:            '~50,000 tasks/mo',
-    mcpConnections:   999,
+    mcpConnections:   50,
     canCreateMesh:    true,
     canJoinMesh:      true,
     meshDevices:      50,
@@ -90,6 +95,7 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     auditExport:      true,
     voiceToCode:      true,
     cloudAutomations: 999_999,
+    advancedSearches: null,
     researchParallelism: 100,
   },
   custom: {
@@ -105,6 +111,7 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     auditExport:      true,
     voiceToCode:      true,
     cloudAutomations: 999_999,
+    advancedSearches: null,
     researchParallelism: 200,
   },
 };

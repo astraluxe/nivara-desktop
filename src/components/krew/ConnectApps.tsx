@@ -3,6 +3,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { credentialStore } from '../../lib/krewDb';
 import ServiceSetupModal from './ServiceSetupModal';
 import { consumeServiceRequest } from '../../lib/connectAppsRequest';
+import { listMcpServers, connectMcpServer, removeMcpServer, refreshMcpServer, type McpServer } from '../../lib/krewMcp';
+import { useAuth } from '../../contexts/AuthContext';
+import { getPlanConfig } from '../../lib/planConfig';
 
 interface ServiceDef {
   id:     string;
@@ -119,7 +122,7 @@ const SERVICES: ServiceDef[] = [
   { id: 'openai',   name: 'OpenAI (GPT-4o)',     desc: 'Powers Krew and Automation with GPT-4o mini. Pay-per-use, very affordable.',            tags: ['ai','llm'],                              usedBy: ['Krew','Automation','Guard'] },
   { id: 'claude',   name: 'Claude (Anthropic)',  desc: 'Powers Krew and Automation with Claude Haiku. Pay-per-use.',                            tags: ['ai','llm'],                              usedBy: ['Krew','Automation','Guard'] },
   // Tools
-  { id: 'brave',    name: 'Web Search',          desc: 'Brave Search — 2K free searches/month. Krew uses this for any web lookup.',             tags: ['search'],                                usedBy: ['Krew'] },
+  { id: 'brave',    name: 'Web Search',          desc: 'Brave Search API (paid) — more reliable web & lead lookups than the built-in keyless search.', tags: ['search'],                                usedBy: ['Krew'] },
   { id: 'gmail',    name: 'Gmail',               desc: 'Read and search inbox via IMAP. Used by Automation email triggers and Guard.',           note: 'Read-only. Connect Google Suite below to send emails.',           tags: ['email','google'],                        usedBy: ['Krew','Automation','Guard'] },
   { id: 'google',   name: 'Google Suite',        desc: 'Calendar, Sheets, Drive, Slides — connected once, works across all four.',              note: 'Also required to send emails via Krew agents.',                   tags: ['calendar','sheets','drive','slides'],     usedBy: ['Krew','Automation'] },
   { id: 'notion',   name: 'Notion',              desc: 'Search pages, read databases, create pages. Also used by Automation → Notion output.',  tags: ['notes','docs'],                          usedBy: ['Krew','Automation'] },
@@ -166,7 +169,9 @@ export default function ConnectApps({ onClose }: Props) {
   const [search,    setSearch]    = useState('');
 
   const reload = useCallback(() => {
-    credentialStore.list().then(setConnected).catch(() => {});
+    credentialStore.list()
+      .then((ids) => setConnected(ids.filter((id) => !id.startsWith('__'))))
+      .catch(() => {});
   }, []);
 
   useEffect(() => { reload(); }, [reload]);
@@ -185,6 +190,18 @@ export default function ConnectApps({ onClose }: Props) {
   async function disconnectAll() {
     await Promise.all(connected.map(s => credentialStore.delete(s).catch(() => {})));
     reload();
+  }
+
+  // Higgsfield is a real MCP server — route its tile into the MCP connect flow
+  // (the live protocol path) instead of the static credential modal.
+  function openService(id: string) {
+    if (id === 'higgsfield') {
+      window.dispatchEvent(new CustomEvent('nv-mcp-prefill', {
+        detail: { name: 'Higgsfield AI', url: 'https://mcp.higgsfield.ai/mcp' },
+      }));
+      return;
+    }
+    setSetup(id);
   }
 
   const filtered = SERVICES.filter(s => {
@@ -240,6 +257,8 @@ export default function ConnectApps({ onClose }: Props) {
 
         {/* Grid */}
         <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-5">
+          <McpSection />
+
           {connectedServices.length > 0 && (
             <section>
               <div className="flex items-center justify-between mb-2">
@@ -251,7 +270,7 @@ export default function ConnectApps({ onClose }: Props) {
               </div>
               <div className="grid grid-cols-2 gap-2.5">
                 {connectedServices.map(s => (
-                  <ServiceCard key={s.id} service={s} isConnected onConnect={() => setSetup(s.id)} onDisconnect={() => disconnect(s.id)} />
+                  <ServiceCard key={s.id} service={s} isConnected onConnect={() => openService(s.id)} onDisconnect={() => disconnect(s.id)} />
                 ))}
               </div>
             </section>
@@ -265,7 +284,7 @@ export default function ConnectApps({ onClose }: Props) {
               </div>
               <div className="grid grid-cols-2 gap-2.5">
                 {availableServices.map(s => (
-                  <ServiceCard key={s.id} service={s} isConnected={false} onConnect={() => setSetup(s.id)} onDisconnect={() => {}} />
+                  <ServiceCard key={s.id} service={s} isConnected={false} onConnect={() => openService(s.id)} onDisconnect={() => {}} />
                 ))}
               </div>
             </section>
@@ -383,5 +402,205 @@ function ServiceCard({ service, isConnected, onConnect, onDisconnect }: {
         )}
       </div>
     </div>
+  );
+}
+
+// ─── Custom MCP servers ───────────────────────────────────────────────────────
+// Connect Krew to ANY Model Context Protocol server by URL. The server's tools
+// are discovered automatically and handed to every Krew agent.
+
+// Popular hosted MCP servers that work with a plain URL (+ optional token) — no
+// developer setup, no GitHub. One click prefills the form. Users can still paste
+// any other server URL manually.
+interface McpPreset { name: string; url: string; desc: string; auth: 'none' | 'optional' | 'token' }
+const MCP_PRESETS: McpPreset[] = [
+  { name: 'DeepWiki',      url: 'https://mcp.deepwiki.com/mcp',  desc: 'Ask anything about any public GitHub repo', auth: 'none' },
+  { name: 'Hugging Face',  url: 'https://huggingface.co/mcp',    desc: 'Search AI models, datasets & spaces',        auth: 'optional' },
+  { name: 'Context7',      url: 'https://mcp.context7.com/mcp',  desc: 'Up-to-date docs for any code library',       auth: 'optional' },
+  { name: 'Higgsfield AI', url: 'https://mcp.higgsfield.ai/mcp', desc: '30+ video models — Veo, Sora, Kling…',        auth: 'token' },
+];
+
+function McpSection() {
+  const { profile } = useAuth();
+  const cap = getPlanConfig(profile?.plan ?? 'explore').mcpConnections;
+
+  const [servers,    setServers]    = useState<McpServer[]>([]);
+  const [showForm,   setShowForm]   = useState(false);
+  const [name,       setName]       = useState('');
+  const [url,        setUrl]        = useState('');
+  const [token,      setToken]      = useState('');
+  const [busy,       setBusy]       = useState(false);
+  const [error,      setError]      = useState('');
+
+  const reload = useCallback(() => {
+    listMcpServers().then(setServers).catch(() => {});
+  }, []);
+  useEffect(() => { reload(); }, [reload]);
+
+  // Prefill the form when another card (e.g. the Higgsfield tile) routes here.
+  useEffect(() => {
+    const onPrefill = (e: Event) => {
+      const d = (e as CustomEvent<{ name?: string; url?: string }>).detail || {};
+      setName(d.name ?? ''); setUrl(d.url ?? ''); setToken(''); setError('');
+      setShowForm(true);
+    };
+    window.addEventListener('nv-mcp-prefill', onPrefill);
+    return () => window.removeEventListener('nv-mcp-prefill', onPrefill);
+  }, []);
+
+  function prefill(p: McpPreset) {
+    setName(p.name); setUrl(p.url); setToken(''); setError(''); setShowForm(true);
+  }
+
+  const atCap = servers.length >= cap;
+  const connectedUrls = new Set(servers.map((s) => s.url));
+
+  async function add() {
+    setError('');
+    setBusy(true);
+    try {
+      await connectMcpServer({ name, url, authValue: token });
+      setName(''); setUrl(''); setToken('');
+      setShowForm(false);
+      reload();
+      window.dispatchEvent(new Event('nv-mcp-changed'));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(id: string) {
+    await removeMcpServer(id).catch(() => {});
+    reload();
+    window.dispatchEvent(new Event('nv-mcp-changed'));
+  }
+
+  const [refreshing, setRefreshing] = useState<string | null>(null);
+  async function refresh(id: string) {
+    setRefreshing(id);
+    try {
+      await refreshMcpServer(id);
+      reload();
+      window.dispatchEvent(new Event('nv-mcp-changed'));
+    } catch { /* leave existing tools as-is on failure */ }
+    finally { setRefreshing(null); }
+  }
+
+  const totalTools = servers.reduce((n, s) => n + s.tools.length, 0);
+
+  return (
+    <section>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-accent" />
+          <p className="text-[11px] font-mono text-nv-muted uppercase tracking-widest">
+            MCP Servers · {servers.length}{totalTools > 0 ? ` · ${totalTools} tools` : ''}
+          </p>
+        </div>
+        <span className="text-[10px] font-mono text-nv-faint">{servers.length}/{cap === 999 ? '∞' : cap} on your plan</span>
+      </div>
+
+      <div className="rounded-xl bg-nv-surface border border-nv-border p-3 flex flex-col gap-3">
+        <p className="text-[11px] text-nv-muted leading-relaxed">
+          Connect any <span className="text-nv-text font-medium">MCP server</span> by URL and Krew agents instantly gain its tools —
+          Notion, Linear, Zapier, Composio, Higgsfield, or your own. Paste the server URL, add a token if it needs one, and we discover everything it can do.
+        </p>
+
+        {/* Connected MCP servers */}
+        {servers.map((s) => (
+          <div key={s.id} className="flex items-center gap-2.5 p-2.5 rounded-lg bg-nv-bg border border-nv-border">
+            <div className="w-7 h-7 rounded-lg bg-nv-surface flex items-center justify-center shrink-0 border border-nv-border text-accent">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="2" width="8" height="8" rx="1.5"/><rect x="14" y="2" width="8" height="8" rx="1.5"/><rect x="8" y="14" width="8" height="8" rx="1.5"/>
+                <path d="M6 10v2a2 2 0 0 0 2 2h0M18 10v2a2 2 0 0 1-2 2h0"/>
+              </svg>
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-1.5">
+                <p className="text-[12px] font-semibold text-nv-text leading-tight truncate">{s.name}</p>
+                <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-nv-green/15 text-nv-green font-mono leading-none shrink-0">{s.tools.length} tools</span>
+              </div>
+              <p className="text-[10px] text-nv-faint font-mono truncate">{s.url}</p>
+            </div>
+            <button onClick={() => refresh(s.id)} disabled={refreshing === s.id} className="text-[11px] px-2.5 py-1.5 rounded-lg border border-nv-border shrink-0 text-nv-muted hover:border-accent/50 hover:text-accent transition-fast font-mono disabled:opacity-50">
+              {refreshing === s.id ? '…' : 'Refresh'}
+            </button>
+            <button onClick={() => remove(s.id)} className="text-[11px] px-2.5 py-1.5 rounded-lg border border-nv-border shrink-0 text-nv-muted hover:border-nv-bad hover:text-nv-bad transition-fast font-mono">
+              Remove
+            </button>
+          </div>
+        ))}
+
+        {/* Add form */}
+        {showForm ? (
+          <div className="flex flex-col gap-2 p-2.5 rounded-lg bg-nv-bg border border-nv-border">
+            <input
+              value={name} onChange={(e) => setName(e.target.value)}
+              placeholder="Name (e.g. Notion)"
+              className="w-full bg-nv-surface border border-nv-border rounded-lg px-3 py-1.5 text-[12px] text-nv-text outline-none focus:border-accent transition-fast placeholder:text-nv-faint"
+            />
+            <input
+              value={url} onChange={(e) => setUrl(e.target.value)}
+              placeholder="MCP server URL (https://…/mcp)"
+              className="w-full bg-nv-surface border border-nv-border rounded-lg px-3 py-1.5 text-[12px] text-nv-text outline-none focus:border-accent transition-fast placeholder:text-nv-faint font-mono"
+            />
+            <input
+              value={token} onChange={(e) => setToken(e.target.value)}
+              placeholder="Access token — optional (only if the server needs auth)"
+              type="password"
+              className="w-full bg-nv-surface border border-nv-border rounded-lg px-3 py-1.5 text-[12px] text-nv-text outline-none focus:border-accent transition-fast placeholder:text-nv-faint"
+            />
+            {error && <p className="text-[10px] text-nv-bad leading-snug font-mono">{error}</p>}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={add}
+                disabled={busy || !url.trim()}
+                className="text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent/85 transition-fast font-mono font-medium disabled:opacity-40"
+              >
+                {busy ? 'Connecting…' : 'Connect & discover tools'}
+              </button>
+              <button onClick={() => { setShowForm(false); setError(''); }} className="text-[11px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text transition-fast font-mono">
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Popular servers — one click prefills the form */}
+            <div className="flex flex-col gap-1.5">
+              <p className="text-[10px] font-mono text-nv-faint uppercase tracking-widest">Popular — one click to add</p>
+              <div className="grid grid-cols-2 gap-2">
+                {MCP_PRESETS.filter((p) => !connectedUrls.has(p.url)).map((p) => (
+                  <button
+                    key={p.url}
+                    onClick={() => atCap ? undefined : prefill(p)}
+                    disabled={atCap}
+                    className="text-left p-2.5 rounded-lg bg-nv-bg border border-nv-border hover:border-accent/40 transition-fast disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <div className="flex items-center justify-between gap-1.5">
+                      <span className="text-[12px] font-semibold text-nv-text truncate">{p.name}</span>
+                      <span className={`text-[8px] font-mono px-1.5 py-0.5 rounded shrink-0 ${
+                        p.auth === 'none' ? 'bg-nv-green/15 text-nv-green' : 'bg-nv-yellow/15 text-nv-yellow'
+                      }`}>{p.auth === 'none' ? 'no key' : p.auth === 'optional' ? 'key optional' : 'needs token'}</span>
+                    </div>
+                    <p className="text-[10px] text-nv-muted leading-snug mt-0.5 line-clamp-2">{p.desc}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <button
+              onClick={() => atCap ? undefined : setShowForm(true)}
+              disabled={atCap}
+              className="self-start text-[11px] px-3 py-1.5 rounded-lg border border-dashed border-accent/50 text-accent hover:bg-accent/8 transition-fast font-mono font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {atCap ? `Plan limit reached (${cap}) — upgrade for more` : '+ Add another by URL'}
+            </button>
+          </>
+        )}
+      </div>
+    </section>
   );
 }

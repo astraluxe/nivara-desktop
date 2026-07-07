@@ -18,6 +18,10 @@ interface Props {
   getTerminalContext: () => string;
   onRunInTerminal: (cmd: string) => void;
   onInsertAtCursor: (text: string) => void;
+  onApplyToFile?: (path: string, code: string) => void; // snapshots + writes + refreshes editor
+  onRevert?: () => void;                                  // undo the last applied change
+  canRevert?: boolean;
+  protectedFiles?: string[];                              // files the user marked as protected
 }
 
 interface DisplayMessage {
@@ -220,9 +224,40 @@ function MessageBubble({ msg, onRun, onInsert, onApply, applyLabel }: {
   );
 }
 
+// Coder slash commands — typing "/" drops a ready instruction about the open file into the input.
+type CoderSlash = { cmd: string; label: string; desc: string; value: string };
+const CODER_SLASH: CoderSlash[] = [
+  { cmd: 'explain',  label: 'Explain code',   desc: 'Explain what the open file does',            value: 'Explain what this file does, step by step.' },
+  { cmd: 'fix',      label: 'Fix bugs',       desc: 'Find & fix bugs in the open file',           value: 'Find and fix any bugs or errors in this file. Return the corrected file.' },
+  { cmd: 'refactor', label: 'Refactor',       desc: 'Clean up without changing behavior',         value: 'Refactor this file for clarity and simplicity WITHOUT changing its behavior. Return the full file.' },
+  { cmd: 'test',     label: 'Write tests',    desc: 'Generate unit tests',                        value: 'Write unit tests for this file.' },
+  { cmd: 'comment',  label: 'Add comments',   desc: 'Document the code',                           value: 'Add clear, concise comments and docstrings to this file. Return the full file.' },
+  { cmd: 'types',    label: 'Fix types',      desc: 'Add / fix TypeScript types',                 value: 'Add or fix the TypeScript types in this file. Return the full file.' },
+  { cmd: 'optimize', label: 'Optimise',       desc: 'Improve performance',                        value: 'Optimise this file for performance without changing its behavior. Explain the changes.' },
+  { cmd: 'review',   label: 'Review',         desc: 'List issues & improvements',                 value: 'Review this file and list any bugs, risks, and improvements — do not rewrite it yet.' },
+];
+function CoderSlashIcon({ name }: { name: string }) {
+  const p: Record<string, React.ReactNode> = {
+    explain:  <><circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .8-1 1.7M12 17h.01" /></>,
+    fix:      <><path d="M14 7l3 3-8 8-3 1 1-3z" /><path d="M15 6l3 3" /></>,
+    refactor: <><path d="M4 7h11M4 7l3-3M4 7l3 3" /><path d="M20 17H9M20 17l-3-3M20 17l-3 3" /></>,
+    test:     <><path d="M9 3h6M10 3v5l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3" /></>,
+    comment:  <><path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></>,
+    types:    <><path d="M4 7h7M7.5 7v10M12 11h8M16 11v6" /></>,
+    optimize: <><path d="M13 2L4 14h6l-1 8 9-12h-6z" /></>,
+    review:   <><circle cx="11" cy="11" r="7" /><path d="M20 20l-3-3M8.5 11l2 2 3.5-4" /></>,
+  };
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      {p[name] ?? <circle cx="12" cy="12" r="9" />}
+    </svg>
+  );
+}
+
 export default function AIChat({
   projectPath, currentFileContent, currentFilePath, dirContext,
   getTerminalContext, onRunInTerminal, onInsertAtCursor,
+  onApplyToFile, onRevert, canRevert, protectedFiles,
 }: Props) {
   const [mode, setMode]               = useState<ConnectionMode>('nivara');
   const [apiKey, setApiKey]           = useState('');
@@ -233,6 +268,16 @@ export default function AIChat({
   const [messages, setMessages]           = useState<DisplayMessage[]>([]);
   const [input, setInput]                 = useState('');
   const [busy, setBusy]                   = useState(false);
+  // Slash-command menu for the coder chat.
+  const [slashOpen, setSlashOpen]         = useState(false);
+  const [slashIdx, setSlashIdx]           = useState(0);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const activeSlashRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => { if (slashOpen) activeSlashRef.current?.scrollIntoView({ block: 'nearest' }); }, [slashIdx, slashOpen]);
+  const slashQuery = slashOpen ? input.replace(/^\//, '').toLowerCase().trim() : '';
+  const slashMatches = slashOpen ? CODER_SLASH.filter((c) => c.cmd.startsWith(slashQuery) || c.label.toLowerCase().includes(slashQuery) || c.desc.toLowerCase().includes(slashQuery)) : [];
+  const onInputChange = (v: string) => { setInput(v); const open = /^\/[a-z]*$/i.test(v.trim()); setSlashOpen(open); if (open) setSlashIdx(0); };
+  const runSlash = (c: CoderSlash) => { setSlashOpen(false); setSlashIdx(0); setInput(c.value); setTimeout(() => { const el = inputRef.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0); };
   const [sessionId, setSessionId]         = useState<string | null>(null);
   const [showHistory, setShowHistory]     = useState(false);
   const [sessions, setSessions]           = useState<ChatSession[]>([]);
@@ -321,6 +366,13 @@ export default function AIChat({
     if (currentFilePath) {
       parts.push(`Currently open file: ${currentFilePath}\n\`\`\`\n${currentFileContent.slice(0, 6000)}\n\`\`\``);
     }
+    if (protectedFiles && protectedFiles.length > 0) {
+      parts.push(
+        `PROTECTED FILES — the user has locked these and does NOT want them changed casually:\n` +
+        protectedFiles.map((p) => `- ${p}`).join('\n') +
+        `\nAvoid editing a protected file unless the user explicitly asks for that exact file. If you must change one, say so clearly first. Any write to a protected file is held until the user approves it.`
+      );
+    }
     const term = getTerminalContext();
     if (term.trim()) parts.push(`Last terminal output:\n\`\`\`\n${term}\n\`\`\``);
     const coderSkills = getActiveSkillsForCoder();
@@ -338,6 +390,21 @@ export default function AIChat({
   async function send() {
     const text = input.trim();
     if (!text || busy) return;
+
+    // Deterministic revert: if the user just asks to undo/revert the last change,
+    // restore the snapshot directly instead of asking the AI to regenerate old code.
+    if (onRevert && /^(?:(?:please|pls|hey|can you|could you|can u|could u|would you|plz)\s+)*(revert|undo|roll ?back)( the| that| my)?( last| previous| recent)?( change| changes| edit| edits| file)?(?:\s+(?:please|pls|plz))?[.!]?$/i.test(text.trim())) {
+      setInput('');
+      setMessages((prev) => [...prev, { role: 'user', content: text }]);
+      if (canRevert) {
+        onRevert();
+        setMessages((prev) => [...prev, { role: 'assistant', content: '↩ Reverted the last change to the open file.' }]);
+      } else {
+        setMessages((prev) => [...prev, { role: 'assistant', content: 'Nothing to revert — no recent changes are recorded for this file.' }]);
+      }
+      return;
+    }
+
     const tokenCap = planCfg.monthlyTokens;
     if (tokenCap !== null && monthlyUsed >= tokenCap) {
       setShowQuotaUpgrade(true);
@@ -386,13 +453,15 @@ export default function AIChat({
           trackTokenUsage('coder', chars);
           setMonthlyUsed(prev => prev + Math.ceil(chars / 4));
         }
-        // Auto-apply: if a file is open and AI returned exactly one code block, write it immediately
+        // Auto-apply: if a file is open and AI returned exactly one code block, write it
+        // immediately — via onApplyToFile so the change is snapshotted (revertable) and the editor refreshes.
         if (currentFilePath) {
           const codeBlocks = [...assistantText.matchAll(/```(?:\w+)?\n?([\s\S]*?)```/g)];
           if (codeBlocks.length === 1) {
             const code = codeBlocks[0][1].trim();
             if (code.length > 30) {
-              invoke('write_file', { path: currentFilePath, content: code }).catch(() => {});
+              if (onApplyToFile) onApplyToFile(currentFilePath, code);
+              else invoke('write_file', { path: currentFilePath, content: code }).catch(() => {});
             }
           }
         }
@@ -561,7 +630,7 @@ export default function AIChat({
                 key={i} msg={msg}
                 onRun={onRunInTerminal}
                 onInsert={onInsertAtCursor}
-                onApply={currentFilePath ? (code: string) => invoke('write_file', { path: currentFilePath, content: code }) : undefined}
+                onApply={currentFilePath ? (code: string) => { if (onApplyToFile) onApplyToFile(currentFilePath, code); else invoke('write_file', { path: currentFilePath, content: code }); } : undefined}
                 applyLabel={currentFilePath ? currentFilePath.split(/[\\/]/).pop() : undefined}
               />
             ))}
@@ -577,7 +646,7 @@ export default function AIChat({
             <button className="ml-1.5 underline opacity-60" onClick={() => { setVoiceErr(null); setVoiceStatus('idle'); }}>dismiss</button>
           </p>
         )}
-        <div className="flex gap-2">
+        <div className="flex gap-2 relative">
           {/* Mic button */}
           <button
             title={
@@ -614,16 +683,47 @@ export default function AIChat({
             )}
           </button>
 
+          {slashOpen && slashMatches.length > 0 && (
+            <div className="absolute bottom-full left-0 mb-2 w-[280px] max-h-[260px] overflow-y-auto rounded-xl border border-nv-border bg-nv-surface shadow-xl z-30 py-1">
+              <div className="px-3 py-1 text-[9px] font-mono uppercase tracking-wide text-nv-faint">Commands · about the open file</div>
+              {slashMatches.map((c, idx) => (
+                <button
+                  key={c.cmd}
+                  ref={idx === slashIdx ? activeSlashRef : undefined}
+                  type="button"
+                  onMouseEnter={() => setSlashIdx(idx)}
+                  onClick={() => runSlash(c)}
+                  className={`w-full text-left flex items-center gap-2.5 px-3 py-1.5 transition-fast ${idx === slashIdx ? 'bg-nv-surface2 text-nv-text' : 'text-nv-muted hover:bg-nv-surface2/60'}`}
+                >
+                  <span className={`w-5 flex items-center justify-center shrink-0 ${idx === slashIdx ? 'text-accent' : 'text-nv-faint'}`}><CoderSlashIcon name={c.cmd} /></span>
+                  <span className="flex-1 min-w-0">
+                    <span className="flex items-center gap-1.5">
+                      <span className="text-[12px] font-semibold text-nv-text">{c.label}</span>
+                      <span className="text-[9px] font-mono text-nv-faint">/{c.cmd}</span>
+                    </span>
+                    <span className="block text-[10px] text-nv-muted truncate">{c.desc}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
           <textarea
+            ref={inputRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => onInputChange(e.target.value)}
             onKeyDown={(e) => {
+              if (slashOpen && slashMatches.length > 0) {
+                if (e.key === 'ArrowDown') { e.preventDefault(); setSlashIdx((i) => (i + 1) % slashMatches.length); return; }
+                if (e.key === 'ArrowUp')   { e.preventDefault(); setSlashIdx((i) => (i - 1 + slashMatches.length) % slashMatches.length); return; }
+                if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); runSlash(slashMatches[slashIdx] ?? slashMatches[0]); return; }
+                if (e.key === 'Escape')    { e.preventDefault(); setSlashOpen(false); return; }
+              }
               if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
             }}
-            placeholder={voiceStatus === 'recording' ? 'Listening… click mic or Ctrl+Shift+V to stop' : 'Ask about your code… (Shift+Enter for newline)'}
+            placeholder={voiceStatus === 'recording' ? 'Listening… click mic or Ctrl+Shift+V to stop' : 'Ask about your code…   type / for commands'}
             rows={2}
             className="flex-1 bg-nv-bg border border-nv-border rounded-lg px-2.5 py-1.5
-              text-[11px] text-nv-text outline-none focus:border-accent transition-fast
+              text-[12px] text-nv-text outline-none focus:border-accent transition-fast
               resize-none placeholder:text-nv-faint"
           />
           {busy ? (

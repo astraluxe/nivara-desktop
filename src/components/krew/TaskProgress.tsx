@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef } from 'react';
+﻿import { useEffect, useRef, useState } from 'react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -67,6 +67,10 @@ export function TaskProgress({ phases, onDismiss, recommendConnect, onConnectApp
   const doneCount    = phases.filter((p) => p.status === 'done' || p.status === 'error').length;
   const totalCount   = phases.length;
   const progressPct  = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
+  const allDone      = totalCount > 0 && doneCount === totalCount;
+
+  // Expand to see the full workflow top-to-bottom (step 1 → last). Collapsed by default.
+  const [expanded, setExpanded] = useState(false);
 
   // Slide-in animation on mount
   const ref = useRef<HTMLDivElement>(null);
@@ -89,19 +93,35 @@ export function TaskProgress({ phases, onDismiss, recommendConnect, onConnectApp
       ref={ref}
       className="mx-3 mb-2 rounded-xl border border-nv-border bg-nv-surface overflow-hidden"
     >
-      {/* Top row — progress bar + dismiss */}
+      {/* Top row — expand toggle + progress bar + dismiss */}
       <div className="flex items-center gap-2.5 px-3 py-2 border-b border-nv-border/60">
-        <span className="text-[10px] font-mono text-nv-muted shrink-0">Working…</span>
-        <span className="text-[10px] font-mono text-accent shrink-0">
+        {/* Expand / collapse chevron — reveals the step-by-step workflow */}
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="text-nv-faint hover:text-nv-text transition-fast shrink-0"
+          title={expanded ? 'Collapse workflow' : 'Expand to see each step'}
+          aria-expanded={expanded}
+        >
+          <svg
+            width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+            strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+            style={{ transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.18s ease' }}
+          >
+            <path d="M6 4l4 4-4 4" />
+          </svg>
+        </button>
+        <span className="text-[10px] font-mono text-nv-muted shrink-0">{allDone ? 'Done' : 'Working…'}</span>
+        <span className={`text-[10px] font-mono shrink-0 ${allDone ? 'text-green-400' : 'text-accent'}`}>
           {progressPct}%
         </span>
         {/* Progress bar */}
         <div className="flex-1 h-1.5 rounded-full bg-nv-bg overflow-hidden">
           <div
-            className="h-full rounded-full bg-accent transition-all duration-500"
+            className={`h-full rounded-full transition-all duration-500 ${allDone ? 'bg-green-400' : 'bg-accent'}`}
             style={{ width: `${progressPct}%` }}
           />
         </div>
+        <span className="text-[10px] font-mono text-nv-faint shrink-0 tabular-nums">{doneCount}/{totalCount}</span>
         <button
           onClick={onDismiss}
           className="text-nv-faint hover:text-nv-text transition-fast shrink-0 ml-1"
@@ -113,27 +133,54 @@ export function TaskProgress({ phases, onDismiss, recommendConnect, onConnectApp
         </button>
       </div>
 
-      {/* Phase list — scrollable row */}
-      <div className="flex items-center gap-3 px-3 py-2 overflow-x-auto">
-        {phases.map((phase, i) => (
-          <div key={phase.id} className="flex items-center gap-1.5 shrink-0">
-            {i > 0 && (
-              <span className="text-nv-faint/40 text-[10px] font-mono mr-1">·</span>
-            )}
-            <PhaseIcon status={phase.status} />
-            <span
-              className={`text-[10px] font-mono leading-tight ${
-                phase.status === 'done'    ? 'text-accent line-through opacity-70' :
-                phase.status === 'running' ? 'text-nv-text font-semibold' :
-                phase.status === 'error'   ? 'text-red-400' :
-                'text-nv-faint'
-              }`}
-            >
-              {phase.label}
-            </span>
-          </div>
-        ))}
-      </div>
+      {expanded ? (
+        /* Expanded — full workflow, step 1 → last, top-to-bottom */
+        <div className="flex flex-col px-3 py-2 gap-0.5">
+          {phases.map((phase, i) => (
+            <div key={phase.id} className="flex items-start gap-2 py-1">
+              {/* Step number + connector */}
+              <div className="flex flex-col items-center shrink-0" style={{ width: 16 }}>
+                <span className="text-[9px] font-mono text-nv-faint leading-none mt-0.5">{i + 1}</span>
+                {i < phases.length - 1 && <span className="w-px flex-1 bg-nv-border/70 mt-1" style={{ minHeight: 10 }} />}
+              </div>
+              <span className="mt-0.5"><PhaseIcon status={phase.status} /></span>
+              <span
+                className={`text-[11px] font-mono leading-snug flex-1 ${
+                  phase.status === 'done'    ? 'text-nv-muted' :
+                  phase.status === 'running' ? 'text-nv-text font-semibold' :
+                  phase.status === 'error'   ? 'text-red-400' :
+                  'text-nv-faint'
+                }`}
+              >
+                {phase.label}
+                {phase.status === 'running' && <span className="text-accent"> · running…</span>}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        /* Collapsed — compact scrollable strip */
+        <div className="flex items-center gap-3 px-3 py-2 overflow-x-auto">
+          {phases.map((phase, i) => (
+            <div key={phase.id} className="flex items-center gap-1.5 shrink-0">
+              {i > 0 && (
+                <span className="text-nv-faint/40 text-[10px] font-mono mr-1">·</span>
+              )}
+              <PhaseIcon status={phase.status} />
+              <span
+                className={`text-[10px] font-mono leading-tight ${
+                  phase.status === 'done'    ? 'text-accent line-through opacity-70' :
+                  phase.status === 'running' ? 'text-nv-text font-semibold' :
+                  phase.status === 'error'   ? 'text-red-400' :
+                  'text-nv-faint'
+                }`}
+              >
+                {phase.label}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Recommendation row (amber tip) */}
       {hasRecommendations && (

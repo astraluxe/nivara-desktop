@@ -11,15 +11,6 @@ const SEV: Record<string, { text: string; bg: string; border: string }> = {
   crit: { text: 'text-nv-bad',  bg: 'bg-red-600/20',     border: 'border-red-600/40'     },
 };
 
-const TYPE_ICON: Record<string, string> = {
-  contract_scan:     '📄',
-  phishing_detected: '🎣',
-  suspicious_login:  '🔐',
-  cve_found:         '🔎',
-  compliance_check:  '✅',
-  malicious_domain:  '🚫',
-};
-
 const TYPE_LABEL: Record<string, string> = {
   contract_scan:     'Contract scan',
   phishing_detected: 'Phishing detected',
@@ -28,6 +19,28 @@ const TYPE_LABEL: Record<string, string> = {
   compliance_check:  'Compliance check',
   malicious_domain:  'Malicious domain',
 };
+
+// Crisp monochrome line icons (enterprise look — no emoji).
+function TypeIcon({ type, className = '' }: { type: string; className?: string }) {
+  const p = { width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+    strokeWidth: 1.8, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, className };
+  switch (type) {
+    case 'contract_scan':
+      return <svg {...p}><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg>;
+    case 'phishing_detected':
+      return <svg {...p}><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></svg>;
+    case 'suspicious_login':
+      return <svg {...p}><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 019.9-1"/></svg>;
+    case 'cve_found':
+      return <svg {...p}><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v3M11 14h.01"/></svg>;
+    case 'compliance_check':
+      return <svg {...p}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>;
+    case 'malicious_domain':
+      return <svg {...p}><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8M3 12h18"/></svg>;
+    default:
+      return <svg {...p}><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>;
+  }
+}
 
 function EventRow({ ev, onDelete }: { ev: GuardEvent; onDelete: (id: string) => void }) {
   const s    = SEV[ev.severity] ?? SEV.low;
@@ -44,8 +57,8 @@ function EventRow({ ev, onDelete }: { ev: GuardEvent; onDelete: (id: string) => 
 
   return (
     <div className="group flex items-start gap-3 p-3 border-b border-nv-border/50 last:border-0 hover:bg-nv-surface2 transition-fast">
-      <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 text-sm ${s.bg} border ${s.border}`}>
-        {TYPE_ICON[ev.event_type] ?? '•'}
+      <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${s.bg} border ${s.border} ${s.text}`}>
+        <TypeIcon type={ev.event_type} />
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-0.5">
@@ -81,40 +94,34 @@ function EventRow({ ev, onDelete }: { ev: GuardEvent; onDelete: (id: string) => 
   );
 }
 
-function ThreatOrb({ score }: { score: number }) {
+function PostureGauge({ score }: { score: number }) {
   const isClean = score === 0;
   const isMed   = score > 0 && score < 50;
   const col     = isClean ? 'var(--nv-ok)' : isMed ? 'var(--nv-warn)' : 'var(--nv-bad)';
-  const label   = isClean ? 'ALL CLEAR' : isMed ? 'MONITORING' : 'AT RISK';
+  const label   = isClean ? 'SECURE' : isMed ? 'MONITORING' : 'AT RISK';
+  const sub     = isClean ? 'No active threats' : isMed ? 'Low-level activity observed' : 'Review required';
+  const r = 46, circ = 2 * Math.PI * r;
+  const dash = (Math.min(score, 100) / 100) * circ;
 
   return (
     <div className="flex flex-col items-center gap-3">
       <div className="relative flex items-center justify-center w-32 h-32">
-        {/* Pulse rings — only when threats */}
-        {!isClean && <>
-          <div className="absolute inset-0 rounded-full" style={{ background: `${col}20`, animation: 'nv-pulse-ring 2.2s ease-out infinite' }} />
-          <div className="absolute inset-0 rounded-full" style={{ background: `${col}15`, animation: 'nv-pulse-ring 2.2s ease-out 1.1s infinite' }} />
-        </>}
-        {/* Main orb */}
-        <div className="relative w-24 h-24 rounded-full flex flex-col items-center justify-center"
-          style={{
-            background: `radial-gradient(circle at 35% 30%, ${col}18, ${col}06 70%)`,
-            border: `1.5px solid ${col}50`,
-            boxShadow: isClean ? `0 0 24px ${col}15` : `0 0 32px ${col}25`,
-          }}>
-          <span className="text-2xl font-bold font-mono leading-none" style={{ color: col }}>{score}</span>
-          <span className="text-[8px] font-mono mt-0.5 tracking-widest" style={{ color: col, opacity: 0.65 }}>/ 100</span>
+        <svg width="128" height="128" className="-rotate-90">
+          <circle cx="64" cy="64" r={r} fill="none" stroke="var(--nv-surface2)" strokeWidth="6" />
+          <circle cx="64" cy="64" r={r} fill="none" stroke={col} strokeWidth="6" strokeLinecap="round"
+            strokeDasharray={`${dash} ${circ}`} style={{ transition: 'stroke-dasharray 0.9s ease' }} />
+        </svg>
+        <div className="absolute flex flex-col items-center">
+          <span className="text-[34px] font-bold font-mono leading-none" style={{ color: col }}>{score}</span>
+          <span className="text-[8px] font-mono tracking-[0.2em] mt-1 text-nv-faint">RISK INDEX</span>
         </div>
-        {/* Status dot */}
-        <div className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full border-2 border-nv-surface"
-          style={{ background: col, animation: isClean ? 'nv-breathe 3s ease-in-out infinite' : 'nv-ping-fade 1.5s ease-in-out infinite' }} />
       </div>
-      <div className="text-center">
-        <p className="text-[11px] font-bold font-mono tracking-[0.2em]" style={{ color: col }}>{label}</p>
-        <p className="text-[9px] text-nv-faint font-mono mt-0.5">
-          {isClean ? 'No threats detected' : score < 50 ? 'Low-level activity observed' : 'Review required'}
-        </p>
+      <div className="flex items-center gap-2">
+        <span className="w-2 h-2 rounded-full" style={{ background: col,
+          animation: isClean ? 'nv-breathe 3s ease-in-out infinite' : 'nv-ping-fade 1.5s ease-in-out infinite' }} />
+        <span className="text-[11px] font-bold font-mono tracking-[0.18em]" style={{ color: col }}>{label}</span>
       </div>
+      <p className="text-[9px] text-nv-faint font-mono">{sub}</p>
     </div>
   );
 }
@@ -241,7 +248,7 @@ export default function ThreatDashboard({ onScanRun }: { onScanRun?: () => void 
         {/* Left panel — threat status */}
         <div className="flex flex-col gap-4 w-[260px] shrink-0 border-r border-nv-border p-5 overflow-y-auto">
 
-          <ThreatOrb score={riskScore} />
+          <PostureGauge score={riskScore} />
 
           {/* Source note */}
           <p className="text-[9px] font-mono text-nv-faint text-center leading-relaxed px-1">
@@ -343,12 +350,14 @@ export default function ThreatDashboard({ onScanRun }: { onScanRun?: () => void 
               </div>
               <div className="grid grid-cols-3 gap-3 w-full max-w-sm mt-2">
                 {[
-                  { icon: '🎣', label: 'Inbox Scan', desc: 'Phishing detection' },
-                  { icon: '📄', label: 'Contract', desc: 'Risk analysis' },
-                  { icon: '🔎', label: 'Vulns', desc: 'CVE scanner' },
+                  { type: 'phishing_detected', label: 'Inbox Scan', desc: 'Phishing detection' },
+                  { type: 'contract_scan',     label: 'Contract',   desc: 'Risk analysis' },
+                  { type: 'cve_found',         label: 'Vulns',      desc: 'CVE scanner' },
                 ].map(a => (
-                  <div key={a.label} className="flex flex-col items-center gap-1 p-3 rounded-xl bg-nv-surface border border-nv-border text-center">
-                    <span className="text-xl">{a.icon}</span>
+                  <div key={a.label} className="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-nv-surface border border-nv-border text-center">
+                    <span className="w-8 h-8 rounded-lg bg-nv-bg border border-nv-border flex items-center justify-center text-nv-muted">
+                      <TypeIcon type={a.type} />
+                    </span>
                     <p className="text-[10px] font-medium text-nv-text">{a.label}</p>
                     <p className="text-[9px] text-nv-faint">{a.desc}</p>
                   </div>

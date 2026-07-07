@@ -1,6 +1,6 @@
 ﻿import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen, emit } from '@tauri-apps/api/event';
 import { getVersion } from '@tauri-apps/api/app';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -131,6 +131,20 @@ export default function SettingsModule() {
     saveSettings(next);
   }
 
+  // Quick Bar — the always-on-top mini chat at the top of the screen.
+  const [quickbarOn, setQuickbarOn] = useState(() => localStorage.getItem('nv-quickbar') !== 'off');
+  async function toggleQuickbar(v: boolean) {
+    setQuickbarOn(v);
+    localStorage.setItem('nv-quickbar', v ? 'on' : 'off');
+    emit('nv-quickbar-toggle', { on: v }).catch(() => {});
+    // The bar's whole point is being there at login without opening the app —
+    // so the autostart registration follows the same switch.
+    try {
+      const { enable, disable } = await import('@tauri-apps/plugin-autostart');
+      if (v) await enable(); else await disable();
+    } catch { /* autostart unavailable — bar still toggles for this session */ }
+  }
+
   return (
     <div className="h-full overflow-y-auto bg-nv-bg">
       {/* Header */}
@@ -188,6 +202,12 @@ export default function SettingsModule() {
 
         {/* Interface */}
         <Section title="Interface">
+          <Toggle
+            on={quickbarOn}
+            onChange={toggleQuickbar}
+            label="Quick Bar & corner badge"
+            desc="The adris chat bar sits at the top-center of your desktop; inside other apps it becomes a small logo at the right edge (click it to chat, right-click to hide it for 1 or 24 hours). Starts with Windows. Turn off to remove both entirely."
+          />
           <div className="py-2">
             <p className="text-[12px] text-nv-text font-medium">Theme</p>
             <p className="text-[10px] text-nv-muted mt-1">Use the theme toggle at the bottom of the sidebar (sun/moon icon) to switch between Ink (dark) and Paper (light).</p>

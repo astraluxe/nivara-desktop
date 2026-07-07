@@ -1181,6 +1181,20 @@ async fn models_pick_file(app: tauri::AppHandle) -> Result<Option<String>, Strin
     Ok(rx.await.ok().flatten())
 }
 
+// Generic file picker for the Brain — returns any chosen file's full path.
+#[tauri::command]
+async fn brain_pick_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    use tokio::sync::oneshot;
+    let (tx, rx) = oneshot::channel();
+    app.dialog()
+        .file()
+        .pick_file(move |path| {
+            let _ = tx.send(path.map(|p| p.to_string()));
+        });
+    Ok(rx.await.ok().flatten())
+}
+
 #[tauri::command]
 async fn studio_save_file(
     app: tauri::AppHandle,
@@ -2137,34 +2151,38 @@ async fn setup_agent_browser(app: tauri::AppHandle) -> Result<(), String> {
             // Re-write if the embedded version differs from what's on disk
             std::fs::read_to_string(&script_path).map(|s| s != script_src).unwrap_or(true)
         };
-        if needs_setup {
-            let node_ok = {
-                #[cfg(target_os = "windows")]
-                { use std::os::windows::process::CommandExt; std::process::Command::new("node").arg("--version").creation_flags(0x08000000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false) }
-                #[cfg(not(target_os = "windows"))]
-                { std::process::Command::new("node").arg("--version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false) }
-            };
+        let node_bin = resolve_node_exe();
+        let node_ok = {
+            #[cfg(target_os = "windows")]
+            { use std::os::windows::process::CommandExt; std::process::Command::new(&node_bin).arg("--version").creation_flags(0x08000000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false) }
+            #[cfg(not(target_os = "windows"))]
+            { std::process::Command::new(&node_bin).arg("--version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false) }
+        };
 
-            if node_ok {
-                let playwright_dir = get_playwright_dir(&app);
-                let _ = std::fs::create_dir_all(&playwright_dir);
+        if node_ok {
+            let playwright_dir = get_playwright_dir(&app);
+            let _ = std::fs::create_dir_all(&playwright_dir);
 
-                // Write the Playwright wrapper script (embedded at compile time)
+            // Deploy/update the wrapper script only when it changed.
+            if needs_setup {
                 let _ = std::fs::write(&script_path, script_src);
+            }
 
-                // Write package.json for playwright-core
-                let pkg_json = r#"{"name":"adris-agent-browser","version":"1.0.0","dependencies":{"playwright-core":"1.48.0"}}"#;
-                let _ = std::fs::write(playwright_dir.join("package.json"), pkg_json);
+            // Always ensure package.json exists.
+            let pkg_json = r#"{"name":"adris-agent-browser","version":"1.0.0","dependencies":{"playwright-core":"1.48.0"}}"#;
+            let _ = std::fs::write(playwright_dir.join("package.json"), pkg_json);
 
-                // npm install playwright-core (silent background install ~10 MB)
+            // CRITICAL: install playwright-core whenever it's missing — independent of
+            // whether the script changed. Previously this was nested under needs_setup,
+            // so installs whose script already matched ended up with no playwright-core
+            // and the browser silently never worked.
+            let already_installed = playwright_dir.join("node_modules").join("playwright-core").exists();
+            if !already_installed {
                 let dir_str = playwright_dir.to_string_lossy().to_string();
-                let already_installed = playwright_dir.join("node_modules").join("playwright-core").exists();
-                if !already_installed {
-                    #[cfg(target_os = "windows")]
-                    { use std::os::windows::process::CommandExt; let _ = std::process::Command::new("cmd").args(["/C", &format!("npm install --prefix \"{}\" playwright-core@1.48.0 --save-exact", dir_str)]).creation_flags(0x08000000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
-                    #[cfg(not(target_os = "windows"))]
-                    { let _ = std::process::Command::new("sh").args(["-c", &format!("npm install --prefix '{}' playwright-core@1.48.0 --save-exact", dir_str)]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
-                }
+                #[cfg(target_os = "windows")]
+                { use std::os::windows::process::CommandExt; let _ = std::process::Command::new("cmd").args(["/C", &format!("npm install --prefix \"{}\" playwright-core@1.48.0 --save-exact", dir_str)]).creation_flags(0x08000000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
+                #[cfg(not(target_os = "windows"))]
+                { let _ = std::process::Command::new("sh").args(["-c", &format!("npm install --prefix '{}' playwright-core@1.48.0 --save-exact", dir_str)]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
             }
         }
 
@@ -2367,6 +2385,71 @@ async fn run_agent_browser_session(app: tauri::AppHandle, session_id: String, ar
 }
 
 // ── agent-browser with persistent profile (sessions saved across tasks — user logs in once) ──
+// Resolve the Node.js executable path. The agent browser runs via `node agent-browser.js`,
+// but a GUI-launched app may NOT have node on PATH (Windows Explorer doesn't reliably pass the
+// shell PATH to launched apps), so bare `Command::new("node")` can silently fail — which made
+// the status say "opening browser" while no window ever appeared. Try the known install
+// locations first, then fall back to bare "node" (PATH) for terminal launches / custom setups.
+fn resolve_node_exe() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+        if let Ok(pf)   = std::env::var("ProgramFiles")      { candidates.push(std::path::PathBuf::from(pf).join("nodejs").join("node.exe")); }
+        if let Ok(pf86) = std::env::var("ProgramFiles(x86)") { candidates.push(std::path::PathBuf::from(pf86).join("nodejs").join("node.exe")); }
+        if let Ok(la)   = std::env::var("LOCALAPPDATA")      { candidates.push(std::path::PathBuf::from(la).join("Programs").join("nodejs").join("node.exe")); }
+        for c in candidates { if c.is_file() { return c.to_string_lossy().into_owned(); } }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        for c in ["/usr/local/bin/node", "/usr/bin/node", "/opt/homebrew/bin/node"] {
+            if std::path::Path::new(c).is_file() { return c.to_string(); }
+        }
+    }
+    "node".to_string()
+}
+
+// Append a line to the browser debug log so we can see EXACTLY what the agent browser did on
+// each call (which path ran, was node found, what came back) instead of guessing. Lives at
+// %LOCALAPPDATA%/tech.nivara.desktop/browser-debug.log.
+fn browser_debug_log(msg: &str) {
+    use std::io::Write;
+    let dir = {
+        #[cfg(target_os = "windows")]
+        { std::env::var("LOCALAPPDATA").ok().map(|p| std::path::PathBuf::from(p).join("tech.nivara.desktop")) }
+        #[cfg(not(target_os = "windows"))]
+        { std::env::var("HOME").ok().map(|p| std::path::PathBuf::from(p).join(".local").join("share").join("tech.nivara.desktop")) }
+    };
+    if let Some(d) = dir {
+        let _ = std::fs::create_dir_all(&d);
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(d.join("browser-debug.log")) {
+            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|x| x.as_secs()).unwrap_or(0);
+            let _ = writeln!(f, "[{}] {}", ts, msg);
+        }
+    }
+}
+
+// Build marker: agent-browser.js v4 (2026-07-02) — `openmany url1|url2|…` batch command:
+// opens several URLs as concurrent tabs in the ONE detached Chrome (single process, many
+// pages) and returns ===SEP===-delimited text per URL, so the lead tools read in parallel
+// instead of ~14s/page serially. No extra window (that mess was separate processes).
+// v4.1: openmany non-LinkedIn extraction also surfaces mailto:/tel: hrefs so enrich finds
+// emails/phones that live only in link hrefs (parity with the single-page `open` path).
+// v4.2: openmany shows the "agent using this window" banner on each batch tab, and reads
+// LinkedIn /in/ PROFILE pages via innerText (identity is at the top, not in the feed).
+// v4.3: openmany surfaces LinkedIn /in/ result links from search pages (decodes DuckDuckGo/
+// Google redirect hrefs) so the browser-based LinkedIn search fallback works when the headless
+// HTTP search engines throttle — recovers profiles that exist but were being left blank.
+// v4.4: openmany now recognises /company/ pages too (not just /in/) — a lead-table row isn't
+// always about a named PERSON (e.g. "find internships" produces rows about ORGANISATIONS with
+// no specific contact); reads a company page the same way as a profile (innerText, identity at
+// the top) instead of running the feed extractor on it, and the search-result redirect decoder
+// surfaces /company/ links too.
+// Build marker: agent-browser.js v3 (2026-06-29) — absolute-path node resolution so the
+// visible browser opens even when GUI-launched without node on PATH; tool-call stop sequences.
+// Build marker: agent-browser.js v2 (2026-06-26) — detached single-window Chrome, clean
+// process exit (no CDP hang), class-independent LinkedIn extractor with impressions,
+// on-page "agent controlling" banner, faster waits. Bumping this comment forces a
+// recompile so include_str! re-embeds the latest scripts/agent-browser/index.js.
 #[tauri::command]
 async fn run_browser_persistent(app: tauri::AppHandle, args: String) -> Result<String, String> {
     use std::process::Command;
@@ -2428,20 +2511,11 @@ async fn run_browser_persistent(app: tauri::AppHandle, args: String) -> Result<S
         }
     };
 
-    // Try system PATH first
-    if let Some(r) = run_with_timeout("agent-browser".to_string(), args.clone(), persistent_dir.clone()).await {
-        return Ok(r);
-    }
-
-    // Try local binary
-    let local_bin = get_agent_browser_local_path(&app);
-    if local_bin.exists() {
-        if let Some(r) = run_with_timeout(format!("\"{}\"", local_bin.display()), args.clone(), persistent_dir.clone()).await {
-            return Ok(r);
-        }
-    }
-
-    // Option B: Node.js + playwright-core (system Chrome, persistent profile, visible window)
+    // PRIMARY: Node.js + playwright-core (our custom agent-browser.js).
+    // This is the script we control — single detached Chrome window, persistent
+    // logged-in profile, LinkedIn/Reddit extractors, contenteditable typing.
+    // It MUST be tried before the generic vercel-labs agent-browser.exe binary,
+    // which opens its own windows and has none of our custom logic.
     let script_path = get_playwright_script_path(&app);
     if script_path.exists() {
         // Parse args: "open \"https://url\"" → cmd="open", url="https://url"
@@ -2453,7 +2527,10 @@ async fn run_browser_persistent(app: tauri::AppHandle, args: String) -> Result<S
         let script_path_clone = script_path.clone();
 
         let node_task = tokio::task::spawn_blocking(move || -> Option<String> {
-            let mut command = std::process::Command::new("node");
+            let node_exe = resolve_node_exe();
+            browser_debug_log(&format!("node path: cmd='{}' url='{}' node='{}' script='{}'",
+                cmd_part, url_part, node_exe, script_path_clone.display()));
+            let mut command = std::process::Command::new(&node_exe);
             command.arg(&script_path_clone);
             if !cmd_part.is_empty() { command.arg(&cmd_part); }
             if !url_part.is_empty() { command.arg(&url_part); }
@@ -2461,9 +2538,14 @@ async fn run_browser_persistent(app: tauri::AppHandle, args: String) -> Result<S
             #[cfg(target_os = "windows")]
             { use std::os::windows::process::CommandExt; command.creation_flags(0x08000000); }
 
-            let out = command.output().ok()?;
+            let out = match command.output() {
+                Ok(o) => o,
+                Err(e) => { browser_debug_log(&format!("node spawn FAILED: {} (falling through)", e)); return None; }
+            };
             let stdout = String::from_utf8_lossy(&out.stdout).to_string();
             let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            browser_debug_log(&format!("node done: exit={:?} stdout_len={} stderr={}",
+                out.status.code(), stdout.len(), stderr.chars().take(180).collect::<String>()));
 
             // If node binary not found, skip gracefully
             if stderr.contains("is not recognized") || stderr.contains("not found") || stderr.contains("No such file") {
@@ -2481,11 +2563,31 @@ async fn run_browser_persistent(app: tauri::AppHandle, args: String) -> Result<S
         });
 
         match tokio::time::timeout(std::time::Duration::from_secs(45), node_task).await {
-            Ok(Ok(Some(r))) => return Ok(r),
-            _ => {}
+            Ok(Ok(Some(r))) => { browser_debug_log(&format!("RETURNED via node ({} chars)", r.len())); return Ok(r); }
+            Ok(Ok(None))    => browser_debug_log("node path unavailable — trying fallbacks"),
+            Ok(Err(_))      => browser_debug_log("node task panicked — trying fallbacks"),
+            Err(_)          => browser_debug_log("node path TIMED OUT (45s) — trying fallbacks"),
+        }
+    } else {
+        browser_debug_log(&format!("node script MISSING at '{}' — trying fallbacks", script_path.display()));
+    }
+
+    // FALLBACK: generic agent-browser in system PATH (only if our node script is unavailable)
+    if let Some(r) = run_with_timeout("agent-browser".to_string(), args.clone(), persistent_dir.clone()).await {
+        browser_debug_log("RETURNED via PATH agent-browser fallback");
+        return Ok(r);
+    }
+
+    // FALLBACK: generic agent-browser.exe bundled binary
+    let local_bin = get_agent_browser_local_path(&app);
+    if local_bin.exists() {
+        if let Some(r) = run_with_timeout(format!("\"{}\"", local_bin.display()), args.clone(), persistent_dir.clone()).await {
+            browser_debug_log("RETURNED via bundled agent-browser.exe fallback");
+            return Ok(r);
         }
     }
 
+    browser_debug_log("agent-browser NOT INSTALLED — no path worked");
     Ok("[agent-browser not installed]".to_string())
 }
 
@@ -2643,6 +2745,67 @@ async fn krew_http_call(
         return Err(format!("HTTP {} — {}", status, text.chars().take(400).collect::<String>()));
     }
     Ok(text)
+}
+
+// ─── Generic MCP (Model Context Protocol) transport ──────────────────────────
+// Streamable-HTTP transport for talking to ANY MCP server by URL. Unlike
+// krew_http_call this exposes the response headers we need for MCP — most
+// importantly `mcp-session-id`, which the server issues on `initialize` and
+// expects echoed back on every later request. SSE-framed responses (the server
+// answers with `text/event-stream` and packs the JSON-RPC reply into `data:`
+// lines) are returned raw together with the content-type so the JS layer can
+// unwrap them. All JSON-RPC orchestration lives in the TypeScript client.
+
+#[derive(Serialize)]
+struct McpHttpResponse {
+    status:       u16,
+    body:         String,
+    session_id:   String,
+    content_type: String,
+}
+
+#[tauri::command]
+async fn mcp_http_call(
+    url:        String,
+    headers:    HashMap<String, String>,
+    body:       String,
+    session_id: Option<String>,
+) -> Result<McpHttpResponse, String> {
+    let client = reqwest::Client::new();
+    let mut req = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream");
+    for (k, v) in &headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    if let Some(sid) = session_id.as_ref() {
+        if !sid.is_empty() {
+            req = req.header("Mcp-Session-Id", sid.as_str());
+        }
+    }
+    req = req.body(body);
+
+    let resp = req.send().await.map_err(|e| e.to_string())?;
+    let status = resp.status().as_u16();
+    let out_session = resp
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .or(session_id)
+        .unwrap_or_default();
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let text = resp.text().await.unwrap_or_default();
+    if status >= 400 {
+        return Err(format!("MCP HTTP {} — {}", status, text.chars().take(400).collect::<String>()));
+    }
+    Ok(McpHttpResponse { status, body: text, session_id: out_session, content_type })
 }
 
 // ─── Gmail IMAP ───────────────────────────────────────────────────────────────
@@ -3219,7 +3382,7 @@ async fn krew_ai_stream(
                 let clean_msgs: Vec<serde_json::Value> = messages.iter().map(|m| serde_json::json!({
                     "role": m.role, "content": strip_image_markers(&m.content)
                 })).collect();
-                let mut body = serde_json::json!({ "model": model, "max_tokens": 4096, "stream": true, "messages": clean_msgs });
+                let mut body = serde_json::json!({ "model": model, "max_tokens": 4096, "stream": true, "messages": clean_msgs, "stop_sequences": ["</tool_call>", "</tool_code>"] });
                 if !sys.is_empty() { body["system"] = serde_json::Value::String(sys); }
                 let resp = reqwest::Client::new().post("https://api.anthropic.com/v1/messages")
                     .header("x-api-key", &key).header("anthropic-version", "2023-06-01")
@@ -3246,7 +3409,8 @@ async fn krew_ai_stream(
                     "role": if m.role == "assistant" { "model" } else { "user" },
                     "parts": parse_gemini_parts(&m.content)
                 })).collect();
-                let mut body = serde_json::json!({ "contents": gemini_msgs });
+                // Stop at a closed tool call so the model can't fabricate the tool result.
+                let mut body = serde_json::json!({ "contents": gemini_msgs, "generationConfig": { "stopSequences": ["</tool_call>", "</tool_code>"] } });
                 if !sys.is_empty() { body["systemInstruction"] = serde_json::json!({"parts":[{"text":sys}]}); }
                 let resp = reqwest::Client::new().post(&url).json(&body).send().await
                     .map_err(|e| { let s = e.to_string(); emit_error(s.clone()); s })?;
@@ -3294,7 +3458,7 @@ async fn krew_ai_stream(
                 let mut all_msgs: Vec<serde_json::Value> = Vec::new();
                 if !sys.is_empty() { all_msgs.push(serde_json::json!({"role":"system","content":sys})); }
                 for m in &messages { all_msgs.push(serde_json::json!({"role":m.role,"content":strip_image_markers(&m.content)})); }
-                let body = serde_json::json!({ "model": model, "messages": all_msgs, "stream": true });
+                let body = serde_json::json!({ "model": model, "messages": all_msgs, "stream": true, "stop": ["</tool_call>", "</tool_code>"] });
                 let resp = reqwest::Client::new().post(&endpoint)
                     .header(header::AUTHORIZATION, format!("Bearer {}", key))
                     .header(header::CONTENT_TYPE, "application/json").json(&body).send().await
@@ -3344,7 +3508,11 @@ async fn krew_ai_stream(
                     "role": if m.role == "assistant" { "model" } else { "user" },
                     "parts": parse_gemini_parts(&m.content)
                 })).collect();
-                let mut body = serde_json::json!({ "contents": contents, "generationConfig": { "maxOutputTokens": 32768 } });
+                // stopSequences halt generation the instant a tool call closes, so the model
+                // cannot keep going and HALLUCINATE the tool's result (the bug that produced
+                // fake leads and a browser that "ran" without ever opening). The agent loop
+                // then executes the real tool and feeds back the real result.
+                let mut body = serde_json::json!({ "contents": contents, "generationConfig": { "maxOutputTokens": 32768, "stopSequences": ["</tool_call>", "</tool_code>"] } });
                 if !sys.is_empty() { body["systemInstruction"] = serde_json::json!({"parts":[{"text": sys}]}); }
                 let client = reqwest::Client::builder()
                     .timeout(std::time::Duration::from_secs(120))
@@ -3398,7 +3566,7 @@ async fn krew_ai_stream(
             } else {
                 // Fallback: route via krew-stream Edge Function
                 let fn_url = "https://xkkqcqsacgdrfwbwdqsp.supabase.co/functions/v1/krew-stream";
-                let body = serde_json::json!({ "messages": messages, "systemPrompt": sys });
+                let body = serde_json::json!({ "messages": messages, "systemPrompt": sys, "stopSequences": ["</tool_call>", "</tool_code>"] });
                 // HTTP/1.1 only — avoids HTTP/2 ALPN negotiation issues on some Windows TLS configs
                 let client = reqwest::Client::builder()
                     .http1_only()
@@ -3476,31 +3644,21 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
                 std::thread::spawn(move || {
                     let vs = app2.state::<VaultState>();
                     if should_enable {
-                        let mode = vs.mode.lock().unwrap().clone();
-                        let (p, s) = dns_for_mode(&mode);
-                        let adapter = get_active_adapter();
-                        let dns_ok = match apply_dns(&adapter, p, s) {
-                            Ok(()) => true,
-                            Err(e) if e == "admin_required" => {
-                                vault_task_exists()
-                                    && write_dns_config_for_task(&app2, true, &adapter, p, s).is_ok()
-                                    && trigger_vault_task().is_ok()
+                        let requested = vs.mode.lock().unwrap().clone();
+                        // Use the SAME safe enable as the UI — pre-checks DNS reachability and
+                        // never strands the machine offline (the disconnect bug).
+                        match safe_vault_enable(&app2, &vs, &requested) {
+                            Ok(res) => {
+                                let _ = app2.emit("vault_state_changed", serde_json::json!({
+                                    "enabled": true, "mode": res.active_mode, "adapter": res.adapter,
+                                    "failover_used": res.failover_used
+                                }));
                             }
-                            _ => false,
-                        };
-                        if dns_ok {
-                            *vs.enabled.lock().unwrap() = true;
-                            *vs.adapter.lock().unwrap() = Some(adapter.clone());
-                            save_vault_state(&app2, true, &mode, &adapter);
-                            update_tray_vault(&app2, true, &mode);
-                            let _ = app2.emit("vault_state_changed", serde_json::json!({
-                                "enabled": true, "mode": mode, "adapter": adapter
-                            }));
-                        } else {
-                            let err = if vault_task_exists() { "dns_error" } else { "setup_required" };
-                            let _ = app2.emit("vault_state_changed", serde_json::json!({
-                                "enabled": false, "mode": mode, "adapter": null, "error": err
-                            }));
+                            Err(err) => {
+                                let _ = app2.emit("vault_state_changed", serde_json::json!({
+                                    "enabled": false, "mode": requested, "adapter": null, "error": err
+                                }));
+                            }
                         }
                     } else {
                         let (adapter, mode) = {
@@ -3532,6 +3690,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
 
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
     }
@@ -3582,6 +3741,36 @@ async fn spawn_trigger(
             tokio::task::spawn_blocking(move || {
                 run_webhook_trigger_blocking(path, aid, app2, flag);
             });
+        }
+        // Canvas flows carry their trigger node's intent at the top level of the
+        // config (lifted at save time), so they can run automatically in the
+        // background just like form automations — then executeAutomation routes
+        // the fire to the canvas graph executor.
+        "canvas_flow" => {
+            match cfg["triggerType"].as_str().unwrap_or("schedule") {
+                "schedule" => {
+                    let cron_str = cfg["cron"].as_str().unwrap_or("0 9 * * *").to_string();
+                    tokio::spawn(run_schedule_trigger(cron_str, automation_id.clone(), app.clone(), flag));
+                }
+                "email" => {
+                    tokio::spawn(run_email_poll_trigger(automation_id.clone(), app.clone(), flag));
+                }
+                "file_watch" => {
+                    let folder = cfg["folder"].as_str().unwrap_or("").to_string();
+                    if !folder.is_empty() {
+                        let aid = automation_id.clone();
+                        let app2 = app.clone();
+                        tokio::task::spawn_blocking(move || run_file_watch_trigger_blocking(folder, aid, app2, flag));
+                    }
+                }
+                "webhook" => {
+                    let path = cfg["webhook_path"].as_str().unwrap_or("/webhook").to_string();
+                    let aid = automation_id.clone();
+                    let app2 = app.clone();
+                    tokio::task::spawn_blocking(move || run_webhook_trigger_blocking(path, aid, app2, flag));
+                }
+                _ => {} // rss/github/calendar/stripe/twitter have no background poller — run via "Run now"
+            }
         }
         _ => {}
     }
@@ -5020,13 +5209,30 @@ struct VaultEnableResult {
     failover_used: bool,
 }
 
-#[tauri::command]
-fn vault_enable(
-    app: tauri::AppHandle,
-    vault_state: tauri::State<'_, VaultState>,
-    mode: String,
+// Pick the first DNS mode whose servers are actually reachable on THIS network.
+// Tries the requested mode first, then the failover order. Returns None when no
+// private DNS can be reached — in which case we must NOT touch the system DNS, or
+// we'd strand the whole machine with no name resolution (the "internet died" bug).
+fn pick_reachable_mode(requested: &str) -> Option<(String, &'static str, &'static str)> {
+    let mut order: Vec<&str> = vec![requested];
+    for &m in MODE_FAILOVER_ORDER { if m != requested { order.push(m); } }
+    for m in order {
+        let (p, s) = dns_for_mode(m);
+        if dns_reachable(p) || dns_reachable(s) {
+            return Some((m.to_string(), p, s));
+        }
+    }
+    None
+}
+
+// Shared safe enable used by BOTH the UI command and the tray toggle. It never
+// applies a DNS server it cannot reach, so enabling Vault can never knock the
+// machine offline. If nothing is reachable it leaves DNS untouched and errors.
+fn safe_vault_enable(
+    app: &tauri::AppHandle,
+    vault_state: &VaultState,
+    requested_mode: &str,
 ) -> Result<VaultEnableResult, String> {
-    // Candidate adapter names in priority order
     let detected = get_active_adapter();
     let candidates = {
         let mut v = vec![detected.as_str(), "Wi-Fi", "Ethernet", "Local Area Connection", "WLAN"];
@@ -5034,16 +5240,21 @@ fn vault_enable(
         v
     };
 
-    let (primary, secondary) = dns_for_mode(&mode);
+    // Pre-flight reachability: choose a mode we can actually reach BEFORE changing
+    // anything. This is the core safety fix — we never set a dead DNS.
+    let (active_mode, primary, secondary) = match pick_reachable_mode(requested_mode) {
+        Some(t) => t,
+        None => return Err("no_dns_reachable".to_string()),
+    };
+    let failover_used = active_mode != requested_mode;
 
-    // Try direct netsh first; fall back to the scheduled task if elevation is needed.
-    let (adapter, via_task) = match apply_dns_with_fallback(&candidates, primary, secondary) {
-        Ok(a) => (a, false),
+    let adapter = match apply_dns_with_fallback(&candidates, primary, secondary) {
+        Ok(a) => a,
         Err(e) if e == "admin_required" => {
             if vault_task_exists() {
-                write_dns_config_for_task(&app, true, &detected, primary, secondary)?;
+                write_dns_config_for_task(app, true, &detected, primary, secondary)?;
                 trigger_vault_task()?;
-                (detected.clone(), true)
+                detected.clone()
             } else {
                 return Err("setup_required".to_string());
             }
@@ -5051,35 +5262,21 @@ fn vault_enable(
         Err(e) => return Err(e),
     };
 
-    // DNS failover only runs on the direct-netsh path; when the task handles DNS
-    // we trust it applied the settings and skip the reachability check.
-    let mut active_mode = mode.clone();
-    let mut failover_used = false;
-
-    if !via_task && !dns_reachable(primary) && !dns_reachable(secondary) {
-        // Primary mode's servers aren't reachable — try fallback modes
-        'outer: for &fallback in MODE_FAILOVER_ORDER {
-            if fallback == mode.as_str() { continue; }
-            let (fp, fs) = dns_for_mode(fallback);
-            if dns_reachable(fp) || dns_reachable(fs) {
-                // This mode's servers are reachable — switch to it
-                if apply_dns_with_fallback(&candidates, fp, fs).is_ok() {
-                    active_mode  = fallback.to_string();
-                    failover_used = true;
-                    break 'outer;
-                }
-            }
-        }
-        // If no fallback worked, the DNS is still set to the requested mode's servers.
-        // (Windows secondary DNS means the OS will retry on its own schedule.)
-    }
-
     *vault_state.enabled.lock().unwrap() = true;
     *vault_state.mode.lock().unwrap()    = active_mode.clone();
     *vault_state.adapter.lock().unwrap() = Some(adapter.clone());
-    save_vault_state(&app, true, &active_mode, &adapter);
-    update_tray_vault(&app, true, &active_mode);
+    save_vault_state(app, true, &active_mode, &adapter);
+    update_tray_vault(app, true, &active_mode);
     Ok(VaultEnableResult { adapter, active_mode, failover_used })
+}
+
+#[tauri::command]
+fn vault_enable(
+    app: tauri::AppHandle,
+    vault_state: tauri::State<'_, VaultState>,
+    mode: String,
+) -> Result<VaultEnableResult, String> {
+    safe_vault_enable(&app, &vault_state, &mode)
 }
 
 #[tauri::command]
@@ -5294,7 +5491,23 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
     let updater = app.updater().map_err(|e| e.to_string())?;
     if let Some(update) = updater.check().await.map_err(|e| e.to_string())? {
-        update.download_and_install(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
+        // Stream download progress to the UI — a silent multi-MB download looked like
+        // "clicked download, nothing happened" (the exact user complaint on v0.69).
+        let progress_app = app.clone();
+        let mut downloaded: u64 = 0;
+        update
+            .download_and_install(
+                move |chunk, total| {
+                    downloaded += chunk as u64;
+                    let _ = progress_app.emit(
+                        "update-progress",
+                        serde_json::json!({ "downloaded": downloaded, "total": total }),
+                    );
+                },
+                || {},
+            )
+            .await
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -5308,8 +5521,22 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Autostart at login with --quickbar: the Quick Bar appears without the user
+        // "opening the exe" — the main window stays hidden until they ask for it.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--quickbar"]),
+        ))
         .manage(pty_map)
         .setup(|app| {
+            // Launched by autostart (--quickbar): keep the MAIN window hidden — the
+            // always-on-top Quick Bar is the only thing the user sees. Opening the app
+            // normally (no flag) shows the main window as always.
+            if std::env::args().any(|a| a == "--quickbar") {
+                if let Some(main) = app.get_webview_window("main") {
+                    let _ = main.hide();
+                }
+            }
             let conn      = init_db(app).expect("Failed to open Coder SQLite DB");
             let krew_conn = init_krew_db(app).expect("Failed to open Krew SQLite DB");
             let auto_conn  = init_automation_db(app).expect("Failed to open Automation SQLite DB");
@@ -5325,6 +5552,31 @@ pub fn run() {
             app.manage(VoiceState::new());
             app.manage(SessionKeyState::new());
             setup_tray(app)?;
+
+            // Corner badge — authoritative Rust-side driver. The two JS paths (the
+            // badge's own script and the main window's driveBadge) have proven fragile
+            // on real machines; Rust positions and shows the window directly with no
+            // webview timing or capability/ACL dependencies. The badge's own script
+            // stays the owner of the off/snooze state (localStorage) and hides the
+            // window right back within seconds if the user disabled it.
+            let badge_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                for delay in [2u64, 8, 20] {
+                    tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+                    if let Some(badge) = badge_handle.get_webview_window("quickbadge") {
+                        if let Ok(Some(mon)) = badge.primary_monitor() {
+                            let sf = mon.scale_factor();
+                            let pos = mon.position();
+                            let size = mon.size();
+                            let x = pos.x + size.width as i32 - (56.0 * sf) as i32 - (10.0 * sf) as i32;
+                            let y = pos.y + (size.height as f64 * 0.32) as i32;
+                            let _ = badge.set_position(tauri::PhysicalPosition::new(x, y));
+                        }
+                        let _ = badge.show();
+                        let _ = badge.set_always_on_top(true);
+                    }
+                }
+            });
 
             // Start background triggers for all currently-enabled automations
             let app_handle = app.handle().clone();
@@ -5377,28 +5629,44 @@ pub fn run() {
                             v.dedup();
                             v
                         };
-                        let (primary, secondary) = dns_for_mode(&mode);
-                        match apply_dns_with_fallback(&candidates, primary, secondary) {
-                            Ok(adapter) => {
-                                *vs.enabled.lock().unwrap() = true;
-                                *vs.adapter.lock().unwrap() = Some(adapter.clone());
-                                update_tray_vault(&vault_app, true, &mode);
-                            }
-                            Err(e) if e == "admin_required" => {
-                                if vault_task_exists() {
-                                    let (primary, secondary) = dns_for_mode(&mode);
-                                    if write_dns_config_for_task(&vault_app, true, &saved_adapter, primary, secondary).is_ok()
-                                        && trigger_vault_task().is_ok()
-                                    {
+                        // Safety: only re-apply a DNS we can actually reach on THIS network.
+                        // If the user moved to a network that blocks the saved DNS, stay on DHCP
+                        // (working internet) instead of stranding the machine offline.
+                        match pick_reachable_mode(&mode) {
+                            Some((active_mode, primary, secondary)) => {
+                                match apply_dns_with_fallback(&candidates, primary, secondary) {
+                                    Ok(adapter) => {
                                         *vs.enabled.lock().unwrap() = true;
-                                        *vs.adapter.lock().unwrap() = Some(saved_adapter.clone());
-                                        update_tray_vault(&vault_app, true, &mode);
+                                        *vs.mode.lock().unwrap()    = active_mode.clone();
+                                        *vs.adapter.lock().unwrap() = Some(adapter.clone());
+                                        save_vault_state(&vault_app, true, &active_mode, &adapter);
+                                        update_tray_vault(&vault_app, true, &active_mode);
                                     }
-                                } else {
-                                    let _ = vault_app.emit("vault_needs_admin", serde_json::json!({ "mode": mode }));
+                                    Err(e) if e == "admin_required" => {
+                                        if vault_task_exists()
+                                            && write_dns_config_for_task(&vault_app, true, &saved_adapter, primary, secondary).is_ok()
+                                            && trigger_vault_task().is_ok()
+                                        {
+                                            *vs.enabled.lock().unwrap() = true;
+                                            *vs.mode.lock().unwrap()    = active_mode.clone();
+                                            *vs.adapter.lock().unwrap() = Some(saved_adapter.clone());
+                                            save_vault_state(&vault_app, true, &active_mode, &saved_adapter);
+                                            update_tray_vault(&vault_app, true, &active_mode);
+                                        } else if !vault_task_exists() {
+                                            let _ = vault_app.emit("vault_needs_admin", serde_json::json!({ "mode": active_mode }));
+                                        }
+                                    }
+                                    Err(_) => {} // adapter gone or netsh error — vault stays off
                                 }
                             }
-                            Err(_) => {} // adapter gone or netsh error — vault stays off
+                            None => {
+                                // No private DNS reachable here — ensure DHCP (working resolution)
+                                // and leave Vault OFF so the user is never stranded.
+                                let _ = revert_dns(&detected);
+                                *vs.enabled.lock().unwrap() = false;
+                                save_vault_state(&vault_app, false, &mode, &detected);
+                                update_tray_vault(&vault_app, false, &mode);
+                            }
                         }
                     }
                 }
@@ -5482,6 +5750,7 @@ pub fn run() {
             fetch_page_text,
             read_browser_history,
             krew_http_call,
+            mcp_http_call,
             gmail_fetch_emails,
             gmail_fetch_email_body,
             // Automation
@@ -5508,6 +5777,7 @@ pub fn run() {
             models_stop_engine,
             models_download_engine,
             models_pick_file,
+            brain_pick_file,
             models_import,
             studio_save_file,
             // Vault
