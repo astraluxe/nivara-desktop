@@ -70,6 +70,7 @@ interface PullResponse {
 // Pull URL for when Vercel API routes are deployed (Phase 9).
 // Downloads are deferred until then — catalogue browsing is fully static/local.
 const PULL_URL = 'https://adris.tech/api/models/pull';
+const SEEN_MODELS_KEY = 'nv-models-seen';
 
 const FILTER_LABELS: Record<string, string> = {
   all:       'All',
@@ -461,6 +462,7 @@ function ModelCard({
   downloading,
   fitsSystem,
   sysRam,
+  isNew,
   onDownload,
   onDelete,
   onRun,
@@ -470,6 +472,7 @@ function ModelCard({
   downloading?: DownloadProgress;
   fitsSystem: boolean;
   sysRam: number;
+  isNew?: boolean;
   onDownload: (m: RegistryModel) => void;
   onDelete: (id: string) => void;
   onRun: (filename: string) => void;
@@ -492,6 +495,11 @@ function ModelCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <p className="text-nv-text text-[13px] font-semibold leading-tight">{model.name}</p>
+            {isNew && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-400 border border-sky-500/20 font-mono">
+                new
+              </span>
+            )}
             {model.gated && (
               <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/20 font-mono">
                 token req.
@@ -591,6 +599,14 @@ function ModelCard({
           <button disabled className="flex-1 text-[11px] py-1.5 rounded-lg bg-nv-surface2 text-nv-faint cursor-not-allowed">
             Downloading…
           </button>
+        ) : model.mesh_required ? (
+          <button
+            disabled
+            title="Too large for a single machine — join or build a Mesh session to run it"
+            className="flex-1 text-[11px] py-1.5 rounded-lg bg-nv-surface2 text-nv-faint cursor-not-allowed"
+          >
+            Requires Mesh
+          </button>
         ) : (
           <button
             onClick={() => onDownload(model)}
@@ -671,6 +687,7 @@ export default function ModelsModule() {
   const [engineDlStep, setEngineDlStep] = useState('');
   const [gatedModal, setGatedModal] = useState<PullResponse | null>(null);
   const [pendingModel, setPendingModel] = useState<RegistryModel | null>(null);
+  const [newModelIds, setNewModelIds] = useState<Set<string>>(new Set());
   const [_showSpecsBar, _setShowSpecsBar]           = useState(false);
   const [showHardwareReport, setShowHardwareReport] = useState(false);
   // Import model flow
@@ -683,8 +700,23 @@ export default function ModelsModule() {
   const filterByPC = filter === '__pc__';
 
   useEffect(() => {
-    // Catalogue is static — no external API call, works offline
+    // Paint instantly from the bundled catalogue (works fully offline), then try the
+    // LIVE registry — adris.tech can fix a broken link or add a newly-scanned model any
+    // time and every open app picks it up immediately, with no exe update needed.
     setRegistry(DESKTOP_MODELS);
+    fetch('https://adris.tech/api/models/registry', { signal: AbortSignal.timeout(6000) })
+      .then(r => (r.ok ? r.json() : Promise.reject()))
+      .then((data: { models?: RegistryModel[] }) => {
+        if (!Array.isArray(data.models) || data.models.length === 0) return;
+        setRegistry(data.models);
+        const seen = JSON.parse(localStorage.getItem(SEEN_MODELS_KEY) ?? '[]') as string[];
+        if (seen.length > 0) {
+          const fresh = data.models.map(m => m.id).filter(id => !seen.includes(id));
+          if (fresh.length > 0) setNewModelIds(new Set(fresh));
+        }
+        localStorage.setItem(SEEN_MODELS_KEY, JSON.stringify(data.models.map(m => m.id)));
+      })
+      .catch(() => { /* offline or not reachable — bundled catalogue already showing */ });
 
     // Load system info
     invoke<SysInfo>('get_system_info').then(setSysInfo).catch(() => {});
@@ -1073,6 +1105,7 @@ export default function ModelsModule() {
                     downloading={downloading[m.id]}
                     fitsSystem={modelFitsPC(m)}
                     sysRam={sysRam}
+                    isNew={newModelIds.has(m.id)}
                     onDownload={handleDownload}
                     onDelete={handleDelete}
                     onRun={handleRun}

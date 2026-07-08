@@ -600,6 +600,7 @@ export default function AIChat({
           modelName={modelName} onModelNameChange={setModelName}
           baseUrl={baseUrl} onBaseUrlChange={setBaseUrl}
           localModel={localModel} onLocalModelChange={setLocalModel}
+          currentPlan={profile?.plan ?? 'explore'}
         />
       </div>
 

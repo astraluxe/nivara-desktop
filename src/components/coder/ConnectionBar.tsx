@@ -1,5 +1,7 @@
-﻿import { useState } from 'react';
+﻿import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { ConnectionMode, Provider, PROVIDERS } from '../../lib/ai';
+import { PLAN_CONFIG, Plan } from '../../lib/planConfig';
 
 interface Props {
   mode: ConnectionMode;
@@ -14,7 +16,20 @@ interface Props {
   onBaseUrlChange: (u: string) => void;
   localModel: string;
   onLocalModelChange: (m: string) => void;
+  currentPlan: string;
 }
+
+interface InstalledModel {
+  id: string;
+  name: string;
+  filename: string;
+  size_gb: number;
+}
+
+const PLAN_ORDER: Plan[] = ['explore', 'solo', 'builder', 'business', 'custom'];
+const PLAN_LABELS: Record<Plan, string> = {
+  explore: 'Free', free: 'Free', solo: 'Solo', builder: 'Builder', business: 'Business', custom: 'Custom',
+};
 
 const MODES: { id: ConnectionMode; label: string; dotClass: string }[] = [
   { id: 'local',   label: 'Local',   dotClass: 'bg-nv-green' },
@@ -29,8 +44,30 @@ const PROVIDER_ORDER: Provider[] = [
 export default function ConnectionBar(props: Props) {
   const { mode, onModeChange, apiKey, onApiKeyChange, provider, onProviderChange,
           modelName, onModelNameChange, baseUrl, onBaseUrlChange,
-          localModel, onLocalModelChange } = props;
+          localModel, onLocalModelChange, currentPlan } = props;
   const [popup, setPopup] = useState<ConnectionMode | null>(null);
+  const [installedModels, setInstalledModels] = useState<InstalledModel[] | null>(null);
+  const [engineStatus, setEngineStatus] = useState<'idle' | 'starting' | 'running' | 'error'>('idle');
+  const [engineError, setEngineError] = useState('');
+
+  useEffect(() => {
+    if (popup !== 'local') return;
+    invoke<InstalledModel[]>('models_list_installed').then(setInstalledModels).catch(() => setInstalledModels([]));
+    invoke<boolean>('models_check_engine').then(running => setEngineStatus(running ? 'running' : 'idle')).catch(() => {});
+  }, [popup]);
+
+  async function loadLocalModel(filename: string) {
+    onLocalModelChange(filename);
+    setEngineStatus('starting');
+    setEngineError('');
+    try {
+      await invoke('models_run', { modelFilename: filename });
+      setEngineStatus('running');
+    } catch (e) {
+      setEngineStatus('error');
+      setEngineError(String(e));
+    }
+  }
 
   function handleProviderChange(p: Provider) {
     onProviderChange(p);
@@ -75,24 +112,43 @@ export default function ConnectionBar(props: Props) {
             onClick={(e) => e.stopPropagation()}
           >
             <p className="text-[11px] font-semibold text-nv-text uppercase tracking-wider mb-4">
-              {popup === 'local'   && 'Local Model (Ollama)'}
+              {popup === 'local'   && 'Local Model'}
               {popup === 'own_key' && 'Own API Key'}
               {popup === 'nivara'  && 'adris.tech Plan'}
             </p>
 
             {popup === 'local' && (
               <>
-                <label className="text-nv-faint text-[11px] block mb-1.5">Ollama model name</label>
-                <input
-                  value={localModel}
-                  onChange={(e) => onLocalModelChange(e.target.value)}
-                  placeholder="llama3, mistral, codellama…"
-                  className="w-full bg-nv-bg border border-nv-border rounded-lg px-3 py-2
-                    text-[12px] text-nv-text outline-none focus:border-accent transition-fast"
-                />
-                <p className="text-nv-faint text-[10px] mt-2">
-                  Ollama must be running on <span className="font-mono">localhost:11434</span>
-                </p>
+                {installedModels === null ? (
+                  <p className="text-nv-faint text-[11px]">Checking downloaded models…</p>
+                ) : installedModels.length === 0 ? (
+                  <p className="text-nv-muted text-[11px] leading-relaxed">
+                    No models downloaded yet. Open the <span className="text-nv-text font-semibold">Models</span> tab,
+                    pull one that fits your machine, then pick it here.
+                  </p>
+                ) : (
+                  <>
+                    <label className="text-nv-faint text-[11px] block mb-1.5">Downloaded models</label>
+                    <select
+                      value={localModel}
+                      onChange={(e) => loadLocalModel(e.target.value)}
+                      className="w-full bg-nv-bg border border-nv-border rounded-lg px-3 py-2
+                        text-[12px] text-nv-text outline-none focus:border-accent transition-fast mb-2
+                        appearance-none cursor-pointer"
+                    >
+                      <option value="" disabled>Select a model…</option>
+                      {installedModels.map((m) => (
+                        <option key={m.id} value={m.filename}>{m.name} · {m.size_gb} GB</option>
+                      ))}
+                    </select>
+                    <p className="text-[10px] font-mono">
+                      {engineStatus === 'starting' && <span className="text-nv-faint">Starting engine…</span>}
+                      {engineStatus === 'running'  && <span className="text-emerald-400">● running — ready to chat</span>}
+                      {engineStatus === 'error'    && <span className="text-red-400">Could not start: {engineError}</span>}
+                      {engineStatus === 'idle'     && <span className="text-nv-faint">Pick a model to load it</span>}
+                    </p>
+                  </>
+                )}
               </>
             )}
 
@@ -160,10 +216,14 @@ export default function ConnectionBar(props: Props) {
                 </p>
                 <div className="rounded-lg border border-nv-border bg-nv-bg px-3 py-2 space-y-1">
                   <p className="text-[10px] text-nv-faint font-mono uppercase tracking-wide">Task limits</p>
-                  <p className="text-[11px] text-nv-muted">Free · 50 tasks lifetime</p>
-                  <p className="text-[11px] text-nv-muted">Solo · ~2,000 tasks / month</p>
-                  <p className="text-[11px] text-nv-muted">Builder · ~8,000 tasks / month</p>
-                  <p className="text-[11px] text-nv-muted">Business · ~30,000 tasks / month</p>
+                  {PLAN_ORDER.map((p) => {
+                    const isCurrent = currentPlan === p || (currentPlan === 'free' && p === 'explore');
+                    return (
+                      <p key={p} className={`text-[11px] ${isCurrent ? 'text-accent font-semibold' : 'text-nv-muted'}`}>
+                        {PLAN_LABELS[p]} · {PLAN_CONFIG[p].label}{isCurrent ? ' — your plan' : ''}
+                      </p>
+                    );
+                  })}
                 </div>
                 <p className="text-[10px] text-nv-faint">
                   Hit the limit? Switch to Own Key mode — connect Gemini free in ConnectApps.

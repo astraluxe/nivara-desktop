@@ -3456,6 +3456,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
             modelName={modelName}     onModelNameChange={setModelName}
             baseUrl={baseUrl}         onBaseUrlChange={setBaseUrl}
             localModel={localModel}   onLocalModelChange={setLocalModel}
+            currentPlan={profile?.plan ?? 'explore'}
           />
         </div>
 
