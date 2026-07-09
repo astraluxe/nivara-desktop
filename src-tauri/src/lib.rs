@@ -2112,9 +2112,14 @@ async fn setup_agent_browser(app: tauri::AppHandle) -> Result<(), String> {
         };
 
         let local_bin = get_agent_browser_local_path(&app);
+        browser_debug_log(&format!("setup_agent_browser: in_path={} local_bin_exists={}", in_path, local_bin.exists()));
 
         if !in_path && !local_bin.exists() {
-            // Attempt binary download (kept for future; currently 404s)
+            // Standalone binary — no Node.js needed. This is the path that matters most for a
+            // user with no Node installed: without it, browsing silently degrades to a headless
+            // text-only fetch and no window ever appears (indistinguishable from "nothing happened"
+            // to the user watching their screen). Logged explicitly since a failure here is
+            // otherwise invisible — the only symptom is "the agent said it browsed but nothing showed".
             let dl_url = if cfg!(target_os = "windows") {
                 "https://github.com/vercel-labs/agent-browser/releases/latest/download/agent-browser-win32-x64.exe"
             } else if cfg!(target_os = "linux") && cfg!(target_arch = "aarch64") {
@@ -2129,17 +2134,25 @@ async fn setup_agent_browser(app: tauri::AppHandle) -> Result<(), String> {
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build().unwrap_or_else(|_| reqwest::Client::new());
-            if let Ok(resp) = client.get(dl_url).send().await {
-                if resp.status().is_success() {
-                    if let Ok(bytes) = resp.bytes().await {
+            match client.get(dl_url).send().await {
+              Ok(resp) if resp.status().is_success() => {
+                    match resp.bytes().await {
+                      Ok(bytes) => {
                         if let Some(p) = local_bin.parent() { let _ = std::fs::create_dir_all(p); }
-                        let _ = std::fs::write(&local_bin, &bytes);
+                        match std::fs::write(&local_bin, &bytes) {
+                          Ok(()) => browser_debug_log(&format!("agent-browser binary downloaded OK ({} bytes) -> {}", bytes.len(), local_bin.display())),
+                          Err(e) => browser_debug_log(&format!("agent-browser binary download OK but WRITE FAILED: {}", e)),
+                        }
                         #[cfg(unix)] {
                             use std::os::unix::fs::PermissionsExt;
                             let _ = std::fs::set_permissions(&local_bin, std::fs::Permissions::from_mode(0o755));
                         }
+                      }
+                      Err(e) => browser_debug_log(&format!("agent-browser binary download: response body read FAILED: {}", e)),
                     }
-                }
+              }
+              Ok(resp) => browser_debug_log(&format!("agent-browser binary download FAILED: HTTP {} from {}", resp.status(), dl_url)),
+              Err(e) => browser_debug_log(&format!("agent-browser binary download FAILED: {} ({})", e, dl_url)),
             }
         }
 

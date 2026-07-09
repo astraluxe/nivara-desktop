@@ -2350,8 +2350,13 @@ export async function executeTool(
     const navResult = await invoke<string>('run_browser_persistent', { args: `open "${url}"` }).catch(e => String(e));
 
     if (navResult.includes('[agent-browser not installed]')) {
-      // No browser automation available — fall back to a plain HTTP fetch.
-      // Do NOT open the user's real Chrome (that caused extra windows + login confusion).
+      // NO real browser is available on this machine right now — one-time setup hasn't
+      // finished (or failed). Falling back to a plain, unauthenticated HTTP fetch: static
+      // HTML only, no JS rendering, no login, no window on screen. Every message returned
+      // from THIS branch must say so honestly — telling the model "a browser window just
+      // opened" here was a real bug: no window ever opens on this path, so the model relayed
+      // that as fact and the user saw nothing, matching exactly what "it said it's using the
+      // browser but nothing showed" looks like from the outside.
       try {
         const fetched = await invoke<string>('fetch_page_text', { url });
         const cleaned = cleanBrowserText(fetched);
@@ -2364,13 +2369,13 @@ export async function executeTool(
           const isLoginPage = hasAuthwall || (isShort && hasLoginForm);
           if (isLoginPage) {
             const host = (() => { try { return new URL(url).hostname; } catch { return url; } })();
-            return `[LOGIN REQUIRED — STOP] ${host} requires login. A browser window just opened. Ask the user to log in and say "continue". Do NOT call web_search or any other tool. Wait for the user.`;
+            return `[NO LIVE BROWSER AVAILABLE] ${host} needs a login, and no real browser window is available on this machine right now (one-time setup is still finishing in the background — retry in a minute). No window opened; nothing was shown to the user. Do NOT claim you opened or are using a browser. Tell the user plainly that live browsing (LinkedIn, Maps, anything requiring login) isn't ready yet, and suggest web_search or trying again shortly instead.`;
           }
           const content = cleaned.length > 6000 ? cleaned.slice(0, 6000) + '\n…[truncated]' : cleaned;
-          return fenceUntrusted(`the web page ${url}`, `Content from ${url} (public read):\n\n${content}`);
+          return fenceUntrusted(`a plain-text fetch of ${url} (NOT a live browser — no window opened, no JS rendered, static HTML only)`, `Content from ${url} (static, unauthenticated read — no live browser session):\n\n${content}`);
         }
       } catch { /* fall through */ }
-      return `[LOGIN REQUIRED — STOP] This page needs login. A browser window just opened. Ask the user to log in and say "continue". Do NOT call web_search or any other tool. Wait.`;
+      return `[NO LIVE BROWSER AVAILABLE] This page needs a real browser (login or JS-rendered content) and none is available on this machine right now — one-time setup is still finishing in the background. No window opened. Do NOT claim you opened or are using a browser. Tell the user plainly and suggest web_search or trying again shortly.`;
     }
 
     if (navResult.includes('[SIGN_IN_REQUIRED]')) {

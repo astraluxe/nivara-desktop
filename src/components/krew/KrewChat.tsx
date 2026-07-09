@@ -1651,6 +1651,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
   const [connectRec,    setConnectRec]    = useState<string[]>([]);
   const [braveNudge, setBraveNudge] = useState(false);
   const [browserNudge, setBrowserNudge] = useState(false);
+  const [browserRetrying, setBrowserRetrying] = useState(false);
   const [browserActive, setBrowserActive] = useState(false);
   // Non-null while a turn is auto-retrying through a network drop (shows a reconnecting banner).
   const [reconnecting, setReconnecting] = useState<{ attempt: number; max: number } | null>(null);
@@ -2685,6 +2686,13 @@ The prompt must be production-ready — specific enough for a motion designer to
               // than on a natural final answer — used to force a wrap-up so the delegate never
               // returns empty after doing real browser/search work.
               let cutOffMidWork = false;
+              // Separate from cutOffMidWork (which resets every iteration): true for the rest of
+              // this delegation once ANY tool call has actually executed. A stream hiccup or a
+              // model that just stops can make the LAST turn's text empty even though real search
+              // work already happened this run — without this flag that reached a "genuine final
+              // answer" break with nothing to show, silently producing "(no response)" / "couldn't
+              // pull that together" and discarding real results.
+              let anyToolRan = false;
               for (let ds = 0; ds < DELEGATE_MAX && !stopRef.current; ds++) {
                 cutOffMidWork = false;
                 let stepText = '';
@@ -2753,7 +2761,14 @@ The prompt must be production-ready — specific enough for a motion designer to
                     if (cl.startsWith('{')) dm = ['', cl] as unknown as RegExpMatchArray;
                   }
                 }
-                if (!dm) break; // no tool call anywhere in the text — genuine final answer
+                if (!dm) {
+                  // Genuine final answer — but if real tool work already ran this turn and the
+                  // model still ended up with nothing accumulated (stream hiccup / empty reply),
+                  // treat it the same as running out of budget mid-work: force the wrap-up below
+                  // instead of silently falling through to a dead-end message.
+                  if (anyToolRan && !delegateAccum.trim()) cutOffMidWork = true;
+                  break;
+                }
                 // Parse tool call
                 const dRaw = dm[1];
                 let dParsed: Record<string, unknown> | null = null;
@@ -2800,6 +2815,7 @@ The prompt must be production-ready — specific enough for a motion designer to
                 const agentDisplayName = agentHandle(targetAgent);
                 setAgentStep(`${agentDisplayName} · ${toolDisplayName}…`);
                 updateLastMsg((delegateAccum || '') + `\n\n*${agentDisplayName} is using ${toolDisplayName}…*`);
+                anyToolRan = true;
                 let dResult = '';
                 try {
                   dResult = await executeTool(dTool, dArgs, creds, requestTerminalApproval, targetKey, user?.id ?? '', `${sidRef.current ?? 'main'}-${targetKey}`);
@@ -3001,6 +3017,10 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                 // Same "ran out of steps while still working" signal as the single-delegate loop —
                 // forces a real final answer instead of a silent/empty step result.
                 let wfCutOff = false;
+                // Same anyToolRan backstop as the single-delegate loop: a step that already ran a
+                // real tool but whose LAST turn came back empty (stream hiccup, model just stops)
+                // must still get the wrap-up chance, not silently become "(no response)".
+                let wfAnyToolRan = false;
                 for (let ds = 0; ds < 8 && !stopRef.current; ds++) {
                   wfCutOff = false;
                   let stepTxt = '';
@@ -3011,16 +3031,38 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                   });
                   wfFinal = wfRaw;
                   if (wfTrunc && !wfRaw.includes('<tool_call>') && !wfRaw.includes('<tool_code>')) {
-                    wfHist.push({ role: 'assistant', content: wfRaw }); wfHist.push({ role: 'user', content: 'continue' });
-                    const prose = wfRaw.replace(/<tool_call>[\s\S]*/g, '').replace(/<tool_code>[\s\S]*/g, '').replace(/CHOICES_BLOCK:[\s\S]*/g, '').trim();
-                    if (prose) wfAccum = wfAccum ? wfAccum + '\n\n' + prose : prose;
+                    // Same inDraft/midTable handling as the single-delegate loop — a bare "continue"
+                    // here is what glued fence headers/names to the next turn's text with zero
+                    // separator (e.g. a cut mid "```email Ankit Ratan" resuming as "atanSubject:...").
+                    let wfProseSoFar = wfRaw.replace(/<tool_call>[\s\S]*/g, '').replace(/<tool_code>[\s\S]*/g, '').replace(/CHOICES_BLOCK:[\s\S]*/g, '').trim();
+                    const wfInDraft = /```(?:email|draft|message|outreach)/i.test(wfProseSoFar);
+                    const wfMidTable = !wfInDraft && /\|[^\n]*\|/.test(wfProseSoFar);
+                    if (wfMidTable) {
+                      const ls = wfProseSoFar.split('\n');
+                      if (ls.length && !ls[ls.length - 1].trim().endsWith('|')) ls.pop();
+                      wfProseSoFar = ls.join('\n');
+                    }
+                    const wfHdr = wfProseSoFar.split('\n').find((l) => /\|/.test(l) && /name|company|contact/i.test(l));
+                    const wfColN = wfHdr ? wfHdr.split('|').filter((c) => c.trim()).length : 6;
+                    wfHist.push({ role: 'assistant', content: wfRaw });
+                    wfHist.push({ role: 'user', content: wfMidTable
+                      ? `Continue the table. Output ONLY the remaining rows as complete pipe rows with EXACTLY ${wfColN} cells each (matching the header columns), one row per line, every cell filled. Do NOT repeat earlier rows, do NOT output a header or separator row, and write NO text before or after the rows.`
+                      : wfInDraft
+                      ? 'Continue EXACTLY where you left off and finish the message — do NOT restart it or repeat earlier text. Stay inside the same ```email block and close it with ``` when the message is complete. Then write any remaining messages, each in its own ```email fence.'
+                      : 'continue' });
+                    if (wfProseSoFar) wfAccum = wfAccum ? wfAccum + '\n' + wfProseSoFar : wfProseSoFar;
                     continue;
                   }
                   const prose = wfFinal.replace(/<tool_call>[\s\S]*/g, '').replace(/<tool_code>[\s\S]*/g, '').replace(/CHOICES_BLOCK:[\s\S]*/g, '').trim();
                   if (prose) wfAccum = wfAccum ? wfAccum + '\n\n' + prose : prose;
                   let dm = wfFinal.match(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/) ?? wfFinal.match(/<tool_code>\s*([\s\S]*?)\s*<\/tool_code>/);
                   if (!dm) { const ot = ['<tool_call>','<tool_code>'].find(t => wfFinal.includes(t)); if (ot) { const after = wfFinal.slice(wfFinal.indexOf(ot) + ot.length).trim(); const cl = ['</tool_call>','</tool_code>'].reduce((s,t) => s.split(t).join(''), after).trim(); if (cl.startsWith('{')) dm = ['', cl] as unknown as RegExpMatchArray; } }
-                  if (!dm) break; // no tool call anywhere in the text — genuine final answer
+                  if (!dm) {
+                    // Same backstop as the single-delegate loop: real tool work happened this step
+                    // but the model's final turn came back with nothing — force the wrap-up.
+                    if (wfAnyToolRan && !wfAccum.trim()) wfCutOff = true;
+                    break; // no tool call anywhere in the text — genuine final answer
+                  }
                   let dParsed: Record<string, unknown> | null = null;
                   try { dParsed = (() => { try { return JSON.parse(dm![1]) as Record<string, unknown>; } catch {} const s = dm![1].replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'').trim(); try { return JSON.parse(s) as Record<string, unknown>; } catch {} const m2 = s.match(/\{[\s\S]*\}/); if (m2) { try { return JSON.parse(m2[0]) as Record<string, unknown>; } catch {} } return null; })(); } catch {}
                   if (!dParsed) {
@@ -3036,6 +3078,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                   const dTool = String(dParsed.tool ?? ''); const dRoot = { ...dParsed } as Record<string, unknown>; delete dRoot.tool;
                   const dArgs = (dParsed.args && typeof dParsed.args === 'object') ? { ...dRoot, ...(dParsed.args as Record<string, unknown>) } : dRoot;
                   setAgentStep(`${agentHandle(wfAgent)} · ${dTool.replace(/_/g,' ')}…`); updateLastMsg((wfAccum || '') + `\n\n*${agentHandle(wfAgent)} is using ${dTool.replace(/_/g,' ')}…*`);
+                  wfAnyToolRan = true;
                   let dRes = ''; try { dRes = await executeTool(dTool, dArgs, creds, requestTerminalApproval, wfKey, user?.id ?? '', `${sidRef.current ?? 'main'}-${wfKey}`); if (dTool.startsWith('browser_') && dRes.includes('[agent-browser not installed')) setBrowserNudge(true); } catch (e) { dRes = `Error: ${e}`; }
                   if (stopRef.current) break;   // user stopped mid-tool — don't re-show the indicator
                   const cappedWfRes = dRes.length > 3000 ? dRes.slice(0, 3000) + '\n…[truncated for context]' : dRes;
@@ -3542,9 +3585,18 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
               <circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
             </svg>
             <div className="flex-1 min-w-0">
-              <p className="text-[11px] font-semibold text-accent leading-tight">Browser Agent not installed</p>
-              <p className="text-[10px] text-nv-faint mt-0.5 leading-relaxed">Run in your terminal: <span className="font-mono text-nv-muted">npm install -g agent-browser</span> then <span className="font-mono text-nv-muted">agent-browser install</span> — Chrome downloads automatically.</p>
+              <p className="text-[11px] font-semibold text-accent leading-tight">Live browsing isn't set up yet</p>
+              <p className="text-[10px] text-nv-faint mt-0.5 leading-relaxed">
+                Agents just answered using plain page text instead of a real browser window — sites like LinkedIn or Google Maps need the real thing.
+                {browserRetrying ? ' Setting it up now…' : ' This is a one-time setup — no download or terminal needed from you.'}
+              </p>
             </div>
+            {!browserRetrying && (
+              <button
+                onClick={() => { setBrowserRetrying(true); invoke('setup_agent_browser').catch(() => {}).finally(() => setTimeout(() => { setBrowserRetrying(false); setBrowserNudge(false); }, 4000)); }}
+                className="shrink-0 text-[10px] font-mono px-2 py-1 rounded-lg bg-accent/15 text-accent hover:bg-accent/25 border border-accent/30 transition-fast"
+              >Set up now</button>
+            )}
             <button onClick={() => setBrowserNudge(false)} className="shrink-0 text-[10px] font-mono px-2 py-1 rounded-lg bg-nv-surface2 text-nv-faint hover:text-nv-muted border border-nv-border transition-fast">✕</button>
           </div>
         )}
