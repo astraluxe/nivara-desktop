@@ -85,6 +85,18 @@ export function isJunkName(name: string): boolean {
   if (/^(partner|founder|co-?founder|ceo|cmd|md|director|chairman|head|senior partner|managing director)\b/i.test(fc)) return true;
   if (/couldn'?t verify|unverified guess|found via|\]\(https?:/i.test(fc)) return true; // corrupted-name leftovers
   if (/\/in\/|linkedin\.com|https?:\/\//i.test(fc)) return true;                        // a URL/slug fragment leaked into the name
+  // A markdown table-separator row (e.g. ":---", "--", ":-:") landing in a data row when a
+  // continuation/repair pass fails to fully drop a stray header — no real name is ever built
+  // only from colons, dashes, pipes and spaces.
+  if (/^[\s:|-]+$/.test(fc)) return true;
+  // A real person's name never contains a domain suffix or a stray/unbalanced paren — that
+  // shape only happens when a company URL or a following cell's text got glued onto this one
+  // (e.g. "Ktestsigma.com)" from a mangled/merged row). Requiring at least one real word of
+  // letters (and rejecting the domain/paren markers) catches this whole corruption class
+  // instead of chasing each specific garbled shape one at a time.
+  if (/\.(com|io|ai|co|in|org|net)\b/i.test(fc)) return true;
+  if (/[()]/.test(fc)) return true;
+  if (!/[a-z]{2,}/i.test(fc)) return true; // no real word at all — nothing left to show
   return false;
 }
 

@@ -1841,7 +1841,12 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     // Each specialist accumulates their own memory about the user's patterns over time.
     if (agent.key === 'boss') {
       return [
-        ...SYSTEM_TOOLS.filter(t => ['save_memory', 'recall_memory', 'forget_memory'].includes(t.name)),
+        // recall_from_brain (read-only) lets boss actually CHECK before answering questions
+        // like "did you save that?" — without it, boss had no way to verify Brain state at
+        // all and could only guess, which is how a fabricated "yes, saved as X" answer led
+        // the user to an empty/wrong note. save_to_brain itself stays off boss's list —
+        // saving is still the deterministic/specialist path, not something boss does.
+        ...SYSTEM_TOOLS.filter(t => ['save_memory', 'recall_memory', 'forget_memory', 'recall_from_brain'].includes(t.name)),
         ...BOSS_TOOLS,
         ...BROWSER_TOOLS,
       ];
