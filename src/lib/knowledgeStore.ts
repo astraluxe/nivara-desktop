@@ -153,10 +153,31 @@ export const brain = {
         ?? d.nodes.find((n) => n.title.toLowerCase().includes(ql));
   },
 
+  // Relevance-SCORED, not a blind single-substring match. The old version treated the whole
+  // query as one substring test against title+body — for a short/generic query (a single
+  // word like "companies" or "Bangalore") that silently surfaces a completely unrelated old
+  // note (any note that happens to mention that one word anywhere) as if it were a real match,
+  // with no ranking to prefer an actually-relevant hit. This is how a stale, off-topic Brain
+  // note can get handed to an agent as "the" answer to an unrelated question. Score by how
+  // many of the query's significant words appear (title matches weighted higher, an exact
+  // full-phrase match highest of all), and only return notes with a real, positive score.
   search(q: string): BrainNode[] {
     const d = read();
     const ql = q.trim().toLowerCase();
     if (!ql) return d.nodes;
-    return d.nodes.filter((n) => n.title.toLowerCase().includes(ql) || n.body.toLowerCase().includes(ql));
+    const words = ql.split(/\s+/).filter((w) => w.length >= 3);
+    const scored = d.nodes.map((n) => {
+      const title = n.title.toLowerCase();
+      const body = n.body.toLowerCase();
+      let score = 0;
+      if (title.includes(ql)) score += 10;
+      else if (body.includes(ql)) score += 4;
+      for (const w of words) {
+        if (title.includes(w)) score += 3;
+        else if (body.includes(w)) score += 1;
+      }
+      return { n, score };
+    });
+    return scored.filter((s) => s.score > 0).sort((a, b) => b.score - a.score).map((s) => s.n);
   },
 };

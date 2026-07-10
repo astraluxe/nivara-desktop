@@ -10,6 +10,16 @@ export const KREW_PROFILE_KEY = '__krew_profile__';
 // ─── Browser text cleaner ─────────────────────────────────────────────────────
 // Strips JSON-LD, ads, cookie banners, nav noise, and low-density junk lines.
 // Technique: Firecrawl pattern exclusion + Crawl4AI text-density scoring.
+// A CAPTCHA/"verify you are human" block page still has plenty of visible text on it, so a
+// length-only check treats it as a valid result — the model then either tries to extract real
+// data from challenge-page copy, or quietly substitutes unrelated recalled context to have
+// SOMETHING to show. Shared by web_search and browser_search so neither silently mistakes a
+// block page for real search results.
+function looksBlockedPage(t: string): boolean {
+  const s = t.toLowerCase().slice(0, 600);
+  return /unusual traffic|verify you.?re a human|are you a human|i.?m not a robot|captcha|blocked|access denied|request could not be processed|automated (queries|requests)/.test(s);
+}
+
 function cleanBrowserText(text: string): string {
   const lines = text.split('\n');
   const out: string[] = [];
@@ -1374,7 +1384,7 @@ export async function executeTool(
     try {
       const fetched = await invoke<string>('fetch_page_text', { url: ddgUrl });
       const text = cleanBrowserText(fetched);
-      if (text && text.length > 80) {
+      if (text && text.length > 80 && !looksBlockedPage(text)) {
         return fenceUntrusted('web search results', text.length > 5000 ? text.slice(0, 5000) + '\n…[truncated]' : text);
       }
     } catch { /* fall through to browser path */ }
@@ -1385,15 +1395,18 @@ export async function executeTool(
       if (!opened.includes('[agent-browser not installed]')) {
         const raw = await invoke<string>('run_agent_browser_session', { sessionId, args: 'get text body' });
         const text = cleanBrowserText(raw);
-        if (text && text.length > 40) {
+        if (text && text.length > 40 && !looksBlockedPage(text)) {
           return fenceUntrusted('web search results', text.length > 5000 ? text.slice(0, 5000) + '\n…[truncated]' : text);
         }
       }
     } catch { /* fall through */ }
 
-    // 4) Everything failed — instruct the agent to keep going from context, and
-    //    NEVER to claim it finished research or a deliverable it didn't actually produce.
-    return `[web_search is temporarily unavailable for "${query}". Do NOT abandon the task or claim you researched/drafted anything — continue from the context you already have, note any assumption in one line, and still output the full, complete deliverable.]`;
+    // 4) Everything failed (including a CAPTCHA/block page) — tell the model PLAINLY that
+    // search is blocked right now, rather than staying silent about it (silence is what let
+    // a model quietly substitute unrelated recalled context for a real answer before). Point
+    // it at browser_navigate directly to the specific site it needs, which does not go
+    // through DuckDuckGo at all.
+    return `[web_search is BLOCKED right now (the search engine returned a "verify you're human" / anti-bot page, not real results) for "${query}". Do NOT use anything from that blocked page as if it were real data, and do NOT substitute unrelated information you recall from memory or Brain to fill the gap — that is fabrication. Instead: browser_navigate DIRECTLY to the specific site you actually need (e.g. the company's own website), or tell the user plainly that search is temporarily blocked and ask if they want you to try again shortly.]`;
   }
 
   // ── Company research (open data sources) — REAL company names, never invent ──
@@ -2435,6 +2448,9 @@ export async function executeTool(
     const raw = await runBrowser('get text body');
     if (raw.startsWith('[Browser automation unavailable]') || raw.startsWith('[agent-browser not installed')) return raw;
     const text = cleanBrowserText(raw);
+    if (looksBlockedPage(text)) {
+      return `[browser_search is BLOCKED right now (Google returned a "verify you're human" / anti-bot page, not real results) for "${str(args.query)}"]. Do NOT use anything from that page as if it were real data, and do NOT substitute unrelated recalled context to fill the gap. Try web_search instead, or browser_navigate DIRECTLY to the specific site you actually need.`;
+    }
     return fenceUntrusted('web search results', text.length > 5000 ? text.slice(0, 5000) + '\n…[truncated]' : text);
   }
   if (toolName === 'browser_snapshot') {
