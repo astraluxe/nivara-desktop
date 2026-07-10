@@ -75,6 +75,20 @@ export function cleanLeadCell(key: string, raw: string): string {
   if ((key === 'company' || key === 'sector' || key === 'city') && /\]\(https?:\/\//.test(s)) {
     s = s.replace(/\]\([^)]*\)/g, '').replace(/[[\]]/g, '').replace(/\s*in\/[a-z0-9-]+$/i, '').trim();
   }
+  // Broader column-bleed net: even WITHOUT the "](" bracket pattern above, a company/sector/city
+  // cell can still end up with a bare domain fragment or a LinkedIn URL glued onto it with no
+  // markdown syntax at all — e.g. ".com/company/appsmith" (a "linkedin" prefix got cut) or
+  // "Bangalorelinkedin.com/company/signadotcompany/newton-school" (multiple ROWS' worth of link
+  // fragments mashed into one cell with zero separators — seen when a model tries to cram a
+  // different task's info, like an internship application link, into a column that was never
+  // meant to hold a URL). Real sector/city/role text never legitimately contains "linkedin.com"
+  // or a raw "<dot-extension>/<path>" shape — if it does, the cell is corrupted beyond a clean
+  // fix. Better to show "—" than a glued, unreadable mess.
+  if (key === 'company' || key === 'sector' || key === 'city') {
+    if (/linkedin\.com/i.test(s)) return '';
+    if (/\.(com|io|ai|co|in|org|net)\/[a-z0-9\-/]/i.test(s)) return '';
+    if (s.length > 60) return ''; // real sector/city/role values are always short phrases
+  }
   return s;
 }
 
