@@ -111,6 +111,13 @@ function withBrowserLock<T>(fn: () => Promise<T>): Promise<T> {
 // while a login is pending, because the user needs that window open to sign in.
 let _browserActiveThisRun = false;
 let _browserLoginPending  = false;
+// The Advanced-mode pre-warm opens an about:blank window BEFORE any browser tool runs, so it
+// doesn't flip _browserActiveThisRun. Without tracking it separately, a pre-warmed window that
+// the task never actually used stayed open forever (the close-at-end saw "browser not used" and
+// skipped it) — exactly the "browser wasn't needed but stayed open" complaint.
+let _browserPrewarmed = false;
+/** Called by the UI when it pre-warms Chrome, so an unused pre-warm still gets closed at run end. */
+export function markBrowserPrewarmed(): void { _browserPrewarmed = true; }
 // Cooperative stop for the long deterministic lead passes (enrich/verify): the UI sets this when
 // the user hits Stop, and the sub-batch loops check it between batches to bail out early with
 // whatever they've filled so far (instead of running the whole list regardless).
@@ -125,12 +132,14 @@ export function isLeadStopRequested(): boolean { return _leadStopRequested; }
 export function resetBrowserRunState(): void {
   _browserActiveThisRun = false;
   _browserLoginPending  = false;
+  _browserPrewarmed     = false;
 }
 
-/** Close the agent browser window if it was used this run and no login is pending. */
+/** Close the agent browser window if it was used OR pre-warmed this run and no login is pending. */
 export async function closeAgentBrowserIfActive(): Promise<boolean> {
-  if (!_browserActiveThisRun || _browserLoginPending) return false;
+  if ((!_browserActiveThisRun && !_browserPrewarmed) || _browserLoginPending) return false;
   _browserActiveThisRun = false;
+  _browserPrewarmed     = false;
   try {
     await invoke<string>('run_browser_persistent', { args: 'close' });
     emit('agent-browser-idle', {}).catch(() => {});

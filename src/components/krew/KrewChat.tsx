@@ -7,7 +7,7 @@ import type { Node, Edge } from '@xyflow/react';
 import { krewDb, credentialStore, krewMemoryDb, type KrewMemory } from '../../lib/krewDb';
 import { listMcpServers, mcpToolDefs } from '../../lib/krewMcp';
 import { brain as brainStore, nodeToMarkdown } from '../../lib/knowledgeStore';
-import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, LEAD_TOOLS, buildKrewSystemPrompt, executeTool, needsCompression, resetBrowserRunState, closeAgentBrowserIfActive, requestLeadStop, resetLeadStop, isLeadStopRequested, KREW_PROFILE_KEY, type ToolDef } from '../../lib/krewTools';
+import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, LEAD_TOOLS, buildKrewSystemPrompt, executeTool, needsCompression, resetBrowserRunState, closeAgentBrowserIfActive, markBrowserPrewarmed, requestLeadStop, resetLeadStop, isLeadStopRequested, KREW_PROFILE_KEY, type ToolDef } from '../../lib/krewTools';
 import { TaskProgress, type TaskPhase } from './TaskProgress';
 import { runParallelResearch } from '../../lib/researchSources';
 import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, type KrewAgent } from '../../lib/krewAgents';
@@ -2561,9 +2561,16 @@ The prompt must be production-ready — specific enough for a motion designer to
     if (!creds.brave?.api_key && /verif|linkedin|lead list|find (me )?(more )?(people|compan|contact|leads|decision)|decision maker|prospect|email.*(compan|people)/i.test(text)) {
       setBraveNudge(true);
     }
-    // Pre-warm Chrome in Advanced mode so the FIRST browser open isn't a ~10s cold start — it's
-    // launching in the background while the model thinks, and the agent reuses this same window.
-    if (searchMode === 'advanced') {
+    // Pre-warm Chrome in Advanced mode so the FIRST browser open isn't a ~10s cold start — BUT
+    // only when the task actually looks like it will browse. A pure content/drafting task (write
+    // messages, draft an email, compose a post) in Advanced mode never needs the browser, so
+    // opening one just wastes the user's time with a window they didn't ask for. Skip the
+    // pre-warm unless there's a real browse/research signal in the request. Even if this guesses
+    // wrong either way it's safe: an un-pre-warmed browse task just cold-starts, and any window
+    // that does open (pre-warm or real use) is guaranteed to close at run end.
+    const browseSignal = /\b(find|search|verify|check|look ?up|research|scrape|browse|visit|open the|go to|lead list|leads|prospects|decision maker|who (is|are|can|do)|contact (details|info)|phone number|email address|google maps|\bmaps\b|profile|careers|current price|pricing of|competitor|website of|list of)\b/i.test(text);
+    if (searchMode === 'advanced' && browseSignal) {
+      markBrowserPrewarmed();
       invoke('run_browser_persistent', { args: 'open "about:blank"' }).catch(() => {});
     }
 
