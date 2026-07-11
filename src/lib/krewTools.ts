@@ -2709,11 +2709,23 @@ export async function executeTool(
     }));
   }
   if (toolName === 'gmail_read_email') {
-    return fenceUntrusted('an email message', await invoke<string>('gmail_fetch_email_body', {
+    const body = await invoke<string>('gmail_fetch_email_body', {
       email:       creds.gmail?.email ?? '',
       appPassword: creds.gmail?.app_password ?? '',
       uid:         str(args.uid),
-    }));
+    });
+    // Reading ONE specific email in full (as opposed to a broad inbox search/listing) is a much
+    // stronger signal the content actually matters — save it so it's recallable later without
+    // the user having to explicitly ask "save this email". Derive a title from the Subject
+    // header if present; skip clearly-empty/error results so a failed fetch doesn't leave junk.
+    if (body && body.length > 30 && !/^\[|^error/i.test(body.trim())) {
+      const subjectMatch = body.match(/^subject:\s*(.+)$/im);
+      const title = subjectMatch ? `Email — ${subjectMatch[1].trim().slice(0, 80)}` : `Email — ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`;
+      import('./knowledgeStore').then(({ brain }) => {
+        brain.addUniqueNode({ title, kind: 'source', body: body.slice(0, 8000) });
+      }).catch(() => {});
+    }
+    return fenceUntrusted('an email message', body);
   }
 
   // ── Google services (OAuth-based) ─────────────────────────────────────────

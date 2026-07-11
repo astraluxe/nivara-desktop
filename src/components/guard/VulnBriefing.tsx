@@ -14,6 +14,21 @@ interface VulnFinding {
   affected: boolean;
 }
 
+async function saveVulnBriefingToBrain(repoName: string, summary: string, findings: VulnFinding[]) {
+  const affected = findings.filter((f) => f.affected);
+  if (affected.length === 0) return; // nothing worth keeping — a clean scan isn't a lasting record
+  const sevIcon = (s: string) => s === 'high' ? '🔴' : s === 'med' ? '🟡' : '🟢';
+  const body = [
+    summary,
+    '',
+    '### Vulnerable dependencies',
+    ...affected.map((f) => `- ${sevIcon(f.severity)} **${f.package}${f.version ? ` ${f.version}` : ''}** — ${f.title}: ${f.description}`),
+  ].join('\n');
+  const { brain } = await import('../../lib/knowledgeStore');
+  const title = `Vulnerability scan — ${repoName} — ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`;
+  brain.addUniqueNode({ title, kind: 'source', body });
+}
+
 const SEV: Record<string, { text: string; bg: string; border: string; bar: string }> = {
   high: { text: 'text-nv-bad',  bg: 'bg-red-500/10',    border: 'border-red-500/30',    bar: 'bg-red-500'    },
   med:  { text: 'text-nv-warn', bg: 'bg-amber-400/10',  border: 'border-amber-400/30',  bar: 'bg-amber-400'  },
@@ -135,6 +150,7 @@ export default function VulnBriefing() {
           `CVE in ${f.package} · ${f.title} · ${repo.name}`,
           { package: f.package, version: f.version, repo: repo.full_name });
       }
+      saveVulnBriefingToBrain(repo.name, parsed.summary ?? '', parsed.findings ?? []).catch(() => {});
       setStep('done');
     } catch (e) {
       setError(`Scan failed: ${e}`);

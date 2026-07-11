@@ -5,6 +5,25 @@ import { extractDocument, GuardExtractError, type ExtractProgress } from '../../
 
 type ScanResult = GuardScanResult;
 
+// Every Guard scan already produces a clean, structured result — no fragile LLM-output
+// parsing needed (unlike Krew's freeform tables), so this can save deterministically every
+// time, no user action required.
+async function saveContractScanToBrain(fileLabel: string, r: GuardScanResult) {
+  const sevIcon = (s: string) => s === 'high' ? '🔴' : s === 'med' ? '🟡' : '🟢';
+  const body = [
+    `**Risk score:** ${r.risk_score}/100`,
+    `**Sections scanned:** ${r.chunksScanned}${r.truncated ? ' (truncated — document was very long)' : ''}`,
+    '',
+    r.summary,
+    '',
+    '### Findings',
+    ...r.findings.map((f) => `- ${sevIcon(f.severity)} **${f.title}**${f.section ? ` (${f.section})` : ''} — ${f.detail}`),
+  ].join('\n');
+  const { brain } = await import('../../lib/knowledgeStore');
+  const title = `Contract scan — ${fileLabel} — ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`;
+  brain.addUniqueNode({ title, kind: 'source', body });
+}
+
 const PHASE_LABEL: Record<ExtractProgress['phase'], string> = {
   reading:   'Reading file…',
   detecting: 'Checking document text…',
@@ -145,6 +164,7 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
         `Contract scanned · ${parsed.chunksScanned} section${parsed.chunksScanned !== 1 ? 's' : ''} · score ${parsed.risk_score}/100 · ${parsed.findings.length} finding${parsed.findings.length !== 1 ? 's' : ''}`,
         { risk_score: parsed.risk_score, findings_count: parsed.findings.length, file: fileName || 'pasted text', sections: parsed.chunksScanned, truncated: parsed.truncated }
       );
+      saveContractScanToBrain(fileName || 'pasted text', parsed).catch(() => {});
       setResult(parsed);
     } catch (e) {
       const msg = String(e);

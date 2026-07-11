@@ -18,6 +18,21 @@ interface ComplianceResult {
   action_items: string[];
 }
 
+async function saveComplianceCheckToBrain(fileLabel: string, bizType: string, r: ComplianceResult) {
+  const icon = (s: string) => s === 'pass' ? '✓' : s === 'warn' ? '!' : '✕';
+  const body = [
+    `**Overall:** ${r.overall.replace('_', ' ')} — **Score:** ${r.score}/100`,
+    `**Business type:** ${bizType}`,
+    '',
+    '### Checks',
+    ...r.rows.map((row) => `- ${icon(row.status)} **${row.standard}** — ${row.requirement}: ${row.note}`),
+    ...(r.action_items.length ? ['', '### Action items', ...r.action_items.map((a) => `- ${a}`)] : []),
+  ].join('\n');
+  const { brain } = await import('../../lib/knowledgeStore');
+  const title = `Compliance check — ${fileLabel} — ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`;
+  brain.addUniqueNode({ title, kind: 'source', body });
+}
+
 const STATUS = {
   pass: { text: 'text-nv-ok',   bg: 'bg-emerald-500/10', border: 'border-emerald-500/25', icon: '✓', label: 'PASS' },
   warn: { text: 'text-nv-warn', bg: 'bg-amber-400/10',   border: 'border-amber-400/25',   icon: '!', label: 'WARN' },
@@ -209,6 +224,7 @@ export default function ComplianceChecker({ onScanRun }: { onScanRun?: () => voi
         `Compliance · ${bizType} · score ${parsed.score}/100 · ${fileName || 'pasted'}`,
         { overall: parsed.overall, score: parsed.score, file: fileName });
       setLastLogId(logId ?? null);
+      saveComplianceCheckToBrain(fileName || 'pasted content', bizType, parsed).catch(() => {});
       setResult(parsed);
     } catch (e) {
       const msg = String(e);

@@ -42,6 +42,18 @@ function mdToHtml(md: string): string {
   let html = '', i = 0;
   while (i < lines.length) {
     const line = lines[i];
+    // Fenced code block — without this, every line of a saved code snippet (e.g. from a Coder
+    // explanation) fell through to the plain-paragraph case below: proportional font, no
+    // preserved whitespace, one <p> per line. Render as a real <pre><code> block instead.
+    const fence = line.match(/^```(\w*)/);
+    if (fence) {
+      i++;
+      const codeLines: string[] = [];
+      while (i < lines.length && !lines[i].match(/^```\s*$/)) { codeLines.push(lines[i]); i++; }
+      i++; // skip the closing fence
+      html += `<pre><code>${escHtml(codeLines.join('\n'))}</code></pre>`;
+      continue;
+    }
     const hm = line.match(/^(#{1,4})\s+(.+)/);
     if (hm) { const lvl = Math.min(hm[1].length, 3) + 1; html += `<h${lvl}>${inlineHtml(hm[2])}</h${lvl}>`; i++; continue; }
     if (line.trim().startsWith('|') && (line.match(/\|/g) || []).length >= 2 && lines[i + 1] && lines[i + 1].includes('|')) {
@@ -70,6 +82,8 @@ const NOTE_CLS =
   '[&_h4]:text-[12px] [&_h4]:font-semibold [&_h4]:text-nv-text ' +
   '[&_p]:mb-1.5 [&_strong]:font-semibold [&_a]:text-accent [&_a]:underline ' +
   '[&_ul]:list-disc [&_ul]:ml-5 [&_ul]:my-1 [&_li]:mb-0.5 ' +
+  '[&_pre]:my-2 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:border [&_pre]:border-nv-border [&_pre]:bg-nv-surface2/60 [&_pre]:overflow-x-auto ' +
+  '[&_pre_code]:font-mono [&_pre_code]:text-[11.5px] [&_pre_code]:text-nv-text [&_pre_code]:whitespace-pre ' +
   '[&_table]:my-2 [&_table]:border [&_table]:border-nv-border [&_table]:rounded-lg [&_table]:border-collapse ' +
   '[&_th]:text-left [&_th]:px-3 [&_th]:py-1.5 [&_th]:font-semibold [&_th]:text-nv-text [&_th]:border [&_th]:border-nv-border [&_th]:bg-nv-surface2/50 [&_th]:relative ' +
   '[&_td]:px-3 [&_td]:py-1.5 [&_td]:align-top [&_td]:border [&_td]:border-nv-border/50 [&_td]:text-nv-muted ' +

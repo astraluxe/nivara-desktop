@@ -119,6 +119,22 @@ export const brain = {
     return node;
   },
 
+  /** Like addNode, but NEVER overwrites an existing same-titled node — finds a free
+   *  "title (2)", "title (3)"... instead. For auto-captured content (Guard scans, Coder
+   *  explanations, saved emails) where each new one is its own distinct record, not a
+   *  continuation of the last thing that happened to get the same title. */
+  addUniqueNode(n: { title: string; body?: string; kind?: BrainNodeKind; filePath?: string }): BrainNode {
+    const d = read();
+    let title = n.title;
+    if (d.nodes.some((x) => normTitle(x.title) === normTitle(title))) {
+      for (let i = 2; i < 50; i++) {
+        const t = `${n.title} (${i})`;
+        if (!d.nodes.some((x) => normTitle(x.title) === normTitle(t))) { title = t; break; }
+      }
+    }
+    return this.addNode({ ...n, title });
+  },
+
   updateNode(id: string, patch: Partial<BrainNode>) {
     const d = read();
     const n = d.nodes.find((x) => x.id === id);

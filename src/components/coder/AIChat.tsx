@@ -10,6 +10,23 @@ import ConnectionBar from './ConnectionBar';
 import PromptLibrary from './PromptLibrary';
 import { getActiveSkillsForCoder } from '../../lib/skills';
 
+// Coder's chat has no tool-calling loop (unlike Krew) — the model can't call save_to_brain even
+// if told to, so this has to be a deterministic client-side check instead. Only fires when the
+// user was clearly asking to UNDERSTAND something (not "fix this bug" / "add a function" — those
+// are one-off tasks, not lasting knowledge) AND the answer is a genuine explanation (substantial
+// prose outside any code fences) — a plain code patch never gets saved, only real "here's how/why
+// this works" content worth having later.
+function saveCoderExplanationToBrain(question: string, answer: string) {
+  const asksToUnderstand = /\b(explain|why (is|does|do|are)|how does|how do|what is|what does|what's the (point|purpose|reason)|walk me through|understand|architecture of|difference between)\b/i.test(question);
+  if (!asksToUnderstand) return;
+  const proseOnly = answer.replace(/```[\s\S]*?```/g, '').trim();
+  if (proseOnly.length < 200) return; // too short to be a real explanation worth keeping
+  const title = `Code note — ${question.trim().slice(0, 70)}`;
+  import('../../lib/knowledgeStore').then(({ brain }) => {
+    brain.addUniqueNode({ title, kind: 'note', body: `**Q:** ${question}\n\n${answer}`.slice(0, 8000) });
+  }).catch(() => {});
+}
+
 interface Props {
   projectPath: string;
   currentFileContent: string;
@@ -453,6 +470,7 @@ export default function AIChat({
           trackTokenUsage('coder', chars);
           setMonthlyUsed(prev => prev + Math.ceil(chars / 4));
         }
+        saveCoderExplanationToBrain(userContent, assistantText);
         // Auto-apply: if a file is open and AI returned exactly one code block, write it
         // immediately — via onApplyToFile so the change is snapshotted (revertable) and the editor refreshes.
         if (currentFilePath) {
