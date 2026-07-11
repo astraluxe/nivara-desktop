@@ -1191,7 +1191,59 @@ async function autoSaveUrlToMemory(url: string, agentKey: string): Promise<void>
   }
 }
 
+// A tool belonging to a service the user actually CONNECTED (Gmail, Slack, Notion, GitHub,
+// LinkedIn, Drive, Calendar, Sheets, Slides, Airtable, Linear, Twitter/X) or an attached MCP
+// server, that fetches ONE substantive, specific item (a file, a page, a profile, a thread, a
+// document) — that's a strong signal the content matters and is worth having later, the same
+// principle already used for gmail_read_email, generalised to every connected service (and any
+// future MCP server) without a hand-written case for each one. Deliberately scoped to CONNECTED
+// SERVICES ONLY — generic tools that happen to contain "get"/"read" (browser_get_text, read_file,
+// research_companies, scrape_structured) are NOT connected-app data and must never match here;
+// browser/lead-table content already has its own dedicated, more careful save path elsewhere. A
+// "list many things" or "search" call is also excluded (would flood Brain with thin entries), and
+// so is any write/action tool (create/send/post/like/delete/etc — the user is DOING something
+// there, not retrieving information to keep).
+const CONNECTED_SERVICE_PREFIXES = ['gmail', 'slack', 'notion', 'github', 'linkedin', 'drive', 'gcal', 'sheets', 'slides', 'airtable', 'linear', 'twitter'];
+const AUTO_SAVE_EXCLUDE_RE = /(^|_)(list|search|create|send|post|like|delete|retweet|reply|comment|toggle|append)($|_)/i;
+const AUTO_SAVE_READ_RE = /(^|_)(get|read|query|fetch)($|_)/i;
+
+function shouldAutoSaveToolResult(toolName: string): boolean {
+  if (toolName === 'gmail_read_email') return false; // already saved with its own Subject-derived title above
+  const isMcp = toolName.startsWith('mcp__');
+  if (!isMcp && !CONNECTED_SERVICE_PREFIXES.includes(toolName.split('_')[0])) return false;
+  // MCP tools are namespaced mcp__<server>__<tool> — classify by the tool's OWN local name,
+  // since we can't know in advance what an arbitrary future MCP server's actions look like.
+  const localName = isMcp ? toolName.replace(/^mcp__[^_]+__/, '') : toolName;
+  if (AUTO_SAVE_EXCLUDE_RE.test(localName)) return false;
+  return AUTO_SAVE_READ_RE.test(localName);
+}
+
+function deriveConnectedAppTitle(toolName: string, args: Record<string, unknown>): string {
+  const service = toolName.startsWith('mcp__') ? toolName.split('__')[1] : toolName.split('_')[0];
+  const hint = String(args.path ?? args.page_id ?? args.title ?? args.query ?? args.url ?? args.id ?? '').slice(0, 60);
+  const label = service.charAt(0).toUpperCase() + service.slice(1);
+  return hint ? `${label} — ${hint}` : `${label} — ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`;
+}
+
 export async function executeTool(
+  toolName: string,
+  args: Record<string, unknown>,
+  creds: Creds,
+  onTerminalApprovalNeeded: (command: string) => Promise<boolean>,
+  agentKey: string = 'boss',
+  userId = '',
+  sessionId = 'default',
+): Promise<string> {
+  const result = await executeToolCore(toolName, args, creds, onTerminalApprovalNeeded, agentKey, userId, sessionId);
+  if (shouldAutoSaveToolResult(toolName) && result && result.length > 80 && !result.startsWith('[') && !result.startsWith('Error')) {
+    import('./knowledgeStore').then(({ brain }) => {
+      brain.addUniqueNode({ title: deriveConnectedAppTitle(toolName, args), kind: 'source', body: result.slice(0, 8000) });
+    }).catch(() => {});
+  }
+  return result;
+}
+
+async function executeToolCore(
   toolName: string,
   args: Record<string, unknown>,
   creds: Creds,
