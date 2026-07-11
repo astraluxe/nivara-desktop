@@ -1342,8 +1342,29 @@ function repairLeadTable(text: string): string {
   return out.join('\n');
 }
 
+// Manual backup for whenever automatic detection misses something (wrong routing, an agent that
+// didn't recognise its own output as save-worthy, etc.) — a title derived straight from the
+// content, not from the request, since by the time someone clicks this the request text may not
+// be handy. First heading or first substantial line, falls back to a dated generic title.
+function deriveQuickTitle(content: string): string {
+  const headingMatch = content.match(/^#{1,4}\s+(.+)$/m);
+  if (headingMatch) return headingMatch[1].trim().slice(0, 70);
+  const firstLine = content.split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('|') && !l.startsWith('```'));
+  if (firstLine) return firstLine.replace(/[*_#]/g, '').trim().slice(0, 70);
+  return `Saved from Krew — ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`;
+}
+
 function AssistantBubble({ content, streaming }: { content: string; streaming?: boolean }) {
   const [copied, setCopied] = useState(false);
+  const [savedToBrain, setSavedToBrain] = useState(false);
+
+  function saveToBrainManually() {
+    import('../../lib/knowledgeStore').then(({ brain }) => {
+      brain.addUniqueNode({ title: deriveQuickTitle(content), kind: 'note', body: content });
+      setSavedToBrain(true);
+      setTimeout(() => setSavedToBrain(false), 1800);
+    }).catch(() => {});
+  }
 
   // If the content is HTML (visual asset from visual_creator), render preview
   const trimmed = content.trimStart();
@@ -1420,15 +1441,27 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
         <VideoLinkCard key={url} url={url} />
       ))}
       {!streaming && content.length > 0 && (
-        <button
-          onClick={copyAll}
-          className="mt-1.5 text-[10px] text-nv-faint hover:text-nv-muted transition-fast font-mono flex items-center gap-1"
-        >
-          {copied
-            ? <><span className="text-emerald-400">✓</span> copied</>
-            : <><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> copy</>
-          }
-        </button>
+        <div className="mt-1.5 flex items-center gap-3">
+          <button
+            onClick={copyAll}
+            className="text-[10px] text-nv-faint hover:text-nv-muted transition-fast font-mono flex items-center gap-1"
+          >
+            {copied
+              ? <><span className="text-emerald-400">✓</span> copied</>
+              : <><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> copy</>
+            }
+          </button>
+          <button
+            onClick={saveToBrainManually}
+            title="Agents usually save what matters automatically — use this if something didn't get saved"
+            className="text-[10px] text-nv-faint hover:text-nv-muted transition-fast font-mono flex items-center gap-1"
+          >
+            {savedToBrain
+              ? <><span className="text-emerald-400">✓</span> saved to brain</>
+              : <><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M4.9 4.9l2.9 2.9M16.2 16.2l2.9 2.9M2 12h4M18 12h4M4.9 19.1l2.9-2.9M16.2 7.8l2.9-2.9"/></svg> save to brain</>
+            }
+          </button>
+        </div>
       )}
     </div>
   );
@@ -3301,13 +3334,15 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
               // GUARANTEE the lead table is saved to the Brain — plan_workflow had NO save at all
               // before, so a request routed here (the boss's own prompt steers "find X AND do Y"
               // compound requests to plan_workflow, not delegate_to_agent) silently never reached
-              // the Brain regardless of what the user named the list. Save whichever step's result
-              // looks like a lead table (usually the research step), same custom-title support as
-              // the single-delegate path.
+              // the Brain regardless of what the user named the list. Prefer a lead-shaped result
+              // (Name+LinkedIn columns), but fall back to ANY well-formed table (a non-lead
+              // comparison/ranking produced by a step like cfo/researcher) — autoSaveLeadTableToBrain
+              // itself already branches lead vs generic internally; the bug was this call site
+              // filtering out generic tables BEFORE the function ever got a chance to run.
               const wfLeadResult = wfResults.find((r) => {
                 const rows = extractTableRows(r);
                 return rows.length >= 2 && /\bname\b/i.test(rows[0]) && /linkedin/i.test(rows[0]);
-              });
+              }) ?? wfResults.find((r) => looksLikeAnyTable(extractTableRows(r)));
               if (wfLeadResult) {
                 const wfBrainTitles = attachedTitlesRef.current.length ? attachedTitlesRef.current : [lastAttachedTitleRef.current];
                 const wfCustomTitle = extractCustomListTitle(text);
