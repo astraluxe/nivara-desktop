@@ -1441,24 +1441,30 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
         <VideoLinkCard key={url} url={url} />
       ))}
       {!streaming && content.length > 0 && (
-        <div className="mt-1.5 flex items-center gap-3">
+        <div className="mt-2 flex items-center gap-2">
+          {/* Save to Brain — prominent, always visible (not a faint hover-only link), because
+              it's the manual backup the user reaches for when auto-save missed something. */}
           <button
-            onClick={copyAll}
-            className="text-[10px] text-nv-faint hover:text-nv-muted transition-fast font-mono flex items-center gap-1"
+            onClick={saveToBrainManually}
+            title="Save this agent's answer to your Brain (use this if it wasn't saved automatically)"
+            className={`text-[11px] font-medium px-2.5 py-1 rounded-lg border flex items-center gap-1.5 transition-fast ${
+              savedToBrain
+                ? 'border-emerald-500/40 text-emerald-400 bg-emerald-500/10'
+                : 'border-accent/40 text-accent bg-accent/10 hover:bg-accent/20'
+            }`}
           >
-            {copied
-              ? <><span className="text-emerald-400">✓</span> copied</>
-              : <><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> copy</>
+            {savedToBrain
+              ? <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg> Saved to Brain</>
+              : <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M4.9 4.9l2.9 2.9M16.2 16.2l2.9 2.9M2 12h4M18 12h4M4.9 19.1l2.9-2.9M16.2 7.8l2.9-2.9"/></svg> Save to Brain</>
             }
           </button>
           <button
-            onClick={saveToBrainManually}
-            title="Agents usually save what matters automatically — use this if something didn't get saved"
-            className="text-[10px] text-nv-faint hover:text-nv-muted transition-fast font-mono flex items-center gap-1"
+            onClick={copyAll}
+            className="text-[11px] text-nv-faint hover:text-nv-muted transition-fast font-mono flex items-center gap-1 px-1.5 py-1"
           >
-            {savedToBrain
-              ? <><span className="text-emerald-400">✓</span> saved to brain</>
-              : <><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M4.9 4.9l2.9 2.9M16.2 16.2l2.9 2.9M2 12h4M18 12h4M4.9 19.1l2.9-2.9M16.2 7.8l2.9-2.9"/></svg> save to brain</>
+            {copied
+              ? <><span className="text-emerald-400">✓</span> copied</>
+              : <><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> copy</>
             }
           </button>
         </div>
