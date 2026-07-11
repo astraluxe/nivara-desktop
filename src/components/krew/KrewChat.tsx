@@ -1026,10 +1026,64 @@ function deriveListTitle(requestText: string): string {
   return city ? `${base} — ${city}` : base;
 }
 
+// A well-formed table doesn't have to be a lead/contact list — a comparison, schedule, feature
+// matrix, or any other structured answer is just as saveable. Detect ANY plausible table (header
+// + separator + 2+ data rows, roughly consistent cell counts) so agents aren't limited to the
+// Name/Company/Sector/City/Website/LinkedIn shape — they can design whatever columns actually fit
+// what was asked, and it still gets saved.
+function looksLikeAnyTable(pipeLines: string[]): boolean {
+  if (pipeLines.length < 3) return false;
+  const cellCount = (l: string) => l.split('|').filter((c) => c.trim() !== '' || l.indexOf(c) > 0).length;
+  const headerCells = cellCount(pipeLines[0]);
+  if (headerCells < 2) return false;
+  const isSep = /^\|?[\s:|-]+\|?$/.test(pipeLines[1].replace(/\s/g, ''));
+  const dataRows = pipeLines.slice(isSep ? 2 : 1);
+  return dataRows.length >= 2;
+}
+
+// Pull a short, meaningful title out of the request for a GENERIC (non-lead) table — no
+// sector/city assumptions, just what the user actually asked to build/compare/list.
+function deriveGenericTableTitle(requestText: string): string {
+  const m = requestText.match(/\b(?:compare|table of|list of|build (?:a|me a)?|make (?:a|me a)?|show (?:me)?|give (?:me)?)\s+([a-z0-9][a-z0-9 &'/-]{4,50}?)(?:[.,!?\n]|\bfor\b|\bwith\b|$)/i);
+  const base = m ? m[1].trim() : '';
+  return base ? `${base[0].toUpperCase()}${base.slice(1)}` : `Table — ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
+}
+
 function autoSaveLeadTableToBrain(text: string, fileTitles: string[], separateListTitle = '', requestText = ''): Promise<string | undefined> {
   const pipeLines = extractTableRows(text);
   if (pipeLines.length < 4) return Promise.resolve(undefined);
-  if (!/\bname\b|\bcompany\b|\bwebsite\b|\blinkedin\b/i.test(pipeLines[0])) return Promise.resolve(undefined);
+  const isLeadShaped = /\bname\b|\bcompany\b|\bwebsite\b|\blinkedin\b/i.test(pipeLines[0]);
+  if (!isLeadShaped) {
+    // Not a lead/contact list — the LEAD_CANON merge/repair machinery below is specifically tuned
+    // to that schema and would mangle anything else. Save a generic table as-is (lightly capped),
+    // always as its OWN new node — a differently-shaped table is never "the same list" as an
+    // existing lead list, so there's nothing sensible to merge it into.
+    if (!looksLikeAnyTable(pipeLines)) return Promise.resolve(undefined);
+    const cleanTitles = (fileTitles || [])
+      .map((t) => (t || '').replace(/\.(md|txt|json|csv|markdown)$/i, '').trim())
+      .filter(Boolean);
+    return import('../../lib/knowledgeStore').then(({ brain }) => {
+      const data = brain.all();
+      const anchorIds = (): string[] => {
+        const ids = new Set<string>();
+        for (const t of cleanTitles) { const f = brain.findByTitle(t); if (f) ids.add(f.id); }
+        if (ids.size === 0) {
+          const prod = data.nodes.find((n) => /product|profile|business|about (me|us)|company/i.test(n.title));
+          if (prod) ids.add(prod.id);
+        }
+        return [...ids];
+      };
+      const uniqueTitle = (base: string): string => {
+        if (!brain.findByTitle(base)) return base;
+        for (let i = 2; i < 50; i++) { const t = `${base} (${i})`; if (!brain.findByTitle(t)) return t; }
+        return `${base} (${Date.now()})`;
+      };
+      const title = uniqueTitle(deriveGenericTableTitle(requestText));
+      const node = brain.addNode({ title, kind: 'data', body: text.slice(0, 16000) });
+      for (const aid of anchorIds()) brain.link(aid, node.id, 'built from this');
+      return node.title;
+    }).catch(() => undefined);
+  }
   // Strip trailing .md/.txt etc — Brain nodes are stored WITHOUT the extension, so
   // findByTitle("Lead list — 28/6/2026.md") would miss the real node and never link.
   const cleanTitles = (fileTitles || [])
@@ -2356,6 +2410,12 @@ The prompt must be production-ready — specific enough for a motion designer to
     const draftFormatDirective = `\n\n## OUTPUT FORMAT FOR EMAILS / OUTREACH MESSAGES\nWhen you write an email or outreach message the user will actually send, wrap EACH one in its own fenced block tagged \`email\` — optionally with the sector/segment as a label — so it renders as a clean, copyable box (like tables do). For an email, put the \`Subject:\` line first. One fence per message; never put a markdown table inside the fence. Example:\n\`\`\`email Real Estate\nSubject: Cut contract review from days to minutes\n\nHi {name},\n…\nBest,\n{signing name}\n\`\`\`\nWrite the FULL message text inside the fence — never just describe that you drafted it. For SEVERAL variants (e.g. a LinkedIn DM and an email, or per-sector versions), output EACH as its own separate \`\`\`email fence one after another. Do NOT use CHOICES_BLOCK for emails/outreach — cramming long messages into that JSON breaks the formatting (newlines/quotes) and garbles the output. One clean fence per message. These fenced drafts are saved to your Brain automatically (one "Outreach messages" note, linked to the lead list) — you do NOT need to call save_to_brain.\nSTICK TO WHAT WAS ASKED: a request to draft/write messages is ONLY that — never add a "Research Question", GTM strategy, ICP, Positioning, Acquisition Channels, or 30/60/90-Day Plan section unless the user's own words explicitly asked for a strategy/plan/GTM. If your context includes an earlier step's research or strategy notes, use them ONLY to inform who you're writing to — do NOT repeat, summarise, or re-present that content in your reply. The messages are the entire deliverable.`;
     // Verifying LinkedIn/contacts MUST go through the browser, never from memory.
     const verifyDirective = `\n\n## VERIFYING A LEAD LIST — DO NOT GUESS FROM MEMORY\nYou do NOT know people's current LinkedIn URLs — any you recall are likely stale or the wrong same-name person, which is exactly the bug we're fixing. When the user asks you to verify / check / fix / correct the LinkedIn links in a list (or to confirm who to contact), you MUST call the \`verify_lead_list\` tool with the list — it opens each profile in the browser and checks it for real. NEVER write or "verify" a LinkedIn URL from your own knowledge, and never claim you verified profiles unless verify_lead_list actually ran. Present the table it returns exactly as-is.\n\nEXPANDING / "FIND MORE PEOPLE": first read the people ALREADY in the attached list. Find only NEW people with web_search — do NOT repeat or re-list anyone already there (no duplicate names/companies). Add the new rows to the SAME list (keep the existing rows), then pass the whole combined list to verify_lead_list. The app keeps one lead-list note in the Brain and merges into it (dedupes by name) and connects it to the attached file automatically — so you do NOT need to call save_to_brain or decide what to link; just produce the combined, deduped table.\n\nPHONE / EMAIL / CONTACT DETAILS: when the user wants phone numbers, mobile, office contact, or email added (including "use Google Maps"), call the \`enrich_lead_list\` tool with the list — it searches Google Maps and the company sites in the browser and fills in Phone/Email columns. NEVER make up a phone or email from memory.`;
+    // General-purpose table capability: not every request fits the Name/Company/Sector/City/
+    // Website/LinkedIn lead schema (that one has its own dedicated repair/merge pipeline because
+    // it's the most common and most fragile shape) — a comparison, schedule, ranking, or any other
+    // structured answer just needs a clean table designed for THAT task, and it's saved to Brain
+    // automatically either way.
+    const tableSkillDirective = `\n\n## BUILDING TABLES FOR NON-LEAD REQUESTS\nWhen the user's ask is a table/comparison/list that is NOT a contact/lead list (e.g. "compare these tools", "table of upcoming events", "rank these options", "build me a tracker for X") — design the COLUMNS yourself, whatever best fits what was actually asked. Do not force it into the Name/Company/Sector/City/Website/LinkedIn shape; that's only for contacts/leads. Output ONE clean markdown pipe table (header row, |---| separator, then data rows, every row with the same cell count as the header) — it is saved to your Brain automatically, you do NOT need to call save_to_brain yourself for it.\nREUSE YOUR OWN WORK: after you design a table format for a kind of request you haven't handled before, call save_memory with key "table_format_<short task type>" (e.g. "table_format_event_tracker", "table_format_tool_comparison") and value = the column list + a one-line reason for that shape. Next time a similar request comes in, check your memory FIRST (it's listed under "## Your memory") — if you already have a matching table_format_* entry, reuse those exact columns straight away instead of re-deriving them from scratch. This is a real time/token saving, not busywork: designing a good schema once and reusing it beats re-inventing it every time.`;
     setInput('');
     setBusy(true);
     stopRef.current = false;
@@ -2532,7 +2592,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       `\nMCP RECOMMENDATION RULE: When a task needs a service that is NOT connected AND the task specifically requires API access (sending messages, posting content, reading private data via API), proactively tell the user: "To do this, connect [service] in the Connect Apps tab (Krew → top-right). Higgsfield AI (https://mcp.higgsfield.ai/mcp) is the best single MCP for video generation with 30+ models." Be specific.\n`
       : '';
     const skillsBlock = getActiveSkillsContext(agent.key);
-    const systemPrt  = agent.systemPrompt + memBlock + profileBlock + (agent.key === 'boss' ? '' : userBlock) + connectedAppsBlock + mcpSummary + skillsBlock + tierDirective + dateBlock + searchModeDirective + draftFormatDirective + verifyDirective + '\n\n' + buildKrewSystemPrompt(tools) + bossPostfix;
+    const systemPrt  = agent.systemPrompt + memBlock + profileBlock + (agent.key === 'boss' ? '' : userBlock) + connectedAppsBlock + mcpSummary + skillsBlock + tierDirective + dateBlock + searchModeDirective + draftFormatDirective + verifyDirective + tableSkillDirective + '\n\n' + buildKrewSystemPrompt(tools) + bossPostfix;
 
     // Build history from display messages (user + assistant only, not tool calls/results)
     let history: { role: string; content: string }[] = messages
@@ -2758,7 +2818,7 @@ The prompt must be production-ready — specific enough for a motion designer to
               const pipelineRule = '\n\nCRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.'
                 + '\n\nDELIVERABLE RULE (MANDATORY): If the task asks you to write, draft, create, or prepare something (emails, messages, outreach, posts, copy, code, a document), your reply MUST contain the COMPLETE finished content itself. NEVER say you "drafted", "prepared", or "put together" something without including the full text right there. If a tool such as web_search fails, returns nothing, or hits a technical snag, do NOT stop, apologise, or describe what you would have done — produce the full deliverable from the context already provided, briefly note any assumption in one line, and output the entire content. A reply that only claims work was done, without the actual content, is a failed task.'
                 + '\n\nBE RESOURCEFUL — DECIDE HOW TO FIND THE ANSWER: you have real tools (web_search, scrape_structured, a live browser you can open in front of the user, Google Maps, LinkedIn, plus any connected apps). Pick the right one for what is being asked, and if the first source comes up short, CHAIN to another and EXPAND the approach instead of guessing or giving a thin answer: e.g. web_search → if weak, open the browser and read the page → if a person/contact is missing, try LinkedIn people-search or the company\'s Team/Contact page → if a phone/address is missing, try Google Maps. VERIFY facts you can verify (open the page and read it) rather than inventing them. Only fall back to a clearly-labelled best guess after you have genuinely tried to find the real thing. Use 2–3 sources when one is not enough — that is what makes the answer actually useful.';
-              const delegateSystem = targetAgent.systemPrompt + delegateMemBlock + profileBlock + pipelineRule + userBlock + connectedAppsBlock + mcpSummary + tierDirective + dateBlock + searchModeDirective + draftFormatDirective + verifyDirective + '\n\n' + buildKrewSystemPrompt(delegateTools);
+              const delegateSystem = targetAgent.systemPrompt + delegateMemBlock + profileBlock + pipelineRule + userBlock + connectedAppsBlock + mcpSummary + tierDirective + dateBlock + searchModeDirective + draftFormatDirective + verifyDirective + tableSkillDirective + '\n\n' + buildKrewSystemPrompt(delegateTools);
               // FORWARD THE FILE the user is working with. The delegate has its OWN history
               // and only gets `task` — so the focused Brain file / attached files (which live
               // in the Boss's message, not here) must be passed in, or the delegate sees the
@@ -3112,7 +3172,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                 wfTools.push(...BROWSER_TOOLS); // every agent can open the browser
                 if (wfKey === 'research_agent' || wfAgent.category === 'Sales' || wfAgent.category === 'Content') wfTools.push(...RESEARCH_TOOLS);
                 wfTools.push(...mcpTools); // user-connected MCP servers
-                const wfSys = wfAgent.systemPrompt + wfMemBlock + '\n\nCRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.' + profileBlock + userBlock + connectedAppsBlock + mcpSummary + tierDirective + dateBlock + searchModeDirective + draftFormatDirective + verifyDirective + '\n\n' + buildKrewSystemPrompt(wfTools);
+                const wfSys = wfAgent.systemPrompt + wfMemBlock + '\n\nCRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.' + profileBlock + userBlock + connectedAppsBlock + mcpSummary + tierDirective + dateBlock + searchModeDirective + draftFormatDirective + verifyDirective + tableSkillDirective + '\n\n' + buildKrewSystemPrompt(wfTools);
                 const wfHist = [{ role: 'user', content: wfTask }];
                 let wfAccum = ''; let wfFinal = '';
                 // Same "ran out of steps while still working" signal as the single-delegate loop —
