@@ -1020,10 +1020,33 @@ function isExplicitListContinuation(requestText: string): boolean {
 function deriveListTitle(requestText: string): string {
   const cityMatch = requestText.match(/\b(bangalore|bengaluru|mumbai|delhi|pune|hyderabad|chennai|kolkata|ahmedabad|gurgaon|gurugram|noida)\b/i);
   const city = cityMatch ? cityMatch[1][0].toUpperCase() + cityMatch[1].slice(1).toLowerCase() : '';
-  const audienceMatch = requestText.match(/\b(non-?tech|tech|manufacturing|real estate|logistics|fintech|healthcare|legal|retail|d2c|saas|enterprise|smb|internship)\w*\b[^.]{0,20}?(companies|firms|businesses|leads|prospects|buyers)?/i);
-  const audience = audienceMatch ? audienceMatch[0].trim().replace(/\s+/g, ' ') : '';
+  // "non tech" must be matched with a space OR hyphen OR nothing (non[\s-]?tech), not just the
+  // hyphen — otherwise "non tech companies" fell through to the plain "tech" alternative and got
+  // labelled a Tech list, the exact inverse of what the user asked for.
+  const audienceMatch = requestText.match(/\b(non[\s-]?tech|tech|manufacturing|real estate|logistics|fintech|healthcare|legal|retail|d2c|saas|enterprise|smb|internship)\w*\b[^.]{0,20}?(companies|firms|businesses|leads|prospects|buyers)?/i);
+  let audience = audienceMatch ? audienceMatch[0].trim().replace(/\s+/g, ' ') : '';
+  if (/\bnon[\s-]?tech/i.test(audience)) audience = 'Non-tech'; // normalise "non tech"/"nontech" → "Non-tech"
   const base = audience ? `${audience[0].toUpperCase()}${audience.slice(1)} lead list` : 'Lead list';
   return city ? `${base} — ${city}` : base;
+}
+
+// One place that decides whether a fresh list should be saved as its OWN separate Brain node and
+// under what name — replaces three copy-pasted blocks that each had the same bug: the plain
+// "\btech" check matched the "tech" inside "non tech", so a user asking for a NON-tech list got it
+// saved as "Tech lead list" (the exact opposite audience). non-tech is checked FIRST here.
+function computeSeparateListTitle(text: string): string {
+  const custom = extractCustomListTitle(text);
+  if (custom) return custom;
+  const isNonTech = /\bnon[\s-]?tech/i.test(text);
+  const wantsSeparate =
+    isNonTech ||
+    /\b(new|separate|another|second|different|fresh)\b[^.]{0,40}\blist\b/i.test(text) ||
+    /\btechie\b/i.test(text) ||
+    /\b(non[\s-]?tech|tech(ie)?)\s+lead\s+list\b/i.test(text);
+  if (!wantsSeparate) return '';
+  if (isNonTech) return 'Non-tech lead list';
+  if (/\b(tech|techie|saas|developer|engineer)\b/i.test(text)) return 'Tech lead list';
+  return 'New lead list';
 }
 
 // A well-formed table doesn't have to be a lead/contact list — a comparison, schedule, feature
@@ -3126,12 +3149,8 @@ The prompt must be production-ready — specific enough for a motion designer to
               const brainTitles = attachedTitlesRef.current.length ? attachedTitlesRef.current : [lastAttachedTitleRef.current];
               // If the user asked for a NEW / SEPARATE list, save it as its own Brain note instead
               // of merging into the main lead list. An explicit custom name ("name it as X",
-              // "call it X") always wins; otherwise fall back to the old tech/generic heuristic.
-              const customListTitle = extractCustomListTitle(text);
-              const wantsSeparate = !!customListTitle || /\b(new|separate|another|second|different|fresh)\b[^.]{0,40}\blist\b|\btechie\b|\btech(ie)? lead list\b/i.test(text);
-              const separateTitle = wantsSeparate
-                ? (customListTitle || (/\btech|techie|saas|developer|engineer/i.test(text) ? 'Tech lead list' : 'New lead list'))
-                : '';
+              // "call it X") always wins; non-tech is classified before tech (see helper).
+              const separateTitle = computeSeparateListTitle(text);
               autoSaveLeadTableToBrain(finalDelegateOut, brainTitles, separateTitle, text).then((t) => { if (t) lastAutoSavedListTitleRef.current = t; });
               autoSaveDraftsToBrain(finalDelegateOut, brainTitles); // save any LinkedIn/email drafts too
               // The FULL delegate output is shown to the user in the delegation bubble below.
@@ -3366,12 +3385,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
               }) ?? wfResults.find((r) => looksLikeAnyTable(extractTableRows(r)));
               if (wfLeadResult) {
                 const wfBrainTitles = attachedTitlesRef.current.length ? attachedTitlesRef.current : [lastAttachedTitleRef.current];
-                const wfCustomTitle = extractCustomListTitle(text);
-                const wfWantsSeparate = !!wfCustomTitle || /\b(new|separate|another|second|different|fresh)\b[^.]{0,40}\blist\b|\btechie\b|\btech(ie)? lead list\b/i.test(text);
-                const wfSeparateTitle = wfWantsSeparate
-                  ? (wfCustomTitle || (/\btech|techie|saas|developer|engineer/i.test(text) ? 'Tech lead list' : 'New lead list'))
-                  : '';
-                autoSaveLeadTableToBrain(wfLeadResult, wfBrainTitles, wfSeparateTitle, text).then((t) => { if (t) lastAutoSavedListTitleRef.current = t; });
+                autoSaveLeadTableToBrain(wfLeadResult, wfBrainTitles, computeSeparateListTitle(text), text).then((t) => { if (t) lastAutoSavedListTitleRef.current = t; });
               }
               toolResult = wfResults.map((r, i) => { const cap = r.length > 800 ? r.slice(0, 800) + '…' : r; return `[${wfDelegations[i]?.agent_key ?? `Step ${i + 1}`}]\n${cap}`; }).join('\n\n---\n\n');
               delegationKey = 'plan_workflow';
@@ -3435,12 +3449,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
           const bdTable = (bdTblStart >= 0 ? toolResult.slice(bdTblStart) : toolResult).trim();
           if (bdTable.includes('|')) {
             const bdBrainTitles = attachedTitlesRef.current.length ? attachedTitlesRef.current : [lastAttachedTitleRef.current];
-            const bdCustomTitle = extractCustomListTitle(text);
-            const bdWantsSeparate = !!bdCustomTitle || /\b(new|separate|another|second|different|fresh)\b[^.]{0,40}\blist\b|\btechie\b|\btech(ie)? lead list\b/i.test(text);
-            const bdSeparateTitle = bdWantsSeparate
-              ? (bdCustomTitle || (/\btech|techie|saas|developer|engineer/i.test(text) ? 'Tech lead list' : 'New lead list'))
-              : '';
-            autoSaveLeadTableToBrain(bdTable, bdBrainTitles, bdSeparateTitle, text).then((t) => { if (t) lastAutoSavedListTitleRef.current = t; });
+            autoSaveLeadTableToBrain(bdTable, bdBrainTitles, computeSeparateListTitle(text), text).then((t) => { if (t) lastAutoSavedListTitleRef.current = t; });
           }
         }
         // Save delegations with role 'delegation' + agent key so they restore correctly on reload.
@@ -4249,7 +4258,14 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
               onPaste={(e) => {
                 const items = Array.from(e.clipboardData?.items ?? []);
                 const imageItem = items.find(item => item.type.startsWith('image/'));
-                if (imageItem) {
+                // Copying TEXT from a browser / Office / PDF very often puts an image
+                // representation on the clipboard ALONGSIDE the text. The old check hijacked
+                // the paste for that image and preventDefault'd — so the user's actual text
+                // never pasted ("can't paste my message"). Only treat it as an image paste
+                // when there is NO usable text; otherwise let the normal text paste happen.
+                const hasText = items.some(item => item.kind === 'string' && item.type.startsWith('text/'))
+                  || !!(e.clipboardData?.getData('text/plain'));
+                if (imageItem && !hasText) {
                   e.preventDefault();
                   const blob = imageItem.getAsFile();
                   if (!blob) return;
