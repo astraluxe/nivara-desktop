@@ -1244,29 +1244,39 @@ export async function executeTool(
     const { brain } = await import('./knowledgeStore');
     const validKind = ['list', 'outreach', 'contact', 'data', 'note', 'source', 'file'];
     const kind = validKind.includes(str(args.kind)) ? (str(args.kind) as 'note') : 'note';
-    let title = str(args.title);
+    const title = str(args.title).trim();
     const append = args.append === true || str(args.append) === 'true';
     // Strip any leaked tool-call / result fragments so the Brain stores clean text.
-    let body = str(args.body)
+    const body = str(args.body)
       .replace(/<tool_(?:call|code)>[\s\S]*?<\/tool_(?:call|code)>/gi, '')
       .replace(/<tool_(?:call|code)>\s*\{[^|\n]*/gi, '')
       .replace(/<\/?(?:tool_call|tool_code|res|tool_result)[^>]*>?/gi, '')
       .replace(/^\s*\{\s*"tool"\s*:[\s\S]*?\}\s*$/gim, '')
       .trim();
-    // A lead/company table → always reuse the SINGLE existing lead-list node (expand it)
-    // instead of creating a second copy under a slightly different title.
-    const bodyRows = body.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('|'));
-    const isLeadTable = bodyRows.length >= 4 && /\bname\b|\bcompany\b|\bwebsite\b|\blinkedin\b/i.test(bodyRows[0]);
-    if (isLeadTable) {
-      const data = brain.all();
-      const existingList = data.nodes.find((n) => n.kind === 'list' && /lead|prospect|compan/i.test(n.title));
-      if (existingList) title = existingList.title;
-    }
+    // A missing title or a suspiciously thin body (most often a tool call whose JSON got cut
+    // off mid-generation on a large payload) used to silently create an empty/unnamed node — the
+    // deterministic auto-save already handles the common cases (lead lists, non-lead tables,
+    // outreach drafts) so this tool firing with broken args is pure downside. Reject and ask for
+    // a clean retry instead of writing a stub the user then finds and thinks the app is broken.
+    if (!title) return `[save_to_brain needs a "title" — nothing was saved. Retry with a clear, specific title.]`;
+    if (body.length < 10) return `[save_to_brain needs real "body" content (got almost nothing — the call may have been cut off) — nothing was saved. Retry with the full content.]`;
+    let finalTitle = title;
+    let finalBody = body;
+    // Only redirect into an EXISTING same-shaped list when the caller explicitly asked to
+    // append/continue (append: true) — otherwise an explicit title the model chose (e.g. for a
+    // brand-new, unrelated table) must never get silently rerouted into an old "Lead list" node
+    // just because it also happens to look lead-shaped.
     if (append) {
-      const ex = brain.findByTitle(title);
-      if (ex && ex.body) body = `${ex.body}\n\n${body}`;
+      const bodyRows = body.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('|'));
+      const isLeadTable = bodyRows.length >= 4 && /\bname\b|\bcompany\b|\bwebsite\b|\blinkedin\b/i.test(bodyRows[0]);
+      const existing = brain.findByTitle(title)
+        || (isLeadTable ? brain.all().nodes.find((n) => n.kind === 'list' && /lead|prospect|compan/i.test(n.title)) : undefined);
+      if (existing) {
+        finalTitle = existing.title;
+        if (existing.body) finalBody = `${existing.body}\n\n${body}`;
+      }
     }
-    const node = brain.addNode({ title, body, kind });
+    const node = brain.addNode({ title: finalTitle, body: finalBody, kind });
     const ct = str(args.connect_to);
     if (ct) { const t = brain.findByTitle(ct); if (t) brain.link(t.id, node.id, 'related'); }
     return `${append ? 'Updated' : 'Saved'} "${node.title}" in the Brain${ct ? ` and linked it to "${ct}"` : ''}. It is visible in the Brain screen and recallable by any agent.`;

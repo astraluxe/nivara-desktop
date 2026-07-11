@@ -1257,9 +1257,15 @@ function dedupeLeadTables(text: string): string {
     // uncleaned corruption (glued rows, dropped cells) exactly as the model wrote it. If there
     // ARE plausible data rows (this happens when prose/strategy text gets interleaved with a
     // multi-batch table and the header ends up separated from the rows being processed), assume
-    // the standard schema and repair anyway rather than giving up.
+    // the standard schema and repair anyway rather than giving up — BUT ONLY when the data
+    // actually looks lead-shaped (a real linkedin.com URL present somewhere). Every table in this
+    // app runs through this function regardless of topic — without that check, an unrelated
+    // headerless table (e.g. a product/pricing comparison) got its Price/Cloud-or-Local/Feature
+    // columns silently forced into Name/Company/Sector/City/Website/LinkedIn and mangled, instead
+    // of being left alone for the general (non-lead) table save path to handle correctly.
     const dataLineCount = lines.filter(looksLikeDataRow).length;
-    if (dataLineCount < 2) return text;
+    const hasLeadSignal = /linkedin\.com\/(?:in|company)\//i.test(text);
+    if (dataLineCount < 2 || !hasLeadSignal) return text;
     const firstDataIdx = lines.findIndex(looksLikeDataRow);
     const prefix = lines.slice(0, firstDataIdx).join('\n').trim();
     const tableText = [SYNTHETIC_LEAD_HEADER, SYNTHETIC_LEAD_SEP, ...lines.slice(firstDataIdx)].join('\n');
