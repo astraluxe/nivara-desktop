@@ -1065,11 +1065,22 @@ function looksLikeAnyTable(pipeLines: string[]): boolean {
 }
 
 // Pull a short, meaningful title out of the request for a GENERIC (non-lead) table — no
-// sector/city assumptions, just what the user actually asked to build/compare/list.
-function deriveGenericTableTitle(requestText: string): string {
-  const m = requestText.match(/\b(?:compare|table of|list of|build (?:a|me a)?|make (?:a|me a)?|show (?:me)?|give (?:me)?)\s+([a-z0-9][a-z0-9 &'/-]{4,50}?)(?:[.,!?\n]|\bfor\b|\bwith\b|$)/i);
-  const base = m ? m[1].trim() : '';
-  return base ? `${base[0].toUpperCase()}${base.slice(1)}` : `Table — ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
+// sector/city assumptions, just what the user actually asked to build/compare/list. Tries the
+// request first, then the table CONTENT's own first heading, and only as a true last resort a
+// dated generic — a "Table — <date>" name is useless to the user, so we work hard to avoid it.
+function deriveGenericTableTitle(requestText: string, content = ''): string {
+  // 1. Explicit "save/name it as X" always wins.
+  const custom = extractCustomListTitle(requestText)
+    || requestText.match(/\bsave (?:it|this)(?: to (?:the )?brain)? as\s+["“]?([A-Za-z0-9][A-Za-z0-9 &'/-]{2,60}?)["”]?(?:[.,!?\n]|$)/i)?.[1]?.trim();
+  if (custom) return custom;
+  // 2. The object of the request verb ("compare X", "table of X", "build me X").
+  const m = requestText.match(/\b(?:compare|comparison of|table of|list of|build (?:a|me a)?|make (?:a|me a)?|show (?:me)?|give (?:me)?)\s+([a-z0-9][a-z0-9 &'/-]{4,50}?)(?:[.,!?\n]|\bfor\b|\bwith\b|$)/i);
+  if (m?.[1]) { const b = m[1].trim(); return `${b[0].toUpperCase()}${b.slice(1)}`; }
+  // 3. The table content's own first heading, if it has one.
+  const heading = content.match(/^#{1,4}\s+(.+)$/m)?.[1];
+  if (heading) { const h = stripMdMarkers(heading).slice(0, 60); if (h) return h; }
+  // 4. Last resort — still better than a bare date.
+  return `Comparison — ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
 }
 
 function autoSaveLeadTableToBrain(text: string, fileTitles: string[], separateListTitle = '', requestText = ''): Promise<string | undefined> {
@@ -1082,6 +1093,14 @@ function autoSaveLeadTableToBrain(text: string, fileTitles: string[], separateLi
     // always as its OWN new node — a differently-shaped table is never "the same list" as an
     // existing lead list, so there's nothing sensible to merge it into.
     if (!looksLikeAnyTable(pipeLines)) return Promise.resolve(undefined);
+    // INTENT GATE: only save a generic table when the user actually wanted a table/comparison.
+    // Otherwise an INCIDENTAL table sitting inside an off-topic answer (e.g. an unrequested
+    // competitor-comparison table in what should have been just outreach drafts) would get saved
+    // as a garbage-named "Table — <date>" note. If the real deliverable is drafts (```email
+    // blocks present) and the request wasn't table-oriented, skip — the drafts save handles it.
+    const requestWantsTable = /\b(compar|table|ranking|\brank\b|matrix|breakdown|versus|\bvs\b|spreadsheet|side.by.side)/i.test(requestText);
+    const outputHasDrafts = /```(?:email|draft|message|outreach)/i.test(text);
+    if (!requestWantsTable && outputHasDrafts) return Promise.resolve(undefined);
     const cleanTitles = (fileTitles || [])
       .map((t) => (t || '').replace(/\.(md|txt|json|csv|markdown)$/i, '').trim())
       .filter(Boolean);
@@ -1101,7 +1120,7 @@ function autoSaveLeadTableToBrain(text: string, fileTitles: string[], separateLi
         for (let i = 2; i < 50; i++) { const t = `${base} (${i})`; if (!brain.findByTitle(t)) return t; }
         return `${base} (${Date.now()})`;
       };
-      const title = uniqueTitle(deriveGenericTableTitle(requestText));
+      const title = uniqueTitle(deriveGenericTableTitle(requestText, text));
       const node = brain.addNode({ title, kind: 'data', body: text.slice(0, 16000) });
       for (const aid of anchorIds()) brain.link(aid, node.id, 'built from this');
       return node.title;
@@ -1184,15 +1203,45 @@ function autoSaveLeadTableToBrain(text: string, fileTitles: string[], separateLi
 // Save outreach drafts (LinkedIn DMs / emails) the agents wrote into the Brain, linked to the
 // lead list + product — so the user never loses ready-to-send messages and they sit next to the
 // list they're for. Don't depend on the agent calling save_to_brain.
-function autoSaveDraftsToBrain(text: string, fileTitles: string[]) {
-  const drafts: string[] = [];
-  // ```email / ```message / ```outreach fenced blocks are the clean, primary format.
-  const fence = /```(?:email|draft|message|outreach)[^\n]*\n([\s\S]*?)```/gi;
+// Extract fenced outreach blocks. Handles TRUNCATED / unclosed fences (a common generation
+// artifact — the model opens ```email but the closing ``` never arrives, or the next fence
+// starts before it closes): a block runs to the next fence or the end of text, not requiring a
+// closing ```. Also captures the fence LABEL (e.g. "Tech - Connection Request") so it becomes a
+// heading instead of a generic "Message N".
+function extractDraftBlocks(text: string): { label: string; body: string }[] {
+  const out: { label: string; body: string }[] = [];
+  const openRe = /```(?:email|draft|message|outreach)([^\n]*)\n/gi;
   let m: RegExpExecArray | null;
-  while ((m = fence.exec(text))) { const d = m[1].trim(); if (d.length > 30) drafts.push(d); }
-  if (drafts.length === 0) return;
-  const body = drafts.map((d, i) => `### Message ${i + 1}\n\n${d}`).join('\n\n---\n\n');
+  const opens: { label: string; start: number }[] = [];
+  while ((m = openRe.exec(text))) opens.push({ label: m[1].trim(), start: m.index + m[0].length });
+  for (let i = 0; i < opens.length; i++) {
+    const from = opens[i].start;
+    // End at the next fence opener, or a lone closing ``` before it, whichever comes first.
+    const nextOpen = i + 1 < opens.length ? opens[i + 1].start - 3 : text.length;
+    const slice = text.slice(from, nextOpen);
+    const closeIdx = slice.indexOf('```');
+    const bodyRaw = (closeIdx >= 0 ? slice.slice(0, closeIdx) : slice).trim();
+    if (bodyRaw.length > 25) out.push({ label: opens[i].label.replace(/^[-–—\s]+/, '').trim(), body: bodyRaw });
+  }
+  return out;
+}
+
+// Name an outreach note from the user's REQUEST, not a bare "Outreach messages" — channel
+// (LinkedIn/Email/WhatsApp/cold) + audience (tech / non-tech / a named sector) when present.
+function deriveDraftTitle(requestText: string): string {
+  const t = requestText.toLowerCase();
+  const channel = /linkedin/.test(t) ? 'LinkedIn' : /whatsapp/.test(t) ? 'WhatsApp' : /\b(email|mail|cold email)\b/.test(t) ? 'Email' : '';
+  const hasTech = /\btech\b/.test(t), hasNonTech = /\bnon[\s-]?tech/.test(t);
+  const seg = hasNonTech && hasTech ? ' — tech & non-tech' : hasNonTech ? ' — non-tech' : hasTech ? ' — tech' : '';
+  return `${channel ? channel + ' ' : ''}outreach messages${seg}`.replace(/^./, (c) => c.toUpperCase());
+}
+
+function autoSaveDraftsToBrain(text: string, fileTitles: string[], requestText = ''): string | undefined {
+  const blocks = extractDraftBlocks(text);
+  if (blocks.length === 0) return undefined;
+  const body = blocks.map((b, i) => `### ${b.label || `Message ${i + 1}`}\n\n${b.body}`).join('\n\n---\n\n');
   const cleanTitles = (fileTitles || []).map((t) => (t || '').replace(/\.(md|txt|json|csv|markdown)$/i, '').trim()).filter(Boolean);
+  const title = deriveDraftTitle(requestText);
   import('../../lib/knowledgeStore').then(({ brain }) => {
     const data = brain.all();
     const anchorIds = (): string[] => {
@@ -1203,13 +1252,15 @@ function autoSaveDraftsToBrain(text: string, fileTitles: string[]) {
       if (ids.size === 0) { const prod = data.nodes.find((n) => /product|profile|business/i.test(n.title)); if (prod) ids.add(prod.id); }
       return [...ids];
     };
-    // Keep ONE outreach note, updated in place — never a new copy each run.
-    const existing = data.nodes.find((n) => n.kind === 'outreach') || data.nodes.find((n) => /outreach|messages?|drafts?/i.test(n.title) && n.kind !== 'list');
+    // Reuse an outreach note of the SAME title (same channel+segment) — update in place; a
+    // different segment (tech vs non-tech) becomes its own note rather than overwriting.
+    const existing = brain.findByTitle(title) || data.nodes.find((n) => n.kind === 'outreach' && n.title === title);
     const nodeId = existing
-      ? (brain.updateNode(existing.id, { body: body.slice(0, 16000) }), existing.id)
-      : brain.addNode({ title: 'Outreach messages', kind: 'outreach', body: body.slice(0, 16000) }).id;
+      ? (brain.updateNode(existing.id, { body: body.slice(0, 16000), kind: 'outreach' }), existing.id)
+      : brain.addNode({ title, kind: 'outreach', body: body.slice(0, 16000) }).id;
     for (const aid of anchorIds()) { if (aid !== nodeId) brain.link(aid, nodeId, 'outreach for these'); }
   }).catch(() => {});
+  return title;
 }
 
 // Extract the FIRST complete, brace-balanced JSON object from a string. The model
@@ -2784,7 +2835,7 @@ The prompt must be production-ready — specific enough for a motion designer to
           if (sid) krewDb.saveMessage(sid, 'assistant', fullResponse).catch(() => {});
           history.push({ role: 'assistant', content: fullResponse });
           // If this final answer contains outreach drafts, save them to the Brain too.
-          autoSaveDraftsToBrain(displayResponse, attachedTitlesRef.current.length ? attachedTitlesRef.current : [lastAttachedTitleRef.current]);
+          autoSaveDraftsToBrain(displayResponse, attachedTitlesRef.current.length ? attachedTitlesRef.current : [lastAttachedTitleRef.current], text);
           break;
         }
 
@@ -3152,7 +3203,8 @@ The prompt must be production-ready — specific enough for a motion designer to
               // "call it X") always wins; non-tech is classified before tech (see helper).
               const separateTitle = computeSeparateListTitle(text);
               autoSaveLeadTableToBrain(finalDelegateOut, brainTitles, separateTitle, text).then((t) => { if (t) lastAutoSavedListTitleRef.current = t; });
-              autoSaveDraftsToBrain(finalDelegateOut, brainTitles); // save any LinkedIn/email drafts too
+              const draftTitle = autoSaveDraftsToBrain(finalDelegateOut, brainTitles, text); // save any LinkedIn/email drafts too
+              if (draftTitle) lastAutoSavedListTitleRef.current = draftTitle;
               // The FULL delegate output is shown to the user in the delegation bubble below.
               // For a long result (e.g. a lead-list table) do NOT feed the truncated text
               // back to the boss — that made the boss re-print a half-cut table ending in
@@ -3383,10 +3435,14 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                 const rows = extractTableRows(r);
                 return rows.length >= 2 && /\bname\b/i.test(rows[0]) && /linkedin/i.test(rows[0]);
               }) ?? wfResults.find((r) => looksLikeAnyTable(extractTableRows(r)));
+              const wfBrainTitles = attachedTitlesRef.current.length ? attachedTitlesRef.current : [lastAttachedTitleRef.current];
               if (wfLeadResult) {
-                const wfBrainTitles = attachedTitlesRef.current.length ? attachedTitlesRef.current : [lastAttachedTitleRef.current];
                 autoSaveLeadTableToBrain(wfLeadResult, wfBrainTitles, computeSeparateListTitle(text), text).then((t) => { if (t) lastAutoSavedListTitleRef.current = t; });
               }
+              // Drafts were NOT being saved from the workflow path at all — a "find X then draft
+              // outreach" plan lost its messages. Save drafts from whichever step produced them.
+              const wfDraftSource = wfResults.find((r) => /```(?:email|draft|message|outreach)/i.test(r));
+              if (wfDraftSource) { const dt = autoSaveDraftsToBrain(wfDraftSource, wfBrainTitles, text); if (dt) lastAutoSavedListTitleRef.current = dt; }
               toolResult = wfResults.map((r, i) => { const cap = r.length > 800 ? r.slice(0, 800) + '…' : r; return `[${wfDelegations[i]?.agent_key ?? `Step ${i + 1}`}]\n${cap}`; }).join('\n\n---\n\n');
               delegationKey = 'plan_workflow';
             }

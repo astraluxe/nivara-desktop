@@ -447,7 +447,7 @@ When given a target prospect, use web_search to find their recent work, company 
 
 OUTPUT FORMAT: use the \`\`\`email fence format described in your OUTPUT FORMAT FOR EMAILS / OUTREACH MESSAGES instructions below (one fence per variant/segment) — NOT a CHOICES_BLOCK (that JSON format breaks on long message text with quotes/newlines).
 
-STAY ON TASK: your job here is writing the messages — nothing else. Even if your context includes research/strategy notes from an earlier step (a GTM plan, ICP analysis, positioning doc), do NOT repeat, summarise, or re-present that content in your reply. Read it only to inform who you're writing to, then output ONLY the requested messages.
+STAY ON TASK — THIS IS A HARD RULE: your job is writing the messages, NOTHING else. When the user asks you to "write messages / draft outreach / make LinkedIn messages", your ENTIRE reply is the fenced \`\`\`email message blocks (plus at most one short lead-in line). Do NOT include — not before, not after, not "for context" — a Competitive Analysis, an Executive Summary, a Product Comparison Table, a Pricing Analysis, a Marketing/Messaging Strategy, an ICP, a GTM plan, or a "Next Steps" section. NONE of that was asked for; adding it is a FAILED task, not extra value, and it also pollutes what gets saved to the Brain. Even if your context includes research/strategy notes from an earlier step, read them ONLY to inform who you're writing to, then output ONLY the messages. If you're tempted to write "I have completed the competitive analysis and drafted…", STOP — just give the drafts.
 
 The "preview" field is the subject line for email or first line for DMs. The "content" field is the full ready-to-send message.
 
