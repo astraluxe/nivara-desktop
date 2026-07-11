@@ -1342,15 +1342,30 @@ function repairLeadTable(text: string): string {
   return out.join('\n');
 }
 
+// A Brain node TITLE is plain text (shown on the graph card and in the panel's title field) — it
+// must never carry raw markdown markers. Strip leading heading #, bold/italic *, inline-code
+// backticks, and blockquote/list prefixes so a title derived from a "### **Bold Heading**" line
+// reads "Bold Heading", not "**Bold Heading**".
+function stripMdMarkers(s: string): string {
+  return s
+    .replace(/^\s*#{1,6}\s*/, '')      // leading heading hashes
+    .replace(/^\s*[>*-]\s+/, '')       // leading blockquote / bullet
+    .replace(/\*\*/g, '')              // bold
+    .replace(/`/g, '')                 // inline code
+    .replace(/(^|[^*])\*(?!\*)/g, '$1')// stray single italic *
+    .replace(/[_]{1,2}/g, '')          // underscore emphasis
+    .trim();
+}
+
 // Manual backup for whenever automatic detection misses something (wrong routing, an agent that
 // didn't recognise its own output as save-worthy, etc.) — a title derived straight from the
 // content, not from the request, since by the time someone clicks this the request text may not
 // be handy. First heading or first substantial line, falls back to a dated generic title.
 function deriveQuickTitle(content: string): string {
   const headingMatch = content.match(/^#{1,4}\s+(.+)$/m);
-  if (headingMatch) return headingMatch[1].trim().slice(0, 70);
+  if (headingMatch) return stripMdMarkers(headingMatch[1]).slice(0, 70);
   const firstLine = content.split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('|') && !l.startsWith('```'));
-  if (firstLine) return firstLine.replace(/[*_#]/g, '').trim().slice(0, 70);
+  if (firstLine) return stripMdMarkers(firstLine).slice(0, 70) || `Saved from Krew — ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`;
   return `Saved from Krew — ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`;
 }
 
