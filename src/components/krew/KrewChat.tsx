@@ -1005,16 +1005,38 @@ function stripStrategyAroundTable(text: string): string {
 // Guarantee a produced lead/company table is saved to the Brain (don't depend on the
 // agent calling save_to_brain), linked to the most recently attached file. ONE stable
 // "Lead list" node is kept and EXPANDED — never a new dated duplicate each run.
-function autoSaveLeadTableToBrain(text: string, fileTitles: string[], separateListTitle = '') {
+// A fresh, unrelated search must NEVER silently land inside whatever list already happens to be
+// in the Brain — only an EXPLICIT signal that the user means "add to / fix / verify the list I
+// already have" justifies merging. Everything else creates its own new node. This is the
+// difference between "search for non-tech companies" (a brand new, unrelated audience) quietly
+// getting folded into an old "tech leads" list vs getting its own place.
+function isExplicitListContinuation(requestText: string): boolean {
+  return /\b(expand|add (more|to (the|this|my)?\s*list)|more (companies|leads|people|rows|prospects|contacts)|continue (the|this|my)?\s*list|verify|enrich|dig deeper|update (the|this|my)\s*list|check (the|this)\s*list|fix (the|this)\s*list|correct (the|this)\s*list|remaining (rows|companies)|get (me )?(more|their|phone|email)|those (companies|leads|contacts)|that list|this list)\b/i.test(requestText);
+}
+
+// Pull a short, distinguishing title out of the request so unrelated searches don't all collide
+// under the same generic "Lead list" name (which would force them back into ONE node via
+// addNode's own de-dupe-by-title). Best-effort: sector/audience phrase + city if findable.
+function deriveListTitle(requestText: string): string {
+  const cityMatch = requestText.match(/\b(bangalore|bengaluru|mumbai|delhi|pune|hyderabad|chennai|kolkata|ahmedabad|gurgaon|gurugram|noida)\b/i);
+  const city = cityMatch ? cityMatch[1][0].toUpperCase() + cityMatch[1].slice(1).toLowerCase() : '';
+  const audienceMatch = requestText.match(/\b(non-?tech|tech|manufacturing|real estate|logistics|fintech|healthcare|legal|retail|d2c|saas|enterprise|smb|internship)\w*\b[^.]{0,20}?(companies|firms|businesses|leads|prospects|buyers)?/i);
+  const audience = audienceMatch ? audienceMatch[0].trim().replace(/\s+/g, ' ') : '';
+  const base = audience ? `${audience[0].toUpperCase()}${audience.slice(1)} lead list` : 'Lead list';
+  return city ? `${base} — ${city}` : base;
+}
+
+function autoSaveLeadTableToBrain(text: string, fileTitles: string[], separateListTitle = '', requestText = ''): Promise<string | undefined> {
   const pipeLines = extractTableRows(text);
-  if (pipeLines.length < 4) return;
-  if (!/\bname\b|\bcompany\b|\bwebsite\b|\blinkedin\b/i.test(pipeLines[0])) return;
+  if (pipeLines.length < 4) return Promise.resolve(undefined);
+  if (!/\bname\b|\bcompany\b|\bwebsite\b|\blinkedin\b/i.test(pipeLines[0])) return Promise.resolve(undefined);
   // Strip trailing .md/.txt etc — Brain nodes are stored WITHOUT the extension, so
   // findByTitle("Lead list — 28/6/2026.md") would miss the real node and never link.
   const cleanTitles = (fileTitles || [])
     .map((t) => (t || '').replace(/\.(md|txt|json|csv|markdown)$/i, '').trim())
     .filter(Boolean);
-  import('../../lib/knowledgeStore').then(({ brain, nodeToMarkdown }) => {
+  let savedTitle: string | undefined;
+  return import('../../lib/knowledgeStore').then(({ brain, nodeToMarkdown }) => {
     const data = brain.all();
     // ALWAYS connect the list to context, so the boss/agents have it linked — without the
     // agent having to decide. Link to EVERY attached file this run (PRODUCT.md + the list
@@ -1032,6 +1054,11 @@ function autoSaveLeadTableToBrain(text: string, fileTitles: string[], separateLi
     const linkAll = (nodeId: string) => {
       for (const aid of anchorIds()) { if (aid !== nodeId) brain.link(aid, nodeId, 'leads for this'); }
     };
+    const uniqueTitle = (base: string): string => {
+      if (!brain.findByTitle(base)) return base;
+      for (let i = 2; i < 50; i++) { const t = `${base} (${i})`; if (!brain.findByTitle(t)) return t; }
+      return `${base} (${Date.now()})`;
+    };
     // When the user asked for a NEW / SEPARATE list (e.g. a "techie lead list"), keep it as its
     // OWN node — never merge it into the main list. Reuse a node of that exact title if it
     // already exists, otherwise create a fresh one.
@@ -1041,30 +1068,40 @@ function autoSaveLeadTableToBrain(text: string, fileTitles: string[], separateLi
         const mergedBody = mergeLeadTables(nodeToMarkdown(own.body), text).slice(0, 16000);
         brain.updateNode(own.id, { body: mergedBody });
         linkAll(own.id);
+        savedTitle = own.title;
       } else {
         const node = brain.addNode({ title: separateListTitle, kind: 'list', body: text.slice(0, 16000) });
         linkAll(node.id);
+        savedTitle = node.title;
       }
-      return;
+      return savedTitle;
     }
     // Prefer the ATTACHED lead-list file the user is actually looking at, so the verified list
     // updates IN PLACE where they expect it — not in a separate "Lead list" node they never see.
     const attachedListNode = cleanTitles
       .map((t) => brain.findByTitle(t))
       .find((n) => !!n && /lead|prospect|contact|list/i.test(n.title));
-    // Reuse an existing lead-list node (by title) so we expand instead of duplicating.
+    // Only fold into an EXISTING generic-titled list when the user's own wording says this is a
+    // continuation ("verify this", "add more", "expand") — otherwise a same-shaped-but-unrelated
+    // search (e.g. non-tech companies right after a tech-companies list) would silently merge two
+    // different audiences into one node. No attachment + no continuation wording = always new.
     const existing = attachedListNode
-      || data.nodes.find((n) => n.kind === 'list' && /lead|prospect|compan/i.test(n.title))
-      || brain.findByTitle('Lead list');
+      || (isExplicitListContinuation(requestText)
+          ? (data.nodes.find((n) => n.kind === 'list' && /lead|prospect|compan/i.test(n.title)) || brain.findByTitle('Lead list'))
+          : undefined);
     if (existing) {
       const mergedBody = mergeLeadTables(nodeToMarkdown(existing.body), text).slice(0, 16000);
       brain.updateNode(existing.id, { body: mergedBody });
       linkAll(existing.id);
+      savedTitle = existing.title;
     } else {
-      const node = brain.addNode({ title: 'Lead list', kind: 'list', body: text.slice(0, 16000) });
+      const title = uniqueTitle(deriveListTitle(requestText));
+      const node = brain.addNode({ title, kind: 'list', body: text.slice(0, 16000) });
       linkAll(node.id);
+      savedTitle = node.title;
     }
-  }).catch(() => {});
+    return savedTitle;
+  }).catch(() => undefined);
 }
 
 // Save outreach drafts (LinkedIn DMs / emails) the agents wrote into the Brain, linked to the
@@ -1139,13 +1176,42 @@ function extractCustomListTitle(msg: string): string {
 // caught by isJunkName; and a fully-repeated body row collapses via parseLeadRows' own
 // dedupe-by-name. mergeLeadTables('', tableText) reuses that parse + its "only emit columns that
 // actually carry data" rendering, so this can't silently invent empty Phone/Email columns.
+// Nyx/Krish are ALWAYS instructed to use this exact 6-column layout — used as a fallback
+// header when a real one can't be found (see below), instead of silently giving up on repair.
+const SYNTHETIC_LEAD_HEADER = '| Name | Company/Role | Sector | City | Website | LinkedIn |';
+const SYNTHETIC_LEAD_SEP    = '| --- | --- | --- | --- | --- | --- |';
+
+// A "row" needs at least 3 cells and a real word in the first one to count as plausible data
+// (as opposed to a stray pipe in prose, e.g. "cost is $10 | $20").
+function looksLikeDataRow(line: string): boolean {
+  const t = line.trim();
+  if (!t.startsWith('|')) return false;
+  const cells = t.slice(1, t.endsWith('|') ? -1 : undefined).split('|').map((c) => c.trim());
+  if (cells.length < 3) return false;
+  if (/^[\s:|-]+$/.test(cells[0])) return false; // separator row
+  return /[a-z]{2,}/i.test(cells[0]);
+}
+
 function dedupeLeadTables(text: string): string {
   const lines = text.split('\n');
   const firstHeaderIdx = lines.findIndex((l) => {
     const t = l.trim();
     return t.startsWith('|') && /\bname\b/i.test(t) && /(company|website|linkedin|email|sector|city|role|contact)/i.test(t);
   });
-  if (firstHeaderIdx === -1) return text; // no table header found — nothing to do
+  if (firstHeaderIdx === -1) {
+    // No real header anywhere — this used to mean "nothing to do", silently leaving raw,
+    // uncleaned corruption (glued rows, dropped cells) exactly as the model wrote it. If there
+    // ARE plausible data rows (this happens when prose/strategy text gets interleaved with a
+    // multi-batch table and the header ends up separated from the rows being processed), assume
+    // the standard schema and repair anyway rather than giving up.
+    const dataLineCount = lines.filter(looksLikeDataRow).length;
+    if (dataLineCount < 2) return text;
+    const firstDataIdx = lines.findIndex(looksLikeDataRow);
+    const prefix = lines.slice(0, firstDataIdx).join('\n').trim();
+    const tableText = [SYNTHETIC_LEAD_HEADER, SYNTHETIC_LEAD_SEP, ...lines.slice(firstDataIdx)].join('\n');
+    const rebuilt = mergeLeadTables('', tableText);
+    return prefix ? prefix + '\n\n' + rebuilt : rebuilt;
+  }
   const prefix = lines.slice(0, firstHeaderIdx).join('\n').trim();
   const tableText = lines.slice(firstHeaderIdx).join('\n');
   const rebuilt = mergeLeadTables('', tableText);
@@ -1664,6 +1730,11 @@ const [studioExtracting, setStudioExtracting] = useState(false);
   useEffect(() => { try { localStorage.setItem('krew_search_mode', searchMode); } catch { /* ignore */ } }, [searchMode]);
   const lastAttachedTitleRef = useRef<string>(''); // last attached file name → link lead lists to it in the Brain
   const attachedTitlesRef = useRef<string[]>([]);  // ALL files in context this run → link saved lists to every one
+  // Title of whatever list was JUST auto-saved to the Brain this run — lets a follow-up like
+  // "save this as X" / "call it X" deterministically RENAME that exact node (guaranteed full
+  // content, zero AI involvement) instead of a fresh agent call trying to reconstruct "this" from
+  // a compact name-only summary and saving something thin or empty.
+  const lastAutoSavedListTitleRef = useRef<string>('');
   const [showSkills, setShowSkills] = useState(false);
   const [showBrainPick, setShowBrainPick] = useState(false);
   const [recSkill, setRecSkill] = useState<SkillRegistryEntry | null>(null);
@@ -2192,9 +2263,10 @@ The prompt must be production-ready — specific enough for a motion designer to
       if (sid) krewDb.saveMessage(sid, 'assistant', lead).catch(() => {});
       addMsg({ role: 'tool_result', content: fullTable, toolName: 'enrich_lead_list' });
       if (sid) krewDb.saveMessage(sid, 'tool_result', fullTable, 'enrich_lead_list').catch(() => {});
-      // Save the merged full list back into the Brain lead list.
+      // Save the merged full list back into the Brain lead list. This path only ever runs to
+      // fill/verify an EXISTING list, so it always counts as a continuation (merge, not new file).
       const brainTitles = attachedTitlesRef.current.length ? attachedTitlesRef.current : [lastAttachedTitleRef.current];
-      autoSaveLeadTableToBrain(fullTable, brainTitles);
+      autoSaveLeadTableToBrain(fullTable, brainTitles, '', 'verify enrich update this list');
       return true;
     } catch {
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c.pop(); return c; });
@@ -2281,7 +2353,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       ? `\n\n## SEARCH MODE: ADVANCED (verify — slower, the user EXPECTS to watch the browser)\nThe user chose Advanced. Correctness beats speed and tokens. They WANT to see the Chrome window working.\n- For research/lead tasks, OPEN pages in the real browser the user can watch: use browser_navigate to read each company's site/leadership page AND each decision-maker's LinkedIn. Do NOT rely only on headless research_companies/web_search here — actually open and read.\n- VERIFY every LinkedIn before you put it in a table: browser_navigate to the profile and confirm the person's CURRENT company on that profile matches the company in the row (role/city too when shown). If it does NOT match, the page shows "this page doesn't exist", or you cannot confirm it — LEAVE THE LINKEDIN CELL BLANK. NEVER guess a /in/firstname-lastname slug, and NEVER keep a same-name stranger (e.g. a US software engineer for a Bangalore firm). A blank cell is correct; a wrong link is a failure.\n- Work in batches and NEVER return nothing: output the rows you verified now, keep unverified rows marked "not checked", and end with one line offering to continue. A partial verified table is success; a blank reply is failure.\n- SMALL-FOUNDER FILTER: if the user is a solo/small founder or small team looking for FIRST users, list reachable small / small-to-mid local companies in their city. Do NOT include household-name giants, unicorns, or large listed companies (Zerodha, CRED, Swiggy, Ola, Lenskart, Razorpay, Zoho, Udaan, Practo, Delhivery, Flipkart, etc.) — they won't reply and can't be sold to at this stage. If a search surfaces one, DROP it from the table.`
       : `\n\n## SEARCH MODE: FAST (cheap & quick — no browser window)\nThe user chose Fast. Optimise for speed and fewer tokens: use research_companies / web_search (headless) and answer in as few steps as possible. Do NOT open the visible browser unless the user explicitly asks to see it. When you are not sure a personal LinkedIn profile is correct, do NOT fabricate a /in/firstname-lastname slug — prefer the company LinkedIn page (linkedin.com/company/…) or leave it blank. Still produce the full table; just don't deep-verify each row (tell the user they can switch to Advanced to verify and watch the browser).`;
     // Outreach drafts render as copyable cards when wrapped in a ```email fence.
-    const draftFormatDirective = `\n\n## OUTPUT FORMAT FOR EMAILS / OUTREACH MESSAGES\nWhen you write an email or outreach message the user will actually send, wrap EACH one in its own fenced block tagged \`email\` — optionally with the sector/segment as a label — so it renders as a clean, copyable box (like tables do). For an email, put the \`Subject:\` line first. One fence per message; never put a markdown table inside the fence. Example:\n\`\`\`email Real Estate\nSubject: Cut contract review from days to minutes\n\nHi {name},\n…\nBest,\n{signing name}\n\`\`\`\nWrite the FULL message text inside the fence — never just describe that you drafted it. For SEVERAL variants (e.g. a LinkedIn DM and an email, or per-sector versions), output EACH as its own separate \`\`\`email fence one after another. Do NOT use CHOICES_BLOCK for emails/outreach — cramming long messages into that JSON breaks the formatting (newlines/quotes) and garbles the output. One clean fence per message. These fenced drafts are saved to your Brain automatically (one "Outreach messages" note, linked to the lead list) — you do NOT need to call save_to_brain.`;
+    const draftFormatDirective = `\n\n## OUTPUT FORMAT FOR EMAILS / OUTREACH MESSAGES\nWhen you write an email or outreach message the user will actually send, wrap EACH one in its own fenced block tagged \`email\` — optionally with the sector/segment as a label — so it renders as a clean, copyable box (like tables do). For an email, put the \`Subject:\` line first. One fence per message; never put a markdown table inside the fence. Example:\n\`\`\`email Real Estate\nSubject: Cut contract review from days to minutes\n\nHi {name},\n…\nBest,\n{signing name}\n\`\`\`\nWrite the FULL message text inside the fence — never just describe that you drafted it. For SEVERAL variants (e.g. a LinkedIn DM and an email, or per-sector versions), output EACH as its own separate \`\`\`email fence one after another. Do NOT use CHOICES_BLOCK for emails/outreach — cramming long messages into that JSON breaks the formatting (newlines/quotes) and garbles the output. One clean fence per message. These fenced drafts are saved to your Brain automatically (one "Outreach messages" note, linked to the lead list) — you do NOT need to call save_to_brain.\nSTICK TO WHAT WAS ASKED: a request to draft/write messages is ONLY that — never add a "Research Question", GTM strategy, ICP, Positioning, Acquisition Channels, or 30/60/90-Day Plan section unless the user's own words explicitly asked for a strategy/plan/GTM. If your context includes an earlier step's research or strategy notes, use them ONLY to inform who you're writing to — do NOT repeat, summarise, or re-present that content in your reply. The messages are the entire deliverable.`;
     // Verifying LinkedIn/contacts MUST go through the browser, never from memory.
     const verifyDirective = `\n\n## VERIFYING A LEAD LIST — DO NOT GUESS FROM MEMORY\nYou do NOT know people's current LinkedIn URLs — any you recall are likely stale or the wrong same-name person, which is exactly the bug we're fixing. When the user asks you to verify / check / fix / correct the LinkedIn links in a list (or to confirm who to contact), you MUST call the \`verify_lead_list\` tool with the list — it opens each profile in the browser and checks it for real. NEVER write or "verify" a LinkedIn URL from your own knowledge, and never claim you verified profiles unless verify_lead_list actually ran. Present the table it returns exactly as-is.\n\nEXPANDING / "FIND MORE PEOPLE": first read the people ALREADY in the attached list. Find only NEW people with web_search — do NOT repeat or re-list anyone already there (no duplicate names/companies). Add the new rows to the SAME list (keep the existing rows), then pass the whole combined list to verify_lead_list. The app keeps one lead-list note in the Brain and merges into it (dedupes by name) and connects it to the attached file automatically — so you do NOT need to call save_to_brain or decide what to link; just produce the combined, deduped table.\n\nPHONE / EMAIL / CONTACT DETAILS: when the user wants phone numbers, mobile, office contact, or email added (including "use Google Maps"), call the \`enrich_lead_list\` tool with the list — it searches Google Maps and the company sites in the browser and fills in Phone/Email columns. NEVER make up a phone or email from memory.`;
     setInput('');
@@ -2368,6 +2440,30 @@ The prompt must be production-ready — specific enough for a motion designer to
     // Add user message to display (typed text + file names only)
     addMsg({ role: 'user', content: displayText });
     if (sid) krewDb.saveMessage(sid, 'user', displayText).catch(() => {});
+
+    // ── DETERMINISTIC "SAVE THIS AS X" / "CALL IT X" SHORT-CIRCUIT ────────────
+    // Renaming the list JUST auto-saved this session should never depend on an AI call — the
+    // agent answering "did you save it?" or a follow-up save request had no reliable way to see
+    // the FULL table (boss/delegates only get a compact name-only summary after a long result),
+    // so a fresh save attempt could end up thin or empty. Here the content is GUARANTEED correct
+    // because we're renaming the exact node that was already saved, not reconstructing it.
+    const renameMatch = text.match(/\b(?:save (?:this|it)(?: to (?:the )?brain)? as|call (?:it|this)(?: the list)?(?: as)?|name (?:it|this)(?: the list)?(?: as)?)\s+["“]?([A-Za-z0-9][A-Za-z0-9 &'/-]{1,60}?)["”]?(?:\s*[).!,\n]|$)/i);
+    if (renameMatch && lastAutoSavedListTitleRef.current) {
+      const newTitle = renameMatch[1].trim();
+      try {
+        const { brain } = await import('../../lib/knowledgeStore');
+        const node = brain.findByTitle(lastAutoSavedListTitleRef.current);
+        if (node) {
+          brain.updateNode(node.id, { title: newTitle.slice(0, 120) });
+          lastAutoSavedListTitleRef.current = newTitle;
+          const msg = `Renamed it to **${newTitle}** in your Brain — same list, same content, just relabeled.`;
+          addMsg({ role: 'assistant', content: msg });
+          if (sid) krewDb.saveMessage(sid, 'assistant', msg).catch(() => {});
+          setBusy(false);
+          return;
+        }
+      } catch { /* fall through to the normal AI flow if anything here fails */ }
+    }
 
     // ── DETERMINISTIC LEAD-FILL SHORT-CIRCUIT ─────────────────────────────────
     // "fill / add / complete the LinkedIn + contacts in this list" is the most-used lead flow, and
@@ -2916,7 +3012,7 @@ The prompt must be production-ready — specific enough for a motion designer to
               const separateTitle = wantsSeparate
                 ? (customListTitle || (/\btech|techie|saas|developer|engineer/i.test(text) ? 'Tech lead list' : 'New lead list'))
                 : '';
-              autoSaveLeadTableToBrain(finalDelegateOut, brainTitles, separateTitle);
+              autoSaveLeadTableToBrain(finalDelegateOut, brainTitles, separateTitle, text).then((t) => { if (t) lastAutoSavedListTitleRef.current = t; });
               autoSaveDraftsToBrain(finalDelegateOut, brainTitles); // save any LinkedIn/email drafts too
               // The FULL delegate output is shown to the user in the delegation bubble below.
               // For a long result (e.g. a lead-list table) do NOT feed the truncated text
@@ -3153,7 +3249,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                 const wfSeparateTitle = wfWantsSeparate
                   ? (wfCustomTitle || (/\btech|techie|saas|developer|engineer/i.test(text) ? 'Tech lead list' : 'New lead list'))
                   : '';
-                autoSaveLeadTableToBrain(wfLeadResult, wfBrainTitles, wfSeparateTitle);
+                autoSaveLeadTableToBrain(wfLeadResult, wfBrainTitles, wfSeparateTitle, text).then((t) => { if (t) lastAutoSavedListTitleRef.current = t; });
               }
               toolResult = wfResults.map((r, i) => { const cap = r.length > 800 ? r.slice(0, 800) + '…' : r; return `[${wfDelegations[i]?.agent_key ?? `Step ${i + 1}`}]\n${cap}`; }).join('\n\n---\n\n');
               delegationKey = 'plan_workflow';
@@ -3222,7 +3318,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
             const bdSeparateTitle = bdWantsSeparate
               ? (bdCustomTitle || (/\btech|techie|saas|developer|engineer/i.test(text) ? 'Tech lead list' : 'New lead list'))
               : '';
-            autoSaveLeadTableToBrain(bdTable, bdBrainTitles, bdSeparateTitle);
+            autoSaveLeadTableToBrain(bdTable, bdBrainTitles, bdSeparateTitle, text).then((t) => { if (t) lastAutoSavedListTitleRef.current = t; });
           }
         }
         // Save delegations with role 'delegation' + agent key so they restore correctly on reload.

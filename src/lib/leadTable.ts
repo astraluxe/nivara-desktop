@@ -18,6 +18,11 @@ export const LEAD_CANON: Array<{ key: string; label: string; match: RegExp }> = 
   { key: 'linkedin', label: 'LinkedIn',     match: /linkedin/i },
   { key: 'phone',    label: 'Phone',        match: /phone|mobile|number|\bcontact\b/i },
   { key: 'email',    label: 'Email',        match: /email|mail/i },
+  // Deliberately SEPARATE from a bare "Status" column (still dropped, per the comment above —
+  // that's one-off verify commentary, not meant to persist). "Connection Status" tracks LinkedIn
+  // connection-request progress (sent/accepted/pending) and DOES need to survive every merge —
+  // otherwise re-verifying or enriching the list would silently erase who's already been invited.
+  { key: 'conn_status', label: 'Connection Status', match: /connection.?status|invite.?status|request.?status|connection.?request/i },
 ];
 
 export function splitTableRow(row: string): string[] {

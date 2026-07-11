@@ -185,7 +185,11 @@ async function requestBrowserApproval(actionType: string, description: string): 
   return result;
 }
 
-const CONSEQUENTIAL_RE = /\b(send|submit|post|publish|tweet|buy|purchase|pay|checkout|delete|remove|trash|book\s+now|place\s+order|confirm\s+payment)\b/i;
+// "connect"/"invite" cover LinkedIn's connection-request button — sending a bulk/automated
+// stream of connection requests is exactly the kind of action LinkedIn actively detects and
+// restricts accounts for, so it gets the SAME human-confirm-before-click gate as every other
+// consequential action here, never a silent auto-send.
+const CONSEQUENTIAL_RE = /\b(send|submit|post|publish|tweet|buy|purchase|pay|checkout|delete|remove|trash|book\s+now|place\s+order|confirm\s+payment|connect|invite|follow)\b/i;
 
 function classifyAction(text: string): string {
   const t = text.toLowerCase();
@@ -193,6 +197,7 @@ function classifyAction(text: string): string {
   if (/post|tweet|publish|share/.test(t)) return 'post_content';
   if (/buy|purchase|pay|checkout|order|book/.test(t)) return 'make_purchase';
   if (/delete|remove|trash/.test(t)) return 'delete_content';
+  if (/connect|invite|follow/.test(t)) return 'send_connection_request';
   return 'submit_form';
 }
 
