@@ -2245,6 +2245,12 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
     getMonthlyUsage(isLifetime).then(setMonthlyUsed).catch(() => {});
   }, [profile?.plan]);
 
+  // Live meter: every managed token spend (chat, deck text, images) emits nivara-tokens.
+  useEffect(() => {
+    const un = listen<{ tokens: number }>('nivara-tokens', (e) => setMonthlyUsed((p) => p + (e.payload?.tokens || 0)));
+    return () => { un.then((f) => f()).catch(() => {}); };
+  }, []);
+
   // Budget-aware survival tier (graceful degradation before the hard quota wall).
   const tokenTier   = computeTokenTier(monthlyUsed, planCfg.monthlyTokens);
   const tierBanner  = tokenTierBanner(tokenTier, tasksRemaining(monthlyUsed, planCfg.monthlyTokens));

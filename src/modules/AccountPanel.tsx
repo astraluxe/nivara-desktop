@@ -1,5 +1,6 @@
 ﻿import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useAuth } from "../contexts/AuthContext";
 import { getMonthlyUsage } from "../lib/tokenTracker";
 
@@ -38,6 +39,8 @@ export default function AccountPanel() {
 
   useEffect(() => {
     getMonthlyUsage().then((used) => setTokenUsed(used)).catch(() => {});
+    const un = listen<{ tokens: number }>('nivara-tokens', (e) => setTokenUsed((p) => (p ?? 0) + (e.payload?.tokens || 0)));
+    return () => { un.then((f) => f()).catch(() => {}); };
   }, []);
 
   async function runDiag() {

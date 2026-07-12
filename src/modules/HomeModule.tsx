@@ -1,5 +1,6 @@
 ﻿import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useAuth } from '../contexts/AuthContext';
 import { chatDb, type ChatSession } from '../lib/chatDb';
 import { getMonthlyUsage } from '../lib/tokenTracker';
@@ -208,6 +209,13 @@ export default function HomeModule({ onNavigate, onStartTour }: Props) {
     const pl = profile?.plan ?? 'free';
     const isLifetime = pl === 'free' || pl === 'explore';
     getMonthlyUsage(isLifetime).then(setMonthlyUsed).catch(() => {});
+  }, []);
+
+  // Keep the usage meter live: every managed token spend emits nivara-tokens, so add it
+  // here instead of leaving the bar frozen until the next remount.
+  useEffect(() => {
+    const un = listen<{ tokens: number }>('nivara-tokens', (e) => setMonthlyUsed((p) => p + (e.payload?.tokens || 0)));
+    return () => { un.then((f) => f()).catch(() => {}); };
   }, []);
 
   const projectName  = lastProject?.path.split(/[/\\]/).pop() ?? null;
