@@ -374,6 +374,27 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
     !edges.some((e) => (e.source === node.id && e.target === n.id) || (e.target === node.id && e.source === n.id)));
 
   const [filePath, setFilePath] = useState(node.filePath ?? '');
+  // A deck saved by the PPT maker: an .html under the app's decks folder, with a
+  // DeckSpec .json sidecar. These get Open/Present + Download .pptx actions.
+  const isDeck = !!filePath && /[\\/]decks[\\/]/.test(filePath) && /\.html$/i.test(filePath);
+  async function openDeck() {
+    try { const { open } = await import('@tauri-apps/plugin-shell'); await open(filePath); } catch { /* ignore */ }
+  }
+  async function downloadDeckPptx() {
+    try {
+      const json = await invoke<string>('read_deck_spec', { path: filePath });
+      const { parseDeckSpec, deckToPptxBlob } = await import('../lib/deck');
+      const spec = parseDeckSpec(json);
+      if (!spec) return;
+      const blob = await deckToPptxBlob(spec);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = (spec.title || 'deck').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) + '.pptx';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch { /* ignore */ }
+  }
   const fileInputRef = useRef<HTMLInputElement>(null);
   const titleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editorRef = useRef<HTMLDivElement>(null);
@@ -618,6 +639,16 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
               )}
               <input ref={fileInputRef} type="file" className="hidden" onChange={onHtmlFile} />
             </div>
+            {isDeck && (
+              <div className="space-y-1.5">
+                <label className={labelCls} style={{ color: 'var(--nv-muted)' }}>Presentation</label>
+                <div className="flex gap-1.5">
+                  <button onClick={openDeck} className="flex-1 rounded-lg px-3 py-2 text-[11px] font-semibold text-white" style={{ background: 'var(--nv-accent, #7C5CFF)' }}>Open / Present</button>
+                  <button onClick={downloadDeckPptx} className="flex-1 rounded-lg px-3 py-2 text-[11px] font-medium" style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-text)' }}>Download .pptx</button>
+                </div>
+                <p className="text-[9px]" style={{ color: 'var(--nv-faint)' }}>Opens in your browser — present fullscreen or export to PDF from there.</p>
+              </div>
+            )}
             <div className="space-y-1">
               <label className={labelCls} style={{ color: 'var(--nv-muted)' }}>Your reference note</label>
               <textarea value={ref} onChange={(e) => setRef(e.target.value)} onBlur={save} rows={3}

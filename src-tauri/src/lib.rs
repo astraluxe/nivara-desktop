@@ -1531,6 +1531,33 @@ async fn krew_generate_image(
     Err("Model returned no image (it may have refused the prompt).".to_string())
 }
 
+// Persist a generated deck to disk so it lives in the Brain independently of the
+// chat (survives chat deletion). Writes <appdata>/decks/<slug>-<ts>.html plus a
+// .json sidecar (the DeckSpec, used to re-export .pptx later). Returns the html path.
+#[tauri::command]
+fn save_deck_files(app: tauri::AppHandle, slug: String, html: String, spec_json: String) -> Result<String, String> {
+    use tauri::Manager;
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?.join("decks");
+    std::fs::create_dir_all(&base).map_err(|e| e.to_string())?;
+    let safe: String = slug.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' }).collect();
+    let safe = if safe.trim_matches('-').is_empty() { "deck".to_string() } else { safe };
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+    let stem = format!("{}-{}", &safe[..safe.len().min(40)], ts);
+    let html_path = base.join(format!("{}.html", stem));
+    let json_path = base.join(format!("{}.json", stem));
+    std::fs::write(&html_path, html).map_err(|e| e.to_string())?;
+    std::fs::write(&json_path, spec_json).map_err(|e| e.to_string())?;
+    Ok(html_path.to_string_lossy().to_string())
+}
+
+// Read the DeckSpec sidecar next to a saved deck html (used by the Brain to
+// re-export a .pptx without the chat still being around).
+#[tauri::command]
+fn read_deck_spec(path: String) -> Result<String, String> {
+    let json_path = std::path::Path::new(&path).with_extension("json");
+    std::fs::read_to_string(&json_path).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn sync_token_usage_direct(
     state: tauri::State<'_, SessionKeyState>,
@@ -5836,6 +5863,8 @@ pub fn run() {
             get_token_usage_this_month,
             fetch_session_key,
             krew_generate_image,
+            save_deck_files,
+            read_deck_spec,
             sync_token_usage_direct,
             // Krew tools
             ping_service,

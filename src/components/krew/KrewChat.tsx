@@ -2875,6 +2875,17 @@ The prompt must be production-ready — specific enough for a motion designer to
       // Persist the HTML as an assistant message so the deck reloads as a preview later.
       if (sid) krewDb.saveMessage(sid, 'assistant', html).catch(() => {});
 
+      // Save the deck to disk + the Brain so the user can open/download it later even
+      // if this chat is deleted. Disk (not localStorage) because image decks are large.
+      try {
+        const slug = (spec.title || 'deck').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'deck';
+        const deckPath = await invoke<string>('save_deck_files', { slug, html, specJson: JSON.stringify(spec) });
+        const { brain } = await import('../../lib/knowledgeStore');
+        const summary = `Presentation · ${spec.slides.length} slides\n\n` + spec.slides.map((s, i) => `${i + 1}. ${s.title || s.layout}`).join('\n');
+        const node = brain.addNode({ title: spec.title || 'Presentation', kind: 'file', body: summary });
+        brain.updateNode(node.id, { filePath: deckPath });
+      } catch { /* deck is still in chat; Brain copy is best-effort */ }
+
       if (cfg.format === 'pptx') {
         try {
           const blob = await deckToPptxBlob(spec);
