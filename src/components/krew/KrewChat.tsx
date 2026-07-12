@@ -2866,29 +2866,39 @@ The prompt must be production-ready — specific enough for a motion designer to
 
       let imgNote = '';
       if (cfg.mode === 'advanced') {
+        // Guarantee image slots — if Slade forgot to add imagePrompts, synthesize a few so
+        // Advanced always actually produces images (title, section breaks, closing + a content slide).
+        if (slidesNeedingImages(spec).length === 0) {
+          spec.slides.forEach((s, idx) => {
+            const wants = ['title', 'section', 'image-full', 'closing'].includes(s.layout) || (s.layout === 'bullets' && idx % 4 === 2);
+            if (wants && !s.imagePrompt) {
+              s.imagePrompt = `Professional editorial visual representing "${s.title || spec.title}". Modern, abstract, cinematic composition with ${spec.palette.accent} accents on a dark background. High quality, no text or words in the image.`;
+            }
+          });
+        }
         const need = slidesNeedingImages(spec);
         const imgKey = (provider === 'gemini' && apiKey.trim()) ? apiKey.trim() : null;
+        // Try known image-model ids in order until one works on this key, then reuse it.
+        const candidates: string[] = /pro/.test(cfg.imageModel)
+          ? ['gemini-3-pro-image-preview', 'gemini-3-pro-image', 'gemini-2.5-flash-image', 'gemini-2.5-flash-image-preview']
+          : ['gemini-2.5-flash-image', 'gemini-2.5-flash-image-preview'];
+        let working: string | null = null;
         let fails = 0, lastErr = '';
         for (let k = 0; k < need.length; k++) {
           if (stopRef.current) break;
           setStatus(`Generating image ${k + 1} of ${need.length}…`);
           const idx = need[k];
-          // Try the chosen model; if it errors (e.g. the Pro image model isn't enabled on
-          // this key), fall back to the standard Nano Banana model before giving up.
-          const models = cfg.imageModel === 'gemini-2.5-flash-image'
-            ? ['gemini-2.5-flash-image']
-            : [cfg.imageModel, 'gemini-2.5-flash-image'];
+          const tryList: string[] = working ? [working] : candidates;
           let got = '';
-          for (const model of models) {
+          for (const model of tryList) {
             try {
               const data = await invoke<string>('krew_generate_image', { prompt: spec.slides[idx].imagePrompt, model, apiKey: imgKey });
-              if (data) { got = data; break; }
+              if (data) { got = data; working = model; break; }
             } catch (e) { lastErr = e instanceof Error ? e.message : String(e); }
           }
           if (got) spec.slides[idx].imageData = got; else fails++;
         }
-        if (need.length === 0) imgNote = "Heads up: the deck came back without image slots this time — say \"make the deck\" to try again for AI images.";
-        else if (fails >= need.length) imgNote = `The AI images couldn't be generated${lastErr ? ` (${sanitiseError(lastErr)})` : ''} — the deck was built without them. Your key may not have image-model access.`;
+        if (need.length > 0 && fails >= need.length) imgNote = `The AI images couldn't be generated${lastErr ? ` (${sanitiseError(lastErr)})` : ''} — the deck was built without them. Your adris.tech AI key may not have image-model access enabled.`;
         else if (fails > 0) imgNote = `${fails} of ${need.length} images couldn't be generated; the rest are included.`;
       }
 

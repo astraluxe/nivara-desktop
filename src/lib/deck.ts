@@ -176,7 +176,9 @@ export function renderDeckHtml(spec: DeckSpec): string {
   }
   .slide.active { display:flex; }
   .slide::after { content:''; position:absolute; top:-280px; right:-220px; width:640px; height:640px; border-radius:50%;
-    background:radial-gradient(circle, ${p.accent}2e 0%, transparent 68%); pointer-events:none; }
+    background:radial-gradient(circle, ${p.accent}2e 0%, transparent 68%); pointer-events:none; z-index:0; }
+  .slide::before { content:''; position:absolute; bottom:-220px; left:-180px; width:520px; height:520px; border-radius:50%;
+    background:radial-gradient(circle, ${p.accent}18 0%, transparent 70%); pointer-events:none; z-index:0; }
   h1 { font-family:'${H}',sans-serif; font-weight:800; line-height:1.02; letter-spacing:-.025em; }
   h2 { font-family:'${H}',sans-serif; font-weight:700; line-height:1.1; letter-spacing:-.02em; }
   h3 { font-family:'${H}',sans-serif; }
@@ -204,6 +206,7 @@ export function renderDeckHtml(spec: DeckSpec): string {
   .imgwrap { border-radius:18px; overflow:hidden; background:${p.surface}; display:flex; align-items:center; justify-content:center; position:relative; z-index:1; }
   .imgwrap img { width:100%; height:100%; object-fit:cover; }
   .split { display:grid; grid-template-columns:1.05fr .95fr; gap:60px; align-items:center; }
+  .split .imgwrap { border:1px solid ${p.accent}2a; box-shadow:0 34px 90px rgba(0,0,0,.5); }
   .pill { display:inline-flex; align-items:center; gap:10px; background:${p.accent}; color:#fff; font-weight:700; font-size:22px; padding:15px 30px; border-radius:999px; margin-top:6px; }
   h1, h2, .stat-big, .kicker, .rule, ul, .pill, p { position:relative; z-index:1; }
   #bar { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); display:flex; gap:8px; align-items:center;
