@@ -147,13 +147,14 @@ function fontParam(f: string) { return f.replace(/ /g, '+'); }
 // 16:9 slides scaled to fit the viewport. Arrow keys / space to navigate, F to
 // present fullscreen, P to print (→ Save as PDF). Fully self-contained.
 export function renderDeckHtml(spec: DeckSpec): string {
-  const p = spec.palette;
-  const families = Array.from(new Set([spec.font.heading, spec.font.body]));
+  const p = spec.palette, H = spec.font.heading, B = spec.font.body;
+  const families = Array.from(new Set([H, B]));
   const fontLink = `https://fonts.googleapis.com/css2?${families
     .map((f) => `family=${fontParam(f)}:wght@400;500;600;700;800`)
     .join('&')}&display=swap`;
 
-  const slidesHtml = spec.slides.map((s, i) => renderSlideHtml(s, spec, i)).join('\n');
+  const total = spec.slides.length;
+  const slidesHtml = spec.slides.map((s, i) => renderSlideHtml(s, spec, i, total)).join('\n');
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -166,45 +167,55 @@ export function renderDeckHtml(spec: DeckSpec): string {
 <link href="${fontLink}" rel="stylesheet">
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  html,body { height:100%; background:#111; font-family:'${spec.font.body}',system-ui,sans-serif; }
-  #stage { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+  html,body { height:100%; background:#0a0a0a; font-family:'${B}',system-ui,sans-serif; -webkit-font-smoothing:antialiased; }
+  #stage { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; overflow:hidden; background:#0a0a0a; }
   .slide {
     position:absolute; width:1280px; height:720px; display:none;
-    flex-direction:column; background:${p.bg}; color:${p.text};
-    padding:80px 90px; overflow:hidden;
+    flex-direction:column; justify-content:center; background:${p.bg}; color:${p.text};
+    padding:96px 104px; overflow:hidden;
   }
   .slide.active { display:flex; }
-  .slide h1 { font-family:'${spec.font.heading}',sans-serif; font-weight:800; line-height:1.05; letter-spacing:-.02em; }
-  .slide h2 { font-family:'${spec.font.heading}',sans-serif; font-weight:700; line-height:1.15; letter-spacing:-.01em; }
-  .kicker { text-transform:uppercase; letter-spacing:.14em; font-size:15px; font-weight:600; color:${p.accent}; margin-bottom:20px; }
+  .slide::after { content:''; position:absolute; top:-280px; right:-220px; width:640px; height:640px; border-radius:50%;
+    background:radial-gradient(circle, ${p.accent}2e 0%, transparent 68%); pointer-events:none; }
+  h1 { font-family:'${H}',sans-serif; font-weight:800; line-height:1.02; letter-spacing:-.025em; }
+  h2 { font-family:'${H}',sans-serif; font-weight:700; line-height:1.1; letter-spacing:-.02em; }
+  h3 { font-family:'${H}',sans-serif; }
+  .kicker { display:inline-flex; align-items:center; gap:13px; text-transform:uppercase; letter-spacing:.18em; font-size:14px; font-weight:700; color:${p.accent}; margin-bottom:26px; }
+  .kicker::before { content:''; width:30px; height:2px; background:${p.accent}; }
   .muted { color:${p.muted}; }
   .accent { color:${p.accent}; }
-  ul { list-style:none; }
-  li { display:flex; gap:16px; align-items:flex-start; margin-bottom:20px; font-size:26px; line-height:1.4; }
-  li::before { content:''; flex:0 0 auto; width:10px; height:10px; margin-top:12px; border-radius:3px; background:${p.accent}; }
-  .pagenum { position:absolute; bottom:34px; right:44px; font-size:14px; color:${p.muted}; font-variant-numeric:tabular-nums; }
-  .brandbar { position:absolute; left:0; top:0; width:8px; height:100%; background:${p.accent}; }
-  .imgwrap { flex:1; min-height:0; border-radius:16px; overflow:hidden; background:${p.surface}; display:flex; align-items:center; justify-content:center; }
+  .rule { width:58px; height:4px; background:${p.accent}; border-radius:2px; margin:26px 0; }
+  ul { list-style:none; display:flex; flex-direction:column; gap:21px; position:relative; z-index:1; }
+  li { display:flex; gap:18px; align-items:flex-start; font-size:25px; line-height:1.45; color:${p.text}; }
+  li::before { content:''; flex:0 0 auto; width:9px; height:9px; margin-top:10px; background:${p.accent}; transform:rotate(45deg); }
+  .foot { position:absolute; left:104px; right:104px; bottom:42px; display:flex; justify-content:space-between; align-items:center; font-size:12px; color:${p.muted}; }
+  .foot .brand { font-weight:700; text-transform:uppercase; letter-spacing:.16em; }
+  .foot .pg { font-variant-numeric:tabular-nums; letter-spacing:.08em; }
+  .prog { position:absolute; left:0; bottom:0; height:4px; background:${p.accent}; }
+  .stat-big { font-family:'${H}',sans-serif; font-weight:800; font-size:210px; line-height:.88; color:${p.accent}; letter-spacing:-.045em; position:relative; z-index:1; }
+  .quote-mark { font-family:'${H}',sans-serif; font-size:210px; line-height:.5; color:${p.accent}; opacity:.2; margin-bottom:-46px; }
+  .wm { position:absolute; right:70px; bottom:-56px; font-family:'${H}',sans-serif; font-weight:800; font-size:360px; color:${p.accent}; opacity:.09; line-height:1; }
+  .cols { display:grid; grid-template-columns:1fr 1fr; gap:34px; position:relative; z-index:1; }
+  .col { background:${p.surface}; border:1px solid ${p.accent}26; border-radius:18px; padding:34px 36px; }
+  .col h3 { font-size:23px; color:${p.accent}; margin-bottom:22px; font-weight:700; }
+  .col ul { gap:15px; }
+  .col li { font-size:19px; line-height:1.4; }
+  .col li::before { margin-top:8px; width:7px; height:7px; }
+  .imgwrap { border-radius:18px; overflow:hidden; background:${p.surface}; display:flex; align-items:center; justify-content:center; position:relative; z-index:1; }
   .imgwrap img { width:100%; height:100%; object-fit:cover; }
-  .cols { display:grid; grid-template-columns:1fr 1fr; gap:40px; flex:1; min-height:0; }
-  .col { background:${p.surface}; border-radius:16px; padding:32px 34px; }
-  .col h3 { font-family:'${spec.font.heading}',sans-serif; font-size:24px; margin-bottom:18px; color:${p.accent}; }
-  .col li { font-size:20px; margin-bottom:14px; }
-  .stat-big { font-family:'${spec.font.heading}',sans-serif; font-weight:800; font-size:180px; line-height:1; color:${p.accent}; letter-spacing:-.03em; }
-  .quote-mark { font-family:'${spec.font.heading}',sans-serif; font-size:120px; line-height:.6; color:${p.accent}; opacity:.5; }
-  .split { display:grid; grid-template-columns:1.1fr .9fr; gap:56px; flex:1; min-height:0; align-items:center; }
-  .split .txt { display:flex; flex-direction:column; justify-content:center; }
-  /* controls */
+  .split { display:grid; grid-template-columns:1.05fr .95fr; gap:60px; align-items:center; }
+  .pill { display:inline-flex; align-items:center; gap:10px; background:${p.accent}; color:#fff; font-weight:700; font-size:22px; padding:15px 30px; border-radius:999px; margin-top:6px; }
+  h1, h2, .stat-big, .kicker, .rule, ul, .pill, p { position:relative; z-index:1; }
   #bar { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); display:flex; gap:8px; align-items:center;
-    background:rgba(20,20,22,.86); backdrop-filter:blur(8px); border:1px solid rgba(255,255,255,.1);
+    background:rgba(20,20,22,.86); backdrop-filter:blur(8px); border:1px solid rgba(255,255,255,.12);
     border-radius:999px; padding:8px 12px; z-index:10; font-family:system-ui,sans-serif; }
   #bar button { background:transparent; border:0; color:#eee; cursor:pointer; font-size:13px; padding:6px 10px; border-radius:999px; }
-  #bar button:hover { background:rgba(255,255,255,.12); }
+  #bar button:hover { background:rgba(255,255,255,.14); }
   #bar .count { color:#aaa; font-size:12px; font-variant-numeric:tabular-nums; min-width:52px; text-align:center; }
   @media print {
     #bar { display:none; }
     #stage { position:static; }
-    .slide { display:flex !important; position:relative; page-break-after:always; box-shadow:none; }
+    .slide { display:flex !important; position:relative; page-break-after:always; }
   }
 </style>
 </head>
@@ -220,7 +231,6 @@ export function renderDeckHtml(spec: DeckSpec): string {
 <script>
   var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
   var cur = 0;
-  var stage = document.getElementById('stage');
   function fit(){
     var s = Math.min(window.innerWidth/1280, window.innerHeight/720);
     slides.forEach(function(el){ el.style.transform = 'scale('+s+')'; });
@@ -250,75 +260,80 @@ export function renderDeckHtml(spec: DeckSpec): string {
 </html>`;
 }
 
-function renderSlideHtml(s: DeckSlide, spec: DeckSpec, i: number): string {
-  const num = `<span class="pagenum">${i + 1}</span>`;
-  const bar = `<span class="brandbar"></span>`;
+function renderSlideHtml(s: DeckSlide, spec: DeckSpec, i: number, total: number): string {
+  const multi = (t = '') => esc(t).replace(/\n/g, '<br>');
+  const pct = (((i + 1) / total) * 100).toFixed(1);
+  const chrome = `<div class="prog" style="width:${pct}%"></div><div class="foot"><span class="brand">${esc(spec.title)}</span><span class="pg">${String(i + 1).padStart(2, '0')} / ${String(total).padStart(2, '0')}</span></div>`;
   const img = s.imageData ? `<img src="${s.imageData}" alt=""/>` : '';
   const bullets = (s.bullets || []).map((b) => `<li>${esc(b)}</li>`).join('');
 
   switch (s.layout) {
     case 'title':
-      return `<section class="slide">${bar}
+      return `<section class="slide">
         ${s.subtitle ? `<div class="kicker">${esc(s.subtitle)}</div>` : ''}
-        <div style="flex:1;display:flex;flex-direction:column;justify-content:center">
-          <h1 style="font-size:76px">${esc(s.title || spec.title)}</h1>
-          ${s.body ? `<p class="muted" style="font-size:28px;margin-top:24px;max-width:900px">${esc(s.body)}</p>` : ''}
-        </div>${num}</section>`;
+        <h1 style="font-size:86px;max-width:1040px">${esc(s.title || spec.title)}</h1>
+        <div class="rule"></div>
+        ${s.body ? `<p class="muted" style="font-size:27px;max-width:820px;line-height:1.5">${multi(s.body)}</p>` : ''}
+        ${chrome}</section>`;
     case 'section':
-      return `<section class="slide" style="background:${spec.palette.surface}">${bar}
-        <div style="flex:1;display:flex;flex-direction:column;justify-content:center">
-          <div class="kicker">Section ${i + 1}</div>
-          <h1 style="font-size:64px">${esc(s.title || '')}</h1>
-          ${s.subtitle ? `<p class="muted" style="font-size:26px;margin-top:18px">${esc(s.subtitle)}</p>` : ''}
-        </div>${num}</section>`;
+      return `<section class="slide" style="background:${spec.palette.surface}">
+        <div class="wm">${String(i + 1).padStart(2, '0')}</div>
+        <div class="kicker">Section</div>
+        <h1 style="font-size:72px;max-width:900px">${esc(s.title || '')}</h1>
+        ${s.subtitle ? `<p class="muted" style="font-size:26px;margin-top:20px;max-width:780px;line-height:1.45">${esc(s.subtitle)}</p>` : ''}
+        ${chrome}</section>`;
     case 'quote':
-      return `<section class="slide" style="justify-content:center">${bar}
+      return `<section class="slide">
         <div class="quote-mark">&ldquo;</div>
-        <h2 style="font-size:44px;max-width:960px;margin-top:8px">${esc(s.quote || s.title || '')}</h2>
-        ${s.attribution ? `<p class="accent" style="font-size:22px;margin-top:28px;font-weight:600">— ${esc(s.attribution)}</p>` : ''}
-        ${num}</section>`;
+        <h2 style="font-size:46px;max-width:1000px;font-weight:600;line-height:1.24">${esc(s.quote || s.title || '')}</h2>
+        ${s.attribution ? `<p class="accent" style="font-size:22px;margin-top:34px;font-weight:700;letter-spacing:.03em">— ${esc(s.attribution)}</p>` : ''}
+        ${chrome}</section>`;
     case 'stat':
-      return `<section class="slide" style="justify-content:center">${bar}
+      return `<section class="slide">
         ${s.title ? `<div class="kicker">${esc(s.title)}</div>` : ''}
         <div class="stat-big">${esc(s.stat || '')}</div>
-        ${s.statLabel ? `<p class="muted" style="font-size:30px;margin-top:16px;max-width:820px">${esc(s.statLabel)}</p>` : ''}
-        ${num}</section>`;
+        ${s.statLabel ? `<p class="muted" style="font-size:30px;margin-top:28px;max-width:800px;line-height:1.4">${multi(s.statLabel)}</p>` : ''}
+        ${chrome}</section>`;
     case 'two-column': {
       const cols = (s.columns || []).map((c) =>
         `<div class="col"><h3>${esc(c.heading)}</h3><ul>${(c.bullets || []).map((b) => `<li>${esc(b)}</li>`).join('')}</ul></div>`
       ).join('');
-      return `<section class="slide">${bar}
-        ${s.title ? `<h2 style="font-size:42px;margin-bottom:36px">${esc(s.title)}</h2>` : ''}
-        <div class="cols">${cols}</div>${num}</section>`;
+      return `<section class="slide">
+        ${s.title ? `<h2 style="font-size:44px;max-width:1000px">${esc(s.title)}</h2>` : ''}
+        <div class="rule"></div>
+        <div class="cols">${cols}</div>${chrome}</section>`;
     }
     case 'image-full':
-      return `<section class="slide" style="padding:0">${bar}
-        <div class="imgwrap" style="border-radius:0;flex:1">${img || `<span class="muted">${esc(s.title || '')}</span>`}</div>
-        ${s.title ? `<div style="position:absolute;left:0;bottom:0;width:100%;padding:40px 90px;background:linear-gradient(transparent,rgba(0,0,0,.75))"><h2 style="color:#fff;font-size:40px">${esc(s.title)}</h2></div>` : ''}
-        ${num}</section>`;
+      return `<section class="slide" style="padding:0">
+        <div class="imgwrap" style="border-radius:0;position:absolute;inset:0;z-index:0">${img || `<span class="muted">${esc(s.title || '')}</span>`}</div>
+        ${s.title ? `<div style="position:absolute;left:0;bottom:0;width:100%;padding:64px 104px 84px;background:linear-gradient(transparent,rgba(0,0,0,.82));z-index:1"><h2 style="color:#fff;font-size:46px;max-width:920px">${esc(s.title)}</h2></div>` : ''}
+        <div class="prog" style="width:${pct}%;z-index:2"></div></section>`;
     case 'closing':
-      return `<section class="slide" style="background:${spec.palette.surface};justify-content:center;align-items:flex-start">${bar}
-        <h1 style="font-size:68px">${esc(s.title || 'Thank you')}</h1>
-        ${s.body ? `<p class="muted" style="font-size:28px;margin-top:22px;max-width:900px">${esc(s.body)}</p>` : ''}
-        ${s.subtitle ? `<p class="accent" style="font-size:24px;margin-top:20px;font-weight:600">${esc(s.subtitle)}</p>` : ''}
-        ${num}</section>`;
+      return `<section class="slide" style="background:${spec.palette.surface}">
+        <div class="kicker">Get started</div>
+        <h1 style="font-size:78px;max-width:1000px">${esc(s.title || 'Thank you')}</h1>
+        <div class="rule"></div>
+        ${s.body ? `<p class="muted" style="font-size:26px;max-width:840px;line-height:1.5;margin-bottom:14px">${multi(s.body)}</p>` : ''}
+        ${s.subtitle ? `<div class="pill">${esc(s.subtitle)}</div>` : ''}
+        ${chrome}</section>`;
     case 'bullets':
     default:
-      // If there's an image, split layout (text left, image right). Else full-width bullets.
       if (s.imageData) {
-        return `<section class="slide">${bar}
+        return `<section class="slide">
           <div class="split">
-            <div class="txt">
-              ${s.title ? `<h2 style="font-size:40px;margin-bottom:26px">${esc(s.title)}</h2>` : ''}
+            <div>
+              ${s.title ? `<h2 style="font-size:40px;max-width:520px">${esc(s.title)}</h2>` : ''}
+              <div class="rule"></div>
               <ul>${bullets}</ul>
             </div>
-            <div class="imgwrap">${img}</div>
-          </div>${num}</section>`;
+            <div class="imgwrap" style="height:470px">${img}</div>
+          </div>${chrome}</section>`;
       }
-      return `<section class="slide">${bar}
-        ${s.title ? `<h2 style="font-size:44px;margin-bottom:38px">${esc(s.title)}</h2>` : ''}
-        ${s.body ? `<p class="muted" style="font-size:26px;margin-bottom:28px;max-width:1000px">${esc(s.body)}</p>` : ''}
-        <ul>${bullets}</ul>${num}</section>`;
+      return `<section class="slide">
+        ${s.title ? `<h2 style="font-size:46px;max-width:1040px">${esc(s.title)}</h2>` : ''}
+        <div class="rule"></div>
+        ${s.body ? `<p class="muted" style="font-size:24px;margin-bottom:30px;max-width:1000px;line-height:1.5">${multi(s.body)}</p>` : ''}
+        <ul>${bullets}</ul>${chrome}</section>`;
   }
 }
 

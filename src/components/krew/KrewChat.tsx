@@ -2830,7 +2830,8 @@ The prompt must be production-ready — specific enough for a motion designer to
         : `\n\n## MODE: BASIC\nYou are in BASIC mode. Do NOT output any "imagePrompt" fields — text and layout only.`;
       const _now = new Date();
       const dateBlock = `\n\n## TODAY\nToday is ${_now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}. Use current facts and the current year.`;
-      const sys = AGENT_BY_KEY['deck_maker'].systemPrompt + modeDirective + dateBlock;
+      const coverageDirective = `\n\n## COVER THE WHOLE SOURCE\nWhen a document is attached, base the deck on its FULL breadth — represent the product's different capabilities/modules/sections, not just the first thing mentioned. Pull the strongest, most client-relevant points from across the ENTIRE document. For a rich product, aim for 9–12 slides.`;
+      const sys = AGENT_BY_KEY['deck_maker'].systemPrompt + modeDirective + coverageDirective + dateBlock;
       setStatus('Slade is structuring your slides…');
       // Generate + parse, retrying once if the model returns broken/invalid JSON.
       let spec: DeckSpec | null = null;
@@ -2863,20 +2864,32 @@ The prompt must be production-ready — specific enough for a motion designer to
         setBusy(false); return;
       }
 
+      let imgNote = '';
       if (cfg.mode === 'advanced') {
         const need = slidesNeedingImages(spec);
         const imgKey = (provider === 'gemini' && apiKey.trim()) ? apiKey.trim() : null;
+        let fails = 0, lastErr = '';
         for (let k = 0; k < need.length; k++) {
           if (stopRef.current) break;
           setStatus(`Generating image ${k + 1} of ${need.length}…`);
           const idx = need[k];
-          try {
-            const data = await invoke<string>('krew_generate_image', {
-              prompt: spec.slides[idx].imagePrompt, model: cfg.imageModel, apiKey: imgKey,
-            });
-            if (data) spec.slides[idx].imageData = data;
-          } catch { /* skip this image — the slide still renders without it */ }
+          // Try the chosen model; if it errors (e.g. the Pro image model isn't enabled on
+          // this key), fall back to the standard Nano Banana model before giving up.
+          const models = cfg.imageModel === 'gemini-2.5-flash-image'
+            ? ['gemini-2.5-flash-image']
+            : [cfg.imageModel, 'gemini-2.5-flash-image'];
+          let got = '';
+          for (const model of models) {
+            try {
+              const data = await invoke<string>('krew_generate_image', { prompt: spec.slides[idx].imagePrompt, model, apiKey: imgKey });
+              if (data) { got = data; break; }
+            } catch (e) { lastErr = e instanceof Error ? e.message : String(e); }
+          }
+          if (got) spec.slides[idx].imageData = got; else fails++;
         }
+        if (need.length === 0) imgNote = "Heads up: the deck came back without image slots this time — say \"make the deck\" to try again for AI images.";
+        else if (fails >= need.length) imgNote = `The AI images couldn't be generated${lastErr ? ` (${sanitiseError(lastErr)})` : ''} — the deck was built without them. Your key may not have image-model access.`;
+        else if (fails > 0) imgNote = `${fails} of ${need.length} images couldn't be generated; the rest are included.`;
       }
 
       setStatus('Rendering deck…');
@@ -2889,6 +2902,8 @@ The prompt must be production-ready — specific enough for a motion designer to
       });
       // Persist the HTML as an assistant message so the deck reloads as a preview later.
       if (sid) krewDb.saveMessage(sid, 'assistant', html).catch(() => {});
+      // If Advanced images didn't come through, tell the user why (was silently swallowed).
+      if (imgNote) { addMsg({ role: 'assistant', content: imgNote }); if (sid) krewDb.saveMessage(sid, 'assistant', imgNote).catch(() => {}); }
 
       // Save the deck to disk + the Brain so the user can open/download it later even
       // if this chat is deleted. Disk (not localStorage) because image decks are large.
@@ -3165,7 +3180,12 @@ The prompt must be production-ready — specific enough for a motion designer to
     // basic/advanced + image quality) instead of running the boss. The card drives
     // generation via runDeckGeneration once the user confirms their options.
     if (text && looksLikePresentation(text)) {
-      deckRequestRef.current = apiText; // full context (files/focus + request) for Slade
+      // Decks need the WHOLE source document — the normal 8K chat cap truncated a long
+      // PRODUCT.MD so the deck only covered its first section. Send the full file(s).
+      const DECK_FILE_CAP = 45000;
+      const deckFileBlock = nonImageFiles.map(f => `[File: ${f.name}]\n\`\`\`\n${f.content.slice(0, DECK_FILE_CAP)}\n\`\`\`\n\n`).join('');
+      const deckFocusBlock = focusedFile ? `[File: ${focusedFile.name}]\n\`\`\`\n${focusedFile.content.slice(0, DECK_FILE_CAP)}\n\`\`\`\n\n` : '';
+      deckRequestRef.current = deckFocusBlock + deckFileBlock + text; // full context for Slade
       addMsg({ role: 'deck_setup', content: text });
       setBusy(false);
       return;

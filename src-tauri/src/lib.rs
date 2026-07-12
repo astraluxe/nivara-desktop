@@ -1505,7 +1505,8 @@ async fn krew_generate_image(
     );
     let body = serde_json::json!({
         "contents": [{ "parts": [{ "text": prompt }] }],
-        "generationConfig": { "responseModalities": ["IMAGE"] }
+        // IMAGE + TEXT is the widely-accepted combo for the image models; some reject IMAGE-only.
+        "generationConfig": { "responseModalities": ["IMAGE", "TEXT"] }
     });
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(90))
