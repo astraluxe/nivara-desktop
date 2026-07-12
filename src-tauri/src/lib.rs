@@ -1462,6 +1462,7 @@ async fn fetch_session_key(
 // Returns a data: URI. Used by the Advanced deck maker to put real images on slides.
 #[tauri::command]
 async fn krew_generate_image(
+    app: tauri::AppHandle,
     state: tauri::State<'_, SessionKeyState>,
     prompt: String,
     model: Option<String>,
@@ -1517,9 +1518,12 @@ async fn krew_generate_image(
             let mime = inline["mimeType"].as_str()
                 .or_else(|| inline["mime_type"].as_str())
                 .unwrap_or("image/png");
-            // Bill the managed key (~1290 tokens/image per Google's pricing).
+            // Bill the managed key and report it through the SAME meter as text
+            // (nivara-tokens → token_usage). Nano Banana ≈ 1290 tok/image; Pro costs more.
             if let Some(sk) = &managed_sk {
-                sk.remaining.fetch_sub(1290, std::sync::atomic::Ordering::Relaxed);
+                let cost: i64 = if model.contains("pro") { 3000 } else { 1290 };
+                sk.remaining.fetch_sub(cost, std::sync::atomic::Ordering::Relaxed);
+                let _ = app.emit("nivara-tokens", serde_json::json!({ "tokens": cost }));
             }
             return Ok(format!("data:{};base64,{}", mime, data));
         }
