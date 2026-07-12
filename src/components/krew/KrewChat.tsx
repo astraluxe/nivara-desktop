@@ -2299,6 +2299,21 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
   const [profileMemories, setProfileMemories] = useState<KrewMemory[]>([]);
 
 const [studioExtracting, setStudioExtracting] = useState(false);
+  const [refining, setRefining] = useState(false);
+
+  // Refine: expand the user's rough input into a clear, detailed, structured prompt.
+  async function refinePrompt() {
+    const raw = input.trim();
+    if (!raw || refining || busy) return;
+    setRefining(true);
+    try {
+      const sys = `You are an expert prompt engineer. Rewrite the user's rough request into ONE clear, detailed, well-structured prompt that will get an excellent result from an AI assistant. Expand vague parts into specifics; spell out the goal, the constraints, and the desired output/format; and keep EVERY concrete detail and the user's original intent. Do NOT answer or fulfil the request — only produce the improved prompt. Output ONLY the improved prompt text: no preamble, no explanation, no surrounding quotes.`;
+      const { text } = await streamTurn([{ role: 'user', content: `Rewrite this into a better, more detailed prompt:\n\n${raw}` }], sys, () => {});
+      const refined = text.trim().replace(/^["'`\s]+|["'`\s]+$/g, '');
+      if (refined) setInput(refined);
+    } catch { /* keep the original input if refine fails */ }
+    finally { setRefining(false); }
+  }
   const [attachedFiles, setAttachedFiles] = useState<{ name: string; content: string; isImage?: boolean; mimeType?: string; fromBrain?: boolean }[]>([]);
   const [taskPhases,    setTaskPhases]    = useState<TaskPhase[]>([]);
   const [connectRec,    setConnectRec]    = useState<string[]>([]);
@@ -2879,9 +2894,11 @@ The prompt must be production-ready — specific enough for a motion designer to
         const need = slidesNeedingImages(spec);
         const imgKey = (provider === 'gemini' && apiKey.trim()) ? apiKey.trim() : null;
         // Try known image-model ids in order until one works on this key, then reuse it.
+        // Verified live against the Gemini API: these ids return images; the "-preview" 2.5
+        // id is a 404. Pro tries the GA id first, then falls back to the standard model.
         const candidates: string[] = /pro/.test(cfg.imageModel)
-          ? ['gemini-3-pro-image-preview', 'gemini-3-pro-image', 'gemini-2.5-flash-image', 'gemini-2.5-flash-image-preview']
-          : ['gemini-2.5-flash-image', 'gemini-2.5-flash-image-preview'];
+          ? ['gemini-3-pro-image', 'gemini-3-pro-image-preview', 'gemini-2.5-flash-image']
+          : ['gemini-2.5-flash-image'];
         let working: string | null = null;
         let fails = 0, lastErr = '';
         for (let k = 0; k < need.length; k++) {
@@ -4968,6 +4985,19 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                   </svg>
                 )}
                 Studio
+              </button>
+            )}
+            {!busy && (
+              <button
+                onClick={refinePrompt}
+                disabled={!input.trim() || refining}
+                title="Refine — expand your rough prompt into a detailed, well-structured one"
+                className="flex items-center gap-1 text-[10px] px-2 py-1.5 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-fast shrink-0 font-mono disabled:opacity-40"
+              >
+                {refining
+                  ? <span className="w-2.5 h-2.5 rounded-full border border-accent/30 border-t-accent animate-spin" />
+                  : <svg viewBox="0 0 24 24" className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M13 3l2.2 5.8L21 11l-5.8 2.2L13 19l-2.2-5.8L5 11l5.8-2.2z"/><path d="M5 3v3M3.5 4.5h3M18 16v3M16.5 17.5h3"/></svg>}
+                {refining ? 'Refining…' : 'Refine'}
               </button>
             )}
             {busy ? (

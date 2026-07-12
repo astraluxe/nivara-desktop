@@ -269,21 +269,27 @@ function renderSlideHtml(s: DeckSlide, spec: DeckSpec, i: number, total: number)
   const chrome = `<div class="prog" style="width:${pct}%"></div><div class="foot"><span class="brand">${esc(spec.title)}</span><span class="pg">${String(i + 1).padStart(2, '0')} / ${String(total).padStart(2, '0')}</span></div>`;
   const img = s.imageData ? `<img src="${s.imageData}" alt=""/>` : '';
   const bullets = (s.bullets || []).map((b) => `<li>${esc(b)}</li>`).join('');
+  // Background image (with a directional gradient scrim so the left-side text stays readable).
+  // Used on title/section/closing — layouts that don't have a dedicated image slot.
+  const bgImage = (base: string) => s.imageData
+    ? `<div style="position:absolute;inset:0;background:url('${s.imageData}') center/cover;z-index:0"></div>` +
+      `<div style="position:absolute;inset:0;background:linear-gradient(100deg, ${base} 22%, ${base}ee 48%, ${base}55 74%, transparent);z-index:0"></div>`
+    : '';
 
   switch (s.layout) {
     case 'title':
-      return `<section class="slide">
+      return `<section class="slide">${bgImage(spec.palette.bg)}
         ${s.subtitle ? `<div class="kicker">${esc(s.subtitle)}</div>` : ''}
-        <h1 style="font-size:86px;max-width:1040px">${esc(s.title || spec.title)}</h1>
+        <h1 style="font-size:86px;max-width:${s.imageData ? '780px' : '1040px'}">${esc(s.title || spec.title)}</h1>
         <div class="rule"></div>
-        ${s.body ? `<p class="muted" style="font-size:27px;max-width:820px;line-height:1.5">${multi(s.body)}</p>` : ''}
+        ${s.body ? `<p class="muted" style="font-size:27px;max-width:${s.imageData ? '660px' : '820px'};line-height:1.5">${multi(s.body)}</p>` : ''}
         ${chrome}</section>`;
     case 'section':
-      return `<section class="slide" style="background:${spec.palette.surface}">
-        <div class="wm">${String(i + 1).padStart(2, '0')}</div>
+      return `<section class="slide" style="background:${spec.palette.surface}">${bgImage(spec.palette.surface)}
+        ${s.imageData ? '' : `<div class="wm">${String(i + 1).padStart(2, '0')}</div>`}
         <div class="kicker">Section</div>
-        <h1 style="font-size:72px;max-width:900px">${esc(s.title || '')}</h1>
-        ${s.subtitle ? `<p class="muted" style="font-size:26px;margin-top:20px;max-width:780px;line-height:1.45">${esc(s.subtitle)}</p>` : ''}
+        <h1 style="font-size:72px;max-width:${s.imageData ? '720px' : '900px'}">${esc(s.title || '')}</h1>
+        ${s.subtitle ? `<p class="muted" style="font-size:26px;margin-top:20px;max-width:${s.imageData ? '620px' : '780px'};line-height:1.45">${esc(s.subtitle)}</p>` : ''}
         ${chrome}</section>`;
     case 'quote':
       return `<section class="slide">
@@ -312,11 +318,11 @@ function renderSlideHtml(s: DeckSlide, spec: DeckSpec, i: number, total: number)
         ${s.title ? `<div style="position:absolute;left:0;bottom:0;width:100%;padding:64px 104px 84px;background:linear-gradient(transparent,rgba(0,0,0,.82));z-index:1"><h2 style="color:#fff;font-size:46px;max-width:920px">${esc(s.title)}</h2></div>` : ''}
         <div class="prog" style="width:${pct}%;z-index:2"></div></section>`;
     case 'closing':
-      return `<section class="slide" style="background:${spec.palette.surface}">
+      return `<section class="slide" style="background:${spec.palette.surface}">${bgImage(spec.palette.surface)}
         <div class="kicker">Get started</div>
-        <h1 style="font-size:78px;max-width:1000px">${esc(s.title || 'Thank you')}</h1>
+        <h1 style="font-size:78px;max-width:${s.imageData ? '760px' : '1000px'}">${esc(s.title || 'Thank you')}</h1>
         <div class="rule"></div>
-        ${s.body ? `<p class="muted" style="font-size:26px;max-width:840px;line-height:1.5;margin-bottom:14px">${multi(s.body)}</p>` : ''}
+        ${s.body ? `<p class="muted" style="font-size:26px;max-width:${s.imageData ? '640px' : '840px'};line-height:1.5;margin-bottom:14px">${multi(s.body)}</p>` : ''}
         ${s.subtitle ? `<div class="pill">${esc(s.subtitle)}</div>` : ''}
         ${chrome}</section>`;
     case 'bullets':

@@ -1569,6 +1569,19 @@ fn read_deck_spec(path: String) -> Result<String, String> {
     std::fs::read_to_string(&json_path).map_err(|e| e.to_string())
 }
 
+// Open a file/URL with the OS default app. Used by the Brain "Open / Present" action —
+// the JS shell plugin's open is scope-restricted and was failing silently on local paths.
+#[tauri::command]
+fn open_path(path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    { std::process::Command::new("cmd").args(["/C", "start", "", &path]).spawn().map_err(|e| e.to_string())?; }
+    #[cfg(target_os = "macos")]
+    { std::process::Command::new("open").arg(&path).spawn().map_err(|e| e.to_string())?; }
+    #[cfg(target_os = "linux")]
+    { std::process::Command::new("xdg-open").arg(&path).spawn().map_err(|e| e.to_string())?; }
+    Ok(())
+}
+
 #[tauri::command]
 async fn sync_token_usage_direct(
     state: tauri::State<'_, SessionKeyState>,
@@ -5876,6 +5889,7 @@ pub fn run() {
             krew_generate_image,
             save_deck_files,
             read_deck_spec,
+            open_path,
             sync_token_usage_direct,
             // Krew tools
             ping_service,

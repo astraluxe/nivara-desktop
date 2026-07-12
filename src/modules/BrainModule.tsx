@@ -377,15 +377,19 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
   // A deck saved by the PPT maker: an .html under the app's decks folder, with a
   // DeckSpec .json sidecar. These get Open/Present + Download .pptx actions.
   const isDeck = !!filePath && /[\\/]decks[\\/]/.test(filePath) && /\.html$/i.test(filePath);
+  const [deckMsg, setDeckMsg] = useState('');
   async function openDeck() {
-    try { const { open } = await import('@tauri-apps/plugin-shell'); await open(filePath); } catch { /* ignore */ }
+    setDeckMsg('Opening…');
+    try { await invoke('open_path', { path: filePath }); setDeckMsg(''); }
+    catch (e) { setDeckMsg('Could not open: ' + (e instanceof Error ? e.message : String(e))); }
   }
   async function downloadDeckPptx() {
+    setDeckMsg('Building .pptx…');
     try {
       const json = await invoke<string>('read_deck_spec', { path: filePath });
       const { parseDeckSpec, deckToPptxBlob } = await import('../lib/deck');
       const spec = parseDeckSpec(json);
-      if (!spec) return;
+      if (!spec) { setDeckMsg('Deck data not found.'); return; }
       const blob = await deckToPptxBlob(spec);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -393,7 +397,8 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
       a.download = (spec.title || 'deck').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) + '.pptx';
       a.click();
       URL.revokeObjectURL(url);
-    } catch { /* ignore */ }
+      setDeckMsg('');
+    } catch (e) { setDeckMsg('Export failed: ' + (e instanceof Error ? e.message : String(e))); }
   }
   const fileInputRef = useRef<HTMLInputElement>(null);
   const titleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -646,7 +651,7 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
                   <button onClick={openDeck} className="flex-1 rounded-lg px-3 py-2 text-[11px] font-semibold text-white" style={{ background: 'var(--nv-accent, #7C5CFF)' }}>Open / Present</button>
                   <button onClick={downloadDeckPptx} className="flex-1 rounded-lg px-3 py-2 text-[11px] font-medium" style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-text)' }}>Download .pptx</button>
                 </div>
-                <p className="text-[9px]" style={{ color: 'var(--nv-faint)' }}>Opens in your browser — present fullscreen or export to PDF from there.</p>
+                <p className="text-[9px]" style={{ color: deckMsg.startsWith('Could') || deckMsg.includes('failed') ? '#f87171' : 'var(--nv-faint)' }}>{deckMsg || 'Opens in your browser — present fullscreen or export to PDF from there.'}</p>
               </div>
             )}
             <div className="space-y-1">
