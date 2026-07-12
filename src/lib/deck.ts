@@ -58,38 +58,79 @@ const PRESET_FONTS: Record<string, DeckFont> = {
   neon:      { heading: 'Syne', body: 'Inter' },
 };
 
-// Extract a DeckSpec from raw agent output. Tolerant of ```json fences and stray prose.
-export function parseDeckSpec(raw: string): DeckSpec | null {
-  if (!raw) return null;
-  let text = raw.trim();
-  // strip a leading ```json / ``` fence
-  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence) text = fence[1].trim();
-  // isolate the first balanced {...}
-  const start = text.indexOf('{');
-  if (start < 0) return null;
-  let depth = 0, end = -1, inStr = false, esc = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (inStr) {
-      if (esc) esc = false;
-      else if (ch === '\\') esc = true;
-      else if (ch === '"') inStr = false;
-    } else if (ch === '"') inStr = true;
-    else if (ch === '{') depth++;
-    else if (ch === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
-  }
-  if (end < 0) return null;
-  let spec: DeckSpec;
-  try { spec = JSON.parse(text.slice(start, end)); } catch { return null; }
-  if (!spec || !Array.isArray(spec.slides) || spec.slides.length === 0) return null;
-  // normalise: fill palette/font from preset fallbacks
-  const preset = (spec.preset || 'dark').toLowerCase();
+// Fill defaults + drop invalid slides. Returns null if nothing usable.
+function normalizeSpec(spec: any): DeckSpec | null {
+  if (!spec || !Array.isArray(spec.slides)) return null;
+  spec.slides = spec.slides.filter((s: any) => s && typeof s === 'object' && typeof s.layout === 'string');
+  if (spec.slides.length === 0) return null;
+  const preset = String(spec.preset || 'dark').toLowerCase();
   spec.preset  = preset;
   spec.palette = { ...(PRESET_PALETTES[preset] ?? PRESET_PALETTES.dark), ...(spec.palette || {}) };
   spec.font    = { ...(PRESET_FONTS[preset] ?? PRESET_FONTS.dark), ...(spec.font || {}) };
   spec.title   = spec.title || spec.slides[0]?.title || 'Presentation';
-  return spec;
+  return spec as DeckSpec;
+}
+
+// Return the first balanced {…} or […] substring starting at `from` (string-aware).
+// Returns null if it never closes (i.e. the text was truncated).
+function balancedSpan(text: string, from: number): string | null {
+  const open = text[from], close = open === '{' ? '}' : ']';
+  let depth = 0, inStr = false, esc = false;
+  for (let i = from; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) { if (esc) esc = false; else if (ch === '\\') esc = true; else if (ch === '"') inStr = false; }
+    else if (ch === '"') inStr = true;
+    else if (ch === open) depth++;
+    else if (ch === close) { depth--; if (depth === 0) return text.slice(from, i + 1); }
+  }
+  return null;
+}
+
+function tryParseSlide(chunk: string): any | null {
+  try { const o = JSON.parse(chunk); if (o && o.layout) return o; } catch { /* try balanced prefix */ }
+  const span = balancedSpan(chunk, chunk.indexOf('{'));
+  if (span) { try { const o = JSON.parse(span); if (o && o.layout) return o; } catch { /* give up on this one */ } }
+  return null;
+}
+
+// Last-resort recovery: every slide object starts with "layout", so anchor on those
+// boundaries and parse each slide independently. A corrupted/truncated slide is dropped
+// without swallowing the ones around it, so a partially-mangled stream still yields a deck.
+function salvageDeckSpec(text: string): DeckSpec | null {
+  const head: any = {};
+  const grab = (k: string) => { const m = text.match(new RegExp('"' + k + '"\\s*:\\s*"([^"\\\\]{0,120})"')); if (m) head[k] = m[1]; };
+  grab('title'); grab('subtitle'); grab('preset');
+  const anchors: number[] = [];
+  const re = /\{\s*"layout"/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) anchors.push(m.index);
+  if (anchors.length === 0) return null;
+  const slides: any[] = [];
+  for (let k = 0; k < anchors.length; k++) {
+    const to = k + 1 < anchors.length ? anchors[k + 1] : text.length;
+    let chunk = text.slice(anchors[k], to);
+    const lastBrace = chunk.lastIndexOf('}');
+    if (lastBrace >= 0) chunk = chunk.slice(0, lastBrace + 1); // trim trailing comma/junk
+    const parsed = tryParseSlide(chunk);
+    if (parsed) slides.push(parsed);
+  }
+  return slides.length ? normalizeSpec({ ...head, slides }) : null;
+}
+
+// Extract a DeckSpec from raw agent output. Tolerant of ```json fences and stray prose,
+// and — if the JSON is corrupted/truncated — salvages whatever complete slides survived.
+export function parseDeckSpec(raw: string): DeckSpec | null {
+  if (!raw) return null;
+  let text = raw.trim();
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) text = fence[1].trim();
+  const start = text.indexOf('{');
+  if (start < 0) return null;
+  const span = balancedSpan(text, start);
+  if (span) {
+    try { const spec = normalizeSpec(JSON.parse(span)); if (spec) return spec; } catch { /* fall through to salvage */ }
+  }
+  return salvageDeckSpec(text);
 }
 
 // Slides that carry an imagePrompt (Advanced mode work list).
