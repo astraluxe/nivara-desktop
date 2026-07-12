@@ -656,9 +656,19 @@ async fn ai_stream(
                 }
                 let mut chars = 0i64;
                 let mut stream = resp.bytes_stream();
+                // Buffer bytes across TCP chunks and only parse COMPLETE lines (ending in \n).
+                // Without this, a single SSE `data: {…}` event split across two network reads
+                // was parsed as two broken halves and DROPPED — silently corrupting long
+                // outputs (e.g. a full slide deck came back as mangled/invalid JSON).
+                let mut buf: Vec<u8> = Vec::new();
                 'outer_ai: while let Some(chunk) = stream.next().await {
                     let bytes = chunk.map_err(|e| { let s = format!("Stream interrupted: {}", e); emit_error(s.clone()); s })?;
-                    for line in String::from_utf8_lossy(&bytes).lines() {
+                    buf.extend_from_slice(&bytes);
+                    while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                        let mut line_bytes: Vec<u8> = buf.drain(..=pos).collect();
+                        line_bytes.pop(); // drop '\n'
+                        if line_bytes.last() == Some(&b'\r') { line_bytes.pop(); }
+                        let line = String::from_utf8_lossy(&line_bytes);
                         if let Some(data) = line.strip_prefix("data: ") {
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
                                 if let Some(parts) = v["candidates"][0]["content"]["parts"].as_array() {

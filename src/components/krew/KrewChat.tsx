@@ -2832,19 +2832,34 @@ The prompt must be production-ready — specific enough for a motion designer to
       const dateBlock = `\n\n## TODAY\nToday is ${_now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}. Use current facts and the current year.`;
       const sys = AGENT_BY_KEY['deck_maker'].systemPrompt + modeDirective + dateBlock;
       setStatus('Slade is structuring your slides…');
-      const { text } = await streamTurnWithRetry([{ role: 'user', content: requestCtx }], sys, () => {});
+      // Generate + parse, retrying once if the model returns broken/invalid JSON.
+      let spec: DeckSpec | null = null;
+      let lastText = '';
+      for (let attempt = 1; attempt <= 2 && !spec; attempt++) {
+        if (stopRef.current) { setMessages((prev) => prev.filter((m) => !m.streaming)); setBusy(false); return; }
+        if (attempt === 2) setStatus('Tidying up the deck…');
+        const sysTry = attempt === 1 ? sys
+          : sys + '\n\nIMPORTANT: your previous output was NOT valid JSON. Return ONLY one strictly-valid, COMPACT JSON object — no markdown, no comments. Keep every "notes" and "imagePrompt" to a single short line. Double-check every quote, comma and brace.';
+        const { text } = await streamTurnWithRetry([{ role: 'user', content: requestCtx }], sysTry, () => {});
+        lastText = text;
+        spec = parseDeckSpec(text);
+      }
       if (stopRef.current) { setMessages((prev) => prev.filter((m) => !m.streaming)); setBusy(false); return; }
 
-      const spec = parseDeckSpec(text);
       if (!spec) {
-        // Slade likely asked a clarifying question instead of emitting JSON — surface it as text.
-        const clean = text.trim();
+        const clean = lastText.trim();
+        // A short reply with no JSON is a genuine clarifying question → show it. Broken JSON
+        // must NEVER be dumped at the user — show a clean, actionable message instead.
+        const looksJson = /[{[]/.test(clean) && /"?(slides|layout|title)"?\s*:/.test(clean);
+        const msg = looksJson
+          ? 'I hit a snag building that deck — the layout came back malformed. Say "make the deck" and I\'ll rebuild it.'
+          : (clean || "I couldn't build the deck — tell me the topic and audience and I'll try again.");
         setMessages((prev) => {
           const c = [...prev]; const l = c[c.length - 1];
-          if (l?.role === 'delegation') c[c.length - 1] = { role: 'assistant', content: clean || "I couldn't build the deck — tell me the topic and audience and I'll try again.", streaming: false };
+          if (l?.role === 'delegation') c[c.length - 1] = { role: 'assistant', content: msg, streaming: false };
           return c;
         });
-        if (sid && clean) krewDb.saveMessage(sid, 'assistant', clean).catch(() => {});
+        if (sid) krewDb.saveMessage(sid, 'assistant', msg).catch(() => {});
         setBusy(false); return;
       }
 
@@ -3070,7 +3085,9 @@ The prompt must be production-ready — specific enough for a motion designer to
     // wrong either way it's safe: an un-pre-warmed browse task just cold-starts, and any window
     // that does open (pre-warm or real use) is guaranteed to close at run end.
     const browseSignal = /\b(find|search|verify|check|look ?up|research|scrape|browse|visit|open the|go to|lead list|leads|prospects|decision maker|who (is|are|can|do)|contact (details|info)|phone number|email address|google maps|\bmaps\b|profile|careers|current price|pricing of|competitor|website of|list of)\b/i.test(text);
-    if (searchMode === 'advanced' && browseSignal) {
+    // A deck/PPT or schedule request never needs the browser — don't pre-warm one just because
+    // the text happens to contain a word like "check" (e.g. "check out my platform").
+    if (searchMode === 'advanced' && browseSignal && !looksLikePresentation(text) && !looksLikeScheduleIntent(text)) {
       markBrowserPrewarmed();
       invoke('run_browser_persistent', { args: 'open "about:blank"' }).catch(() => {});
     }

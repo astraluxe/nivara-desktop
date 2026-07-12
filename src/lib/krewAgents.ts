@@ -1505,6 +1505,7 @@ Start immediately with { and end with }. No prose, no markdown fences. Shape:
     { "layout":"bullets", "title":"...", "bullets":["...","..."], "notes":"..." }
   ]
 }
+Output STRICT, valid, COMPACT JSON only — no markdown fences, no comments, no trailing commas. Keep every "notes" to ONE short sentence and every "imagePrompt" to ONE short line (they must not run long). Escape any quotes inside strings.
 Include a short "notes" (speaker notes) on each content slide — they export into PowerPoint's notes.
 IMAGE RULE: only add an "imagePrompt" field to a slide when told you are in ADVANCED mode. Each imagePrompt is a concrete, art-directed description (subject, style, palette matching the deck accent, mood, no text-in-image). In BASIC mode, never output imagePrompt.
 If the brief is too vague to make a real deck (unknown topic/audience), ask ONE specific question as plain text instead of emitting JSON.`,
