@@ -15,6 +15,8 @@ import { useAuth } from '../../contexts/AuthContext';
 import { extractTableRows, mergeLeadTables, parseLeadRows, rowsToMarkdown } from '../../lib/leadTable';
 import { supabase } from '../../lib/supabase';
 import { getPlanConfig } from '../../lib/planConfig';
+import { parseDeckSpec, slidesNeedingImages, renderDeckHtml, deckToPptxBlob, type DeckSpec } from '../../lib/deck';
+import { CHANNEL_META, listConnections, saveConnection, schedulePost, postNow, type SocialConnection, type SocialChannel, type PostContent } from '../../lib/social';
 import UpgradeModal from '../UpgradeModal';
 import { type AutomationProposal } from './AutomationProposalModal';
 import AgentStatus from './AgentStatus';
@@ -150,12 +152,31 @@ interface ChoiceSet {
 }
 
 interface DisplayMsg {
-  role:      'user' | 'assistant' | 'tool_call' | 'tool_result' | 'delegation' | 'proposal' | 'choices';
+  role:      'user' | 'assistant' | 'tool_call' | 'tool_result' | 'delegation' | 'proposal' | 'choices' | 'deck_setup' | 'deck_result' | 'social_schedule';
   content:   string;
   toolName?: string;
   streaming?: boolean;
   proposal?: AutomationProposal;
   choices?:  ChoiceSet;
+  deckSpec?: DeckSpec;
+  deckHtml?: string;
+}
+
+// Detect "schedule / publish these posts" so we can offer the schedule + connect card.
+function looksLikeScheduleIntent(text: string): boolean {
+  const t = text.toLowerCase();
+  const verb = /\b(schedule|publish|auto[- ]?post|queue|post now|post this|post these|post them|post it|share (this|these|them))\b/.test(t);
+  const obj  = /\b(post|posts|tweet|social|linkedin|instagram|facebook|threads|twitter|reddit|tiktok|youtube|it|this|these|them)\b/.test(t);
+  return verb && obj;
+}
+
+// Detect a "make me a presentation / PPT" request so we can offer the deck setup card.
+function looksLikePresentation(text: string): boolean {
+  const t = text.toLowerCase();
+  if (/\b(power\s?point|\.pptx|\bppt\b|pitch\s?deck|slide\s?deck|slidedeck|keynote)\b/.test(t)) return true;
+  if (/\b(presentation|slides?|deck)\b/.test(t) &&
+      /\b(make|create|build|generate|design|prepare|put together|need|want|draft|do|turn (this|it) into)\b/.test(t)) return true;
+  return false;
 }
 
 interface StudioRequest {
@@ -864,6 +885,67 @@ function EmailCard({ content }: { content: string }) {
   );
 }
 
+// ── Social post cards ─────────────────────────────────────────────────────────
+// Per-platform metadata: canonical name, brand-ish accent, and the practical
+// character limit we warn against (soft for the very-high ones).
+const PLATFORM_META: Record<string, { name: string; color: string; limit: number }> = {
+  x:         { name: 'X',         color: '#000000', limit: 280 },
+  twitter:   { name: 'X',         color: '#000000', limit: 280 },
+  threads:   { name: 'Threads',   color: '#000000', limit: 500 },
+  bluesky:   { name: 'Bluesky',   color: '#0a7aff', limit: 300 },
+  mastodon:  { name: 'Mastodon',  color: '#6364ff', limit: 500 },
+  linkedin:  { name: 'LinkedIn',  color: '#0a66c2', limit: 3000 },
+  instagram: { name: 'Instagram', color: '#e1306c', limit: 2200 },
+  facebook:  { name: 'Facebook',  color: '#1877f2', limit: 63206 },
+  tiktok:    { name: 'TikTok',    color: '#010101', limit: 2200 },
+  youtube:   { name: 'YouTube',   color: '#ff0000', limit: 5000 },
+  pinterest: { name: 'Pinterest', color: '#e60023', limit: 500 },
+  reddit:    { name: 'Reddit',    color: '#ff4500', limit: 40000 },
+  discord:   { name: 'Discord',   color: '#5865f2', limit: 2000 },
+  slack:     { name: 'Slack',     color: '#611f69', limit: 4000 },
+  dribbble:  { name: 'Dribbble',  color: '#ea4c89', limit: 1000 },
+};
+
+function detectPlatform(line: string): string | null {
+  const key = line.toLowerCase().replace(/^[-–—\s]+/, '').replace(/^platform:\s*/, '').replace(/[^a-z]/g, '');
+  if (!key || key.length > 12) return null;
+  return PLATFORM_META[key] ? key : null;
+}
+
+function PostCard({ content }: { content: string }) {
+  const [copied, setCopied] = useState(false);
+  const lines     = content.replace(/^\n+/, '').split('\n');
+  const firstKey  = detectPlatform(lines[0] || '');
+  const meta      = firstKey ? PLATFORM_META[firstKey] : null;
+  const body      = (meta ? lines.slice(1).join('\n') : content).replace(/^\n+/, '').trim();
+  const count     = body.length;
+  const over      = meta ? count > meta.limit : false;
+
+  return (
+    <div className="my-2 rounded-xl border border-nv-border overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 bg-nv-surface border-b border-nv-border">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="w-4 h-4 rounded-full shrink-0 flex items-center justify-center text-[8px] font-bold text-white"
+                style={{ background: meta?.color ?? '#888' }}>{(meta?.name ?? 'P')[0]}</span>
+          <span className="text-[11px] font-semibold text-nv-text truncate">{meta?.name ?? 'Post'}</span>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <span className={`text-[10px] font-mono ${over ? 'text-red-400' : 'text-nv-faint'}`}>
+            {count}{meta ? `/${meta.limit}` : ''}
+          </span>
+          <button
+            onClick={() => { navigator.clipboard.writeText(body); setCopied(true); setTimeout(() => setCopied(false), 1800); }}
+            className="text-[10px] text-nv-faint hover:text-nv-text font-mono transition-fast"
+          >{copied ? '✓' : 'Copy'}</button>
+        </div>
+      </div>
+      <div className="px-3 py-3 bg-nv-bg">
+        <pre className="text-[11px] text-nv-muted leading-relaxed whitespace-pre-wrap font-sans">{body}</pre>
+      </div>
+    </div>
+  );
+}
+
 // Split prose text into email/message blocks and plain prose sections, so any
 // drafted email, outreach message or letter the agent writes renders in a clean
 // boxed card. Detected by a "Subject:" line OR a real salutation ("Hi John,",
@@ -959,6 +1041,308 @@ function StudioAssetBubble({ html }: { html: string }) {
         />
       </div>
       <p className="px-3 pb-2 text-[9px] text-nv-faint font-mono">Save the .html file to open at full resolution in your browser</p>
+    </div>
+  );
+}
+
+// ── Deck (presentation) setup + result ───────────────────────────────────────
+export interface DeckConfig {
+  format:     'html' | 'pptx';
+  mode:       'basic' | 'advanced';
+  imageModel: 'gemini-2.5-flash-image' | 'gemini-3-pro-image-preview';
+}
+
+function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled }: {
+  unlockedAdvanced: boolean;
+  onGenerate: (cfg: DeckConfig) => void;
+  onCancel: () => void;
+  disabled?: boolean;
+}) {
+  const [format, setFormat]     = useState<'html' | 'pptx'>('html');
+  const [mode, setMode]         = useState<'basic' | 'advanced'>('basic');
+  const [imgModel, setImgModel] = useState<'gemini-2.5-flash-image' | 'gemini-3-pro-image-preview'>('gemini-2.5-flash-image');
+  const [done, setDone]         = useState(false);
+
+  const Opt = ({ active, onClick, title, sub, lock }: { active: boolean; onClick: () => void; title: string; sub: string; lock?: boolean }) => (
+    <button
+      disabled={disabled || lock}
+      onClick={onClick}
+      className={`flex-1 text-left px-3 py-2.5 rounded-lg border transition-fast ${
+        active ? 'border-accent bg-accent/10 text-nv-text'
+        : lock ? 'border-nv-border/60 opacity-55 cursor-not-allowed text-nv-muted'
+        : 'border-nv-border hover:border-accent/40 text-nv-muted hover:text-nv-text'
+      }`}
+    >
+      <p className="text-[11px] font-semibold mb-0.5 flex items-center gap-1">{title}{lock && <span>🔒</span>}</p>
+      <p className="text-[9.5px] text-nv-faint leading-snug font-mono">{sub}</p>
+    </button>
+  );
+
+  if (done) {
+    return (
+      <div className="my-3 rounded-xl border border-nv-border bg-nv-surface px-3 py-2.5">
+        <p className="text-[11px] text-nv-muted">
+          Building a <span className="text-accent font-semibold">{mode}</span> deck as <span className="text-accent font-semibold">{format === 'pptx' ? 'PowerPoint (.pptx)' : 'an in-chat deck'}</span>…
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="my-3 rounded-xl border border-nv-border bg-nv-surface overflow-hidden text-left">
+      <div className="px-3 py-2.5 bg-nv-bg border-b border-nv-border/60">
+        <p className="text-[12px] font-semibold text-nv-text">Build your presentation</p>
+        <p className="text-[10px] text-nv-faint mt-0.5">Choose how you want it — then generate.</p>
+      </div>
+      <div className="p-3 space-y-3">
+        <div>
+          <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1.5">Where do you want it?</p>
+          <div className="flex gap-2">
+            <Opt active={format === 'html'} onClick={() => setFormat('html')} title="Here in chat" sub="Live deck — present & export PDF" />
+            <Opt active={format === 'pptx'} onClick={() => setFormat('pptx')} title="PowerPoint (.pptx)" sub="Editable file for PowerPoint / Slides" />
+          </div>
+        </div>
+        <div>
+          <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1.5">Detail level</p>
+          <div className="flex gap-2">
+            <Opt active={mode === 'basic'} onClick={() => setMode('basic')} title="Basic" sub="Clean designed slides · fast" />
+            <Opt active={mode === 'advanced'} lock={!unlockedAdvanced} onClick={() => setMode('advanced')} title="Advanced" sub={unlockedAdvanced ? 'AI images per slide · richer' : 'AI images · paid or own Gemini key'} />
+          </div>
+          {!unlockedAdvanced && (
+            <p className="text-[9.5px] text-nv-faint mt-1.5">Advanced adds AI-generated images. Upgrade your plan, or add your own Gemini key in Connect Apps, to unlock it.</p>
+          )}
+        </div>
+        {mode === 'advanced' && unlockedAdvanced && (
+          <div>
+            <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1.5">Image quality</p>
+            <div className="flex gap-2">
+              <Opt active={imgModel === 'gemini-2.5-flash-image'} onClick={() => setImgModel('gemini-2.5-flash-image')} title="Standard" sub="Nano Banana · fast, low cost" />
+              <Opt active={imgModel === 'gemini-3-pro-image-preview'} onClick={() => setImgModel('gemini-3-pro-image-preview')} title="Pro" sub="Nano Banana Pro · best, pricier" />
+            </div>
+          </div>
+        )}
+      </div>
+      <div className="px-3 py-2.5 border-t border-nv-border/60 bg-nv-bg flex justify-end gap-2">
+        <button onClick={onCancel} disabled={disabled} className="text-[11px] text-nv-faint hover:text-nv-text transition-fast font-mono">Cancel</button>
+        <button
+          disabled={disabled}
+          onClick={() => { setDone(true); onGenerate({ format, mode, imageModel: imgModel }); }}
+          className="text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-semibold disabled:opacity-50"
+        >Generate deck →</button>
+      </div>
+    </div>
+  );
+}
+
+function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
+  const [savedHtml, setSavedHtml] = useState(false);
+  const [pptxState, setPptxState] = useState<'idle' | 'building' | 'done' | 'err'>('idle');
+
+  function slug() { return (spec.title || 'deck').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'deck'; }
+  function downloadHtml() {
+    const blob = new Blob([html], { type: 'text/html' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a'); a.href = url; a.download = `${slug()}.html`; a.click();
+    URL.revokeObjectURL(url); setSavedHtml(true); setTimeout(() => setSavedHtml(false), 1800);
+  }
+  async function downloadPptx() {
+    setPptxState('building');
+    try {
+      const blob = await deckToPptxBlob(spec);
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a'); a.href = url; a.download = `${slug()}.pptx`; a.click();
+      URL.revokeObjectURL(url); setPptxState('done'); setTimeout(() => setPptxState('idle'), 2000);
+    } catch { setPptxState('err'); setTimeout(() => setPptxState('idle'), 2500); }
+  }
+
+  const imgCount = spec.slides.filter((s) => s.imageData).length;
+  return (
+    <div className="my-3 rounded-xl border border-accent/30 bg-nv-surface overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-nv-border/60 bg-nv-bg">
+        <div className="flex items-center gap-2 min-w-0">
+          <svg viewBox="0 0 16 16" fill="none" className="w-3.5 h-3.5 text-accent shrink-0">
+            <rect x="1.5" y="2.5" width="13" height="9" rx="1.3" stroke="currentColor" strokeWidth="1.3"/>
+            <path d="M8 11.5v2M5.5 13.5h5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+          </svg>
+          <span className="text-[11px] font-semibold text-nv-text truncate">{spec.title}</span>
+          <span className="text-[9px] text-nv-faint font-mono shrink-0">{spec.slides.length} slides{imgCount ? ` · ${imgCount} images` : ''}</span>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <button onClick={downloadHtml} className="text-[10px] px-2.5 py-1 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40 transition-fast font-mono">
+            {savedHtml ? '✓ Saved' : '⭳ .html'}
+          </button>
+          <button onClick={downloadPptx} className="text-[10px] px-2.5 py-1 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-mono">
+            {pptxState === 'building' ? '…building' : pptxState === 'done' ? '✓ .pptx' : pptxState === 'err' ? 'failed' : '⭳ PowerPoint'}
+          </button>
+        </div>
+      </div>
+      <div className="p-3 bg-nv-bg flex justify-center items-center">
+        <iframe
+          srcDoc={html}
+          sandbox="allow-scripts allow-same-origin"
+          className="rounded-lg border border-nv-border/40 bg-black"
+          style={{ width: '100%', maxWidth: 560, aspectRatio: '16 / 9' }}
+          title="Deck preview"
+        />
+      </div>
+      <p className="px-3 pb-2 text-[9px] text-nv-faint font-mono">Click the preview then use ← → to flip slides · ⛶ Present for fullscreen · download for the full-resolution deck</p>
+    </div>
+  );
+}
+
+// Pull the most recent set of drafted ```post fences out of the conversation so the
+// schedule card knows what to publish, keyed by canonical platform.
+function extractLastSocialPosts(msgs: DisplayMsg[]): { platforms: string[]; content: PostContent; title: string } | null {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m.role !== 'assistant' && m.role !== 'delegation') continue;
+    const blocks = extractDraftBlocks(m.content).filter((b) => b.lang === 'post');
+    if (blocks.length === 0) continue;
+    const perPlatform: Record<string, string> = {};
+    for (const b of blocks) {
+      const firstLine = b.body.split('\n')[0] || '';
+      const key = detectPlatform(b.label) || detectPlatform(firstLine) || (b.label || 'post').toLowerCase().replace(/[^a-z]/g, '') || 'post';
+      // Strip a leading platform line if the body repeats it.
+      const body = detectPlatform(firstLine) ? b.body.split('\n').slice(1).join('\n').trim() : b.body;
+      perPlatform[key] = body;
+    }
+    return { platforms: Object.keys(perPlatform), content: { perPlatform }, title: 'Social posts' };
+  }
+  return null;
+}
+
+function SocialScheduleCard({ initial, canSchedule, onOpenConnectApps }: {
+  initial: { platforms: string[]; content: PostContent; title: string } | null;
+  canSchedule: boolean;
+  onOpenConnectApps?: () => void;
+}) {
+  const [conns, setConns]       = useState<SocialConnection[] | null>(null);
+  const [open, setOpen]         = useState<SocialChannel | null>(null);
+  const [fields, setFields]     = useState<Record<string, string>>({});
+  const [saving, setSaving]     = useState(false);
+  const [busy, setBusy]         = useState(false);
+  const [result, setResult]     = useState<string>('');
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const def = new Date(Date.now() + 3600_000);
+  const [when, setWhen] = useState(`${def.getFullYear()}-${pad(def.getMonth() + 1)}-${pad(def.getDate())}T${pad(def.getHours())}:${pad(def.getMinutes())}`);
+
+  useEffect(() => { if (canSchedule) listConnections().then(setConns).catch(() => setConns([])); }, [canSchedule]);
+
+  if (!canSchedule) {
+    return (
+      <div className="my-3 rounded-xl border border-accent/30 bg-nv-surface p-3">
+        <p className="text-[12px] font-semibold text-nv-text mb-1">Scheduling & publishing is a paid feature</p>
+        <p className="text-[11px] text-nv-muted leading-snug">Your drafts are ready and saved to your Brain — you can copy and post them anywhere. To <span className="text-accent font-semibold">schedule and auto-publish</span> across your platforms, upgrade to a paid plan.</p>
+      </div>
+    );
+  }
+
+  const connected = conns ?? [];
+  const hasConn   = connected.length > 0;
+
+  async function connect(ch: SocialChannel) {
+    setSaving(true);
+    try {
+      const meta = CHANNEL_META.find((c) => c.id === ch)!;
+      const cfg: Record<string, string> = {};
+      for (const f of meta.fields) cfg[f.key] = (fields[`${ch}_${f.key}`] || '').trim();
+      if (meta.fields.some((f) => !cfg[f.key])) { setResult('Fill in every field for that channel.'); setSaving(false); return; }
+      await saveConnection(ch, cfg, meta.name);
+      setConns(await listConnections());
+      setOpen(null); setResult('');
+    } catch (e) { setResult(e instanceof Error ? e.message : 'Could not connect.'); }
+    finally { setSaving(false); }
+  }
+
+  async function doSchedule(now: boolean) {
+    if (!initial) { setResult('Draft some posts first — ask me to write a post, then schedule.'); return; }
+    if (!hasConn) { setResult('Connect at least one channel above to publish.'); return; }
+    setBusy(true); setResult('');
+    try {
+      if (now) { await postNow({ platforms: initial.platforms, content: initial.content, title: initial.title }); setResult('✓ Sent to your connected channels.'); }
+      else {
+        const at = new Date(when);
+        if (isNaN(at.getTime())) { setResult('Pick a valid date & time.'); setBusy(false); return; }
+        await schedulePost({ platforms: initial.platforms, content: initial.content, title: initial.title, scheduledAt: at });
+        setResult(`✓ Scheduled for ${at.toLocaleString()}.`);
+      }
+    } catch (e) { setResult(e instanceof Error ? e.message : 'Failed.'); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="my-3 rounded-xl border border-nv-border bg-nv-surface overflow-hidden text-left">
+      <div className="px-3 py-2.5 bg-nv-bg border-b border-nv-border/60">
+        <p className="text-[12px] font-semibold text-nv-text">Schedule &amp; publish</p>
+        <p className="text-[10px] text-nv-faint mt-0.5">{initial ? `${initial.platforms.length} post${initial.platforms.length === 1 ? '' : 's'} ready` : 'No drafted posts found yet'}</p>
+      </div>
+      <div className="p-3 space-y-3">
+        {initial && (
+          <div className="flex flex-wrap gap-1.5">
+            {initial.platforms.map((p) => (
+              <span key={p} className="text-[10px] px-2 py-0.5 rounded-full bg-nv-bg border border-nv-border text-nv-muted capitalize">{p}</span>
+            ))}
+          </div>
+        )}
+
+        {/* Connections */}
+        <div>
+          <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1.5">
+            {hasConn ? 'Connected' : 'Connect a channel to publish'}
+          </p>
+          {hasConn && (
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {connected.map((c) => (
+                <span key={c.id} className="text-[10px] px-2 py-0.5 rounded-full bg-accent/10 border border-accent/30 text-accent">✓ {CHANNEL_META.find((m) => m.id === c.channel)?.name ?? c.channel}</span>
+              ))}
+            </div>
+          )}
+          <div className="space-y-1.5">
+            {CHANNEL_META.filter((m) => !connected.some((c) => c.channel === m.id)).map((m) => (
+              <div key={m.id} className="rounded-lg border border-nv-border overflow-hidden">
+                <button onClick={() => setOpen(open === m.id ? null : m.id)} className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-nv-bg transition-fast">
+                  <span className="text-[11px] font-semibold text-nv-text">{m.name}</span>
+                  <span className="text-[10px] text-nv-faint">{open === m.id ? '−' : '+ connect'}</span>
+                </button>
+                {open === m.id && (
+                  <div className="px-3 py-2.5 bg-nv-bg border-t border-nv-border/60 space-y-2">
+                    <p className="text-[10px] text-nv-faint leading-snug">{m.hint}</p>
+                    {m.fields.map((f) => (
+                      <input
+                        key={f.key} placeholder={f.placeholder}
+                        value={fields[`${m.id}_${f.key}`] || ''}
+                        onChange={(e) => setFields((s) => ({ ...s, [`${m.id}_${f.key}`]: e.target.value }))}
+                        className="w-full text-[11px] px-2.5 py-1.5 rounded-lg bg-nv-surface border border-nv-border text-nv-text placeholder-nv-faint focus:border-accent/50 outline-none font-mono"
+                      />
+                    ))}
+                    <button disabled={saving} onClick={() => connect(m.id)} className="text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-semibold disabled:opacity-50">
+                      {saving ? 'Connecting…' : 'Connect'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Schedule controls */}
+        {initial && hasConn && (
+          <div className="flex items-end gap-2 pt-1">
+            <div className="flex-1">
+              <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1">When</p>
+              <input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)}
+                className="w-full text-[11px] px-2.5 py-1.5 rounded-lg bg-nv-bg border border-nv-border text-nv-text focus:border-accent/50 outline-none" />
+            </div>
+            <button disabled={busy} onClick={() => doSchedule(false)} className="text-[11px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-text hover:border-accent/40 transition-fast font-semibold disabled:opacity-50">Schedule</button>
+            <button disabled={busy} onClick={() => doSchedule(true)} className="text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-semibold disabled:opacity-50">{busy ? '…' : 'Post now'}</button>
+          </div>
+        )}
+
+        {result && <p className={`text-[11px] ${result.startsWith('✓') ? 'text-emerald-400' : 'text-nv-muted'}`}>{result}</p>}
+        {onOpenConnectApps && (
+          <button onClick={onOpenConnectApps} className="text-[10px] text-nv-faint hover:text-nv-text font-mono transition-fast">Manage in Connect Apps →</button>
+        )}
+      </div>
     </div>
   );
 }
@@ -1208,12 +1592,12 @@ function autoSaveLeadTableToBrain(text: string, fileTitles: string[], separateLi
 // starts before it closes): a block runs to the next fence or the end of text, not requiring a
 // closing ```. Also captures the fence LABEL (e.g. "Tech - Connection Request") so it becomes a
 // heading instead of a generic "Message N".
-function extractDraftBlocks(text: string): { label: string; body: string }[] {
-  const out: { label: string; body: string }[] = [];
-  const openRe = /```(?:email|draft|message|outreach)([^\n]*)\n/gi;
+function extractDraftBlocks(text: string): { lang: string; label: string; body: string }[] {
+  const out: { lang: string; label: string; body: string }[] = [];
+  const openRe = /```(email|draft|message|outreach|post)([^\n]*)\n/gi;
   let m: RegExpExecArray | null;
-  const opens: { label: string; start: number }[] = [];
-  while ((m = openRe.exec(text))) opens.push({ label: m[1].trim(), start: m.index + m[0].length });
+  const opens: { lang: string; label: string; start: number }[] = [];
+  while ((m = openRe.exec(text))) opens.push({ lang: m[1].toLowerCase(), label: m[2].trim(), start: m.index + m[0].length });
   for (let i = 0; i < opens.length; i++) {
     const from = opens[i].start;
     // End at the next fence opener, or a lone closing ``` before it, whichever comes first.
@@ -1221,9 +1605,18 @@ function extractDraftBlocks(text: string): { label: string; body: string }[] {
     const slice = text.slice(from, nextOpen);
     const closeIdx = slice.indexOf('```');
     const bodyRaw = (closeIdx >= 0 ? slice.slice(0, closeIdx) : slice).trim();
-    if (bodyRaw.length > 25) out.push({ label: opens[i].label.replace(/^[-–—\s]+/, '').trim(), body: bodyRaw });
+    // Social posts can be very short (a tweet), so use a lower floor for them.
+    const floor = opens[i].lang === 'post' ? 5 : 25;
+    if (bodyRaw.length > floor) out.push({ lang: opens[i].lang, label: opens[i].label.replace(/^[-–—\s]+/, '').trim(), body: bodyRaw });
   }
   return out;
+}
+
+// Title a social-posts note from the request topic (not the "outreach messages" naming).
+function deriveSocialTitle(requestText: string): string {
+  const t = (requestText || '').replace(/["“”']/g, '').trim();
+  const topic = t.replace(/^.*?\b(about|on|for|announcing|promoting|regarding|to promote|to announce)\b\s*/i, '').replace(/\s+/g, ' ').slice(0, 50).trim();
+  return topic && topic.toLowerCase() !== t.toLowerCase() ? `Social posts — ${topic}` : 'Social posts';
 }
 
 // Name an outreach note from the user's REQUEST, not a bare "Outreach messages" — channel
@@ -1239,9 +1632,10 @@ function deriveDraftTitle(requestText: string): string {
 function autoSaveDraftsToBrain(text: string, fileTitles: string[], requestText = ''): string | undefined {
   const blocks = extractDraftBlocks(text);
   if (blocks.length === 0) return undefined;
+  const isSocial = blocks.some((b) => b.lang === 'post');
   const body = blocks.map((b, i) => `### ${b.label || `Message ${i + 1}`}\n\n${b.body}`).join('\n\n---\n\n');
   const cleanTitles = (fileTitles || []).map((t) => (t || '').replace(/\.(md|txt|json|csv|markdown)$/i, '').trim()).filter(Boolean);
-  const title = deriveDraftTitle(requestText);
+  const title = isSocial ? deriveSocialTitle(requestText) : deriveDraftTitle(requestText);
   import('../../lib/knowledgeStore').then(({ brain }) => {
     const data = brain.all();
     const anchorIds = (): string[] => {
@@ -1484,6 +1878,11 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
           // proper email card (Subject header + copy), not a raw monospace code box.
           if (['email', 'draft', 'message', 'outreach'].includes(lang.toLowerCase())) {
             return <EmailCard key={i} content={code.replace(/\n+$/, '')} />;
+          }
+          // Social posts fenced as ```post <Platform> render as per-platform cards
+          // (brand chip + live character count against that platform's limit).
+          if (lang.toLowerCase() === 'post') {
+            return <PostCard key={i} content={code.replace(/\n+$/, '')} />;
           }
           return (
             <div key={i} className="my-1.5 rounded-lg overflow-hidden border border-nv-border/60">
@@ -1939,6 +2338,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
   const callIdRef          = useRef(0);
   const sidRef             = useRef<string | null>(sessionId);
   const freshSessionRef    = useRef<string | null>(null);
+  const deckRequestRef     = useRef<string>('');   // context for the pending deck request
   sidRef.current           = sessionId;
 
   const [showScrollBtn, setShowScrollBtn] = useState(false);
@@ -2409,6 +2809,96 @@ The prompt must be production-ready — specific enough for a motion designer to
     } catch { return { md: '', title: '' }; }
   }
 
+  // Generate a deck from the pending request + the chosen options. Runs the deck_maker
+  // (Slade) agent to produce a DeckSpec, generates AI images in Advanced mode, then renders
+  // both an in-chat HTML deck and (on demand) an editable .pptx.
+  async function runDeckGeneration(cfg: DeckConfig) {
+    const requestCtx = deckRequestRef.current;
+    if (!requestCtx) return;
+    setBusy(true);
+    stopRef.current = false;
+    const sid = sidRef.current;
+    addMsg({ role: 'delegation', toolName: 'deck_maker', content: 'Designing your deck…', streaming: true });
+    const setStatus = (t: string) => setMessages((prev) => {
+      const c = [...prev]; const l = c[c.length - 1];
+      if (l?.role === 'delegation') c[c.length - 1] = { ...l, content: t };
+      return c;
+    });
+    try {
+      const modeDirective = cfg.mode === 'advanced'
+        ? `\n\n## MODE: ADVANCED\nYou ARE in ADVANCED mode. Add an "imagePrompt" to the title slide, any "image-full"/"section" slides, and about half of the content slides — roughly 4–7 images total. Each imagePrompt: concrete subject + art direction, styled to match the deck's accent colour, with NO text baked into the image.`
+        : `\n\n## MODE: BASIC\nYou are in BASIC mode. Do NOT output any "imagePrompt" fields — text and layout only.`;
+      const _now = new Date();
+      const dateBlock = `\n\n## TODAY\nToday is ${_now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}. Use current facts and the current year.`;
+      const sys = AGENT_BY_KEY['deck_maker'].systemPrompt + modeDirective + dateBlock;
+      setStatus('Slade is structuring your slides…');
+      const { text } = await streamTurnWithRetry([{ role: 'user', content: requestCtx }], sys, () => {});
+      if (stopRef.current) { setMessages((prev) => prev.filter((m) => !m.streaming)); setBusy(false); return; }
+
+      const spec = parseDeckSpec(text);
+      if (!spec) {
+        // Slade likely asked a clarifying question instead of emitting JSON — surface it as text.
+        const clean = text.trim();
+        setMessages((prev) => {
+          const c = [...prev]; const l = c[c.length - 1];
+          if (l?.role === 'delegation') c[c.length - 1] = { role: 'assistant', content: clean || "I couldn't build the deck — tell me the topic and audience and I'll try again.", streaming: false };
+          return c;
+        });
+        if (sid && clean) krewDb.saveMessage(sid, 'assistant', clean).catch(() => {});
+        setBusy(false); return;
+      }
+
+      if (cfg.mode === 'advanced') {
+        const need = slidesNeedingImages(spec);
+        const imgKey = (provider === 'gemini' && apiKey.trim()) ? apiKey.trim() : null;
+        for (let k = 0; k < need.length; k++) {
+          if (stopRef.current) break;
+          setStatus(`Generating image ${k + 1} of ${need.length}…`);
+          const idx = need[k];
+          try {
+            const data = await invoke<string>('krew_generate_image', {
+              prompt: spec.slides[idx].imagePrompt, model: cfg.imageModel, apiKey: imgKey,
+            });
+            if (data) spec.slides[idx].imageData = data;
+          } catch { /* skip this image — the slide still renders without it */ }
+        }
+      }
+
+      setStatus('Rendering deck…');
+      const html = renderDeckHtml(spec);
+      setMessages((prev) => {
+        const c = [...prev]; const l = c[c.length - 1];
+        const result: DisplayMsg = { role: 'deck_result', content: '', deckSpec: spec, deckHtml: html };
+        if (l?.role === 'delegation') c[c.length - 1] = result; else c.push(result);
+        return c;
+      });
+      // Persist the HTML as an assistant message so the deck reloads as a preview later.
+      if (sid) krewDb.saveMessage(sid, 'assistant', html).catch(() => {});
+
+      if (cfg.format === 'pptx') {
+        try {
+          const blob = await deckToPptxBlob(spec);
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = (spec.title || 'deck').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) + '.pptx';
+          a.click();
+          URL.revokeObjectURL(url);
+        } catch { /* the in-chat preview + the .pptx button are still available */ }
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setMessages((prev) => {
+        const c = [...prev]; const l = c[c.length - 1];
+        if (l && (l.streaming || l.role === 'delegation')) c[c.length - 1] = { role: 'assistant', content: `Couldn't build the deck: ${sanitiseError(msg)}`, streaming: false };
+        return c;
+      });
+    } finally {
+      setBusy(false);
+      deckRequestRef.current = '';
+    }
+  }
+
   async function runDirectLeadFill(listMd: string, sid: string | null, verifyAll = false): Promise<boolean> {
     // FOCUS ON MISSING (default) — only pass rows that still need a LinkedIn, so we don't re-open the
     // browser for people already filled. But when the user asks to RE-VERIFY EVERYTHING, process the
@@ -2641,6 +3131,27 @@ The prompt must be production-ready — specific enough for a motion designer to
     // Add user message to display (typed text + file names only)
     addMsg({ role: 'user', content: displayText });
     if (sid) krewDb.saveMessage(sid, 'user', displayText).catch(() => {});
+
+    // ── PRESENTATION / PPT SHORT-CIRCUIT ──────────────────────────────────────
+    // "make me a ppt / pitch deck / slides" → show the deck setup card (format +
+    // basic/advanced + image quality) instead of running the boss. The card drives
+    // generation via runDeckGeneration once the user confirms their options.
+    if (text && looksLikePresentation(text)) {
+      deckRequestRef.current = apiText; // full context (files/focus + request) for Slade
+      addMsg({ role: 'deck_setup', content: text });
+      setBusy(false);
+      return;
+    }
+
+    // ── SCHEDULE / PUBLISH SHORT-CIRCUIT ──────────────────────────────────────
+    // "schedule / publish these posts" → the schedule + connect card (reads the last
+    // drafted posts from the thread). Drafting stays a normal agent task; only the
+    // scheduling/publishing step is gated + connection-aware.
+    if (text && looksLikeScheduleIntent(text)) {
+      addMsg({ role: 'social_schedule', content: '' });
+      setBusy(false);
+      return;
+    }
 
     // ── DETERMINISTIC "SAVE THIS AS X" / "CALL IT X" SHORT-CIRCUIT ────────────
     // Renaming the list JUST auto-saved this session should never depend on an AI call — the
@@ -3959,6 +4470,23 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                     // Content renders inside the card itself — only persist to DB
                     if (sidRef.current) krewDb.saveMessage(sidRef.current, 'assistant', content).catch(() => {});
                   }}
+                />
+              ) : msg.role === 'deck_setup' ? (
+                <DeckSetupCard
+                  key={i}
+                  disabled={busy}
+                  unlockedAdvanced={planCfg.advancedDeck || (provider === 'gemini' && !!apiKey.trim())}
+                  onCancel={() => setMessages((prev) => prev.filter((m) => m !== msg))}
+                  onGenerate={(cfg) => runDeckGeneration(cfg)}
+                />
+              ) : msg.role === 'deck_result' && msg.deckSpec && msg.deckHtml ? (
+                <DeckResultBubble key={i} html={msg.deckHtml} spec={msg.deckSpec} />
+              ) : msg.role === 'social_schedule' ? (
+                <SocialScheduleCard
+                  key={i}
+                  initial={extractLastSocialPosts(messages)}
+                  canSchedule={planCfg.socialScheduling}
+                  onOpenConnectApps={onOpenConnectApps}
                 />
               ) : (
                 <MessageRow key={i} msg={msg} agent={agent} />

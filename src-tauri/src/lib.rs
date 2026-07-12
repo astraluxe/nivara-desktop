@@ -1456,6 +1456,77 @@ async fn fetch_session_key(
     Ok(serde_json::json!({ "ok": true, "plan": plan, "remaining": remaining }))
 }
 
+// Generate one image with a Gemini image model ("Nano Banana" = gemini-2.5-flash-image,
+// "Nano Banana Pro" = gemini-3-pro-image-preview). Uses the caller's own Gemini key when
+// `api_key` is provided (BYO — their cost); otherwise the managed adris.tech session key.
+// Returns a data: URI. Used by the Advanced deck maker to put real images on slides.
+#[tauri::command]
+async fn krew_generate_image(
+    state: tauri::State<'_, SessionKeyState>,
+    prompt: String,
+    model: Option<String>,
+    api_key: Option<String>,
+) -> Result<String, String> {
+    let model = model.unwrap_or_else(|| "gemini-2.5-flash-image".to_string());
+    // Resolve key: explicit BYO key wins; else the managed session key.
+    let (key, managed_sk) = match api_key.filter(|k| !k.trim().is_empty()) {
+        Some(k) => (k, None),
+        None => {
+            let sk = {
+                let g = state.0.lock().unwrap();
+                g.as_ref().and_then(|a| {
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
+                    if a.expires_at > now_ms && a.remaining.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+                        Some(a.clone())
+                    } else { None }
+                })
+            };
+            match sk {
+                Some(a) => (a.key.get(), Some(a)),
+                None => return Err("No image key available — sign in to adris.tech or add your own Gemini key.".to_string()),
+            }
+        }
+    };
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+        model, key
+    );
+    let body = serde_json::json!({
+        "contents": [{ "parts": [{ "text": prompt }] }],
+        "generationConfig": { "responseModalities": ["IMAGE"] }
+    });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(90))
+        .build().unwrap_or_else(|_| reqwest::Client::new());
+    let resp = client.post(&url).json(&body).send().await
+        .map_err(|e| format!("Image request failed: {}", e))?;
+    if !resp.status().is_success() {
+        let st = resp.status();
+        let eb = resp.text().await.unwrap_or_default();
+        return Err(format!("{} — {}", st, eb.chars().take(300).collect::<String>()));
+    }
+    let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    // Find the first inline image part.
+    let parts = v["candidates"][0]["content"]["parts"].as_array()
+        .ok_or_else(|| "No image returned".to_string())?;
+    for part in parts {
+        // API may use inlineData (camel) or inline_data (snake) depending on version.
+        let inline = if part["inlineData"].is_object() { &part["inlineData"] } else { &part["inline_data"] };
+        if let Some(data) = inline["data"].as_str() {
+            let mime = inline["mimeType"].as_str()
+                .or_else(|| inline["mime_type"].as_str())
+                .unwrap_or("image/png");
+            // Bill the managed key (~1290 tokens/image per Google's pricing).
+            if let Some(sk) = &managed_sk {
+                sk.remaining.fetch_sub(1290, std::sync::atomic::Ordering::Relaxed);
+            }
+            return Ok(format!("data:{};base64,{}", mime, data));
+        }
+    }
+    Err("Model returned no image (it may have refused the prompt).".to_string())
+}
+
 #[tauri::command]
 async fn sync_token_usage_direct(
     state: tauri::State<'_, SessionKeyState>,
@@ -5760,6 +5831,7 @@ pub fn run() {
             track_token_usage,
             get_token_usage_this_month,
             fetch_session_key,
+            krew_generate_image,
             sync_token_usage_direct,
             // Krew tools
             ping_service,

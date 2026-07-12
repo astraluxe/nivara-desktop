@@ -15,6 +15,8 @@ export interface PlanConfig {
   voiceToCode:      boolean;
   cloudAutomations: number;        // monthly cloud automation run quota
   advancedSearches: number | null; // monthly "Advanced" (browser verify/enrich) task quota; null = unlimited
+  advancedDeck:     boolean;       // Advanced PPT maker (AI-image slides). Basic deck is available to all.
+  socialScheduling: boolean;       // Schedule/publish social posts. Drafting is free for all; scheduling is paid.
 }
 
 export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
@@ -32,6 +34,8 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     voiceToCode:      false,
     cloudAutomations: 0,
     advancedSearches: 5,
+    advancedDeck:     false,
+    socialScheduling: false,
     researchParallelism: 5,
   },
   free: {
@@ -48,6 +52,8 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     voiceToCode:      false,
     cloudAutomations: 0,
     advancedSearches: 5,
+    advancedDeck:     false,
+    socialScheduling: false,
     researchParallelism: 5,
   },
   solo: {
@@ -64,6 +70,8 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     voiceToCode:      false,
     cloudAutomations: 500,
     advancedSearches: null,   // paid → unlimited Advanced (the upgrade incentive for Free users)
+    advancedDeck:     true,
+    socialScheduling: true,
     researchParallelism: 15,
   },
   builder: {
@@ -80,6 +88,8 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     voiceToCode:      true,
     cloudAutomations: 5_000,
     advancedSearches: null,   // paid → unlimited Advanced
+    advancedDeck:     true,
+    socialScheduling: true,
     researchParallelism: 40,
   },
   business: {
@@ -96,6 +106,8 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     voiceToCode:      true,
     cloudAutomations: 999_999,
     advancedSearches: null,
+    advancedDeck:     true,
+    socialScheduling: true,
     researchParallelism: 100,
   },
   custom: {
@@ -112,6 +124,8 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     voiceToCode:      true,
     cloudAutomations: 999_999,
     advancedSearches: null,
+    advancedDeck:     true,
+    socialScheduling: true,
     researchParallelism: 200,
   },
 };
