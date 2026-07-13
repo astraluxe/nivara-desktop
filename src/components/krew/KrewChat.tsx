@@ -1093,6 +1093,12 @@ function makeAbstractSlideImage(accent: string, bg: string, seed = 0): string {
     return c.toDataURL('image/jpeg', 0.86);
   } catch { return ''; }
 }
+// A slide's imageData renders as a BLACK box if it's not a real, non-trivial image. Accept only
+// a proper base64 image data URI with enough payload — anything else (empty, a stray URL, a
+// truncated/garbage string from the model) is rejected so the fallback fills the slot instead.
+function validImageData(d?: string): boolean {
+  return !!d && /^data:image\/(png|jpe?g|webp|gif);base64,/i.test(d) && d.length > 512;
+}
 
 function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled, deckApps = [] }: {
   unlockedAdvanced: boolean;
@@ -3088,6 +3094,27 @@ The prompt must be production-ready — specific enough for a motion designer to
         setBusy(false); return;
       }
 
+      // SLIDE-COUNT CONTINUATION — models routinely under-deliver on a big count (asked 17, gave
+      // 10) however firmly we ask, and re-asking for "all N" just returns the same short deck. So
+      // instead we ask it to CONTINUE — output ONLY the missing slides — and append them. This
+      // reliably reaches the requested count without truncating one giant response.
+      let contTries = 0;
+      while (spec.slides.length < target && contTries < 4 && !stopRef.current) {
+        contTries++;
+        const have = spec.slides.length;
+        setStatus(`Writing slides ${have + 1}–${target}…`);
+        const done = spec.slides.map((s, i) => `${i + 1}. ${s.title || s.layout}`).join('; ');
+        const contSys = AGENT_BY_KEY['deck_maker'].systemPrompt + contentDirective + coverageDirective + dateBlock
+          + `\n\n## CONTINUE — OUTPUT ONLY THE MISSING SLIDES\nA deck is already in progress with ${have} slides. Output ONLY the REMAINING ${target - have} slides (slide ${have + 1} to ${target}) as a compact JSON object {"slides":[ ... ]}. Do NOT repeat any slide already made; do NOT include title/subtitle/preset/palette — just the "slides" array continuing the brief's narrative. No imagePrompt fields.`;
+        const contUser = requestCtx + `\n\n(Slides already created: ${done}. Now produce ONLY slides ${have + 1}–${target}.)`;
+        const { text } = await streamTurnWithRetry([{ role: 'user', content: contUser }], contSys, () => {});
+        const more = parseDeckSpec(text);
+        if (more && more.slides.length) spec.slides.push(...more.slides);
+        else break; // couldn't parse more → stop rather than loop uselessly
+      }
+      if (spec.slides.length > target) spec.slides = spec.slides.slice(0, target);
+      if (stopRef.current) { setMessages((prev) => prev.filter((m) => !m.streaming)); setBusy(false); return; }
+
       let imgNote = '';
       if (cfg.mode === 'advanced') {
         // Guarantee a proper image spread. Slade often under-delivers imagePrompts (or, when
@@ -3131,11 +3158,12 @@ The prompt must be production-ready — specific enough for a motion designer to
           const slide = spec.slides[idx];
           const tryList: string[] = working ? [working] : candidates;
           let got = '';
-          // 1) AI generation — try Pro, fall down to the lower model automatically.
+          // 1) AI generation — try Pro, fall down to the lower model automatically. Only accept
+          // a VALID image (a broken/garbage return is what rendered as a black box).
           for (const model of tryList) {
             try {
               const data = await invoke<string>('krew_generate_image', { prompt: slide.imagePrompt, model, apiKey: imgKey });
-              if (data) { got = data; working = model; break; }
+              if (validImageData(data)) { got = data; working = model; break; }
             } catch { /* try the next model, then the stock fallback */ }
           }
           // 2) FALLBACK — if AI generation gave nothing (no key / no access / rate limit),
@@ -3145,15 +3173,23 @@ The prompt must be production-ready — specific enough for a motion designer to
               .replace(/[^a-zA-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim().split(' ').slice(0, 5).join(' ');
             try {
               const data = await invoke<string>('fetch_stock_image', { query: q || 'abstract technology' });
-              if (data) got = data;
+              if (validImageData(data)) got = data;
             } catch { /* fall through to the generated fallback */ }
           }
           // 3) GUARANTEED — no network needed: a clean generated abstract in the deck's accent.
-          // This is why a slide never comes back empty anymore.
           if (!got) got = makeAbstractSlideImage(spec.palette.accent, spec.palette.bg, idx);
-          if (got) slide.imageData = got; else fails++;
+          if (validImageData(got)) slide.imageData = got; else fails++;
         }
-        // With the generated fallback, images essentially always land; only note the rare total miss.
+        // FINAL VERIFICATION — no image slot may be left with a missing/invalid (black) image.
+        // Any slide that still lacks a valid image gets the generated abstract; if even that
+        // fails, drop the field entirely so the layout renders its clean TEXT version, not black.
+        for (const idx of need) {
+          const s = spec.slides[idx];
+          if (!validImageData(s.imageData)) {
+            const fb = makeAbstractSlideImage(spec.palette.accent, spec.palette.bg, idx + 100);
+            if (validImageData(fb)) s.imageData = fb; else delete (s as { imageData?: string }).imageData;
+          }
+        }
         if (need.length > 0 && fails >= need.length) imgNote = `Your deck is ready. Some slides couldn't get an image this time — regenerate to try again.`;
       }
 

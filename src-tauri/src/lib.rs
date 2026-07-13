@@ -5917,6 +5917,11 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
             )
             .await
             .map_err(|e| e.to_string())?;
+        // REQUIRED on Windows: download_and_install runs the installer but does NOT relaunch —
+        // without this the app sat forever on "downloading… will restart" (the installer was
+        // waiting for the app to exit). restart() exits so the install finishes, then relaunches
+        // onto the new version. This diverges (never returns).
+        app.restart();
     }
     Ok(())
 }
