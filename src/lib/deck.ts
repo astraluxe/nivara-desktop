@@ -374,7 +374,17 @@ function renderSlideHtml(s: DeckSlide, spec: DeckSpec, i: number, total: number)
         ${s.statLabel ? `<p class="muted" style="font-size:30px;margin-top:28px;max-width:800px;line-height:1.4">${multi(s.statLabel)}</p>` : ''}
         ${chrome}</section>`;
     case 'two-column': {
-      const cols = (s.columns || []).map((c) =>
+      const validCols = (s.columns || []).filter((c) => c && (c.heading || (c.bullets && c.bullets.length)));
+      // No usable column data → don't render empty column boxes; fall back to a normal content slide.
+      if (validCols.length === 0) {
+        return `<section class="slide">
+          ${s.title ? `<h2 style="font-size:46px;max-width:1040px">${esc(s.title)}</h2>` : ''}
+          <div class="rule"></div>
+          ${s.body ? `<p class="muted" style="font-size:24px;margin-bottom:24px;max-width:1000px;line-height:1.5">${multi(s.body)}</p>` : ''}
+          ${(s.bullets || []).length ? `<ul>${(s.bullets || []).map((b) => `<li>${esc(b)}</li>`).join('')}</ul>` : ''}
+          ${chrome}</section>`;
+      }
+      const cols = validCols.map((c) =>
         `<div class="col"><h3>${esc(c.heading)}</h3><ul>${(c.bullets || []).map((b) => `<li>${esc(b)}</li>`).join('')}</ul></div>`
       ).join('');
       return `<section class="slide">
@@ -383,8 +393,17 @@ function renderSlideHtml(s: DeckSlide, spec: DeckSpec, i: number, total: number)
         <div class="cols">${cols}</div>${chrome}</section>`;
     }
     case 'image-full':
+      // No image (Basic mode / generation skipped) → render a bold TEXT slide, never an empty box.
+      if (!s.imageData) {
+        return `<section class="slide" style="background:${spec.palette.surface}">${bgImage(spec.palette.surface)}
+          <div class="kicker">${esc(s.subtitle || 'Highlight')}</div>
+          <h1 style="font-size:64px;max-width:1040px">${esc(s.title || spec.title)}</h1>
+          <div class="rule"></div>
+          ${s.body ? `<p class="muted" style="font-size:25px;max-width:900px;line-height:1.5">${multi(s.body)}</p>` : ''}
+          ${chrome}</section>`;
+      }
       return `<section class="slide" style="padding:0">
-        <div class="imgwrap" style="border-radius:0;position:absolute;inset:0;z-index:0">${img || `<span class="muted">${esc(s.title || '')}</span>`}</div>
+        <div class="imgwrap" style="border-radius:0;position:absolute;inset:0;z-index:0">${img}</div>
         ${s.title ? `<div style="position:absolute;left:0;bottom:0;width:100%;padding:64px 104px 84px;background:linear-gradient(transparent,rgba(0,0,0,.82));z-index:1"><h2 style="color:#fff;font-size:46px;max-width:920px">${esc(s.title)}</h2></div>` : ''}
         <div class="prog" style="width:${pct}%;z-index:2"></div></section>`;
     case 'closing':
