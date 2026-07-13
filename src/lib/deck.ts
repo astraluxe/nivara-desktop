@@ -283,10 +283,21 @@ export function renderDeckHtml(spec: DeckSpec): string {
   #bar button { background:transparent; border:0; color:#eee; cursor:pointer; font-size:13px; padding:6px 10px; border-radius:999px; }
   #bar button:hover { background:rgba(255,255,255,.14); }
   #bar .count { color:#aaa; font-size:12px; font-variant-numeric:tabular-nums; min-width:52px; text-align:center; }
+  /* Subtle, professional entrance — content fades/rises in when a slide becomes active */
+  @keyframes nvIn { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:none; } }
+  .slide.active h1, .slide.active h2, .slide.active .stat-big, .slide.active .kicker,
+  .slide.active .rule, .slide.active ul, .slide.active .cols, .slide.active .pill,
+  .slide.active p, .slide.active .quote-mark, .slide.active .imgwrap {
+    animation: nvIn .52s cubic-bezier(.22,.61,.36,1) both;
+  }
+  .slide.active .rule { animation-delay:.07s; }
+  .slide.active p, .slide.active .pill, .slide.active .stat-big { animation-delay:.10s; }
+  .slide.active ul, .slide.active .cols, .slide.active .imgwrap { animation-delay:.15s; }
   @media print {
     #bar { display:none; }
     #stage { position:static; }
     .slide { display:flex !important; position:relative; page-break-after:always; }
+    .slide * { animation:none !important; }
   }
   /* ── template overrides (change the whole look, not just colours) ── */
   ${templateCss(spec.template || 'aurora', p)}

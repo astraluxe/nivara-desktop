@@ -3987,19 +3987,32 @@ async fn krew_ai_stream(
                     emit_error(format!("{} — {}", status, body_text.chars().take(300).collect::<String>()));
                     return Ok(());
                 }
+                // Estimate input tokens up-front (prompt + system) so edge-fallback usage is
+                // counted too — the fast path uses exact usageMetadata, but the krew-stream SSE
+                // only sends text chunks, so we approximate (~4 chars/token). Emitting
+                // nivara-tokens lets the app's usage listener record it (the "% never moves" fix
+                // when the managed key can't load and everything runs on this fallback).
+                let input_chars: i64 = sys.len() as i64
+                    + messages.iter().map(|m| m.content.len() as i64).sum::<i64>();
+                let mut out_chars = 0i64;
+                let bill = { let app = app.clone(); move |extra: i64| {
+                    let toks = ((input_chars + extra) / 4).max(1);
+                    let _ = app.emit("nivara-tokens", serde_json::json!({ "tokens": toks }));
+                }};
                 let mut stream = resp.bytes_stream();
                 while let Some(chunk) = stream.next().await {
                     let bytes = chunk.map_err(|e| { let s = format!("Stream interrupted: {}", e); emit_error(s.clone()); s })?;
                     for line in String::from_utf8_lossy(&bytes).lines() {
                         if let Some(data) = line.strip_prefix("data: ") {
-                            if data == "[DONE]" { emit_done(); return Ok(()); }
+                            if data == "[DONE]" { bill(out_chars); emit_done(); return Ok(()); }
                             if data == "[TRUNCATED]" { emit_truncated(); continue; }
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
-                                if let Some(t) = v["text"].as_str() { if !t.is_empty() { emit_chunk(t.to_string()); } }
+                                if let Some(t) = v["text"].as_str() { if !t.is_empty() { out_chars += t.len() as i64; emit_chunk(t.to_string()); } }
                             }
                         }
                     }
                 }
+                bill(out_chars);
                 emit_done();
             }
         }

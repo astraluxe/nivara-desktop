@@ -1222,6 +1222,7 @@ function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled, deckA
 function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
   const [savedHtml, setSavedHtml] = useState(false);
   const [pptxState, setPptxState] = useState<'idle' | 'building' | 'done' | 'err'>('idle');
+  const [pdfState, setPdfState]   = useState<'idle' | 'opening' | 'err'>('idle');
   // Live palette editing: the user tweaks 3 colours (background / text / accent) and the deck
   // re-renders instantly. surface/muted are derived so a full palette needs only 3 picks.
   const [pal, setPal] = useState<DeckPalette>(spec.palette);
@@ -1254,6 +1255,22 @@ function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
       URL.revokeObjectURL(url); setPptxState('done'); setTimeout(() => setPptxState('idle'), 2000);
     } catch { setPptxState('err'); setTimeout(() => setPptxState('idle'), 2500); }
   }
+  // PDF: window.print() inside the sandboxed in-chat iframe is blocked, so we save the deck
+  // HTML (with an auto-print script) to disk and open it in the real browser — its native
+  // "Save as PDF" dialog then lets the user choose where to save. Reliable + shows a save box.
+  async function downloadPdf() {
+    setPdfState('opening');
+    try {
+      const printHtml = liveHtml.replace(
+        '</body>',
+        '<script>window.addEventListener("load",function(){setTimeout(function(){try{window.print()}catch(e){}},600)})<\/script></body>'
+      );
+      const path = await invoke<string>('save_deck_files', { slug: slug() + '-pdf', html: printHtml, specJson: JSON.stringify(liveSpec) });
+      await invoke('open_path', { path });
+      setPdfState('idle');
+    } catch { setPdfState('err'); setTimeout(() => setPdfState('idle'), 2500); }
+  }
+
   // Persist the (recoloured) deck to disk + the Brain, so the user's colour choice sticks.
   async function saveChanges() {
     setSaveState('saving');
@@ -1267,15 +1284,12 @@ function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
   }
 
   const imgCount = liveSpec.slides.filter((s) => s.imageData).length;
-  const Swatch = ({ role, label, value }: { role: 'bg' | 'text' | 'accent'; label: string; value: string }) => (
-    <label className="flex items-center gap-1.5 cursor-pointer" title={`${label} colour`}>
-      <span className="relative w-6 h-6 rounded-md border border-nv-border overflow-hidden shrink-0" style={{ background: value }}>
-        <input type="color" value={value} onChange={(e) => setColor(role, e.target.value)}
-          className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" />
-      </span>
-      <span className="text-[9.5px] text-nv-faint">{label}</span>
-    </label>
-  );
+  // Swatches are inlined (NOT a nested component) on purpose: a component defined inside
+  // DeckResultBubble is a NEW type every render, so React remounted the <input> on each colour
+  // change and the native colour picker vanished. Inlined, the inputs stay mounted.
+  const swatches: { role: 'bg' | 'text' | 'accent'; label: string }[] = [
+    { role: 'bg', label: 'Background' }, { role: 'text', label: 'Text' }, { role: 'accent', label: 'Accent' },
+  ];
 
   return (
     <div className="my-3 rounded-xl border border-accent/30 bg-nv-surface overflow-hidden">
@@ -1292,6 +1306,9 @@ function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
           <button onClick={downloadHtml} className="text-[10px] px-2.5 py-1 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40 transition-fast font-mono">
             {savedHtml ? '✓ Saved' : '⭳ .html'}
           </button>
+          <button onClick={downloadPdf} title="Open in your browser and Save as PDF" className="text-[10px] px-2.5 py-1 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40 transition-fast font-mono">
+            {pdfState === 'opening' ? 'opening…' : pdfState === 'err' ? 'failed' : '⭳ PDF'}
+          </button>
           <button onClick={downloadPptx} className="text-[10px] px-2.5 py-1 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-mono">
             {pptxState === 'building' ? '…building' : pptxState === 'done' ? '✓ .pptx' : pptxState === 'err' ? 'failed' : '⭳ PowerPoint'}
           </button>
@@ -1300,9 +1317,18 @@ function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
       {/* Colour editor — 3 colours max; the deck restyles live as you change them */}
       <div className="flex items-center gap-3 px-3 py-2 border-b border-nv-border/40 bg-nv-surface flex-wrap">
         <span className="text-[9px] font-mono uppercase tracking-wider text-nv-faint">Colours</span>
-        <Swatch role="bg" label="Background" value={pal.bg} />
-        <Swatch role="text" label="Text" value={pal.text} />
-        <Swatch role="accent" label="Accent" value={pal.accent} />
+        {swatches.map(({ role, label }) => {
+          const value = pal[role];
+          return (
+            <label key={role} className="flex items-center gap-1.5 cursor-pointer" title={`${label} colour`}>
+              <span className="relative w-6 h-6 rounded-md border border-nv-border overflow-hidden shrink-0" style={{ background: value }}>
+                <input type="color" value={value} onChange={(e) => setColor(role, e.target.value)}
+                  className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" />
+              </span>
+              <span className="text-[9.5px] text-nv-faint">{label}</span>
+            </label>
+          );
+        })}
         <div className="flex-1" />
         {dirty && (
           <button onClick={() => setPal(spec.palette)} className="text-[9.5px] text-nv-faint hover:text-nv-text font-mono">reset</button>
@@ -2986,6 +3012,13 @@ The prompt must be production-ready — specific enough for a motion designer to
     setBusy(true);
     stopRef.current = false;
     const sid = sidRef.current;
+    // Make sure the managed AI key is loaded BEFORE we stream — otherwise the whole deck runs
+    // on the edge fallback, which (a) can't generate images (the "blue empty box") and (b)
+    // doesn't emit nivara-tokens, so nothing gets counted against the plan (the "% never
+    // moves" bug). Refreshing it here routes the deck through the fast path that does both.
+    if (mode === 'nivara' && session?.access_token) {
+      try { await invoke('fetch_session_key', { sessionToken: await freshSessionToken(session.access_token) }); } catch { /* falls back to edge + stock/abstract images */ }
+    }
     addMsg({ role: 'delegation', toolName: 'deck_maker', content: 'Designing your deck…', streaming: true });
     const setStatus = (t: string) => setMessages((prev) => {
       const c = [...prev]; const l = c[c.length - 1];
