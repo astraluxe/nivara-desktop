@@ -77,11 +77,11 @@ const PRESET_FONTS: Record<string, DeckFont> = {
 // The 5 visual TEMPLATES — these change the actual LOOK (backgrounds, decoration,
 // typography feel), not just colours, so decks don't all look the same. Each maps to a
 // default when the agent doesn't request one; the agent may set spec.template directly.
-const TEMPLATES = new Set(['aurora', 'gradient', 'editorial', 'flat', 'mono']);
+const TEMPLATES = new Set(['aurora', 'gradient', 'editorial', 'flat', 'mono', 'glass', 'grid', 'wave', 'split', 'spotlight']);
 const PRESET_TEMPLATE: Record<string, string> = {
-  minimal: 'mono',  bold: 'flat',   dark: 'aurora',  vibrant: 'gradient',
-  corporate: 'editorial', editorial: 'editorial', saas: 'gradient', neon: 'aurora',
-  sunset: 'gradient', ocean: 'gradient', forest: 'flat', royal: 'aurora',
+  minimal: 'mono',  bold: 'split',  dark: 'aurora',  vibrant: 'wave',
+  corporate: 'grid', editorial: 'editorial', saas: 'glass', neon: 'spotlight',
+  sunset: 'wave', ocean: 'glass', forest: 'grid', royal: 'spotlight',
   slate: 'editorial', paper: 'editorial', mint: 'mono',
 };
 
@@ -116,6 +116,45 @@ function templateCss(template: string, p: DeckPalette): string {
       .slide::after  { content:''; position:absolute; top:92px; left:104px; width:46px; height:6px; background:${A}; z-index:1; }
       .kicker { color:${M}; }
       .kicker::before { background:${M}; }`;
+    case 'glass':
+      // Frosted, soft-focus SaaS look — big blurred colour clouds + translucent panels.
+      return `
+      .slide::before { content:''; position:absolute; inset:0; z-index:0; pointer-events:none;
+        background: radial-gradient(1100px 620px at 15% -12%, ${A}2b, transparent 60%),
+                    radial-gradient(900px 520px at 115% 118%, ${A}1f, transparent 60%); }
+      .slide::after { content:''; position:absolute; top:-120px; right:-90px; width:380px; height:380px; border-radius:50%;
+        background:radial-gradient(circle, ${A}26, transparent 70%); filter:blur(14px); z-index:0; pointer-events:none; }
+      .col, .imgwrap { -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px); border:1px solid ${A}33; }`;
+    case 'grid':
+      // Technical / blueprint — a faint accent grid with one soft glow.
+      return `
+      .slide::before { content:''; position:absolute; inset:0; z-index:0; pointer-events:none; opacity:.6;
+        background-image: linear-gradient(${A}12 1px, transparent 1px), linear-gradient(90deg, ${A}12 1px, transparent 1px);
+        background-size: 46px 46px; }
+      .slide::after { content:''; position:absolute; top:-130px; right:-110px; width:420px; height:420px; border-radius:50%;
+        background:radial-gradient(circle, ${A}22, transparent 70%); z-index:0; pointer-events:none; }
+      .rule { height:3px; }`;
+    case 'wave':
+      // Flowing, friendly — a colour sweep rising from the bottom-left corner.
+      return `
+      .slide::before { content:''; position:absolute; left:0; right:0; bottom:0; height:46%; z-index:0; pointer-events:none;
+        background: radial-gradient(150% 120% at 0% 100%, ${A}2e, transparent 62%); clip-path: ellipse(140% 100% at 0% 100%); }
+      .slide::after { content:''; position:absolute; top:-110px; right:-90px; width:340px; height:340px; border-radius:50%;
+        background:radial-gradient(circle, ${A}1e, transparent 70%); z-index:0; pointer-events:none; }`;
+    case 'split':
+      // Bold, high-impact — a large diagonal accent block on the right.
+      return `
+      .slide::before { content:''; position:absolute; top:0; right:0; bottom:0; width:42%; z-index:0; pointer-events:none;
+        background:${A}; opacity:.13; clip-path: polygon(30% 0, 100% 0, 100% 100%, 0% 100%); }
+      .slide::after { content:''; position:absolute; top:0; bottom:0; left:0; width:8px; background:${A}; z-index:2; }
+      .kicker::before { background:${A}; height:3px; }`;
+    case 'spotlight':
+      // Dramatic — a single beam of accent light from the top centre.
+      return `
+      .slide::before { content:''; position:absolute; inset:0; z-index:0; pointer-events:none;
+        background: radial-gradient(820px 520px at 50% -14%, ${A}30, transparent 60%); }
+      .slide::after { content:''; position:absolute; bottom:-160px; left:50%; transform:translateX(-50%); width:620px; height:360px; border-radius:50%;
+        background:radial-gradient(circle, ${A}16, transparent 70%); z-index:0; pointer-events:none; }`;
     case 'aurora':
     default:
       return ''; // base CSS already IS aurora
