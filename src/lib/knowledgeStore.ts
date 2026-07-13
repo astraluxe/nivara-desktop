@@ -36,6 +36,21 @@ function write(d: BrainData) {
   try { window.dispatchEvent(new Event(BRAIN_EVENT)); } catch { /* no window */ }
 }
 function uid() { return 'bn-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-3); }
+
+// Where to drop a new node. The old formula (x = 80 + (i%6)*220, y = 80 + floor(i/6)*150,
+// i = node count) marched DOWNWARD forever — so every added file spawned further from the
+// cluster and the canvas kept zooming out to reach it. Instead, place new nodes in a tight
+// golden-angle ring around the CENTROID of what's already there, so they land next to the
+// existing graph, in view.
+function nextPos(nodes: BrainNode[]): { x: number; y: number } {
+  if (nodes.length === 0) return { x: 240, y: 180 };
+  const cx = nodes.reduce((s, n) => s + n.x, 0) / nodes.length;
+  const cy = nodes.reduce((s, n) => s + n.y, 0) / nodes.length;
+  const k = nodes.length;
+  const ang = k * 2.399963;               // golden angle → even, non-overlapping spread
+  const r = 150 + (k % 6) * 28;
+  return { x: Math.round(cx + Math.cos(ang) * r), y: Math.round(cy + Math.sin(ang) * r) };
+}
 function normTitle(t: string): string {
   return (t || '').toLowerCase().replace(/\.(md|txt|json|csv|markdown)$/i, '').trim();
 }
@@ -107,11 +122,11 @@ export const brain = {
       write(d);
       return existing;
     }
-    const i = d.nodes.length;
+    const { x, y } = nextPos(d.nodes);
     const node: BrainNode = {
       id: uid(), kind: n.kind ?? 'note', title: n.title.slice(0, 120), body: n.body ?? '',
       filePath: n.filePath,
-      x: 80 + (i % 6) * 220, y: 80 + Math.floor(i / 6) * 150,
+      x, y,
       createdAt: Date.now(), updatedAt: Date.now(),
     };
     d.nodes.push(node);

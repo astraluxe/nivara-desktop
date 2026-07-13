@@ -5,7 +5,7 @@ import { getPlanConfig } from '../../lib/planConfig';
 import UpgradeModal from '../UpgradeModal';
 import { streamAI, type ConnectionMode, type Provider, type AiMessage } from '../../lib/ai';
 import { chatDb, type ChatSession, type ChatMessage } from '../../lib/chatDb';
-import { trackTokenUsage, getMonthlyUsage } from '../../lib/tokenTracker';
+import { getMonthlyUsage } from '../../lib/tokenTracker';
 import ConnectionBar from './ConnectionBar';
 import PromptLibrary from './PromptLibrary';
 import { getActiveSkillsForCoder } from '../../lib/skills';
@@ -466,8 +466,10 @@ export default function AIChat({
         });
         if (sid) chatDb.saveMessage(sid, 'assistant', assistantText).catch(() => {});
         if (mode === 'nivara') {
+          // DB usage is written once, live, by the App-level `nivara-tokens` listener (the Rust
+          // fast path emits it; the edge fallback is tracked server-side). We only bump the local
+          // meter here for instant feedback — writing again would double-count.
           const chars = userContent.length + assistantText.length;
-          trackTokenUsage('coder', chars);
           setMonthlyUsed(prev => prev + Math.ceil(chars / 4));
         }
         saveCoderExplanationToBrain(userContent, assistantText);

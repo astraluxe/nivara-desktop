@@ -1,6 +1,6 @@
 [package]
 name = "nivara-desktop"
-version = "1.0.91"
+version = "1.0.95"
 description = "adris.tech Desktop — India's AI operating system"
 authors = ["adris.tech"]
 edition = "2021"
@@ -45,3 +45,7 @@ hound              = "3.5"
 base64             = "0.22"
 sha2               = "0.10"
 hmac               = "0.12"
+# Brain file-extraction (cross-platform, pure Rust): spreadsheets, PDFs, Office XML.
+calamine           = "0.26"
+pdf-extract        = "0.7"
+quick-xml          = "0.36"

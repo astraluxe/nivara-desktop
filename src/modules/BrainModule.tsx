@@ -69,7 +69,17 @@ function mdToHtml(md: string): string {
     }
     if (line.match(/^\s*[-*]\s+/)) { let items = ''; while (i < lines.length && lines[i].match(/^\s*[-*]\s+/)) { items += `<li>${inlineHtml(lines[i].replace(/^\s*[-*]\s+/, ''))}</li>`; i++; } html += `<ul>${items}</ul>`; continue; }
     if (!line.trim()) { i++; continue; }
-    html += `<p>${inlineHtml(line)}</p>`; i++;
+    // Plain prose — GROUP consecutive plain lines into ONE paragraph joined by <br>, so a
+    // document (a PDF/résumé dumped line-by-line) reads tightly instead of every single line
+    // becoming its own spaced block. A blank line (or any special line) ends the paragraph.
+    const para: string[] = [];
+    while (i < lines.length && lines[i].trim()
+        && !lines[i].match(/^```/) && !lines[i].match(/^(#{1,4})\s+/)
+        && !lines[i].match(/^\s*[-*]\s+/)
+        && !(lines[i].trim().startsWith('|') && (lines[i].match(/\|/g) || []).length >= 2)) {
+      para.push(inlineHtml(lines[i])); i++;
+    }
+    if (para.length) html += `<p>${para.join('<br>')}</p>`;
   }
   return html;
 }
@@ -103,9 +113,12 @@ function Stage({ data, selectedId, onSelect, onMoveNode }: {
 
   const nodePos = useCallback((n: BrainNode) => pos[n.id] ?? { x: n.x, y: n.y }, [pos]);
 
-  // Fit-to-content once on first load / when count changes a lot.
-  const fitKey = data.nodes.length;
+  // Fit-to-content ONCE, on first load. Previously this refit every time the node COUNT
+  // changed — so adding each new file zoomed the whole canvas out a little more, which felt
+  // like the graph kept shrinking. Now it fits once; the zoom controls handle the rest.
+  const didFit = useRef(false);
   useEffect(() => {
+    if (didFit.current) return;
     const el = wrapRef.current;
     if (!el || data.nodes.length === 0) return;
     const xs = data.nodes.map((n) => n.x), ys = data.nodes.map((n) => n.y);
@@ -118,8 +131,8 @@ function Stage({ data, selectedId, onSelect, onMoveNode }: {
       x: (cw - (maxX - minX) * scale) / 2 - minX * scale,
       y: (ch - (maxY - minY) * scale) / 2 - minY * scale,
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fitKey]);
+    didFit.current = true;
+  }, [data.nodes.length]);
 
   function onWheel(e: React.WheelEvent) {
     e.preventDefault();
@@ -258,6 +271,92 @@ function Stage({ data, selectedId, onSelect, onMoveNode }: {
   );
 }
 
+// ─── PDF viewer ─────────────────────────────────────────────────────────────
+// Renders a PDF as an actual PDF (pages rendered via pdf.js) instead of showing the
+// extracted text. Reads the bytes from the durable Brain copy so it keeps working even
+// after the user deletes the original. Pages render progressively.
+function PdfViewer({ path }: { path: string }) {
+  const [pages, setPages] = useState<string[]>([]);
+  const [status, setStatus] = useState<'loading' | 'ok' | 'err'>('loading');
+  const [msg, setMsg] = useState('');
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setStatus('loading'); setPages([]); setMsg('');
+      try {
+        const b64 = await invoke<string>('read_file_base64', { path });
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const pdfjsLib = await import('pdfjs-dist');
+        pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
+        const pdf = await pdfjsLib.getDocument({ data: bytes, cMapUrl: '/cmaps/', cMapPacked: true }).promise;
+        const out: string[] = [];
+        const n = Math.min(pdf.numPages, 60);
+        for (let p = 1; p <= n; p++) {
+          if (cancelled) return;
+          const page = await pdf.getPage(p);
+          const viewport = page.getViewport({ scale: 1.6 });
+          const canvas = document.createElement('canvas');
+          canvas.width = viewport.width; canvas.height = viewport.height;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          await page.render({ canvas, viewport } as any).promise;
+          out.push(canvas.toDataURL('image/jpeg', 0.88));
+          if (!cancelled) setPages([...out]); // show pages as they finish
+        }
+        if (!cancelled) setStatus('ok');
+      } catch (e) {
+        if (!cancelled) { setStatus('err'); setMsg(e instanceof Error ? e.message : String(e)); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [path]);
+
+  return (
+    <div className="flex-1 min-w-0 overflow-y-auto p-4" style={{ background: 'var(--nv-bg)' }}>
+      {status === 'loading' && pages.length === 0 && (
+        <div className="h-full flex items-center justify-center text-[12px]" style={{ color: 'var(--nv-faint)' }}>Rendering PDF…</div>
+      )}
+      {status === 'err' && (
+        <div className="h-full flex flex-col items-center justify-center text-[12px] text-center px-6 gap-1">
+          <span style={{ color: '#f87171' }}>Couldn't display this PDF.</span>
+          {msg && <span className="text-[10px] font-mono" style={{ color: 'var(--nv-faint)' }}>{msg}</span>}
+        </div>
+      )}
+      <div className="flex flex-col items-center gap-3">
+        {pages.map((src, i) => (
+          <img key={i} src={src} alt={`Page ${i + 1}`} className="max-w-full rounded-lg shadow-lg" style={{ border: '1px solid var(--nv-border)' }} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Deck preview ───────────────────────────────────────────────────────────
+// Shows a saved deck AS the deck (its rendered HTML in an iframe) instead of the summary
+// text — so a presentation saved to the Brain actually looks like the presentation.
+function DeckPreview({ path }: { path: string }) {
+  const [html, setHtml] = useState<string | null>(null);
+  const [err, setErr] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    invoke<string>('read_file', { path }).then((h) => { if (!cancelled) setHtml(h); }).catch(() => { if (!cancelled) setErr(true); });
+    return () => { cancelled = true; };
+  }, [path]);
+  return (
+    <div className="flex-1 min-w-0 overflow-y-auto p-4 flex flex-col items-center justify-start" style={{ background: 'var(--nv-bg)' }}>
+      {err ? (
+        <div className="m-auto text-[12px]" style={{ color: '#f87171' }}>Couldn't load the deck preview.</div>
+      ) : html === null ? (
+        <div className="m-auto text-[12px]" style={{ color: 'var(--nv-faint)' }}>Loading deck…</div>
+      ) : (
+        <iframe srcDoc={html} sandbox="allow-scripts allow-same-origin" title="Deck preview"
+          className="rounded-lg" style={{ width: '100%', maxWidth: 820, aspectRatio: '16 / 9', border: '1px solid var(--nv-border)', background: '#000' }} />
+      )}
+    </div>
+  );
+}
+
 // ─── Main module ──────────────────────────────────────────────────────────────
 export default function BrainModule() {
   const [data, setData] = useState<BrainData>(() => brain.all());
@@ -286,10 +385,14 @@ export default function BrainModule() {
     try {
       const path = await invoke<string | null>('brain_pick_file');
       if (path === null) return; // cancelled
-      const content = await invoke<string>('read_file', { path }).catch(() => '');
+      // brain_extract_text reads plain-text files directly AND pulls text out of PDF,
+      // PPTX, DOCX and Excel/CSV so the agents can actually use what's inside them.
+      const content = await invoke<string>('brain_extract_text', { path }).catch(() => '');
       const name = path.split(/[/\\]/).pop() || path;
-      const node = brain.addNode({ title: name, kind: 'file', body: content.slice(0, 8000) });
-      brain.updateNode(node.id, { filePath: path });
+      // Keep a durable copy inside the Brain so the node survives the user deleting the original.
+      const stored = await invoke<string>('brain_store_file', { sourcePath: path }).catch(() => path);
+      const node = brain.addNode({ title: name, kind: 'file', body: content.slice(0, 100000) });
+      brain.updateNode(node.id, { filePath: stored });
       setSelectedId(node.id);
     } catch {
       const node = brain.addNode({ title: 'New file', kind: 'file', body: '' });
@@ -377,6 +480,8 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
   // A deck saved by the PPT maker: an .html under the app's decks folder, with a
   // DeckSpec .json sidecar. These get Open/Present + Download .pptx actions.
   const isDeck = !!filePath && /[\\/]decks[\\/]/.test(filePath) && /\.html$/i.test(filePath);
+  // A PDF file → show the actual PDF (pdf.js viewer) rather than the extracted text.
+  const isPdf = !!filePath && /\.pdf$/i.test(filePath);
   const [deckMsg, setDeckMsg] = useState('');
   async function openDeck() {
     setDeckMsg('Opening…');
@@ -452,7 +557,10 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
     clone.querySelectorAll('.col-resizer').forEach((h) => h.remove());
     return clone.innerHTML;
   };
-  const save = () => brain.updateNode(node.id, { title: title.trim() || 'Untitled', body: readBody(), ref, kind });
+  // For a PDF/deck the editor isn't rendered, so readBody() would return '' and WIPE the stored
+  // body — skip the body write in those cases (title/ref/kind still save).
+  const readOnlyFile = isPdf || isDeck;
+  const save = () => brain.updateNode(node.id, { title: title.trim() || 'Untitled', ...(readOnlyFile ? {} : { body: readBody() }), ref, kind });
   const afterEdit = () => { enhanceTables(); save(); };
   // Formatting buttons — the user clicks these instead of typing markdown symbols.
   const exec = (cmd: string, val?: string) => { document.execCommand(cmd, false, val); editorRef.current?.focus(); save(); };
@@ -525,9 +633,12 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
     const newTitle = (!title.trim() || title.trim() === 'New note') ? name : title;
     setKind('file'); setTitle(newTitle);
     if (path) setFilePath(path);
+    // Store the extracted text as the node body (agents recall it) regardless of whether the
+    // editor is shown — for a PDF the panel shows the actual PDF, not this text.
+    const html = mdToHtml(content.slice(0, 100000));
     const cur = editorRef.current;
-    if (cur && !cur.innerText.trim()) cur.innerHTML = mdToHtml(content.slice(0, 8000));
-    brain.updateNode(node.id, { kind: 'file', title: newTitle, body: editorRef.current?.innerHTML ?? mdToHtml(content.slice(0, 8000)), ...(path ? { filePath: path } : {}) });
+    if (cur && !cur.innerText.trim()) cur.innerHTML = html;
+    brain.updateNode(node.id, { kind: 'file', title: newTitle, body: html, ...(path ? { filePath: path } : {}) });
   }
 
   // Attach a real file to THIS node. Tries the native picker (gives the full path);
@@ -536,8 +647,10 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
     try {
       const path = await invoke<string | null>('brain_pick_file');
       if (!path) return; // user cancelled
-      const content = await invoke<string>('read_file', { path }).catch(() => '');
-      applyFile(path.split(/[/\\]/).pop() || path, content, path);
+      const content = await invoke<string>('brain_extract_text', { path }).catch(() => '');
+      // Durable copy so the file stays in the Brain even if the original is deleted.
+      const stored = await invoke<string>('brain_store_file', { sourcePath: path }).catch(() => path);
+      applyFile(path.split(/[/\\]/).pop() || path, content, stored);
     } catch {
       fileInputRef.current?.click(); // native dialog unavailable → browser picker
     }
@@ -569,6 +682,7 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
             onChange={(e) => { setTitle(e.target.value); patchTitleDebounced(e.target.value); }} onBlur={save}
             placeholder="Untitled"
             className="flex-1 bg-transparent text-[16px] font-semibold outline-none" style={{ color: 'var(--nv-text)' }} />
+          {!readOnlyFile && (
           <div className="flex items-center gap-0.5 shrink-0">
             {([
               { label: 'B', cmd: 'bold', title: 'Bold', cls: 'font-bold' },
@@ -583,10 +697,12 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
               </button>
             ))}
           </div>
+          )}
           <button onClick={() => { save(); onClose(); }} className="text-xl ml-1" style={{ color: 'var(--nv-faint)' }}>×</button>
         </div>
 
-        {/* Table toolbar — Excel-style structure editing */}
+        {/* Table toolbar — Excel-style structure editing (hidden for read-only files: PDF/deck) */}
+        {!readOnlyFile && (
         <div className="flex items-center gap-1 px-5 py-1.5 shrink-0 flex-wrap" style={{ borderBottom: '1px solid var(--nv-border)', background: 'var(--nv-bg)' }}>
           <span className="text-[9px] font-mono uppercase tracking-wider mr-1" style={{ color: 'var(--nv-faint)' }}>Table</span>
           {([
@@ -607,9 +723,15 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
           ))}
           <span className="text-[9px] ml-2" style={{ color: 'var(--nv-faint)' }}>tip: drag a cell's right/bottom edge to resize</span>
         </div>
+        )}
 
-        {/* Body — formatted note editor (WYSIWYG) + metadata sidebar */}
+        {/* Body — deck preview for decks, PDF viewer for PDFs, else the note editor + sidebar */}
         <div className="flex flex-1 min-h-0">
+          {isDeck ? (
+            <DeckPreview path={filePath} />
+          ) : isPdf ? (
+            <PdfViewer path={filePath} />
+          ) : (
           <div
             ref={editorRef}
             contentEditable
@@ -619,6 +741,7 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
             className={`flex-1 min-w-0 overflow-y-auto p-6 empty:before:content-[attr(data-placeholder)] empty:before:text-nv-faint ${NOTE_CLS}`}
             style={{ color: 'var(--nv-text)' }}
           />
+          )}
 
           <div className="w-[268px] shrink-0 overflow-y-auto p-4 flex flex-col gap-3" style={{ borderLeft: '1px solid var(--nv-border)', background: 'var(--nv-bg)' }}>
             <div className="space-y-1">

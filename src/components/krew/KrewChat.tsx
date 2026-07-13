@@ -1,4 +1,4 @@
-﻿import { useState, useRef, useEffect, useCallback } from 'react';
+﻿import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { listen, emit } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import * as pdfjsLib from 'pdfjs-dist';
@@ -15,7 +15,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { extractTableRows, mergeLeadTables, parseLeadRows, rowsToMarkdown } from '../../lib/leadTable';
 import { supabase } from '../../lib/supabase';
 import { getPlanConfig } from '../../lib/planConfig';
-import { parseDeckSpec, slidesNeedingImages, renderDeckHtml, deckToPptxBlob, type DeckSpec } from '../../lib/deck';
+import { parseDeckSpec, slidesNeedingImages, renderDeckHtml, deckToPptxBlob, type DeckSpec, type DeckPalette } from '../../lib/deck';
 import { CHANNEL_META, listConnections, saveConnection, schedulePost, postNow, type SocialConnection, type SocialChannel, type PostContent } from '../../lib/social';
 import UpgradeModal from '../UpgradeModal';
 import { type AutomationProposal } from './AutomationProposalModal';
@@ -1050,17 +1050,65 @@ export interface DeckConfig {
   format:     'html' | 'pptx';
   mode:       'basic' | 'advanced';
   imageModel: 'gemini-2.5-flash-image' | 'gemini-3-pro-image-preview';
+  slideCount: number;               // target number of slides (the user picks it)
+  audience?:  string;               // optional "who's this for" to sharpen the content
 }
 
-function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled }: {
+// ── Guaranteed image fallback ────────────────────────────────────────────────
+// Draw a tasteful abstract (the deck's accent, on its background) to a canvas → JPEG data
+// URI. No network, never fails — so when BOTH AI generation and stock search come up empty,
+// a slide STILL gets a clean visual instead of "couldn't get an image". Works in the HTML
+// deck AND the .pptx (raster, not SVG).
+function hexA(hex: string, a: number): string {
+  const m = (hex || '#000000').replace('#', '').match(/.{2}/g)?.map((x) => parseInt(x, 16)) ?? [0, 0, 0];
+  return `rgba(${m[0] || 0},${m[1] || 0},${m[2] || 0},${a})`;
+}
+function mulberry(seed: number) {
+  let t = (seed >>> 0) + 0x9e3779b9;
+  return () => { t += 0x6D2B79F5; let r = Math.imul(t ^ (t >>> 15), 1 | t); r ^= r + Math.imul(r ^ (r >>> 7), 61 | r); return ((r ^ (r >>> 14)) >>> 0) / 4294967296; };
+}
+// Blend two hex colours (t=0→a, t=1→b) — used to derive the deck's surface/muted tones from
+// the 3 colours the user actually picks (background, text, accent).
+function mixHex(a: string, b: string, t: number): string {
+  const pa = (a || '#000000').replace('#', '').match(/.{2}/g)?.map((x) => parseInt(x, 16)) ?? [0, 0, 0];
+  const pb = (b || '#000000').replace('#', '').match(/.{2}/g)?.map((x) => parseInt(x, 16)) ?? [0, 0, 0];
+  return '#' + pa.map((v, i) => Math.max(0, Math.min(255, Math.round(v + ((pb[i] ?? 0) - v) * t))).toString(16).padStart(2, '0')).join('');
+}
+function makeAbstractSlideImage(accent: string, bg: string, seed = 0): string {
+  try {
+    const W = 1024, H = 768;
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    const ctx = c.getContext('2d'); if (!ctx) return '';
+    ctx.fillStyle = bg || '#0a0a0a'; ctx.fillRect(0, 0, W, H);
+    const g = ctx.createLinearGradient(0, 0, W, H);
+    g.addColorStop(0, hexA(accent, 0.5)); g.addColorStop(1, hexA(accent, 0.04));
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    const rnd = mulberry(seed + 7);
+    for (let i = 0; i < 5; i++) {
+      const x = rnd() * W, y = rnd() * H, r = 130 + rnd() * 260;
+      const rg = ctx.createRadialGradient(x, y, 0, x, y, r);
+      rg.addColorStop(0, hexA(accent, 0.3)); rg.addColorStop(1, hexA(accent, 0));
+      ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    }
+    return c.toDataURL('image/jpeg', 0.86);
+  } catch { return ''; }
+}
+
+function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled, deckApps = [] }: {
   unlockedAdvanced: boolean;
   onGenerate: (cfg: DeckConfig) => void;
   onCancel: () => void;
   disabled?: boolean;
+  deckApps?: string[];             // connected presentation apps/MCP (e.g. Canva) to offer as a target
 }) {
-  const [format, setFormat]     = useState<'html' | 'pptx'>('html');
+  // Destination: 'chat' (live HTML deck) · 'pptx' (download) · a connected app name (→ editable
+  // .pptx you import into it). Only 'chat' maps to the in-chat deck; everything else = .pptx.
+  const [dest, setDest]         = useState<string>('chat');
+  const format: 'html' | 'pptx' = dest === 'chat' ? 'html' : 'pptx';
   const [mode, setMode]         = useState<'basic' | 'advanced'>('basic');
   const [imgModel, setImgModel] = useState<'gemini-2.5-flash-image' | 'gemini-3-pro-image-preview'>('gemini-2.5-flash-image');
+  const [slides, setSlides]     = useState(12);
+  const [audience, setAudience] = useState('');
   const [done, setDone]         = useState(false);
 
   const Opt = ({ active, onClick, title, sub, lock }: { active: boolean; onClick: () => void; title: string; sub: string; lock?: boolean }) => (
@@ -1098,35 +1146,72 @@ function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled }: {
         <div>
           <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1.5">Where do you want it?</p>
           <div className="flex gap-2">
-            <Opt active={format === 'html'} onClick={() => setFormat('html')} title="Here in chat" sub="Live deck — present & export PDF" />
-            <Opt active={format === 'pptx'} onClick={() => setFormat('pptx')} title="PowerPoint (.pptx)" sub="Editable file for PowerPoint / Slides" />
+            <Opt active={dest === 'chat'} onClick={() => setDest('chat')} title="Here in chat" sub="Live deck — present & export PDF" />
+            <Opt active={dest === 'pptx'} onClick={() => setDest('pptx')} title="PowerPoint (.pptx)" sub="Editable file for PowerPoint / Slides" />
           </div>
+          {deckApps.length > 0 && (
+            <>
+              <div className="flex gap-2 mt-2">
+                {deckApps.map((app) => (
+                  <Opt key={app} active={dest === app} onClick={() => setDest(app)} title={app} sub={`Editable file to import into ${app}`} />
+                ))}
+              </div>
+              {deckApps.includes(dest) && (
+                <p className="text-[9.5px] text-nv-faint mt-1.5">We'll build an editable .pptx — open <span className="text-nv-text">{dest}</span> and import it (it maps 1:1 to slides).</p>
+              )}
+            </>
+          )}
         </div>
         <div>
           <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1.5">Detail level</p>
           <div className="flex gap-2">
             <Opt active={mode === 'basic'} onClick={() => setMode('basic')} title="Basic" sub="Clean designed slides · fast" />
-            <Opt active={mode === 'advanced'} lock={!unlockedAdvanced} onClick={() => setMode('advanced')} title="Advanced" sub={unlockedAdvanced ? 'AI images per slide · richer' : 'AI images · paid or own Gemini key'} />
+            <Opt active={mode === 'advanced'} lock={!unlockedAdvanced} onClick={() => setMode('advanced')} title="Advanced" sub={unlockedAdvanced ? 'Images on every key slide · richer' : 'Adds images · paid plan or own key'} />
           </div>
           {!unlockedAdvanced && (
-            <p className="text-[9.5px] text-nv-faint mt-1.5">Advanced adds AI-generated images. Upgrade your plan, or add your own Gemini key in Connect Apps, to unlock it.</p>
+            <p className="text-[9.5px] text-nv-faint mt-1.5">Advanced adds images to your slides. Upgrade your plan, or add your own AI key in Connect Apps, to unlock it.</p>
           )}
         </div>
         {mode === 'advanced' && unlockedAdvanced && (
           <div>
             <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1.5">Image quality</p>
             <div className="flex gap-2">
-              <Opt active={imgModel === 'gemini-2.5-flash-image'} onClick={() => setImgModel('gemini-2.5-flash-image')} title="Standard" sub="Nano Banana · fast, low cost" />
-              <Opt active={imgModel === 'gemini-3-pro-image-preview'} onClick={() => setImgModel('gemini-3-pro-image-preview')} title="Pro" sub="Nano Banana Pro · best, pricier" />
+              <Opt active={imgModel === 'gemini-2.5-flash-image'} onClick={() => setImgModel('gemini-2.5-flash-image')} title="Standard" sub="Fast · clean visuals" />
+              <Opt active={imgModel === 'gemini-3-pro-image-preview'} onClick={() => setImgModel('gemini-3-pro-image-preview')} title="Pro" sub="Highest detail · slower" />
             </div>
           </div>
         )}
+        <div>
+          <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1.5">How many slides?</p>
+          <div className="flex items-center gap-2">
+            <button disabled={disabled} onClick={() => setSlides((s) => Math.max(4, s - 1))}
+              className="w-8 h-8 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40 text-[15px] disabled:opacity-40">−</button>
+            <div className="flex-1 text-center rounded-lg border border-nv-border py-1.5">
+              <span className="text-[15px] font-bold text-nv-text tabular-nums">{slides}</span>
+              <span className="text-[9.5px] text-nv-faint ml-1">slides</span>
+            </div>
+            <button disabled={disabled} onClick={() => setSlides((s) => Math.min(24, s + 1))}
+              className="w-8 h-8 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40 text-[15px] disabled:opacity-40">+</button>
+          </div>
+          <div className="flex gap-1.5 mt-1.5">
+            {[8, 10, 12, 15].map((n) => (
+              <button key={n} disabled={disabled} onClick={() => setSlides(n)}
+                className={`flex-1 text-[10px] py-1 rounded-md border transition-fast ${slides === n ? 'border-accent bg-accent/10 text-nv-text' : 'border-nv-border text-nv-faint hover:text-nv-text'}`}>{n}</button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1.5">Who's it for? <span className="text-nv-faint/70 normal-case">(optional — sharpens the writing)</span></p>
+          <input value={audience} onChange={(e) => setAudience(e.target.value)} disabled={disabled}
+            placeholder="e.g. B2B SaaS founders, CFOs, non-tech SMB owners…"
+            className="w-full rounded-lg px-3 py-2 text-[11px] outline-none focus:border-accent" style={{ background: 'var(--nv-bg)', border: '1px solid var(--nv-border)', color: 'var(--nv-text)' }} />
+        </div>
       </div>
       <div className="px-3 py-2.5 border-t border-nv-border/60 bg-nv-bg flex justify-end gap-2">
         <button onClick={onCancel} disabled={disabled} className="text-[11px] text-nv-faint hover:text-nv-text transition-fast font-mono">Cancel</button>
         <button
           disabled={disabled}
-          onClick={() => { setDone(true); onGenerate({ format, mode, imageModel: imgModel }); }}
+          onClick={() => { setDone(true); onGenerate({ format, mode, imageModel: imgModel, slideCount: slides, audience: audience.trim() || undefined }); }}
           className="text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-semibold disabled:opacity-50"
         >Generate deck →</button>
       </div>
@@ -1137,10 +1222,25 @@ function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled }: {
 function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
   const [savedHtml, setSavedHtml] = useState(false);
   const [pptxState, setPptxState] = useState<'idle' | 'building' | 'done' | 'err'>('idle');
+  // Live palette editing: the user tweaks 3 colours (background / text / accent) and the deck
+  // re-renders instantly. surface/muted are derived so a full palette needs only 3 picks.
+  const [pal, setPal] = useState<DeckPalette>(spec.palette);
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'done'>('idle');
+  const dirty = pal.bg !== spec.palette.bg || pal.text !== spec.palette.text || pal.accent !== spec.palette.accent;
+
+  const liveSpec = useMemo(() => ({ ...spec, palette: pal }), [spec, pal]);
+  const liveHtml = useMemo(() => { try { return renderDeckHtml(liveSpec); } catch { return html; } }, [liveSpec, html]);
+
+  function setColor(role: 'bg' | 'text' | 'accent', v: string) {
+    setPal((p) => {
+      const bg = role === 'bg' ? v : p.bg, text = role === 'text' ? v : p.text, accent = role === 'accent' ? v : p.accent;
+      return { bg, text, accent, surface: mixHex(bg, text, 0.08), muted: mixHex(text, bg, 0.45) };
+    });
+  }
 
   function slug() { return (spec.title || 'deck').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'deck'; }
   function downloadHtml() {
-    const blob = new Blob([html], { type: 'text/html' });
+    const blob = new Blob([liveHtml], { type: 'text/html' });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a'); a.href = url; a.download = `${slug()}.html`; a.click();
     URL.revokeObjectURL(url); setSavedHtml(true); setTimeout(() => setSavedHtml(false), 1800);
@@ -1148,14 +1248,35 @@ function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
   async function downloadPptx() {
     setPptxState('building');
     try {
-      const blob = await deckToPptxBlob(spec);
+      const blob = await deckToPptxBlob(liveSpec);
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement('a'); a.href = url; a.download = `${slug()}.pptx`; a.click();
       URL.revokeObjectURL(url); setPptxState('done'); setTimeout(() => setPptxState('idle'), 2000);
     } catch { setPptxState('err'); setTimeout(() => setPptxState('idle'), 2500); }
   }
+  // Persist the (recoloured) deck to disk + the Brain, so the user's colour choice sticks.
+  async function saveChanges() {
+    setSaveState('saving');
+    try {
+      const path = await invoke<string>('save_deck_files', { slug: slug(), html: liveHtml, specJson: JSON.stringify(liveSpec) });
+      const { brain } = await import('../../lib/knowledgeStore');
+      const node = brain.addNode({ title: liveSpec.title || 'Presentation', kind: 'file', body: `Presentation · ${liveSpec.slides.length} slides\n\n` + liveSpec.slides.map((s, i) => `${i + 1}. ${s.title || s.layout}`).join('\n') });
+      brain.updateNode(node.id, { filePath: path });
+      setSaveState('done'); setTimeout(() => setSaveState('idle'), 1800);
+    } catch { setSaveState('idle'); }
+  }
 
-  const imgCount = spec.slides.filter((s) => s.imageData).length;
+  const imgCount = liveSpec.slides.filter((s) => s.imageData).length;
+  const Swatch = ({ role, label, value }: { role: 'bg' | 'text' | 'accent'; label: string; value: string }) => (
+    <label className="flex items-center gap-1.5 cursor-pointer" title={`${label} colour`}>
+      <span className="relative w-6 h-6 rounded-md border border-nv-border overflow-hidden shrink-0" style={{ background: value }}>
+        <input type="color" value={value} onChange={(e) => setColor(role, e.target.value)}
+          className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" />
+      </span>
+      <span className="text-[9.5px] text-nv-faint">{label}</span>
+    </label>
+  );
+
   return (
     <div className="my-3 rounded-xl border border-accent/30 bg-nv-surface overflow-hidden">
       <div className="flex items-center justify-between px-3 py-2 border-b border-nv-border/60 bg-nv-bg">
@@ -1165,7 +1286,7 @@ function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
             <path d="M8 11.5v2M5.5 13.5h5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
           </svg>
           <span className="text-[11px] font-semibold text-nv-text truncate">{spec.title}</span>
-          <span className="text-[9px] text-nv-faint font-mono shrink-0">{spec.slides.length} slides{imgCount ? ` · ${imgCount} images` : ''}</span>
+          <span className="text-[9px] text-nv-faint font-mono shrink-0">{liveSpec.slides.length} slides{imgCount ? ` · ${imgCount} images` : ''}</span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <button onClick={downloadHtml} className="text-[10px] px-2.5 py-1 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40 transition-fast font-mono">
@@ -1176,16 +1297,31 @@ function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
           </button>
         </div>
       </div>
+      {/* Colour editor — 3 colours max; the deck restyles live as you change them */}
+      <div className="flex items-center gap-3 px-3 py-2 border-b border-nv-border/40 bg-nv-surface flex-wrap">
+        <span className="text-[9px] font-mono uppercase tracking-wider text-nv-faint">Colours</span>
+        <Swatch role="bg" label="Background" value={pal.bg} />
+        <Swatch role="text" label="Text" value={pal.text} />
+        <Swatch role="accent" label="Accent" value={pal.accent} />
+        <div className="flex-1" />
+        {dirty && (
+          <button onClick={() => setPal(spec.palette)} className="text-[9.5px] text-nv-faint hover:text-nv-text font-mono">reset</button>
+        )}
+        <button onClick={saveChanges} disabled={saveState === 'saving'}
+          className="text-[10px] px-2.5 py-1 rounded-lg border border-accent/50 text-accent hover:bg-accent/10 transition-fast font-mono disabled:opacity-50">
+          {saveState === 'saving' ? 'saving…' : saveState === 'done' ? '✓ saved' : '⭳ Save to Brain'}
+        </button>
+      </div>
       <div className="p-3 bg-nv-bg flex justify-center items-center">
         <iframe
-          srcDoc={html}
+          srcDoc={liveHtml}
           sandbox="allow-scripts allow-same-origin"
           className="rounded-lg border border-nv-border/40 bg-black"
           style={{ width: '100%', maxWidth: 560, aspectRatio: '16 / 9' }}
           title="Deck preview"
         />
       </div>
-      <p className="px-3 pb-2 text-[9px] text-nv-faint font-mono">Click the preview then use ← → to flip slides · ⛶ Present for fullscreen · download for the full-resolution deck</p>
+      <p className="px-3 pb-2 text-[9px] text-nv-faint font-mono">Click the preview then use ← → to flip slides · ⛶ Present for fullscreen · change the 3 colours above and the deck restyles instantly</p>
     </div>
   );
 }
@@ -2287,6 +2423,7 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
 
   const [messages,      setMessages]      = useState<DisplayMsg[]>([]);
   const [input,         setInput]         = useState('');
+  const [inputExpanded, setInputExpanded] = useState(false); // tall message box to read a long prompt
   // Slash-command menu ("/" in the input opens the app's feature palette).
   const [slashOpen,     setSlashOpen]     = useState(false);
   const [slashIdx,      setSlashIdx]      = useState(0);
@@ -2318,7 +2455,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
       const refined = text.trim().replace(/^["'`\s]+|["'`\s]+$/g, '');
       if (refined) setInput(refined);
     } catch { /* keep the original input if refine fails */ }
-    finally { setRefining(false); }
+    finally { setRefining(false); } // usage is tracked live by the App-level nivara-tokens listener
   }
   const [attachedFiles, setAttachedFiles] = useState<{ name: string; content: string; isImage?: boolean; mimeType?: string; fromBrain?: boolean }[]>([]);
   const [taskPhases,    setTaskPhases]    = useState<TaskPhase[]>([]);
@@ -2545,6 +2682,16 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     if (searchMode === 'advanced') return tools.filter(t => !ADVANCED_DROP_TOOLS.has(t.name));
     return tools;
   }, [creds, agent.key, agent.category, mcpTools, searchMode]);
+
+  // Connected presentation apps (via MCP) to offer as a deck destination in the setup card —
+  // so if the user has Canva/Slides/Gamma connected, they can choose it right there.
+  const deckApps = useMemo(() => {
+    const names = mcpTools.map((t) => t.name.toLowerCase());
+    const apps: string[] = [];
+    if (names.some((n) => n.includes('canva'))) apps.push('Canva');
+    if (names.some((n) => /gamma|beautiful|pitch|google.?slides|presentation|\bslides\b/.test(n))) apps.push('Slides');
+    return apps;
+  }, [mcpTools]);
 
   function sanitiseError(raw: unknown): string {
     const msg = raw instanceof Error ? raw.message : String(raw);
@@ -2846,25 +2993,48 @@ The prompt must be production-ready — specific enough for a motion designer to
       return c;
     });
     try {
+      // ADVANCED: do NOT ask Slade for imagePrompts — the app assigns and generates images
+      // itself (see the top-up below). Keeping them OUT of the JSON makes the output much
+      // shorter, which is the single biggest defense against the truncation that was cutting
+      // long decks down to 2–5 slides on the fallback path.
       const modeDirective = cfg.mode === 'advanced'
-        ? `\n\n## MODE: ADVANCED\nYou ARE in ADVANCED mode. Add an "imagePrompt" to the title slide, any "image-full"/"section" slides, and about half of the content slides — roughly 4–7 images total. Each imagePrompt: concrete subject + art direction, styled to match the deck's accent colour, with NO text baked into the image.`
+        ? `\n\n## MODE: ADVANCED\nYou ARE in ADVANCED mode, BUT do NOT output any "imagePrompt" fields — the app adds the images automatically. Spend your output budget on COMPLETE, well-written slides instead. Keep the JSON compact so all slides fit.`
         : `\n\n## MODE: BASIC\nYou are in BASIC mode. Do NOT output any "imagePrompt" fields — text and layout only.`;
       const _now = new Date();
       const dateBlock = `\n\n## TODAY\nToday is ${_now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}. Use current facts and the current year.`;
-      const coverageDirective = `\n\n## COVER THE WHOLE SOURCE\nWhen a document is attached, base the deck on its FULL breadth — represent the product's different capabilities/modules/sections, not just the first thing mentioned. Pull the strongest, most client-relevant points from across the ENTIRE document. For a rich product, aim for 9–12 slides.`;
-      const sys = AGENT_BY_KEY['deck_maker'].systemPrompt + modeDirective + coverageDirective + dateBlock;
-      setStatus('Slade is structuring your slides…');
-      // Generate + parse, retrying once if the model returns broken/invalid JSON.
+      // Anti-sameness: models tend to reach for the same "dark" theme every time. Push Slade
+      // to actually match the palette to the topic's industry/mood (Gamma-style variety).
+      const designDirective = `\n\n## PICK A PALETTE + TEMPLATE THAT FIT THIS TOPIC\nDo NOT default to the same dark theme every time. Choose the preset + accent colour that genuinely matches THIS deck's industry and mood (e.g. finance→corporate blue, wellness→soft/editorial, dev-tool→minimal, launch→bold, consumer/youth→vibrant, crypto/gaming→neon; you may also set a custom "palette"). You MAY add a "template" field to pick the visual treatment: "aurora" (glowing, techy), "gradient" (soft modern SaaS), "editorial" (clean, thin rules, premium), "flat" (bold solid, strong accent bar), or "mono" (minimal, big type). Vary the layouts too — mix section breaks, a stat slide, a quote, and two-column comparisons; never 10 identical bullet slides.`;
+      const target = Math.max(4, Math.min(24, Math.round(cfg.slideCount || 12)));
+      const minSlides = Math.max(4, target - 1); // accept target-1, else retry for the rest
+      const countDirective = `\n\n## SLIDE COUNT — HARD REQUIREMENT\nProduce EXACTLY ${target} slides — a full, complete slide object for each. Not 6, not "a few": ${target}. Keep adding slides until the "slides" array has ${target} entries. This count overrides any smaller number implied anywhere else.`;
+      const audienceDirective = cfg.audience
+        ? `\n\n## AUDIENCE\nWrite every headline, bullet and note for this audience: ${cfg.audience}. Speak to their goals and pains in "you" language.`
+        : '';
+      const contentDirective = `\n\n## WRITE REAL, SPECIFIC CONTENT — NOT FILLER\n- Build the deck FROM the attached document: use its ACTUAL numbers, product/module names, comparisons and pricing. Never generic marketing fluff.\n- Every slide earns its place: a concrete claim + the specific proof/number behind it. Benefit-led headlines ("Save 10 hrs/week", not "Our Features").\n- Follow the brief's narrative arc (problem → solution → proof → ROI → call to action). Use VARIED layouts — a stat slide for a big number, a two-column slide for a comparison/before-after, a quote for a testimonial — so it reads like a designed deck, not a bullet dump.\n- 3–6 tight bullets per content slide, each ≤ 14 words. One idea per slide.`;
+      const coverageDirective = `\n\n## COVER THE WHOLE SOURCE\nWhen a document is attached, base the deck on its FULL breadth — represent the product's different capabilities/modules/sections, not just the first thing mentioned. Pull the strongest, most client-relevant points from across the ENTIRE document.\n\n## KEEP NOTES SHORT\nEven if the brief asks for a "speaker script", keep each slide's "notes" to ONE short line (≤ 20 words) — a long script per slide overflows the output limit and truncates the deck.`;
+      const sys = AGENT_BY_KEY['deck_maker'].systemPrompt + modeDirective + countDirective + contentDirective + coverageDirective + designDirective + audienceDirective + dateBlock;
+      setStatus(`Slade is structuring your ${target} slides…`);
+      // Generate + parse. Retry once if the JSON is broken OR fewer than the requested slides
+      // came back. We keep whatever parsed as a fallback so a short retry never loses the first.
       let spec: DeckSpec | null = null;
       let lastText = '';
-      for (let attempt = 1; attempt <= 2 && !spec; attempt++) {
+      let wasTruncated = false;
+      for (let attempt = 1; attempt <= 2; attempt++) {
         if (stopRef.current) { setMessages((prev) => prev.filter((m) => !m.streaming)); setBusy(false); return; }
-        if (attempt === 2) setStatus('Tidying up the deck…');
+        if (attempt === 2) setStatus('Adding the rest of the slides…');
+        const retryReason = spec
+          ? `your previous answer had only ${spec.slides.length} slide(s) — the user asked for ${target}. Output ALL ${target} complete slides this time.`
+          : 'your previous output was NOT valid JSON.';
         const sysTry = attempt === 1 ? sys
-          : sys + '\n\nIMPORTANT: your previous output was NOT valid JSON. Return ONLY one strictly-valid, COMPACT JSON object — no markdown, no comments. Keep every "notes" and "imagePrompt" to a single short line. Double-check every quote, comma and brace.';
-        const { text } = await streamTurnWithRetry([{ role: 'user', content: requestCtx }], sysTry, () => {});
+          : sys + `\n\nIMPORTANT: ${retryReason} Return ONLY one strictly-valid, COMPACT JSON object — no markdown, no comments, no imagePrompt fields. Keep every "notes" to one short line. Double-check every quote, comma and brace.`;
+        const { text, truncated } = await streamTurnWithRetry([{ role: 'user', content: requestCtx }], sysTry, () => {});
         lastText = text;
-        spec = parseDeckSpec(text);
+        wasTruncated = truncated;
+        const parsed = parseDeckSpec(text);
+        if (parsed) spec = parsed;                              // keep the best we've parsed so far
+        if (parsed && parsed.slides.length >= minSlides) break; // got enough → done
+        if (truncated) break;                                   // retrying will just truncate again
       }
       if (stopRef.current) { setMessages((prev) => prev.filter((m) => !m.streaming)); setBusy(false); return; }
 
@@ -2887,18 +3057,32 @@ The prompt must be production-ready — specific enough for a motion designer to
 
       let imgNote = '';
       if (cfg.mode === 'advanced') {
-        // Guarantee image slots — if Slade forgot to add imagePrompts, synthesize a few so
-        // Advanced always actually produces images (title, section breaks, closing + a content slide).
-        if (slidesNeedingImages(spec).length === 0) {
-          spec.slides.forEach((s, idx) => {
-            const wants = ['title', 'section', 'image-full', 'closing'].includes(s.layout) || (s.layout === 'bullets' && idx % 4 === 2);
-            if (wants && !s.imagePrompt) {
-              s.imagePrompt = `Professional editorial visual representing "${s.title || spec.title}". Modern, abstract, cinematic composition with ${spec.palette.accent} accents on a dark background. High quality, no text or words in the image.`;
-            }
-          });
-        }
+        // Guarantee a proper image spread. Slade often under-delivers imagePrompts (or, when
+        // the JSON is long, omits them entirely) — so instead of only stepping in when there
+        // are ZERO, we always TOP UP: keep any prompts Slade wrote and add our own to the
+        // slides that should carry a visual (title, section breaks, image-full, closing, and
+        // roughly every 4th content slide). This is why Advanced sometimes came back with no
+        // images at all — the old guard skipped top-up as soon as a single prompt existed.
+        spec.slides.forEach((s, idx) => {
+          const wants = ['title', 'section', 'image-full', 'closing'].includes(s.layout) || (s.layout === 'bullets' && idx % 3 === 1);
+          if (wants && !s.imagePrompt) {
+            s.imagePrompt = `Professional editorial visual representing "${s.title || spec.title}". Modern, abstract, cinematic composition with ${spec.palette.accent} accents on a dark background. High quality, no text or words in the image.`;
+          }
+        });
         const need = slidesNeedingImages(spec);
         const imgKey = (provider === 'gemini' && apiKey.trim()) ? apiKey.trim() : null;
+        // Images need a real Gemini key: the user's own, OR the managed session key. The
+        // managed key is fetched once at app-start (App.tsx) but that call fails silently on a
+        // network blip — leaving "No image key available" even for a plan that IS entitled. So
+        // if we're about to rely on the managed key, re-fetch it right now (best-effort) before
+        // the image loop, so a stale/failed startup fetch doesn't cost the user their images.
+        if (!imgKey && need.length > 0 && session?.access_token) {
+          setStatus('Preparing image generation…');
+          try {
+            const tok = await freshSessionToken(session.access_token);
+            await invoke('fetch_session_key', { sessionToken: tok });
+          } catch { /* if this fails too, the loop below reports it clearly */ }
+        }
         // Try known image-model ids in order until one works on this key, then reuse it.
         // Verified live against the Gemini API: these ids return images; the "-preview" 2.5
         // id is a 404. Pro tries the GA id first, then falls back to the standard model.
@@ -2906,23 +3090,38 @@ The prompt must be production-ready — specific enough for a motion designer to
           ? ['gemini-3-pro-image', 'gemini-3-pro-image-preview', 'gemini-2.5-flash-image']
           : ['gemini-2.5-flash-image'];
         let working: string | null = null;
-        let fails = 0, lastErr = '';
+        let fails = 0;
         for (let k = 0; k < need.length; k++) {
           if (stopRef.current) break;
-          setStatus(`Generating image ${k + 1} of ${need.length}…`);
+          setStatus(`Adding image ${k + 1} of ${need.length}…`);
           const idx = need[k];
+          const slide = spec.slides[idx];
           const tryList: string[] = working ? [working] : candidates;
           let got = '';
+          // 1) AI generation — try Pro, fall down to the lower model automatically.
           for (const model of tryList) {
             try {
-              const data = await invoke<string>('krew_generate_image', { prompt: spec.slides[idx].imagePrompt, model, apiKey: imgKey });
+              const data = await invoke<string>('krew_generate_image', { prompt: slide.imagePrompt, model, apiKey: imgKey });
               if (data) { got = data; working = model; break; }
-            } catch (e) { lastErr = e instanceof Error ? e.message : String(e); }
+            } catch { /* try the next model, then the stock fallback */ }
           }
-          if (got) spec.slides[idx].imageData = got; else fails++;
+          // 2) FALLBACK — if AI generation gave nothing (no key / no access / rate limit),
+          // fetch a real, license-free photo relevant to the slide so it STILL gets a visual.
+          if (!got) {
+            const q = (slide.title || slide.quote || spec.title || 'abstract technology')
+              .replace(/[^a-zA-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim().split(' ').slice(0, 5).join(' ');
+            try {
+              const data = await invoke<string>('fetch_stock_image', { query: q || 'abstract technology' });
+              if (data) got = data;
+            } catch { /* fall through to the generated fallback */ }
+          }
+          // 3) GUARANTEED — no network needed: a clean generated abstract in the deck's accent.
+          // This is why a slide never comes back empty anymore.
+          if (!got) got = makeAbstractSlideImage(spec.palette.accent, spec.palette.bg, idx);
+          if (got) slide.imageData = got; else fails++;
         }
-        if (need.length > 0 && fails >= need.length) imgNote = `The AI images couldn't be generated${lastErr ? ` (${sanitiseError(lastErr)})` : ''} — the deck was built without them. Your adris.tech AI key may not have image-model access enabled.`;
-        else if (fails > 0) imgNote = `${fails} of ${need.length} images couldn't be generated; the rest are included.`;
+        // With the generated fallback, images essentially always land; only note the rare total miss.
+        if (need.length > 0 && fails >= need.length) imgNote = `Your deck is ready. Some slides couldn't get an image this time — regenerate to try again.`;
       }
 
       setStatus('Rendering deck…');
@@ -2937,6 +3136,12 @@ The prompt must be production-ready — specific enough for a motion designer to
       if (sid) krewDb.saveMessage(sid, 'assistant', html).catch(() => {});
       // If Advanced images didn't come through, tell the user why (was silently swallowed).
       if (imgNote) { addMsg({ role: 'assistant', content: imgNote }); if (sid) krewDb.saveMessage(sid, 'assistant', imgNote).catch(() => {}); }
+      // If the model's JSON was cut off (hit the output limit), the deck may be short a few
+      // slides — say so plainly rather than pretending the short deck is complete.
+      if (wasTruncated && spec.slides.length < 8) {
+        const t = `Heads up — that came back a little short (${spec.slides.length} slides) because the model's output was cut off. Say "extend the deck" or "add more slides on X" and I'll build it out further.`;
+        addMsg({ role: 'assistant', content: t }); if (sid) krewDb.saveMessage(sid, 'assistant', t).catch(() => {});
+      }
 
       // Save the deck to disk + the Brain so the user can open/download it later even
       // if this chat is deleted. Disk (not localStorage) because image decks are large.
@@ -2970,6 +3175,8 @@ The prompt must be production-ready — specific enough for a motion designer to
     } finally {
       setBusy(false);
       deckRequestRef.current = '';
+      // Token usage was already recorded live by the App-level `nivara-tokens` listener as the
+      // deck streamed — no extra flush here (a second write would double-count the deck).
     }
   }
 
@@ -3121,8 +3328,10 @@ The prompt must be production-ready — specific enough for a motion designer to
     resetBrowserRunState(); // start tracking browser use for this run (auto-close at end)
 
     // Suggest connecting Brave Search for reliable verification (keyless engines rate-limit and
-    // leave rows unverified). Only nudge on lead/search-type tasks, and only if not connected.
-    if (!creds.brave?.api_key && /verif|linkedin|lead list|find (me )?(more )?(people|compan|contact|leads|decision)|decision maker|prospect|email.*(compan|people)/i.test(text)) {
+    // leave rows unverified). Only nudge on lead/search-type tasks, only if not connected, and
+    // NEVER again once the user has dismissed it — so it stops nagging on every search.
+    if (!creds.brave?.api_key && localStorage.getItem('nv-brave-nudge-off') !== '1'
+        && /verif|linkedin|lead list|find (me )?(more )?(people|compan|contact|leads|decision)|decision maker|prospect|email.*(compan|people)/i.test(text)) {
       setBraveNudge(true);
     }
     // Pre-warm Chrome in Advanced mode so the FIRST browser open isn't a ~10s cold start — BUT
@@ -3159,7 +3368,10 @@ The prompt must be production-ready — specific enough for a motion designer to
       if (toCapture.length > 0) {
         import('../../lib/knowledgeStore').then(({ brain }) => {
           for (const f of toCapture) {
-            brain.addNode({ title: f.name, kind: 'file', body: f.content.slice(0, 4000) });
+            // Store essentially the whole file (was 4000 chars — that silently truncated a
+            // 29KB PRODUCT.MD to a fraction, so later attaching it FROM Brain fed the deck only
+            // a stub → decks "missing context"). 100k covers any normal document.
+            brain.addNode({ title: f.name, kind: 'file', body: f.content.slice(0, 100000) });
           }
         }).catch(() => {});
       }
@@ -3215,7 +3427,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     if (text && looksLikePresentation(text)) {
       // Decks need the WHOLE source document — the normal 8K chat cap truncated a long
       // PRODUCT.MD so the deck only covered its first section. Send the full file(s).
-      const DECK_FILE_CAP = 45000;
+      const DECK_FILE_CAP = 90000; // send the whole source doc to Slade — a truncated doc = a deck missing context
       const deckFileBlock = nonImageFiles.map(f => `[File: ${f.name}]\n\`\`\`\n${f.content.slice(0, DECK_FILE_CAP)}\n\`\`\`\n\n`).join('');
       const deckFocusBlock = focusedFile ? `[File: ${focusedFile.name}]\n\`\`\`\n${focusedFile.content.slice(0, DECK_FILE_CAP)}\n\`\`\`\n\n` : '';
       deckRequestRef.current = deckFocusBlock + deckFileBlock + text; // full context for Slade
@@ -4194,17 +4406,11 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
       setBrowserActive(false); // run over — clear the "browser in use" banner
       // Refresh the shared profile in case an agent learned something this run.
       reloadProfile();
-      // Flush token usage to DB regardless of success/error
-      // Fast-path: Rust queued tokens via pending_usage; krew-stream fallback: server already tracked
-      if (mode === 'nivara' && session?.access_token) {
-        // Use a fresh token — after a long task the captured one may have expired, which would
-        // silently drop the usage sync.
-        freshSessionToken(session.access_token).then((tok) => invoke('sync_token_usage_direct', {
-          supabaseUrl: import.meta.env.VITE_SUPABASE_URL as string,
-          supabaseAnonKey: import.meta.env.VITE_SUPABASE_ANON_KEY as string,
-          sessionToken: tok,
-        })).catch(() => {});
-      }
+      // Token usage: the App-level `nivara-tokens` listener (App.tsx) already wrote each turn's
+      // usage to token_usage LIVE as it streamed — and image generation is billed the same way.
+      // We deliberately do NOT flush pending_usage here: that flush wrote the SAME tokens a
+      // second time, double-counting every managed-key task. The edge-fallback path is tracked
+      // server-side by krew-stream. So there is exactly one write per usage, from one place.
       setBusy(false);
       setAgentStep(null);
       setAgentTool(null);
@@ -4451,6 +4657,11 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
               onClick={() => { setBraveNudge(false); onOpenConnectApps?.(); }}
               className="shrink-0 text-[10px] font-mono px-2.5 py-1 rounded-lg bg-orange-500/20 text-orange-300 hover:bg-orange-500/30 border border-orange-500/30 transition-fast whitespace-nowrap"
             >Connect Brave →</button>
+            <button
+              title="Don't show this again"
+              onClick={() => { try { localStorage.setItem('nv-brave-nudge-off', '1'); } catch { /* ignore */ } setBraveNudge(false); }}
+              className="shrink-0 text-[13px] leading-none px-1.5 text-nv-faint hover:text-nv-text transition-fast"
+            >×</button>
           </div>
         )}
 
@@ -4556,6 +4767,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                 <DeckSetupCard
                   key={i}
                   disabled={busy}
+                  deckApps={deckApps}
                   unlockedAdvanced={planCfg.advancedDeck || (provider === 'gemini' && !!apiKey.trim())}
                   onCancel={() => setMessages((prev) => prev.filter((m) => m !== msg))}
                   onGenerate={(cfg) => runDeckGeneration(cfg)}
@@ -4958,11 +5170,25 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                 }
               }}
               placeholder={`Ask ${agent.humanName} anything…   type / for commands`}
-              rows={2}
+              rows={inputExpanded ? 14 : 2}
               className="flex-1 bg-nv-bg border border-nv-border rounded-lg px-2.5 py-1.5
                 text-[12px] text-nv-text outline-none focus:border-accent transition-fast
                 resize-none placeholder:text-nv-faint"
             />
+            {/* Expand / collapse the message box — handy for reading a long or refined prompt */}
+            {(input.trim().length > 80 || inputExpanded) && (
+              <button
+                onClick={() => setInputExpanded((v) => !v)}
+                title={inputExpanded ? 'Collapse the message box' : 'Expand the message box'}
+                className="flex items-center text-[10px] px-2 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40 transition-fast shrink-0 self-start"
+              >
+                {inputExpanded ? (
+                  <svg viewBox="0 0 24 24" className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+                )}
+              </button>
+            )}
             {onOpenResearch && !busy && input.trim() && (
               <button
                 onClick={() => onOpenResearch(input.trim())}

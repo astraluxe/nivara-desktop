@@ -5,7 +5,6 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { credentialStore } from '../lib/krewDb';
 import type { Provider } from '../lib/ai';
-import { trackTokenUsage } from '../lib/tokenTracker';
 import { callAutomationAI } from '../lib/automationRunner';
 
 // ─── Project types & formats ────────────────────────────────────────────────
@@ -1770,9 +1769,8 @@ export default function StudioModule({ initialRequest, onRequestConsumed }: Stud
       const u2 = await listen<{ id: string }>('krew-done', (e) => {
         if (e.payload.id !== callId) return;
         done.cleanup();
-        if (mode === 'nivara' && full.length > 0) {
-          trackTokenUsage('studio', systemPrompt.length + userMessage.length + full.length);
-        }
+        // Managed-key usage is recorded once, live, by the App-level `nivara-tokens` listener
+        // (fast path) or server-side (edge fallback) — tracking again here would double-count.
         resolve(full);
       });
       const u3 = await listen<{ id: string; error: string }>('krew-error', (e) => {

@@ -29,7 +29,8 @@ export interface DeckFont    { heading: string; body: string }
 export interface DeckSpec {
   title:     string;
   subtitle?: string;
-  preset:    string;                 // one of the 8 design presets (informational)
+  preset:    string;                 // one of the design presets (informational)
+  template?: string;                 // visual treatment: aurora | gradient | editorial | flat | mono
   palette:   DeckPalette;
   font:      DeckFont;
   slides:    DeckSlide[];
@@ -45,6 +46,14 @@ const PRESET_PALETTES: Record<string, DeckPalette> = {
   editorial: { bg: '#fafafa', surface: '#ffffff', text: '#111111', muted: '#666666', accent: '#e11d48' },
   saas:      { bg: '#f8fafc', surface: '#ffffff', text: '#0f172a', muted: '#64748b', accent: '#6d5cff' },
   neon:      { bg: '#050505', surface: '#0e0e12', text: '#f5f5f5', muted: '#8a8a94', accent: '#39ff14' },
+  // extra palettes for topic variety
+  sunset:    { bg: '#1a0f12', surface: '#241419', text: '#fff5f0', muted: '#c9a8a0', accent: '#ff7a45' },
+  ocean:     { bg: '#071a24', surface: '#0c2734', text: '#eaf6fb', muted: '#8fb3c2', accent: '#22d3ee' },
+  forest:    { bg: '#0a1710', surface: '#112418', text: '#eef7ef', muted: '#9db8a4', accent: '#34d399' },
+  royal:     { bg: '#12091f', surface: '#1c1030', text: '#f4efff', muted: '#b0a4c8', accent: '#a855f7' },
+  slate:     { bg: '#0f172a', surface: '#1e293b', text: '#f1f5f9', muted: '#94a3b8', accent: '#38bdf8' },
+  paper:     { bg: '#faf7f2', surface: '#ffffff', text: '#1a1a1a', muted: '#6b6b6b', accent: '#c2410c' },
+  mint:      { bg: '#f0fdfa', surface: '#ffffff', text: '#0f2e2a', muted: '#5b8a83', accent: '#0d9488' },
 };
 
 const PRESET_FONTS: Record<string, DeckFont> = {
@@ -56,7 +65,62 @@ const PRESET_FONTS: Record<string, DeckFont> = {
   editorial: { heading: 'Playfair Display', body: 'Inter' },
   saas:      { heading: 'Plus Jakarta Sans', body: 'Plus Jakarta Sans' },
   neon:      { heading: 'Syne', body: 'Inter' },
+  sunset:    { heading: 'Sora', body: 'Inter' },
+  ocean:     { heading: 'Space Grotesk', body: 'Inter' },
+  forest:    { heading: 'Sora', body: 'Inter' },
+  royal:     { heading: 'Fraunces', body: 'Inter' },
+  slate:     { heading: 'Space Grotesk', body: 'Inter' },
+  paper:     { heading: 'Fraunces', body: 'Inter' },
+  mint:      { heading: 'Sora', body: 'Inter' },
 };
+
+// The 5 visual TEMPLATES — these change the actual LOOK (backgrounds, decoration,
+// typography feel), not just colours, so decks don't all look the same. Each maps to a
+// default when the agent doesn't request one; the agent may set spec.template directly.
+const TEMPLATES = new Set(['aurora', 'gradient', 'editorial', 'flat', 'mono']);
+const PRESET_TEMPLATE: Record<string, string> = {
+  minimal: 'mono',  bold: 'flat',   dark: 'aurora',  vibrant: 'gradient',
+  corporate: 'editorial', editorial: 'editorial', saas: 'gradient', neon: 'aurora',
+  sunset: 'gradient', ocean: 'gradient', forest: 'flat', royal: 'aurora',
+  slate: 'editorial', paper: 'editorial', mint: 'mono',
+};
+
+// Per-template decorative CSS. Injected AFTER the base rules so it overrides the default
+// aurora glow. Only the DECORATION/typography varies — the layout grid stays identical.
+function templateCss(template: string, p: DeckPalette): string {
+  const A = p.accent, M = p.muted;
+  switch (template) {
+    case 'gradient':
+      return `
+      .slide::before { content:''; position:absolute; inset:0; z-index:0; pointer-events:none;
+        background:linear-gradient(135deg, ${A}1f 0%, transparent 42%, transparent 60%, ${A}12 100%); }
+      .slide::after { content:''; position:absolute; top:-160px; right:-120px; width:560px; height:560px; border-radius:50%;
+        background:radial-gradient(circle, ${A}30 0%, transparent 70%); filter:blur(6px); z-index:0; pointer-events:none; }
+      .kicker::before { width:26px; }`;
+    case 'editorial':
+      return `
+      .slide::before { content:''; position:absolute; top:56px; left:104px; right:104px; height:1px; background:${A}; opacity:.32; z-index:1; }
+      .slide::after  { content:''; position:absolute; bottom:70px; left:104px; right:104px; height:1px; background:${M}; opacity:.22; z-index:0; }
+      .kicker { letter-spacing:.26em; }
+      h1, h2 { letter-spacing:-.01em; }
+      .rule { height:2px; width:44px; }`;
+    case 'flat':
+      return `
+      .slide::before { content:''; position:absolute; top:0; left:0; bottom:0; width:16px; background:${A}; z-index:2; }
+      .slide::after  { content:none; }
+      .kicker::before { background:${A}; height:3px; }
+      .rule { height:6px; }`;
+    case 'mono':
+      return `
+      .slide::before { content:none; }
+      .slide::after  { content:''; position:absolute; top:92px; left:104px; width:46px; height:6px; background:${A}; z-index:1; }
+      .kicker { color:${M}; }
+      .kicker::before { background:${M}; }`;
+    case 'aurora':
+    default:
+      return ''; // base CSS already IS aurora
+  }
+}
 
 // Fill defaults + drop invalid slides. Returns null if nothing usable.
 function normalizeSpec(spec: any): DeckSpec | null {
@@ -67,6 +131,10 @@ function normalizeSpec(spec: any): DeckSpec | null {
   spec.preset  = preset;
   spec.palette = { ...(PRESET_PALETTES[preset] ?? PRESET_PALETTES.dark), ...(spec.palette || {}) };
   spec.font    = { ...(PRESET_FONTS[preset] ?? PRESET_FONTS.dark), ...(spec.font || {}) };
+  // Visual template: honour the agent's choice if valid, else derive one from the preset so
+  // different topics/palettes get genuinely different-looking decks.
+  const reqTpl = String(spec.template || '').toLowerCase();
+  spec.template = TEMPLATES.has(reqTpl) ? reqTpl : (PRESET_TEMPLATE[preset] ?? 'aurora');
   spec.title   = spec.title || spec.slides[0]?.title || 'Presentation';
   return spec as DeckSpec;
 }
@@ -220,6 +288,8 @@ export function renderDeckHtml(spec: DeckSpec): string {
     #stage { position:static; }
     .slide { display:flex !important; position:relative; page-break-after:always; }
   }
+  /* ── template overrides (change the whole look, not just colours) ── */
+  ${templateCss(spec.template || 'aurora', p)}
 </style>
 </head>
 <body>

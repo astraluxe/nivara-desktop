@@ -327,6 +327,212 @@ fn write_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, content).map_err(|e| e.to_string())
 }
 
+// Read any file as base64 — used by the Brain's PDF viewer (pdf.js needs the raw bytes) and
+// anywhere the frontend must load a binary local file it can't read directly.
+#[tauri::command]
+fn read_file_base64(path: String) -> Result<String, String> {
+    use base64::{Engine as _, engine::general_purpose};
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    Ok(general_purpose::STANDARD.encode(&bytes))
+}
+
+// Copy a picked file INTO the app's own storage (<appdata>/brain-files) and return the new
+// path. The Brain then references this durable copy — so a PDF stays viewable in the Brain
+// even after the user deletes the original from their Desktop.
+#[tauri::command]
+fn brain_store_file(app: tauri::AppHandle, source_path: String) -> Result<String, String> {
+    use tauri::Manager;
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?.join("brain-files");
+    std::fs::create_dir_all(&base).map_err(|e| e.to_string())?;
+    let src = std::path::Path::new(&source_path);
+    let stem: String = src.file_stem().and_then(|s| s.to_str()).unwrap_or("file")
+        .chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let stem = if stem.trim_matches('-').is_empty() { "file".to_string() } else { stem };
+    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("bin");
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+    let dest = base.join(format!("{}-{}.{}", &stem[..stem.len().min(40)], ts, ext));
+    std::fs::copy(src, &dest).map_err(|e| format!("Couldn't save file into the Brain: {}", e))?;
+    Ok(dest.to_string_lossy().to_string())
+}
+
+// ─── Brain: extract readable text from any file ──────────────────────────────
+// The Brain lets users drop in real documents. Plain-text files (csv, txt, md,
+// json, code…) read directly; office/binary formats (PDF, PPTX, DOCX, XLSX/XLS/
+// ODS) are parsed into plain text the agents can actually read. All deps are pure
+// Rust (calamine, pdf-extract, quick-xml, zip) so it behaves identically on
+// Windows and Linux. Returns the extracted text (capped) or a clear error.
+#[tauri::command]
+fn brain_extract_text(path: String) -> Result<String, String> {
+    let ext = std::path::Path::new(&path)
+        .extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let text = match ext.as_str() {
+        "pdf"                                          => extract_pdf_text(&path)?,
+        "xlsx" | "xls" | "xlsm" | "xlsb" | "ods"       => extract_spreadsheet_text(&path)?,
+        "pptx"                                         => extract_ooxml_text(&path, "ppt/slides/slide")?,
+        "docx"                                         => extract_ooxml_text(&path, "word/document")?,
+        // csv / tsv / txt / md / json / code / anything else → read as (lossy) UTF-8.
+        _ => {
+            let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+            String::from_utf8_lossy(&bytes).to_string()
+        }
+    };
+    // Cap so a huge workbook/PDF can't blow up localStorage or the model context.
+    const CAP: usize = 200_000;
+    if text.chars().count() > CAP {
+        Ok(text.chars().take(CAP).collect())
+    } else {
+        Ok(text)
+    }
+}
+
+fn extract_pdf_text(path: &str) -> Result<String, String> {
+    // pdf-extract can panic on some malformed PDFs — isolate it so we degrade gracefully.
+    let p = path.to_string();
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pdf_extract::extract_text(&p)));
+    match res {
+        Ok(Ok(t)) if !t.trim().is_empty() => Ok(normalize_pdf_text(&t)),
+        Ok(Ok(_))  => Err("No selectable text found — this PDF may be scanned images.".to_string()),
+        Ok(Err(e)) => Err(format!("Couldn't read this PDF: {}", e)),
+        Err(_)     => Err("Couldn't read this PDF (it may be encrypted or corrupted).".to_string()),
+    }
+}
+
+// pdf-extract emits a blank line between almost every visual line, which renders as a
+// spaced-out, hard-to-read wall. Trim trailing space and collapse any run of blank
+// lines to a single one so the text reads like the original document.
+fn normalize_pdf_text(t: &str) -> String {
+    let mut out = String::new();
+    let mut blanks = 0;
+    for line in t.lines() {
+        let l = line.trim_end();
+        if l.trim().is_empty() {
+            blanks += 1;
+            if blanks == 1 { out.push('\n'); }
+        } else {
+            blanks = 0;
+            out.push_str(l);
+            out.push('\n');
+        }
+    }
+    out.trim().to_string()
+}
+
+// Render a workbook as clean GitHub-flavored-markdown tables. The naive "every row is a
+// table row" approach breaks on real sheets: merged title rows (a single wide cell) and
+// ragged row widths make the markdown table collapse. Instead: neutralize newlines/pipes
+// inside cells, treat leading single-cell rows as captions, and build ONE aligned table
+// per sheet (header + separator, every row padded to the sheet's width).
+fn extract_spreadsheet_text(path: &str) -> Result<String, String> {
+    use calamine::{open_workbook_auto, Reader};
+    let mut wb = open_workbook_auto(path).map_err(|e| format!("Couldn't open spreadsheet: {}", e))?;
+    let mut out = String::new();
+    let names = wb.sheet_names().to_owned();
+    let multi = names.len() > 1;
+    for name in names {
+        let range = match wb.worksheet_range(&name) { Ok(r) => r, Err(_) => continue };
+        if range.is_empty() { continue; }
+        // Clean every cell: strip newlines/tabs (they'd break the row) and escape pipes.
+        let rows: Vec<Vec<String>> = range.rows().map(|r| {
+            r.iter().map(|c| c.to_string()
+                .replace(['\r', '\n', '\t'], " ")
+                .replace('|', "/")
+                .split_whitespace().collect::<Vec<_>>().join(" ")
+            ).collect()
+        }).collect();
+        let width = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        if width == 0 { continue; }
+        if multi { out.push_str(&format!("## {}\n\n", name)); }
+        // The real table starts at the first row with 2+ filled cells — earlier single-cell
+        // rows are titles/captions and are emitted as bold lines above the table.
+        let first_table = rows.iter().position(|r| r.iter().filter(|c| !c.trim().is_empty()).count() >= 2);
+        let mut header_done = false;
+        for (i, r) in rows.iter().enumerate() {
+            let filled = r.iter().filter(|c| !c.trim().is_empty()).count();
+            if filled == 0 { continue; }
+            if first_table.map_or(true, |ft| i < ft) {
+                let cap = r.iter().find(|c| !c.trim().is_empty()).cloned().unwrap_or_default();
+                out.push_str(&format!("**{}**\n\n", cap));
+                continue;
+            }
+            let mut cells = r.clone();
+            cells.resize(width, String::new());
+            out.push_str("| ");
+            out.push_str(&cells.join(" | "));
+            out.push_str(" |\n");
+            if !header_done {
+                out.push_str("| ");
+                out.push_str(&vec!["---"; width].join(" | "));
+                out.push_str(" |\n");
+                header_done = true;
+            }
+        }
+        out.push('\n');
+    }
+    if out.trim().is_empty() {
+        return Err("The spreadsheet appears to be empty.".to_string());
+    }
+    Ok(out)
+}
+
+// Pull the visible text out of an OOXML part (PPTX slides / DOCX document). Text runs
+// live in <a:t> (PPTX) and <w:t> (DOCX); paragraphs end at <a:p>/<w:p>. Slides are
+// numbered (slide1.xml, slide2.xml…) so we sort them into presentation order.
+fn extract_ooxml_text(path: &str, prefix: &str) -> Result<String, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("Not a valid Office file: {}", e))?;
+    let mut parts: Vec<String> = (0..zip.len())
+        .filter_map(|i| zip.by_index(i).ok().map(|f| f.name().to_string()))
+        .filter(|n| n.starts_with(prefix) && n.ends_with(".xml"))
+        .collect();
+    parts.sort_by_key(|n| trailing_number(n));
+    let mut out = String::new();
+    for name in parts {
+        let mut xml = String::new();
+        if let Ok(mut f) = zip.by_name(&name) {
+            if f.read_to_string(&mut xml).is_ok() {
+                out.push_str(&ooxml_runs_to_text(&xml));
+                out.push('\n');
+            }
+        }
+    }
+    if out.trim().is_empty() {
+        return Err("No readable text found in this file.".to_string());
+    }
+    Ok(out)
+}
+
+fn trailing_number(name: &str) -> u32 {
+    name.trim_end_matches(".xml")
+        .chars().rev().take_while(|c| c.is_ascii_digit())
+        .collect::<String>().chars().rev().collect::<String>()
+        .parse().unwrap_or(0)
+}
+
+fn ooxml_runs_to_text(xml: &str) -> String {
+    use quick_xml::events::Event;
+    use quick_xml::reader::Reader;
+    let mut reader = Reader::from_str(xml);
+    let mut out = String::new();
+    let mut in_text = false;
+    let is_run  = |n: &[u8]| n.ends_with(b":t") || n == b"t";
+    let is_para = |n: &[u8]| n.ends_with(b":p") || n == b"p";
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) => { if is_run(e.name().as_ref()) { in_text = true; } }
+            Ok(Event::End(e)) => {
+                let n = e.name();
+                if is_run(n.as_ref())  { in_text = false; }
+                if is_para(n.as_ref()) { out.push('\n'); }
+            }
+            Ok(Event::Text(t)) => { if in_text { out.push_str(&t.unescape().unwrap_or_default()); } }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    out
+}
+
 #[tauri::command]
 async fn open_folder_dialog(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
@@ -1540,6 +1746,57 @@ async fn krew_generate_image(
         }
     }
     Err("Model returned no image (it may have refused the prompt).".to_string())
+}
+
+// Keyless, commercial-use image search used as a FALLBACK so a deck always has visuals even
+// when AI image generation isn't available (no managed key / plan without image access / rate
+// limit). Uses Openverse (aggregates Flickr, Wikimedia, museums…), filtered to commercially
+// usable licenses, and returns the first real image as a data: URI. Cross-platform (reqwest).
+#[tauri::command]
+async fn fetch_stock_image(query: String) -> Result<String, String> {
+    use base64::{Engine as _, engine::general_purpose};
+    let q = query.trim();
+    if q.is_empty() { return Err("empty query".to_string()); }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .user_agent("adris.tech-desktop/1.0")
+        .build().unwrap_or_else(|_| reqwest::Client::new());
+    let resp = client
+        .get("https://api.openverse.org/v1/images/")
+        .query(&[
+            ("q", q),
+            ("license_type", "commercial"),
+            ("page_size", "12"),
+            ("mature", "false"),
+        ])
+        .send().await
+        .map_err(|e| format!("image search failed: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("image search returned {}", resp.status()));
+    }
+    let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let results = v["results"].as_array().cloned().unwrap_or_default();
+    // Prefer the full image url; fall back to the thumbnail. Try each until one downloads.
+    let mut urls: Vec<String> = Vec::new();
+    for item in &results {
+        if let Some(u) = item["url"].as_str() { urls.push(u.to_string()); }
+        if let Some(t) = item["thumbnail"].as_str() { urls.push(t.to_string()); }
+    }
+    for u in urls.into_iter().take(16) {
+        let r = match client.get(&u).send().await { Ok(r) => r, Err(_) => continue };
+        if !r.status().is_success() { continue; }
+        let ct = r.headers().get(reqwest::header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok()).unwrap_or("image/jpeg").to_string();
+        let ct = ct.split(';').next().unwrap_or("image/jpeg").trim().to_string();
+        if !ct.starts_with("image/") { continue; }
+        if let Ok(bytes) = r.bytes().await {
+            if bytes.len() > 1200 {
+                let b64 = general_purpose::STANDARD.encode(&bytes);
+                return Ok(format!("data:{};base64,{}", ct, b64));
+            }
+        }
+    }
+    Err("no usable image found".to_string())
 }
 
 // Persist a generated deck to disk so it lives in the Brain independently of the
@@ -5887,6 +6144,7 @@ pub fn run() {
             get_token_usage_this_month,
             fetch_session_key,
             krew_generate_image,
+            fetch_stock_image,
             save_deck_files,
             read_deck_spec,
             open_path,
@@ -5932,6 +6190,9 @@ pub fn run() {
             models_download_engine,
             models_pick_file,
             brain_pick_file,
+            brain_extract_text,
+            read_file_base64,
+            brain_store_file,
             models_import,
             studio_save_file,
             // Vault
