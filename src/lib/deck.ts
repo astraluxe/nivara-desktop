@@ -332,10 +332,18 @@ export function renderDeckHtml(spec: DeckSpec): string {
   .slide.active .rule { animation-delay:.07s; }
   .slide.active p, .slide.active .pill, .slide.active .stat-big { animation-delay:.10s; }
   .slide.active ul, .slide.active .cols, .slide.active .imgwrap { animation-delay:.15s; }
+  /* Each slide = one full 16:9 page (no A4, no margins, no shrinking). The on-screen fit()
+     scales slides to the viewport — that transform MUST be reset for print or every slide
+     shrinks and several pile onto one A4 page. */
+  @page { size: 1280px 720px; margin: 0; }
   @media print {
+    html, body { margin:0; padding:0; background:#fff; height:auto; }
     #bar { display:none; }
-    #stage { position:static; }
-    .slide { display:flex !important; position:relative; page-break-after:always; }
+    #stage { position:static; display:block; overflow:visible; height:auto; }
+    .slide { display:flex !important; position:relative !important; left:auto !important; top:auto !important;
+      width:1280px; height:720px; transform:none !important; overflow:hidden;
+      page-break-after:always; break-after:page; page-break-inside:avoid; break-inside:avoid; }
+    .slide:last-child { page-break-after:auto; break-after:auto; }
     .slide * { animation:none !important; }
   }
   /* ── template overrides (change the whole look, not just colours) ── */

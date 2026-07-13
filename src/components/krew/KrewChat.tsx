@@ -1052,7 +1052,23 @@ export interface DeckConfig {
   imageModel: 'gemini-2.5-flash-image' | 'gemini-3-pro-image-preview';
   slideCount: number;               // target number of slides (the user picks it)
   audience?:  string;               // optional "who's this for" to sharpen the content
+  accent?:    string;               // optional accent colour the user picked (else auto)
+  template?:  string;               // optional visual template the user picked (else auto)
 }
+
+// Friendly colour swatches so the user picks a colour by eye, not by hex code.
+const DECK_ACCENTS: { name: string; hex: string }[] = [
+  { name: 'Blue', hex: '#4f8cff' }, { name: 'Indigo', hex: '#6d5cff' }, { name: 'Violet', hex: '#a855f7' },
+  { name: 'Pink', hex: '#ff5ca8' }, { name: 'Rose', hex: '#e11d48' }, { name: 'Red', hex: '#ff4d2e' },
+  { name: 'Orange', hex: '#ff7a45' }, { name: 'Amber', hex: '#f59e0b' }, { name: 'Emerald', hex: '#10b981' },
+  { name: 'Teal', hex: '#22d3ee' }, { name: 'Green', hex: '#34d399' }, { name: 'Slate', hex: '#64748b' },
+];
+const DECK_TEMPLATES: { id: string; label: string }[] = [
+  { id: 'aurora', label: 'Aurora' }, { id: 'gradient', label: 'Gradient' }, { id: 'glass', label: 'Glass' },
+  { id: 'grid', label: 'Grid' }, { id: 'wave', label: 'Wave' }, { id: 'split', label: 'Split' },
+  { id: 'spotlight', label: 'Spotlight' }, { id: 'editorial', label: 'Editorial' }, { id: 'flat', label: 'Flat' },
+  { id: 'mono', label: 'Mono' },
+];
 
 // ── Guaranteed image fallback ────────────────────────────────────────────────
 // Draw a tasteful abstract (the deck's accent, on its background) to a canvas → JPEG data
@@ -1115,6 +1131,8 @@ function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled, deckA
   const [imgModel, setImgModel] = useState<'gemini-2.5-flash-image' | 'gemini-3-pro-image-preview'>('gemini-2.5-flash-image');
   const [slides, setSlides]     = useState(12);
   const [audience, setAudience] = useState('');
+  const [accent, setAccent]     = useState('');   // '' = auto (let the deck pick)
+  const [template, setTemplate] = useState('');   // '' = auto
   const [done, setDone]         = useState(false);
 
   const Opt = ({ active, onClick, title, sub, lock }: { active: boolean; onClick: () => void; title: string; sub: string; lock?: boolean }) => (
@@ -1212,12 +1230,42 @@ function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled, deckA
             placeholder="e.g. B2B SaaS founders, CFOs, non-tech SMB owners…"
             className="w-full rounded-lg px-3 py-2 text-[11px] outline-none focus:border-accent" style={{ background: 'var(--nv-bg)', border: '1px solid var(--nv-border)', color: 'var(--nv-text)' }} />
         </div>
+        {/* Colour — pick by eye (swatches) or your own; optional. You can also recolour after. */}
+        <div>
+          <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1.5">Colour <span className="text-nv-faint/70 normal-case">(optional — change it live after too)</span></p>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <button disabled={disabled} onClick={() => setAccent('')}
+              className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${accent === '' ? 'border-accent bg-accent/10 text-nv-text' : 'border-nv-border text-nv-faint hover:text-nv-text'}`}>Auto</button>
+            {DECK_ACCENTS.map((c) => (
+              <button key={c.hex} disabled={disabled} title={c.name} onClick={() => setAccent(c.hex)}
+                className={`w-6 h-6 rounded-full shrink-0 transition-fast ${accent.toLowerCase() === c.hex ? 'ring-2 ring-offset-2 ring-offset-nv-surface ring-white' : 'hover:scale-110'}`}
+                style={{ background: c.hex, border: '1px solid rgba(255,255,255,.25)' }} />
+            ))}
+            <label title="Pick your own colour" className="relative w-6 h-6 rounded-full shrink-0 cursor-pointer overflow-hidden"
+              style={{ background: (accent && !DECK_ACCENTS.some(c => c.hex === accent.toLowerCase())) ? accent : 'conic-gradient(from 0deg,#ff4d2e,#f59e0b,#34d399,#22d3ee,#4f8cff,#a855f7,#ff5ca8,#ff4d2e)', border: '1px solid rgba(255,255,255,.35)' }}>
+              <input type="color" disabled={disabled} value={accent || '#4f8cff'} onChange={(e) => setAccent(e.target.value)}
+                className="absolute inset-0 opacity-0 w-full h-full cursor-pointer" />
+            </label>
+          </div>
+        </div>
+        {/* Template — the visual style; optional (Auto lets the deck match the topic). */}
+        <div>
+          <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1.5">Design template <span className="text-nv-faint/70 normal-case">(optional)</span></p>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <button disabled={disabled} onClick={() => setTemplate('')}
+              className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${template === '' ? 'border-accent bg-accent/10 text-nv-text' : 'border-nv-border text-nv-faint hover:text-nv-text'}`}>Auto</button>
+            {DECK_TEMPLATES.map((t) => (
+              <button key={t.id} disabled={disabled} onClick={() => setTemplate(t.id)}
+                className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${template === t.id ? 'border-accent bg-accent/10 text-nv-text' : 'border-nv-border text-nv-faint hover:text-nv-text'}`}>{t.label}</button>
+            ))}
+          </div>
+        </div>
       </div>
       <div className="px-3 py-2.5 border-t border-nv-border/60 bg-nv-bg flex justify-end gap-2">
         <button onClick={onCancel} disabled={disabled} className="text-[11px] text-nv-faint hover:text-nv-text transition-fast font-mono">Cancel</button>
         <button
           disabled={disabled}
-          onClick={() => { setDone(true); onGenerate({ format, mode, imageModel: imgModel, slideCount: slides, audience: audience.trim() || undefined }); }}
+          onClick={() => { setDone(true); onGenerate({ format, mode, imageModel: imgModel, slideCount: slides, audience: audience.trim() || undefined, accent: accent || undefined, template: template || undefined }); }}
           className="text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-semibold disabled:opacity-50"
         >Generate deck →</button>
       </div>
@@ -3114,6 +3162,11 @@ The prompt must be production-ready — specific enough for a motion designer to
       }
       if (spec.slides.length > target) spec.slides = spec.slides.slice(0, target);
       if (stopRef.current) { setMessages((prev) => prev.filter((m) => !m.streaming)); setBusy(false); return; }
+
+      // Apply the user's OPTIONAL colour/template choices from the setup card (before images so
+      // the generated-abstract fallback uses the chosen accent). Both stay tweakable live after.
+      if (cfg.template) spec.template = cfg.template;
+      if (cfg.accent) spec.palette = { ...spec.palette, accent: cfg.accent };
 
       let imgNote = '';
       if (cfg.mode === 'advanced') {
