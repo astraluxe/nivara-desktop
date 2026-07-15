@@ -3392,7 +3392,11 @@ The prompt must be production-ready — specific enough for a motion designer to
           : 'your previous output was NOT valid JSON.';
         const sysTry = attempt === 1 ? sys
           : sys + `\n\nIMPORTANT: ${retryReason} Return ONLY one strictly-valid, COMPACT JSON object — no markdown, no comments, no imagePrompt fields. Keep every "notes" to one short line. Double-check every quote, comma and brace.`;
-        const { text, truncated } = await streamTurnWithRetry([{ role: 'user', content: requestCtx }], sysTry, () => {});
+        // If the RETRY (attempt 2) hits a transient AI error but attempt 1 already gave us a
+        // usable deck, keep that deck instead of failing the whole thing.
+        let text = '', truncated = false;
+        try { ({ text, truncated } = await streamTurnWithRetry([{ role: 'user', content: requestCtx }], sysTry, () => {})); }
+        catch (e) { if (spec) break; throw e; }
         lastText = text;
         wasTruncated = truncated;
         const parsed = parseDeckSpec(text);
@@ -3434,7 +3438,12 @@ The prompt must be production-ready — specific enough for a motion designer to
         const contSys = AGENT_BY_KEY['deck_maker'].systemPrompt + contentDirective + coverageDirective + chartDirective + layoutsDirective + dateBlock
           + `\n\n## CONTINUE — OUTPUT ONLY THE MISSING SLIDES\nA deck is already in progress with ${have} slides. Output ONLY the REMAINING ${target - have} slides (slide ${have + 1} to ${target}) as a compact JSON object {"slides":[ ... ]}. Do NOT repeat any slide already made; do NOT include title/subtitle/preset/palette — just the "slides" array continuing the brief's narrative, using VARIED layouts. No imagePrompt fields.`;
         const contUser = requestCtx + `\n\n(Slides already created: ${done}. Now produce ONLY slides ${have + 1}–${target} — that's ${target - have} more.)`;
-        const { text } = await streamTurnWithRetry([{ role: 'user', content: contUser }], contSys, () => {});
+        // Best-effort: a transient AI 5xx here must NOT discard the deck we already parsed —
+        // just stop adding more and use what we have (the outer catch would have shown
+        // "AI service temporarily unavailable" and thrown the whole deck away).
+        let text = '';
+        try { ({ text } = await streamTurnWithRetry([{ role: 'user', content: contUser }], contSys, () => {})); }
+        catch { break; }
         const more = parseDeckSpec(text);
         if (more && more.slides.length) {
           // Append but DROP duplicates the model re-emits (this is the "slide used twice / loops"
@@ -3457,7 +3466,11 @@ The prompt must be production-ready — specific enough for a motion designer to
         const draftJson = JSON.stringify({ ...spec, slides: spec.slides.map((s) => ({ ...s, imageData: undefined, imagePrompt: undefined })) });
         const reviewSys = AGENT_BY_KEY['deck_maker'].systemPrompt + coverageDirective + chartDirective + layoutsDirective + densityDirective
           + `\n\n## YOU ARE THE REVIEWER — RETURN A CORRECTED DECK\nBelow is a DRAFT deck (JSON) built for the brief. Review it critically as a senior presentation designer and return the FULL corrected deck as ONE compact, strictly-valid JSON object with the same structure. Fix ALL of these:\n- REMOVE duplicate or near-duplicate slides; a slide must NEVER repeat.\n- Every slide must carry REAL, specific content taken from the brief/source (actual numbers, names, comparisons) — rewrite or fill any thin, vague, or near-empty slide. A lone title is NOT acceptable.\n- ONLY slide 1 is layout "title"; everything else is a CONTENT layout, VARIED (bullets/cards/comparison/chart/stat/two-column/pricing/timeline/quote), matched to what the slide says.\n- If the brief gave a slide-by-slide plan, keep that order and one slide per item. Keep about ${spec.slides.length} slides.\n- No imagePrompt/imageData fields. Return ONLY the JSON object.`;
-        const reviewUser = requestCtx + `\n\n=== DRAFT DECK TO REVIEW (return the corrected full spec) ===\n${draftJson}`;
+        // Use the ASK/plan (not the whole attached document) as the review brief — the draft
+        // already contains the extracted content, and a smaller prompt is far less likely to hit
+        // a transient AI error. Include a trimmed slice of the doc for fact-checking only.
+        const reviewBrief = (deckTextRef.current || requestCtx).slice(0, 6000);
+        const reviewUser = `BRIEF:\n${reviewBrief}\n\n=== DRAFT DECK TO REVIEW (return the corrected full spec) ===\n${draftJson}`;
         const { text: rtext } = await streamTurnWithRetry([{ role: 'user', content: reviewUser }], reviewSys, () => {});
         const reviewed = parseDeckSpec(rtext);
         if (reviewed && reviewed.slides.length >= Math.max(4, spec.slides.length - 3)) {
