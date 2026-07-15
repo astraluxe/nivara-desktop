@@ -1145,6 +1145,8 @@ export interface DeckConfig {
   accent?:    string;               // optional accent colour the user picked (else auto)
   template?:  string;               // optional visual template the user picked (else auto)
   density?:   'light' | 'balanced' | 'detailed';  // how much text per slide
+  strictPlan?: boolean;             // true = follow the user's outline + slide count EXACTLY;
+                                    // false (default) = use it as reference and design a better deck
 }
 
 // Friendly colour swatches so the user picks a colour by eye, not by hex code.
@@ -1189,6 +1191,7 @@ function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled }: {
   const [imgModel, setImgModel] = useState<'gemini-2.5-flash-image' | 'gemini-3-pro-image-preview'>('gemini-2.5-flash-image');
   const [slides, setSlides]     = useState(12);
   const [density, setDensity]   = useState<'light' | 'balanced' | 'detailed'>('balanced');
+  const [strictPlan, setStrictPlan] = useState(false); // off = design a better deck from the brief
   const [audience, setAudience] = useState('');
   const [accent, setAccent]     = useState('');   // '' = auto (let the deck pick)
   const [template, setTemplate] = useState('');   // '' = auto
@@ -1263,6 +1266,14 @@ function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled }: {
                 className={`flex-1 text-[10px] py-1 rounded-md border transition-fast ${slides === n ? 'border-accent bg-accent/10 text-nv-text' : 'border-nv-border text-nv-faint hover:text-nv-text'}`}>{n}</button>
             ))}
           </div>
+          {/* Strict vs. flexible — off (default): treat the ask + files as reference and design the
+              best deck, adjusting the count if it helps. On: follow the outline + count exactly. */}
+          <label className="flex items-start gap-2 mt-2 cursor-pointer">
+            <input type="checkbox" checked={strictPlan} disabled={disabled} onChange={(e) => setStrictPlan(e.target.checked)} className="mt-0.5 accent-accent" />
+            <span className="text-[10px] text-nv-muted leading-snug">Follow my outline & slide count <span className="font-semibold">exactly</span>
+              <span className="block text-[9px] text-nv-faint">{strictPlan ? 'On — I\'ll match your slides one-for-one.' : 'Off — I\'ll use your notes + files as reference and design the best deck, adding slides if it improves the result.'}</span>
+            </span>
+          </label>
         </div>
         <div>
           <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1.5">How much text per slide?</p>
@@ -1321,7 +1332,7 @@ function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled }: {
         <button onClick={onCancel} disabled={disabled} className="text-[11px] text-nv-faint hover:text-nv-text transition-fast font-mono">Cancel</button>
         <button
           disabled={disabled}
-          onClick={() => { setDone(true); onGenerate({ format, mode, imageModel: imgModel, slideCount: slides, density, audience: audience.trim() || undefined, accent: accent || undefined, template: template || undefined }); }}
+          onClick={() => { setDone(true); onGenerate({ format, mode, imageModel: imgModel, slideCount: slides, density, strictPlan, audience: audience.trim() || undefined, accent: accent || undefined, template: template || undefined }); }}
           className="text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-semibold disabled:opacity-50"
         >Generate deck →</button>
       </div>
@@ -3352,18 +3363,28 @@ The prompt must be production-ready — specific enough for a motion designer to
       // Anti-sameness: models tend to reach for the same "dark" theme every time. Push Slade
       // to actually match the palette to the topic's industry/mood (Gamma-style variety).
       const designDirective = `\n\n## PICK A PALETTE + TEMPLATE THAT FIT THIS TOPIC\nDo NOT default to the same dark theme every time. Choose the preset + accent colour that genuinely matches THIS deck's industry and mood (e.g. finance→corporate blue, wellness→soft/editorial, dev-tool→minimal, launch→bold, consumer/youth→vibrant, crypto/gaming→neon; you may also set a custom "palette"). You MAY add a "template" field to pick the visual treatment: "aurora" (glowing, techy), "gradient" (soft modern SaaS), "glass" (frosted, blurred clouds), "grid" (technical blueprint), "wave" (flowing colour sweep), "split" (bold diagonal block), "spotlight" (dramatic top beam), "editorial" (clean, thin rules, premium), "flat" (bold solid accent bar), or "mono" (minimal, big type). Pick the one that fits the mood. Vary the layouts too — mix section breaks, a stat slide, a quote, and two-column comparisons; never 10 identical bullet slides.`;
-      // If the user pasted an explicit slide-by-slide plan, its highest "Slide N" number is the
-      // real target — honour that over the setup-card stepper (they asked for 11, the plan has 11).
+      // STRICT vs FLEXIBLE (the "Follow my outline & slide count exactly" checkbox):
+      //  • strict  → follow the user's outline one-for-one and hit the exact slide count.
+      //  • flexible (default) → treat the notes + files as REFERENCE and design the best deck,
+      //    with the count as a suggestion the agent may exceed a little for a stronger result.
+      const strict = !!cfg.strictPlan;
       let planCount = 0;
       { const re = /\bslide\s*#?\s*(\d{1,2})\b/gi; let m: RegExpExecArray | null; while ((m = re.exec(requestCtx))) planCount = Math.max(planCount, parseInt(m[1], 10)); }
-      const target = Math.max(4, Math.min(30, planCount >= 4 ? planCount : Math.round(cfg.slideCount || 12)));
-      const minSlides = Math.max(4, target - 1); // accept target-1, else retry for the rest
-      const countDirective = `\n\n## SLIDE COUNT — HARD REQUIREMENT\nProduce EXACTLY ${target} slides — a full, complete slide object for each. Not 6, not "a few": ${target}. Keep adding slides until the "slides" array has ${target} entries. This count overrides any smaller number implied anywhere else.`;
+      const suggested = strict && planCount >= 4 ? planCount : Math.round(cfg.slideCount || 12);
+      const target = Math.max(4, Math.min(30, suggested));
+      const maxSlides = strict ? target : Math.min(30, target + 5); // flexible may run a little over
+      const minSlides = strict ? target : Math.max(4, target - 2);
+      const planDirective = strict
+        ? `\n\n## FOLLOW THE USER'S OUTLINE EXACTLY\nThe user's request is an explicit slide plan. Produce ONE slide per item, in their order, with their titles/content. Fix obvious typos and pull the real numbers from the document, but do NOT change the structure or the count.`
+        : `\n\n## THE REQUEST + DOCUMENT ARE REFERENCE — DESIGN YOUR OWN BEST DECK\nTreat the user's notes/outline and the attached document as REFERENCE and SOURCE MATERIAL, not a script to copy. Understand what they want to achieve, then PLAN AND DESIGN your OWN professional, well-structured presentation: fix errors, typos and garbled/incomplete lines in their notes; merge or split points for better flow; choose the strongest layout for each slide; drop weak slides; and ADD slides where they make the story clearer or more persuasive. Keep EVERY real figure, price and name from the source — but the structure, wording and slide choices are YOURS to make excellent. Do not reproduce their rough outline verbatim.`;
+      const countDirective = strict
+        ? `\n\n## SLIDE COUNT — HARD REQUIREMENT\nProduce EXACTLY ${target} slides — a full, complete slide object for each. Not 6, not "a few": ${target}. Keep adding slides until the "slides" array has ${target} entries. This count overrides any smaller number implied anywhere else.`
+        : `\n\n## SLIDE COUNT — A TARGET, NOT A CAGE\nAim for about ${target} slides. You MAY use a few more (up to ${maxSlides}) when it genuinely makes a stronger, clearer deck, or slightly fewer if the content is tight — decide like a presentation designer. Never pad with filler just to hit a number, and never leave the deck thin.`;
       const audienceDirective = cfg.audience
         ? `\n\n## AUDIENCE\nWrite every headline, bullet and note for this audience: ${cfg.audience}. Speak to their goals and pains in "you" language.`
         : '';
       const contentDirective = `\n\n## WRITE REAL, SPECIFIC CONTENT — NOT FILLER\n- Build the deck FROM the attached document: use its ACTUAL numbers, product/module names, comparisons and pricing. Never generic marketing fluff.\n- Every slide earns its place: a concrete claim + the specific proof/number behind it. Benefit-led headlines ("Save 10 hrs/week", not "Our Features").\n- Follow the brief's narrative arc (problem → solution → proof → ROI → call to action). Use VARIED layouts — a stat slide for a big number, a two-column slide for a comparison/before-after, a quote for a testimonial — so it reads like a designed deck, not a bullet dump.\n- 3–6 tight bullets per content slide, each ≤ 14 words. One idea per slide.`;
-      const coverageDirective = `\n\n## COVER THE WHOLE SOURCE — DON'T OVER-INDEX ON ONE PART\nWhen a document is attached, base the deck on its FULL breadth — represent the product's different capabilities/modules/sections, not just the first/biggest thing mentioned. Do NOT let one module (e.g. the agents) eat half the deck; give the others their own slides. Pull the strongest, most client-relevant points from across the ENTIRE document.\n\n## FOLLOW A PER-SLIDE BRIEF EXACTLY\nIf the request assigns specific topics to specific slides (e.g. "Slide 4-9: one module each", "Slide 2: the problem"), produce a distinct slide for EACH assignment, in that order — never collapse several into one or skip any. Every slide must have REAL content (title + bullets/stat/columns); never emit an empty or near-empty slide.\n\n## KEEP NOTES SHORT\nEven if the brief asks for a "speaker script", keep each slide's "notes" to ONE short line (≤ 20 words) — a long script per slide overflows the output limit and truncates the deck.`;
+      const coverageDirective = `\n\n## COVER THE WHOLE SOURCE — DON'T OVER-INDEX ON ONE PART\nWhen a document is attached, base the deck on its FULL breadth — represent the product's different capabilities/modules/sections, not just the first/biggest thing mentioned. Do NOT let one module (e.g. the agents) eat half the deck; give the others their own slides. Pull the strongest, most client-relevant points from across the ENTIRE document. Every slide must have REAL content (title + bullets/stat/columns); never emit an empty or near-empty slide.\n\n## KEEP NOTES SHORT\nEven if the brief asks for a "speaker script", keep each slide's "notes" to ONE short line (≤ 20 words) — a long script per slide overflows the output limit and truncates the deck.`;
       const chartDirective = `\n\n## SHOW NUMBERS AS A CHART\nWhen a slide compares a FEW numbers (costs, ROI %, growth, before/after, time saved), use a CHART slide instead of a plain bullet list — it looks far more professional. Emit: {"layout":"chart","title":"…","chartData":[{"label":"Traditional","value":250000},{"label":"adris.tech","value":19999}],"chartUnit":"₹","notes":"…"}. Rules: 2–6 data points, "value" MUST be a plain number (no commas, symbols or text — put the unit in "chartUnit" like "₹", "%", "hrs"), keep labels short. Use 1–3 chart slides where the data genuinely warrants it (e.g. the cost/ROI comparison), not everywhere.`;
       const layoutsDirective = `\n\n## USE THE RIGHT LAYOUT FOR EACH SLIDE (pick per content — don't make every slide bullets)\nEach slide object has a "layout". Available layouts and their fields:\n- "title": title, subtitle, body — the OPENING cover slide (slide 1 MUST be this).\n- "agenda": title + bullets[] — a numbered outline of the deck's topics (use as slide 2 for a long deck).\n- "section": title, subtitle — a chapter divider between parts.\n- "bullets": title + bullets[] (3–6, ≤14 words) — a standard point slide.\n- "two-column": title + columns[{heading,bullets[]}] — two related lists.\n- "comparison": title + columns[2]{heading,bullets[]} — us-vs-them / before-vs-after (renders a VS badge).\n- "cards": title + cards[{heading,body}] (3–6) — a feature/module grid (great for "6 modules").\n- "process": title + cards[{heading,body}] (3–5) — numbered steps / how-it-works.\n- "timeline": title + timeline[{label,text}] — roadmap/milestones.\n- "stat": title(kicker) + stat + statLabel — ONE giant number.\n- "chart": title + chartData[{label,value}] + chartUnit — a bar chart for a few numbers (cost/ROI comparisons).\n- "pricing": title + plans[{name,price,bullets[],highlight}] — 2–4 pricing tiers.\n- "quote": quote + attribution — a testimonial / punchy line.\n- "team": title + people[{name,role}] — the people / about-us grid.\n- "logos": title + subtitle + logos[] (names) — a "trusted by" client/partner wall.\n- "image-full": title (+ image) — a full-bleed impact slide.\n- "closing": title, subtitle(CTA pill), body — the final call-to-action.\nVARY them: a real deck mixes agenda, cards, comparison, chart, stat, quote, pricing, team, logos — NOT 12 bullet slides. Match the layout to what the slide is actually saying.`;
       // How much text per slide (from the setup card) + a hard rule that ONLY slide 1 is a title.
@@ -3377,7 +3398,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       const fileDirective = /\[Reference document:/.test(requestCtx)
         ? `\n\n## USE THE ATTACHED DOCUMENT — MANDATORY\nOne or more reference documents are included below. You MUST read them fully and build the deck FROM them — every fact, number, product/module name, price and comparison comes from the document(s). Do NOT invent figures or ignore the document. If the request also gives a slide plan, follow the plan's structure and fill each slide with the real content from the document.`
         : '';
-      const sys = AGENT_BY_KEY['deck_maker'].systemPrompt + modeDirective + countDirective + fileDirective + contentDirective + coverageDirective + chartDirective + layoutsDirective + slideRoleDirective + densityDirective + designDirective + audienceDirective + dateBlock;
+      const sys = AGENT_BY_KEY['deck_maker'].systemPrompt + modeDirective + planDirective + countDirective + fileDirective + contentDirective + coverageDirective + chartDirective + layoutsDirective + slideRoleDirective + densityDirective + designDirective + audienceDirective + dateBlock;
       setStatus(`Slade is structuring your ${target} slides…`);
       // Generate + parse. Retry once if the JSON is broken OR fewer than the requested slides
       // came back. We keep whatever parsed as a fallback so a short retry never loses the first.
@@ -3454,7 +3475,7 @@ The prompt must be production-ready — specific enough for a motion designer to
         } else contMisses++;
       }
       spec.slides = dedupeDeckSlides(spec.slides); // final safety pass against any repeats
-      if (spec.slides.length > target) spec.slides = spec.slides.slice(0, target);
+      if (spec.slides.length > maxSlides) spec.slides = spec.slides.slice(0, maxSlides);
       if (stopRef.current) { setMessages((prev) => prev.filter((m) => !m.streaming)); setBusy(false); return; }
 
       // ── AUTO-REVIEW — a reviewer pass critiques the WHOLE deck and returns a corrected version
@@ -3464,8 +3485,11 @@ The prompt must be production-ready — specific enough for a motion designer to
       setStatus('Reviewing & polishing the deck…');
       try {
         const draftJson = JSON.stringify({ ...spec, slides: spec.slides.map((s) => ({ ...s, imageData: undefined, imagePrompt: undefined })) });
+        const reviewPlanRule = strict
+          ? `- The brief is an explicit slide plan — keep that order and one slide per item; keep about ${spec.slides.length} slides.`
+          : `- Treat the brief as reference: improve structure and wording freely, merge/split/reorder for the strongest narrative, and keep about ${spec.slides.length} slides (a couple more or fewer is fine if it's better).`;
         const reviewSys = AGENT_BY_KEY['deck_maker'].systemPrompt + coverageDirective + chartDirective + layoutsDirective + densityDirective
-          + `\n\n## YOU ARE THE REVIEWER — RETURN A CORRECTED DECK\nBelow is a DRAFT deck (JSON) built for the brief. Review it critically as a senior presentation designer and return the FULL corrected deck as ONE compact, strictly-valid JSON object with the same structure. Fix ALL of these:\n- REMOVE duplicate or near-duplicate slides; a slide must NEVER repeat.\n- Every slide must carry REAL, specific content taken from the brief/source (actual numbers, names, comparisons) — rewrite or fill any thin, vague, or near-empty slide. A lone title is NOT acceptable.\n- ONLY slide 1 is layout "title"; everything else is a CONTENT layout, VARIED (bullets/cards/comparison/chart/stat/two-column/pricing/timeline/quote), matched to what the slide says.\n- If the brief gave a slide-by-slide plan, keep that order and one slide per item. Keep about ${spec.slides.length} slides.\n- No imagePrompt/imageData fields. Return ONLY the JSON object.`;
+          + `\n\n## YOU ARE THE REVIEWER — RETURN A CORRECTED DECK\nBelow is a DRAFT deck (JSON) built for the brief. Review it critically as a senior presentation designer and return the FULL corrected deck as ONE compact, strictly-valid JSON object with the same structure. Fix ALL of these:\n- REMOVE duplicate or near-duplicate slides; a slide must NEVER repeat.\n- Every slide must carry REAL, specific content taken from the brief/source (actual numbers, names, comparisons) — rewrite or fill any thin, vague, or near-empty slide. A lone title is NOT acceptable.\n- ONLY slide 1 is layout "title"; everything else is a CONTENT layout, VARIED (bullets/cards/comparison/chart/stat/two-column/pricing/timeline/quote), matched to what the slide says.\n${reviewPlanRule}\n- No imagePrompt/imageData fields. Return ONLY the JSON object.`;
         // Use the ASK/plan (not the whole attached document) as the review brief — the draft
         // already contains the extracted content, and a smaller prompt is far less likely to hit
         // a transient AI error. Include a trimmed slice of the doc for fact-checking only.
@@ -3477,7 +3501,7 @@ The prompt must be production-ready — specific enough for a motion designer to
           reviewed.palette = spec.palette; reviewed.font = spec.font; reviewed.template = spec.template;
           if (!reviewed.title) reviewed.title = spec.title;
           reviewed.slides = dedupeDeckSlides(reviewed.slides);
-          if (reviewed.slides.length > target) reviewed.slides = reviewed.slides.slice(0, target);
+          if (reviewed.slides.length > maxSlides) reviewed.slides = reviewed.slides.slice(0, maxSlides);
           spec = reviewed;
         }
       } catch { /* keep the draft if review fails */ }
@@ -4056,15 +4080,13 @@ The prompt must be production-ready — specific enough for a motion designer to
       const DECK_FILE_CAP = 90000; // send the whole source doc to Slade — a truncated doc = a deck missing context
       const deckFileBlock = nonImageFiles.map(f => `[Reference document: ${f.name}]\n\`\`\`\n${f.content.slice(0, DECK_FILE_CAP)}\n\`\`\`\n\n`).join('');
       const deckFocusBlock = focusedFile ? `[Reference document: ${focusedFile.name}]\n\`\`\`\n${focusedFile.content.slice(0, DECK_FILE_CAP)}\n\`\`\`\n\n` : '';
-      // Put the user's REQUEST/PLAN FIRST (before the reference doc). When the message contains an
-      // explicit slide-by-slide outline, that plan is the structure to follow — the document is
-      // only the source of facts/numbers. (Previously the doc came first and Slade built the deck
-      // from the doc, ignoring the outline the user had written.)
-      const hasPlan = /slide\s*#?\s*\d+\s*[:.\-)]/i.test(text) || /\bslide\s+\d+\b/i.test(text);
-      const planLead = hasPlan
-        ? `THE USER HAS GIVEN AN EXPLICIT SLIDE-BY-SLIDE PLAN BELOW. Follow it EXACTLY — one slide per item, in that order, with the titles/content they specify. Use the reference document only to fill in the real facts, numbers and names. Do NOT replace their plan with your own structure.\n\n=== USER'S REQUEST / PLAN ===\n${text}\n\n=== END REQUEST ===\n\n`
-        : `=== USER'S REQUEST ===\n${text}\n\n`;
-      deckRequestRef.current = planLead + deckFocusBlock + deckFileBlock; // full context for Slade, plan first
+      // Put the user's request FIRST, then the reference document(s). Whether the request is a
+      // strict plan-to-follow or just reference material is decided at generation time by the
+      // "Follow my outline exactly" checkbox (cfg.strictPlan) — so keep the framing NEUTRAL here.
+      deckRequestRef.current = `=== USER'S REQUEST / NOTES ===\n${text}\n\n${deckFocusBlock}${deckFileBlock}`;
+      deckTextRef.current = text; // the raw ask — used to read slide numbers / picture names (not the doc)
+      // Pictures the user attached WITH the deck request → use them in the deck (logo on every
+      // slide, or a photo on the slides they name). A name containing "logo" (or a lone image
       deckTextRef.current = text; // the raw ask — used to read slide numbers / picture names (not the doc)
       // Pictures the user attached WITH the deck request → use them in the deck (logo on every
       // slide, or a photo on the slides they name). A name containing "logo" (or a lone image
