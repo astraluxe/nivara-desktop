@@ -15,7 +15,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { extractTableRows, mergeLeadTables, parseLeadRows, rowsToMarkdown } from '../../lib/leadTable';
 import { supabase } from '../../lib/supabase';
 import { getPlanConfig } from '../../lib/planConfig';
-import { parseDeckSpec, slidesNeedingImages, renderDeckHtml, extractDeckSpec, type DeckSpec, type DeckPalette } from '../../lib/deck';
+import { parseDeckSpec, slidesNeedingImages, renderDeckHtml, extractDeckSpec, type DeckSpec, type DeckSlide, type DeckPalette } from '../../lib/deck';
 import { setLastDeck } from '../../lib/deckStore';
 import { CHANNEL_META, listConnections, saveConnection, schedulePost, postNow, type SocialConnection, type SocialChannel, type PostContent } from '../../lib/social';
 import UpgradeModal from '../UpgradeModal';
@@ -222,6 +222,23 @@ function looksLikeDeckEdit(text: string): boolean {
 // Place the user's own images onto the deck: a logo → spec.logo (drawn on every slide); the
 // rest onto the slide numbers they named, then any leftover onto image-friendly slides in
 // order. User images always WIN over AI generation (we clear that slide's imagePrompt).
+// Identity of a slide by its main text — used to drop duplicates the continuation pass sometimes
+// re-emits (the "one slide used twice / looping" bug).
+function slideSig(s: DeckSlide): string {
+  return (s.title || s.quote || s.stat || s.subtitle || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+function dedupeDeckSlides(slides: DeckSlide[]): DeckSlide[] {
+  const seen = new Set<string>();
+  const out: DeckSlide[] = [];
+  for (const s of slides) {
+    const sig = slideSig(s);
+    if (sig && seen.has(sig)) continue; // a repeat of an already-included titled slide → skip
+    if (sig) seen.add(sig);
+    out.push(s);
+  }
+  return out;
+}
+
 function applyUserImagesToSpec(spec: DeckSpec, imgs: DeckImage[], text: string): number {
   if (!imgs.length) return 0;
   let placed = 0;
@@ -1312,14 +1329,20 @@ function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled }: {
   );
 }
 
-function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
+function DeckResultBubble({ html, spec: specProp }: { html: string; spec: DeckSpec }) {
   const [savedHtml, setSavedHtml] = useState(false);
   const [pdfState, setPdfState]   = useState<'idle' | 'opening' | 'err'>('idle');
+  // Working copy of the deck — structural edits (add / delete / reorder slides) mutate this and
+  // re-render; inline text edits are layered on top via editsRef (no reload). The `spec` prop is
+  // only the initial value.
+  const [baseSpec, setBaseSpec] = useState<DeckSpec>(specProp);
+  const spec = baseSpec;
+  const [showSlides, setShowSlides] = useState(false); // slide manager panel
   // Live palette editing: the user tweaks 3 colours (background / text / accent) and the deck
   // re-renders instantly. surface/muted are derived so a full palette needs only 3 picks.
-  const [pal, setPal] = useState<DeckPalette>(spec.palette);
+  const [pal, setPal] = useState<DeckPalette>(specProp.palette);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'done'>('idle');
-  const dirty = pal.bg !== spec.palette.bg || pal.text !== spec.palette.text || pal.accent !== spec.palette.accent;
+  const dirty = pal.bg !== specProp.palette.bg || pal.text !== specProp.palette.text || pal.accent !== specProp.palette.accent;
 
   // Inline editing: the user clicks any text ON the deck and edits it. Edits are posted from
   // the iframe and collected here (in a ref, so typing never reloads the iframe). editId scopes
@@ -1378,6 +1401,16 @@ function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
       return { bg, text, accent, surface: mixHex(bg, text, 0.08), muted: mixHex(text, bg, 0.45) };
     });
   }
+  // Structural slide edit — first BAKE any pending inline text edits (so a half-typed change isn't
+  // lost when indices shift), clear them, then apply the change and re-render.
+  function mutateSlides(fn: (slides: DeckSlide[]) => DeckSlide[]) {
+    const baked = applyEdits({ ...baseSpec, palette: pal });
+    editsRef.current = {};
+    setBaseSpec({ ...baked, slides: fn(baked.slides.slice()) });
+  }
+  const deleteSlide = (i: number) => mutateSlides((s) => (s.length > 1 ? s.filter((_, j) => j !== i) : s));
+  const moveSlide = (i: number, dir: -1 | 1) => mutateSlides((s) => { const j = i + dir; if (j < 0 || j >= s.length) return s; const c = s.slice(); [c[i], c[j]] = [c[j], c[i]]; return c; });
+  const addSlideAfter = (i: number) => mutateSlides((s) => { const c = s.slice(); c.splice(i + 1, 0, { layout: 'bullets', title: 'New slide', bullets: ['Add your point here'] }); return c; });
 
   function slug() { return (spec.title || 'deck').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'deck'; }
   function downloadHtml() {
@@ -1449,6 +1482,10 @@ function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
           <span className="text-[9px] text-nv-faint font-mono shrink-0">{liveSpec.slides.length} slides{imgCount ? ` · ${imgCount} images` : ''}</span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          <button onClick={() => setShowSlides((v) => !v)} title="Add, delete or reorder slides"
+            className={`text-[10px] px-2.5 py-1 rounded-lg border transition-fast font-mono ${showSlides ? 'border-accent text-accent bg-accent/10' : 'border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40'}`}>
+            ⧉ Slides
+          </button>
           <button onClick={downloadHtml} className="text-[10px] px-2.5 py-1 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40 transition-fast font-mono">
             {savedHtml ? '✓ Saved' : '⭳ .html'}
           </button>
@@ -1457,6 +1494,23 @@ function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
           </button>
         </div>
       </div>
+      {/* Slide manager — add, delete, reorder. Text is edited by clicking on the slide itself. */}
+      {showSlides && (
+        <div className="px-3 py-2 border-b border-nv-border/40 bg-nv-bg max-h-52 overflow-y-auto">
+          {liveSpec.slides.map((s, i) => (
+            <div key={i} className="flex items-center gap-2 py-1">
+              <span className="text-[9px] font-mono text-nv-faint w-5 shrink-0">{String(i + 1).padStart(2, '0')}</span>
+              <span className="text-[8px] font-mono px-1.5 py-0.5 rounded bg-nv-surface2 text-nv-faint shrink-0">{s.layout}</span>
+              <span className="text-[10px] text-nv-text truncate flex-1">{s.title || s.quote || s.stat || '(untitled)'}</span>
+              <button onClick={() => moveSlide(i, -1)} disabled={i === 0} title="Move up" className="text-[11px] px-1 text-nv-faint hover:text-nv-text disabled:opacity-30">↑</button>
+              <button onClick={() => moveSlide(i, 1)} disabled={i === liveSpec.slides.length - 1} title="Move down" className="text-[11px] px-1 text-nv-faint hover:text-nv-text disabled:opacity-30">↓</button>
+              <button onClick={() => addSlideAfter(i)} title="Add a slide after this" className="text-[11px] px-1 text-nv-faint hover:text-accent">＋</button>
+              <button onClick={() => deleteSlide(i)} disabled={liveSpec.slides.length <= 1} title="Delete this slide" className="text-[11px] px-1 text-nv-faint hover:text-nv-red disabled:opacity-30">🗑</button>
+            </div>
+          ))}
+          <p className="text-[9px] text-nv-faint font-mono mt-1">Click any text on a slide to edit it · add / delete / reorder here · download when done</p>
+        </div>
+      )}
       {/* Colour editor — 3 colours max; the deck restyles live as you change them */}
       <div className="flex items-center gap-3 px-3 py-2 border-b border-nv-border/40 bg-nv-surface flex-wrap">
         <span className="text-[9px] font-mono uppercase tracking-wider text-nv-faint">Colours</span>
@@ -1474,7 +1528,7 @@ function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
         })}
         <div className="flex-1" />
         {dirty && (
-          <button onClick={() => setPal(spec.palette)} className="text-[9.5px] text-nv-faint hover:text-nv-text font-mono">reset</button>
+          <button onClick={() => setPal(specProp.palette)} className="text-[9.5px] text-nv-faint hover:text-nv-text font-mono">reset</button>
         )}
         <button onClick={saveChanges} disabled={saveState === 'saving'}
           className="text-[10px] px-2.5 py-1 rounded-lg border border-accent/50 text-accent hover:bg-accent/10 transition-fast font-mono disabled:opacity-50">
@@ -3247,7 +3301,7 @@ The prompt must be production-ready — specific enough for a motion designer to
   // (Slade) agent to produce a DeckSpec, generates AI images in Advanced mode, then renders
   // both an in-chat HTML deck and (on demand) an editable .pptx.
   async function runDeckGeneration(cfg: DeckConfig) {
-    const requestCtx = deckRequestRef.current;
+    let requestCtx = deckRequestRef.current;
     if (!requestCtx) return;
     setBusy(true);
     stopRef.current = false;
@@ -3265,6 +3319,26 @@ The prompt must be production-ready — specific enough for a motion designer to
       if (l?.role === 'delegation') c[c.length - 1] = { ...l, content: t };
       return c;
     });
+    // ── WEB RESEARCH PRE-PASS — pull a little live context from the internet to enrich the deck
+    // with current facts/stats. Runs when the deck would benefit (no source doc attached, or the
+    // ask explicitly wants research/latest/market data). Best-effort; failures are ignored, and it
+    // is clearly labelled SUPPLEMENTARY so the user's own document stays the primary source.
+    try {
+      const askLc = (deckTextRef.current || '').toLowerCase();
+      const wantsResearch = /\b(research|latest|current|market|trend|statistic|stats|industry|benchmark|data|report)\b/.test(askLc);
+      const hasDoc = /\[Reference document:/.test(requestCtx);
+      if (wantsResearch || !hasDoc) {
+        setStatus('Researching current facts…');
+        const topic = (deckTextRef.current || '').split('\n')[0].replace(/\b(make|create|build|generate|deck|presentation|ppt|slides?)\b/gi, '').replace(/\s+/g, ' ').trim().slice(0, 80);
+        const q = `${topic || 'business AI'} statistics market data 2026`;
+        const raw = await invoke<string>('fetch_page_text', { url: `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}` }).catch(() => '');
+        const clean = (raw || '').replace(/\s+/g, ' ').trim().slice(0, 2500);
+        if (clean.length > 120) {
+          requestCtx += `\n\n=== SUPPLEMENTARY WEB CONTEXT (external, verify before quoting; the user's document is the primary source) ===\n${clean}`;
+        }
+      }
+    } catch { /* research is optional */ }
+
     try {
       // ADVANCED: do NOT ask Slade for imagePrompts — the app assigns and generates images
       // itself (see the top-up below). Keeping them OUT of the JSON makes the output much
@@ -3299,7 +3373,11 @@ The prompt must be production-ready — specific enough for a motion designer to
         ? `\n\n## TEXT AMOUNT: DETAILED\nWrite fuller content — 5–6 substantive bullets per content slide (≤ 16 words each) or two-column detail, so each slide is self-explanatory. Still one idea per slide; no rambling.`
         : `\n\n## TEXT AMOUNT: BALANCED\n3–5 tight bullets per content slide (≤ 14 words each), or the right visual layout for the data.`;
       const slideRoleDirective = `\n\n## SLIDE ROLES — CRITICAL\n- ONLY slide 1 uses layout "title". NEVER use "title" for any other slide.\n- Use "section" sparingly (at most a couple of chapter dividers) — it is NOT a content slide.\n- EVERY other slide is a CONTENT slide and MUST carry real content in the right layout (bullets / cards / comparison / two-column / chart / stat / pricing / timeline / team / quote) — never an almost-empty slide that's just a heading. If a slide would only have a title, add its bullets/cards/columns.`;
-      const sys = AGENT_BY_KEY['deck_maker'].systemPrompt + modeDirective + countDirective + contentDirective + coverageDirective + chartDirective + layoutsDirective + slideRoleDirective + densityDirective + designDirective + audienceDirective + dateBlock;
+      // When the user attached a document, its content is the MANDATORY basis for the deck.
+      const fileDirective = /\[Reference document:/.test(requestCtx)
+        ? `\n\n## USE THE ATTACHED DOCUMENT — MANDATORY\nOne or more reference documents are included below. You MUST read them fully and build the deck FROM them — every fact, number, product/module name, price and comparison comes from the document(s). Do NOT invent figures or ignore the document. If the request also gives a slide plan, follow the plan's structure and fill each slide with the real content from the document.`
+        : '';
+      const sys = AGENT_BY_KEY['deck_maker'].systemPrompt + modeDirective + countDirective + fileDirective + contentDirective + coverageDirective + chartDirective + layoutsDirective + slideRoleDirective + densityDirective + designDirective + audienceDirective + dateBlock;
       setStatus(`Slade is structuring your ${target} slides…`);
       // Generate + parse. Retry once if the JSON is broken OR fewer than the requested slides
       // came back. We keep whatever parsed as a fallback so a short retry never loses the first.
@@ -3358,10 +3436,38 @@ The prompt must be production-ready — specific enough for a motion designer to
         const contUser = requestCtx + `\n\n(Slides already created: ${done}. Now produce ONLY slides ${have + 1}–${target} — that's ${target - have} more.)`;
         const { text } = await streamTurnWithRetry([{ role: 'user', content: contUser }], contSys, () => {});
         const more = parseDeckSpec(text);
-        if (more && more.slides.length) { spec.slides.push(...more.slides); contMisses = 0; }
-        else contMisses++; // a miss no longer breaks — retry a couple times before giving up
+        if (more && more.slides.length) {
+          // Append but DROP duplicates the model re-emits (this is the "slide used twice / loops"
+          // bug). If nothing new actually got added, count it as a miss so we don't spin forever.
+          const before = spec.slides.length;
+          spec.slides = dedupeDeckSlides([...spec.slides, ...more.slides]);
+          contMisses = spec.slides.length > before ? 0 : contMisses + 1;
+        } else contMisses++;
       }
+      spec.slides = dedupeDeckSlides(spec.slides); // final safety pass against any repeats
       if (spec.slides.length > target) spec.slides = spec.slides.slice(0, target);
+      if (stopRef.current) { setMessages((prev) => prev.filter((m) => !m.streaming)); setBusy(false); return; }
+
+      // ── AUTO-REVIEW — a reviewer pass critiques the WHOLE deck and returns a corrected version
+      // BEFORE the user ever sees it: removes any leftover repeats, fills thin/empty slides with
+      // real content from the source, fixes layout choices, and keeps to the plan. Runs on the
+      // text-only spec (images are added afterwards). Best-effort: a bad/failed review is ignored.
+      setStatus('Reviewing & polishing the deck…');
+      try {
+        const draftJson = JSON.stringify({ ...spec, slides: spec.slides.map((s) => ({ ...s, imageData: undefined, imagePrompt: undefined })) });
+        const reviewSys = AGENT_BY_KEY['deck_maker'].systemPrompt + coverageDirective + chartDirective + layoutsDirective + densityDirective
+          + `\n\n## YOU ARE THE REVIEWER — RETURN A CORRECTED DECK\nBelow is a DRAFT deck (JSON) built for the brief. Review it critically as a senior presentation designer and return the FULL corrected deck as ONE compact, strictly-valid JSON object with the same structure. Fix ALL of these:\n- REMOVE duplicate or near-duplicate slides; a slide must NEVER repeat.\n- Every slide must carry REAL, specific content taken from the brief/source (actual numbers, names, comparisons) — rewrite or fill any thin, vague, or near-empty slide. A lone title is NOT acceptable.\n- ONLY slide 1 is layout "title"; everything else is a CONTENT layout, VARIED (bullets/cards/comparison/chart/stat/two-column/pricing/timeline/quote), matched to what the slide says.\n- If the brief gave a slide-by-slide plan, keep that order and one slide per item. Keep about ${spec.slides.length} slides.\n- No imagePrompt/imageData fields. Return ONLY the JSON object.`;
+        const reviewUser = requestCtx + `\n\n=== DRAFT DECK TO REVIEW (return the corrected full spec) ===\n${draftJson}`;
+        const { text: rtext } = await streamTurnWithRetry([{ role: 'user', content: reviewUser }], reviewSys, () => {});
+        const reviewed = parseDeckSpec(rtext);
+        if (reviewed && reviewed.slides.length >= Math.max(4, spec.slides.length - 3)) {
+          reviewed.palette = spec.palette; reviewed.font = spec.font; reviewed.template = spec.template;
+          if (!reviewed.title) reviewed.title = spec.title;
+          reviewed.slides = dedupeDeckSlides(reviewed.slides);
+          if (reviewed.slides.length > target) reviewed.slides = reviewed.slides.slice(0, target);
+          spec = reviewed;
+        }
+      } catch { /* keep the draft if review fails */ }
       if (stopRef.current) { setMessages((prev) => prev.filter((m) => !m.streaming)); setBusy(false); return; }
 
       // Guarantee a proper TITLE slide first (the user reported the title layout wasn't used). If
