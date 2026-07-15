@@ -759,3 +759,191 @@ export async function deckToPptxBlob(spec: DeckSpec): Promise<Blob> {
   const out = await pptx.write({ outputType: 'blob' });
   return out as Blob;
 }
+
+// ── PDF (shareable, e.g. attached to an email) ───────────────────────────────
+// A real VECTOR PDF drawn from the DeckSpec with jsPDF (not a screenshot) — reliable and small.
+// Mirrors the deck's layouts at readable fidelity. 960×540 pt canvas = 16:9.
+function rgb(hex: string): [number, number, number] {
+  const m = (hex || '#000000').replace('#', '').match(/.{2}/g)?.map((x) => parseInt(x, 16)) ?? [0, 0, 0];
+  return [m[0] || 0, m[1] || 0, m[2] || 0];
+}
+export async function deckToPdfBlob(spec: DeckSpec): Promise<Blob> {
+  const mod: any = await import('jspdf');
+  const JsPDF = mod.jsPDF || mod.default || mod;
+  const W = 960, H = 540, M = 66;
+  const doc = new JsPDF({ orientation: 'landscape', unit: 'pt', format: [W, H] });
+  const p = spec.palette;
+  const [tr, tg, tb] = rgb(p.text), [mr, mg, mb] = rgb(p.muted), [ar, ag, ab] = rgb(p.accent);
+  const setText = (hex: string) => { const [r, g, b] = rgb(hex); doc.setTextColor(r, g, b); };
+
+  spec.slides.forEach((s, i) => {
+    if (i > 0) doc.addPage([W, H], 'landscape');
+    const surface = s.layout === 'section' || s.layout === 'closing';
+    const [bgR, bgG, bgB] = rgb(surface ? p.surface : p.bg);
+    doc.setFillColor(bgR, bgG, bgB); doc.rect(0, 0, W, H, 'F');
+    // accent brand bar (left edge)
+    doc.setFillColor(ar, ag, ab); doc.rect(0, 0, 6, H, 'F');
+    // page number
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(mr, mg, mb);
+    doc.text(`${String(i + 1).padStart(2, '0')} / ${String(spec.slides.length).padStart(2, '0')}`, W - M, H - 24, { align: 'right' });
+    // logo top-right
+    if (spec.logo) { try { doc.addImage(spec.logo, 'PNG', W - M - 90, 22, 90, 34, undefined, 'FAST'); } catch { /* skip */ } }
+
+    const title = (size: number, y: number, txt: string, color = p.text) => {
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(size); setText(color);
+      const lines = doc.splitTextToSize(txt || '', W - M * 2);
+      doc.text(lines, M, y); return y + lines.length * size * 1.08;
+    };
+    const rule = (y: number) => { doc.setFillColor(ar, ag, ab); doc.rect(M, y, 42, 3, 'F'); };
+    const para = (size: number, y: number, txt: string, w = W - M * 2, color = p.muted) => {
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(size); setText(color);
+      const lines = doc.splitTextToSize(txt || '', w); doc.text(lines, M, y); return y + lines.length * size * 1.35;
+    };
+    const bulletList = (size: number, y0: number, items: string[], x = M, w = W - M * 2) => {
+      let y = y0; doc.setFontSize(size);
+      for (const b of items) {
+        doc.setFillColor(ar, ag, ab); doc.rect(x, y - size * 0.32, 4, 4, 'F');
+        doc.setFont('helvetica', 'normal'); doc.setTextColor(tr, tg, tb);
+        const lines = doc.splitTextToSize(b, w - 16); doc.text(lines, x + 14, y);
+        y += lines.length * size * 1.28 + 6;
+      }
+      return y;
+    };
+    const kicker = (y: number, txt: string) => { doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(ar, ag, ab); doc.text((txt || '').toUpperCase(), M, y); };
+    const imgCover = (data: string, x: number, y: number, w: number, h: number) => { try { doc.addImage(data, 'JPEG', x, y, w, h, undefined, 'FAST'); } catch { try { doc.addImage(data, 'PNG', x, y, w, h, undefined, 'FAST'); } catch { /* skip */ } } };
+
+    switch (s.layout) {
+      case 'title': {
+        if (s.subtitle) kicker(210, s.subtitle);
+        let y = title(40, 260, s.title || spec.title); rule(y + 8);
+        if (s.body) para(16, y + 40, s.body, W - M * 2);
+        break;
+      }
+      case 'section': {
+        kicker(250, 'Section');
+        let y = title(34, 300, s.title || ''); if (s.subtitle) para(16, y + 20, s.subtitle);
+        break;
+      }
+      case 'agenda': {
+        title(30, 120, s.title || 'Agenda'); rule(140);
+        let y = 190; doc.setFontSize(18);
+        (s.bullets || []).slice(0, 8).forEach((b, bi) => {
+          doc.setFont('helvetica', 'bold'); doc.setTextColor(ar, ag, ab); doc.text(String(bi + 1).padStart(2, '0'), M, y);
+          doc.setFont('helvetica', 'normal'); doc.setTextColor(tr, tg, tb); doc.text(doc.splitTextToSize(b, W - M * 2 - 50), M + 42, y);
+          y += 42;
+        });
+        break;
+      }
+      case 'quote': {
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(96); doc.setTextColor(ar, ag, ab); doc.text('“', M, 200);
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(26); setText(p.text);
+        doc.text(doc.splitTextToSize(s.quote || s.title || '', W - M * 2), M, 250);
+        if (s.attribution) { doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(ar, ag, ab); doc.text(`— ${s.attribution}`, M, 400); }
+        break;
+      }
+      case 'stat': {
+        if (s.title) kicker(190, s.title);
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(150); doc.setTextColor(ar, ag, ab); doc.text(s.stat || '', M, 330);
+        if (s.statLabel) para(20, 380, s.statLabel);
+        break;
+      }
+      case 'chart': {
+        title(30, 110, s.title || ''); rule(128);
+        const data = (s.chartData || []).filter((d) => d && typeof d.value === 'number').slice(0, 6);
+        if (data.length >= 2) {
+          const max = Math.max(...data.map((d) => d.value), 1);
+          const base = 430, chartH = 230, n = data.length, gap = 26;
+          const bw = Math.min(120, (W - M * 2 - gap * (n - 1)) / n);
+          data.forEach((d, di) => {
+            const bh = Math.max(6, (Math.max(0, d.value) / max) * chartH);
+            const x = M + di * (bw + gap), y = base - bh;
+            doc.setFillColor(ar, ag, ab); doc.rect(x, y, bw, bh, 'F');
+            doc.setFont('helvetica', 'bold'); doc.setFontSize(14); setText(p.text);
+            const lbl = (s.chartUnit === '₹' ? '₹' : '') + Math.round(d.value).toLocaleString() + (s.chartUnit && s.chartUnit !== '₹' ? s.chartUnit : '');
+            doc.text(lbl, x + bw / 2, y - 8, { align: 'center' });
+            doc.setFont('helvetica', 'normal'); doc.setFontSize(11); doc.setTextColor(mr, mg, mb);
+            doc.text(doc.splitTextToSize(String(d.label), bw + gap - 6), x + bw / 2, base + 18, { align: 'center' });
+          });
+        } else if (s.body) para(16, 170, s.body);
+        break;
+      }
+      case 'two-column':
+      case 'comparison': {
+        title(30, 100, s.title || ''); rule(118);
+        const cols = (s.columns || []).filter((c) => c && (c.heading || c.bullets?.length)).slice(0, 2);
+        const cw = (W - M * 2 - 24) / 2;
+        cols.forEach((c, ci) => {
+          const cx = M + ci * (cw + 24);
+          const [sr, sg, sb] = rgb(p.surface); doc.setFillColor(sr, sg, sb); doc.roundedRect(cx, 150, cw, 320, 10, 10, 'F');
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(17); doc.setTextColor(ar, ag, ab); doc.text(doc.splitTextToSize(c.heading || '', cw - 40), cx + 22, 185);
+          bulletList(14, 220, c.bullets || [], cx + 22, cw - 44);
+        });
+        if (s.layout === 'comparison' && cols.length === 2) { doc.setFillColor(ar, ag, ab); doc.circle(W / 2, 310, 24, 'F'); doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(255, 255, 255); doc.text('VS', W / 2, 315, { align: 'center' }); }
+        break;
+      }
+      case 'cards':
+      case 'process': {
+        title(30, 100, s.title || ''); rule(118);
+        const cards = (s.cards || []).filter((c) => c && (c.heading || c.body)).slice(0, 6);
+        const per = cards.length <= 2 ? cards.length : 3; const rows = Math.ceil(cards.length / per);
+        const cw = (W - M * 2 - 20 * (per - 1)) / per, ch = rows > 1 ? 150 : 300;
+        cards.forEach((c, ci) => {
+          const cx = M + (ci % per) * (cw + 20), cy = 150 + Math.floor(ci / per) * (ch + 20);
+          const [sr, sg, sb] = rgb(p.surface); doc.setFillColor(sr, sg, sb); doc.roundedRect(cx, cy, cw, ch, 10, 10, 'F');
+          let ty = cy + 34;
+          if (s.layout === 'process') { doc.setFillColor(ar, ag, ab); doc.roundedRect(cx + 20, cy + 18, 30, 30, 6, 6, 'F'); doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(255, 255, 255); doc.text(String(ci + 1), cx + 35, cy + 38, { align: 'center' }); ty = cy + 76; }
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(16); setText(p.text); doc.text(doc.splitTextToSize(c.heading || '', cw - 40), cx + 20, ty);
+          if (c.body) { doc.setFont('helvetica', 'normal'); doc.setFontSize(12); doc.setTextColor(mr, mg, mb); doc.text(doc.splitTextToSize(c.body, cw - 40), cx + 20, ty + 24); }
+        });
+        break;
+      }
+      case 'timeline': {
+        title(30, 100, s.title || ''); rule(118);
+        let y = 170; (s.timeline || []).slice(0, 6).forEach((t) => {
+          doc.setFillColor(ar, ag, ab); doc.circle(M + 6, y - 4, 5, 'F');
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(ar, ag, ab); doc.text(t.label || '', M + 26, y);
+          doc.setFont('helvetica', 'normal'); doc.setFontSize(13); setText(p.text); doc.text(doc.splitTextToSize(t.text || '', W - M * 2 - 180), M + 180, y);
+          y += 56;
+        });
+        break;
+      }
+      case 'pricing': {
+        title(30, 96, s.title || ''); rule(114);
+        const plans = (s.plans || []).filter((pl) => pl && pl.name).slice(0, 4);
+        const n = plans.length || 1, gap = 18, cw = (W - M * 2 - gap * (n - 1)) / n;
+        plans.forEach((pl, pi) => {
+          const cx = M + pi * (cw + gap);
+          const [sr, sg, sb] = rgb(p.surface); doc.setFillColor(sr, sg, sb); doc.roundedRect(cx, 150, cw, 330, 10, 10, 'F');
+          if (pl.highlight) { doc.setDrawColor(ar, ag, ab); doc.setLineWidth(2); doc.roundedRect(cx, 150, cw, 330, 10, 10, 'S'); }
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(15); setText(p.text); doc.text(doc.splitTextToSize(pl.name, cw - 30), cx + 18, 182);
+          if (pl.price) { doc.setFontSize(26); doc.setTextColor(ar, ag, ab); doc.text(pl.price, cx + 18, 220); }
+          bulletList(12, 252, pl.bullets || [], cx + 18, cw - 34);
+        });
+        break;
+      }
+      case 'image-full': {
+        if (s.imageData) { imgCover(s.imageData, 0, 0, W, H); doc.setFillColor(0, 0, 0); (doc as any).setGState && (doc as any).setGState(new (doc as any).GState({ opacity: 0.55 })); doc.rect(0, H - 120, W, 120, 'F'); (doc as any).setGState && (doc as any).setGState(new (doc as any).GState({ opacity: 1 })); doc.setFont('helvetica', 'bold'); doc.setFontSize(26); doc.setTextColor(255, 255, 255); doc.text(doc.splitTextToSize(s.title || '', W - M * 2), M, H - 60); }
+        else { kicker(200, s.subtitle || 'Highlight'); let y = title(30, 250, s.title || spec.title); rule(y + 8); if (s.body) para(15, y + 40, s.body); }
+        break;
+      }
+      case 'closing': {
+        kicker(210, 'Get started');
+        let y = title(38, 270, s.title || 'Thank you'); rule(y + 8);
+        if (s.body) y = para(16, y + 40, s.body);
+        if (s.subtitle) { doc.setFillColor(ar, ag, ab); doc.roundedRect(M, y + 20, doc.getTextWidth(s.subtitle) + 40, 34, 17, 17, 'F'); doc.setFont('helvetica', 'bold'); doc.setFontSize(14); doc.setTextColor(255, 255, 255); doc.text(s.subtitle, M + 20, y + 42); }
+        break;
+      }
+      default: {
+        // bullets (with optional image on the right)
+        const hasImg = !!s.imageData; const txtW = hasImg ? W - M * 2 - 340 : W - M * 2;
+        let y = title(28, 110, s.title || ''); rule(y + 6); y += 34;
+        if (s.body) y = para(15, y, s.body, txtW);
+        bulletList(16, y + 10, s.bullets || [], M, txtW);
+        if (hasImg) imgCover(s.imageData!, W - M - 300, 150, 300, 300);
+        break;
+      }
+    }
+  });
+
+  return doc.output('blob') as Blob;
+}

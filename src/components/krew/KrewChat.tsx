@@ -16,6 +16,7 @@ import { extractTableRows, mergeLeadTables, parseLeadRows, rowsToMarkdown } from
 import { supabase } from '../../lib/supabase';
 import { getPlanConfig } from '../../lib/planConfig';
 import { parseDeckSpec, slidesNeedingImages, renderDeckHtml, type DeckSpec, type DeckPalette } from '../../lib/deck';
+import { setLastDeck } from '../../lib/deckStore';
 import { CHANNEL_META, listConnections, saveConnection, schedulePost, postNow, type SocialConnection, type SocialChannel, type PostContent } from '../../lib/social';
 import UpgradeModal from '../UpgradeModal';
 import { type AutomationProposal } from './AutomationProposalModal';
@@ -1367,20 +1368,25 @@ function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
     const a    = document.createElement('a'); a.href = url; a.download = `${slug()}.html`; a.click();
     URL.revokeObjectURL(url); setSavedHtml(true); setTimeout(() => setSavedHtml(false), 1800);
   }
-  // PDF: window.print() inside the sandboxed in-chat iframe is blocked, so we save the deck
-  // HTML (with an auto-print script) to disk and open it in the real browser — its native
-  // "Save as PDF" dialog then lets the user choose where to save. Reliable + shows a save box.
+  // PDF: generate a real vector PDF directly from the deck (jsPDF) and download it — no browser
+  // print dialog needed. Falls back to the open-in-browser print flow if generation fails.
   async function downloadPdf() {
     setPdfState('opening');
     try {
-      const printHtml = finalHtml().replace(
-        '</body>',
-        '<script>window.addEventListener("load",function(){setTimeout(function(){try{window.print()}catch(e){}},600)})<\/script></body>'
-      );
-      const path = await invoke<string>('save_deck_files', { slug: slug() + '-pdf', html: printHtml, specJson: JSON.stringify(finalSpec()) });
-      await invoke('open_path', { path });
+      const { deckToPdfBlob } = await import('../../lib/deck');
+      const blob = await deckToPdfBlob(finalSpec());
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = `${slug()}.pdf`; a.click();
+      URL.revokeObjectURL(url);
       setPdfState('idle');
-    } catch { setPdfState('err'); setTimeout(() => setPdfState('idle'), 2500); }
+    } catch {
+      try {
+        const printHtml = finalHtml().replace('</body>', '<script>window.addEventListener("load",function(){setTimeout(function(){try{window.print()}catch(e){}},600)})<\/script></body>');
+        const path = await invoke<string>('save_deck_files', { slug: slug() + '-pdf', html: printHtml, specJson: JSON.stringify(finalSpec()) });
+        await invoke('open_path', { path });
+        setPdfState('idle');
+      } catch { setPdfState('err'); setTimeout(() => setPdfState('idle'), 2500); }
+    }
   }
   // Present: fullscreen the iframe element itself (the deck fills the screen; its own keyboard
   // nav then drives the slides). Requested from the deck's inner ⛶ button via postMessage.
@@ -1428,8 +1434,8 @@ function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
           <button onClick={downloadHtml} className="text-[10px] px-2.5 py-1 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40 transition-fast font-mono">
             {savedHtml ? '✓ Saved' : '⭳ .html'}
           </button>
-          <button onClick={downloadPdf} title="Open in your browser and Save as PDF" className="text-[10px] px-2.5 py-1 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-mono">
-            {pdfState === 'opening' ? 'opening…' : pdfState === 'err' ? 'failed' : '⭳ PDF'}
+          <button onClick={downloadPdf} title="Download as PDF" className="text-[10px] px-2.5 py-1 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-mono">
+            {pdfState === 'opening' ? '…pdf' : pdfState === 'err' ? 'failed' : '⭳ PDF'}
           </button>
         </div>
       </div>
@@ -3441,6 +3447,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       setStatus('Rendering deck…');
       const html = renderDeckHtml(spec);
       lastDeckSpecRef.current = spec; // remember it so follow-up messages can edit it in place
+      setLastDeck(spec); // publish for the email tools (attach as PDF)
       setMessages((prev) => {
         const c = [...prev]; const l = c[c.length - 1];
         const result: DisplayMsg = { role: 'deck_result', content: '', deckSpec: spec, deckHtml: html };
@@ -3579,6 +3586,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       setStatus('Rendering deck…');
       const html = renderDeckHtml(spec);
       lastDeckSpecRef.current = spec;
+      setLastDeck(spec);
       setMessages((prev) => {
         const c = [...prev]; const l = c[c.length - 1];
         const result: DisplayMsg = { role: 'deck_result', content: '', deckSpec: spec, deckHtml: html };
