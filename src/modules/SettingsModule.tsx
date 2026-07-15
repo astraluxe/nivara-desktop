@@ -69,6 +69,7 @@ export default function SettingsModule() {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('idle');
   const [updateInfo, setUpdateInfo] = useState<{ version?: string; body?: string; current?: string; propagating?: boolean }>({});
   const [updateErr, setUpdateErr] = useState('');
+  const [updatePct, setUpdatePct] = useState(0);
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>('checking');
   const [voicePct, setVoicePct]       = useState(0);
   const [voiceStep, setVoiceStep]     = useState('');
@@ -119,9 +120,20 @@ export default function SettingsModule() {
     }
   }
 
+  // Live download progress so "installing…" never just looks frozen (the cursor-spinner the user
+  // saw). The Rust install_update emits `update-progress` {downloaded,total} as it streams.
+  useEffect(() => {
+    const un = listen<{ downloaded: number; total: number }>('update-progress', (e) => {
+      const { downloaded, total } = e.payload || { downloaded: 0, total: 0 };
+      if (total > 0) setUpdatePct(Math.min(100, Math.round((downloaded / total) * 100)));
+    });
+    return () => { un.then((f) => f()).catch(() => {}); };
+  }, []);
+
   async function installUpdate() {
     setUpdateStatus('installing');
     setUpdateErr('');
+    setUpdatePct(0);
     try {
       await invoke('install_update');
       // install_update restarts the app on success, so reaching here means it returned without
@@ -334,7 +346,12 @@ export default function SettingsModule() {
               <p className="text-[11px] text-nv-red mb-3">Could not check for updates. Check your connection.</p>
             )}
             {updateStatus === 'installing' && (
-              <p className="text-[11px] text-nv-muted mb-3">Downloading update — the app will restart automatically…</p>
+              <div className="mb-3">
+                <p className="text-[11px] text-nv-muted">{updatePct > 0 ? `Downloading update — ${updatePct}%` : 'Starting download…'} The app will restart automatically when done.</p>
+                <div className="mt-1.5 h-1.5 rounded-full bg-nv-surface2 overflow-hidden">
+                  <div className="h-full bg-accent transition-all" style={{ width: `${updatePct}%` }} />
+                </div>
+              </div>
             )}
             <div className="flex gap-2">
               <button

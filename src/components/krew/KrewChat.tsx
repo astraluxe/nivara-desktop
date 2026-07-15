@@ -15,7 +15,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { extractTableRows, mergeLeadTables, parseLeadRows, rowsToMarkdown } from '../../lib/leadTable';
 import { supabase } from '../../lib/supabase';
 import { getPlanConfig } from '../../lib/planConfig';
-import { parseDeckSpec, slidesNeedingImages, renderDeckHtml, type DeckSpec, type DeckPalette } from '../../lib/deck';
+import { parseDeckSpec, slidesNeedingImages, renderDeckHtml, extractDeckSpec, type DeckSpec, type DeckPalette } from '../../lib/deck';
 import { setLastDeck } from '../../lib/deckStore';
 import { CHANNEL_META, listConnections, saveConnection, schedulePost, postNow, type SocialConnection, type SocialChannel, type PostContent } from '../../lib/social';
 import UpgradeModal from '../UpgradeModal';
@@ -2226,9 +2226,14 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
   // If the content is HTML (visual asset from visual_creator), render preview
   const trimmed = content.trimStart();
   if (!streaming && (trimmed.startsWith('<!DOCTYPE') || trimmed.startsWith('<html'))) {
-    // A deck reloaded from history is a full interactive presentation, NOT a static asset —
-    // render it in the deck bubble so its Present/PDF buttons actually work.
-    if (isDeckHtml(content)) return <SavedDeckBubble html={content} />;
+    // A deck reloaded from history: if its DeckSpec is embedded (new decks), re-hydrate the FULL
+    // editable bubble (inline text editing, colour editor, PDF). Otherwise fall back to the
+    // read-only saved-deck bubble (older decks) — still interactive Present/PDF.
+    if (isDeckHtml(content)) {
+      const spec = extractDeckSpec(content);
+      if (spec) return <DeckResultBubble html={content} spec={spec} />;
+      return <SavedDeckBubble html={content} />;
+    }
     return <StudioAssetBubble html={content} />;
   }
 
@@ -3255,7 +3260,11 @@ The prompt must be production-ready — specific enough for a motion designer to
       // Anti-sameness: models tend to reach for the same "dark" theme every time. Push Slade
       // to actually match the palette to the topic's industry/mood (Gamma-style variety).
       const designDirective = `\n\n## PICK A PALETTE + TEMPLATE THAT FIT THIS TOPIC\nDo NOT default to the same dark theme every time. Choose the preset + accent colour that genuinely matches THIS deck's industry and mood (e.g. finance→corporate blue, wellness→soft/editorial, dev-tool→minimal, launch→bold, consumer/youth→vibrant, crypto/gaming→neon; you may also set a custom "palette"). You MAY add a "template" field to pick the visual treatment: "aurora" (glowing, techy), "gradient" (soft modern SaaS), "glass" (frosted, blurred clouds), "grid" (technical blueprint), "wave" (flowing colour sweep), "split" (bold diagonal block), "spotlight" (dramatic top beam), "editorial" (clean, thin rules, premium), "flat" (bold solid accent bar), or "mono" (minimal, big type). Pick the one that fits the mood. Vary the layouts too — mix section breaks, a stat slide, a quote, and two-column comparisons; never 10 identical bullet slides.`;
-      const target = Math.max(4, Math.min(24, Math.round(cfg.slideCount || 12)));
+      // If the user pasted an explicit slide-by-slide plan, its highest "Slide N" number is the
+      // real target — honour that over the setup-card stepper (they asked for 11, the plan has 11).
+      let planCount = 0;
+      { const re = /\bslide\s*#?\s*(\d{1,2})\b/gi; let m: RegExpExecArray | null; while ((m = re.exec(requestCtx))) planCount = Math.max(planCount, parseInt(m[1], 10)); }
+      const target = Math.max(4, Math.min(30, planCount >= 4 ? planCount : Math.round(cfg.slideCount || 12)));
       const minSlides = Math.max(4, target - 1); // accept target-1, else retry for the rest
       const countDirective = `\n\n## SLIDE COUNT — HARD REQUIREMENT\nProduce EXACTLY ${target} slides — a full, complete slide object for each. Not 6, not "a few": ${target}. Keep adding slides until the "slides" array has ${target} entries. This count overrides any smaller number implied anywhere else.`;
       const audienceDirective = cfg.audience
@@ -3264,7 +3273,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       const contentDirective = `\n\n## WRITE REAL, SPECIFIC CONTENT — NOT FILLER\n- Build the deck FROM the attached document: use its ACTUAL numbers, product/module names, comparisons and pricing. Never generic marketing fluff.\n- Every slide earns its place: a concrete claim + the specific proof/number behind it. Benefit-led headlines ("Save 10 hrs/week", not "Our Features").\n- Follow the brief's narrative arc (problem → solution → proof → ROI → call to action). Use VARIED layouts — a stat slide for a big number, a two-column slide for a comparison/before-after, a quote for a testimonial — so it reads like a designed deck, not a bullet dump.\n- 3–6 tight bullets per content slide, each ≤ 14 words. One idea per slide.`;
       const coverageDirective = `\n\n## COVER THE WHOLE SOURCE — DON'T OVER-INDEX ON ONE PART\nWhen a document is attached, base the deck on its FULL breadth — represent the product's different capabilities/modules/sections, not just the first/biggest thing mentioned. Do NOT let one module (e.g. the agents) eat half the deck; give the others their own slides. Pull the strongest, most client-relevant points from across the ENTIRE document.\n\n## FOLLOW A PER-SLIDE BRIEF EXACTLY\nIf the request assigns specific topics to specific slides (e.g. "Slide 4-9: one module each", "Slide 2: the problem"), produce a distinct slide for EACH assignment, in that order — never collapse several into one or skip any. Every slide must have REAL content (title + bullets/stat/columns); never emit an empty or near-empty slide.\n\n## KEEP NOTES SHORT\nEven if the brief asks for a "speaker script", keep each slide's "notes" to ONE short line (≤ 20 words) — a long script per slide overflows the output limit and truncates the deck.`;
       const chartDirective = `\n\n## SHOW NUMBERS AS A CHART\nWhen a slide compares a FEW numbers (costs, ROI %, growth, before/after, time saved), use a CHART slide instead of a plain bullet list — it looks far more professional. Emit: {"layout":"chart","title":"…","chartData":[{"label":"Traditional","value":250000},{"label":"adris.tech","value":19999}],"chartUnit":"₹","notes":"…"}. Rules: 2–6 data points, "value" MUST be a plain number (no commas, symbols or text — put the unit in "chartUnit" like "₹", "%", "hrs"), keep labels short. Use 1–3 chart slides where the data genuinely warrants it (e.g. the cost/ROI comparison), not everywhere.`;
-      const layoutsDirective = `\n\n## USE THE RIGHT LAYOUT FOR EACH SLIDE (pick per content — don't make every slide bullets)\nEach slide object has a "layout". Available layouts and their fields:\n- "title": title, subtitle, body — the OPENING cover slide (slide 1 MUST be this).\n- "agenda": title + bullets[] — a numbered outline of the deck's topics (use as slide 2 for a long deck).\n- "section": title, subtitle — a chapter divider between parts.\n- "bullets": title + bullets[] (3–6, ≤14 words) — a standard point slide.\n- "two-column": title + columns[{heading,bullets[]}] — two related lists.\n- "comparison": title + columns[2]{heading,bullets[]} — us-vs-them / before-vs-after (renders a VS badge).\n- "cards": title + cards[{heading,body}] (3–6) — a feature/module grid (great for "6 modules").\n- "process": title + cards[{heading,body}] (3–5) — numbered steps / how-it-works.\n- "timeline": title + timeline[{label,text}] — roadmap/milestones.\n- "stat": title(kicker) + stat + statLabel — ONE giant number.\n- "chart": title + chartData[{label,value}] + chartUnit — a bar chart for a few numbers (cost/ROI comparisons).\n- "pricing": title + plans[{name,price,bullets[],highlight}] — 2–4 pricing tiers.\n- "quote": quote + attribution — a testimonial / punchy line.\n- "image-full": title (+ image) — a full-bleed impact slide.\n- "closing": title, subtitle(CTA pill), body — the final call-to-action.\nVARY them: a real deck mixes agenda, cards, comparison, chart, stat, quote, pricing — NOT 12 bullet slides. Match the layout to what the slide is actually saying.`;
+      const layoutsDirective = `\n\n## USE THE RIGHT LAYOUT FOR EACH SLIDE (pick per content — don't make every slide bullets)\nEach slide object has a "layout". Available layouts and their fields:\n- "title": title, subtitle, body — the OPENING cover slide (slide 1 MUST be this).\n- "agenda": title + bullets[] — a numbered outline of the deck's topics (use as slide 2 for a long deck).\n- "section": title, subtitle — a chapter divider between parts.\n- "bullets": title + bullets[] (3–6, ≤14 words) — a standard point slide.\n- "two-column": title + columns[{heading,bullets[]}] — two related lists.\n- "comparison": title + columns[2]{heading,bullets[]} — us-vs-them / before-vs-after (renders a VS badge).\n- "cards": title + cards[{heading,body}] (3–6) — a feature/module grid (great for "6 modules").\n- "process": title + cards[{heading,body}] (3–5) — numbered steps / how-it-works.\n- "timeline": title + timeline[{label,text}] — roadmap/milestones.\n- "stat": title(kicker) + stat + statLabel — ONE giant number.\n- "chart": title + chartData[{label,value}] + chartUnit — a bar chart for a few numbers (cost/ROI comparisons).\n- "pricing": title + plans[{name,price,bullets[],highlight}] — 2–4 pricing tiers.\n- "quote": quote + attribution — a testimonial / punchy line.\n- "team": title + people[{name,role}] — the people / about-us grid.\n- "logos": title + subtitle + logos[] (names) — a "trusted by" client/partner wall.\n- "image-full": title (+ image) — a full-bleed impact slide.\n- "closing": title, subtitle(CTA pill), body — the final call-to-action.\nVARY them: a real deck mixes agenda, cards, comparison, chart, stat, quote, pricing, team, logos — NOT 12 bullet slides. Match the layout to what the slide is actually saying.`;
       const sys = AGENT_BY_KEY['deck_maker'].systemPrompt + modeDirective + countDirective + contentDirective + coverageDirective + chartDirective + layoutsDirective + designDirective + audienceDirective + dateBlock;
       setStatus(`Slade is structuring your ${target} slides…`);
       // Generate + parse. Retry once if the JSON is broken OR fewer than the requested slides
@@ -3311,19 +3320,21 @@ The prompt must be production-ready — specific enough for a motion designer to
       // 10) however firmly we ask, and re-asking for "all N" just returns the same short deck. So
       // instead we ask it to CONTINUE — output ONLY the missing slides — and append them. This
       // reliably reaches the requested count without truncating one giant response.
-      let contTries = 0;
-      while (spec.slides.length < target && contTries < 4 && !stopRef.current) {
+      let contTries = 0, contMisses = 0;
+      while (spec.slides.length < target && contTries < 6 && contMisses < 3 && !stopRef.current) {
         contTries++;
         const have = spec.slides.length;
         setStatus(`Writing slides ${have + 1}–${target}…`);
         const done = spec.slides.map((s, i) => `${i + 1}. ${s.title || s.layout}`).join('; ');
-        const contSys = AGENT_BY_KEY['deck_maker'].systemPrompt + contentDirective + coverageDirective + dateBlock
-          + `\n\n## CONTINUE — OUTPUT ONLY THE MISSING SLIDES\nA deck is already in progress with ${have} slides. Output ONLY the REMAINING ${target - have} slides (slide ${have + 1} to ${target}) as a compact JSON object {"slides":[ ... ]}. Do NOT repeat any slide already made; do NOT include title/subtitle/preset/palette — just the "slides" array continuing the brief's narrative. No imagePrompt fields.`;
-        const contUser = requestCtx + `\n\n(Slides already created: ${done}. Now produce ONLY slides ${have + 1}–${target}.)`;
+        // Include the LAYOUTS guidance so the continuation slides use varied templates too (not
+        // all bullets), and keep retrying (a single unparseable reply no longer aborts the count).
+        const contSys = AGENT_BY_KEY['deck_maker'].systemPrompt + contentDirective + coverageDirective + chartDirective + layoutsDirective + dateBlock
+          + `\n\n## CONTINUE — OUTPUT ONLY THE MISSING SLIDES\nA deck is already in progress with ${have} slides. Output ONLY the REMAINING ${target - have} slides (slide ${have + 1} to ${target}) as a compact JSON object {"slides":[ ... ]}. Do NOT repeat any slide already made; do NOT include title/subtitle/preset/palette — just the "slides" array continuing the brief's narrative, using VARIED layouts. No imagePrompt fields.`;
+        const contUser = requestCtx + `\n\n(Slides already created: ${done}. Now produce ONLY slides ${have + 1}–${target} — that's ${target - have} more.)`;
         const { text } = await streamTurnWithRetry([{ role: 'user', content: contUser }], contSys, () => {});
         const more = parseDeckSpec(text);
-        if (more && more.slides.length) spec.slides.push(...more.slides);
-        else break; // couldn't parse more → stop rather than loop uselessly
+        if (more && more.slides.length) { spec.slides.push(...more.slides); contMisses = 0; }
+        else contMisses++; // a miss no longer breaks — retry a couple times before giving up
       }
       if (spec.slides.length > target) spec.slides = spec.slides.slice(0, target);
       if (stopRef.current) { setMessages((prev) => prev.filter((m) => !m.streaming)); setBusy(false); return; }

@@ -9,7 +9,7 @@
 
 export interface DeckSlide {
   layout: 'title' | 'section' | 'bullets' | 'quote' | 'stat' | 'two-column' | 'image-full' | 'closing' | 'chart'
-        | 'agenda' | 'comparison' | 'cards' | 'process' | 'timeline' | 'pricing';
+        | 'agenda' | 'comparison' | 'cards' | 'process' | 'timeline' | 'pricing' | 'team' | 'logos';
   title?:       string;
   subtitle?:    string;
   bullets?:     string[];
@@ -24,6 +24,8 @@ export interface DeckSlide {
   cards?:       { heading: string; body?: string }[]; // 'cards'/'process' grid; 'process' auto-numbers
   timeline?:    { label: string; text?: string }[];   // 'timeline' milestones
   plans?:       { name: string; price?: string; bullets?: string[]; highlight?: boolean }[]; // 'pricing'
+  people?:      { name: string; role?: string }[];    // 'team' grid
+  logos?:       string[];                              // 'logos' wall — client/partner names
   imagePrompt?: string;   // Advanced mode: prompt for the AI image
   imageData?:   string;   // filled after generation — a data: URI (or full remote URL)
   notes?:       string;   // speaker notes (exported to pptx notes)
@@ -352,6 +354,13 @@ export function renderDeckHtml(spec: DeckSpec, editable = false, editId = ''): s
   .plan li { font-size:16px; line-height:1.35; }
   .plan li::before { margin-top:8px; width:7px; height:7px; }
   .vs { display:inline-flex; align-items:center; justify-content:center; width:56px; height:56px; border-radius:50%; background:${p.accent}; color:#fff; font-family:'${H}',sans-serif; font-weight:800; font-size:20px; position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); z-index:3; }
+  .team { display:grid; grid-template-columns:repeat(4,1fr); gap:22px; position:relative; z-index:1; }
+  .team .m { text-align:center; }
+  .team .av { width:96px; height:96px; border-radius:50%; margin:0 auto 14px; background:${p.accent}22; border:2px solid ${p.accent}; display:flex; align-items:center; justify-content:center; font-family:'${H}',sans-serif; font-weight:800; font-size:34px; color:${p.accent}; }
+  .team .nm { font-size:19px; font-weight:700; color:${p.text}; }
+  .team .rl { font-size:15px; color:${p.muted}; margin-top:3px; }
+  .logos { display:grid; grid-template-columns:repeat(4,1fr); gap:20px; position:relative; z-index:1; }
+  .logos .lg { background:${p.surface}; border:1px solid ${p.accent}22; border-radius:14px; height:96px; display:flex; align-items:center; justify-content:center; text-align:center; padding:12px; font-family:'${H}',sans-serif; font-weight:700; font-size:19px; color:${p.text}; }
   .split { display:grid; grid-template-columns:1.05fr .95fr; gap:60px; align-items:center; }
   .split .imgwrap { border:1px solid ${p.accent}2a; box-shadow:0 34px 90px rgba(0,0,0,.5); }
   .pill { display:inline-flex; align-items:center; gap:10px; background:${p.accent}; color:#fff; font-weight:700; font-size:22px; padding:15px 30px; border-radius:999px; margin-top:6px; }
@@ -450,8 +459,17 @@ ${editable ? `
     }
   });` : ''}
 </script>
+<script type="application/json" id="nv-deck-spec">${JSON.stringify(spec).replace(/<\/(script)/gi, '<\\/$1')}</script>
 </body>
 </html>`;
+}
+
+// Recover a DeckSpec embedded in a rendered deck's HTML (the hidden nv-deck-spec script). Lets a
+// deck reloaded from chat history be re-hydrated into the fully editable deck bubble.
+export function extractDeckSpec(html: string): DeckSpec | null {
+  const m = html.match(/<script type="application\/json" id="nv-deck-spec">([\s\S]*?)<\/script>/i);
+  if (!m) return null;
+  try { return normalizeSpec(JSON.parse(m[1].replace(/<\\\/(script)/gi, '</$1'))); } catch { return null; }
 }
 
 // Format a chart number compactly: 12_00_000 → "12L"-ish is overkill; keep it simple with
@@ -602,6 +620,25 @@ function renderSlideHtml(s: DeckSlide, spec: DeckSpec, i: number, total: number,
         ${s.title ? `<h2 style="font-size:44px;max-width:1040px"${ed('title')}>${esc(s.title)}</h2>` : ''}
         <div class="rule"></div>
         <div class="plans">${plans.map((pl) => `<div class="plan${pl.highlight ? ' hl' : ''}"><div class="pn">${esc(pl.name)}</div>${pl.price ? `<div class="pp">${esc(pl.price)}</div>` : ''}<ul>${(pl.bullets || []).map((b) => `<li>${esc(b)}</li>`).join('')}</ul></div>`).join('')}</div>
+        ${chrome}</section>`;
+    }
+    case 'team': {
+      const ppl = (s.people || []).filter((m) => m && m.name).slice(0, 8);
+      if (!ppl.length) return renderSlideHtml({ ...s, layout: 'bullets' }, spec, i, total, editable);
+      return `<section class="slide">
+        ${s.title ? `<h2 style="font-size:44px;max-width:1040px"${ed('title')}>${esc(s.title)}</h2>` : ''}
+        <div class="rule"></div>
+        <div class="team" style="grid-template-columns:repeat(${Math.min(4, ppl.length)},1fr)">${ppl.map((m) => `<div class="m"><div class="av">${esc((m.name || '?').trim().charAt(0).toUpperCase())}</div><div class="nm">${esc(m.name)}</div>${m.role ? `<div class="rl">${esc(m.role)}</div>` : ''}</div>`).join('')}</div>
+        ${chrome}</section>`;
+    }
+    case 'logos': {
+      const logos = (s.logos || []).filter(Boolean).slice(0, 12);
+      if (!logos.length) return renderSlideHtml({ ...s, layout: 'bullets' }, spec, i, total, editable);
+      return `<section class="slide">
+        <div class="kicker">${esc(s.subtitle || 'Trusted by')}</div>
+        ${s.title ? `<h2 style="font-size:40px;max-width:1040px"${ed('title')}>${esc(s.title)}</h2>` : ''}
+        <div class="rule"></div>
+        <div class="logos" style="grid-template-columns:repeat(${Math.min(4, logos.length)},1fr)">${logos.map((l) => `<div class="lg">${esc(l)}</div>`).join('')}</div>
         ${chrome}</section>`;
     }
     case 'two-column': {
@@ -918,6 +955,30 @@ export async function deckToPdfBlob(spec: DeckSpec): Promise<Blob> {
           doc.setFont('helvetica', 'bold'); doc.setFontSize(15); setText(p.text); doc.text(doc.splitTextToSize(pl.name, cw - 30), cx + 18, 182);
           if (pl.price) { doc.setFontSize(26); doc.setTextColor(ar, ag, ab); doc.text(pl.price, cx + 18, 220); }
           bulletList(12, 252, pl.bullets || [], cx + 18, cw - 34);
+        });
+        break;
+      }
+      case 'team': {
+        title(30, 100, s.title || ''); rule(118);
+        const ppl = (s.people || []).filter((m) => m && m.name).slice(0, 8);
+        const per = Math.min(4, ppl.length || 1), cw = (W - M * 2 - 20 * (per - 1)) / per;
+        ppl.forEach((m, mi) => {
+          const cx = M + (mi % per) * (cw + 20) + cw / 2, cy = 190 + Math.floor(mi / per) * 170;
+          doc.setFillColor(ar, ag, ab); doc.circle(cx, cy, 34, 'S'); doc.setDrawColor(ar, ag, ab);
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(26); doc.setTextColor(ar, ag, ab); doc.text((m.name || '?').charAt(0).toUpperCase(), cx, cy + 9, { align: 'center' });
+          doc.setFontSize(15); setText(p.text); doc.text(doc.splitTextToSize(m.name, cw), cx, cy + 62, { align: 'center' });
+          if (m.role) { doc.setFont('helvetica', 'normal'); doc.setFontSize(12); doc.setTextColor(mr, mg, mb); doc.text(doc.splitTextToSize(m.role, cw), cx, cy + 82, { align: 'center' }); }
+        });
+        break;
+      }
+      case 'logos': {
+        kicker(90, s.subtitle || 'Trusted by'); title(30, 130, s.title || ''); rule(148);
+        const logos = (s.logos || []).filter(Boolean).slice(0, 12);
+        const per = Math.min(4, logos.length || 1), cw = (W - M * 2 - 18 * (per - 1)) / per, ch = 84;
+        logos.forEach((l, li) => {
+          const cx = M + (li % per) * (cw + 18), cy = 180 + Math.floor(li / per) * (ch + 18);
+          const [sr, sg, sb] = rgb(p.surface); doc.setFillColor(sr, sg, sb); doc.roundedRect(cx, cy, cw, ch, 10, 10, 'F');
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(15); setText(p.text); doc.text(doc.splitTextToSize(l, cw - 24), cx + cw / 2, cy + ch / 2 + 5, { align: 'center' });
         });
         break;
       }

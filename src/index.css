@@ -60,7 +60,11 @@ html, body, #root {
   -webkit-user-select: none;
 }
 
-input, textarea, [data-selectable] {
+/* The app chrome is non-selectable (feels native), but READABLE CONTENT must be selectable so
+   the user can copy chat messages, notes, tables, code, etc. (was: only inputs — nothing else
+   could be copied). */
+input, textarea, [data-selectable], .select-text, [contenteditable="true"],
+p, li, td, th, pre, code, blockquote, h1, h2, h3, h4, h5, h6, .font-serif, .font-mono {
   user-select: text;
   -webkit-user-select: text;
 }
