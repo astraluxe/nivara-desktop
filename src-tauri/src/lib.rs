@@ -5979,6 +5979,7 @@ async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, St
 #[tauri::command]
 async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
+    use tauri::Manager;
     let updater = app.updater().map_err(|e| e.to_string())?;
     // Retry the check a few times: right after a release is published the updater endpoint can
     // briefly 404 / still resolve to the old release while GitHub propagates. Without this, the
@@ -6014,6 +6015,13 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
             )
             .await
             .map_err(|e| e.to_string())?;
+        // Drop a sentinel so the relaunched app FORCES the main window open — the update relaunch
+        // can inherit the autostart "--quickbar" arg (which normally keeps main hidden), so after
+        // an update the user only saw the Quick Bar, not the app window. setup() consumes this.
+        if let Ok(dir) = app.path().app_data_dir() {
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(dir.join(".show-main-after-update"), b"1");
+        }
         // REQUIRED on Windows: download_and_install runs the installer but does NOT relaunch —
         // without this the app sat forever on "downloading… will restart" (the installer was
         // waiting for the app to exit). restart() exits so the install finishes, then relaunches
@@ -6051,12 +6059,26 @@ pub fn run() {
         ))
         .manage(pty_map)
         .setup(|app| {
+            // If we just relaunched after an update, FORCE the main window open (even if this
+            // launch inherited the autostart "--quickbar" flag). Otherwise the user only saw the
+            // Quick Bar after updating, not the app. The sentinel is written by install_update.
+            let show_after_update = app.path().app_data_dir().ok()
+                .map(|d| d.join(".show-main-after-update"))
+                .filter(|p| p.exists())
+                .map(|p| { let _ = std::fs::remove_file(&p); true })
+                .unwrap_or(false);
             // Launched by autostart (--quickbar): keep the MAIN window hidden — the
             // always-on-top Quick Bar is the only thing the user sees. Opening the app
             // normally (no flag) shows the main window as always.
-            if std::env::args().any(|a| a == "--quickbar") {
+            if std::env::args().any(|a| a == "--quickbar") && !show_after_update {
                 if let Some(main) = app.get_webview_window("main") {
                     let _ = main.hide();
+                }
+            } else if show_after_update {
+                if let Some(main) = app.get_webview_window("main") {
+                    let _ = main.show();
+                    let _ = main.unminimize();
+                    let _ = main.set_focus();
                 }
             }
             let conn      = init_db(app).expect("Failed to open Coder SQLite DB");

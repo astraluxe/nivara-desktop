@@ -1127,6 +1127,7 @@ export interface DeckConfig {
   audience?:  string;               // optional "who's this for" to sharpen the content
   accent?:    string;               // optional accent colour the user picked (else auto)
   template?:  string;               // optional visual template the user picked (else auto)
+  density?:   'light' | 'balanced' | 'detailed';  // how much text per slide
 }
 
 // Friendly colour swatches so the user picks a colour by eye, not by hex code.
@@ -1170,6 +1171,7 @@ function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled }: {
   const [mode, setMode]         = useState<'basic' | 'advanced'>('basic');
   const [imgModel, setImgModel] = useState<'gemini-2.5-flash-image' | 'gemini-3-pro-image-preview'>('gemini-2.5-flash-image');
   const [slides, setSlides]     = useState(12);
+  const [density, setDensity]   = useState<'light' | 'balanced' | 'detailed'>('balanced');
   const [audience, setAudience] = useState('');
   const [accent, setAccent]     = useState('');   // '' = auto (let the deck pick)
   const [template, setTemplate] = useState('');   // '' = auto
@@ -1246,6 +1248,22 @@ function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled }: {
           </div>
         </div>
         <div>
+          <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1.5">How much text per slide?</p>
+          <div className="flex gap-2">
+            {([
+              { id: 'light', label: 'Light', sub: 'Punchy · few words, more visuals' },
+              { id: 'balanced', label: 'Balanced', sub: '3–5 bullets · the default' },
+              { id: 'detailed', label: 'Detailed', sub: 'Fuller copy per slide' },
+            ] as const).map((d) => (
+              <button key={d.id} disabled={disabled} onClick={() => setDensity(d.id)}
+                className={`flex-1 text-left px-2.5 py-2 rounded-lg border transition-fast ${density === d.id ? 'border-accent bg-accent/10 text-nv-text' : 'border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40'}`}>
+                <p className="text-[11px] font-semibold">{d.label}</p>
+                <p className="text-[9px] text-nv-faint leading-snug font-mono mt-0.5">{d.sub}</p>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
           <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1.5">Who's it for? <span className="text-nv-faint/70 normal-case">(optional — sharpens the writing)</span></p>
           <input value={audience} onChange={(e) => setAudience(e.target.value)} disabled={disabled}
             placeholder="e.g. B2B SaaS founders, CFOs, non-tech SMB owners…"
@@ -1286,7 +1304,7 @@ function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled }: {
         <button onClick={onCancel} disabled={disabled} className="text-[11px] text-nv-faint hover:text-nv-text transition-fast font-mono">Cancel</button>
         <button
           disabled={disabled}
-          onClick={() => { setDone(true); onGenerate({ format, mode, imageModel: imgModel, slideCount: slides, audience: audience.trim() || undefined, accent: accent || undefined, template: template || undefined }); }}
+          onClick={() => { setDone(true); onGenerate({ format, mode, imageModel: imgModel, slideCount: slides, density, audience: audience.trim() || undefined, accent: accent || undefined, template: template || undefined }); }}
           className="text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-semibold disabled:opacity-50"
         >Generate deck →</button>
       </div>
@@ -3274,7 +3292,14 @@ The prompt must be production-ready — specific enough for a motion designer to
       const coverageDirective = `\n\n## COVER THE WHOLE SOURCE — DON'T OVER-INDEX ON ONE PART\nWhen a document is attached, base the deck on its FULL breadth — represent the product's different capabilities/modules/sections, not just the first/biggest thing mentioned. Do NOT let one module (e.g. the agents) eat half the deck; give the others their own slides. Pull the strongest, most client-relevant points from across the ENTIRE document.\n\n## FOLLOW A PER-SLIDE BRIEF EXACTLY\nIf the request assigns specific topics to specific slides (e.g. "Slide 4-9: one module each", "Slide 2: the problem"), produce a distinct slide for EACH assignment, in that order — never collapse several into one or skip any. Every slide must have REAL content (title + bullets/stat/columns); never emit an empty or near-empty slide.\n\n## KEEP NOTES SHORT\nEven if the brief asks for a "speaker script", keep each slide's "notes" to ONE short line (≤ 20 words) — a long script per slide overflows the output limit and truncates the deck.`;
       const chartDirective = `\n\n## SHOW NUMBERS AS A CHART\nWhen a slide compares a FEW numbers (costs, ROI %, growth, before/after, time saved), use a CHART slide instead of a plain bullet list — it looks far more professional. Emit: {"layout":"chart","title":"…","chartData":[{"label":"Traditional","value":250000},{"label":"adris.tech","value":19999}],"chartUnit":"₹","notes":"…"}. Rules: 2–6 data points, "value" MUST be a plain number (no commas, symbols or text — put the unit in "chartUnit" like "₹", "%", "hrs"), keep labels short. Use 1–3 chart slides where the data genuinely warrants it (e.g. the cost/ROI comparison), not everywhere.`;
       const layoutsDirective = `\n\n## USE THE RIGHT LAYOUT FOR EACH SLIDE (pick per content — don't make every slide bullets)\nEach slide object has a "layout". Available layouts and their fields:\n- "title": title, subtitle, body — the OPENING cover slide (slide 1 MUST be this).\n- "agenda": title + bullets[] — a numbered outline of the deck's topics (use as slide 2 for a long deck).\n- "section": title, subtitle — a chapter divider between parts.\n- "bullets": title + bullets[] (3–6, ≤14 words) — a standard point slide.\n- "two-column": title + columns[{heading,bullets[]}] — two related lists.\n- "comparison": title + columns[2]{heading,bullets[]} — us-vs-them / before-vs-after (renders a VS badge).\n- "cards": title + cards[{heading,body}] (3–6) — a feature/module grid (great for "6 modules").\n- "process": title + cards[{heading,body}] (3–5) — numbered steps / how-it-works.\n- "timeline": title + timeline[{label,text}] — roadmap/milestones.\n- "stat": title(kicker) + stat + statLabel — ONE giant number.\n- "chart": title + chartData[{label,value}] + chartUnit — a bar chart for a few numbers (cost/ROI comparisons).\n- "pricing": title + plans[{name,price,bullets[],highlight}] — 2–4 pricing tiers.\n- "quote": quote + attribution — a testimonial / punchy line.\n- "team": title + people[{name,role}] — the people / about-us grid.\n- "logos": title + subtitle + logos[] (names) — a "trusted by" client/partner wall.\n- "image-full": title (+ image) — a full-bleed impact slide.\n- "closing": title, subtitle(CTA pill), body — the final call-to-action.\nVARY them: a real deck mixes agenda, cards, comparison, chart, stat, quote, pricing, team, logos — NOT 12 bullet slides. Match the layout to what the slide is actually saying.`;
-      const sys = AGENT_BY_KEY['deck_maker'].systemPrompt + modeDirective + countDirective + contentDirective + coverageDirective + chartDirective + layoutsDirective + designDirective + audienceDirective + dateBlock;
+      // How much text per slide (from the setup card) + a hard rule that ONLY slide 1 is a title.
+      const densityDirective = cfg.density === 'light'
+        ? `\n\n## TEXT AMOUNT: LIGHT\nKeep every slide punchy — 2–4 short bullets (≤ 8 words each) or a single stat/chart. Prefer VISUAL layouts (stat, chart, cards, comparison, timeline) over walls of text. Let the design carry it.`
+        : cfg.density === 'detailed'
+        ? `\n\n## TEXT AMOUNT: DETAILED\nWrite fuller content — 5–6 substantive bullets per content slide (≤ 16 words each) or two-column detail, so each slide is self-explanatory. Still one idea per slide; no rambling.`
+        : `\n\n## TEXT AMOUNT: BALANCED\n3–5 tight bullets per content slide (≤ 14 words each), or the right visual layout for the data.`;
+      const slideRoleDirective = `\n\n## SLIDE ROLES — CRITICAL\n- ONLY slide 1 uses layout "title". NEVER use "title" for any other slide.\n- Use "section" sparingly (at most a couple of chapter dividers) — it is NOT a content slide.\n- EVERY other slide is a CONTENT slide and MUST carry real content in the right layout (bullets / cards / comparison / two-column / chart / stat / pricing / timeline / team / quote) — never an almost-empty slide that's just a heading. If a slide would only have a title, add its bullets/cards/columns.`;
+      const sys = AGENT_BY_KEY['deck_maker'].systemPrompt + modeDirective + countDirective + contentDirective + coverageDirective + chartDirective + layoutsDirective + slideRoleDirective + densityDirective + designDirective + audienceDirective + dateBlock;
       setStatus(`Slade is structuring your ${target} slides…`);
       // Generate + parse. Retry once if the JSON is broken OR fewer than the requested slides
       // came back. We keep whatever parsed as a fallback so a short retry never loses the first.
@@ -3346,6 +3371,22 @@ The prompt must be production-ready — specific enough for a motion designer to
       if (s0 && s0.layout !== 'title') {
         const thin = !(s0.bullets?.length) && !(s0.columns?.length) && !s0.stat && !s0.chartData && !s0.quote;
         if (thin || s0.layout === 'section') { s0.layout = 'title'; if (!s0.subtitle && spec.subtitle) s0.subtitle = spec.subtitle; }
+      }
+      // Only slide 1 may be a title. Any OTHER slide that came back as 'title' is really a content
+      // slide the model mislabelled — demote it to a content layout so the deck isn't a stack of
+      // cover slides (the user's exact complaint). Pick the best fit from whatever data it has.
+      for (let si = 1; si < spec.slides.length; si++) {
+        const sl = spec.slides[si];
+        if (sl.layout === 'title') {
+          if (sl.columns?.length) sl.layout = 'two-column';
+          else if (sl.stat) sl.layout = 'stat';
+          else if (sl.chartData?.length) sl.layout = 'chart';
+          else {
+            sl.layout = 'bullets';
+            // A bare title slide → turn its subtitle/body into a first bullet so it isn't empty.
+            if (!sl.bullets?.length) { const seed = sl.body || sl.subtitle; if (seed) { sl.bullets = [seed]; } }
+          }
+        }
       }
 
       // Apply the user's OPTIONAL colour/template choices from the setup card (before images so
