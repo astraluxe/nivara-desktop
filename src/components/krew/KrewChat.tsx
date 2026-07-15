@@ -15,7 +15,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { extractTableRows, mergeLeadTables, parseLeadRows, rowsToMarkdown } from '../../lib/leadTable';
 import { supabase } from '../../lib/supabase';
 import { getPlanConfig } from '../../lib/planConfig';
-import { parseDeckSpec, slidesNeedingImages, renderDeckHtml, deckToPptxBlob, type DeckSpec, type DeckPalette } from '../../lib/deck';
+import { parseDeckSpec, slidesNeedingImages, renderDeckHtml, type DeckSpec, type DeckPalette } from '../../lib/deck';
 import { CHANNEL_META, listConnections, saveConnection, schedulePost, postNow, type SocialConnection, type SocialChannel, type PostContent } from '../../lib/social';
 import UpgradeModal from '../UpgradeModal';
 import { type AutomationProposal } from './AutomationProposalModal';
@@ -177,6 +177,78 @@ function looksLikePresentation(text: string): boolean {
   if (/\b(presentation|slides?|deck)\b/.test(t) &&
       /\b(make|create|build|generate|design|prepare|put together|need|want|draft|do|turn (this|it) into)\b/.test(t)) return true;
   return false;
+}
+
+// ─── In-chat deck editing helpers ─────────────────────────────────────────────
+// A user's own picture to drop into the deck: a logo (shown on every slide) or a photo
+// placed on a specific slide.
+interface DeckImage { name: string; dataUri: string; isLogo?: boolean; slide?: number }
+
+// Slide numbers named in an instruction, in order: "put it on slide 3", "slides 2 and 4".
+function parseSlideTargets(text: string): number[] {
+  const out: number[] = [];
+  const re = /slides?\s+#?(\d{1,2})/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) { const n = parseInt(m[1], 10); if (n >= 1 && n <= 60) out.push(n); }
+  return out;
+}
+
+const NAMED_COLOURS: Record<string, string> = {
+  blue: '#4f8cff', indigo: '#6d5cff', violet: '#a855f7', purple: '#a855f7', pink: '#ff5ca8', rose: '#e11d48',
+  red: '#ff4d2e', orange: '#ff7a45', amber: '#f59e0b', yellow: '#f5b301', gold: '#f59e0b',
+  emerald: '#10b981', green: '#34d399', teal: '#22d3ee', cyan: '#22d3ee', mint: '#0d9488',
+  slate: '#64748b', gray: '#64748b', grey: '#64748b', black: '#111111', white: '#f5f5f5', navy: '#1e3a8a',
+};
+function colourFromText(text: string): string | null {
+  const hex = text.match(/#([0-9a-f]{6}|[0-9a-f]{3})\b/i);
+  if (hex) return '#' + hex[1];
+  const lc = text.toLowerCase();
+  for (const [name, hexv] of Object.entries(NAMED_COLOURS)) {
+    if (new RegExp(`\\b${name}\\b`).test(lc)) return hexv;
+  }
+  return null;
+}
+
+// A follow-up message that edits the deck we just built (place a pic, recolour, change text,
+// add/remove a slide). Only consulted when a deck already exists in the thread.
+function looksLikeDeckEdit(text: string): boolean {
+  const t = text.toLowerCase();
+  if (colourFromText(t) && /\b(make|change|turn|recolou?r|set|use)\b/.test(t)) return true;
+  if (!/\b(slide|deck|presentation|ppt|logo|pics?|picture|image|photo|colou?r|accent|title|bullet|heading|subtitle|text)\b/.test(t)) return false;
+  return /\b(change|edit|replace|update|set|rename|put|add|insert|remove|delete|drop|swap|move|use|make|recolou?r|colou?r|turn)\b/.test(t);
+}
+
+// Place the user's own images onto the deck: a logo → spec.logo (drawn on every slide); the
+// rest onto the slide numbers they named, then any leftover onto image-friendly slides in
+// order. User images always WIN over AI generation (we clear that slide's imagePrompt).
+function applyUserImagesToSpec(spec: DeckSpec, imgs: DeckImage[], text: string): number {
+  if (!imgs.length) return 0;
+  let placed = 0;
+  const logo = imgs.find((im) => im.isLogo);
+  if (logo) { spec.logo = logo.dataUri; placed++; }
+  const rest = imgs.filter((im) => im !== logo);
+  const targets = parseSlideTargets(text);
+  const used = new Set<number>();
+  const unplaced: DeckImage[] = [];
+  let ti = 0;
+  for (const im of rest) {
+    let idx = -1;
+    if (im.slide && im.slide >= 1 && im.slide <= spec.slides.length) idx = im.slide - 1;
+    else if (ti < targets.length) { const tval = targets[ti++]; if (tval >= 1 && tval <= spec.slides.length) idx = tval - 1; }
+    if (idx >= 0) { spec.slides[idx].imageData = im.dataUri; delete spec.slides[idx].imagePrompt; used.add(idx); placed++; }
+    else unplaced.push(im);
+  }
+  if (unplaced.length) {
+    const friendlyLayouts = ['title', 'section', 'image-full', 'closing', 'two-column', 'bullets'];
+    const slots = spec.slides.map((_, i) => i).filter((i) => !used.has(i) && !spec.slides[i].imageData);
+    const friendly = slots.filter((i) => friendlyLayouts.includes(spec.slides[i].layout));
+    const order = friendly.length ? friendly : slots;
+    for (let k = 0; k < unplaced.length && k < order.length; k++) {
+      const i = order[k];
+      spec.slides[i].imageData = unplaced[k].dataUri; delete spec.slides[i].imagePrompt; used.add(i); placed++;
+    }
+  }
+  return placed;
 }
 
 interface StudioRequest {
@@ -1071,43 +1143,12 @@ const DECK_TEMPLATES: { id: string; label: string }[] = [
 ];
 
 // ── Guaranteed image fallback ────────────────────────────────────────────────
-// Draw a tasteful abstract (the deck's accent, on its background) to a canvas → JPEG data
-// URI. No network, never fails — so when BOTH AI generation and stock search come up empty,
-// a slide STILL gets a clean visual instead of "couldn't get an image". Works in the HTML
-// deck AND the .pptx (raster, not SVG).
-function hexA(hex: string, a: number): string {
-  const m = (hex || '#000000').replace('#', '').match(/.{2}/g)?.map((x) => parseInt(x, 16)) ?? [0, 0, 0];
-  return `rgba(${m[0] || 0},${m[1] || 0},${m[2] || 0},${a})`;
-}
-function mulberry(seed: number) {
-  let t = (seed >>> 0) + 0x9e3779b9;
-  return () => { t += 0x6D2B79F5; let r = Math.imul(t ^ (t >>> 15), 1 | t); r ^= r + Math.imul(r ^ (r >>> 7), 61 | r); return ((r ^ (r >>> 14)) >>> 0) / 4294967296; };
-}
 // Blend two hex colours (t=0→a, t=1→b) — used to derive the deck's surface/muted tones from
 // the 3 colours the user actually picks (background, text, accent).
 function mixHex(a: string, b: string, t: number): string {
   const pa = (a || '#000000').replace('#', '').match(/.{2}/g)?.map((x) => parseInt(x, 16)) ?? [0, 0, 0];
   const pb = (b || '#000000').replace('#', '').match(/.{2}/g)?.map((x) => parseInt(x, 16)) ?? [0, 0, 0];
   return '#' + pa.map((v, i) => Math.max(0, Math.min(255, Math.round(v + ((pb[i] ?? 0) - v) * t))).toString(16).padStart(2, '0')).join('');
-}
-function makeAbstractSlideImage(accent: string, bg: string, seed = 0): string {
-  try {
-    const W = 1024, H = 768;
-    const c = document.createElement('canvas'); c.width = W; c.height = H;
-    const ctx = c.getContext('2d'); if (!ctx) return '';
-    ctx.fillStyle = bg || '#0a0a0a'; ctx.fillRect(0, 0, W, H);
-    const g = ctx.createLinearGradient(0, 0, W, H);
-    g.addColorStop(0, hexA(accent, 0.5)); g.addColorStop(1, hexA(accent, 0.04));
-    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-    const rnd = mulberry(seed + 7);
-    for (let i = 0; i < 5; i++) {
-      const x = rnd() * W, y = rnd() * H, r = 130 + rnd() * 260;
-      const rg = ctx.createRadialGradient(x, y, 0, x, y, r);
-      rg.addColorStop(0, hexA(accent, 0.3)); rg.addColorStop(1, hexA(accent, 0));
-      ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
-    }
-    return c.toDataURL('image/jpeg', 0.86);
-  } catch { return ''; }
 }
 // A slide's imageData renders as a BLACK box if it's not a real, non-trivial image. Accept only
 // a proper base64 image data URI with enough payload — anything else (empty, a stray URL, a
@@ -1116,17 +1157,15 @@ function validImageData(d?: string): boolean {
   return !!d && /^data:image\/(png|jpe?g|webp|gif);base64,/i.test(d) && d.length > 512;
 }
 
-function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled, deckApps = [] }: {
+function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled }: {
   unlockedAdvanced: boolean;
   onGenerate: (cfg: DeckConfig) => void;
   onCancel: () => void;
   disabled?: boolean;
-  deckApps?: string[];             // connected presentation apps/MCP (e.g. Canva) to offer as a target
 }) {
-  // Destination: 'chat' (live HTML deck) · 'pptx' (download) · a connected app name (→ editable
-  // .pptx you import into it). Only 'chat' maps to the in-chat deck; everything else = .pptx.
-  const [dest, setDest]         = useState<string>('chat');
-  const format: 'html' | 'pptx' = dest === 'chat' ? 'html' : 'pptx';
+  // The deck is always built here in the chat (live, editable, present + export PDF). The
+  // PowerPoint/.pptx export was removed for now — everything stays in our own chat deck.
+  const format: 'html' = 'html';
   const [mode, setMode]         = useState<'basic' | 'advanced'>('basic');
   const [imgModel, setImgModel] = useState<'gemini-2.5-flash-image' | 'gemini-3-pro-image-preview'>('gemini-2.5-flash-image');
   const [slides, setSlides]     = useState(12);
@@ -1154,7 +1193,7 @@ function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled, deckA
     return (
       <div className="my-3 rounded-xl border border-nv-border bg-nv-surface px-3 py-2.5">
         <p className="text-[11px] text-nv-muted">
-          Building a <span className="text-accent font-semibold">{mode}</span> deck as <span className="text-accent font-semibold">{format === 'pptx' ? 'PowerPoint (.pptx)' : 'an in-chat deck'}</span>…
+          Building a <span className="text-accent font-semibold">{mode}</span> deck <span className="text-accent font-semibold">here in chat</span>…
         </p>
       </div>
     );
@@ -1164,28 +1203,9 @@ function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled, deckA
     <div className="my-3 rounded-xl border border-nv-border bg-nv-surface overflow-hidden text-left">
       <div className="px-3 py-2.5 bg-nv-bg border-b border-nv-border/60">
         <p className="text-[12px] font-semibold text-nv-text">Build your presentation</p>
-        <p className="text-[10px] text-nv-faint mt-0.5">Choose how you want it — then generate.</p>
+        <p className="text-[10px] text-nv-faint mt-0.5">Attach your logo or pictures with the message and I'll place them in the deck. Tweak it after with "put my logo on slide 1", "make it blue"…</p>
       </div>
       <div className="p-3 space-y-3">
-        <div>
-          <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1.5">Where do you want it?</p>
-          <div className="flex gap-2">
-            <Opt active={dest === 'chat'} onClick={() => setDest('chat')} title="Here in chat" sub="Live deck — present & export PDF" />
-            <Opt active={dest === 'pptx'} onClick={() => setDest('pptx')} title="PowerPoint (.pptx)" sub="Editable file for PowerPoint / Slides" />
-          </div>
-          {deckApps.length > 0 && (
-            <>
-              <div className="flex gap-2 mt-2">
-                {deckApps.map((app) => (
-                  <Opt key={app} active={dest === app} onClick={() => setDest(app)} title={app} sub={`Editable file to import into ${app}`} />
-                ))}
-              </div>
-              {deckApps.includes(dest) && (
-                <p className="text-[9.5px] text-nv-faint mt-1.5">We'll build an editable .pptx — open <span className="text-nv-text">{dest}</span> and import it (it maps 1:1 to slides).</p>
-              )}
-            </>
-          )}
-        </div>
         <div>
           <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1.5">Detail level</p>
           <div className="flex gap-2">
@@ -1275,7 +1295,6 @@ function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled, deckA
 
 function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
   const [savedHtml, setSavedHtml] = useState(false);
-  const [pptxState, setPptxState] = useState<'idle' | 'building' | 'done' | 'err'>('idle');
   const [pdfState, setPdfState]   = useState<'idle' | 'opening' | 'err'>('idle');
   // Live palette editing: the user tweaks 3 colours (background / text / accent) and the deck
   // re-renders instantly. surface/muted are derived so a full palette needs only 3 picks.
@@ -1283,8 +1302,56 @@ function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'done'>('idle');
   const dirty = pal.bg !== spec.palette.bg || pal.text !== spec.palette.text || pal.accent !== spec.palette.accent;
 
+  // Inline editing: the user clicks any text ON the deck and edits it. Edits are posted from
+  // the iframe and collected here (in a ref, so typing never reloads the iframe). editId scopes
+  // messages to THIS deck when several decks are in the thread.
+  const editId = useRef('dk-' + Math.random().toString(36).slice(2, 9)).current;
+  const editsRef = useRef<Record<string, string>>({});
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  // The deck's own ⛶ Present / ⭳ PDF buttons live inside the sandboxed iframe where fullscreen
+  // and print are blocked — so the deck posts a message and WE do the action out here (fullscreen
+  // the iframe / open the deck in the real browser to Save-as-PDF). Kept in a ref so the message
+  // listener always calls the latest handler without re-subscribing.
+  const actionsRef = useRef<{ pdf: () => void; present: () => void }>({ pdf: () => {}, present: () => {} });
+  const applyEdits = useCallback((sp: DeckSpec): DeckSpec => {
+    const keys = Object.keys(editsRef.current);
+    if (!keys.length) return sp;
+    const copy: DeckSpec = JSON.parse(JSON.stringify(sp));
+    for (const k of keys) {
+      const bar = k.indexOf('|'); const si = +k.slice(0, bar); const field = k.slice(bar + 1);
+      const sl = copy.slides[si]; if (!sl) continue;
+      const v = editsRef.current[k];
+      if (field.startsWith('bullet.')) { const bi = +field.slice(7); if (!Array.isArray(sl.bullets)) sl.bullets = []; sl.bullets[bi] = v; }
+      else (sl as unknown as Record<string, string>)[field] = v;
+    }
+    return copy;
+  }, []);
+  useEffect(() => {
+    function onMsg(e: MessageEvent) {
+      const d = e.data as { __deckEdit?: boolean; __deckPdf?: boolean; __deckPresent?: boolean; id?: string; s?: number; f?: string; value?: string };
+      if (!d) return;
+      // present/pdf carry no id, so only react if the message came from THIS deck's iframe
+      // (several decks can share the thread).
+      const fromThis = iframeRef.current && e.source === iframeRef.current.contentWindow;
+      if (d.__deckEdit && d.id === editId && typeof d.s === 'number' && typeof d.f === 'string') {
+        editsRef.current[`${d.s}|${d.f}`] = String(d.value ?? '');
+      } else if (d.__deckPdf && fromThis) {
+        actionsRef.current.pdf();
+      } else if (d.__deckPresent && fromThis) {
+        actionsRef.current.present();
+      }
+    }
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, [editId]);
+
   const liveSpec = useMemo(() => ({ ...spec, palette: pal }), [spec, pal]);
-  const liveHtml = useMemo(() => { try { return renderDeckHtml(liveSpec); } catch { return html; } }, [liveSpec, html]);
+  // Editable preview. It intentionally does NOT depend on the edits ref, so typing/blur never
+  // reloads the iframe; a palette change re-renders and re-applies the accumulated edits.
+  const liveHtml = useMemo(() => { try { return renderDeckHtml(applyEdits(liveSpec), true, editId); } catch { return html; } }, [liveSpec, html, editId, applyEdits]);
+  // Clean, non-editable spec/html for downloads & saving (palette + inline text edits baked in).
+  const finalSpec = () => applyEdits(liveSpec);
+  const finalHtml = () => { try { return renderDeckHtml(finalSpec(), false); } catch { return liveHtml; } };
 
   function setColor(role: 'bg' | 'text' | 'accent', v: string) {
     setPal((p) => {
@@ -1295,19 +1362,10 @@ function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
 
   function slug() { return (spec.title || 'deck').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'deck'; }
   function downloadHtml() {
-    const blob = new Blob([liveHtml], { type: 'text/html' });
+    const blob = new Blob([finalHtml()], { type: 'text/html' });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a'); a.href = url; a.download = `${slug()}.html`; a.click();
     URL.revokeObjectURL(url); setSavedHtml(true); setTimeout(() => setSavedHtml(false), 1800);
-  }
-  async function downloadPptx() {
-    setPptxState('building');
-    try {
-      const blob = await deckToPptxBlob(liveSpec);
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement('a'); a.href = url; a.download = `${slug()}.pptx`; a.click();
-      URL.revokeObjectURL(url); setPptxState('done'); setTimeout(() => setPptxState('idle'), 2000);
-    } catch { setPptxState('err'); setTimeout(() => setPptxState('idle'), 2500); }
   }
   // PDF: window.print() inside the sandboxed in-chat iframe is blocked, so we save the deck
   // HTML (with an auto-print script) to disk and open it in the real browser — its native
@@ -1315,23 +1373,33 @@ function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
   async function downloadPdf() {
     setPdfState('opening');
     try {
-      const printHtml = liveHtml.replace(
+      const printHtml = finalHtml().replace(
         '</body>',
         '<script>window.addEventListener("load",function(){setTimeout(function(){try{window.print()}catch(e){}},600)})<\/script></body>'
       );
-      const path = await invoke<string>('save_deck_files', { slug: slug() + '-pdf', html: printHtml, specJson: JSON.stringify(liveSpec) });
+      const path = await invoke<string>('save_deck_files', { slug: slug() + '-pdf', html: printHtml, specJson: JSON.stringify(finalSpec()) });
       await invoke('open_path', { path });
       setPdfState('idle');
     } catch { setPdfState('err'); setTimeout(() => setPdfState('idle'), 2500); }
   }
+  // Present: fullscreen the iframe element itself (the deck fills the screen; its own keyboard
+  // nav then drives the slides). Requested from the deck's inner ⛶ button via postMessage.
+  function presentDeck() {
+    const el = iframeRef.current as (HTMLIFrameElement & { webkitRequestFullscreen?: () => void }) | null;
+    if (!el) return;
+    try { (el.requestFullscreen || el.webkitRequestFullscreen)?.call(el); el.focus?.(); } catch { /* ignore */ }
+  }
+  // Keep the ref pointing at the current handlers so the (stable) message listener can call them.
+  actionsRef.current = { pdf: downloadPdf, present: presentDeck };
 
   // Persist the (recoloured) deck to disk + the Brain, so the user's colour choice sticks.
   async function saveChanges() {
     setSaveState('saving');
     try {
-      const path = await invoke<string>('save_deck_files', { slug: slug(), html: liveHtml, specJson: JSON.stringify(liveSpec) });
+      const fs = finalSpec();
+      const path = await invoke<string>('save_deck_files', { slug: slug(), html: finalHtml(), specJson: JSON.stringify(fs) });
       const { brain } = await import('../../lib/knowledgeStore');
-      const node = brain.addNode({ title: liveSpec.title || 'Presentation', kind: 'file', body: `Presentation · ${liveSpec.slides.length} slides\n\n` + liveSpec.slides.map((s, i) => `${i + 1}. ${s.title || s.layout}`).join('\n') });
+      const node = brain.addNode({ title: fs.title || 'Presentation', kind: 'file', body: `Presentation · ${fs.slides.length} slides\n\n` + fs.slides.map((s, i) => `${i + 1}. ${s.title || s.layout}`).join('\n') });
       brain.updateNode(node.id, { filePath: path });
       setSaveState('done'); setTimeout(() => setSaveState('idle'), 1800);
     } catch { setSaveState('idle'); }
@@ -1360,11 +1428,8 @@ function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
           <button onClick={downloadHtml} className="text-[10px] px-2.5 py-1 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40 transition-fast font-mono">
             {savedHtml ? '✓ Saved' : '⭳ .html'}
           </button>
-          <button onClick={downloadPdf} title="Open in your browser and Save as PDF" className="text-[10px] px-2.5 py-1 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40 transition-fast font-mono">
+          <button onClick={downloadPdf} title="Open in your browser and Save as PDF" className="text-[10px] px-2.5 py-1 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-mono">
             {pdfState === 'opening' ? 'opening…' : pdfState === 'err' ? 'failed' : '⭳ PDF'}
-          </button>
-          <button onClick={downloadPptx} className="text-[10px] px-2.5 py-1 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-mono">
-            {pptxState === 'building' ? '…building' : pptxState === 'done' ? '✓ .pptx' : pptxState === 'err' ? 'failed' : '⭳ PowerPoint'}
           </button>
         </div>
       </div>
@@ -1394,16 +1459,103 @@ function DeckResultBubble({ html, spec }: { html: string; spec: DeckSpec }) {
       </div>
       <div className="p-3 bg-nv-bg flex justify-center items-center">
         <iframe
+          ref={iframeRef}
           srcDoc={liveHtml}
           sandbox="allow-scripts allow-same-origin"
+          allow="fullscreen"
           className="rounded-lg border border-nv-border/40 bg-black"
           style={{ width: '100%', maxWidth: 560, aspectRatio: '16 / 9' }}
           title="Deck preview"
         />
       </div>
-      <p className="px-3 pb-2 text-[9px] text-nv-faint font-mono">Click the preview then use ← → to flip slides · ⛶ Present for fullscreen · change the 3 colours above and the deck restyles instantly</p>
+      <p className="px-3 pb-2 text-[9px] text-nv-faint font-mono">Click any text on a slide to edit it inline · ← → flip slides · ⛶ Present for fullscreen · change the 3 colours above to restyle · download once you're happy</p>
     </div>
   );
+}
+
+// A deck reloaded from history (saved as raw HTML — no spec, so no inline/colour editing).
+// It's fully interactive and its own ⛶ Present / ⭳ PDF buttons work: they post a message
+// and we fullscreen the iframe / open the deck in the real browser to Save-as-PDF.
+function SavedDeckBubble({ html }: { html: string }) {
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [pdfState, setPdfState] = useState<'idle' | 'opening' | 'err'>('idle');
+  const [savedHtml, setSavedHtml] = useState(false);
+
+  const doPdf = useCallback(async () => {
+    setPdfState('opening');
+    try {
+      const printHtml = html.replace(
+        '</body>',
+        '<script>window.addEventListener("load",function(){setTimeout(function(){try{window.print()}catch(e){}},600)})<\/script></body>'
+      );
+      const path = await invoke<string>('save_deck_files', { slug: 'deck-pdf', html: printHtml, specJson: '{}' });
+      await invoke('open_path', { path });
+      setPdfState('idle');
+    } catch { setPdfState('err'); setTimeout(() => setPdfState('idle'), 2500); }
+  }, [html]);
+  const doPresent = useCallback(() => {
+    const el = iframeRef.current as (HTMLIFrameElement & { webkitRequestFullscreen?: () => void }) | null;
+    if (!el) return;
+    try { (el.requestFullscreen || el.webkitRequestFullscreen)?.call(el); el.focus?.(); } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    function onMsg(e: MessageEvent) {
+      if (!iframeRef.current || e.source !== iframeRef.current.contentWindow) return;
+      const d = e.data as { __deckPdf?: boolean; __deckPresent?: boolean };
+      if (d && d.__deckPdf) doPdf();
+      else if (d && d.__deckPresent) doPresent();
+    }
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, [doPdf, doPresent]);
+
+  function downloadHtml() {
+    const blob = new Blob([html], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'deck.html'; a.click();
+    URL.revokeObjectURL(url); setSavedHtml(true); setTimeout(() => setSavedHtml(false), 1800);
+  }
+
+  return (
+    <div className="my-3 rounded-xl border border-accent/30 bg-nv-surface overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-nv-border/60 bg-nv-bg">
+        <div className="flex items-center gap-2 min-w-0">
+          <svg viewBox="0 0 16 16" fill="none" className="w-3.5 h-3.5 text-accent shrink-0">
+            <rect x="1.5" y="2.5" width="13" height="9" rx="1.3" stroke="currentColor" strokeWidth="1.3"/>
+            <path d="M8 11.5v2M5.5 13.5h5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+          </svg>
+          <span className="text-[11px] font-semibold text-nv-text truncate">Presentation</span>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <button onClick={downloadHtml} className="text-[10px] px-2.5 py-1 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40 transition-fast font-mono">
+            {savedHtml ? '✓ Saved' : '⭳ .html'}
+          </button>
+          <button onClick={doPresent} className="text-[10px] px-2.5 py-1 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40 transition-fast font-mono">⛶ Present</button>
+          <button onClick={doPdf} title="Open in your browser and Save as PDF" className="text-[10px] px-2.5 py-1 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-mono">
+            {pdfState === 'opening' ? 'opening…' : pdfState === 'err' ? 'failed' : '⭳ PDF'}
+          </button>
+        </div>
+      </div>
+      <div className="p-3 bg-nv-bg flex justify-center items-center">
+        <iframe
+          ref={iframeRef}
+          srcDoc={html}
+          sandbox="allow-scripts allow-same-origin"
+          allow="fullscreen"
+          className="rounded-lg border border-nv-border/40 bg-black"
+          style={{ width: '100%', maxWidth: 560, aspectRatio: '16 / 9' }}
+          title="Deck"
+        />
+      </div>
+      <p className="px-3 pb-2 text-[9px] text-nv-faint font-mono">← → flip slides · ⛶ Present for fullscreen · ⭳ PDF opens it in your browser to Save as PDF</p>
+    </div>
+  );
+}
+
+// Does this saved assistant message contain a rendered deck (from the PPT maker)?
+function isDeckHtml(s: string): boolean {
+  return /id=["']stage["']/.test(s) && /class=["']slide["']/.test(s) && /id=["']present["']/.test(s);
 }
 
 // Pull the most recent set of drafted ```post fences out of the conversation so the
@@ -2068,6 +2220,9 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
   // If the content is HTML (visual asset from visual_creator), render preview
   const trimmed = content.trimStart();
   if (!streaming && (trimmed.startsWith('<!DOCTYPE') || trimmed.startsWith('<html'))) {
+    // A deck reloaded from history is a full interactive presentation, NOT a static asset —
+    // render it in the deck bubble so its Present/PDF buttons actually work.
+    if (isDeckHtml(content)) return <SavedDeckBubble html={content} />;
     return <StudioAssetBubble html={content} />;
   }
 
@@ -2530,9 +2685,17 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     if (!raw || refining || busy) return;
     setRefining(true);
     try {
-      const sys = `You are an expert prompt engineer. Rewrite the user's rough request into ONE clear, detailed, well-structured prompt that will get an excellent result from an AI assistant. Expand vague parts into specifics; spell out the goal, the constraints, and the desired output/format; and keep EVERY concrete detail and the user's original intent. Do NOT answer or fulfil the request — only produce the improved prompt. Output ONLY the improved prompt text: no preamble, no explanation, no surrounding quotes.`;
+      const sys = `You are an expert prompt engineer. Rewrite the user's rough request into ONE clear, detailed, well-structured prompt that will get an excellent result from an AI assistant. Expand vague parts into specifics; spell out the goal, the constraints, and the desired output/format; and keep EVERY concrete detail and the user's original intent. Do NOT answer or fulfil the request — only produce the improved prompt.\n\nFORMAT: Output PLAIN TEXT only. This goes straight into a plain text box, so do NOT use any markdown symbols — no #, ##, ###, no ** or __ for bold, no backticks, no bullet asterisks. Write it as clean prose and simple lines; if you need sections or a list, use a plain label followed by a colon and normal sentences or hyphen (-) bullets. No preamble, no explanation, no surrounding quotes.`;
       const { text } = await streamTurn([{ role: 'user', content: `Rewrite this into a better, more detailed prompt:\n\n${raw}` }], sys, () => {});
-      const refined = text.trim().replace(/^["'`\s]+|["'`\s]+$/g, '');
+      // Belt-and-suspenders: strip any markdown symbols the model still slips in, so the input
+      // box never shows raw ### / ** / ` characters.
+      const refined = text.trim()
+        .replace(/^#{1,6}\s+/gm, '')                    // heading markers at line start
+        .replace(/\*\*([^*]+)\*\*/g, '$1')              // **bold**
+        .replace(/__([^_]+)__/g, '$1')                  // __bold__
+        .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1$2')      // *italic*
+        .replace(/`+/g, '')                             // backticks
+        .replace(/^["'`\s]+|["'`\s]+$/g, '');
       if (refined) setInput(refined);
     } catch { /* keep the original input if refine fails */ }
     finally { setRefining(false); } // usage is tracked live by the App-level nivara-tokens listener
@@ -2577,6 +2740,9 @@ const [studioExtracting, setStudioExtracting] = useState(false);
   const sidRef             = useRef<string | null>(sessionId);
   const freshSessionRef    = useRef<string | null>(null);
   const deckRequestRef     = useRef<string>('');   // context for the pending deck request
+  const deckTextRef        = useRef<string>('');   // the user's raw request text (for slide/pic references)
+  const deckImagesRef      = useRef<DeckImage[]>([]); // pictures the user attached with the deck request
+  const lastDeckSpecRef    = useRef<DeckSpec | null>(null); // the deck currently in the thread, for in-chat edits
   sidRef.current           = sessionId;
 
   const [showScrollBtn, setShowScrollBtn] = useState(false);
@@ -2763,15 +2929,6 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     return tools;
   }, [creds, agent.key, agent.category, mcpTools, searchMode]);
 
-  // Connected presentation apps (via MCP) to offer as a deck destination in the setup card —
-  // so if the user has Canva/Slides/Gamma connected, they can choose it right there.
-  const deckApps = useMemo(() => {
-    const names = mcpTools.map((t) => t.name.toLowerCase());
-    const apps: string[] = [];
-    if (names.some((n) => n.includes('canva'))) apps.push('Canva');
-    if (names.some((n) => /gamma|beautiful|pitch|google.?slides|presentation|\bslides\b/.test(n))) apps.push('Slides');
-    return apps;
-  }, [mcpTools]);
 
   function sanitiseError(raw: unknown): string {
     const msg = raw instanceof Error ? raw.message : String(raw);
@@ -3100,7 +3257,9 @@ The prompt must be production-ready — specific enough for a motion designer to
         : '';
       const contentDirective = `\n\n## WRITE REAL, SPECIFIC CONTENT — NOT FILLER\n- Build the deck FROM the attached document: use its ACTUAL numbers, product/module names, comparisons and pricing. Never generic marketing fluff.\n- Every slide earns its place: a concrete claim + the specific proof/number behind it. Benefit-led headlines ("Save 10 hrs/week", not "Our Features").\n- Follow the brief's narrative arc (problem → solution → proof → ROI → call to action). Use VARIED layouts — a stat slide for a big number, a two-column slide for a comparison/before-after, a quote for a testimonial — so it reads like a designed deck, not a bullet dump.\n- 3–6 tight bullets per content slide, each ≤ 14 words. One idea per slide.`;
       const coverageDirective = `\n\n## COVER THE WHOLE SOURCE — DON'T OVER-INDEX ON ONE PART\nWhen a document is attached, base the deck on its FULL breadth — represent the product's different capabilities/modules/sections, not just the first/biggest thing mentioned. Do NOT let one module (e.g. the agents) eat half the deck; give the others their own slides. Pull the strongest, most client-relevant points from across the ENTIRE document.\n\n## FOLLOW A PER-SLIDE BRIEF EXACTLY\nIf the request assigns specific topics to specific slides (e.g. "Slide 4-9: one module each", "Slide 2: the problem"), produce a distinct slide for EACH assignment, in that order — never collapse several into one or skip any. Every slide must have REAL content (title + bullets/stat/columns); never emit an empty or near-empty slide.\n\n## KEEP NOTES SHORT\nEven if the brief asks for a "speaker script", keep each slide's "notes" to ONE short line (≤ 20 words) — a long script per slide overflows the output limit and truncates the deck.`;
-      const sys = AGENT_BY_KEY['deck_maker'].systemPrompt + modeDirective + countDirective + contentDirective + coverageDirective + designDirective + audienceDirective + dateBlock;
+      const chartDirective = `\n\n## SHOW NUMBERS AS A CHART\nWhen a slide compares a FEW numbers (costs, ROI %, growth, before/after, time saved), use a CHART slide instead of a plain bullet list — it looks far more professional. Emit: {"layout":"chart","title":"…","chartData":[{"label":"Traditional","value":250000},{"label":"adris.tech","value":19999}],"chartUnit":"₹","notes":"…"}. Rules: 2–6 data points, "value" MUST be a plain number (no commas, symbols or text — put the unit in "chartUnit" like "₹", "%", "hrs"), keep labels short. Use 1–3 chart slides where the data genuinely warrants it (e.g. the cost/ROI comparison), not everywhere.`;
+      const layoutsDirective = `\n\n## USE THE RIGHT LAYOUT FOR EACH SLIDE (pick per content — don't make every slide bullets)\nEach slide object has a "layout". Available layouts and their fields:\n- "title": title, subtitle, body — the OPENING cover slide (slide 1 MUST be this).\n- "agenda": title + bullets[] — a numbered outline of the deck's topics (use as slide 2 for a long deck).\n- "section": title, subtitle — a chapter divider between parts.\n- "bullets": title + bullets[] (3–6, ≤14 words) — a standard point slide.\n- "two-column": title + columns[{heading,bullets[]}] — two related lists.\n- "comparison": title + columns[2]{heading,bullets[]} — us-vs-them / before-vs-after (renders a VS badge).\n- "cards": title + cards[{heading,body}] (3–6) — a feature/module grid (great for "6 modules").\n- "process": title + cards[{heading,body}] (3–5) — numbered steps / how-it-works.\n- "timeline": title + timeline[{label,text}] — roadmap/milestones.\n- "stat": title(kicker) + stat + statLabel — ONE giant number.\n- "chart": title + chartData[{label,value}] + chartUnit — a bar chart for a few numbers (cost/ROI comparisons).\n- "pricing": title + plans[{name,price,bullets[],highlight}] — 2–4 pricing tiers.\n- "quote": quote + attribution — a testimonial / punchy line.\n- "image-full": title (+ image) — a full-bleed impact slide.\n- "closing": title, subtitle(CTA pill), body — the final call-to-action.\nVARY them: a real deck mixes agenda, cards, comparison, chart, stat, quote, pricing — NOT 12 bullet slides. Match the layout to what the slide is actually saying.`;
+      const sys = AGENT_BY_KEY['deck_maker'].systemPrompt + modeDirective + countDirective + contentDirective + coverageDirective + chartDirective + layoutsDirective + designDirective + audienceDirective + dateBlock;
       setStatus(`Slade is structuring your ${target} slides…`);
       // Generate + parse. Retry once if the JSON is broken OR fewer than the requested slides
       // came back. We keep whatever parsed as a fallback so a short retry never loses the first.
@@ -3163,10 +3322,45 @@ The prompt must be production-ready — specific enough for a motion designer to
       if (spec.slides.length > target) spec.slides = spec.slides.slice(0, target);
       if (stopRef.current) { setMessages((prev) => prev.filter((m) => !m.streaming)); setBusy(false); return; }
 
+      // Guarantee a proper TITLE slide first (the user reported the title layout wasn't used). If
+      // the opening slide is a plain content slide with no bullets/columns/stat, promote it to the
+      // title layout so the deck opens on a real cover.
+      const s0 = spec.slides[0];
+      if (s0 && s0.layout !== 'title') {
+        const thin = !(s0.bullets?.length) && !(s0.columns?.length) && !s0.stat && !s0.chartData && !s0.quote;
+        if (thin || s0.layout === 'section') { s0.layout = 'title'; if (!s0.subtitle && spec.subtitle) s0.subtitle = spec.subtitle; }
+      }
+
       // Apply the user's OPTIONAL colour/template choices from the setup card (before images so
       // the generated-abstract fallback uses the chosen accent). Both stay tweakable live after.
       if (cfg.template) spec.template = cfg.template;
       if (cfg.accent) spec.palette = { ...spec.palette, accent: cfg.accent };
+
+      // The user's OWN pictures win over AI images: whatever they attached with the request,
+      // plus any saved Brain picture they referenced by name (e.g. "use my logo"). A logo goes
+      // on every slide; other pictures land on the slides they named (or the best free slots).
+      // Runs in BASIC mode too, so a no-AI deck can still carry the user's logo/photos.
+      {
+        const userImages: DeckImage[] = [...deckImagesRef.current];
+        const askText = deckTextRef.current || '';
+        try {
+          const { brain } = await import('../../lib/knowledgeStore');
+          const lc = askText.toLowerCase();
+          for (const pic of brain.listPictures()) {
+            const nm = pic.title.toLowerCase().replace(/\.[a-z0-9]+$/i, '').trim();
+            if (nm.length >= 3 && pic.filePath && lc.includes(nm) &&
+                !userImages.some((u) => u.name.toLowerCase() === pic.title.toLowerCase())) {
+              try {
+                const b64 = await invoke<string>('read_file_base64', { path: pic.filePath });
+                const ext = (pic.filePath.split('.').pop() || 'png').toLowerCase();
+                const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : ext === 'svg' ? 'image/svg+xml' : ext === 'gif' ? 'image/gif' : 'image/png';
+                userImages.push({ name: pic.title, dataUri: `data:${mime};base64,${b64}`, isLogo: /logo/.test(nm) });
+              } catch { /* skip a picture we can't read */ }
+            }
+          }
+        } catch { /* Brain unavailable — just use the attached images */ }
+        if (userImages.length) applyUserImagesToSpec(spec, userImages, askText);
+      }
 
       let imgNote = '';
       if (cfg.mode === 'advanced') {
@@ -3229,25 +3423,24 @@ The prompt must be production-ready — specific enough for a motion designer to
               if (validImageData(data)) got = data;
             } catch { /* fall through to the generated fallback */ }
           }
-          // 3) GUARANTEED — no network needed: a clean generated abstract in the deck's accent.
-          if (!got) got = makeAbstractSlideImage(spec.palette.accent, spec.palette.bg, idx);
+          // NO dark abstract fallback anymore: a generated dark canvas looked like an empty/black
+          // box (the exact user complaint). If AI + stock both fail, leave the slot EMPTY so the
+          // layout renders its clean TEXT version instead — and the user can drop in their own
+          // picture ("use this pic on slide N"). Only a real image (AI, stock, or the user's) is used.
           if (validImageData(got)) slide.imageData = got; else fails++;
         }
-        // FINAL VERIFICATION — no image slot may be left with a missing/invalid (black) image.
-        // Any slide that still lacks a valid image gets the generated abstract; if even that
-        // fails, drop the field entirely so the layout renders its clean TEXT version, not black.
+        // FINAL VERIFICATION — never leave a broken/invalid image on a slide (that's the black box).
+        // Drop the field so the layout renders its clean TEXT version instead.
         for (const idx of need) {
           const s = spec.slides[idx];
-          if (!validImageData(s.imageData)) {
-            const fb = makeAbstractSlideImage(spec.palette.accent, spec.palette.bg, idx + 100);
-            if (validImageData(fb)) s.imageData = fb; else delete (s as { imageData?: string }).imageData;
-          }
+          if (!validImageData(s.imageData)) delete (s as { imageData?: string }).imageData;
         }
-        if (need.length > 0 && fails >= need.length) imgNote = `Your deck is ready. Some slides couldn't get an image this time — regenerate to try again.`;
+        if (need.length > 0 && fails >= need.length) imgNote = `Your deck is ready — I couldn't fetch images this time, so those slides are text-only. You can attach your own pictures and say e.g. "put this on slide 3", or regenerate to try images again.`;
       }
 
       setStatus('Rendering deck…');
       const html = renderDeckHtml(spec);
+      lastDeckSpecRef.current = spec; // remember it so follow-up messages can edit it in place
       setMessages((prev) => {
         const c = [...prev]; const l = c[c.length - 1];
         const result: DisplayMsg = { role: 'deck_result', content: '', deckSpec: spec, deckHtml: html };
@@ -3275,18 +3468,6 @@ The prompt must be production-ready — specific enough for a motion designer to
         const node = brain.addNode({ title: spec.title || 'Presentation', kind: 'file', body: summary });
         brain.updateNode(node.id, { filePath: deckPath });
       } catch { /* deck is still in chat; Brain copy is best-effort */ }
-
-      if (cfg.format === 'pptx') {
-        try {
-          const blob = await deckToPptxBlob(spec);
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = (spec.title || 'deck').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) + '.pptx';
-          a.click();
-          URL.revokeObjectURL(url);
-        } catch { /* the in-chat preview + the .pptx button are still available */ }
-      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setMessages((prev) => {
@@ -3297,8 +3478,132 @@ The prompt must be production-ready — specific enough for a motion designer to
     } finally {
       setBusy(false);
       deckRequestRef.current = '';
+      deckTextRef.current = '';
+      deckImagesRef.current = [];
       // Token usage was already recorded live by the App-level `nivara-tokens` listener as the
       // deck streamed — no extra flush here (a second write would double-count the deck).
+    }
+  }
+
+  // Edit the deck already in the thread, in place: place the user's pictures/logo, recolour,
+  // change slide text, or add/remove a slide — driven by a plain-language follow-up message.
+  async function runDeckEdit(text: string, imageFiles: { name: string; content: string; mimeType?: string; isImage?: boolean; fromBrain?: boolean }[]) {
+    const base = lastDeckSpecRef.current;
+    if (!base) return;
+    setBusy(true);
+    stopRef.current = false;
+    const sid = sidRef.current;
+    addMsg({ role: 'delegation', toolName: 'deck_maker', content: 'Updating your deck…', streaming: true });
+    const setStatus = (t: string) => setMessages((prev) => {
+      const c = [...prev]; const l = c[c.length - 1];
+      if (l?.role === 'delegation') c[c.length - 1] = { ...l, content: t };
+      return c;
+    });
+    try {
+      let spec: DeckSpec = JSON.parse(JSON.stringify(base));
+      let changed = 0;
+      const lc = text.toLowerCase();
+
+      // 1) Pictures — attached now + saved Brain pictures referenced by name.
+      const userImages: DeckImage[] = imageFiles.map((f) => ({
+        name: f.name,
+        dataUri: `data:${f.mimeType ?? 'image/png'};base64,${f.content}`,
+        isLogo: /\blogo\b/i.test(f.name) || (/\blogo\b/.test(lc) && imageFiles.length === 1),
+      }));
+      try {
+        const { brain } = await import('../../lib/knowledgeStore');
+        for (const pic of brain.listPictures()) {
+          const nm = pic.title.toLowerCase().replace(/\.[a-z0-9]+$/i, '').trim();
+          if (nm.length >= 3 && pic.filePath && lc.includes(nm) &&
+              !userImages.some((u) => u.name.toLowerCase() === pic.title.toLowerCase())) {
+            try {
+              const b64 = await invoke<string>('read_file_base64', { path: pic.filePath });
+              const ext = (pic.filePath.split('.').pop() || 'png').toLowerCase();
+              const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : ext === 'svg' ? 'image/svg+xml' : ext === 'gif' ? 'image/gif' : 'image/png';
+              userImages.push({ name: pic.title, dataUri: `data:${mime};base64,${b64}`, isLogo: /logo/.test(nm) });
+            } catch { /* skip */ }
+          }
+        }
+      } catch { /* no Brain */ }
+      if (userImages.length) changed += applyUserImagesToSpec(spec, userImages, text);
+
+      // 2) Recolour ("make it blue", "accent #ff0000", "change the colour to teal").
+      const col = colourFromText(text);
+      if (col && /\b(colou?r|accent|make it|turn it|recolou?r|theme|palette)\b/.test(lc)) {
+        spec.palette = { ...spec.palette, accent: col };
+        changed++;
+      }
+
+      // 3) Remove a slide.
+      const rm = text.match(/\b(?:remove|delete|drop)\s+slide\s+#?(\d{1,2})/i);
+      if (rm) { const n = parseInt(rm[1], 10); if (n >= 1 && n <= spec.slides.length) { spec.slides.splice(n - 1, 1); changed++; } }
+
+      // 4) Title / subtitle text edits.
+      const titleEdit = text.match(/\brename\s+slide\s+#?(\d{1,2})\s+to\s+["“]?([^"”\n]+?)["”]?\s*$/i)
+        || text.match(/slide\s+#?(\d{1,2})[^.\n]*?\b(?:title|heading|name)\b[^.\n]*?\bto\b\s+["“]?([^"”\n]+?)["”]?\s*$/i);
+      if (titleEdit) { const n = parseInt(titleEdit[1], 10); if (n >= 1 && n <= spec.slides.length) { spec.slides[n - 1].title = titleEdit[2].trim(); changed++; } }
+      const subEdit = text.match(/slide\s+#?(\d{1,2})[^.\n]*?\bsubtitle\b[^.\n]*?\bto\b\s+["“]?([^"”\n]+?)["”]?\s*$/i);
+      if (subEdit) { const n = parseInt(subEdit[1], 10); if (n >= 1 && n <= spec.slides.length) { spec.slides[n - 1].subtitle = subEdit[2].trim(); changed++; } }
+
+      // 5) Anything else (rewrite a slide's wording, add a slide, reorder…) → let Slade rewrite
+      // the deck. Images/logo are stripped before sending (base64 is huge) and re-applied by
+      // slide index afterwards so the user's pictures survive a text edit.
+      if (changed === 0) {
+        setStatus('Applying your changes…');
+        const stripped = { ...spec, logo: undefined, slides: spec.slides.map((s) => ({ ...s, imageData: undefined })) };
+        const editSys = AGENT_BY_KEY['deck_maker'].systemPrompt +
+          `\n\n## EDIT AN EXISTING DECK\nBelow is the current deck as JSON. Apply ONLY the user's requested change and return the FULL updated deck as ONE compact, strictly-valid JSON object with the same structure. Keep every slide the user did NOT mention EXACTLY as-is and in the same order (slide 3 stays slide 3). Do NOT add imagePrompt or imageData fields. No markdown, no comments.\n\nCURRENT DECK:\n${JSON.stringify(stripped)}`;
+        const { text: outText } = await streamTurnWithRetry([{ role: 'user', content: text }], editSys, () => {});
+        const edited = parseDeckSpec(outText);
+        if (edited && edited.slides.length) {
+          edited.logo = spec.logo;
+          edited.slides.forEach((s, i) => { if (spec.slides[i]?.imageData) s.imageData = spec.slides[i].imageData; });
+          spec = edited;
+          changed++;
+        }
+      }
+
+      if (stopRef.current) { setMessages((prev) => prev.filter((m) => !m.streaming)); setBusy(false); return; }
+
+      if (changed === 0) {
+        const msg = 'I couldn\'t tell what to change. Try: "put my logo on slide 1", "use this pic on slide 3", "make it blue", "remove slide 4", or "change slide 2 title to …". You can also tweak the 3 colours right on the deck above.';
+        setMessages((prev) => {
+          const c = [...prev]; const l = c[c.length - 1];
+          if (l?.role === 'delegation') c[c.length - 1] = { role: 'assistant', content: msg, streaming: false };
+          return c;
+        });
+        if (sid) krewDb.saveMessage(sid, 'assistant', msg).catch(() => {});
+        setBusy(false); return;
+      }
+
+      setStatus('Rendering deck…');
+      const html = renderDeckHtml(spec);
+      lastDeckSpecRef.current = spec;
+      setMessages((prev) => {
+        const c = [...prev]; const l = c[c.length - 1];
+        const result: DisplayMsg = { role: 'deck_result', content: '', deckSpec: spec, deckHtml: html };
+        if (l?.role === 'delegation') c[c.length - 1] = result; else c.push(result);
+        return c;
+      });
+      if (sid) krewDb.saveMessage(sid, 'assistant', html).catch(() => {});
+      // Persist the updated deck to disk + Brain (same as a fresh build).
+      try {
+        const slug = (spec.title || 'deck').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'deck';
+        const deckPath = await invoke<string>('save_deck_files', { slug, html, specJson: JSON.stringify(spec) });
+        const { brain } = await import('../../lib/knowledgeStore');
+        const summary = `Presentation · ${spec.slides.length} slides\n\n` + spec.slides.map((s, i) => `${i + 1}. ${s.title || s.layout}`).join('\n');
+        const node = brain.addNode({ title: spec.title || 'Presentation', kind: 'file', body: summary });
+        brain.updateNode(node.id, { filePath: deckPath });
+      } catch { /* best-effort */ }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setMessages((prev) => {
+        const c = [...prev]; const l = c[c.length - 1];
+        if (l && (l.streaming || l.role === 'delegation')) c[c.length - 1] = { role: 'assistant', content: `Couldn't update the deck: ${sanitiseError(msg)}`, streaming: false };
+        return c;
+      });
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -3453,6 +3758,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     // leave rows unverified). Only nudge on lead/search-type tasks, only if not connected, and
     // NEVER again once the user has dismissed it — so it stops nagging on every search.
     if (!creds.brave?.api_key && localStorage.getItem('nv-brave-nudge-off') !== '1'
+        && !looksLikePresentation(text) && !looksLikeDeckEdit(text) && !looksLikeScheduleIntent(text)
         && /verif|linkedin|lead list|find (me )?(more )?(people|compan|contact|leads|decision)|decision maker|prospect|email.*(compan|people)/i.test(text)) {
       setBraveNudge(true);
     }
@@ -3505,16 +3811,35 @@ The prompt must be production-ready — specific enough for a motion designer to
     } else {
       attachedTitlesRef.current = [];
     }
+    // Auto-capture attached IMAGES into the Brain's Pictures folder (on disk, not localStorage)
+    // so a logo/photo the user drops in chat is saved with a proper name and reusable in decks.
+    if (imageFiles.length > 0) {
+      const lcText = (text || '').toLowerCase();
+      const toSave = imageFiles.filter((f) => !f.fromBrain);
+      for (const f of toSave) {
+        const ext = (f.mimeType?.split('/')[1] || 'png').replace('jpeg', 'jpg').replace('svg+xml', 'svg');
+        const base = (f.name || '').replace(/\.[a-z0-9]+$/i, '').trim();
+        const name = (/\blogo\b/.test(lcText) && toSave.length === 1) ? (base || 'Logo') : (base || 'Picture');
+        invoke<string>('brain_store_image', { name, dataBase64: f.content, ext })
+          .then((path) => import('../../lib/knowledgeStore').then(({ brain }) => { brain.addPicture({ name, filePath: path, body: 'Picture added from chat.' }); }))
+          .catch(() => {});
+      }
+    }
     const fileBlock = nonImageFiles.length > 0
       ? nonImageFiles.map(f => {
-          const body = f.content.length > FILE_CAP ? f.content.slice(0, FILE_CAP) + `\n…[truncated — ${f.content.length - FILE_CAP} chars omitted]` : f.content;
+          // A file the user pulled FROM the Brain (e.g. a filtered contact list) gets a much
+          // bigger budget than a random drag-drop attachment, so "email all these contacts"
+          // actually sees all the rows the user filtered to, not just the first few.
+          const cap = f.fromBrain ? 60000 : FILE_CAP;
+          const body = f.content.length > cap ? f.content.slice(0, cap) + `\n…[truncated — ${f.content.length - cap} chars omitted]` : f.content;
           return `[File: ${f.name}]\n\`\`\`\n${body}\n\`\`\`\n\n`;
         }).join('')
       : '';
     const imageBlock = imageFiles.map(f => `[IMAGE:${f.mimeType ?? 'image/png'}:${f.content}]`).join('\n');
     // Focus mode: keep the conversation scoped to the chosen Brain file + its connected
     // notes, every turn. The content already includes the "Connected in Brain" section.
-    const FOCUS_CAP = 9000;
+    // Generous cap so a focused Brain file (often a filtered list to act on) arrives whole.
+    const FOCUS_CAP = 60000;
     const focusBlock = focusedFile
       ? `[FOCUSED FILE: ${focusedFile.name}]\nYou are working WITH this file from the user's Brain and the notes connected to it. Stay scoped to this file and its connected notes — answer, edit, and expand around THIS, do not wander to unrelated topics and do NOT create a duplicate of it (use edit_brain to change it in place). When the user says "this file"/"it", they mean this:\n\`\`\`\n${focusedFile.content.slice(0, FOCUS_CAP)}\n\`\`\`\n\n`
       : '';
@@ -3550,11 +3875,39 @@ The prompt must be production-ready — specific enough for a motion designer to
       // Decks need the WHOLE source document — the normal 8K chat cap truncated a long
       // PRODUCT.MD so the deck only covered its first section. Send the full file(s).
       const DECK_FILE_CAP = 90000; // send the whole source doc to Slade — a truncated doc = a deck missing context
-      const deckFileBlock = nonImageFiles.map(f => `[File: ${f.name}]\n\`\`\`\n${f.content.slice(0, DECK_FILE_CAP)}\n\`\`\`\n\n`).join('');
-      const deckFocusBlock = focusedFile ? `[File: ${focusedFile.name}]\n\`\`\`\n${focusedFile.content.slice(0, DECK_FILE_CAP)}\n\`\`\`\n\n` : '';
-      deckRequestRef.current = deckFocusBlock + deckFileBlock + text; // full context for Slade
+      const deckFileBlock = nonImageFiles.map(f => `[Reference document: ${f.name}]\n\`\`\`\n${f.content.slice(0, DECK_FILE_CAP)}\n\`\`\`\n\n`).join('');
+      const deckFocusBlock = focusedFile ? `[Reference document: ${focusedFile.name}]\n\`\`\`\n${focusedFile.content.slice(0, DECK_FILE_CAP)}\n\`\`\`\n\n` : '';
+      // Put the user's REQUEST/PLAN FIRST (before the reference doc). When the message contains an
+      // explicit slide-by-slide outline, that plan is the structure to follow — the document is
+      // only the source of facts/numbers. (Previously the doc came first and Slade built the deck
+      // from the doc, ignoring the outline the user had written.)
+      const hasPlan = /slide\s*#?\s*\d+\s*[:.\-)]/i.test(text) || /\bslide\s+\d+\b/i.test(text);
+      const planLead = hasPlan
+        ? `THE USER HAS GIVEN AN EXPLICIT SLIDE-BY-SLIDE PLAN BELOW. Follow it EXACTLY — one slide per item, in that order, with the titles/content they specify. Use the reference document only to fill in the real facts, numbers and names. Do NOT replace their plan with your own structure.\n\n=== USER'S REQUEST / PLAN ===\n${text}\n\n=== END REQUEST ===\n\n`
+        : `=== USER'S REQUEST ===\n${text}\n\n`;
+      deckRequestRef.current = planLead + deckFocusBlock + deckFileBlock; // full context for Slade, plan first
+      deckTextRef.current = text; // the raw ask — used to read slide numbers / picture names (not the doc)
+      // Pictures the user attached WITH the deck request → use them in the deck (logo on every
+      // slide, or a photo on the slides they name). A name containing "logo" (or a lone image
+      // when the ask says "logo") is treated as the brand logo.
+      deckImagesRef.current = imageFiles.map((f) => ({
+        name: f.name,
+        dataUri: `data:${f.mimeType ?? 'image/png'};base64,${f.content}`,
+        isLogo: /\blogo\b/i.test(f.name) || (/\blogo\b/i.test(text) && imageFiles.length === 1),
+      }));
+      setBraveNudge(false); // never nag about Brave Search while building a presentation
       addMsg({ role: 'deck_setup', content: text });
       setBusy(false);
+      return;
+    }
+
+    // ── IN-CHAT DECK EDIT ─────────────────────────────────────────────────────
+    // Once a deck exists in the thread, follow-ups like "put my logo on slide 1",
+    // "use this pic on slide 3", "make it blue", "remove slide 4" or "change slide 2
+    // title to …" edit that deck in place instead of running the boss.
+    if (lastDeckSpecRef.current && (looksLikeDeckEdit(text) ||
+        (imageFiles.length > 0 && /\b(slide|deck|logo|presentation|ppt|pics?|picture|image|photo)\b/i.test(text)))) {
+      await runDeckEdit(text, imageFiles);
       return;
     }
 
@@ -3891,8 +4244,8 @@ The prompt must be production-ready — specific enough for a motion designer to
               // in the Boss's message, not here) must be passed in, or the delegate sees the
               // instruction "expand this file" with no file and produces nothing.
               const ctxParts: string[] = [];
-              if (focusedFile) ctxParts.push(`The user is working WITH this file from their Brain (and the notes connected to it). USE it as the basis — expand and act on it, do NOT re-create it:\n\n${focusedFile.content.slice(0, 9000)}`);
-              for (const f of nonImageFiles) ctxParts.push(`Attached file "${f.name}":\n${f.content.slice(0, 8000)}`);
+              if (focusedFile) ctxParts.push(`The user is working WITH this file from their Brain (and the notes connected to it). USE it as the basis — expand and act on it, do NOT re-create it:\n\n${focusedFile.content.slice(0, 60000)}`);
+              for (const f of nonImageFiles) ctxParts.push(`Attached file "${f.name}":\n${f.content.slice(0, f.fromBrain ? 60000 : 8000)}`);
               const delegateTask = ctxParts.length
                 ? `${task}\n\n--- THE USER'S DATA TO WORK FROM (do not ignore this; build on it) ---\n${ctxParts.join('\n\n')}`
                 : task;
@@ -4889,7 +5242,6 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                 <DeckSetupCard
                   key={i}
                   disabled={busy}
-                  deckApps={deckApps}
                   unlockedAdvanced={planCfg.advancedDeck || (provider === 'gemini' && !!apiKey.trim())}
                   onCancel={() => setMessages((prev) => prev.filter((m) => m !== msg))}
                   onGenerate={(cfg) => runDeckGeneration(cfg)}
@@ -5080,7 +5432,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
             <input
               type="file"
               multiple
-              accept=".txt,.md,.csv,.json,.ts,.tsx,.js,.jsx,.py,.rs,.go,.java,.html,.css,.xml,.yaml,.yml,.toml,.sh,.sql,.log,.pdf"
+              accept=".txt,.md,.csv,.json,.ts,.tsx,.js,.jsx,.py,.rs,.go,.java,.html,.css,.xml,.yaml,.yml,.toml,.sh,.sql,.log,.pdf,.png,.jpg,.jpeg,.webp,.gif,.svg,image/*"
               style={{ display: 'none' }}
               id="krew-file-attach"
               onChange={(e) => {
@@ -5094,6 +5446,21 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                   setAttachedFiles(prev => [...prev, ...flat]);
                 };
                 files.forEach((file, i) => {
+                  // An image (logo/icon/photo) → read as base64 so it can be shown, used by
+                  // vision, AND placed into a deck. Reading it as text (the old default) produced
+                  // garbage and it never became a usable picture.
+                  if (file.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg|bmp)$/i.test(file.name)) {
+                    const reader = new FileReader();
+                    reader.onload = (ev) => {
+                      const dataUrl = String(ev.target?.result ?? '');
+                      const b64 = dataUrl.split(',')[1] ?? '';
+                      results[i] = [{ name: file.name, content: b64, isImage: true, mimeType: file.type || 'image/png' }];
+                      if (--pending === 0) flush();
+                    };
+                    reader.onerror = () => { results[i] = []; if (--pending === 0) flush(); };
+                    reader.readAsDataURL(file);
+                    return;
+                  }
                   if (file.name.toLowerCase().endsWith('.pdf')) {
                     file.arrayBuffer().then(buf => pdfjsLib.getDocument({ data: new Uint8Array(buf), cMapUrl: '/cmaps/', cMapPacked: true }).promise).then(async (pdf) => {
                       const pageTexts: string[] = [];

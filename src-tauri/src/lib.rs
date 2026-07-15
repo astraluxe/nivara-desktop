@@ -355,6 +355,29 @@ fn brain_store_file(app: tauri::AppHandle, source_path: String) -> Result<String
     Ok(dest.to_string_lossy().to_string())
 }
 
+// Save a picture (base64 bytes from the browser — e.g. an image the user dropped into the
+// chat) into the app's own storage under brain-files/pictures, with a clean, human name.
+// Returns the new path; the Brain references this durable copy so decks/notes can reuse it.
+#[tauri::command]
+fn brain_store_image(app: tauri::AppHandle, name: String, data_base64: String, ext: String) -> Result<String, String> {
+    use tauri::Manager;
+    use base64::{Engine as _, engine::general_purpose};
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?.join("brain-files").join("pictures");
+    std::fs::create_dir_all(&base).map_err(|e| e.to_string())?;
+    // Clean the name into a safe file stem.
+    let stem: String = name.trim().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let stem = stem.trim_matches('-').to_string();
+    let stem = if stem.is_empty() { "image".to_string() } else { stem };
+    let ext = ext.trim().trim_start_matches('.').to_ascii_lowercase();
+    let ext = if ext.is_empty() || ext.len() > 5 { "png".to_string() } else { ext };
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+    let bytes = general_purpose::STANDARD.decode(data_base64.trim())
+        .map_err(|e| format!("Couldn't decode the image: {}", e))?;
+    let dest = base.join(format!("{}-{}.{}", &stem[..stem.len().min(48)], ts, ext));
+    std::fs::write(&dest, &bytes).map_err(|e| format!("Couldn't save the picture: {}", e))?;
+    Ok(dest.to_string_lossy().to_string())
+}
+
 // ─── Brain: extract readable text from any file ──────────────────────────────
 // The Brain lets users drop in real documents. Plain-text files (csv, txt, md,
 // json, code…) read directly; office/binary formats (PDF, PPTX, DOCX, XLSX/XLS/
@@ -376,13 +399,22 @@ fn brain_extract_text(path: String) -> Result<String, String> {
             String::from_utf8_lossy(&bytes).to_string()
         }
     };
-    // Cap so a huge workbook/PDF can't blow up localStorage or the model context.
-    const CAP: usize = 200_000;
+    // Cap so a truly enormous file can't hang the UI, but keep it high enough that a big
+    // spreadsheet (e.g. a 1200-row vendor master) comes through COMPLETE instead of being cut
+    // off partway — the earlier 200k cap silently dropped the back half of large tables.
+    const CAP: usize = 2_000_000;
     if text.chars().count() > CAP {
         Ok(text.chars().take(CAP).collect())
     } else {
         Ok(text)
     }
+}
+
+// Size on disk of a stored file, in bytes — shown in the Brain so the user can see how much
+// storage each attached file/picture is using.
+#[tauri::command]
+fn file_size(path: String) -> Result<u64, String> {
+    std::fs::metadata(&path).map(|m| m.len()).map_err(|e| e.to_string())
 }
 
 fn extract_pdf_text(path: &str) -> Result<String, String> {
@@ -432,8 +464,12 @@ fn extract_spreadsheet_text(path: &str) -> Result<String, String> {
         let range = match wb.worksheet_range(&name) { Ok(r) => r, Err(_) => continue };
         if range.is_empty() { continue; }
         // Clean every cell: strip newlines/tabs (they'd break the row) and escape pipes.
+        // `_x000D_` is the literal OOXML escape for a carriage return that calamine leaves in
+        // shared strings (e.g. multi-line addresses) — turn it into a space too, or the table
+        // fills with "_x000D_" noise.
         let rows: Vec<Vec<String>> = range.rows().map(|r| {
             r.iter().map(|c| c.to_string()
+                .replace("_x000D_", " ")
                 .replace(['\r', '\n', '\t'], " ")
                 .replace('|', "/")
                 .split_whitespace().collect::<Vec<_>>().join(" ")
@@ -5881,25 +5917,86 @@ async fn test_krew_connection() -> String {
     out
 }
 
+// Parse "1.2.3" (tolerating a leading 'v' and extra build metadata) into (major, minor, patch).
+fn parse_semver(v: &str) -> (u64, u64, u64) {
+    let v = v.trim().trim_start_matches('v');
+    let core = v.split(|c| c == '-' || c == '+').next().unwrap_or(v);
+    let mut it = core.split('.').map(|p| p.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse::<u64>().unwrap_or(0));
+    (it.next().unwrap_or(0), it.next().unwrap_or(0), it.next().unwrap_or(0))
+}
+
+// Ask the GitHub API directly for the newest release tag. This is a FALLBACK for the Tauri
+// updater's static endpoint: right after a release is published, GitHub's CDN-cached
+// `/releases/latest/download/latest.json` redirect can briefly still point at the PREVIOUS
+// release, so the updater reports "you're on the latest" for a minute or two. The API's
+// "latest release" flips reliably, so we use it to avoid that false negative.
+async fn github_latest_version() -> Option<String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://api.github.com/repos/astraluxe/nivara-desktop/releases/latest")
+        .header("User-Agent", "NivaraDesktop")
+        .header("Accept", "application/vnd.github+json")
+        .timeout(std::time::Duration::from_secs(12))
+        .send().await.ok()?;
+    if !resp.status().is_success() { return None; }
+    let json: serde_json::Value = resp.json().await.ok()?;
+    json.get("tag_name").and_then(|t| t.as_str()).map(|s| s.to_string())
+}
+
 #[tauri::command]
 async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     use tauri_plugin_updater::UpdaterExt;
+    let current = app.package_info().version.to_string();
+    // 1) Primary — the signature-verified Tauri updater.
     match app.updater().map_err(|e| e.to_string())?.check().await {
-        Ok(Some(update)) => Ok(serde_json::json!({
+        Ok(Some(update)) => return Ok(serde_json::json!({
             "available": true,
             "version": update.version,
             "body": update.body.unwrap_or_default(),
+            "current": current,
         })),
-        Ok(None) => Ok(serde_json::json!({ "available": false })),
-        Err(e) => Err(e.to_string()),
+        Ok(None) => { /* fall through to the API fallback before concluding "latest" */ }
+        Err(e) => return Err(e.to_string()),
     }
+    // 2) Fallback — the Tauri endpoint said "none". Double-check via the GitHub API so a
+    // still-propagating release isn't mistaken for "you're already up to date".
+    if let Some(tag) = github_latest_version().await {
+        if parse_semver(&tag) > parse_semver(&current) {
+            return Ok(serde_json::json!({
+                "available": true,
+                "version": tag.trim_start_matches('v'),
+                "body": "A new version is available.",
+                "current": current,
+                // The download is published but GitHub is still updating its \"latest\" pointer,
+                // so the in-app installer may need another minute. The UI can offer a direct link.
+                "propagating": true,
+            }));
+        }
+    }
+    Ok(serde_json::json!({ "available": false, "current": current }))
 }
 
 #[tauri::command]
 async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
     let updater = app.updater().map_err(|e| e.to_string())?;
-    if let Some(update) = updater.check().await.map_err(|e| e.to_string())? {
+    // Retry the check a few times: right after a release is published the updater endpoint can
+    // briefly 404 / still resolve to the old release while GitHub propagates. Without this, the
+    // installer silently did nothing and the UI hung on "installing…". A short retry rides out
+    // the propagation window; if it still isn't ready we return a clear error the UI can show.
+    let mut found = None;
+    for attempt in 0..4 {
+        match updater.check().await {
+            Ok(Some(u)) => { found = Some(u); break; }
+            Ok(None) => { if attempt < 3 { tokio::time::sleep(std::time::Duration::from_secs(3)).await; } }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    let update = match found {
+        Some(u) => u,
+        None => return Err("The update is published but GitHub is still making it available. Please try again in a minute, or download it from github.com/astraluxe/nivara-desktop/releases/latest.".to_string()),
+    };
+    {
         // Stream download progress to the UI — a silent multi-MB download looked like
         // "clicked download, nothing happened" (the exact user complaint on v0.69).
         let progress_app = app.clone();
@@ -6211,6 +6308,8 @@ pub fn run() {
             brain_extract_text,
             read_file_base64,
             brain_store_file,
+            brain_store_image,
+            file_size,
             models_import,
             studio_save_file,
             // Vault

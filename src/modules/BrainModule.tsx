@@ -1,18 +1,25 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { brain, BRAIN_EVENT, nodeToMarkdown, type BrainNode, type BrainNodeKind, type BrainData } from '../lib/knowledgeStore';
 
 // ─── Kind metadata ────────────────────────────────────────────────────────────
 const KIND_COLOR: Record<BrainNodeKind, string> = {
   note: '#7C5CFF', file: '#38bdf8', data: '#34d399', list: '#f59e0b',
-  outreach: '#f472b6', contact: '#a78bfa', source: '#94a3b8',
+  outreach: '#f472b6', contact: '#a78bfa', source: '#94a3b8', image: '#f97316',
 };
 const KIND_LABEL: Record<BrainNodeKind, string> = {
-  note: 'Note', file: 'File', data: 'Data', list: 'List', outreach: 'Outreach', contact: 'Contact', source: 'Source',
+  note: 'Note', file: 'File', data: 'Data', list: 'List', outreach: 'Outreach', contact: 'Contact', source: 'Source', image: 'Picture',
 };
-const KINDS: BrainNodeKind[] = ['note', 'file', 'data', 'list', 'outreach', 'contact', 'source'];
+const KINDS: BrainNodeKind[] = ['note', 'file', 'data', 'list', 'outreach', 'contact', 'source', 'image'];
 
 const NODE_W = 150, NODE_H = 38;
+
+// Human-readable byte size for the storage-used display.
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
 
 // ─── Content helpers: hide tool-call noise + convert markdown → formatted HTML ──
 // so the user always sees a clean, formatted note (never raw ## / ** / <tool_call>).
@@ -95,8 +102,8 @@ const NOTE_CLS =
   '[&_pre]:my-2 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:border [&_pre]:border-nv-border [&_pre]:bg-nv-surface2/60 [&_pre]:overflow-x-auto ' +
   '[&_pre_code]:font-mono [&_pre_code]:text-[11.5px] [&_pre_code]:text-nv-text [&_pre_code]:whitespace-pre ' +
   '[&_table]:my-2 [&_table]:border [&_table]:border-nv-border [&_table]:rounded-lg [&_table]:border-collapse ' +
-  '[&_th]:text-left [&_th]:px-3 [&_th]:py-1.5 [&_th]:font-semibold [&_th]:text-nv-text [&_th]:border [&_th]:border-nv-border [&_th]:bg-nv-surface2/50 [&_th]:relative ' +
-  '[&_td]:px-3 [&_td]:py-1.5 [&_td]:align-top [&_td]:border [&_td]:border-nv-border/50 [&_td]:text-nv-muted ' +
+  '[&_th]:text-left [&_th]:px-3 [&_th]:py-1.5 [&_th]:font-semibold [&_th]:text-nv-text [&_th]:border [&_th]:border-nv-border [&_th]:bg-nv-surface2/50 [&_th]:relative [&_th]:min-w-[120px] [&_th]:max-w-[380px] [&_th]:break-words [&_th]:whitespace-normal ' +
+  '[&_td]:px-3 [&_td]:py-1.5 [&_td]:align-top [&_td]:border [&_td]:border-nv-border/50 [&_td]:text-nv-muted [&_td]:min-w-[120px] [&_td]:max-w-[380px] [&_td]:break-words [&_td]:whitespace-normal ' +
   '[&_.col-resizer]:absolute [&_.col-resizer]:top-0 [&_.col-resizer]:-right-[3px] [&_.col-resizer]:w-[6px] [&_.col-resizer]:h-full [&_.col-resizer]:cursor-col-resize [&_.col-resizer]:z-10 [&_.col-resizer:hover]:bg-accent/40';
 
 // ─── Graph stage (custom SVG + cards, like the Krew Office — no heavy lib) ─────
@@ -332,6 +339,36 @@ function PdfViewer({ path }: { path: string }) {
   );
 }
 
+// ─── Image viewer ────────────────────────────────────────────────────────────
+// A saved picture (logo/photo) node → show the actual image, read from disk as base64.
+function ImageViewer({ path }: { path: string }) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [err, setErr] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const b64 = await invoke<string>('read_file_base64', { path });
+        const ext = (path.split('.').pop() || 'png').toLowerCase();
+        const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif' : ext === 'svg' ? 'image/svg+xml' : 'image/png';
+        if (!cancelled) setSrc(`data:${mime};base64,${b64}`);
+      } catch { if (!cancelled) setErr(true); }
+    })();
+    return () => { cancelled = true; };
+  }, [path]);
+  return (
+    <div className="flex-1 min-w-0 overflow-auto p-6 flex items-center justify-center" style={{ background: 'var(--nv-bg)' }}>
+      {err ? (
+        <div className="text-[12px]" style={{ color: '#f87171' }}>Couldn't load this picture.</div>
+      ) : src === null ? (
+        <div className="text-[12px]" style={{ color: 'var(--nv-faint)' }}>Loading picture…</div>
+      ) : (
+        <img src={src} alt="" className="max-w-full max-h-full rounded-lg" style={{ border: '1px solid var(--nv-border)' }} />
+      )}
+    </div>
+  );
+}
+
 // ─── Deck preview ───────────────────────────────────────────────────────────
 // Shows a saved deck AS the deck (its rendered HTML in an iframe) instead of the summary
 // text — so a presentation saved to the Brain actually looks like the presentation.
@@ -363,20 +400,40 @@ export default function BrainModule() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
 
-  const reload = useCallback(() => setData(brain.all()), []);
+  // Reload from storage on change, but COALESCE bursts: a batch of updates (e.g. saving a big
+  // file, or an agent writing several nodes) used to fire brain.all() — which re-parses the whole
+  // localStorage blob, now up to ~2MB with a big Excel — once PER event, freezing the UI. A short
+  // debounce collapses the burst into a single re-parse.
+  const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reload = useCallback(() => {
+    if (reloadTimer.current) clearTimeout(reloadTimer.current);
+    reloadTimer.current = setTimeout(() => setData(brain.all()), 120);
+  }, []);
   useEffect(() => {
     window.addEventListener(BRAIN_EVENT, reload);
-    return () => window.removeEventListener(BRAIN_EVENT, reload);
+    return () => { window.removeEventListener(BRAIN_EVENT, reload); if (reloadTimer.current) clearTimeout(reloadTimer.current); };
   }, [reload]);
 
+  // Deferred so typing in the search box stays responsive even with a big Brain (React keeps the
+  // input live and computes the filtered set at a lower priority instead of blocking each keystroke).
+  const deferredSearch = useDeferredValue(search);
   const filtered: BrainData = useMemo(() => {
-    if (!search.trim()) return data;
-    const q = search.toLowerCase();
-    const ids = new Set(data.nodes.filter((n) => n.title.toLowerCase().includes(q) || n.body.toLowerCase().includes(q)).map((n) => n.id));
+    const q = deferredSearch.trim().toLowerCase();
+    if (!q) return data;
+    // Full-text scan a node's body only when it's small; for a huge body (a big spreadsheet)
+    // lowercasing megabytes on every search was the freeze — match those on title only. Row-level
+    // search inside a big file is what the in-file column filters are for.
+    const ids = new Set(data.nodes.filter((n) =>
+      n.title.toLowerCase().includes(q) || (n.body.length < 60000 && n.body.toLowerCase().includes(q))
+    ).map((n) => n.id));
     return { nodes: data.nodes.filter((n) => ids.has(n.id)), edges: data.edges.filter((e) => ids.has(e.source) && ids.has(e.target)) };
-  }, [data, search]);
+  }, [data, deferredSearch]);
 
   const selected = data.nodes.find((n) => n.id === selectedId) || null;
+
+  // Total text stored in the Brain (localStorage bodies) — a rough at-a-glance storage figure.
+  // Per-file on-disk sizes are shown in each item's panel.
+  const totalTextBytes = useMemo(() => data.nodes.reduce((s, n) => s + (n.body ? n.body.length : 0), 0), [data.nodes]);
 
   // "+ File" — try the native picker (gives the real path) and create the node from
   // it; if the picker isn't available, just create an empty file node and let the
@@ -387,11 +444,19 @@ export default function BrainModule() {
       if (path === null) return; // cancelled
       // brain_extract_text reads plain-text files directly AND pulls text out of PDF,
       // PPTX, DOCX and Excel/CSV so the agents can actually use what's inside them.
-      const content = await invoke<string>('brain_extract_text', { path }).catch(() => '');
       const name = path.split(/[/\\]/).pop() || path;
       // Keep a durable copy inside the Brain so the node survives the user deleting the original.
       const stored = await invoke<string>('brain_store_file', { sourcePath: path }).catch(() => path);
-      const node = brain.addNode({ title: name, kind: 'file', body: content.slice(0, 100000) });
+      // An image → save it as a Picture (in the Pictures folder), no text extraction.
+      if (/\.(png|jpe?g|webp|gif|svg|bmp)$/i.test(path)) {
+        const node = brain.addPicture({ name, filePath: stored });
+        setSelectedId(node.id);
+        return;
+      }
+      // brain_extract_text reads plain-text files directly AND pulls text out of PDF,
+      // PPTX, DOCX and Excel/CSV so the agents can actually use what's inside them.
+      const content = await invoke<string>('brain_extract_text', { path }).catch(() => '');
+      const node = brain.addNode({ title: name, kind: 'file', body: content.slice(0, 2000000) });
       brain.updateNode(node.id, { filePath: stored });
       setSelectedId(node.id);
     } catch {
@@ -414,7 +479,7 @@ export default function BrainModule() {
             </div>
             <div>
               <h2 className="text-[15px] font-bold" style={{ color: 'var(--nv-text)' }}>Brain</h2>
-              <p className="text-[11px] font-mono" style={{ color: 'var(--nv-faint)' }}>{data.nodes.length} items · {data.edges.length} links · shared with your agents</p>
+              <p className="text-[11px] font-mono" style={{ color: 'var(--nv-faint)' }}>{data.nodes.length} items · {data.edges.length} links · {formatBytes(totalTextBytes)} · shared with your agents</p>
             </div>
           </div>
           <div className="flex-1" />
@@ -468,6 +533,9 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
   const [ref,   setRef]   = useState(node.ref ?? '');
   const [kind,  setKind]  = useState<BrainNodeKind>(node.kind);
   const [connectTo, setConnectTo] = useState('');
+  // Maximize the file window to fill the screen (handy for wide spreadsheets/tables);
+  // toggles back to the comfortable centred size.
+  const [maximized, setMaximized] = useState(false);
 
   const connections = edges
     .filter((e) => e.source === node.id || e.target === node.id)
@@ -482,28 +550,35 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
   const isDeck = !!filePath && /[\\/]decks[\\/]/.test(filePath) && /\.html$/i.test(filePath);
   // A PDF file → show the actual PDF (pdf.js viewer) rather than the extracted text.
   const isPdf = !!filePath && /\.pdf$/i.test(filePath);
+  // A saved picture → show the actual image. (kind 'image', or an image file extension.)
+  const isImage = (node.kind === 'image' || (!!filePath && /\.(png|jpe?g|webp|gif|svg|bmp)$/i.test(filePath))) && !!filePath;
+  // Storage used by this item — the on-disk file size if it has one, else the size of its text
+  // content. Shown so the user can see how much space each Brain item takes.
+  const [diskSize, setDiskSize] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (filePath) invoke<number>('file_size', { path: filePath }).then((n) => { if (!cancelled) setDiskSize(n); }).catch(() => { if (!cancelled) setDiskSize(null); });
+    else setDiskSize(null);
+    return () => { cancelled = true; };
+  }, [filePath]);
+  const textBytes = useMemo(() => new Blob([node.body || '']).size, [node.body]);
+  const storageBytes = diskSize != null ? diskSize + textBytes : textBytes;
+  // A very large body (a big spreadsheet — thousands of rows) is rendered READ-ONLY: a live
+  // contentEditable with ~15k+ editable cells is what froze the app on open and on every click.
+  // Non-editable, the same table lays out fast and stays smooth; filter/sort still work.
+  const largeBody = (node.body?.length || 0) > 150000;
+  // Table filter (Excel-style): a text search across rows PLUS per-column value pickers.
+  const [tableFilter, setTableFilter] = useState('');
+  const [hasTable, setHasTable] = useState(false);
+  const textFilterRef = useRef('');
+  const colFiltersRef = useRef<Map<number, Set<string>>>(new Map()); // colIndex → allowed values (absent = all)
+  const filterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const colMenuRef = useRef<HTMLDivElement | null>(null);
   const [deckMsg, setDeckMsg] = useState('');
   async function openDeck() {
     setDeckMsg('Opening…');
     try { await invoke('open_path', { path: filePath }); setDeckMsg(''); }
     catch (e) { setDeckMsg('Could not open: ' + (e instanceof Error ? e.message : String(e))); }
-  }
-  async function downloadDeckPptx() {
-    setDeckMsg('Building .pptx…');
-    try {
-      const json = await invoke<string>('read_deck_spec', { path: filePath });
-      const { parseDeckSpec, deckToPptxBlob } = await import('../lib/deck');
-      const spec = parseDeckSpec(json);
-      if (!spec) { setDeckMsg('Deck data not found.'); return; }
-      const blob = await deckToPptxBlob(spec);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = (spec.title || 'deck').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) + '.pptx';
-      a.click();
-      URL.revokeObjectURL(url);
-      setDeckMsg('');
-    } catch (e) { setDeckMsg('Export failed: ' + (e instanceof Error ? e.message : String(e))); }
   }
   const fileInputRef = useRef<HTMLInputElement>(null);
   const titleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -520,8 +595,18 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
   const enhanceTables = useCallback(() => {
     const root = editorRef.current; if (!root) return;
     root.querySelectorAll('table').forEach((table) => {
-      (table as HTMLElement).style.tableLayout = 'fixed';
-      (table as HTMLElement).style.width = (table as HTMLElement).style.width || '100%';
+      // CONTENT-SIZED layout (not `fixed`): with `fixed`, per-cell min/max widths are ignored
+      // and every column is squeezed to an equal sliver — which is why a wide Excel table wrapped
+      // to ~3 letters per cell with no way to scroll. `auto` + `width:max-content` lets each
+      // column size to its text (capped by the cell max-width so a long address wraps at a
+      // readable ~380px instead of collapsing), so the whole table grows as wide as it needs and
+      // the editor (overflow-auto) shows a horizontal scrollbar. `min-width:100%` keeps a small
+      // table filling the pane.
+      const el = table as HTMLElement;
+      el.style.tableLayout = 'auto';
+      el.style.width = 'max-content';
+      el.style.minWidth = '100%';
+      el.style.maxWidth = 'none';
       const headRow = table.tHead?.rows[0] || table.rows[0];
       if (!headRow) return;
       Array.from(headRow.cells).forEach((th) => {
@@ -531,19 +616,196 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
         handle.contentEditable = 'false';
         handle.addEventListener('pointerdown', (e) => {
           e.preventDefault(); e.stopPropagation();
+          const colIdx = (th as HTMLTableCellElement).cellIndex;
           const startX = e.clientX;
           const startW = (th as HTMLElement).getBoundingClientRect().width;
-          const move = (ev: PointerEvent) => { (th as HTMLElement).style.width = `${Math.max(48, startW + (ev.clientX - startX))}px`; };
+          const move = (ev: PointerEvent) => {
+            const w = Math.max(60, startW + (ev.clientX - startX));
+            // Resize the WHOLE column and lift the wrap cap so the user can pull a column as wide
+            // as they want (e.g. to read a long address on one line).
+            for (const row of Array.from(table.rows)) {
+              const cell = row.cells[colIdx] as HTMLElement | undefined;
+              if (cell) { cell.style.width = `${w}px`; cell.style.maxWidth = 'none'; }
+            }
+          };
           const up = () => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); save(); };
           document.addEventListener('pointermove', move);
           document.addEventListener('pointerup', up);
         });
         th.appendChild(handle);
+        // Click-to-sort (Excel-style): a small ⇅ button in each header sorts the table by that
+        // column, toggling ascending/descending. Numeric columns sort numerically. It's its own
+        // (non-editable) button so it never fights the resize handle or the text caret.
+        if (!(th as HTMLElement).querySelector('.col-sort')) {
+          const sortBtn = document.createElement('span');
+          sortBtn.className = 'col-sort';
+          sortBtn.contentEditable = 'false';
+          sortBtn.textContent = ' ⇅';
+          sortBtn.style.cssText = 'cursor:pointer;opacity:.45;font-size:11px;user-select:none;margin-left:4px';
+          sortBtn.addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            const colIdx = (th as HTMLTableCellElement).cellIndex;
+            const body = table.tBodies[0]; if (!body) return;
+            const rows = Array.from(body.rows);
+            const dir = (table as HTMLElement).dataset.sortCol === String(colIdx) && (table as HTMLElement).dataset.sortDir === 'asc' ? 'desc' : 'asc';
+            const val = (r: HTMLTableRowElement) => (r.cells[colIdx]?.textContent || '').trim();
+            const numeric = rows.every((r) => { const v = val(r).replace(/[,₹%\s]/g, ''); return v === '' || !isNaN(Number(v)); });
+            rows.sort((a, b) => {
+              const av = val(a), bv = val(b);
+              const cmp = numeric ? (Number(av.replace(/[,₹%\s]/g, '') || 0) - Number(bv.replace(/[,₹%\s]/g, '') || 0)) : av.localeCompare(bv);
+              return dir === 'asc' ? cmp : -cmp;
+            });
+            rows.forEach((r) => body.appendChild(r));
+            (table as HTMLElement).dataset.sortCol = String(colIdx);
+            (table as HTMLElement).dataset.sortDir = dir;
+            save();
+          });
+          th.appendChild(sortBtn);
+        }
+        // Excel-style per-column value filter (▾): pick which values in this column to show.
+        if (!(th as HTMLElement).querySelector('.col-filter')) {
+          const filterBtn = document.createElement('span');
+          filterBtn.className = 'col-filter';
+          filterBtn.contentEditable = 'false';
+          filterBtn.textContent = ' ▾';
+          filterBtn.title = 'Filter this column';
+          filterBtn.style.cssText = 'cursor:pointer;opacity:.5;font-size:10px;user-select:none;margin-left:3px';
+          filterBtn.addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            openColMenuRef.current(table as HTMLTableElement, (th as HTMLTableCellElement).cellIndex, filterBtn);
+          });
+          th.appendChild(filterBtn);
+        }
       });
     });
+    setHasTable(!!root.querySelector('table'));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Show only the rows that pass BOTH the text search AND every active per-column value filter.
+  // View-only (display:none) — readBody() restores full visibility before anything is saved.
+  const applyAllFilters = useCallback(() => {
+    const root = editorRef.current; if (!root) return;
+    const q = textFilterRef.current.trim().toLowerCase();
+    const cf = colFiltersRef.current;
+    root.querySelectorAll('table').forEach((table) => {
+      const body = (table as HTMLTableElement).tBodies[0]; if (!body) return;
+      const rows = body.rows;
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i] as HTMLTableRowElement;
+        // textContent (NOT innerText) — innerText forces a synchronous reflow per row, which
+        // froze the app when filtering a ~1200-row table. textContent reads with no layout.
+        let show = !q || (r.textContent || '').toLowerCase().includes(q);
+        if (show && cf.size) {
+          for (const [ci, allowed] of cf) {
+            const v = (r.cells[ci]?.textContent || '').trim();
+            if (!allowed.has(v)) { show = false; break; }
+          }
+        }
+        r.style.display = show ? '' : 'none';
+      }
+    });
+  }, []);
+  // Debounced so dragging through the text box doesn't re-scan thousands of rows per keystroke.
+  const onTextFilter = useCallback((v: string) => {
+    setTableFilter(v);
+    textFilterRef.current = v;
+    if (filterTimer.current) clearTimeout(filterTimer.current);
+    filterTimer.current = setTimeout(() => applyAllFilters(), 180);
+  }, [applyAllFilters]);
+
+  const closeColMenu = useCallback(() => { colMenuRef.current?.remove(); colMenuRef.current = null; }, []);
+
+  // Excel-style per-column filter: click a header's ▾ to pick which values in that column to show
+  // (e.g. Country → tick only INDIA + UNITED KINGDOM). Distinct values are gathered once, on open.
+  const openColMenu = useCallback((table: HTMLTableElement, colIdx: number, anchor: HTMLElement) => {
+    closeColMenu();
+    const body = table.tBodies[0]; if (!body) return;
+    // Gather distinct values with textContent (NOT innerText — innerText reflows per row and froze
+    // the app when opening the menu on a big column).
+    const seen = new Set<string>(); const values: string[] = [];
+    for (let i = 0; i < body.rows.length; i++) {
+      const v = (body.rows[i].cells[colIdx]?.textContent || '').trim();
+      if (!seen.has(v)) { seen.add(v); values.push(v); }
+      if (values.length >= 20000) break; // safety cap
+    }
+    values.sort((a, b) => a.localeCompare(b));
+    const current = colFiltersRef.current.get(colIdx); // Set (allowed) or undefined (= all)
+    // Persistent selection that survives search re-renders. Only a capped slice is rendered at a
+    // time (rendering thousands of checkboxes was the freeze); the search box narrows which slice
+    // shows, but toggles update this Set so unrendered values keep their state.
+    const selected = new Set<string>(current ? current : values);
+    const LIMIT = 300;
+
+    const panel = document.createElement('div');
+    panel.className = 'nv-colmenu';
+    panel.contentEditable = 'false';
+    panel.style.cssText = 'position:fixed;z-index:100;width:250px;max-height:360px;display:flex;flex-direction:column;'
+      + 'background:var(--nv-surface);border:1px solid var(--nv-border);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.45);'
+      + 'font-family:inherit;color:var(--nv-text);overflow:hidden;';
+    const search = document.createElement('input');
+    search.placeholder = 'Search values…';
+    search.style.cssText = 'margin:8px;padding:6px 8px;font-size:11px;border-radius:6px;border:1px solid var(--nv-border);background:var(--nv-bg);color:var(--nv-text);outline:none;';
+    const bar = document.createElement('div');
+    bar.style.cssText = 'display:flex;gap:10px;padding:0 10px 4px;font-size:10px;';
+    const selAll = document.createElement('button'); selAll.textContent = 'Select all'; selAll.style.cssText = 'color:var(--nv-accent,#7C5CFF);background:none;border:none;cursor:pointer;padding:0;';
+    const selNone = document.createElement('button'); selNone.textContent = 'Clear'; selNone.style.cssText = 'color:var(--nv-faint);background:none;border:none;cursor:pointer;padding:0;';
+    bar.appendChild(selAll); bar.appendChild(selNone);
+    const listWrap = document.createElement('div');
+    listWrap.style.cssText = 'flex:1;overflow:auto;padding:2px 8px;';
+    const renderList = () => {
+      const q = search.value.trim().toLowerCase();
+      const matched = q ? values.filter((v) => v.toLowerCase().includes(q)) : values;
+      listWrap.textContent = '';
+      for (const v of matched.slice(0, LIMIT)) {
+        const row = document.createElement('label');
+        row.style.cssText = 'display:flex;align-items:center;gap:7px;padding:3px 2px;font-size:11px;cursor:pointer;';
+        const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = selected.has(v);
+        cb.addEventListener('change', () => { if (cb.checked) selected.add(v); else selected.delete(v); });
+        const span = document.createElement('span'); span.textContent = v || '(blank)'; span.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        row.appendChild(cb); row.appendChild(span); listWrap.appendChild(row);
+      }
+      if (matched.length > LIMIT) {
+        const note = document.createElement('div');
+        note.style.cssText = 'font-size:9.5px;color:var(--nv-faint);padding:4px 2px;';
+        note.textContent = `Showing ${LIMIT} of ${matched.length} — type to narrow.`;
+        listWrap.appendChild(note);
+      }
+    };
+    selAll.addEventListener('click', () => { values.forEach((v) => selected.add(v)); renderList(); });
+    selNone.addEventListener('click', () => { selected.clear(); renderList(); });
+    search.addEventListener('input', renderList);
+    renderList();
+    const foot = document.createElement('div');
+    foot.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;padding:8px;border-top:1px solid var(--nv-border);';
+    const clearBtn = document.createElement('button'); clearBtn.textContent = 'Reset'; clearBtn.style.cssText = 'font-size:10.5px;color:var(--nv-faint);background:none;border:none;cursor:pointer;';
+    const applyBtn = document.createElement('button'); applyBtn.textContent = 'Apply'; applyBtn.style.cssText = 'font-size:10.5px;font-weight:600;color:#fff;background:var(--nv-accent,#7C5CFF);border:none;border-radius:6px;padding:4px 12px;cursor:pointer;';
+    clearBtn.addEventListener('click', () => { colFiltersRef.current.delete(colIdx); anchor.style.opacity = '.5'; anchor.style.color = ''; applyAllFilters(); closeColMenu(); });
+    applyBtn.addEventListener('click', () => {
+      if (selected.size >= values.length) { colFiltersRef.current.delete(colIdx); }
+      else { colFiltersRef.current.set(colIdx, new Set(selected)); }
+      anchor.style.opacity = colFiltersRef.current.has(colIdx) ? '1' : '.5';
+      anchor.style.color = colFiltersRef.current.has(colIdx) ? 'var(--nv-accent,#7C5CFF)' : '';
+      applyAllFilters(); closeColMenu();
+    });
+    foot.appendChild(clearBtn); foot.appendChild(applyBtn);
+    panel.appendChild(search); panel.appendChild(bar); panel.appendChild(listWrap); panel.appendChild(foot);
+    document.body.appendChild(panel);
+    colMenuRef.current = panel;
+    // Position under the header button, kept on-screen.
+    const r = anchor.getBoundingClientRect();
+    panel.style.left = `${Math.min(r.left, window.innerWidth - 262)}px`;
+    panel.style.top = `${Math.min(r.bottom + 4, window.innerHeight - 350)}px`;
+    // Dismiss on outside click.
+    setTimeout(() => {
+      const onDoc = (ev: MouseEvent) => { if (colMenuRef.current && !colMenuRef.current.contains(ev.target as Node) && ev.target !== anchor) { closeColMenu(); document.removeEventListener('mousedown', onDoc); } };
+      document.addEventListener('mousedown', onDoc);
+    }, 0);
+  }, [applyAllFilters, closeColMenu]);
+  const openColMenuRef = useRef(openColMenu);
+  openColMenuRef.current = openColMenu;
+
   useEffect(() => { if (editorRef.current) { editorRef.current.innerHTML = initialHtml; enhanceTables(); } }, [initialHtml, enhanceTables]);
+  useEffect(() => () => { if (filterTimer.current) clearTimeout(filterTimer.current); closeColMenu(); }, [closeColMenu]);
 
   const patch = (p: Partial<BrainNode>) => brain.updateNode(node.id, p);
   const patchTitleDebounced = (t: string) => {
@@ -554,13 +816,30 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
   const readBody = () => {
     const root = editorRef.current; if (!root) return '';
     const clone = root.cloneNode(true) as HTMLElement;
-    clone.querySelectorAll('.col-resizer').forEach((h) => h.remove());
+    clone.querySelectorAll('.col-resizer, .col-sort, .col-filter').forEach((h) => h.remove());
+    // A row hidden by the live filter must NOT be saved as display:none (that would make it
+    // vanish permanently). Restore every row's visibility in the saved copy.
+    clone.querySelectorAll('tr').forEach((r) => { (r as HTMLElement).style.display = ''; });
     return clone.innerHTML;
   };
-  // For a PDF/deck the editor isn't rendered, so readBody() would return '' and WIPE the stored
-  // body — skip the body write in those cases (title/ref/kind still save).
-  const readOnlyFile = isPdf || isDeck;
-  const save = () => brain.updateNode(node.id, { title: title.trim() || 'Untitled', ...(readOnlyFile ? {} : { body: readBody() }), ref, kind });
+  // HTML for sending to Krew: strips UI buttons and DROPS rows the filter/column-picker have
+  // hidden — so when the user narrows the table (e.g. Country = INDIA) and clicks "Chat with this
+  // file", Krew receives ONLY those rows and can act on them ("email all of these").
+  const exportHtmlForChat = () => {
+    const root = editorRef.current; if (!root) return '';
+    const clone = root.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll('.col-resizer, .col-sort, .col-filter').forEach((h) => h.remove());
+    clone.querySelectorAll('tr').forEach((r) => { if ((r as HTMLElement).style.display === 'none') r.remove(); });
+    return clone.innerHTML;
+  };
+  const anyFilterActive = () => colFiltersRef.current.size > 0 || !!textFilterRef.current.trim();
+  // For a PDF/deck/image the editor isn't rendered, so readBody() would return '' and WIPE the
+  // stored body — skip the body write there (title/ref/kind still save). A LARGE table is shown
+  // read-only, so filter/sort are view-only and never persisted (cloning a 15k-cell DOM on every
+  // sort/blur was itself a freeze).
+  const readOnlyFile = isPdf || isDeck || isImage;
+  const skipBodyWrite = readOnlyFile || largeBody;
+  const save = () => brain.updateNode(node.id, { title: title.trim() || 'Untitled', ...(skipBodyWrite ? {} : { body: readBody() }), ref, kind });
   const afterEdit = () => { enhanceTables(); save(); };
   // Formatting buttons — the user clicks these instead of typing markdown symbols.
   const exec = (cmd: string, val?: string) => { document.execCommand(cmd, false, val); editorRef.current?.focus(); save(); };
@@ -635,7 +914,7 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
     if (path) setFilePath(path);
     // Store the extracted text as the node body (agents recall it) regardless of whether the
     // editor is shown — for a PDF the panel shows the actual PDF, not this text.
-    const html = mdToHtml(content.slice(0, 100000));
+    const html = mdToHtml(content.slice(0, 2000000));
     const cur = editorRef.current;
     if (cur && !cur.innerText.trim()) cur.innerHTML = html;
     brain.updateNode(node.id, { kind: 'file', title: newTitle, body: html, ...(path ? { filePath: path } : {}) });
@@ -669,10 +948,10 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
   const labelCls = 'text-[9px] font-mono uppercase tracking-wider';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-8" style={{ background: 'rgba(0,0,0,.5)' }}
+    <div className={`fixed inset-0 z-50 flex items-center justify-center ${maximized ? 'p-0' : 'p-4 sm:p-8'}`} style={{ background: 'rgba(0,0,0,.5)' }}
       onMouseDown={() => { save(); onClose(); }}>
-      <div className="flex flex-col w-full max-w-6xl rounded-2xl overflow-hidden shadow-2xl"
-        style={{ height: '92vh', background: 'var(--nv-surface)', border: '1px solid var(--nv-border)' }}
+      <div className={`flex flex-col w-full overflow-hidden shadow-2xl ${maximized ? 'max-w-none' : 'max-w-6xl rounded-2xl'}`}
+        style={{ height: maximized ? '100vh' : '92vh', background: 'var(--nv-surface)', border: '1px solid var(--nv-border)' }}
         onMouseDown={(e) => e.stopPropagation()}>
 
         {/* Header — title + simple formatting buttons (no markdown to learn) */}
@@ -698,14 +977,27 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
             ))}
           </div>
           )}
-          <button onClick={() => { save(); onClose(); }} className="text-xl ml-1" style={{ color: 'var(--nv-faint)' }}>×</button>
+          <button onClick={() => setMaximized((m) => !m)} title={maximized ? 'Restore size' : 'Maximize'}
+            className="w-7 h-7 rounded-md flex items-center justify-center ml-1 transition-fast hover:bg-nv-surface2" style={{ color: 'var(--nv-faint)' }}>
+            {maximized ? (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M8 3v3a2 2 0 0 1-2 2H3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M16 21v-3a2 2 0 0 1 2-2h3"/>
+              </svg>
+            ) : (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/>
+              </svg>
+            )}
+          </button>
+          <button onClick={() => { save(); onClose(); }} className="text-xl ml-0.5" style={{ color: 'var(--nv-faint)' }}>×</button>
         </div>
 
         {/* Table toolbar — Excel-style structure editing (hidden for read-only files: PDF/deck) */}
         {!readOnlyFile && (
         <div className="flex items-center gap-1 px-5 py-1.5 shrink-0 flex-wrap" style={{ borderBottom: '1px solid var(--nv-border)', background: 'var(--nv-bg)' }}>
-          <span className="text-[9px] font-mono uppercase tracking-wider mr-1" style={{ color: 'var(--nv-faint)' }}>Table</span>
-          {([
+          <span className="text-[9px] font-mono uppercase tracking-wider mr-1" style={{ color: 'var(--nv-faint)' }}>{largeBody ? 'View' : 'Table'}</span>
+          {/* Structure editing is hidden for a big table — it's shown read-only for speed. */}
+          {!largeBody && ([
             { l: '⊞ Insert', fn: insertTable, t: 'Insert a new table', del: false },
             { l: '+ Row', fn: addRow, t: 'Add a row', del: false },
             { l: '+ Col', fn: addColumn, t: 'Add a column', del: false },
@@ -721,7 +1013,13 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
               {b.l}
             </button>
           ))}
-          <span className="text-[9px] ml-2" style={{ color: 'var(--nv-faint)' }}>tip: drag a cell's right/bottom edge to resize</span>
+          {hasTable && (
+            <input value={tableFilter} onChange={(e) => onTextFilter(e.target.value)}
+              placeholder="Filter rows…"
+              className="ml-2 w-44 rounded-md px-2.5 py-1 text-[10.5px] outline-none focus:border-accent"
+              style={{ background: 'var(--nv-surface)', border: '1px solid var(--nv-border)', color: 'var(--nv-text)' }} />
+          )}
+          <span className="text-[9px] ml-2" style={{ color: 'var(--nv-faint)' }}>{hasTable ? (largeBody ? 'big table — read-only · ▾ filter a column · ⇅ sort · drag a cell edge to resize' : 'filter rows · ▾ filter a column · ⇅ sort · drag a cell edge to resize') : "tip: drag a cell's right/bottom edge to resize"}</span>
         </div>
         )}
 
@@ -731,14 +1029,16 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
             <DeckPreview path={filePath} />
           ) : isPdf ? (
             <PdfViewer path={filePath} />
+          ) : isImage ? (
+            <ImageViewer path={filePath} />
           ) : (
           <div
             ref={editorRef}
-            contentEditable
+            contentEditable={!largeBody}
             suppressContentEditableWarning
             onBlur={save}
             data-placeholder="Start writing… use the B / H / • buttons above to format. Anything Krew finds (like a company list) shows here as a clean table."
-            className={`flex-1 min-w-0 overflow-y-auto p-6 empty:before:content-[attr(data-placeholder)] empty:before:text-nv-faint ${NOTE_CLS}`}
+            className={`flex-1 min-w-0 overflow-auto p-6 empty:before:content-[attr(data-placeholder)] empty:before:text-nv-faint ${NOTE_CLS}`}
             style={{ color: 'var(--nv-text)' }}
           />
           )}
@@ -765,6 +1065,8 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
                   Attach a file
                 </button>
               )}
+              {/* Storage used — shown for EVERY item (text size, plus the on-disk file if attached). */}
+              <p className="text-[9px] font-mono mt-1" style={{ color: 'var(--nv-faint)' }}>Storage used: {formatBytes(storageBytes)}{diskSize != null ? ' (file on disk + text)' : ''}</p>
               <input ref={fileInputRef} type="file" className="hidden" onChange={onHtmlFile} />
             </div>
             {isDeck && (
@@ -772,7 +1074,6 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
                 <label className={labelCls} style={{ color: 'var(--nv-muted)' }}>Presentation</label>
                 <div className="flex gap-1.5">
                   <button onClick={openDeck} className="flex-1 rounded-lg px-3 py-2 text-[11px] font-semibold text-white" style={{ background: 'var(--nv-accent, #7C5CFF)' }}>Open / Present</button>
-                  <button onClick={downloadDeckPptx} className="flex-1 rounded-lg px-3 py-2 text-[11px] font-medium" style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-text)' }}>Download .pptx</button>
                 </div>
                 <p className="text-[9px]" style={{ color: deckMsg.startsWith('Could') || deckMsg.includes('failed') ? '#f87171' : 'var(--nv-faint)' }}>{deckMsg || 'Opens in your browser — present fullscreen or export to PDF from there.'}</p>
               </div>
@@ -807,9 +1108,11 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
               onClick={() => {
                 save();
                 // Build this file's markdown PLUS the notes connected to it, then enter
-                // a focused chat that stays scoped to this file + its connections.
-                const html = editorRef.current?.innerHTML || '';
+                // a focused chat that stays scoped to this file + its connections. If a filter is
+                // active, only the visible (filtered) rows are sent.
+                const html = exportHtmlForChat();
                 let content = (nodeToMarkdown(html) || editorRef.current?.innerText || '').trim();
+                if (anyFilterActive()) content = `(Filtered view — only the rows matching the applied filter are included below.)\n\n${content}`;
                 const data = brain.all();
                 const linkedIds = new Set<string>();
                 data.edges.forEach((e) => {
@@ -832,8 +1135,9 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
             <button
               onClick={() => {
                 save();
-                const html = editorRef.current?.innerHTML || '';
-                const content = (nodeToMarkdown(html) || editorRef.current?.innerText || '').trim();
+                const html = exportHtmlForChat();
+                let content = (nodeToMarkdown(html) || editorRef.current?.innerText || '').trim();
+                if (anyFilterActive()) content = `(Filtered view — only the rows matching the applied filter are included below.)\n\n${content}`;
                 window.dispatchEvent(new CustomEvent('nv-brain-to-krew', { detail: { name: `${(title.trim() || 'Brain note')}.md`, content } }));
                 window.dispatchEvent(new Event('nv-goto-krew'));
                 onClose();

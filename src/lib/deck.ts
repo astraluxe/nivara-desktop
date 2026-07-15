@@ -8,7 +8,8 @@
 // imagePrompt is turned into a real image (Gemini "Nano Banana") and stored as a data URI.
 
 export interface DeckSlide {
-  layout: 'title' | 'section' | 'bullets' | 'quote' | 'stat' | 'two-column' | 'image-full' | 'closing';
+  layout: 'title' | 'section' | 'bullets' | 'quote' | 'stat' | 'two-column' | 'image-full' | 'closing' | 'chart'
+        | 'agenda' | 'comparison' | 'cards' | 'process' | 'timeline' | 'pricing';
   title?:       string;
   subtitle?:    string;
   bullets?:     string[];
@@ -18,6 +19,11 @@ export interface DeckSlide {
   stat?:        string;   // big number, e.g. "94%"
   statLabel?:   string;
   columns?:     { heading: string; bullets: string[] }[];
+  chartData?:   { label: string; value: number }[];   // 'chart' layout: a few labelled numbers → bar chart
+  chartUnit?:   string;   // optional unit shown on bars/axis, e.g. "₹", "%", "hrs"
+  cards?:       { heading: string; body?: string }[]; // 'cards'/'process' grid; 'process' auto-numbers
+  timeline?:    { label: string; text?: string }[];   // 'timeline' milestones
+  plans?:       { name: string; price?: string; bullets?: string[]; highlight?: boolean }[]; // 'pricing'
   imagePrompt?: string;   // Advanced mode: prompt for the AI image
   imageData?:   string;   // filled after generation — a data: URI (or full remote URL)
   notes?:       string;   // speaker notes (exported to pptx notes)
@@ -34,6 +40,7 @@ export interface DeckSpec {
   palette:   DeckPalette;
   font:      DeckFont;
   slides:    DeckSlide[];
+  logo?:     string;                 // optional brand logo (data: URI) shown in a corner on every slide
 }
 
 // Fallback palettes per preset, used if the agent omits or under-specifies colours.
@@ -253,7 +260,7 @@ function fontParam(f: string) { return f.replace(/ /g, '+'); }
 // ── HTML deck ────────────────────────────────────────────────────────────────
 // 16:9 slides scaled to fit the viewport. Arrow keys / space to navigate, F to
 // present fullscreen, P to print (→ Save as PDF). Fully self-contained.
-export function renderDeckHtml(spec: DeckSpec): string {
+export function renderDeckHtml(spec: DeckSpec, editable = false, editId = ''): string {
   const p = spec.palette, H = spec.font.heading, B = spec.font.body;
   const families = Array.from(new Set([H, B]));
   const fontLink = `https://fonts.googleapis.com/css2?${families
@@ -261,7 +268,14 @@ export function renderDeckHtml(spec: DeckSpec): string {
     .join('&')}&display=swap`;
 
   const total = spec.slides.length;
-  const slidesHtml = spec.slides.map((s, i) => renderSlideHtml(s, spec, i, total)).join('\n');
+  // A brand logo (the user's own, given in chat) is drawn in the top corner of every slide.
+  // Injected right after each slide's opening <section …> tag so it sits above the layout,
+  // regardless of which of the 8 layouts rendered the slide.
+  const logoTag = spec.logo ? `<img class="nv-logo" src="${spec.logo}" alt=""/>` : '';
+  const slidesHtml = spec.slides.map((s, i) => {
+    const html = renderSlideHtml(s, spec, i, total, editable);
+    return logoTag ? html.replace(/(<section\b[^>]*>)/, `$1${logoTag}`) : html;
+  }).join('\n');
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -312,9 +326,36 @@ export function renderDeckHtml(spec: DeckSpec): string {
   .col li::before { margin-top:8px; width:7px; height:7px; }
   .imgwrap { border-radius:18px; overflow:hidden; background:${p.surface}; display:flex; align-items:center; justify-content:center; position:relative; z-index:1; }
   .imgwrap img { width:100%; height:100%; object-fit:cover; }
+  /* agenda / process / cards / timeline / pricing / comparison layouts */
+  .agenda { display:flex; flex-direction:column; gap:18px; position:relative; z-index:1; }
+  .agenda .it { display:flex; align-items:center; gap:22px; }
+  .agenda .n { font-family:'${H}',sans-serif; font-weight:800; font-size:34px; color:${p.accent}; min-width:56px; opacity:.9; }
+  .agenda .t { font-size:26px; color:${p.text}; }
+  .grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:24px; position:relative; z-index:1; }
+  .grid2 { display:grid; grid-template-columns:repeat(2,1fr); gap:24px; position:relative; z-index:1; }
+  .card { background:${p.surface}; border:1px solid ${p.accent}26; border-radius:18px; padding:28px 30px; }
+  .card .cn { display:inline-flex; align-items:center; justify-content:center; width:42px; height:42px; border-radius:12px; background:${p.accent}; color:#fff; font-family:'${H}',sans-serif; font-weight:800; font-size:20px; margin-bottom:16px; }
+  .card h3 { font-size:22px; color:${p.text}; margin-bottom:10px; font-weight:700; }
+  .card p { font-size:17px; line-height:1.45; color:${p.muted}; }
+  .steps { display:grid; grid-auto-flow:column; grid-auto-columns:1fr; gap:18px; align-items:stretch; position:relative; z-index:1; }
+  .tl { position:relative; z-index:1; display:flex; flex-direction:column; gap:0; }
+  .tl .row { display:grid; grid-template-columns:190px 1fr; gap:26px; padding:16px 0; border-left:3px solid ${p.accent}44; padding-left:30px; margin-left:8px; position:relative; }
+  .tl .row::before { content:''; position:absolute; left:-9px; top:22px; width:15px; height:15px; border-radius:50%; background:${p.accent}; }
+  .tl .lab { font-family:'${H}',sans-serif; font-weight:700; font-size:21px; color:${p.accent}; }
+  .tl .txt { font-size:19px; color:${p.text}; line-height:1.4; }
+  .plans { display:grid; grid-auto-flow:column; grid-auto-columns:1fr; gap:22px; position:relative; z-index:1; }
+  .plan { background:${p.surface}; border:1px solid ${p.accent}26; border-radius:18px; padding:30px 28px; display:flex; flex-direction:column; }
+  .plan.hl { border:2px solid ${p.accent}; box-shadow:0 24px 60px ${p.accent}22; }
+  .plan .pn { font-size:20px; font-weight:700; color:${p.text}; }
+  .plan .pp { font-family:'${H}',sans-serif; font-weight:800; font-size:40px; color:${p.accent}; margin:10px 0 16px; letter-spacing:-.02em; }
+  .plan ul { gap:11px; }
+  .plan li { font-size:16px; line-height:1.35; }
+  .plan li::before { margin-top:8px; width:7px; height:7px; }
+  .vs { display:inline-flex; align-items:center; justify-content:center; width:56px; height:56px; border-radius:50%; background:${p.accent}; color:#fff; font-family:'${H}',sans-serif; font-weight:800; font-size:20px; position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); z-index:3; }
   .split { display:grid; grid-template-columns:1.05fr .95fr; gap:60px; align-items:center; }
   .split .imgwrap { border:1px solid ${p.accent}2a; box-shadow:0 34px 90px rgba(0,0,0,.5); }
   .pill { display:inline-flex; align-items:center; gap:10px; background:${p.accent}; color:#fff; font-weight:700; font-size:22px; padding:15px 30px; border-radius:999px; margin-top:6px; }
+  .nv-logo { position:absolute; top:44px; right:52px; height:58px; max-width:230px; object-fit:contain; z-index:6; pointer-events:none; }
   h1, h2, .stat-big, .kicker, .rule, ul, .pill, p { position:relative; z-index:1; }
   #bar { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); display:flex; gap:8px; align-items:center;
     background:rgba(20,20,22,.86); backdrop-filter:blur(8px); border:1px solid rgba(255,255,255,.12);
@@ -348,6 +389,7 @@ export function renderDeckHtml(spec: DeckSpec): string {
   }
   /* ── template overrides (change the whole look, not just colours) ── */
   ${templateCss(spec.template || 'aurora', p)}
+  ${editable ? `[data-f]{outline:none;border-radius:5px;transition:box-shadow .12s} [data-f]:hover{box-shadow:0 0 0 2px ${p.accent}55} [data-f]:focus{box-shadow:0 0 0 2px ${p.accent};cursor:text;background:${p.accent}0d}` : ''}
 </style>
 </head>
 <body>
@@ -371,32 +413,91 @@ export function renderDeckHtml(spec: DeckSpec): string {
     slides.forEach(function(el,i){ el.classList.toggle('active', i===cur); });
     document.getElementById('count').textContent = (cur+1)+' / '+slides.length;
   }
+  // Are we embedded inside the app (an iframe), or opened standalone in a real browser?
+  // When embedded, fullscreen + print are blocked by the iframe sandbox, so we ask the parent
+  // app to do them (it fullscreens the iframe / opens the deck in the real browser to print).
+  // When standalone (a downloaded .html), we do them directly — they work there.
+  var EMBEDDED = false; try { EMBEDDED = window.parent && window.parent !== window; } catch(e){ EMBEDDED = true; }
   document.getElementById('prev').onclick = function(){ show(cur-1); };
   document.getElementById('next').onclick = function(){ show(cur+1); };
   document.getElementById('present').onclick = function(){
+    if (EMBEDDED){ try { parent.postMessage({ __deckPresent: true }, '*'); return; } catch(e){} }
     if (document.fullscreenElement) document.exitFullscreen();
     else document.documentElement.requestFullscreen && document.documentElement.requestFullscreen();
   };
-  document.getElementById('pdf').onclick = function(){ window.print(); };
+  document.getElementById('pdf').onclick = function(){
+    if (EMBEDDED){ try { parent.postMessage({ __deckPdf: true }, '*'); return; } catch(e){} }
+    window.print();
+  };
   window.addEventListener('keydown', function(e){
+    // Don't hijack keys (arrows/space) while the user is editing a text field.
+    var t = e.target;
+    if (t && t.getAttribute && t.getAttribute('contenteditable') === 'true') return;
     if (e.key==='ArrowRight'||e.key==='ArrowDown'||e.key===' '||e.key==='PageDown'){ show(cur+1); e.preventDefault(); }
     else if (e.key==='ArrowLeft'||e.key==='ArrowUp'||e.key==='PageUp'){ show(cur-1); e.preventDefault(); }
     else if (e.key==='f'||e.key==='F'){ document.getElementById('present').click(); }
-    else if (e.key==='p'||e.key==='P'){ window.print(); }
+    else if (e.key==='p'||e.key==='P'){ document.getElementById('pdf').click(); }
   });
   window.addEventListener('resize', fit);
   fit(); show(0);
+${editable ? `
+  // Post every text edit back to the parent app so the deck spec stays in sync (used for
+  // downloads / Save to Brain). Fires when a field loses focus.
+  document.addEventListener('focusout', function(e){
+    var t = e.target;
+    if (t && t.getAttribute && t.getAttribute('data-f') != null){
+      try { parent.postMessage({ __deckEdit: true, id: '${editId}', s: parseInt(t.getAttribute('data-s'),10), f: t.getAttribute('data-f'), value: t.innerText }, '*'); } catch(_){}
+    }
+  });` : ''}
 </script>
 </body>
 </html>`;
 }
 
-function renderSlideHtml(s: DeckSlide, spec: DeckSpec, i: number, total: number): string {
+// Format a chart number compactly: 12_00_000 → "12L"-ish is overkill; keep it simple with
+// thousands separators and a k/M shorthand for big values so bar labels stay readable.
+function fmtChartNum(n: number): string {
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000) return (n / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1).replace(/\.0$/, '') + 'M';
+  if (abs >= 1_000)     return (n / 1_000).toFixed(abs >= 10_000 ? 0 : 1).replace(/\.0$/, '') + 'k';
+  return String(Math.round(n * 100) / 100);
+}
+// A clean SVG bar chart for a 'chart' slide (a few labelled numbers). Bars in the deck accent,
+// value on top, label below. Returns '' when there's no usable numeric data.
+function renderChartSvg(s: DeckSlide, p: DeckPalette): string {
+  const data = (s.chartData || [])
+    .filter((d) => d && d.label != null && typeof d.value === 'number' && isFinite(d.value))
+    .slice(0, 8);
+  if (data.length < 2) return '';
+  const max = Math.max(...data.map((d) => d.value), 1);
+  const W = 1040, H = 430, padX = 20, base = H - 54, gap = 30, n = data.length;
+  const bw = Math.max(40, (W - padX * 2 - gap * (n - 1)) / n);
+  const unit = s.chartUnit || '';
+  const bars = data.map((d, idx) => {
+    const h = Math.max(6, (Math.max(0, d.value) / max) * (base - 40));
+    const x = padX + idx * (bw + gap);
+    const y = base - h;
+    const label = unit === '₹' ? '₹' + fmtChartNum(d.value) : fmtChartNum(d.value) + (unit && unit !== '₹' ? unit : '');
+    return `<rect x="${x}" y="${y}" width="${bw}" height="${h}" rx="8" fill="${p.accent}"/>`
+      + `<text x="${x + bw / 2}" y="${y - 12}" text-anchor="middle" font-size="21" font-weight="800" fill="${p.text}">${esc(label)}</text>`
+      + `<text x="${x + bw / 2}" y="${H - 16}" text-anchor="middle" font-size="17" fill="${p.muted}">${esc(String(d.label).slice(0, 22))}</text>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:1040px;position:relative;z-index:1;overflow:visible">`
+    + `<line x1="${padX}" y1="${base}" x2="${W - padX}" y2="${base}" stroke="${p.muted}" stroke-opacity=".35" stroke-width="1.5"/>${bars}</svg>`;
+}
+
+function renderSlideHtml(s: DeckSlide, spec: DeckSpec, i: number, total: number, editable = false): string {
   const multi = (t = '') => esc(t).replace(/\n/g, '<br>');
   const pct = (((i + 1) / total) * 100).toFixed(1);
+  // In-chat editing: mark a text field editable and tag it so a change can be posted back to
+  // the deck spec (slide index + field name). Downloaded/saved decks are NOT editable.
+  const ed = editable ? (field: string) => ` contenteditable="true" data-s="${i}" data-f="${field}" spellcheck="false"` : () => '';
   const chrome = `<div class="prog" style="width:${pct}%"></div><div class="foot"><span class="brand">${esc(spec.title)}</span><span class="pg">${String(i + 1).padStart(2, '0')} / ${String(total).padStart(2, '0')}</span></div>`;
-  const img = s.imageData ? `<img src="${s.imageData}" alt=""/>` : '';
-  const bullets = (s.bullets || []).map((b) => `<li>${esc(b)}</li>`).join('');
+  // If an image fails to load (broken/blank data), remove its box so a slide never shows an
+  // empty coloured rectangle — the split layout collapses to a clean single text column.
+  const imgErr = `onerror="this.closest('.imgwrap')&amp;&amp;this.closest('.imgwrap').remove();this.closest('.split')&amp;&amp;this.closest('.split').style.setProperty('grid-template-columns','1fr')"`;
+  const img = s.imageData ? `<img src="${s.imageData}" alt="" ${imgErr}/>` : '';
+  const bullets = (s.bullets || []).map((b, bi) => `<li${ed('bullet.' + bi)}>${esc(b)}</li>`).join('');
   // Background image (with a directional gradient scrim so the left-side text stays readable).
   // Used on title/section/closing — layouts that don't have a dedicated image slot.
   const bgImage = (base: string) => s.imageData
@@ -407,46 +508,118 @@ function renderSlideHtml(s: DeckSlide, spec: DeckSpec, i: number, total: number)
   switch (s.layout) {
     case 'title':
       return `<section class="slide">${bgImage(spec.palette.bg)}
-        ${s.subtitle ? `<div class="kicker">${esc(s.subtitle)}</div>` : ''}
-        <h1 style="font-size:86px;max-width:${s.imageData ? '780px' : '1040px'}">${esc(s.title || spec.title)}</h1>
+        ${s.subtitle ? `<div class="kicker"${ed('subtitle')}>${esc(s.subtitle)}</div>` : ''}
+        <h1 style="font-size:86px;max-width:${s.imageData ? '780px' : '1040px'}"${ed('title')}>${esc(s.title || spec.title)}</h1>
         <div class="rule"></div>
-        ${s.body ? `<p class="muted" style="font-size:27px;max-width:${s.imageData ? '660px' : '820px'};line-height:1.5">${multi(s.body)}</p>` : ''}
+        ${s.body ? `<p class="muted" style="font-size:27px;max-width:${s.imageData ? '660px' : '820px'};line-height:1.5"${ed('body')}>${multi(s.body)}</p>` : ''}
         ${chrome}</section>`;
     case 'section':
       return `<section class="slide" style="background:${spec.palette.surface}">${bgImage(spec.palette.surface)}
         ${s.imageData ? '' : `<div class="wm">${String(i + 1).padStart(2, '0')}</div>`}
         <div class="kicker">Section</div>
-        <h1 style="font-size:72px;max-width:${s.imageData ? '720px' : '900px'}">${esc(s.title || '')}</h1>
-        ${s.subtitle ? `<p class="muted" style="font-size:26px;margin-top:20px;max-width:${s.imageData ? '620px' : '780px'};line-height:1.45">${esc(s.subtitle)}</p>` : ''}
+        <h1 style="font-size:72px;max-width:${s.imageData ? '720px' : '900px'}"${ed('title')}>${esc(s.title || '')}</h1>
+        ${s.subtitle ? `<p class="muted" style="font-size:26px;margin-top:20px;max-width:${s.imageData ? '620px' : '780px'};line-height:1.45"${ed('subtitle')}>${esc(s.subtitle)}</p>` : ''}
         ${chrome}</section>`;
     case 'quote':
       return `<section class="slide">
         <div class="quote-mark">&ldquo;</div>
-        <h2 style="font-size:46px;max-width:1000px;font-weight:600;line-height:1.24">${esc(s.quote || s.title || '')}</h2>
-        ${s.attribution ? `<p class="accent" style="font-size:22px;margin-top:34px;font-weight:700;letter-spacing:.03em">— ${esc(s.attribution)}</p>` : ''}
+        <h2 style="font-size:46px;max-width:1000px;font-weight:600;line-height:1.24"${ed('quote')}>${esc(s.quote || s.title || '')}</h2>
+        ${s.attribution ? `<p class="accent" style="font-size:22px;margin-top:34px;font-weight:700;letter-spacing:.03em"${ed('attribution')}>— ${esc(s.attribution)}</p>` : ''}
         ${chrome}</section>`;
     case 'stat':
       return `<section class="slide">
-        ${s.title ? `<div class="kicker">${esc(s.title)}</div>` : ''}
-        <div class="stat-big">${esc(s.stat || '')}</div>
-        ${s.statLabel ? `<p class="muted" style="font-size:30px;margin-top:28px;max-width:800px;line-height:1.4">${multi(s.statLabel)}</p>` : ''}
+        ${s.title ? `<div class="kicker"${ed('title')}>${esc(s.title)}</div>` : ''}
+        <div class="stat-big"${ed('stat')}>${esc(s.stat || '')}</div>
+        ${s.statLabel ? `<p class="muted" style="font-size:30px;margin-top:28px;max-width:800px;line-height:1.4"${ed('statLabel')}>${multi(s.statLabel)}</p>` : ''}
         ${chrome}</section>`;
+    case 'chart': {
+      const chart = renderChartSvg(s, spec.palette);
+      // No usable numbers → render as a normal text slide instead of an empty frame.
+      if (!chart) {
+        return `<section class="slide">
+          ${s.title ? `<h2 style="font-size:46px;max-width:1040px"${ed('title')}>${esc(s.title)}</h2>` : ''}
+          <div class="rule"></div>
+          ${s.body ? `<p class="muted" style="font-size:24px;margin-bottom:24px;max-width:1000px;line-height:1.5"${ed('body')}>${multi(s.body)}</p>` : ''}
+          ${(s.bullets || []).length ? `<ul>${bullets}</ul>` : ''}
+          ${chrome}</section>`;
+      }
+      return `<section class="slide">
+        ${s.title ? `<h2 style="font-size:44px;max-width:1040px"${ed('title')}>${esc(s.title)}</h2>` : ''}
+        <div class="rule"></div>
+        ${chart}
+        ${s.body ? `<p class="muted" style="font-size:21px;margin-top:24px;max-width:1000px;line-height:1.5"${ed('body')}>${multi(s.body)}</p>` : ''}
+        ${chrome}</section>`;
+    }
+    case 'agenda': {
+      const items = (s.bullets || []).filter(Boolean);
+      if (!items.length) return renderSlideHtml({ ...s, layout: 'bullets' }, spec, i, total, editable);
+      return `<section class="slide">
+        <div class="kicker">${esc(s.subtitle || 'Agenda')}</div>
+        <h2 style="font-size:52px;max-width:1040px"${ed('title')}>${esc(s.title || 'Agenda')}</h2>
+        <div class="rule"></div>
+        <div class="agenda">${items.map((b, bi) => `<div class="it"><span class="n">${String(bi + 1).padStart(2, '0')}</span><span class="t"${ed('bullet.' + bi)}>${esc(b)}</span></div>`).join('')}</div>
+        ${chrome}</section>`;
+    }
+    case 'comparison': {
+      const cc = (s.columns || []).filter((c) => c && (c.heading || (c.bullets && c.bullets.length))).slice(0, 2);
+      if (cc.length < 2) return renderSlideHtml({ ...s, layout: 'two-column' }, spec, i, total, editable);
+      const col = (c: { heading: string; bullets: string[] }) =>
+        `<div class="col"><h3>${esc(c.heading)}</h3><ul>${(c.bullets || []).map((b) => `<li>${esc(b)}</li>`).join('')}</ul></div>`;
+      return `<section class="slide">
+        ${s.title ? `<h2 style="font-size:44px;max-width:1000px"${ed('title')}>${esc(s.title)}</h2>` : ''}
+        <div class="rule"></div>
+        <div class="cols" style="position:relative">${col(cc[0])}${col(cc[1])}<span class="vs">VS</span></div>
+        ${chrome}</section>`;
+    }
+    case 'cards':
+    case 'process': {
+      const cards = (s.cards || []).filter((c) => c && (c.heading || c.body)).slice(0, 6);
+      if (!cards.length) return renderSlideHtml({ ...s, layout: 'bullets' }, spec, i, total, editable);
+      const isProc = s.layout === 'process';
+      const gridCls = cards.length <= 2 ? 'grid2' : 'grid3';
+      const cardHtml = cards.map((c, ci) =>
+        `<div class="card">${isProc ? `<span class="cn">${ci + 1}</span>` : ''}<h3>${esc(c.heading || '')}</h3>${c.body ? `<p>${esc(c.body)}</p>` : ''}</div>`
+      ).join('');
+      return `<section class="slide">
+        ${s.title ? `<h2 style="font-size:44px;max-width:1040px"${ed('title')}>${esc(s.title)}</h2>` : ''}
+        <div class="rule"></div>
+        <div class="${isProc ? 'steps' : gridCls}">${cardHtml}</div>
+        ${chrome}</section>`;
+    }
+    case 'timeline': {
+      const rows = (s.timeline || []).filter((t) => t && (t.label || t.text)).slice(0, 7);
+      if (!rows.length) return renderSlideHtml({ ...s, layout: 'bullets' }, spec, i, total, editable);
+      return `<section class="slide">
+        ${s.title ? `<h2 style="font-size:44px;max-width:1040px"${ed('title')}>${esc(s.title)}</h2>` : ''}
+        <div class="rule"></div>
+        <div class="tl">${rows.map((t) => `<div class="row"><div class="lab">${esc(t.label || '')}</div><div class="txt">${esc(t.text || '')}</div></div>`).join('')}</div>
+        ${chrome}</section>`;
+    }
+    case 'pricing': {
+      const plans = (s.plans || []).filter((p2) => p2 && p2.name).slice(0, 4);
+      if (!plans.length) return renderSlideHtml({ ...s, layout: 'two-column' }, spec, i, total, editable);
+      return `<section class="slide">
+        ${s.title ? `<h2 style="font-size:44px;max-width:1040px"${ed('title')}>${esc(s.title)}</h2>` : ''}
+        <div class="rule"></div>
+        <div class="plans">${plans.map((pl) => `<div class="plan${pl.highlight ? ' hl' : ''}"><div class="pn">${esc(pl.name)}</div>${pl.price ? `<div class="pp">${esc(pl.price)}</div>` : ''}<ul>${(pl.bullets || []).map((b) => `<li>${esc(b)}</li>`).join('')}</ul></div>`).join('')}</div>
+        ${chrome}</section>`;
+    }
     case 'two-column': {
       const validCols = (s.columns || []).filter((c) => c && (c.heading || (c.bullets && c.bullets.length)));
       // No usable column data → don't render empty column boxes; fall back to a normal content slide.
       if (validCols.length === 0) {
         return `<section class="slide">
-          ${s.title ? `<h2 style="font-size:46px;max-width:1040px">${esc(s.title)}</h2>` : ''}
+          ${s.title ? `<h2 style="font-size:46px;max-width:1040px"${ed('title')}>${esc(s.title)}</h2>` : ''}
           <div class="rule"></div>
-          ${s.body ? `<p class="muted" style="font-size:24px;margin-bottom:24px;max-width:1000px;line-height:1.5">${multi(s.body)}</p>` : ''}
-          ${(s.bullets || []).length ? `<ul>${(s.bullets || []).map((b) => `<li>${esc(b)}</li>`).join('')}</ul>` : ''}
+          ${s.body ? `<p class="muted" style="font-size:24px;margin-bottom:24px;max-width:1000px;line-height:1.5"${ed('body')}>${multi(s.body)}</p>` : ''}
+          ${(s.bullets || []).length ? `<ul>${bullets}</ul>` : ''}
           ${chrome}</section>`;
       }
       const cols = validCols.map((c) =>
         `<div class="col"><h3>${esc(c.heading)}</h3><ul>${(c.bullets || []).map((b) => `<li>${esc(b)}</li>`).join('')}</ul></div>`
       ).join('');
       return `<section class="slide">
-        ${s.title ? `<h2 style="font-size:44px;max-width:1000px">${esc(s.title)}</h2>` : ''}
+        ${s.title ? `<h2 style="font-size:44px;max-width:1000px"${ed('title')}>${esc(s.title)}</h2>` : ''}
         <div class="rule"></div>
         <div class="cols">${cols}</div>${chrome}</section>`;
     }
@@ -454,23 +627,23 @@ function renderSlideHtml(s: DeckSlide, spec: DeckSpec, i: number, total: number)
       // No image (Basic mode / generation skipped) → render a bold TEXT slide, never an empty box.
       if (!s.imageData) {
         return `<section class="slide" style="background:${spec.palette.surface}">${bgImage(spec.palette.surface)}
-          <div class="kicker">${esc(s.subtitle || 'Highlight')}</div>
-          <h1 style="font-size:64px;max-width:1040px">${esc(s.title || spec.title)}</h1>
+          <div class="kicker"${ed('subtitle')}>${esc(s.subtitle || 'Highlight')}</div>
+          <h1 style="font-size:64px;max-width:1040px"${ed('title')}>${esc(s.title || spec.title)}</h1>
           <div class="rule"></div>
-          ${s.body ? `<p class="muted" style="font-size:25px;max-width:900px;line-height:1.5">${multi(s.body)}</p>` : ''}
+          ${s.body ? `<p class="muted" style="font-size:25px;max-width:900px;line-height:1.5"${ed('body')}>${multi(s.body)}</p>` : ''}
           ${chrome}</section>`;
       }
       return `<section class="slide" style="padding:0">
         <div class="imgwrap" style="border-radius:0;position:absolute;inset:0;z-index:0">${img}</div>
-        ${s.title ? `<div style="position:absolute;left:0;bottom:0;width:100%;padding:64px 104px 84px;background:linear-gradient(transparent,rgba(0,0,0,.82));z-index:1"><h2 style="color:#fff;font-size:46px;max-width:920px">${esc(s.title)}</h2></div>` : ''}
+        ${s.title ? `<div style="position:absolute;left:0;bottom:0;width:100%;padding:64px 104px 84px;background:linear-gradient(transparent,rgba(0,0,0,.82));z-index:1"><h2 style="color:#fff;font-size:46px;max-width:920px"${ed('title')}>${esc(s.title)}</h2></div>` : ''}
         <div class="prog" style="width:${pct}%;z-index:2"></div></section>`;
     case 'closing':
       return `<section class="slide" style="background:${spec.palette.surface}">${bgImage(spec.palette.surface)}
         <div class="kicker">Get started</div>
-        <h1 style="font-size:78px;max-width:${s.imageData ? '760px' : '1000px'}">${esc(s.title || 'Thank you')}</h1>
+        <h1 style="font-size:78px;max-width:${s.imageData ? '760px' : '1000px'}"${ed('title')}>${esc(s.title || 'Thank you')}</h1>
         <div class="rule"></div>
-        ${s.body ? `<p class="muted" style="font-size:26px;max-width:${s.imageData ? '640px' : '840px'};line-height:1.5;margin-bottom:14px">${multi(s.body)}</p>` : ''}
-        ${s.subtitle ? `<div class="pill">${esc(s.subtitle)}</div>` : ''}
+        ${s.body ? `<p class="muted" style="font-size:26px;max-width:${s.imageData ? '640px' : '840px'};line-height:1.5;margin-bottom:14px"${ed('body')}>${multi(s.body)}</p>` : ''}
+        ${s.subtitle ? `<div class="pill"${ed('subtitle')}>${esc(s.subtitle)}</div>` : ''}
         ${chrome}</section>`;
     case 'bullets':
     default:
@@ -478,7 +651,7 @@ function renderSlideHtml(s: DeckSlide, spec: DeckSpec, i: number, total: number)
         return `<section class="slide">
           <div class="split">
             <div>
-              ${s.title ? `<h2 style="font-size:40px;max-width:520px">${esc(s.title)}</h2>` : ''}
+              ${s.title ? `<h2 style="font-size:40px;max-width:520px"${ed('title')}>${esc(s.title)}</h2>` : ''}
               <div class="rule"></div>
               <ul>${bullets}</ul>
             </div>
@@ -486,9 +659,9 @@ function renderSlideHtml(s: DeckSlide, spec: DeckSpec, i: number, total: number)
           </div>${chrome}</section>`;
       }
       return `<section class="slide">
-        ${s.title ? `<h2 style="font-size:46px;max-width:1040px">${esc(s.title)}</h2>` : ''}
+        ${s.title ? `<h2 style="font-size:46px;max-width:1040px"${ed('title')}>${esc(s.title)}</h2>` : ''}
         <div class="rule"></div>
-        ${s.body ? `<p class="muted" style="font-size:24px;margin-bottom:30px;max-width:1000px;line-height:1.5">${multi(s.body)}</p>` : ''}
+        ${s.body ? `<p class="muted" style="font-size:24px;margin-bottom:30px;max-width:1000px;line-height:1.5"${ed('body')}>${multi(s.body)}</p>` : ''}
         <ul>${bullets}</ul>${chrome}</section>`;
   }
 }
@@ -518,6 +691,8 @@ export async function deckToPptxBlob(spec: DeckSpec): Promise<Blob> {
     slide.background = { color: hx(isSurface ? p.surface : p.bg) };
     // brand bar
     slide.addShape('rect', { x: 0, y: 0, w: 0.14, h: H, fill: { color: hx(p.accent) } });
+    // brand logo (top-right corner) if the user supplied one
+    if (spec.logo) { try { slide.addImage({ data: spec.logo, x: W - 1.9, y: 0.3, w: 1.5, h: 0.62, sizing: { type: 'contain', w: 1.5, h: 0.62 } }); } catch { /* skip a bad logo */ } }
     if (s.notes) slide.addNotes(s.notes);
 
     const titleOpt = { fontFace: headFont, color: hx(p.text), bold: true } as any;

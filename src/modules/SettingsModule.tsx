@@ -67,7 +67,8 @@ export default function SettingsModule() {
   const [settings, setSettings] = useState<NvSettings>(loadSettings);
   const [appVersion, setAppVersion]   = useState<string>('');
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('idle');
-  const [updateInfo, setUpdateInfo] = useState<{ version?: string; body?: string }>({});
+  const [updateInfo, setUpdateInfo] = useState<{ version?: string; body?: string; current?: string; propagating?: boolean }>({});
+  const [updateErr, setUpdateErr] = useState('');
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>('checking');
   const [voicePct, setVoicePct]       = useState(0);
   const [voiceStep, setVoiceStep]     = useState('');
@@ -102,12 +103,14 @@ export default function SettingsModule() {
   async function checkUpdate() {
     setUpdateStatus('checking');
     setUpdateInfo({});
+    setUpdateErr('');
     try {
-      const res = await invoke<{ available: boolean; version?: string; body?: string }>('check_for_update');
+      const res = await invoke<{ available: boolean; version?: string; body?: string; current?: string; propagating?: boolean }>('check_for_update');
       if (res.available) {
         setUpdateStatus('available');
-        setUpdateInfo({ version: res.version, body: res.body });
+        setUpdateInfo({ version: res.version, body: res.body, current: res.current, propagating: res.propagating });
       } else {
+        setUpdateInfo({ current: res.current });
         setUpdateStatus('latest');
       }
     } catch (e) {
@@ -118,10 +121,15 @@ export default function SettingsModule() {
 
   async function installUpdate() {
     setUpdateStatus('installing');
+    setUpdateErr('');
     try {
       await invoke('install_update');
-    } catch {
-      setUpdateStatus('error');
+      // install_update restarts the app on success, so reaching here means it returned without
+      // installing (e.g. the release is still propagating) — surface that instead of hanging.
+      setUpdateStatus('available');
+    } catch (e) {
+      setUpdateErr(e instanceof Error ? e.message : String(e));
+      setUpdateStatus('available');
     }
   }
 
@@ -309,12 +317,18 @@ export default function SettingsModule() {
           <div className="pt-3 border-t border-nv-border/60">
             {updateStatus === 'available' && (
               <div className="mb-3 p-3 rounded-lg bg-accent/10 border border-accent/30">
-                <p className="text-[11px] text-accent font-medium">Update available — v{updateInfo.version}</p>
+                <p className="text-[11px] text-accent font-medium">Update available — v{updateInfo.version}{updateInfo.current ? <span className="text-nv-muted font-normal"> (you're on v{updateInfo.current})</span> : null}</p>
                 {updateInfo.body && <p className="text-[10px] text-nv-muted mt-1 leading-relaxed">{updateInfo.body}</p>}
+                {updateInfo.propagating && !updateErr && (
+                  <p className="text-[10px] text-nv-muted mt-1 leading-relaxed">Just published — if Install says it's not ready yet, give it a minute and try again.</p>
+                )}
+                {updateErr && (
+                  <p className="text-[10px] text-nv-red mt-1.5 leading-relaxed">{updateErr}</p>
+                )}
               </div>
             )}
             {updateStatus === 'latest' && (
-              <p className="text-[11px] text-nv-green mb-3">You're on the latest version.</p>
+              <p className="text-[11px] text-nv-green mb-3">You're on the latest version{updateInfo.current ? ` (v${updateInfo.current})` : ''}.</p>
             )}
             {updateStatus === 'error' && (
               <p className="text-[11px] text-nv-red mb-3">Could not check for updates. Check your connection.</p>

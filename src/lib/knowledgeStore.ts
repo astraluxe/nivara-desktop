@@ -6,7 +6,11 @@
 // SAME store. Agents save results here and recall them later instead of
 // re-fetching → fewer tokens, and nothing is forgotten between turns.
 
-export type BrainNodeKind = 'note' | 'file' | 'data' | 'list' | 'outreach' | 'contact' | 'source';
+export type BrainNodeKind = 'note' | 'file' | 'data' | 'list' | 'outreach' | 'contact' | 'source' | 'image';
+
+// Title of the single hub node that all saved pictures (logos, photos the user drops in
+// chat) connect to — the Brain's "Pictures folder".
+export const PICTURES_HUB = 'Pictures';
 
 export interface BrainNode {
   id: string;
@@ -210,5 +214,28 @@ export const brain = {
       return { n, score };
     });
     return scored.filter((s) => s.score > 0).sort((a, b) => b.score - a.score).map((s) => s.n);
+  },
+
+  // ── Pictures folder ─────────────────────────────────────────────────────────
+  /** Find (or create) the single "Pictures" hub node that all saved images link to. */
+  ensurePicturesHub(): BrainNode {
+    const d = read();
+    const hub = d.nodes.find((n) => n.kind === 'list' && normTitle(n.title) === normTitle(PICTURES_HUB));
+    if (hub) return hub;
+    return this.addNode({ title: PICTURES_HUB, kind: 'list', body: 'Your saved pictures — logos and images you can drop into presentations and notes.' });
+  },
+
+  /** Save a picture as an image node (its bytes live on disk at filePath) and link it into
+   *  the Pictures folder. Never overwrites a same-named picture — keeps "name (2)" etc. */
+  addPicture(p: { name: string; filePath: string; body?: string }): BrainNode {
+    const hub = this.ensurePicturesHub();
+    const node = this.addUniqueNode({ title: p.name, kind: 'image', filePath: p.filePath, body: p.body ?? '' });
+    this.link(hub.id, node.id, 'picture');
+    return node;
+  },
+
+  /** All saved pictures (image nodes), newest first. */
+  listPictures(): BrainNode[] {
+    return read().nodes.filter((n) => n.kind === 'image').sort((a, b) => b.createdAt - a.createdAt);
   },
 };
