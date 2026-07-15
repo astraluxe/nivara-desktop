@@ -1171,6 +1171,35 @@ function mixHex(a: string, b: string, t: number): string {
   const pb = (b || '#000000').replace('#', '').match(/.{2}/g)?.map((x) => parseInt(x, 16)) ?? [0, 0, 0];
   return '#' + pa.map((v, i) => Math.max(0, Math.min(255, Math.round(v + ((pb[i] ?? 0) - v) * t))).toString(16).padStart(2, '0')).join('');
 }
+// Relative luminance (0 dark … 1 light) of a hex colour.
+function luminance(hex: string): number {
+  const m = (hex || '#000000').replace('#', '').match(/.{2}/g)?.map((x) => parseInt(x, 16) / 255) ?? [0, 0, 0];
+  const f = (c: number) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+  return 0.2126 * f(m[0] || 0) + 0.7152 * f(m[1] || 0) + 0.0722 * f(m[2] || 0);
+}
+// A clean, high-contrast LIGHT palette built around the user's chosen accent — a near-white
+// background gently tinted with the accent, near-black text, the accent for highlights. Gives a
+// professional, positive-feeling deck that reads well (the user asked for a light primary + dark
+// text that still matches the theme colour they picked).
+function lightPaletteFrom(accent: string): DeckPalette {
+  return {
+    bg:      mixHex(accent, '#ffffff', 0.95),
+    surface: mixHex(accent, '#ffffff', 0.88),
+    text:    mixHex(accent, '#0b0f14', 0.88),
+    muted:   mixHex(accent, '#5b6472', 0.55),
+    accent,
+  };
+}
+// Guarantee readable contrast between text and background no matter what palette we ended up with
+// (a model-picked palette or preset can be too low-contrast). Forces near-black/near-white text.
+function ensureReadable(p: DeckPalette): DeckPalette {
+  const bgL = luminance(p.bg), txL = luminance(p.text);
+  if (Math.abs(bgL - txL) < 0.45) {
+    const dark = bgL > 0.5;
+    return { ...p, text: dark ? '#111418' : '#f4f6f8', muted: dark ? '#5b6472' : '#aab3c0', surface: dark ? mixHex(p.bg, '#000000', 0.05) : mixHex(p.bg, '#ffffff', 0.08) };
+  }
+  return p;
+}
 // A slide's imageData renders as a BLACK box if it's not a real, non-trivial image. Accept only
 // a proper base64 image data URI with enough payload — anything else (empty, a stray URL, a
 // truncated/garbage string from the model) is rejected so the fallback fills the slot instead.
@@ -3362,7 +3391,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       const dateBlock = `\n\n## TODAY\nToday is ${_now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}. Use current facts and the current year.`;
       // Anti-sameness: models tend to reach for the same "dark" theme every time. Push Slade
       // to actually match the palette to the topic's industry/mood (Gamma-style variety).
-      const designDirective = `\n\n## PICK A PALETTE + TEMPLATE THAT FIT THIS TOPIC\nDo NOT default to the same dark theme every time. Choose the preset + accent colour that genuinely matches THIS deck's industry and mood (e.g. finance→corporate blue, wellness→soft/editorial, dev-tool→minimal, launch→bold, consumer/youth→vibrant, crypto/gaming→neon; you may also set a custom "palette"). You MAY add a "template" field to pick the visual treatment: "aurora" (glowing, techy), "gradient" (soft modern SaaS), "glass" (frosted, blurred clouds), "grid" (technical blueprint), "wave" (flowing colour sweep), "split" (bold diagonal block), "spotlight" (dramatic top beam), "editorial" (clean, thin rules, premium), "flat" (bold solid accent bar), or "mono" (minimal, big type). Pick the one that fits the mood. Vary the layouts too — mix section breaks, a stat slide, a quote, and two-column comparisons; never 10 identical bullet slides.`;
+      const designDirective = `\n\n## PICK A CLEAN, HIGH-CONTRAST PALETTE + TEMPLATE\nDefault to a LIGHT, professional look: a light/near-white background with DARK, easily-readable text and ONE accent colour for highlights (corporate blue, teal, indigo, emerald etc. by industry) — this reads best and feels positive. Only go dark for a topic that genuinely calls for it (gaming, luxury, crypto). Text MUST have strong contrast against the background — never light-grey text on white or dark-grey on black. You MAY add a "template" field: "editorial"/"flat"/"mono"/"grid" (clean, premium, great for business), or "aurora"/"gradient"/"glass"/"wave"/"split"/"spotlight" (more expressive). Keep decoration subtle so it never sits behind or over the words. Vary the layouts — mix a stat, a chart, a comparison, cards; never 10 identical bullet slides.`;
       // STRICT vs FLEXIBLE (the "Follow my outline & slide count exactly" checkbox):
       //  • strict  → follow the user's outline one-for-one and hit the exact slide count.
       //  • flexible (default) → treat the notes + files as REFERENCE and design the best deck,
@@ -3535,7 +3564,11 @@ The prompt must be production-ready — specific enough for a motion designer to
       // Apply the user's OPTIONAL colour/template choices from the setup card (before images so
       // the generated-abstract fallback uses the chosen accent). Both stay tweakable live after.
       if (cfg.template) spec.template = cfg.template;
-      if (cfg.accent) spec.palette = { ...spec.palette, accent: cfg.accent };
+      // When the user picks a colour, build a professional LIGHT palette around it (light bg, dark
+      // readable text, that colour as the accent) — the user asked for a lighter primary + dark
+      // text that still matches their chosen theme colour. Then always enforce readable contrast.
+      if (cfg.accent) spec.palette = lightPaletteFrom(cfg.accent);
+      spec.palette = ensureReadable(spec.palette);
 
       // The user's OWN pictures win over AI images: whatever they attached with the request,
       // plus any saved Brain picture they referenced by name (e.g. "use my logo"). A logo goes
@@ -3571,10 +3604,15 @@ The prompt must be production-ready — specific enough for a motion designer to
         // slides that should carry a visual (title, section breaks, image-full, closing, and
         // roughly every 4th content slide). This is why Advanced sometimes came back with no
         // images at all — the old guard skipped top-up as soon as a single prompt existed.
+        const lightDeck = luminance(spec.palette.bg) > 0.5;
         spec.slides.forEach((s, idx) => {
           const wants = ['title', 'section', 'image-full', 'closing'].includes(s.layout) || (s.layout === 'bullets' && idx % 3 === 1);
           if (wants && !s.imagePrompt) {
-            s.imagePrompt = `Professional editorial visual representing "${s.title || spec.title}". Modern, abstract, cinematic composition with ${spec.palette.accent} accents on a dark background. High quality, no text or words in the image.`;
+            // Build the prompt from the slide's ACTUAL content (title + its points) so the image
+            // relates to what the slide is about — not a generic abstract. Match the deck's mood.
+            const gist = [s.title, s.subtitle, ...(s.bullets || []).slice(0, 3), s.statLabel, s.body]
+              .filter(Boolean).join(' — ').replace(/\s+/g, ' ').slice(0, 220);
+            s.imagePrompt = `A professional, realistic editorial photograph or clean 3D illustration that literally represents this slide: "${gist || s.title || spec.title}". It should visually match the meaning of the content (e.g. teamwork, cost savings, security, automation, growth). Modern corporate style, ${lightDeck ? 'bright and airy on a light background' : 'cinematic on a dark background'} with subtle ${spec.palette.accent} tones. High quality, sharp, absolutely NO text, words, letters, numbers, logos or charts in the image.`;
           }
         });
         const need = slidesNeedingImages(spec);
@@ -3617,10 +3655,13 @@ The prompt must be production-ready — specific enough for a motion designer to
           // 2) FALLBACK — if AI generation gave nothing (no key / no access / rate limit),
           // fetch a real, license-free photo relevant to the slide so it STILL gets a visual.
           if (!got) {
-            const q = (slide.title || slide.quote || spec.title || 'abstract technology')
-              .replace(/[^a-zA-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim().split(' ').slice(0, 5).join(' ');
+            // Build a focused stock-photo query from the slide's concrete words (drop filler) so
+            // the photo relates to the content, plus a "business concept" qualifier for relevance.
+            const stop = /^(the|a|an|of|and|to|for|with|your|our|is|are|in|on|by|vs|part|scenario|slide|head|comparison)$/i;
+            const words = (slide.title || slide.quote || spec.title || '').replace(/[^a-zA-Z0-9 ]/g, ' ').split(/\s+/).filter((w) => w.length > 2 && !stop.test(w)).slice(0, 4);
+            const q = (words.join(' ') || 'business technology') + ' business concept';
             try {
-              const data = await invoke<string>('fetch_stock_image', { query: q || 'abstract technology' });
+              const data = await invoke<string>('fetch_stock_image', { query: q });
               if (validImageData(data)) got = data;
             } catch { /* fall through to the generated fallback */ }
           }

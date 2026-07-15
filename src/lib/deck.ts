@@ -298,6 +298,10 @@ export function renderDeckHtml(spec: DeckSpec, editable = false, editId = ''): s
     padding:96px 104px; overflow:hidden;
   }
   .slide.active { display:flex; }
+  /* Long words / URLs wrap instead of shooting off the edge; content sits ABOVE the decorations. */
+  h1,h2,h3,p,li,.kicker,.pill,.stat-big,.agenda .t,.tl .txt,.card h3,.card p,.plan { overflow-wrap:anywhere; word-break:break-word; }
+  /* auto-fit wrapper: the deck scales this down if the slide's content would overflow (built in JS) */
+  .fitwrap { position:relative; z-index:1; display:flex; flex-direction:column; width:100%; transform-origin:center center; }
   .slide::after { content:''; position:absolute; top:-280px; right:-220px; width:640px; height:640px; border-radius:50%;
     background:radial-gradient(circle, ${p.accent}2e 0%, transparent 68%); pointer-events:none; z-index:0; }
   .slide::before { content:''; position:absolute; bottom:-220px; left:-180px; width:520px; height:520px; border-radius:50%;
@@ -319,7 +323,7 @@ export function renderDeckHtml(spec: DeckSpec, editable = false, editId = ''): s
   .prog { position:absolute; left:0; bottom:0; height:4px; background:${p.accent}; }
   .stat-big { font-family:'${H}',sans-serif; font-weight:800; font-size:210px; line-height:.88; color:${p.accent}; letter-spacing:-.045em; position:relative; z-index:1; }
   .quote-mark { font-family:'${H}',sans-serif; font-size:210px; line-height:.5; color:${p.accent}; opacity:.2; margin-bottom:-46px; }
-  .wm { position:absolute; right:70px; bottom:-56px; font-family:'${H}',sans-serif; font-weight:800; font-size:360px; color:${p.accent}; opacity:.09; line-height:1; }
+  .wm { position:absolute; right:60px; bottom:-40px; font-family:'${H}',sans-serif; font-weight:800; font-size:240px; color:${p.accent}; opacity:.06; line-height:1; z-index:0; pointer-events:none; }
   .cols { display:grid; grid-template-columns:1fr 1fr; gap:34px; position:relative; z-index:1; }
   .col { background:${p.surface}; border:1px solid ${p.accent}26; border-radius:18px; padding:34px 36px; }
   .col h3 { font-size:23px; color:${p.accent}; margin-bottom:22px; font-weight:700; }
@@ -413,14 +417,44 @@ export function renderDeckHtml(spec: DeckSpec, editable = false, editId = ''): s
 <script>
   var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
   var cur = 0;
+  // Wrap each slide's flowing content into a .fitwrap so we can shrink it to fit if it would
+  // overflow (long bullet lists / big headings) — nothing should ever run off the slide edge.
+  function clsOf(c){ var n = c.className; return (n && n.baseVal !== undefined) ? n.baseVal : (n || ''); }
+  function wrapContent(){
+    slides.forEach(function(sl){
+      if (sl.querySelector(':scope > .fitwrap')) return;
+      var kids = [];
+      for (var i=0;i<sl.children.length;i++){
+        var c = sl.children[i];
+        if (/\\b(prog|foot|wm|nv-logo|fitwrap)\\b/.test(clsOf(c))) continue;
+        if (getComputedStyle(c).position === 'absolute') continue; // full-bleed overlays stay put
+        kids.push(c);
+      }
+      if (!kids.length) return;
+      var wrap = document.createElement('div'); wrap.className = 'fitwrap';
+      sl.insertBefore(wrap, kids[0]);
+      kids.forEach(function(k){ wrap.appendChild(k); });
+    });
+  }
+  function fitOne(sl){
+    if (!sl) return;
+    var wrap = sl.querySelector(':scope > .fitwrap');
+    if (!wrap) return;
+    wrap.style.transform = 'none';
+    var avail = 720 - 96 - 96 - 6;               // slide height minus top+bottom padding
+    var h = wrap.scrollHeight;
+    if (h > avail) wrap.style.transform = 'scale(' + Math.max(0.55, avail / h) + ')';
+  }
   function fit(){
     var s = Math.min(window.innerWidth/1280, window.innerHeight/720);
     slides.forEach(function(el){ el.style.transform = 'scale('+s+')'; });
+    fitOne(slides[cur]);
   }
   function show(n){
     cur = Math.max(0, Math.min(slides.length-1, n));
     slides.forEach(function(el,i){ el.classList.toggle('active', i===cur); });
     document.getElementById('count').textContent = (cur+1)+' / '+slides.length;
+    fitOne(slides[cur]);
   }
   // Are we embedded inside the app (an iframe), or opened standalone in a real browser?
   // When embedded, fullscreen + print are blocked by the iframe sandbox, so we ask the parent
@@ -448,6 +482,10 @@ export function renderDeckHtml(spec: DeckSpec, editable = false, editId = ''): s
     else if (e.key==='p'||e.key==='P'){ document.getElementById('pdf').click(); }
   });
   window.addEventListener('resize', fit);
+  wrapContent();
+  // Re-fit once fonts have loaded (text metrics change → overflow can appear after load).
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(function(){ fitOne(slides[cur]); });
+  setTimeout(function(){ fitOne(slides[cur]); }, 350);
   fit(); show(0);
 ${editable ? `
   // Post every text edit back to the parent app so the deck spec stays in sync (used for
