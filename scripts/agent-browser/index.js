@@ -784,6 +784,57 @@ async function main() {
     return;
   }
 
+  // ── connections [limit] ────────────────────────────────────────────────────
+  // Load the "My Network → Connections" page, scroll + click "Load more" until we have
+  // `limit` connections (bounded well under Rust's 30s cap), then return the RAW innerText
+  // — the exact on-screen list. The caller parses real names from this in code, so the model
+  // can NEVER rewrite/hallucinate them (the bug where 8 fake "Gupta" names got saved).
+  if (cmd === 'connections') {
+    var wantN = parseInt(argv[1], 10) || 50;
+    var cConn = await ensureChrome();
+    var cCtx  = cConn.context;
+    if (!cCtx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
+    var cPage = cCtx.pages().at(-1) || await cCtx.newPage();
+    var connUrl = 'https://www.linkedin.com/mynetwork/invite-connect/connections/';
+    try { await cPage.goto(connUrl, { waitUntil: 'domcontentloaded', timeout: 25000 }); } catch (_) {}
+    var cFinal = cPage.url();
+    if (isAuthWall(cFinal)) {
+      var ok = await pollForLoginCompletion(cPage, 30000);
+      if (!ok) { writeState({ url: cFinal }); process.stdout.write('[SIGN_IN_REQUIRED] Please sign in to LinkedIn in the ADRIS browser window that just opened, then say "continue".'); return; }
+    }
+    await showBanner(cPage, 'ADRIS is reading your LinkedIn connections — please don’t close this window.');
+    try { await cPage.waitForSelector('a[href*="/in/"]', { timeout: 8000 }); } catch (_) {}
+    var cDeadline = Date.now() + 22000; // stay under the 30s Rust process timeout
+    var cLast = 0, cStall = 0;
+    while (Date.now() < cDeadline) {
+      var cCount = await cPage.evaluate(function() { return document.querySelectorAll('a[href*="/in/"]').length; }).catch(function () { return 0; });
+      if (cCount >= wantN) break;
+      await cPage.evaluate(function() {
+        var m = document.querySelector('.scaffold-finite-scroll__content') || document.querySelector('.scaffold-layout__main') || document.querySelector('main') || document.body;
+        if (m) m.scrollTop = m.scrollHeight;
+        window.scrollTo(0, document.body.scrollHeight);
+      }).catch(function () {});
+      try {
+        await cPage.evaluate(function() {
+          var btn = document.querySelector('button.scaffold-finite-scroll__load-button');
+          if (!btn) { var bs = [].slice.call(document.querySelectorAll('button')); for (var i = 0; i < bs.length; i++) { if (/load more/i.test(bs[i].textContent || '')) { btn = bs[i]; break; } } }
+          if (btn) btn.click();
+        }).catch(function () {});
+      } catch (_) {}
+      await new Promise(function (r) { setTimeout(r, 1300); });
+      if (cCount <= cLast) { cStall++; if (cStall >= 3) break; } else cStall = 0;
+      cLast = cCount;
+    }
+    await hideBanner(cPage);
+    var connText = await cPage.evaluate(function() {
+      var main = document.querySelector('main') || document.body;
+      return (main.innerText || '').trim();
+    }).catch(function () { return ''; });
+    writeState({ url: cFinal });
+    process.stdout.write(connText || '[no-connections-text]');
+    return;
+  }
+
   // ── open <url> ────────────────────────────────────────────────────────────
   var rawUrl = argv.slice(1).join(' ').replace(/^"|"$/g, '').trim();
   var url    = rawUrl.startsWith('http') ? rawUrl : 'https://' + rawUrl;
