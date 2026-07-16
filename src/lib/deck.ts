@@ -402,7 +402,8 @@ export function renderDeckHtml(spec: DeckSpec, editable = false, editId = ''): s
   }
   /* ── template overrides (change the whole look, not just colours) ── */
   ${templateCss(spec.template || 'aurora', p)}
-  ${editable ? `[data-f]{outline:none;border-radius:5px;transition:box-shadow .12s} [data-f]:hover{box-shadow:0 0 0 2px ${p.accent}55} [data-f]:focus{box-shadow:0 0 0 2px ${p.accent};cursor:text;background:${p.accent}0d}` : ''}
+  ${editable ? `[data-f]{outline:none;border-radius:5px;transition:box-shadow .12s;min-width:24px} [data-f]:hover{box-shadow:0 0 0 2px ${p.accent}55} [data-f]:focus{box-shadow:0 0 0 2px ${p.accent};cursor:text;background:${p.accent}0d}
+  [data-f]:empty{min-height:1em;min-width:120px;display:inline-block} [data-ph]:empty::after{content:attr(data-ph);color:${p.muted};opacity:.5;pointer-events:none}` : ''}
 </style>
 </head>
 <body>
@@ -553,7 +554,14 @@ function renderSlideHtml(s: DeckSlide, spec: DeckSpec, i: number, total: number,
   // empty coloured rectangle — the split layout collapses to a clean single text column.
   const imgErr = `onerror="this.closest('.imgwrap')&amp;&amp;this.closest('.imgwrap').remove();this.closest('.split')&amp;&amp;this.closest('.split').style.setProperty('grid-template-columns','1fr')"`;
   const img = s.imageData ? `<img src="${s.imageData}" alt="" ${imgErr}/>` : '';
-  const bullets = (s.bullets || []).map((b, bi) => `<li${ed('bullet.' + bi)}>${esc(b)}</li>`).join('');
+  // In the FINAL deck, empty/placeholder bullets are dropped so "Add your point here" never shows.
+  // In EDIT mode they stay as empty, clickable <li> (with a faint "Type a point…" hint) so the user
+  // can fill or ignore them.
+  const bullets = (s.bullets || [])
+    .map((b, bi) => ({ b: b || '', bi }))
+    .filter(({ b }) => editable || b.trim())
+    .map(({ b, bi }) => `<li${ed('bullet.' + bi)}${editable && !b.trim() ? ' data-ph="Type a point…"' : ''}>${esc(b)}</li>`)
+    .join('');
   // Background image (with a directional gradient scrim so the left-side text stays readable).
   // Used on title/section/closing — layouts that don't have a dedicated image slot.
   const bgImage = (base: string) => s.imageData
@@ -726,7 +734,7 @@ function renderSlideHtml(s: DeckSlide, spec: DeckSpec, i: number, total: number,
         return `<section class="slide">
           <div class="split">
             <div>
-              ${s.title ? `<h2 style="font-size:40px;max-width:520px"${ed('title')}>${esc(s.title)}</h2>` : ''}
+              ${(editable || s.title) ? `<h2 style="font-size:40px;max-width:520px"${ed('title')}${editable && !s.title ? ' data-ph="Slide title…"' : ''}>${esc(s.title || '')}</h2>` : ''}
               <div class="rule"></div>
               <ul>${bullets}</ul>
             </div>
@@ -734,7 +742,7 @@ function renderSlideHtml(s: DeckSlide, spec: DeckSpec, i: number, total: number,
           </div>${chrome}</section>`;
       }
       return `<section class="slide">
-        ${s.title ? `<h2 style="font-size:46px;max-width:1040px"${ed('title')}>${esc(s.title)}</h2>` : ''}
+        ${(editable || s.title) ? `<h2 style="font-size:46px;max-width:1040px"${ed('title')}${editable && !s.title ? ' data-ph="Slide title…"' : ''}>${esc(s.title || '')}</h2>` : ''}
         <div class="rule"></div>
         ${s.body ? `<p class="muted" style="font-size:24px;margin-bottom:30px;max-width:1000px;line-height:1.5"${ed('body')}>${multi(s.body)}</p>` : ''}
         <ul>${bullets}</ul>${chrome}</section>`;

@@ -1395,6 +1395,7 @@ function DeckResultBubble({ html, spec: specProp }: { html: string; spec: DeckSp
   // the iframe / open the deck in the real browser to Save-as-PDF). Kept in a ref so the message
   // listener always calls the latest handler without re-subscribing.
   const actionsRef = useRef<{ pdf: () => void; present: () => void }>({ pdf: () => {}, present: () => {} });
+  const autoSaveRef = useRef<() => void>(() => {}); // set to scheduleAutoSave below; called on inline edits
   const applyEdits = useCallback((sp: DeckSpec): DeckSpec => {
     const keys = Object.keys(editsRef.current);
     if (!keys.length) return sp;
@@ -1417,6 +1418,7 @@ function DeckResultBubble({ html, spec: specProp }: { html: string; spec: DeckSp
       const fromThis = iframeRef.current && e.source === iframeRef.current.contentWindow;
       if (d.__deckEdit && d.id === editId && typeof d.s === 'number' && typeof d.f === 'string') {
         editsRef.current[`${d.s}|${d.f}`] = String(d.value ?? '');
+        autoSaveRef.current(); // live-save the text edit to Brain
       } else if (d.__deckPdf && fromThis) {
         actionsRef.current.pdf();
       } else if (d.__deckPresent && fromThis) {
@@ -1440,6 +1442,7 @@ function DeckResultBubble({ html, spec: specProp }: { html: string; spec: DeckSp
       const bg = role === 'bg' ? v : p.bg, text = role === 'text' ? v : p.text, accent = role === 'accent' ? v : p.accent;
       return { bg, text, accent, surface: mixHex(bg, text, 0.08), muted: mixHex(text, bg, 0.45) };
     });
+    scheduleAutoSave();
   }
   // Structural slide edit — first BAKE any pending inline text edits (so a half-typed change isn't
   // lost when indices shift), clear them, then apply the change and re-render.
@@ -1447,10 +1450,23 @@ function DeckResultBubble({ html, spec: specProp }: { html: string; spec: DeckSp
     const baked = applyEdits({ ...baseSpec, palette: pal });
     editsRef.current = {};
     setBaseSpec({ ...baked, slides: fn(baked.slides.slice()) });
+    scheduleAutoSave();
   }
   const deleteSlide = (i: number) => mutateSlides((s) => (s.length > 1 ? s.filter((_, j) => j !== i) : s));
   const moveSlide = (i: number, dir: -1 | 1) => mutateSlides((s) => { const j = i + dir; if (j < 0 || j >= s.length) return s; const c = s.slice(); [c[i], c[j]] = [c[j], c[i]]; return c; });
-  const addSlideAfter = (i: number) => mutateSlides((s) => { const c = s.slice(); c.splice(i + 1, 0, { layout: 'bullets', title: 'New slide', bullets: ['Add your point here'] }); return c; });
+  // A fresh, EMPTY slide of the chosen type — its fields render as clickable placeholders you type
+  // into (nothing ships as "Add your point here"; empty fields are dropped from the final deck).
+  const blankSlide = (layout: string): DeckSlide => {
+    switch (layout) {
+      case 'section': return { layout: 'section', title: '', subtitle: '' };
+      case 'stat':    return { layout: 'stat', title: '', stat: '', statLabel: '' };
+      case 'quote':   return { layout: 'quote', quote: '', attribution: '' };
+      case 'closing': return { layout: 'closing', title: '', subtitle: '', body: '' };
+      default:        return { layout: 'bullets', title: '', bullets: ['', '', ''] };
+    }
+  };
+  const addSlideAfter = (i: number, layout = 'bullets') => mutateSlides((s) => { const c = s.slice(); c.splice(i + 1, 0, blankSlide(layout)); return c; });
+  const [addAt, setAddAt] = useState<number | null>(null); // which row's "add" menu is open
 
   function slug() { return (spec.title || 'deck').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'deck'; }
   function downloadHtml() {
@@ -1489,18 +1505,31 @@ function DeckResultBubble({ html, spec: specProp }: { html: string; spec: DeckSp
   // Keep the ref pointing at the current handlers so the (stable) message listener can call them.
   actionsRef.current = { pdf: downloadPdf, present: presentDeck };
 
-  // Persist the (recoloured) deck to disk + the Brain, so the user's colour choice sticks.
-  async function saveChanges() {
-    setSaveState('saving');
+  // Persist the CURRENT (edited) deck to disk + the Brain — same-titled node is UPDATED in place
+  // (brain.addNode de-dupes by title), so an edit replaces the old version rather than piling up.
+  async function persist(silent: boolean) {
+    if (!silent) setSaveState('saving');
     try {
       const fs = finalSpec();
       const path = await invoke<string>('save_deck_files', { slug: slug(), html: finalHtml(), specJson: JSON.stringify(fs) });
       const { brain } = await import('../../lib/knowledgeStore');
       const node = brain.addNode({ title: fs.title || 'Presentation', kind: 'file', body: `Presentation · ${fs.slides.length} slides\n\n` + fs.slides.map((s, i) => `${i + 1}. ${s.title || s.layout}`).join('\n') });
       brain.updateNode(node.id, { filePath: path });
-      setSaveState('done'); setTimeout(() => setSaveState('idle'), 1800);
-    } catch { setSaveState('idle'); }
+      setLastDeck(fs); // keep the "last deck" (email-as-PDF) in sync with the edits too
+      if (!silent) { setSaveState('done'); setTimeout(() => setSaveState('idle'), 1800); }
+    } catch { if (!silent) setSaveState('idle'); }
   }
+  const saveChanges = () => persist(false);
+  // Live auto-save: any edit (colour, text, add/delete/reorder) is written back to the SAME Brain
+  // deck automatically after a short pause — so the user's changes are what's stored, not the
+  // original (the exact request: "changes should be saved live rather than saving the old ppt").
+  const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleAutoSave = useCallback(() => {
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    autoSaveTimer.current = setTimeout(() => { void persist(true); }, 1600);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  autoSaveRef.current = scheduleAutoSave; // let the inline-edit message handler trigger auto-save
+  useEffect(() => () => { if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current); }, []);
 
   const imgCount = liveSpec.slides.filter((s) => s.imageData).length;
   // Swatches are inlined (NOT a nested component) on purpose: a component defined inside
@@ -1538,17 +1567,28 @@ function DeckResultBubble({ html, spec: specProp }: { html: string; spec: DeckSp
       {showSlides && (
         <div className="px-3 py-2 border-b border-nv-border/40 bg-nv-bg max-h-52 overflow-y-auto">
           {liveSpec.slides.map((s, i) => (
-            <div key={i} className="flex items-center gap-2 py-1">
-              <span className="text-[9px] font-mono text-nv-faint w-5 shrink-0">{String(i + 1).padStart(2, '0')}</span>
-              <span className="text-[8px] font-mono px-1.5 py-0.5 rounded bg-nv-surface2 text-nv-faint shrink-0">{s.layout}</span>
-              <span className="text-[10px] text-nv-text truncate flex-1">{s.title || s.quote || s.stat || '(untitled)'}</span>
-              <button onClick={() => moveSlide(i, -1)} disabled={i === 0} title="Move up" className="text-[11px] px-1 text-nv-faint hover:text-nv-text disabled:opacity-30">↑</button>
-              <button onClick={() => moveSlide(i, 1)} disabled={i === liveSpec.slides.length - 1} title="Move down" className="text-[11px] px-1 text-nv-faint hover:text-nv-text disabled:opacity-30">↓</button>
-              <button onClick={() => addSlideAfter(i)} title="Add a slide after this" className="text-[11px] px-1 text-nv-faint hover:text-accent">＋</button>
-              <button onClick={() => deleteSlide(i)} disabled={liveSpec.slides.length <= 1} title="Delete this slide" className="text-[11px] px-1 text-nv-faint hover:text-nv-red disabled:opacity-30">🗑</button>
+            <div key={i}>
+              <div className="flex items-center gap-2 py-1">
+                <span className="text-[9px] font-mono text-nv-faint w-5 shrink-0">{String(i + 1).padStart(2, '0')}</span>
+                <span className="text-[8px] font-mono px-1.5 py-0.5 rounded bg-nv-surface2 text-nv-faint shrink-0">{s.layout}</span>
+                <span className="text-[10px] text-nv-text truncate flex-1">{s.title || s.quote || s.stat || '(untitled)'}</span>
+                <button onClick={() => moveSlide(i, -1)} disabled={i === 0} title="Move up" className="text-[11px] px-1 text-nv-faint hover:text-nv-text disabled:opacity-30">↑</button>
+                <button onClick={() => moveSlide(i, 1)} disabled={i === liveSpec.slides.length - 1} title="Move down" className="text-[11px] px-1 text-nv-faint hover:text-nv-text disabled:opacity-30">↓</button>
+                <button onClick={() => setAddAt(addAt === i ? null : i)} title="Add a slide after this" className={`text-[11px] px-1 hover:text-accent ${addAt === i ? 'text-accent' : 'text-nv-faint'}`}>＋</button>
+                <button onClick={() => deleteSlide(i)} disabled={liveSpec.slides.length <= 1} title="Delete this slide" className="text-[11px] px-1 text-nv-faint hover:text-nv-red disabled:opacity-30">🗑</button>
+              </div>
+              {addAt === i && (
+                <div className="flex flex-wrap gap-1 pl-7 pb-1.5">
+                  <span className="text-[9px] text-nv-faint mr-1 self-center">add:</span>
+                  {(['bullets', 'section', 'stat', 'quote', 'closing'] as const).map((lay) => (
+                    <button key={lay} onClick={() => { addSlideAfter(i, lay); setAddAt(null); }}
+                      className="text-[9px] px-1.5 py-0.5 rounded border border-nv-border text-nv-muted hover:text-accent hover:border-accent/40 transition-fast">{lay}</button>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
-          <p className="text-[9px] text-nv-faint font-mono mt-1">Click any text on a slide to edit it · add / delete / reorder here · download when done</p>
+          <p className="text-[9px] text-nv-faint font-mono mt-1">Click any text on a slide to edit it — empty boxes show a hint and let you type · add / delete / reorder here · your edits save to Brain automatically</p>
         </div>
       )}
       {/* Colour editor — 3 colours max; the deck restyles live as you change them */}
@@ -3427,7 +3467,8 @@ The prompt must be production-ready — specific enough for a motion designer to
       const fileDirective = /\[Reference document:/.test(requestCtx)
         ? `\n\n## USE THE ATTACHED DOCUMENT — MANDATORY\nOne or more reference documents are included below. You MUST read them fully and build the deck FROM them — every fact, number, product/module name, price and comparison comes from the document(s). Do NOT invent figures or ignore the document. If the request also gives a slide plan, follow the plan's structure and fill each slide with the real content from the document.`
         : '';
-      const sys = AGENT_BY_KEY['deck_maker'].systemPrompt + modeDirective + planDirective + countDirective + fileDirective + contentDirective + coverageDirective + chartDirective + layoutsDirective + slideRoleDirective + densityDirective + designDirective + audienceDirective + dateBlock;
+      const flowDirective = `\n\n## ORDER THE SLIDES AS ONE LOGICAL STORY\nSequence the slides so the argument FLOWS and anyone can follow it — each slide builds on the one before. A strong sales-deck arc: (1) Title/cover → (2) optional Agenda → (3) the Problem/pain → (4) the Solution overview → (5–8) how it works / the modules or features, ONE idea per slide → (9–11) proof: stats, ROI, comparison, pricing → (12) trust / privacy → (final) Call to Action, and a Sources slide if the brief lists references. Do NOT jump between unrelated topics or scatter the numbers across random slides. Group related points together; put the payoff (ROI/pricing) after the value has been shown, and the CTA last.`;
+      const sys = AGENT_BY_KEY['deck_maker'].systemPrompt + modeDirective + planDirective + countDirective + fileDirective + contentDirective + coverageDirective + chartDirective + layoutsDirective + slideRoleDirective + flowDirective + densityDirective + designDirective + audienceDirective + dateBlock;
       setStatus(`Slade is structuring your ${target} slides…`);
       // Generate + parse. Retry once if the JSON is broken OR fewer than the requested slides
       // came back. We keep whatever parsed as a fallback so a short retry never loses the first.
@@ -3517,8 +3558,8 @@ The prompt must be production-ready — specific enough for a motion designer to
         const reviewPlanRule = strict
           ? `- The brief is an explicit slide plan — keep that order and one slide per item; keep about ${spec.slides.length} slides.`
           : `- Treat the brief as reference: improve structure and wording freely, merge/split/reorder for the strongest narrative, and keep about ${spec.slides.length} slides (a couple more or fewer is fine if it's better).`;
-        const reviewSys = AGENT_BY_KEY['deck_maker'].systemPrompt + coverageDirective + chartDirective + layoutsDirective + densityDirective
-          + `\n\n## YOU ARE THE REVIEWER — RETURN A CORRECTED DECK\nBelow is a DRAFT deck (JSON) built for the brief. Review it critically as a senior presentation designer and return the FULL corrected deck as ONE compact, strictly-valid JSON object with the same structure. Fix ALL of these:\n- REMOVE duplicate or near-duplicate slides; a slide must NEVER repeat.\n- Every slide must carry REAL, specific content taken from the brief/source (actual numbers, names, comparisons) — rewrite or fill any thin, vague, or near-empty slide. A lone title is NOT acceptable.\n- ONLY slide 1 is layout "title"; everything else is a CONTENT layout, VARIED (bullets/cards/comparison/chart/stat/two-column/pricing/timeline/quote), matched to what the slide says.\n${reviewPlanRule}\n- No imagePrompt/imageData fields. Return ONLY the JSON object.`;
+        const reviewSys = AGENT_BY_KEY['deck_maker'].systemPrompt + coverageDirective + chartDirective + layoutsDirective + densityDirective + flowDirective
+          + `\n\n## YOU ARE THE REVIEWER — RETURN A CORRECTED DECK\nBelow is a DRAFT deck (JSON) built for the brief. Review it critically as a senior presentation designer and return the FULL corrected deck as ONE compact, strictly-valid JSON object with the same structure. Fix ALL of these:\n- RE-ORDER the slides into ONE logical, flowing story (title → problem → solution → details → proof/ROI → CTA); fix any jumbled sequence so each slide follows naturally from the last.\n- Slide 1 MUST be a "title" cover slide.\n- REMOVE duplicate or near-duplicate slides; a slide must NEVER repeat.\n- Every slide must carry REAL, specific content taken from the brief/source (actual numbers, names, comparisons) — rewrite or fill any thin, vague, or near-empty slide. A lone title is NOT acceptable.\n- Only slide 1 is layout "title"; everything else is a CONTENT layout, VARIED (bullets/cards/comparison/chart/stat/two-column/pricing/timeline/quote), matched to what the slide says.\n${reviewPlanRule}\n- No imagePrompt/imageData fields. Return ONLY the JSON object.`;
         // Use the ASK/plan (not the whole attached document) as the review brief — the draft
         // already contains the extracted content, and a smaller prompt is far less likely to hit
         // a transient AI error. Include a trimmed slice of the doc for fact-checking only.
@@ -3536,13 +3577,18 @@ The prompt must be production-ready — specific enough for a motion designer to
       } catch { /* keep the draft if review fails */ }
       if (stopRef.current) { setMessages((prev) => prev.filter((m) => !m.streaming)); setBusy(false); return; }
 
-      // Guarantee a proper TITLE slide first (the user reported the title layout wasn't used). If
-      // the opening slide is a plain content slide with no bullets/columns/stat, promote it to the
-      // title layout so the deck opens on a real cover.
+      // GUARANTEE a title slide first — every deck must open on a cover (the user reported decks
+      // starting with no title). If slide 1 is thin, promote it; if it's a real content slide,
+      // PREPEND a proper title slide built from the deck's title/subtitle.
       const s0 = spec.slides[0];
-      if (s0 && s0.layout !== 'title') {
-        const thin = !(s0.bullets?.length) && !(s0.columns?.length) && !s0.stat && !s0.chartData && !s0.quote;
-        if (thin || s0.layout === 'section') { s0.layout = 'title'; if (!s0.subtitle && spec.subtitle) s0.subtitle = spec.subtitle; }
+      if (!s0 || s0.layout !== 'title') {
+        const thin = s0 && !(s0.bullets?.length) && !(s0.columns?.length) && !s0.stat && !s0.chartData && !s0.quote && !(s0.cards?.length) && !(s0.plans?.length);
+        if (s0 && (thin || s0.layout === 'section')) {
+          s0.layout = 'title'; if (!s0.subtitle && spec.subtitle) s0.subtitle = spec.subtitle;
+        } else {
+          spec.slides.unshift({ layout: 'title', title: spec.title || 'Presentation', subtitle: spec.subtitle });
+          if (spec.slides.length > maxSlides) spec.slides = spec.slides.slice(0, maxSlides);
+        }
       }
       // Only slide 1 may be a title. Any OTHER slide that came back as 'title' is really a content
       // slide the model mislabelled — demote it to a content layout so the deck isn't a stack of
@@ -3677,7 +3723,16 @@ The prompt must be production-ready — specific enough for a motion designer to
           const s = spec.slides[idx];
           if (!validImageData(s.imageData)) delete (s as { imageData?: string }).imageData;
         }
-        if (need.length > 0 && fails >= need.length) imgNote = `Your deck is ready — I couldn't fetch images this time, so those slides are text-only. You can attach your own pictures and say e.g. "put this on slide 3", or regenerate to try images again.`;
+        // Be honest about images: if NONE came through, tell the user why (rather than the status
+        // saying "adding image 8 of 8" and then nothing appearing). If some did, note the partial.
+        const gotCount = need.filter((idx) => validImageData(spec.slides[idx].imageData)).length;
+        if (need.length > 0 && gotCount === 0) {
+          imgNote = imgKey
+            ? `Your deck is ready (text-only). I couldn't generate images this time — the image service didn't return any. You can attach your own pictures and say "put this on slide 3", or regenerate to try again.`
+            : `Your deck is ready (text-only). Advanced images need your Google/Gemini key connected (Connect Apps → Gemini) or a plan that includes them — without it I can't generate images. You can still attach your own pictures ("put this on slide 3").`;
+        } else if (need.length > 0 && gotCount < need.length) {
+          imgNote = `Your deck is ready. ${gotCount} of ${need.length} image slots got a picture; the rest are text-only — attach your own or regenerate to fill them.`;
+        }
       }
 
       setStatus('Rendering deck…');
