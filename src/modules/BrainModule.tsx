@@ -375,6 +375,7 @@ function ImageViewer({ path }: { path: string }) {
 function DeckPreview({ path }: { path: string }) {
   const [html, setHtml] = useState<string | null>(null);
   const [err, setErr] = useState(false);
+  const [pdfMsg, setPdfMsg] = useState('');
   const iframeRef = useRef<HTMLIFrameElement>(null);
   useEffect(() => {
     let cancelled = false;
@@ -394,6 +395,16 @@ function DeckPreview({ path }: { path: string }) {
         const el = iframeRef.current as (HTMLIFrameElement & { webkitRequestFullscreen?: () => void });
         try { (el.requestFullscreen || el.webkitRequestFullscreen)?.call(el); el.focus?.(); } catch { /* ignore */ }
       } else if (d?.__deckPdf && html) {
+        setPdfMsg('Making PDF…');
+        const slug = ((html.match(/<title>([^<]*)<\/title>/i)?.[1] || 'deck').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)) || 'deck';
+        // 1) Native Chrome print engine — perfect, all design, nothing missing.
+        try {
+          const saved = await invoke<string>('deck_export_pdf', { html, slug });
+          try { await invoke('open_path', { path: saved }); } catch { /* still saved */ }
+          setPdfMsg('✓ Saved to Downloads'); setTimeout(() => setPdfMsg(''), 3500);
+          return;
+        } catch { /* fall through */ }
+        // 2) html2canvas capture.
         try {
           const { extractDeckSpec, deckToPdfBlob } = await import('../lib/deck');
           const spec = extractDeckSpec(html);
@@ -402,13 +413,15 @@ function DeckPreview({ path }: { path: string }) {
             const buf = new Uint8Array(await blob.arrayBuffer());
             let bin = ''; const CH = 0x8000;
             for (let i = 0; i < buf.length; i += CH) bin += String.fromCharCode.apply(null, Array.from(buf.subarray(i, i + CH)));
-            const slug = (spec.title || 'deck').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'deck';
             const saved = await invoke<string>('save_to_downloads', { filename: `${slug}.pdf`, dataBase64: btoa(bin) });
             try { await invoke('open_path', { path: saved }); } catch { /* still saved */ }
+            setPdfMsg('✓ Saved to Downloads'); setTimeout(() => setPdfMsg(''), 3500);
             return;
           }
         } catch { /* fall back to opening the html to print */ }
-        try { await invoke('open_path', { path }); } catch { /* ignore */ }
+        // 3) Last resort: open the saved .html so the user can Save-as-PDF.
+        try { await invoke('open_path', { path }); setPdfMsg('Opened in your browser — use Save as PDF.'); setTimeout(() => setPdfMsg(''), 4000); }
+        catch { setPdfMsg('Could not export the PDF.'); setTimeout(() => setPdfMsg(''), 3500); }
       }
     }
     window.addEventListener('message', onMsg);
@@ -425,6 +438,12 @@ function DeckPreview({ path }: { path: string }) {
         <iframe ref={iframeRef} srcDoc={html} sandbox="allow-scripts allow-same-origin" title="Deck preview"
           allow="fullscreen"
           className="rounded-lg" style={{ width: '100%', maxWidth: 820, aspectRatio: '16 / 9', border: '1px solid var(--nv-border)', background: '#000' }} />
+      )}
+      {pdfMsg && (
+        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg text-[12px] font-medium shadow-lg"
+          style={{ background: 'var(--nv-surface, #1a1a1a)', color: 'var(--nv-text, #fff)', border: '1px solid var(--nv-border)' }}>
+          {pdfMsg}
+        </div>
       )}
     </div>
   );

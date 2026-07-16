@@ -411,6 +411,47 @@ fn save_to_downloads(app: tauri::AppHandle, filename: String, data_base64: Strin
     Ok(dest.to_string_lossy().to_string())
 }
 
+// Export a deck as a PERFECT PDF using real Chrome's own print engine. We write the deck HTML to a
+// temp file, have the agent-browser render it and run CDP Page.printToPDF (native — all gradients/
+// shadows/fonts, sharp vector text, one slide per page), then drop the finished PDF into Downloads
+// and return its path. This is the reliable path that html2canvas (blur / dropped text) couldn't be.
+#[tauri::command]
+async fn deck_export_pdf(app: tauri::AppHandle, html: String, slug: String) -> Result<String, String> {
+    use tauri::Manager;
+    let tmp = app.path().app_cache_dir()
+        .or_else(|_| app.path().app_data_dir())
+        .map_err(|e| e.to_string())?.join("deck-export");
+    std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+    let html_path = tmp.join(format!("deck-{}.html", ts));
+    std::fs::write(&html_path, html.as_bytes()).map_err(|e| format!("Couldn't stage the deck: {}", e))?;
+    let html_str = html_path.to_string_lossy().to_string();
+
+    // Render + native-print via the persistent Chrome (30s-bounded inside run_browser_persistent).
+    let out = run_browser_persistent(app.clone(), format!("printpdf \"{}\"", html_str)).await
+        .unwrap_or_else(|e| e);
+    let pdf_src = out.lines().find_map(|l| l.trim().strip_prefix("PDF_OK:").map(|s| s.trim().to_string()));
+    let _ = std::fs::remove_file(&html_path);
+    let pdf_src = match pdf_src {
+        Some(p) if std::path::Path::new(&p).exists() => p,
+        _ => return Err(format!("native-pdf-failed: {}", out.chars().take(160).collect::<String>())),
+    };
+
+    // Move the finished PDF into the user's Downloads with a clean, unique name.
+    let dir = app.path().download_dir()
+        .or_else(|_| app.path().home_dir().map(|h| h.join("Downloads")))
+        .map_err(|e| format!("Couldn't find your Downloads folder: {}", e))?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stem: String = slug.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
+    let stem = { let s = stem.trim_matches('-').to_string(); if s.is_empty() { "deck".to_string() } else { s } };
+    let mut dest = dir.join(format!("{}.pdf", stem));
+    let mut n = 2;
+    while dest.exists() { dest = dir.join(format!("{} ({}).pdf", stem, n)); n += 1; if n > 200 { break; } }
+    std::fs::copy(&pdf_src, &dest).map_err(|e| format!("Couldn't save the PDF to Downloads: {}", e))?;
+    let _ = std::fs::remove_file(&pdf_src);
+    Ok(dest.to_string_lossy().to_string())
+}
+
 // ─── Brain: extract readable text from any file ──────────────────────────────
 // The Brain lets users drop in real documents. Plain-text files (csv, txt, md,
 // json, code…) read directly; office/binary formats (PDF, PPTX, DOCX, XLSX/XLS/
@@ -6386,6 +6427,7 @@ pub fn run() {
             brain_store_file,
             brain_store_image,
             save_to_downloads,
+            deck_export_pdf,
             file_size,
             models_import,
             studio_save_file,

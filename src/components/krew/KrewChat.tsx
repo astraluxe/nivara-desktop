@@ -1545,26 +1545,34 @@ function DeckResultBubble({ html, spec: specProp }: { html: string; spec: DeckSp
     const a    = document.createElement('a'); a.href = url; a.download = `${slug()}.html`; a.click();
     URL.revokeObjectURL(url); setSavedHtml(true); setTimeout(() => setSavedHtml(false), 1800);
   }
-  // PDF: generate a real vector PDF directly from the deck (jsPDF) and download it — no browser
-  // print dialog needed. Falls back to the open-in-browser print flow if generation fails.
+  // PDF: PRIMARY path is a native Chrome print (deck_export_pdf) — pixel-perfect, all design, sharp
+  // text, nothing missing — saved straight to Downloads and opened. Falls back to the html2canvas
+  // capture, then to open-in-browser print, so the user ALWAYS ends up with a PDF.
   async function downloadPdf() {
     setPdfState('opening');
+    // 1) Native Chrome print engine — the reliable, perfect one.
+    try {
+      const path = await invoke<string>('deck_export_pdf', { html: finalHtml(), slug: slug() });
+      try { await invoke('open_path', { path }); } catch { /* still saved */ }
+      setPdfState('saved'); setTimeout(() => setPdfState('idle'), 4000);
+      return;
+    } catch { /* fall through */ }
+    // 2) html2canvas capture → Downloads.
     try {
       const { deckToPdfBlob } = await import('../../lib/deck');
       const blob = await deckToPdfBlob(finalSpec());
-      // Write the real PDF into the user's Downloads folder (WebView2 ignores <a download>),
-      // then open it so they see it landed.
       const path = await saveBlobToDownloads(blob, `${slug()}.pdf`);
       try { await invoke('open_path', { path }); } catch { /* still saved */ }
-      setPdfState('saved'); setTimeout(() => setPdfState('idle'), 3200);
-    } catch {
-      try {
-        const printHtml = finalHtml().replace('</body>', '<script>window.addEventListener("load",function(){setTimeout(function(){try{window.print()}catch(e){}},600)})<\/script></body>');
-        const path = await invoke<string>('save_deck_files', { slug: slug() + '-pdf', html: printHtml, specJson: JSON.stringify(finalSpec()) });
-        await invoke('open_path', { path });
-        setPdfState('idle');
-      } catch { setPdfState('err'); setTimeout(() => setPdfState('idle'), 2500); }
-    }
+      setPdfState('saved'); setTimeout(() => setPdfState('idle'), 4000);
+      return;
+    } catch { /* fall through */ }
+    // 3) Last resort: open in the browser to Save-as-PDF.
+    try {
+      const printHtml = finalHtml().replace('</body>', '<script>window.addEventListener("load",function(){setTimeout(function(){try{window.print()}catch(e){}},600)})<\/script></body>');
+      const path = await invoke<string>('save_deck_files', { slug: slug() + '-pdf', html: printHtml, specJson: JSON.stringify(finalSpec()) });
+      await invoke('open_path', { path });
+      setPdfState('idle');
+    } catch { setPdfState('err'); setTimeout(() => setPdfState('idle'), 3000); }
   }
   // Present: fullscreen the iframe element itself (the deck fills the screen; its own keyboard
   // nav then drives the slides). Requested from the deck's inner ⛶ button via postMessage.
@@ -1712,21 +1720,27 @@ function SavedDeckBubble({ html }: { html: string }) {
 
   const doPdf = useCallback(async () => {
     setPdfState('opening');
-    // Preferred: rebuild the DeckSpec from the saved HTML and render a real vector PDF straight
-    // into the user's Downloads folder (same as a freshly-made deck).
+    const slug = ((html.match(/<title>([^<]*)<\/title>/i)?.[1] || 'deck').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)) || 'deck';
+    // 1) Native Chrome print engine — perfect, all design, sharp, nothing missing.
+    try {
+      const path = await invoke<string>('deck_export_pdf', { html, slug });
+      try { await invoke('open_path', { path }); } catch { /* still saved */ }
+      setPdfState('saved'); setTimeout(() => setPdfState('idle'), 4000);
+      return;
+    } catch { /* fall through */ }
+    // 2) html2canvas capture from the rebuilt spec.
     try {
       const { extractDeckSpec, deckToPdfBlob } = await import('../../lib/deck');
       const spec = extractDeckSpec(html);
       if (spec && spec.slides?.length) {
         const blob = await deckToPdfBlob(spec);
-        const slug = (spec.title || 'deck').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'deck';
         const path = await saveBlobToDownloads(blob, `${slug}.pdf`);
         try { await invoke('open_path', { path }); } catch { /* still saved */ }
-        setPdfState('saved'); setTimeout(() => setPdfState('idle'), 3200);
+        setPdfState('saved'); setTimeout(() => setPdfState('idle'), 4000);
         return;
       }
     } catch { /* fall through to the print flow */ }
-    // Fallback: open the deck in the browser with auto-print so the user can Save-as-PDF.
+    // 3) Last resort: open the deck in the browser with auto-print so the user can Save-as-PDF.
     try {
       const printHtml = html.replace(
         '</body>',
@@ -1735,7 +1749,7 @@ function SavedDeckBubble({ html }: { html: string }) {
       const path = await invoke<string>('save_deck_files', { slug: 'deck-pdf', html: printHtml, specJson: '{}' });
       await invoke('open_path', { path });
       setPdfState('idle');
-    } catch { setPdfState('err'); setTimeout(() => setPdfState('idle'), 2500); }
+    } catch { setPdfState('err'); setTimeout(() => setPdfState('idle'), 3000); }
   }, [html]);
   const doPresent = useCallback(() => {
     const el = iframeRef.current as (HTMLIFrameElement & { webkitRequestFullscreen?: () => void }) | null;

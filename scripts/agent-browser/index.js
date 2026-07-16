@@ -835,6 +835,54 @@ async function main() {
     return;
   }
 
+  // ── printpdf <htmlFilePath> ─────────────────────────────────────────────────
+  // Render a deck's HTML file in real Chrome and export it with Chromium's OWN print engine
+  // (CDP Page.printToPDF). This is a NATIVE render — every gradient/shadow/mesh background, the
+  // exact fonts, and sharp vector text — one slide per page, nothing missing. Writes the PDF next
+  // to the html file and prints "PDF_OK:<path>". This is the reliable path html2canvas couldn't be.
+  if (cmd === 'printpdf') {
+    var htmlPath = argv.slice(1).join(' ').replace(/^"|"$/g, '').trim();
+    var fileUrl = 'file:///' + htmlPath.replace(/\\/g, '/').replace(/^\/+/, '');
+    var pconn = await ensureChrome();
+    var pctx  = pconn.context;
+    if (!pctx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
+    var ppage = pctx.pages().at(-1) || await pctx.newPage();
+    try { await ppage.goto(fileUrl, { waitUntil: 'networkidle', timeout: 25000 }); }
+    catch (_) { try { await ppage.goto(fileUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }); } catch (e2) {} }
+    try { await ppage.evaluate(function(){ return document.fonts && document.fonts.ready; }); } catch (_) {}
+    // Switch to print media so ALL slides lay out (each 1280x720, one per page), then run the same
+    // content auto-fit the on-screen deck uses — on EVERY slide — so long slides shrink to fit
+    // instead of clipping. (On screen only the active slide is fitted.)
+    try { await ppage.emulateMedia({ media: 'print' }); } catch (_) {}
+    try {
+      await ppage.evaluate(function() {
+        var avail = 720 - 96 - 96 - 6;
+        var sls = document.querySelectorAll('.slide');
+        for (var i = 0; i < sls.length; i++) {
+          var wrap = sls[i].querySelector(':scope > .fitwrap');
+          if (!wrap) continue;
+          wrap.style.transform = 'none';
+          var h = wrap.scrollHeight;
+          if (h > avail) wrap.style.transform = 'scale(' + Math.max(0.55, avail / h) + ')';
+        }
+      });
+    } catch (_) {}
+    await new Promise(function (r) { setTimeout(r, 350); });
+    var pdfPath = htmlPath.replace(/\.html?$/i, '') + '.pdf';
+    try {
+      var session = await pctx.newCDPSession(ppage);
+      var res = await session.send('Page.printToPDF', {
+        printBackground: true, preferCSSPageSize: true,
+        marginTop: 0, marginBottom: 0, marginLeft: 0, marginRight: 0,
+      });
+      fs.writeFileSync(pdfPath, Buffer.from(res.data, 'base64'));
+      process.stdout.write('PDF_OK:' + pdfPath);
+    } catch (e) {
+      process.stdout.write('[pdf-failed] ' + (e && e.message ? e.message : String(e)));
+    }
+    return;
+  }
+
   // ── message <profileUrl> ───────────────────────────────────────────────────
   // Open a LinkedIn profile and CLICK its "Message" button so the chat box pops open,
   // ready for the user to paste + send. This ONLY opens the box — it never types or sends
