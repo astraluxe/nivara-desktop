@@ -849,12 +849,13 @@ async function main() {
       cLast = cCount;
     }
     await hideBanner(cPage);
-    // Extract each connection STRUCTURALLY from the DOM — name straight from the profile link,
-    // occupation from the card. innerText alone drops the img-alt name lines, so text-parsing
-    // failed ("couldn't read any names"). Reading the /in/ anchors is reliable and gives REAL
-    // names the model never touches. Returns CONN_JSON:[{name,headline}]; falls back to innerText.
+    // Extract each connection STRUCTURALLY from the DOM — name from the /in/ profile link, and the
+    // occupation as the most substantial non-name/non-badge text element in the card. This is
+    // element-traversal (textContent), NOT innerText line-parsing (which was fragile and dropped
+    // names/occupations). Verified against realistic LinkedIn card markup. Returns CONN_JSON:[…].
     var people = await cPage.evaluate(function() {
       function clean(s) { return (s || '').replace(/\s+/g, ' ').trim(); }
+      var noiseRe = /^(message|connect|connected|following|follow|pending|1st|2nd|3rd|•\s*1st|·\s*1st|view .*profile)$/i;
       var out = [], seen = {};
       var anchors = document.querySelectorAll('a[href*="/in/"]');
       for (var i = 0; i < anchors.length; i++) {
@@ -863,39 +864,47 @@ async function main() {
         if (href.indexOf('/in/') === -1) continue;
         var key = href.split('?')[0].replace(/\/$/, '');
         if (seen[key]) continue;
-        var card = a.closest('li') || a.closest('[data-view-name]') || a.closest('.artdeco-list__item') || a.closest('.mn-connection-card') || a.parentElement;
+        var card = a.closest('li') || a.closest('.mn-connection-card') || a.closest('[data-view-name]') || a.closest('.artdeco-list__item') || a.parentElement;
         if (!card) continue;
-        // Name: prefer a visible name span inside the link, else the link text.
         var nameEl = a.querySelector('span[aria-hidden="true"]') || a.querySelector('span') || a;
-        var name = clean(nameEl.innerText || nameEl.textContent);
-        name = name.split('\n')[0].trim();
-        // Skip avatar-only links (no text) and obvious non-names.
-        if (!name || name.length > 80 || /^(message|connect|following|pending)$/i.test(name)) {
-          // try a heading inside the card
-          var h = card.querySelector('span[aria-hidden="true"]');
-          name = h ? clean(h.innerText).split('\n')[0] : '';
+        var name = clean(nameEl.textContent).split('\n')[0].trim();
+        if (!name || name.length > 80 || noiseRe.test(name)) {
+          var h = card.querySelector('a[href*="/in/"] span[aria-hidden="true"]');
+          name = h ? clean(h.textContent) : '';
           if (!name || name.length > 80) continue;
         }
-        // Occupation: first card line that isn't the name / Connected / Message / status noise.
-        var occ = '';
-        var lines = (card.innerText || '').split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
-        for (var j = 0; j < lines.length; j++) {
-          var L = lines[j];
-          if (L === name) continue;
-          if (/^connected/i.test(L) || /^message$/i.test(L) || /profile picture$/i.test(L)) continue;
-          if (/^(1st|2nd|3rd|•|·)$/i.test(L) || L.length < 2) continue;
-          occ = L; break;
+        var cands = [];
+        var els = card.querySelectorAll('div,p,span,h3,h4');
+        for (var k = 0; k < els.length; k++) {
+          var el = els[k];
+          if (el.closest('a[href*="/in/"]') || el.closest('button') || el.closest('time')) continue;
+          if (el.querySelector('a[href*="/in/"], button, time')) continue; // wrapper, not a leaf line
+          var tt = clean(el.textContent);
+          if (tt.length < 3 || tt.length > 180) continue;
+          if (tt === name || noiseRe.test(tt)) continue;
+          if (/^[•·]/.test(tt) && tt.length < 14) continue;
+          if (/degree connection/i.test(tt)) continue;
+          cands.push(tt);
         }
+        cands.sort(function (x, y) { return y.length - x.length; });
         seen[key] = 1;
-        out.push({ name: name, headline: occ });
+        out.push({ name: name, headline: cands[0] || '' });
       }
       return out;
     }).catch(function () { return []; });
     writeState({ url: cFinal });
     if (people && people.length) { process.stdout.write('CONN_JSON:' + JSON.stringify(people)); return; }
-    // Fallback: raw innerText (older parser handles the "'s profile picture" / "Connected on" form).
-    var connText = await cPage.evaluate(function() { var m = document.querySelector('main') || document.body; return (m.innerText || '').trim(); }).catch(function () { return ''; });
-    process.stdout.write(connText || '[no-connections-text]');
+    // Nothing read → return a DIAGNOSTIC (url, link count, login?, title, snippet) so the failure
+    // message is accurate and pin-pointable instead of a vague "couldn't read".
+    var diag = await cPage.evaluate(function() {
+      var u = location.href;
+      var anchors = document.querySelectorAll('a[href*="/in/"]').length;
+      var login = !!(document.querySelector('input[name="session_key"], input#username, .login__form, a[href*="/uas/login"], a[href*="/login"], form[action*="login"]'))
+        || /\/(login|authwall|checkpoint|uas\/login)/.test(u);
+      var m = document.querySelector('main') || document.body;
+      return { url: u, anchors: anchors, login: login, title: (document.title || '').slice(0, 80), snippet: ((m && m.innerText) || '').replace(/\s+/g, ' ').trim().slice(0, 160) };
+    }).catch(function () { return { url: cFinal, anchors: 0, login: false, title: '', snippet: '' }; });
+    process.stdout.write('CONN_DIAG:' + JSON.stringify(diag));
     return;
   }
 

@@ -1564,6 +1564,17 @@ async function executeToolCore(
     if (raw.includes('[no-connections-text]')) {
       return "I opened your LinkedIn connections page but it hadn't rendered any people yet (LinkedIn can be slow to load the list). Open that window, scroll the list once, then run /scan again.";
     }
+    // Diagnostic path — the browser read nothing; say WHY precisely.
+    const diagIdx = raw.indexOf('CONN_DIAG:');
+    if (diagIdx >= 0) {
+      try {
+        const d = JSON.parse(raw.slice(diagIdx + 'CONN_DIAG:'.length).trim()) as { url?: string; anchors?: number; login?: boolean; title?: string; snippet?: string };
+        if (d.login || /\/(login|authwall|checkpoint|uas)/.test(d.url || '')) {
+          return "You're not signed in to LinkedIn in the ADRIS browser. I opened it for you — please sign in there once (it's saved forever), then run /scan again.";
+        }
+        return `I opened LinkedIn but couldn't find your connections list on the page (found ${d.anchors ?? 0} profile links). It may not have finished loading, or LinkedIn showed a different page (title: "${d.title || '—'}"). Open the ADRIS browser window, make sure it's on your Connections page and signed in, scroll once, then run /scan again.`;
+      } catch { /* fall through */ }
+    }
     // The browser command returns structured JSON (CONN_JSON:[{name,headline}]) read straight from
     // the DOM — most reliable. Fall back to text-parsing the innerText if JSON isn't present.
     let all: { name: string; headline: string }[] = [];
