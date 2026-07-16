@@ -895,29 +895,46 @@ export async function deckToPdfBlob(spec: DeckSpec): Promise<Blob> {
     const html2canvas = h2cMod.default || h2cMod;
     const jsMod: any = await import('jspdf');
     const JsPDF = jsMod.jsPDF || jsMod.default || jsMod;
-    const avail = SH - 96 - 96 - 6;
+    const win = iframe.contentWindow as Window;
+    // 2× capture (2560×1440 per slide) — sharp full-screen/projected, and a sane file size to
+    // share with clients. PNG below keeps text/gradient edges crisp (no JPEG blur).
+    const capScale = 2;
     let doc: any = null;
 
     for (let i = 0; i < slides.length; i++) {
-      // Show ONLY this slide, at native 1280×720 (undo the viewport-fit scale), then re-run the
-      // content auto-fit so long slides shrink-to-fit exactly like on screen.
+      // Show ONLY this slide. Capture it at its NATURAL height with NO transform — html2canvas
+      // mis-renders (and drops the text of) elements inside a CSS `transform: scale()` subtree,
+      // which is why the box/card text vanished. So instead of the on-screen scale trick, we let
+      // the slide grow to fit its content, photograph it whole, then scale the IMAGE to fit the
+      // 16:9 page below (uniform shrink, centred — identical visual result, but crisp and complete).
       slides.forEach((el) => { el.classList.remove('active'); el.style.display = 'none'; el.style.transform = 'none'; });
       const sl = slides[i];
       sl.classList.add('active');
       sl.style.display = 'flex';
       sl.style.transform = 'none';
       sl.style.left = '0'; sl.style.top = '0';
+      sl.style.height = 'auto';
+      sl.style.minHeight = SH + 'px';
+      sl.style.overflow = 'visible';
       const wrap = sl.querySelector(':scope > .fitwrap') as HTMLElement | null;
-      if (wrap) { wrap.style.transform = 'none'; const h = wrap.scrollHeight; if (h > avail) wrap.style.transform = `scale(${Math.max(0.55, avail / h)})`; }
-      await sleep(60);
+      if (wrap) wrap.style.transform = 'none';
+      await sleep(70);
+      const contentH = Math.max(SH, Math.ceil(sl.scrollHeight));
+      const bgCol = win.getComputedStyle(sl).backgroundColor || '#ffffff';
       const canvas = await html2canvas(sl, {
-        width: SW, height: SH, windowWidth: SW, windowHeight: SH,
-        scale: 2, backgroundColor: null, useCORS: true, logging: false, imageTimeout: 4000,
+        width: SW, height: contentH, windowWidth: SW, windowHeight: contentH,
+        scale: capScale, backgroundColor: bgCol, useCORS: true, logging: false, imageTimeout: 5000,
       });
-      const img = canvas.toDataURL('image/jpeg', 0.92);
+      const img = canvas.toDataURL('image/png'); // lossless — no JPEG blur on text/gradients
       if (!doc) doc = new JsPDF({ orientation: 'landscape', unit: 'px', format: [SW, SH], compress: true });
       else doc.addPage([SW, SH], 'landscape');
-      doc.addImage(img, 'JPEG', 0, 0, SW, SH, undefined, 'FAST');
+      // Fill the page with the slide's own background, then draw the slide image scaled to fit
+      // (letterboxed only when the content is taller than 16:9 — matching the on-screen fit).
+      try { const m = bgCol.match(/\d+/g); if (m && m.length >= 3) { doc.setFillColor(+m[0], +m[1], +m[2]); doc.rect(0, 0, SW, SH, 'F'); } } catch { /* skip */ }
+      const fit = Math.min(SW / SW, SH / contentH); // 1 when it fits, <1 when taller than 16:9
+      const drawW = SW * fit, drawH = contentH * fit;
+      const dx = (SW - drawW) / 2, dy = (SH - drawH) / 2;
+      doc.addImage(img, 'PNG', dx, dy, drawW, drawH, undefined, 'SLOW'); // SLOW = better downscale quality
     }
     return doc.output('blob') as Blob;
   } catch {
