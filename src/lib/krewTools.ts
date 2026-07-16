@@ -1561,8 +1561,20 @@ async function executeToolCore(
     if (raw.startsWith('[browser-') || raw.includes('[agent-browser not installed') || raw.includes('[no-connections-text]')) {
       return "Couldn't read the connections page just now (the browser may still be loading or not signed in). Ask the user to make sure they're logged into LinkedIn in the ADRIS browser, then try again.";
     }
-    const all = parseLinkedInConnections(raw);
-    if (all.length === 0) return "Opened the connections page but couldn't read any names from it (LinkedIn may have changed the layout, or it hadn't finished loading). Ask the user to scroll it once in the ADRIS browser and try again.";
+    // The browser command returns structured JSON (CONN_JSON:[{name,headline}]) read straight from
+    // the DOM — most reliable. Fall back to text-parsing the innerText if JSON isn't present.
+    let all: { name: string; headline: string }[] = [];
+    const jsonIdx = raw.indexOf('CONN_JSON:');
+    if (jsonIdx >= 0) {
+      try {
+        const arr = JSON.parse(raw.slice(jsonIdx + 'CONN_JSON:'.length).trim());
+        if (Array.isArray(arr)) all = arr
+          .map((p: { name?: unknown; headline?: unknown }) => ({ name: String(p?.name || '').trim(), headline: String(p?.headline || '').trim() }))
+          .filter((p) => p.name && !/^(message|connect|following|pending|load more)$/i.test(p.name));
+      } catch { /* fall through to text parse */ }
+    }
+    if (all.length === 0) all = parseLinkedInConnections(raw);
+    if (all.length === 0) return "Opened the connections page but couldn't read any names from it (LinkedIn may not have finished loading, or you're not signed in). Make sure you're logged into LinkedIn in the ADRIS browser, then try /scan again.";
     const fresh = all.filter((c) => !existingNames.has(c.name.toLowerCase())).slice(0, limit);
     if (fresh.length === 0) return `Scanned your connections — all ${all.length} people I could load are already saved in the "${LIST_TITLE}" Brain note. To go further, say "scan the next 50" (I'll keep scrolling past the ones already saved) or "scan all".`;
     const rows = fresh.map((c) => `| ${c.name} | ${c.headline || '—'} |`).join('\n');

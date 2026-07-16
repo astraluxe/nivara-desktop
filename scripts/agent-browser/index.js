@@ -826,11 +826,52 @@ async function main() {
       cLast = cCount;
     }
     await hideBanner(cPage);
-    var connText = await cPage.evaluate(function() {
-      var main = document.querySelector('main') || document.body;
-      return (main.innerText || '').trim();
-    }).catch(function () { return ''; });
+    // Extract each connection STRUCTURALLY from the DOM — name straight from the profile link,
+    // occupation from the card. innerText alone drops the img-alt name lines, so text-parsing
+    // failed ("couldn't read any names"). Reading the /in/ anchors is reliable and gives REAL
+    // names the model never touches. Returns CONN_JSON:[{name,headline}]; falls back to innerText.
+    var people = await cPage.evaluate(function() {
+      function clean(s) { return (s || '').replace(/\s+/g, ' ').trim(); }
+      var out = [], seen = {};
+      var anchors = document.querySelectorAll('a[href*="/in/"]');
+      for (var i = 0; i < anchors.length; i++) {
+        var a = anchors[i];
+        var href = (a.getAttribute('href') || '');
+        if (href.indexOf('/in/') === -1) continue;
+        var key = href.split('?')[0].replace(/\/$/, '');
+        if (seen[key]) continue;
+        var card = a.closest('li') || a.closest('[data-view-name]') || a.closest('.artdeco-list__item') || a.closest('.mn-connection-card') || a.parentElement;
+        if (!card) continue;
+        // Name: prefer a visible name span inside the link, else the link text.
+        var nameEl = a.querySelector('span[aria-hidden="true"]') || a.querySelector('span') || a;
+        var name = clean(nameEl.innerText || nameEl.textContent);
+        name = name.split('\n')[0].trim();
+        // Skip avatar-only links (no text) and obvious non-names.
+        if (!name || name.length > 80 || /^(message|connect|following|pending)$/i.test(name)) {
+          // try a heading inside the card
+          var h = card.querySelector('span[aria-hidden="true"]');
+          name = h ? clean(h.innerText).split('\n')[0] : '';
+          if (!name || name.length > 80) continue;
+        }
+        // Occupation: first card line that isn't the name / Connected / Message / status noise.
+        var occ = '';
+        var lines = (card.innerText || '').split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
+        for (var j = 0; j < lines.length; j++) {
+          var L = lines[j];
+          if (L === name) continue;
+          if (/^connected/i.test(L) || /^message$/i.test(L) || /profile picture$/i.test(L)) continue;
+          if (/^(1st|2nd|3rd|•|·)$/i.test(L) || L.length < 2) continue;
+          occ = L; break;
+        }
+        seen[key] = 1;
+        out.push({ name: name, headline: occ });
+      }
+      return out;
+    }).catch(function () { return []; });
     writeState({ url: cFinal });
+    if (people && people.length) { process.stdout.write('CONN_JSON:' + JSON.stringify(people)); return; }
+    // Fallback: raw innerText (older parser handles the "'s profile picture" / "Connected on" form).
+    var connText = await cPage.evaluate(function() { var m = document.querySelector('main') || document.body; return (m.innerText || '').trim(); }).catch(function () { return ''; });
     process.stdout.write(connText || '[no-connections-text]');
     return;
   }
@@ -845,20 +886,16 @@ async function main() {
     var htmlPath = argv.slice(1).join(' ').replace(/^"|"$/g, '').trim();
     var fileUrl = 'file:///' + htmlPath.replace(/\\/g, '/').replace(/^\/+/, '');
     var pdfPath = htmlPath.replace(/\.html?$/i, '') + '.pdf';
-    var chromeExe = findChromeExe();
-    if (!chromeExe) { process.stdout.write('[pdf-failed] Chrome not found'); return; }
-    var hb = null;
-    try {
-      hb = await chromium.launch({ headless: true, executablePath: chromeExe, args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'] });
-      var hp = await hb.newPage({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 2 });
-      try { await hp.goto(fileUrl, { waitUntil: 'networkidle', timeout: 25000 }); }
-      catch (_) { try { await hp.goto(fileUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }); } catch (e2) {} }
-      try { await hp.evaluate(function(){ return document.fonts && document.fonts.ready; }); } catch (_) {}
-      // Print media lays out ALL slides (each 1280x720, one per page); then run the on-screen
-      // content auto-fit on EVERY slide so long slides shrink to fit instead of clipping.
-      try { await hp.emulateMedia({ media: 'print' }); } catch (_) {}
+    var pdfArgs = ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--hide-scrollbars'];
+    // Runs on any page: switch to print media so ALL slides lay out (each 1280x720, one per
+    // page), then run the on-screen content auto-fit on EVERY slide so long ones shrink to fit.
+    async function prep(pg) {
+      try { await pg.goto(fileUrl, { waitUntil: 'load', timeout: 20000 }); }
+      catch (_) { try { await pg.goto(fileUrl, { waitUntil: 'domcontentloaded', timeout: 12000 }); } catch (e2) {} }
+      try { await pg.evaluate(function(){ return document.fonts && document.fonts.ready; }); } catch (_) {}
+      try { await pg.emulateMedia({ media: 'print' }); } catch (_) {}
       try {
-        await hp.evaluate(function() {
+        await pg.evaluate(function() {
           var avail = 720 - 96 - 96 - 6;
           var sls = document.querySelectorAll('.slide');
           for (var i = 0; i < sls.length; i++) {
@@ -871,17 +908,41 @@ async function main() {
         });
       } catch (_) {}
       await new Promise(function (r) { setTimeout(r, 350); });
-      await hp.pdf({
-        path: pdfPath, printBackground: true, preferCSSPageSize: true,
-        width: '1280px', height: '720px', pageRanges: '',
-        margin: { top: '0', bottom: '0', left: '0', right: '0' },
-      });
-      process.stdout.write('PDF_OK:' + pdfPath);
-    } catch (e) {
-      process.stdout.write('[pdf-failed] ' + (e && e.message ? e.message : String(e)));
-    } finally {
-      if (hb) { try { await hb.close(); } catch (_) {} }
     }
+    var ok = function () { try { return fs.existsSync(pdfPath) && fs.statSync(pdfPath).size > 1200; } catch (_) { return false; } };
+    var lastErr = '';
+    // Strategy 1 & 2 & 3: a dedicated HEADLESS browser (invisible, no session), tried via the
+    // official Chrome channel, then a detected Chrome/Edge exe, then the Edge channel.
+    var exe = findChromeExe();
+    var launchTries = [{ headless: true, channel: 'chrome', args: pdfArgs }];
+    if (exe) launchTries.push({ headless: true, executablePath: exe, args: pdfArgs });
+    launchTries.push({ headless: true, channel: 'msedge', args: pdfArgs });
+    for (var t = 0; t < launchTries.length && !ok(); t++) {
+      var hb = null;
+      try {
+        hb = await chromium.launch(launchTries[t]);
+        var hp = await hb.newPage({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 2 });
+        await prep(hp);
+        await hp.pdf({ path: pdfPath, printBackground: true, preferCSSPageSize: true, margin: { top: '0', bottom: '0', left: '0', right: '0' } });
+      } catch (e) { lastErr = (e && e.message ? e.message : String(e)); }
+      finally { if (hb) { try { await hb.close(); } catch (_) {} } }
+    }
+    // Strategy 4 (last resort): CDP Page.printToPDF on the already-running persistent Chrome.
+    if (!ok()) {
+      try {
+        var pc = await ensureChrome();
+        var pctx = pc && pc.context;
+        if (pctx) {
+          var pp = pctx.pages().at(-1) || await pctx.newPage();
+          await prep(pp);
+          var sess = await pctx.newCDPSession(pp);
+          var r = await sess.send('Page.printToPDF', { printBackground: true, preferCSSPageSize: true, marginTop: 0, marginBottom: 0, marginLeft: 0, marginRight: 0 });
+          fs.writeFileSync(pdfPath, Buffer.from(r.data, 'base64'));
+        }
+      } catch (e) { lastErr = (e && e.message ? e.message : String(e)); }
+    }
+    if (ok()) process.stdout.write('PDF_OK:' + pdfPath);
+    else process.stdout.write('[pdf-failed] ' + (lastErr || 'no PDF produced'));
     return;
   }
 

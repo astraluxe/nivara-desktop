@@ -391,6 +391,9 @@ export function renderDeckHtml(spec: DeckSpec, editable = false, editId = ''): s
      shrinks and several pile onto one A4 page. */
   @page { size: 1280px 720px; margin: 0; }
   @media print {
+    /* Force backgrounds/gradients/shadows to PRINT (Chrome's "Background graphics" is off by
+       default → without this the browser-print fallback comes out as bare text on white). */
+    html, body, #stage, .slide, .slide * { -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; }
     html, body { margin:0; padding:0; background:#fff; height:auto; }
     #bar { display:none; }
     #stage { position:static; display:block; overflow:visible; height:auto; }
