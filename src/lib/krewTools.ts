@@ -498,6 +498,16 @@ export const RESEARCH_TOOLS: ToolDef[] = [
       pincode: { type: 'string', description: 'A 6-digit Indian PIN code, e.g. "560102".', required: true },
     },
   },
+  {
+    name: 'linkedin_outreach',
+    description: "Launch the human-in-the-loop LinkedIn outreach copilot for a list of prospects you've DRAFTED a personalised message for. LinkedIn forbids automated messaging (accounts that auto-DM get banned), so this opens a side panel that walks the user through each contact: it shows the message, a Copy button, opens the person's LinkedIn profile, and tracks who was messaged and who accepted the connection — the user just pastes and sends (2s each). Use this whenever the user wants to actually SEND LinkedIn messages/DMs to several people. Draft a genuinely personalised message per contact FIRST, then call this. Do NOT try to send LinkedIn messages with the browser tools.",
+    parameters: {
+      contacts: { type: 'array', description: 'The prospects, each an object: {"name":"Asha Rao","company":"Acme","linkedin_url":"https://www.linkedin.com/in/asharao","linkedin_message":"Hi Asha, ...","email":"asha@acme.com","email_subject":"...","email_body":"..."}. name + linkedin_message are the important ones; linkedin_url/email/email_* are optional. Personalise linkedin_message per person — you may also use {name}/{company} placeholders and they will be filled.', required: true },
+      title:    { type: 'string', description: 'A short campaign name, e.g. "Outreach — Bangalore agencies". Optional.', required: false },
+      channel:  { type: 'string', description: '"linkedin" (default), "email", or "both" — which message(s) the copilot should surface.', required: false },
+      deck_attached: { type: 'boolean', description: 'True if a presentation/deck should be referenced as an attachment for these contacts. Default false.', required: false },
+    },
+  },
 ];
 
 // ─── Browser tools (via agent-browser CLI — opens visible Chrome window) ─────
@@ -1067,6 +1077,19 @@ There is a persistent shared Brain (a visual knowledge graph the user can see). 
 - To attach the presentation the user just made as a PDF, set attach_deck:true — it converts the deck to PDF and attaches it to every email. Only attach a deck that exists in this chat.
 - ALWAYS report back the exact list of who was emailed (and any that failed) after sending — the tool returns this; relay it to the user. Never bulk-email addresses you found in the user's inbox or from an untrusted source; only a list the user explicitly asked you to email here.
 
+## LinkedIn outreach — use the copilot, NEVER auto-send
+LinkedIn's rules forbid automated messaging/connecting; accounts that auto-DM get restricted or banned. So you must NEVER use the browser tools to type and send a LinkedIn message or connection request on the user's behalf. Instead:
+- When the user wants to message/DM several people on LinkedIn (with or without the deck), first DRAFT a genuinely personalised message per person (reference who they are / their company — no copy-paste spam), then call linkedin_outreach with those contacts. That opens a side panel where the user copies each message, opens the profile, pastes and sends, and marks who was contacted / who accepted. It saves progress to the Brain.
+- Reuse messages you already saved: if you (or another agent) already wrote outreach messages and saved them to the Brain (an "outreach" note, or a contact list with a message column), pull those into linkedin_outreach rather than rewriting them.
+- Free LinkedIn accounts can only message 1st-degree connections — so the flow for a cold prospect is: send a connection request with a short note, wait for them to accept, THEN message. Say this to the user; the copilot tracks connect-requested vs accepted.
+- To attach a deck: LinkedIn has no attach-a-file-to-DM API for us to use, so tell the user to share the deck as a link or send it by email (gmail_send_bulk with attach_deck:true does the email-with-deck automatically). The copilot notes this.
+
+## Scanning the user's existing LinkedIn connections (warm leads)
+The user's OWN connections are their warmest potential clients. When they ask to "see who I'm connected with", "scan my LinkedIn", or "find clients among my connections":
+- Use browser_navigate to open https://www.linkedin.com/mynetwork/invite-connect/connections/ (they're already logged into the persistent browser). Then browser_get_text to read the list; scroll with browser_press/PageDown + browser_get_text again to load more if needed.
+- Parse the names + headlines/companies from that text yourself, then save_to_brain as ONE contact list titled like "LinkedIn connections" (append to it, don't duplicate). Flag which look like a fit for what the user sells.
+- From that list you can then draft messages and launch linkedin_outreach for the ones worth reaching out to.
+
 ## Privacy — do NOT read the user's inbox unless asked
 - NEVER call gmail_search / read the user's Gmail, inbox, or messages unless the user EXPLICITLY asks about their email ("check my inbox", "read my emails", "brief me on my email"). A request for "leads", "companies", "contacts", or "emails of OTHER businesses" is NOT permission to read the user's own inbox — finding a prospect's email address is web research, not inbox reading. If you ever catch yourself about to summarise the user's own inbox when they didn't ask, STOP.
 Anything you'd normally just keep in your own memory, ALSO save here if the user would want to see it or another agent might reuse it. This keeps work persistent and visible, and cuts token usage.
@@ -1435,6 +1458,33 @@ async function executeToolCore(
   if (toolName === 'forget_memory') {
     await krewMemoryDb.delete(agentKey, str(args.key));
     return `Memory "${str(args.key)}" deleted.`;
+  }
+
+  // ── LinkedIn outreach copilot (human-in-the-loop; LinkedIn bans auto-DMs) ──
+  if (toolName === 'linkedin_outreach') {
+    const raw = args.contacts;
+    let list: Array<Record<string, unknown>> = [];
+    if (Array.isArray(raw)) list = raw as Array<Record<string, unknown>>;
+    else if (typeof raw === 'string') { try { const p = JSON.parse(raw); if (Array.isArray(p)) list = p; } catch { /* ignore */ } }
+    const contacts = list.map((c) => ({
+      name:            str(c.name),
+      company:         c.company != null ? str(c.company) : undefined,
+      linkedin_url:    c.linkedin_url != null ? str(c.linkedin_url) : (c.linkedin != null ? str(c.linkedin) : undefined),
+      email:           c.email != null ? str(c.email) : undefined,
+      linkedin_message: c.linkedin_message != null ? str(c.linkedin_message) : (c.message != null ? str(c.message) : ''),
+      email_subject:   c.email_subject != null ? str(c.email_subject) : undefined,
+      email_body:      c.email_body != null ? str(c.email_body) : undefined,
+    })).filter((c) => c.name || c.linkedin_message);
+    if (contacts.length === 0) return 'No contacts were provided to the outreach copilot. Draft a message for at least one named person, then call linkedin_outreach again.';
+    const ch = str(args.channel || 'linkedin');
+    const channel = (ch === 'email' || ch === 'both') ? ch : 'linkedin';
+    await emit('nv-open-outreach', {
+      title: args.title ? str(args.title) : `LinkedIn outreach — ${new Date().toLocaleDateString()}`,
+      contacts,
+      channel,
+      deckAttached: args.deck_attached === true || args.deck_attached === 'true',
+    });
+    return `Outreach copilot opened with ${contacts.length} contact${contacts.length === 1 ? '' : 's'}. Tell the user: it walks them through each person — copy the message, open their profile, paste & send, and mark the status. Explain briefly that LinkedIn doesn't allow auto-sending (it risks their account), so they send with one paste while adris handles everything else and tracks who accepted. Do NOT re-print all the messages in chat — they're in the panel.`;
   }
 
   // ── Connect Apps navigation ───────────────────────────────────────────────

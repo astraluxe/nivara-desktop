@@ -378,6 +378,39 @@ fn brain_store_image(app: tauri::AppHandle, name: String, data_base64: String, e
     Ok(dest.to_string_lossy().to_string())
 }
 
+// Save arbitrary bytes (base64 from the webview — e.g. a generated PDF) straight into the
+// user's real Downloads folder. The old flow used an in-page <a download> click on a blob URL,
+// which WebView2 on Windows silently ignores — so "Download PDF" did nothing. Writing the file
+// natively here always lands a real file the user can find, and returns its path so the UI can
+// say "Saved to Downloads" and offer to open it. Auto-suffixes "(2)", "(3)"… so it never
+// clobbers an earlier download of the same name.
+#[tauri::command]
+fn save_to_downloads(app: tauri::AppHandle, filename: String, data_base64: String) -> Result<String, String> {
+    use tauri::Manager;
+    use base64::{Engine as _, engine::general_purpose};
+    let dir = app.path().download_dir()
+        .or_else(|_| app.path().home_dir().map(|h| h.join("Downloads")))
+        .map_err(|e| format!("Couldn't find your Downloads folder: {}", e))?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // Sanitise the requested name; keep its extension.
+    let p = std::path::Path::new(&filename);
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("pdf").to_string();
+    let stem: String = p.file_stem().and_then(|s| s.to_str()).unwrap_or("download")
+        .chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
+    let stem = { let s = stem.trim_matches('-').to_string(); if s.is_empty() { "download".to_string() } else { s } };
+    let bytes = general_purpose::STANDARD.decode(data_base64.trim())
+        .map_err(|e| format!("Couldn't decode the file: {}", e))?;
+    let mut dest = dir.join(format!("{}.{}", stem, ext));
+    let mut n = 2;
+    while dest.exists() {
+        dest = dir.join(format!("{} ({}).{}", stem, n, ext));
+        n += 1;
+        if n > 200 { break; }
+    }
+    std::fs::write(&dest, &bytes).map_err(|e| format!("Couldn't save to Downloads: {}", e))?;
+    Ok(dest.to_string_lossy().to_string())
+}
+
 // ─── Brain: extract readable text from any file ──────────────────────────────
 // The Brain lets users drop in real documents. Plain-text files (csv, txt, md,
 // json, code…) read directly; office/binary formats (PDF, PPTX, DOCX, XLSX/XLS/
@@ -3960,7 +3993,15 @@ async fn krew_ai_stream(
                 let mut api_total_tokens: Option<i64> = None; // usageMetadata.totalTokenCount (input + output)
                 let mut stream = resp.bytes_stream();
                 'outer_krew: while let Some(chunk) = stream.next().await {
-                    let bytes = chunk.map_err(|e| { let s = format!("Stream interrupted: {}", e); emit_error(s.clone()); s })?;
+                    // A network hiccup mid-stream must NOT discard the partial answer or drop
+                    // the token count on the floor. If a chunk errors, mark the reply truncated,
+                    // bill exactly what was used so far (below), and end the turn CLEANLY — the
+                    // user sees a coherent (if shorter) reply instead of a frozen/garbled one
+                    // that still cost tokens with nothing to show for it.
+                    let bytes = match chunk {
+                        Ok(b) => b,
+                        Err(_) => { emit_truncated(); break 'outer_krew; }
+                    };
                     for line in String::from_utf8_lossy(&bytes).lines() {
                         if let Some(data) = line.strip_prefix("data: ") {
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
@@ -6331,6 +6372,7 @@ pub fn run() {
             read_file_base64,
             brain_store_file,
             brain_store_image,
+            save_to_downloads,
             file_size,
             models_import,
             studio_save_file,

@@ -27,6 +27,7 @@ import { getMonthlyUsage } from '../../lib/tokenTracker';
 import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining } from '../../lib/tokenTier';
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
 import SkillsPanel from './SkillsPanel';
+import OutreachCopilot, { type OutreachCampaign, loadSavedCampaign } from './OutreachCopilot';
 
 // Get the freshest Supabase access token right before a model call. A long browser/tool pass can
 // run for minutes and outlive the token captured at render — reusing that stale token 401'd the
@@ -384,6 +385,22 @@ function SearchResultBubble({ content }: { content: string }) {
 
 function openLink(url: string) {
   import('@tauri-apps/plugin-shell').then(({ open }) => open(url)).catch(() => window.open(url, '_blank'));
+}
+
+// Save a blob (e.g. a generated PDF) into the user's real Downloads folder via the Rust side —
+// a programmatic <a download> on a blob URL is silently ignored by WebView2 on Windows, which is
+// why "Download PDF" did nothing. This writes a real file and returns its path. Throws on failure
+// so callers can fall back. Reveals/opens the file so the user can see it landed.
+async function saveBlobToDownloads(blob: Blob, filename: string): Promise<string> {
+  const buf = await blob.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  // base64-encode in chunks (avoid call-stack overflow on large PDFs)
+  let bin = '';
+  const CH = 0x8000;
+  for (let i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + CH)));
+  const b64 = btoa(bin);
+  const path = await invoke<string>('save_to_downloads', { filename, dataBase64: b64 });
+  return path;
 }
 
 function renderInline(text: string): React.ReactNode[] {
@@ -1379,7 +1396,7 @@ function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled }: {
 
 function DeckResultBubble({ html, spec: specProp }: { html: string; spec: DeckSpec }) {
   const [savedHtml, setSavedHtml] = useState(false);
-  const [pdfState, setPdfState]   = useState<'idle' | 'opening' | 'err'>('idle');
+  const [pdfState, setPdfState]   = useState<'idle' | 'opening' | 'err' | 'saved'>('idle');
   // Working copy of the deck — structural edits (add / delete / reorder slides) mutate this and
   // re-render; inline text edits are layered on top via editsRef (no reload). The `spec` prop is
   // only the initial value.
@@ -1499,10 +1516,11 @@ function DeckResultBubble({ html, spec: specProp }: { html: string; spec: DeckSp
     try {
       const { deckToPdfBlob } = await import('../../lib/deck');
       const blob = await deckToPdfBlob(finalSpec());
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = `${slug()}.pdf`; a.click();
-      URL.revokeObjectURL(url);
-      setPdfState('idle');
+      // Write the real PDF into the user's Downloads folder (WebView2 ignores <a download>),
+      // then open it so they see it landed.
+      const path = await saveBlobToDownloads(blob, `${slug()}.pdf`);
+      try { await invoke('open_path', { path }); } catch { /* still saved */ }
+      setPdfState('saved'); setTimeout(() => setPdfState('idle'), 3200);
     } catch {
       try {
         const printHtml = finalHtml().replace('</body>', '<script>window.addEventListener("load",function(){setTimeout(function(){try{window.print()}catch(e){}},600)})<\/script></body>');
@@ -1575,8 +1593,8 @@ function DeckResultBubble({ html, spec: specProp }: { html: string; spec: DeckSp
           <button onClick={downloadHtml} className="text-[10px] px-2.5 py-1 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40 transition-fast font-mono">
             {savedHtml ? '✓ Saved' : '⭳ .html'}
           </button>
-          <button onClick={downloadPdf} title="Download as PDF" className="text-[10px] px-2.5 py-1 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-mono">
-            {pdfState === 'opening' ? '…pdf' : pdfState === 'err' ? 'failed' : '⭳ PDF'}
+          <button onClick={downloadPdf} title="Download as PDF (saved to your Downloads folder)" className="text-[10px] px-2.5 py-1 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-mono">
+            {pdfState === 'opening' ? '…making pdf' : pdfState === 'saved' ? '✓ Saved to Downloads' : pdfState === 'err' ? 'failed' : '⭳ PDF'}
           </button>
         </div>
       </div>
@@ -1653,11 +1671,26 @@ function DeckResultBubble({ html, spec: specProp }: { html: string; spec: DeckSp
 // and we fullscreen the iframe / open the deck in the real browser to Save-as-PDF.
 function SavedDeckBubble({ html }: { html: string }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [pdfState, setPdfState] = useState<'idle' | 'opening' | 'err'>('idle');
+  const [pdfState, setPdfState] = useState<'idle' | 'opening' | 'err' | 'saved'>('idle');
   const [savedHtml, setSavedHtml] = useState(false);
 
   const doPdf = useCallback(async () => {
     setPdfState('opening');
+    // Preferred: rebuild the DeckSpec from the saved HTML and render a real vector PDF straight
+    // into the user's Downloads folder (same as a freshly-made deck).
+    try {
+      const { extractDeckSpec, deckToPdfBlob } = await import('../../lib/deck');
+      const spec = extractDeckSpec(html);
+      if (spec && spec.slides?.length) {
+        const blob = await deckToPdfBlob(spec);
+        const slug = (spec.title || 'deck').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'deck';
+        const path = await saveBlobToDownloads(blob, `${slug}.pdf`);
+        try { await invoke('open_path', { path }); } catch { /* still saved */ }
+        setPdfState('saved'); setTimeout(() => setPdfState('idle'), 3200);
+        return;
+      }
+    } catch { /* fall through to the print flow */ }
+    // Fallback: open the deck in the browser with auto-print so the user can Save-as-PDF.
     try {
       const printHtml = html.replace(
         '</body>',
@@ -1707,8 +1740,8 @@ function SavedDeckBubble({ html }: { html: string }) {
             {savedHtml ? '✓ Saved' : '⭳ .html'}
           </button>
           <button onClick={doPresent} className="text-[10px] px-2.5 py-1 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40 transition-fast font-mono">⛶ Present</button>
-          <button onClick={doPdf} title="Open in your browser and Save as PDF" className="text-[10px] px-2.5 py-1 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-mono">
-            {pdfState === 'opening' ? 'opening…' : pdfState === 'err' ? 'failed' : '⭳ PDF'}
+          <button onClick={doPdf} title="Download as PDF (saved to your Downloads folder)" className="text-[10px] px-2.5 py-1 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-mono">
+            {pdfState === 'opening' ? '…making pdf' : pdfState === 'saved' ? '✓ Saved to Downloads' : pdfState === 'err' ? 'failed' : '⭳ PDF'}
           </button>
         </div>
       </div>
@@ -2786,6 +2819,7 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
   const [showVoiceUpgrade,  setShowVoiceUpgrade]   = useState(false);
   const [showQuotaUpgrade,  setShowQuotaUpgrade]   = useState(false);
   const [monthlyUsed,       setMonthlyUsed]         = useState(0);
+  const [outreachCampaign,  setOutreachCampaign]    = useState<OutreachCampaign | null>(null);
   // "Chat with this file" — when set, the conversation stays scoped to this Brain
   // file and the notes connected to it, every turn, until the user clears it.
   const [focusedFile, setFocusedFile] = useState<{ name: string; content: string; connected: number } | null>(null);
@@ -2793,12 +2827,38 @@ export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenCon
   useEffect(() => {
     const plan = profile?.plan ?? 'explore';
     const isLifetime = plan === 'free' || plan === 'explore';
-    getMonthlyUsage(isLifetime).then(setMonthlyUsed).catch(() => {});
+    const refresh = () => getMonthlyUsage(isLifetime).then(setMonthlyUsed).catch(() => {});
+    refresh();
+    // Re-read the REAL usage from the server on focus + every 2 min, so if the count is
+    // reset (e.g. a fresh billing period, a support reset) or the plan is upgraded, the
+    // stale in-memory total — and the Saver-mode banner riding on it — clears on its own
+    // instead of sticking at "270 tasks left" until the app is restarted.
+    const onFocus = () => refresh();
+    window.addEventListener('focus', onFocus);
+    const iv = setInterval(refresh, 120000);
+    return () => { window.removeEventListener('focus', onFocus); clearInterval(iv); };
   }, [profile?.plan]);
 
   // Live meter: every managed token spend (chat, deck text, images) emits nivara-tokens.
   useEffect(() => {
     const un = listen<{ tokens: number }>('nivara-tokens', (e) => setMonthlyUsed((p) => p + (e.payload?.tokens || 0)));
+    return () => { un.then((f) => f()).catch(() => {}); };
+  }, []);
+
+  // The linkedin_outreach tool (and the "Continue outreach" affordance) opens the human-in-the-
+  // loop copilot: Krew has drafted the messages, now the user walks through each contact —
+  // copy, open profile, paste, send, mark status. Payload carries the contacts + messages.
+  useEffect(() => {
+    const un = listen<OutreachCampaign>('nv-open-outreach', (e) => {
+      const camp = e.payload;
+      if (camp && Array.isArray(camp.contacts) && camp.contacts.length) {
+        setOutreachCampaign({ ...camp, title: camp.title || `LinkedIn outreach — ${new Date().toLocaleDateString()}` });
+      } else {
+        // No payload → resume the last saved campaign if there is one.
+        const saved = loadSavedCampaign();
+        if (saved) setOutreachCampaign(saved);
+      }
+    });
     return () => { un.then((f) => f()).catch(() => {}); };
   }, []);
 
@@ -6077,6 +6137,9 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
           highlightPlan="solo"
           reason="You've used all your AI tasks for this period. Upgrade to keep going."
         />
+      )}
+      {outreachCampaign && (
+        <OutreachCopilot campaign={outreachCampaign} onClose={() => setOutreachCampaign(null)} />
       )}
     </>
   );
