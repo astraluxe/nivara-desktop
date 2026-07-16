@@ -54,14 +54,20 @@ async function freshSessionToken(fallback: string | null): Promise<string | null
 //  • 'prompt' → drops a ready phrasing into the input (the user reviews and sends; it routes
 //    through the normal Krew flow / deterministic short-circuits).
 //  • 'nav'    → opens another module of the exe (via the global nv-navigate event App listens to).
-type SlashCmd = { cmd: string; label: string; desc: string; run: 'prompt' | 'nav' | 'research' | 'agents'; value: string };
+type SlashCmd = { cmd: string; label: string; desc: string; run: 'prompt' | 'nav' | 'research' | 'agents' | 'outreach'; value: string };
 const SLASH_COMMANDS: SlashCmd[] = [
   // ── Actions that run in the chat ─────────────────────────────────────────
   { cmd: 'verify',   label: 'Verify LinkedIn',   desc: 'Open & check every LinkedIn in your lead list',   run: 'prompt', value: 'Go to <file name> and verify each and every LinkedIn — open and check each one, and fill it in properly if it exists.' },
   { cmd: 'enrich',   label: 'Fill contacts',     desc: 'Add missing LinkedIn, phone & email',             run: 'prompt', value: 'Fill in the missing LinkedIn, phone and email for the people already in <file name>.' },
   { cmd: 'findleads',label: 'Find prospects',    desc: 'Research new leads for your product',              run: 'prompt', value: 'Find new prospects for my product and add them to <file name> — do not duplicate anyone already there.' },
+  { cmd: 'scan',     label: 'Scan LinkedIn connections', desc: 'List who you\'re already connected with as warm leads', run: 'prompt', value: 'Scan my LinkedIn connections — open my connections page, read everyone I\'m already connected with, and save them to my Brain as a contact list of potential clients. Flag which ones look like a fit for what I sell.' },
   { cmd: 'expand',   label: 'Add more leads',    desc: 'Grow the list with new people',                   run: 'prompt', value: 'Add more prospects to <file name> — new people only, do not repeat anyone already there.' },
   { cmd: 'draft',    label: 'Draft outreach',    desc: 'Write DMs / emails for your list',                run: 'prompt', value: 'Write a LinkedIn DM and a short cold email for the people in <file name>, tailored by sector.' },
+  { cmd: 'outreach', label: 'Send outreach (copilot)', desc: 'Draft LinkedIn messages & walk through sending them', run: 'prompt', value: 'Draft a personalised LinkedIn message for each person in <file name>, then open the outreach copilot so I can send them one by one.' },
+  { cmd: 'continue', label: 'Continue outreach', desc: 'Reopen the outreach copilot where you left off',   run: 'outreach', value: '' },
+  { cmd: 'deck',     label: 'Make a presentation', desc: 'Build a slide deck / PPT you can edit & export', run: 'prompt', value: 'Make a presentation about ' },
+  { cmd: 'email',    label: 'Email a list',      desc: 'Send a personalised email to everyone on a list', run: 'prompt', value: 'Email everyone in <file name> a personalised message — one separate email each — and tell me exactly who it went to.' },
+  { cmd: 'image',    label: 'Generate an image', desc: 'Create an image / logo / graphic',                run: 'prompt', value: 'Generate an image of ' },
   { cmd: 'post',     label: 'Write a post',      desc: 'Draft a LinkedIn / X post',                       run: 'prompt', value: 'Write a LinkedIn post about ' },
   { cmd: 'reply',    label: 'Draft a reply',     desc: 'Reply to a message / email',                      run: 'prompt', value: 'Draft a reply to this: ' },
   { cmd: 'automate', label: 'Build automation',  desc: 'Describe an automation to build',                 run: 'prompt', value: 'Build an automation that ' },
@@ -88,8 +94,14 @@ function SlashIcon({ name }: { name: string }) {
     verify:      <><path d="M9 12l2 2 4-4" /><circle cx="12" cy="12" r="9" /></>,
     enrich:      <><rect x="3" y="5" width="18" height="14" rx="2" /><circle cx="8" cy="11" r="2" /><path d="M14 10h4M14 14h4M5 16c.7-1.5 4.3-1.5 5 0" /></>,
     findleads:   <><circle cx="11" cy="11" r="7" /><path d="M20 20l-3-3" /></>,
+    scan:        <><circle cx="11" cy="11" r="7" /><path d="M20 20l-3-3M8 11h6M11 8v6" /></>,
     expand:      <><circle cx="12" cy="12" r="9" /><path d="M12 8v8M8 12h8" /></>,
     draft:       <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M4 7l8 6 8-6" /></>,
+    outreach:    <><path d="M4 4h16v12H7l-3 3z" /><path d="M8 9h8M8 12h5" /></>,
+    continue:    <><circle cx="12" cy="12" r="9" /><path d="M10 8l6 4-6 4z" /></>,
+    deck:        <><rect x="3" y="4" width="18" height="12" rx="1.5" /><path d="M8 20h8M12 16v4" /></>,
+    email:       <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3.5 7l8.5 6 8.5-6" /></>,
+    image:       <><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="8.5" cy="9.5" r="1.5" /><path d="M4 17l5-4 4 3 3-2 4 3" /></>,
     reply:       <><path d="M9 17l-5-5 5-5" /><path d="M4 12h11a5 5 0 0 1 5 5v1" /></>,
     automate:    <><circle cx="12" cy="12" r="3" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" /></>,
     inbox:       <><path d="M3 12h5l2 3h4l2-3h5" /><path d="M4 12l2-7h12l2 7v6H4z" /></>,
@@ -4053,6 +4065,13 @@ The prompt must be production-ready — specific enough for a motion designer to
     if (c.run === 'nav') { emit('nv-navigate', { module: c.value }).catch(() => {}); setInput(''); return; }
     if (c.run === 'research') { setInput(''); onOpenResearch?.(''); return; }   // open the Research workspace
     if (c.run === 'agents')   { setInput(''); onBrowseAgents?.(); return; }      // open the agent grid
+    if (c.run === 'outreach') {
+      setInput('');
+      const saved = loadSavedCampaign();
+      if (saved) setOutreachCampaign(saved);                                     // reopen where they left off
+      else setInput('Draft a personalised LinkedIn message for each person in <file name>, then open the outreach copilot so I can send them one by one.');
+      return;
+    }
     // 'prompt' → drop the phrasing into the input, keep focus. If it contains a <file name>
     // placeholder, SELECT it (not just place the caret) so it's unmissable and the user's first
     // keystroke replaces it directly — a plain <textarea> can't render it in a different color, but
