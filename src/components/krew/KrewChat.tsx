@@ -60,7 +60,7 @@ const SLASH_COMMANDS: SlashCmd[] = [
   { cmd: 'verify',   label: 'Verify LinkedIn',   desc: 'Open & check every LinkedIn in your lead list',   run: 'prompt', value: 'Go to <file name> and verify each and every LinkedIn — open and check each one, and fill it in properly if it exists.' },
   { cmd: 'enrich',   label: 'Fill contacts',     desc: 'Add missing LinkedIn, phone & email',             run: 'prompt', value: 'Fill in the missing LinkedIn, phone and email for the people already in <file name>.' },
   { cmd: 'findleads',label: 'Find prospects',    desc: 'Research new leads for your product',              run: 'prompt', value: 'Find new prospects for my product and add them to <file name> — do not duplicate anyone already there.' },
-  { cmd: 'scan',     label: 'Scan LinkedIn connections', desc: 'List who you\'re already connected with as warm leads', run: 'prompt', value: 'Scan my LinkedIn connections — open my connections page, read everyone I\'m already connected with, and save them to my Brain as a contact list of potential clients. Flag which ones look like a fit for what I sell.' },
+  { cmd: 'scan',     label: 'Scan LinkedIn connections', desc: 'List who you\'re already connected with as warm leads', run: 'prompt', value: 'Scan my LinkedIn connections (up to 50 this run) — open my connections page, read the people, and save them to my Brain in ONE list called "LinkedIn connections". Skip anyone already in that list and add only new people. Use their REAL names, and flag which look like a fit for what I sell. Tell me how many total I have so I can ask for the next 50 or all.' },
   { cmd: 'expand',   label: 'Add more leads',    desc: 'Grow the list with new people',                   run: 'prompt', value: 'Add more prospects to <file name> — new people only, do not repeat anyone already there.' },
   { cmd: 'draft',    label: 'Draft outreach',    desc: 'Write DMs / emails for your list',                run: 'prompt', value: 'Write a LinkedIn DM and a short cold email for the people in <file name>, tailored by sector.' },
   { cmd: 'outreach', label: 'Send outreach (copilot)', desc: 'Draft LinkedIn messages & walk through sending them', run: 'prompt', value: 'Draft a personalised LinkedIn message for each person in <file name>, then open the outreach copilot so I can send them one by one.' },
@@ -399,6 +399,30 @@ function openLink(url: string) {
   import('@tauri-apps/plugin-shell').then(({ open }) => open(url)).catch(() => window.open(url, '_blank'));
 }
 
+// Copy text to the clipboard, RELIABLY. navigator.clipboard.writeText rejects silently in
+// WebView2 when the document isn't focused or the permission isn't granted — which is why the
+// chat "Copy" buttons did nothing. Always fall back to a hidden-textarea execCommand copy, which
+// works in the webview. Resolves true/false and NEVER rejects, so `.then(() => setCopied(true))`
+// callers still light up on success.
+function copyToClipboard(text: string): Promise<boolean> {
+  const fallback = (): boolean => {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.top = '0'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta); return ok;
+    } catch { return false; }
+  };
+  try {
+    const nav = navigator.clipboard;
+    if (nav?.writeText) {
+      return nav.writeText(text).then(() => true, () => fallback());
+    }
+  } catch { /* fall through */ }
+  return Promise.resolve(fallback());
+}
+
 // Save a blob (e.g. a generated PDF) into the user's real Downloads folder via the Rust side —
 // a programmatic <a download> on a blob URL is silently ignored by WebView2 on Windows, which is
 // why "Download PDF" did nothing. This writes a real file and returns its path. Throws on failure
@@ -479,7 +503,7 @@ function VideoLinkCard({ url }: { url: string }) {
               className="text-[10px] px-2 py-1 rounded-lg border border-nv-border text-nv-muted font-mono hover:border-accent/40 hover:text-accent transition-fast">
               Open
             </button>
-            <button onClick={() => navigator.clipboard.writeText(url)}
+            <button onClick={() => copyToClipboard(url)}
               className="text-[10px] px-2 py-1 rounded-lg border border-nv-border text-nv-muted font-mono hover:border-accent/40 hover:text-accent transition-fast">
               Copy URL
             </button>
@@ -502,7 +526,7 @@ function TableBlock({ mdTable, headers, aligns, rows }: {
       <div className="flex items-center justify-between px-3 py-1 bg-nv-surface2 border-b border-nv-border">
         <span className="text-[9px] font-mono text-nv-faint uppercase tracking-wide">{rows.length} {rows.length === 1 ? 'row' : 'rows'}</span>
         <button
-          onClick={() => navigator.clipboard.writeText(mdTable).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1800); })}
+          onClick={() => copyToClipboard(mdTable).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1800); })}
           className="text-[10px] text-nv-faint hover:text-nv-muted transition-fast font-mono flex items-center gap-1"
         >
           {copied
@@ -1001,7 +1025,7 @@ function EmailCard({ content }: { content: string }) {
           <span className="text-[11px] font-semibold text-nv-text truncate">{subject || 'Draft message'}</span>
         </div>
         <button
-          onClick={() => { navigator.clipboard.writeText(content); setCopied(true); setTimeout(() => setCopied(false), 1800); }}
+          onClick={() => { copyToClipboard(content); setCopied(true); setTimeout(() => setCopied(false), 1800); }}
           className="text-[10px] text-nv-faint hover:text-nv-text font-mono transition-fast shrink-0 ml-2"
         >{copied ? '✓' : 'Copy'}</button>
       </div>
@@ -1061,7 +1085,7 @@ function PostCard({ content }: { content: string }) {
             {count}{meta ? `/${meta.limit}` : ''}
           </span>
           <button
-            onClick={() => { navigator.clipboard.writeText(body); setCopied(true); setTimeout(() => setCopied(false), 1800); }}
+            onClick={() => { copyToClipboard(body); setCopied(true); setTimeout(() => setCopied(false), 1800); }}
             className="text-[10px] text-nv-faint hover:text-nv-text font-mono transition-fast"
           >{copied ? '✓' : 'Copy'}</button>
         </div>
@@ -1149,7 +1173,7 @@ function StudioAssetBubble({ html }: { html: string }) {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => { navigator.clipboard.writeText(html); setCopied(true); setTimeout(() => setCopied(false), 1800); }}
+            onClick={() => { copyToClipboard(html); setCopied(true); setTimeout(() => setCopied(false), 1800); }}
             className="text-[10px] text-nv-faint hover:text-nv-text font-mono transition-fast"
           >{copied ? '✓ Copied' : 'Copy HTML'}</button>
           <button
@@ -2454,7 +2478,7 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
   const parts = content.split(/(```[\s\S]*?```)/g);
 
   function copyAll() {
-    navigator.clipboard.writeText(content).then(() => {
+    copyToClipboard(content).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
     });
@@ -2485,7 +2509,7 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
               <div className="flex items-center justify-between px-3 py-1 bg-nv-surface2">
                 <span className="text-[10px] text-nv-faint font-mono">{lang || 'code'}</span>
                 <button
-                  onClick={() => navigator.clipboard.writeText(code.trim())}
+                  onClick={() => copyToClipboard(code.trim())}
                   className="text-[10px] text-nv-muted hover:text-nv-text transition-fast"
                 >Copy</button>
               </div>
@@ -2577,7 +2601,7 @@ function ChoicePicker({ choiceSet, onSelect, disabled, storageKey }: { choiceSet
             <span className="text-[10px] text-nv-faint">· {choiceSet.title}</span>
           </div>
           <button
-            onClick={() => { navigator.clipboard.writeText(content); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+            onClick={() => { copyToClipboard(content); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
             className="text-[10px] text-nv-faint hover:text-nv-text transition-fast font-mono"
           >{copied ? '✓ Copied' : 'Copy'}</button>
         </div>
@@ -2638,7 +2662,7 @@ function CopyBtn({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
-      onClick={() => navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1800); })}
+      onClick={() => copyToClipboard(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1800); })}
       className="text-[10px] text-nv-faint hover:text-nv-muted transition-fast font-mono flex items-center gap-1 mt-1"
     >
       {copied

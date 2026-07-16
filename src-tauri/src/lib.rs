@@ -1185,12 +1185,24 @@ struct GpuInfo {
     vram_gb: f32,
 }
 
+// Stop child processes (wmic, cmd, open helpers) from flashing a black console window on
+// Windows — that flash also stole focus and made module switches (Models/Vault) feel like they
+// "hung". CREATE_NO_WINDOW = 0x08000000. No-op on other platforms.
+#[cfg(windows)]
+fn no_console(cmd: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(0x0800_0000);
+}
+#[cfg(not(windows))]
+fn no_console(_cmd: &mut std::process::Command) {}
+
 #[tauri::command]
 fn detect_gpu() -> Vec<GpuInfo> {
     use std::process::Command;
-    let out = Command::new("wmic")
-        .args(["path", "win32_VideoController", "get", "Name,AdapterRAM", "/format:csv"])
-        .output();
+    let mut cmd = Command::new("wmic");
+    cmd.args(["path", "win32_VideoController", "get", "Name,AdapterRAM", "/format:csv"]);
+    no_console(&mut cmd);
+    let out = cmd.output();
     let Ok(out) = out else { return vec![]; };
     let text = String::from_utf8_lossy(&out.stdout);
     let mut gpus = vec![];
@@ -1386,12 +1398,12 @@ async fn models_run(
     if let Some(mut child) = old_child { let _ = child.kill().await; }
     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
 
-    let child = tokio::process::Command::new(&engine)
-        .args(["-m", &model_path, "--port", "8080", "--host", "127.0.0.1",
-               "-c", "4096", "--log-disable"])
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| format!("Could not start engine: {e}"))?;
+    let mut ec = tokio::process::Command::new(&engine);
+    ec.args(["-m", &model_path, "--port", "8080", "--host", "127.0.0.1",
+             "-c", "4096", "--log-disable"])
+        .kill_on_drop(true);
+    #[cfg(windows)] { ec.creation_flags(0x0800_0000); } // no flashing console for the engine
+    let child = ec.spawn().map_err(|e| format!("Could not start engine: {e}"))?;
 
     { let mut g = state.0.lock().unwrap(); *g = Some(child); }
 
@@ -1900,7 +1912,7 @@ fn read_deck_spec(path: String) -> Result<String, String> {
 #[tauri::command]
 fn open_path(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
-    { std::process::Command::new("cmd").args(["/C", "start", "", &path]).spawn().map_err(|e| e.to_string())?; }
+    { let mut c = std::process::Command::new("cmd"); c.args(["/C", "start", "", &path]); no_console(&mut c); c.spawn().map_err(|e| e.to_string())?; }
     #[cfg(target_os = "macos")]
     { std::process::Command::new("open").arg(&path).spawn().map_err(|e| e.to_string())?; }
     #[cfg(target_os = "linux")]
@@ -4921,8 +4933,9 @@ fn mesh_get_machine_info() -> MeshMachineInfo {
     let mut sys = System::new();
     sys.refresh_memory();
     let ram_gb = sys.total_memory() as f32 / 1_073_741_824.0;
-    let hostname = std::process::Command::new("hostname")
-        .output()
+    let mut hc = std::process::Command::new("hostname");
+    no_console(&mut hc);
+    let hostname = hc.output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_else(|_| "Unknown".to_string());
     MeshMachineInfo { hostname, ram_gb, os: System::name().unwrap_or_else(|| "Windows".to_string()) }
@@ -4940,10 +4953,10 @@ fn mesh_start_exo(
     let exo_path = mesh_exe_path(&app)
         .ok_or_else(|| "Mesh engine not found. Use the download button in Mesh to install it.".to_string())?;
 
-    let child = std::process::Command::new(&exo_path)
-        .args(["--node-count", &node_count.to_string()])
-        .spawn()
-        .map_err(|e| format!("Failed to start mesh engine: {e}"))?;
+    let mut ec = std::process::Command::new(&exo_path);
+    ec.args(["--node-count", &node_count.to_string()]);
+    no_console(&mut ec);
+    let child = ec.spawn().map_err(|e| format!("Failed to start mesh engine: {e}"))?;
 
     *lock = Some(child);
     Ok(())
@@ -5425,11 +5438,10 @@ struct TrayState {
 fn vault_task_exists() -> bool {
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("schtasks")
-            .args(["/query", "/tn", "NivaraVaultDNS", "/fo", "LIST"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        let mut c = std::process::Command::new("schtasks");
+        c.args(["/query", "/tn", "NivaraVaultDNS", "/fo", "LIST"]);
+        no_console(&mut c);
+        c.output().map(|o| o.status.success()).unwrap_or(false)
     }
     #[cfg(not(target_os = "windows"))]
     { false }
@@ -5456,10 +5468,10 @@ fn write_dns_config_for_task(
 fn trigger_vault_task() -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        let out = std::process::Command::new("schtasks")
-            .args(["/run", "/tn", "NivaraVaultDNS"])
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut c = std::process::Command::new("schtasks");
+        c.args(["/run", "/tn", "NivaraVaultDNS"]);
+        no_console(&mut c);
+        let out = c.output().map_err(|e| e.to_string())?;
         std::thread::sleep(std::time::Duration::from_millis(900));
         if out.status.success() { Ok(()) } else {
             Err(String::from_utf8_lossy(&out.stdout).trim().to_string())
@@ -5510,13 +5522,13 @@ const MODE_FAILOVER_ORDER: &[&str] = &["swift", "core", "guard", "block", "famil
 fn get_active_adapter() -> String {
     #[cfg(target_os = "windows")]
     {
-        if let Ok(out) = std::process::Command::new("powershell")
-            .args([
-                "-NoProfile", "-Command",
-                "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Sort-Object -Property Speed -Descending | Select-Object -First 1 -ExpandProperty Name",
-            ])
-            .output()
-        {
+        let mut c = std::process::Command::new("powershell");
+        c.args([
+            "-NoProfile", "-Command",
+            "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Sort-Object -Property Speed -Descending | Select-Object -First 1 -ExpandProperty Name",
+        ]);
+        no_console(&mut c);
+        if let Ok(out) = c.output() {
             let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if !name.is_empty() { return name; }
         }
@@ -5540,10 +5552,10 @@ fn get_active_adapter() -> String {
 fn apply_dns(adapter: &str, primary: &str, secondary: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        let out = std::process::Command::new("netsh")
-            .args(["interface", "ip", "set", "dns", adapter, "static", primary])
-            .output()
-            .map_err(|e| format!("Failed to run netsh: {}", e))?;
+        let mut c = std::process::Command::new("netsh");
+        c.args(["interface", "ip", "set", "dns", adapter, "static", primary]);
+        no_console(&mut c);
+        let out = c.output().map_err(|e| format!("Failed to run netsh: {}", e))?;
 
         if !out.status.success() {
             let combined = format!(
@@ -5558,9 +5570,10 @@ fn apply_dns(adapter: &str, primary: &str, secondary: &str) -> Result<(), String
             return Err(combined.trim().to_string());
         }
         // Add secondary DNS
-        let _ = std::process::Command::new("netsh")
-            .args(["interface", "ip", "add", "dns", adapter, secondary, "index=2"])
-            .output();
+        let mut c2 = std::process::Command::new("netsh");
+        c2.args(["interface", "ip", "add", "dns", adapter, secondary, "index=2"]);
+        no_console(&mut c2);
+        let _ = c2.output();
         Ok(())
     }
     #[cfg(target_os = "linux")]
@@ -5596,10 +5609,10 @@ fn apply_dns(adapter: &str, primary: &str, secondary: &str) -> Result<(), String
 fn revert_dns(adapter: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        let out = std::process::Command::new("netsh")
-            .args(["interface", "ip", "set", "dns", adapter, "dhcp"])
-            .output()
-            .map_err(|e| format!("Failed to run netsh: {}", e))?;
+        let mut c = std::process::Command::new("netsh");
+        c.args(["interface", "ip", "set", "dns", adapter, "dhcp"]);
+        no_console(&mut c);
+        let out = c.output().map_err(|e| format!("Failed to run netsh: {}", e))?;
 
         if !out.status.success() {
             let combined = format!(
@@ -5806,13 +5819,13 @@ fn vault_status(vault_state: tauri::State<'_, VaultState>) -> VaultStatusResult 
 fn vault_get_adapters() -> Vec<String> {
     #[cfg(target_os = "windows")]
     {
-        if let Ok(out) = std::process::Command::new("powershell")
-            .args([
-                "-NoProfile", "-Command",
-                "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -ExpandProperty Name",
-            ])
-            .output()
-        {
+        let mut c = std::process::Command::new("powershell");
+        c.args([
+            "-NoProfile", "-Command",
+            "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -ExpandProperty Name",
+        ]);
+        no_console(&mut c);
+        if let Ok(out) = c.output() {
             let names: Vec<String> = String::from_utf8_lossy(&out.stdout)
                 .lines()
                 .map(|l| l.trim().to_string())

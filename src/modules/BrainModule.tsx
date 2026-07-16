@@ -375,11 +375,46 @@ function ImageViewer({ path }: { path: string }) {
 function DeckPreview({ path }: { path: string }) {
   const [html, setHtml] = useState<string | null>(null);
   const [err, setErr] = useState(false);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
   useEffect(() => {
     let cancelled = false;
     invoke<string>('read_file', { path }).then((h) => { if (!cancelled) setHtml(h); }).catch(() => { if (!cancelled) setErr(true); });
     return () => { cancelled = true; };
   }, [path]);
+
+  // The deck's own ⛶ Present / ⭳ PDF buttons live INSIDE the sandboxed iframe and postMessage to
+  // us (the parent) — without this listener those clicks did nothing in the Brain preview (only
+  // prev/next, handled inside the deck, worked). Present → fullscreen the iframe; PDF → rebuild the
+  // DeckSpec and save a real PDF into Downloads.
+  useEffect(() => {
+    async function onMsg(e: MessageEvent) {
+      if (!iframeRef.current || e.source !== iframeRef.current.contentWindow) return;
+      const d = e.data as { __deckPdf?: boolean; __deckPresent?: boolean };
+      if (d?.__deckPresent) {
+        const el = iframeRef.current as (HTMLIFrameElement & { webkitRequestFullscreen?: () => void });
+        try { (el.requestFullscreen || el.webkitRequestFullscreen)?.call(el); el.focus?.(); } catch { /* ignore */ }
+      } else if (d?.__deckPdf && html) {
+        try {
+          const { extractDeckSpec, deckToPdfBlob } = await import('../lib/deck');
+          const spec = extractDeckSpec(html);
+          if (spec && spec.slides?.length) {
+            const blob = await deckToPdfBlob(spec);
+            const buf = new Uint8Array(await blob.arrayBuffer());
+            let bin = ''; const CH = 0x8000;
+            for (let i = 0; i < buf.length; i += CH) bin += String.fromCharCode.apply(null, Array.from(buf.subarray(i, i + CH)));
+            const slug = (spec.title || 'deck').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'deck';
+            const saved = await invoke<string>('save_to_downloads', { filename: `${slug}.pdf`, dataBase64: btoa(bin) });
+            try { await invoke('open_path', { path: saved }); } catch { /* still saved */ }
+            return;
+          }
+        } catch { /* fall back to opening the html to print */ }
+        try { await invoke('open_path', { path }); } catch { /* ignore */ }
+      }
+    }
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, [html, path]);
+
   return (
     <div className="flex-1 min-w-0 overflow-y-auto p-4 flex flex-col items-center justify-start" style={{ background: 'var(--nv-bg)' }}>
       {err ? (
@@ -387,7 +422,8 @@ function DeckPreview({ path }: { path: string }) {
       ) : html === null ? (
         <div className="m-auto text-[12px]" style={{ color: 'var(--nv-faint)' }}>Loading deck…</div>
       ) : (
-        <iframe srcDoc={html} sandbox="allow-scripts allow-same-origin" title="Deck preview"
+        <iframe ref={iframeRef} srcDoc={html} sandbox="allow-scripts allow-same-origin" title="Deck preview"
+          allow="fullscreen"
           className="rounded-lg" style={{ width: '100%', maxWidth: 820, aspectRatio: '16 / 9', border: '1px solid var(--nv-border)', background: '#000' }} />
       )}
     </div>
