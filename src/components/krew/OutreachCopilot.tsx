@@ -105,6 +105,8 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
   const [idx, setIdx] = useState(0);
   const [copied, setCopied] = useState<'msg' | 'email' | null>(null);
   const [whyOpen, setWhyOpen] = useState(false);
+  const [opening, setOpening] = useState(false);
+  const [openNote, setOpenNote] = useState('');
 
   const cur = contacts[idx];
   const channel = campaign.channel || 'linkedin';
@@ -135,6 +137,30 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
   }
 
   const msg = fillTokens(cur.linkedin_message || '', cur);
+  const hasProfile = !!(cur.linkedin_url && /linkedin\.com\/in\//i.test(cur.linkedin_url));
+
+  // One click: copy the message AND drive the ADRIS browser to open this person's chat box
+  // (opens their profile + clicks "Message"). The user just pastes (Ctrl+V) + sends — nothing is
+  // auto-typed or auto-sent, so the account stays safe. Falls back to opening the profile.
+  async function copyAndOpenChat() {
+    setOpenNote('');
+    await copyText(msg);
+    setCopied('msg'); setTimeout(() => setCopied((c) => (c === 'msg' ? null : c)), 1600);
+    if (!hasProfile) { openLink(profileUrl(cur)); setOpenNote('Opened a LinkedIn search — pick the right person, hit Message, and paste.'); return; }
+    setOpening(true);
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const res = await invoke<string>('run_browser_persistent', { args: `message "${cur.linkedin_url}"` });
+      if (typeof res === 'string' && res.includes('SIGN_IN_REQUIRED')) setOpenNote('Sign in to LinkedIn in the ADRIS browser window, then click again.');
+      else if (typeof res === 'string' && res.includes('MESSAGE_BOX_OPENED')) setOpenNote('Chat box is open in the ADRIS browser — paste (Ctrl+V) and send.');
+      else setOpenNote('Opened their profile in the ADRIS browser — click Message, then paste & send. (If you\'re not connected yet, send a connection request first.)');
+    } catch {
+      openLink(profileUrl(cur));
+      setOpenNote('Opened their profile in your browser — click Message and paste.');
+    } finally {
+      setOpening(false);
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-[60] flex items-stretch justify-end bg-black/40 backdrop-blur-[2px]" onClick={onClose}>
@@ -194,14 +220,27 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
             {cur.company && <div className="text-xs text-faint">{cur.company}</div>}
           </div>
 
-          {/* Open profile */}
-          <button
-            onClick={() => openLink(profileUrl(cur))}
-            className="w-full flex items-center justify-center gap-2 text-xs px-3 py-2 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast"
-          >
-            <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>
-            {cur.linkedin_url ? 'Open their LinkedIn' : 'Find them on LinkedIn'}
-          </button>
+          {/* Copy the message AND open the chat box in one click */}
+          {(channel === 'linkedin' || channel === 'both') && (
+            <div className="space-y-1.5">
+              <button
+                onClick={copyAndOpenChat}
+                disabled={opening}
+                className="w-full flex items-center justify-center gap-2 text-xs px-3 py-2 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast disabled:opacity-60"
+              >
+                {opening
+                  ? <><span className="w-3 h-3 rounded-full border border-white/40 border-t-white animate-spin" /> Opening chat…</>
+                  : <><svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg> Copy message &amp; open chat</>}
+              </button>
+              <button
+                onClick={() => { openLink(profileUrl(cur)); setOpenNote('Opened their profile — use this to connect first if you\'re not connected yet.'); }}
+                className="w-full text-[10.5px] px-3 py-1 rounded-lg border border-white/15 text-faint hover:bg-white/5 transition-fast"
+              >
+                {hasProfile ? 'Just open their profile' : 'Find them on LinkedIn'}
+              </button>
+              {openNote && <p className="text-[10px] text-emerald-300/90 leading-relaxed">{openNote}</p>}
+            </div>
+          )}
 
           {/* The message to paste */}
           {(channel === 'linkedin' || channel === 'both') && (

@@ -835,6 +835,51 @@ async function main() {
     return;
   }
 
+  // ── message <profileUrl> ───────────────────────────────────────────────────
+  // Open a LinkedIn profile and CLICK its "Message" button so the chat box pops open,
+  // ready for the user to paste + send. This ONLY opens the box — it never types or sends
+  // (that's the human-in-the-loop step that keeps the account safe). Falls back to just
+  // showing the profile if the Message button can't be found (e.g. not a 1st-degree
+  // connection, where you must connect first).
+  if (cmd === 'message') {
+    var mRaw = argv.slice(1).join(' ').replace(/^"|"$/g, '').trim();
+    var mUrl = mRaw.startsWith('http') ? mRaw : 'https://' + mRaw;
+    var mConn = await ensureChrome();
+    var mCtx  = mConn.context;
+    if (!mCtx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
+    var mPage = mCtx.pages().at(-1) || await mCtx.newPage();
+    try { await mPage.goto(mUrl, { waitUntil: 'domcontentloaded', timeout: 25000 }); } catch (_) {}
+    var mFinal = mPage.url();
+    if (isAuthWall(mFinal)) {
+      var mok = await pollForLoginCompletion(mPage, 30000);
+      if (!mok) { writeState({ url: mFinal }); process.stdout.write('[SIGN_IN_REQUIRED] Please sign in to LinkedIn in the ADRIS browser window that just opened, then try again.'); return; }
+    }
+    await showBanner(mPage, 'ADRIS opened this chat for you — paste your message (Ctrl+V) and send.');
+    try { await mPage.waitForLoadState('networkidle', { timeout: 4000 }); } catch (_) {}
+    await new Promise(function (r) { setTimeout(r, 1200); });
+    var mClicked = await mPage.evaluate(function() {
+      function vis(el) { if (!el) return false; var r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; }
+      var cands = [].slice.call(document.querySelectorAll('button, a'));
+      // Prefer the primary profile "Message" action; avoid "Message" links that are actually
+      // premium upsells or nav items.
+      var btn = null;
+      for (var i = 0; i < cands.length; i++) {
+        var el = cands[i];
+        if (!vis(el)) continue;
+        var al = (el.getAttribute('aria-label') || '').toLowerCase();
+        var tx = (el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        if (al.indexOf('premium') !== -1) continue;
+        if (al.indexOf('message ') === 0 || al === 'message' || tx === 'message') { btn = el; break; }
+      }
+      if (btn) { try { btn.scrollIntoView({ block: 'center' }); } catch (e) {} btn.click(); return true; }
+      return false;
+    }).catch(function () { return false; });
+    await new Promise(function (r) { setTimeout(r, 900); });
+    writeState({ url: mFinal });
+    process.stdout.write(mClicked ? 'MESSAGE_BOX_OPENED' : 'PROFILE_OPENED');
+    return;
+  }
+
   // ── open <url> ────────────────────────────────────────────────────────────
   var rawUrl = argv.slice(1).join(' ').replace(/^"|"$/g, '').trim();
   var url    = rawUrl.startsWith('http') ? rawUrl : 'https://' + rawUrl;
