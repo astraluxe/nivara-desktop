@@ -852,7 +852,84 @@ function rgb(hex: string): [number, number, number] {
   const m = (hex || '#000000').replace('#', '').match(/.{2}/g)?.map((x) => parseInt(x, 16)) ?? [0, 0, 0];
   return [m[0] || 0, m[1] || 0, m[2] || 0];
 }
+// High-fidelity PDF: render the ACTUAL deck HTML (gradients, shadows, mesh backgrounds, the
+// auto-fit that makes 6 bullets fill the slide) offscreen and photograph each slide with
+// html2canvas, then drop those images full-bleed into a 16:9 PDF. This replaces the old
+// hand-drawn jsPDF reconstruction, which lost every gradient/shadow, flattened the deck to one
+// colour, and mangled bar-graph numbers into "1 2 , 5 0 0". The vector version is kept as a
+// fallback for the rare case html2canvas can't run. The result is pixel-identical to what the
+// user sees in the chat/Brain, at the SAME size — no shrinking, no empty space after the last point.
 export async function deckToPdfBlob(spec: DeckSpec): Promise<Blob> {
+  const SW = 1280, SH = 720;
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  let iframe: HTMLIFrameElement | null = null;
+  try {
+    const html = renderDeckHtml(spec, false);
+    iframe = document.createElement('iframe');
+    iframe.setAttribute('aria-hidden', 'true');
+    iframe.style.cssText = `position:fixed;left:-10000px;top:0;width:${SW}px;height:${SH}px;border:0;background:transparent;`;
+    document.body.appendChild(iframe);
+    const idoc = iframe.contentDocument || iframe.contentWindow?.document;
+    if (!idoc) throw new Error('no iframe doc');
+    idoc.open(); idoc.write(html); idoc.close();
+
+    // Wait for the deck to load, its fonts, its images, and its own wrapContent()/fit pass.
+    await new Promise<void>((res) => {
+      let done = false; const finish = () => { if (!done) { done = true; res(); } };
+      if (idoc.readyState === 'complete') finish();
+      iframe!.addEventListener('load', finish, { once: true });
+      setTimeout(finish, 2500);
+    });
+    try { await (idoc as unknown as { fonts?: { ready?: Promise<unknown> } }).fonts?.ready; } catch { /* system fonts */ }
+    // Wait for slide images (data URIs load instantly, but be safe).
+    try {
+      const imgs = Array.from(idoc.images || []);
+      await Promise.all(imgs.map((im) => im.complete ? Promise.resolve() : new Promise<void>((r) => { im.addEventListener('load', () => r(), { once: true }); im.addEventListener('error', () => r(), { once: true }); setTimeout(r, 1500); })));
+    } catch { /* ignore */ }
+    await sleep(300); // let the deck's setTimeout fit pass run
+
+    const slides = Array.from(idoc.querySelectorAll('.slide')) as HTMLElement[];
+    if (!slides.length) throw new Error('no slides');
+
+    const h2cMod: any = await import('html2canvas');
+    const html2canvas = h2cMod.default || h2cMod;
+    const jsMod: any = await import('jspdf');
+    const JsPDF = jsMod.jsPDF || jsMod.default || jsMod;
+    const avail = SH - 96 - 96 - 6;
+    let doc: any = null;
+
+    for (let i = 0; i < slides.length; i++) {
+      // Show ONLY this slide, at native 1280×720 (undo the viewport-fit scale), then re-run the
+      // content auto-fit so long slides shrink-to-fit exactly like on screen.
+      slides.forEach((el) => { el.classList.remove('active'); el.style.display = 'none'; el.style.transform = 'none'; });
+      const sl = slides[i];
+      sl.classList.add('active');
+      sl.style.display = 'flex';
+      sl.style.transform = 'none';
+      sl.style.left = '0'; sl.style.top = '0';
+      const wrap = sl.querySelector(':scope > .fitwrap') as HTMLElement | null;
+      if (wrap) { wrap.style.transform = 'none'; const h = wrap.scrollHeight; if (h > avail) wrap.style.transform = `scale(${Math.max(0.55, avail / h)})`; }
+      await sleep(60);
+      const canvas = await html2canvas(sl, {
+        width: SW, height: SH, windowWidth: SW, windowHeight: SH,
+        scale: 2, backgroundColor: null, useCORS: true, logging: false, imageTimeout: 4000,
+      });
+      const img = canvas.toDataURL('image/jpeg', 0.92);
+      if (!doc) doc = new JsPDF({ orientation: 'landscape', unit: 'px', format: [SW, SH], compress: true });
+      else doc.addPage([SW, SH], 'landscape');
+      doc.addImage(img, 'JPEG', 0, 0, SW, SH, undefined, 'FAST');
+    }
+    return doc.output('blob') as Blob;
+  } catch {
+    // Anything went wrong with the live capture → fall back to the vector reconstruction so the
+    // user still gets a (plainer) PDF rather than nothing.
+    return deckToPdfBlobVector(spec);
+  } finally {
+    if (iframe && iframe.parentNode) iframe.parentNode.removeChild(iframe);
+  }
+}
+
+async function deckToPdfBlobVector(spec: DeckSpec): Promise<Blob> {
   const mod: any = await import('jspdf');
   const JsPDF = mod.jsPDF || mod.default || mod;
   const W = 960, H = 540, M = 66;
