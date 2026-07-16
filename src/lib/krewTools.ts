@@ -1557,9 +1557,12 @@ async function executeToolCore(
     // Load a bit extra so that after removing already-saved people we still net ~limit new ones.
     const raw = await invoke<string>('run_browser_persistent', { args: `connections ${limit + existingNames.size + 10}` }).catch((e) => String(e));
     emit('agent-browser-idle', {}).catch(() => {});
-    if (raw.includes('[SIGN_IN_REQUIRED]')) return 'The LinkedIn connections page needs a login. Ask the user to sign in to LinkedIn in the ADRIS browser window that just opened, then say "continue" and call linkedin_scan_connections again.';
-    if (raw.startsWith('[browser-') || raw.includes('[agent-browser not installed') || raw.includes('[no-connections-text]')) {
-      return "Couldn't read the connections page just now (the browser may still be loading or not signed in). Ask the user to make sure they're logged into LinkedIn in the ADRIS browser, then try again.";
+    if (raw.includes('[SIGN_IN_REQUIRED]')) return "I opened LinkedIn in the ADRIS browser but you're not signed in there. Please sign in to LinkedIn in that window (you only have to do it once — it's saved), then run /scan again.";
+    if (raw.startsWith('[browser-') || raw.includes('[agent-browser not installed')) {
+      return "The ADRIS browser couldn't start just now. Make sure Google Chrome (or Edge) is installed, then run /scan again.";
+    }
+    if (raw.includes('[no-connections-text]')) {
+      return "I opened your LinkedIn connections page but it hadn't rendered any people yet (LinkedIn can be slow to load the list). Open that window, scroll the list once, then run /scan again.";
     }
     // The browser command returns structured JSON (CONN_JSON:[{name,headline}]) read straight from
     // the DOM — most reliable. Fall back to text-parsing the innerText if JSON isn't present.

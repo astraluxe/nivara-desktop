@@ -4073,8 +4073,11 @@ The prompt must be production-ready — specific enough for a motion designer to
     try {
       const result = await executeTool('linkedin_scan_connections', { limit, link_to: linkTo }, creds, requestTerminalApproval, agent.key, user?.id ?? '', `${sidRef.current ?? 'main'}-scan`);
       // The tool's return has a tail of instructions meant for the LLM — strip it for direct display.
-      const display = result.replace(/\n\nTell the user[\s\S]*$/, '').trim()
-        + '\n\n_Want me to flag which of these fit what you sell, or draft outreach for the good ones? Just ask._';
+      const base = result.replace(/\n\nTell the user[\s\S]*$/, '').trim();
+      // Only offer the fit/outreach follow-up when we actually SAVED people (the result has a table).
+      const display = /\n\|/.test(base)
+        ? base + '\n\n_Want me to flag which of these fit what you sell, or draft outreach for the good ones? Just ask._'
+        : base;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: display, streaming: false }; return c; });
       if (sid) krewDb.saveMessage(sid, 'assistant', display).catch(() => {});
     } catch (e) {
