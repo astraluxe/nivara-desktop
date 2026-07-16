@@ -627,82 +627,84 @@ function renderSlideHtml(s: DeckSlide, spec: DeckSpec, i: number, total: number,
     case 'comparison': {
       const cc = (s.columns || []).filter((c) => c && (c.heading || (c.bullets && c.bullets.length))).slice(0, 2);
       if (cc.length < 2) return renderSlideHtml({ ...s, layout: 'two-column' }, spec, i, total, editable);
-      const col = (c: { heading: string; bullets: string[] }) =>
-        `<div class="col"><h3>${esc(c.heading)}</h3><ul>${(c.bullets || []).map((b) => `<li>${esc(b)}</li>`).join('')}</ul></div>`;
+      const col = (c: { heading: string; bullets: string[] }, ci: number) =>
+        `<div class="col"><h3${ed('col.' + ci + '.head')}>${esc(c.heading)}</h3><ul>${(c.bullets || []).map((b, bi) => `<li${ed('col.' + ci + '.b.' + bi)}>${esc(b)}</li>`).join('')}</ul></div>`;
       return `<section class="slide">
-        ${s.title ? `<h2 style="font-size:44px;max-width:1000px"${ed('title')}>${esc(s.title)}</h2>` : ''}
+        ${(editable || s.title) ? `<h2 style="font-size:44px;max-width:1000px"${ed('title')}${editable && !s.title ? ' data-ph="Title…"' : ''}>${esc(s.title || '')}</h2>` : ''}
         <div class="rule"></div>
-        <div class="cols" style="position:relative">${col(cc[0])}${col(cc[1])}<span class="vs">VS</span></div>
+        <div class="cols" style="position:relative">${col(cc[0], 0)}${col(cc[1], 1)}<span class="vs">VS</span></div>
         ${chrome}</section>`;
     }
     case 'cards':
     case 'process': {
-      const cards = (s.cards || []).filter((c) => c && (c.heading || c.body)).slice(0, 6);
+      // In EDIT mode render the full array so inline-edit indices match the spec; in the final
+      // deck drop empty cards.
+      const cards = (editable ? (s.cards || []) : (s.cards || []).filter((c) => c && (c.heading || c.body))).slice(0, 6);
       if (!cards.length) return renderSlideHtml({ ...s, layout: 'bullets' }, spec, i, total, editable);
       const isProc = s.layout === 'process';
       const gridCls = cards.length <= 2 ? 'grid2' : 'grid3';
       const cardHtml = cards.map((c, ci) =>
-        `<div class="card">${isProc ? `<span class="cn">${ci + 1}</span>` : ''}<h3>${esc(c.heading || '')}</h3>${c.body ? `<p>${esc(c.body)}</p>` : ''}</div>`
+        `<div class="card">${isProc ? `<span class="cn">${ci + 1}</span>` : ''}<h3${ed('card.' + ci + '.head')}${editable && !c.heading ? ' data-ph="Heading…"' : ''}>${esc(c.heading || '')}</h3>${(editable || c.body) ? `<p${ed('card.' + ci + '.body')}${editable && !c.body ? ' data-ph="Description…"' : ''}>${esc(c.body || '')}</p>` : ''}</div>`
       ).join('');
       return `<section class="slide">
-        ${s.title ? `<h2 style="font-size:44px;max-width:1040px"${ed('title')}>${esc(s.title)}</h2>` : ''}
+        ${(editable || s.title) ? `<h2 style="font-size:44px;max-width:1040px"${ed('title')}${editable && !s.title ? ' data-ph="Title…"' : ''}>${esc(s.title || '')}</h2>` : ''}
         <div class="rule"></div>
         <div class="${isProc ? 'steps' : gridCls}">${cardHtml}</div>
         ${chrome}</section>`;
     }
     case 'timeline': {
-      const rows = (s.timeline || []).filter((t) => t && (t.label || t.text)).slice(0, 7);
+      const rows = (editable ? (s.timeline || []) : (s.timeline || []).filter((t) => t && (t.label || t.text))).slice(0, 7);
       if (!rows.length) return renderSlideHtml({ ...s, layout: 'bullets' }, spec, i, total, editable);
       return `<section class="slide">
-        ${s.title ? `<h2 style="font-size:44px;max-width:1040px"${ed('title')}>${esc(s.title)}</h2>` : ''}
+        ${(editable || s.title) ? `<h2 style="font-size:44px;max-width:1040px"${ed('title')}${editable && !s.title ? ' data-ph="Title…"' : ''}>${esc(s.title || '')}</h2>` : ''}
         <div class="rule"></div>
-        <div class="tl">${rows.map((t) => `<div class="row"><div class="lab">${esc(t.label || '')}</div><div class="txt">${esc(t.text || '')}</div></div>`).join('')}</div>
+        <div class="tl">${rows.map((t, ti) => `<div class="row"><div class="lab"${ed('tl.' + ti + '.label')}${editable && !t.label ? ' data-ph="When…"' : ''}>${esc(t.label || '')}</div><div class="txt"${ed('tl.' + ti + '.text')}${editable && !t.text ? ' data-ph="What happened…"' : ''}>${esc(t.text || '')}</div></div>`).join('')}</div>
         ${chrome}</section>`;
     }
     case 'pricing': {
-      const plans = (s.plans || []).filter((p2) => p2 && p2.name).slice(0, 4);
+      const plans = (editable ? (s.plans || []) : (s.plans || []).filter((p2) => p2 && p2.name)).slice(0, 4);
       if (!plans.length) return renderSlideHtml({ ...s, layout: 'two-column' }, spec, i, total, editable);
       return `<section class="slide">
-        ${s.title ? `<h2 style="font-size:44px;max-width:1040px"${ed('title')}>${esc(s.title)}</h2>` : ''}
+        ${(editable || s.title) ? `<h2 style="font-size:44px;max-width:1040px"${ed('title')}${editable && !s.title ? ' data-ph="Title…"' : ''}>${esc(s.title || '')}</h2>` : ''}
         <div class="rule"></div>
-        <div class="plans">${plans.map((pl) => `<div class="plan${pl.highlight ? ' hl' : ''}"><div class="pn">${esc(pl.name)}</div>${pl.price ? `<div class="pp">${esc(pl.price)}</div>` : ''}<ul>${(pl.bullets || []).map((b) => `<li>${esc(b)}</li>`).join('')}</ul></div>`).join('')}</div>
+        <div class="plans">${plans.map((pl, pi) => `<div class="plan${pl.highlight ? ' hl' : ''}"><div class="pn"${ed('plan.' + pi + '.name')}${editable && !pl.name ? ' data-ph="Plan…"' : ''}>${esc(pl.name)}</div>${(editable || pl.price) ? `<div class="pp"${ed('plan.' + pi + '.price')}${editable && !pl.price ? ' data-ph="₹—"' : ''}>${esc(pl.price || '')}</div>` : ''}<ul>${(pl.bullets || []).map((b, bi) => `<li${ed('plan.' + pi + '.b.' + bi)}>${esc(b)}</li>`).join('')}</ul></div>`).join('')}</div>
         ${chrome}</section>`;
     }
     case 'team': {
-      const ppl = (s.people || []).filter((m) => m && m.name).slice(0, 8);
+      const ppl = (editable ? (s.people || []) : (s.people || []).filter((m) => m && m.name)).slice(0, 8);
       if (!ppl.length) return renderSlideHtml({ ...s, layout: 'bullets' }, spec, i, total, editable);
       return `<section class="slide">
-        ${s.title ? `<h2 style="font-size:44px;max-width:1040px"${ed('title')}>${esc(s.title)}</h2>` : ''}
+        ${(editable || s.title) ? `<h2 style="font-size:44px;max-width:1040px"${ed('title')}${editable && !s.title ? ' data-ph="Title…"' : ''}>${esc(s.title || '')}</h2>` : ''}
         <div class="rule"></div>
-        <div class="team" style="grid-template-columns:repeat(${Math.min(4, ppl.length)},1fr)">${ppl.map((m) => `<div class="m"><div class="av">${esc((m.name || '?').trim().charAt(0).toUpperCase())}</div><div class="nm">${esc(m.name)}</div>${m.role ? `<div class="rl">${esc(m.role)}</div>` : ''}</div>`).join('')}</div>
+        <div class="team" style="grid-template-columns:repeat(${Math.min(4, Math.max(1, ppl.length))},1fr)">${ppl.map((m, mi) => `<div class="m"><div class="av">${esc((m.name || '?').trim().charAt(0).toUpperCase())}</div><div class="nm"${ed('team.' + mi + '.name')}${editable && !m.name ? ' data-ph="Name…"' : ''}>${esc(m.name)}</div>${(editable || m.role) ? `<div class="rl"${ed('team.' + mi + '.role')}${editable && !m.role ? ' data-ph="Role…"' : ''}>${esc(m.role || '')}</div>` : ''}</div>`).join('')}</div>
         ${chrome}</section>`;
     }
     case 'logos': {
-      const logos = (s.logos || []).filter(Boolean).slice(0, 12);
+      const logos = (editable ? (s.logos || []) : (s.logos || []).filter(Boolean)).slice(0, 12);
       if (!logos.length) return renderSlideHtml({ ...s, layout: 'bullets' }, spec, i, total, editable);
       return `<section class="slide">
         <div class="kicker">${esc(s.subtitle || 'Trusted by')}</div>
-        ${s.title ? `<h2 style="font-size:40px;max-width:1040px"${ed('title')}>${esc(s.title)}</h2>` : ''}
+        ${(editable || s.title) ? `<h2 style="font-size:40px;max-width:1040px"${ed('title')}${editable && !s.title ? ' data-ph="Title…"' : ''}>${esc(s.title || '')}</h2>` : ''}
         <div class="rule"></div>
-        <div class="logos" style="grid-template-columns:repeat(${Math.min(4, logos.length)},1fr)">${logos.map((l) => `<div class="lg">${esc(l)}</div>`).join('')}</div>
+        <div class="logos" style="grid-template-columns:repeat(${Math.min(4, Math.max(1, logos.length))},1fr)">${logos.map((l, li) => `<div class="lg"${ed('logo.' + li)}${editable && !l ? ' data-ph="Name…"' : ''}>${esc(l)}</div>`).join('')}</div>
         ${chrome}</section>`;
     }
     case 'two-column': {
-      const validCols = (s.columns || []).filter((c) => c && (c.heading || (c.bullets && c.bullets.length)));
+      const validCols = editable ? (s.columns || []) : (s.columns || []).filter((c) => c && (c.heading || (c.bullets && c.bullets.length)));
       // No usable column data → don't render empty column boxes; fall back to a normal content slide.
       if (validCols.length === 0) {
         return `<section class="slide">
-          ${s.title ? `<h2 style="font-size:46px;max-width:1040px"${ed('title')}>${esc(s.title)}</h2>` : ''}
+          ${(editable || s.title) ? `<h2 style="font-size:46px;max-width:1040px"${ed('title')}${editable && !s.title ? ' data-ph="Title…"' : ''}>${esc(s.title || '')}</h2>` : ''}
           <div class="rule"></div>
           ${s.body ? `<p class="muted" style="font-size:24px;margin-bottom:24px;max-width:1000px;line-height:1.5"${ed('body')}>${multi(s.body)}</p>` : ''}
           ${(s.bullets || []).length ? `<ul>${bullets}</ul>` : ''}
           ${chrome}</section>`;
       }
-      const cols = validCols.map((c) =>
-        `<div class="col"><h3>${esc(c.heading)}</h3><ul>${(c.bullets || []).map((b) => `<li>${esc(b)}</li>`).join('')}</ul></div>`
+      const cols = validCols.map((c, ci) =>
+        `<div class="col"><h3${ed('col.' + ci + '.head')}${editable && !c.heading ? ' data-ph="Heading…"' : ''}>${esc(c.heading)}</h3><ul>${(c.bullets || []).map((b, bi) => `<li${ed('col.' + ci + '.b.' + bi)}>${esc(b)}</li>`).join('')}</ul></div>`
       ).join('');
       return `<section class="slide">
-        ${s.title ? `<h2 style="font-size:44px;max-width:1000px"${ed('title')}>${esc(s.title)}</h2>` : ''}
+        ${(editable || s.title) ? `<h2 style="font-size:44px;max-width:1000px"${ed('title')}${editable && !s.title ? ' data-ph="Title…"' : ''}>${esc(s.title || '')}</h2>` : ''}
         <div class="rule"></div>
         <div class="cols">${cols}</div>${chrome}</section>`;
     }

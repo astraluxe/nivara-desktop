@@ -174,6 +174,14 @@ function looksLikeScheduleIntent(text: string): boolean {
 // Detect a "make me a presentation / PPT" request so we can offer the deck setup card.
 function looksLikePresentation(text: string): boolean {
   const t = text.toLowerCase();
+  // Does the user EXPLICITLY ask to MAKE a deck (make/create/build … a deck/ppt/slides/presentation)?
+  const makeDeckExplicit = /\b(make|create|build|design|generate|prepare|put together|need|want|draft|turn (this|it) into)\b[^.]{0,28}\b(deck|presentation|slides?|ppt|pptx|pitch\s?deck|keynote|power\s?point)\b/.test(t);
+  // Is the PRIMARY ask really a written message / email / outreach / research?
+  const wantsMessageOrResearch = /\b(message|messages|email|e-?mail|linkedin|outreach|dm|whatsapp|cold\s*(mail|email)|reply|caption|research|analy[sz]e|summar|strategy|go[- ]to[- ]market|gtm)\b/.test(t);
+  // If they want a message/research and did NOT explicitly ask to MAKE a deck, then a "ppt/deck"
+  // mention is just an ATTACHMENT ("attach the ppt") — do NOT hijack into the deck maker.
+  if (wantsMessageOrResearch && !makeDeckExplicit) return false;
+
   if (/\b(power\s?point|\.pptx|\bppt\b|pitch\s?deck|slide\s?deck|slidedeck|keynote)\b/.test(t)) return true;
   if (/\b(presentation|slides?|deck)\b/.test(t) &&
       /\b(make|create|build|generate|design|prepare|put together|need|want|draft|do|turn (this|it) into)\b/.test(t)) return true;
@@ -1400,12 +1408,21 @@ function DeckResultBubble({ html, spec: specProp }: { html: string; spec: DeckSp
     const keys = Object.keys(editsRef.current);
     if (!keys.length) return sp;
     const copy: DeckSpec = JSON.parse(JSON.stringify(sp));
+    const at = <T,>(arr: T[] | undefined, i: number, def: T): T[] => { const a = Array.isArray(arr) ? arr : []; if (!a[i]) a[i] = def; return a; };
     for (const k of keys) {
       const bar = k.indexOf('|'); const si = +k.slice(0, bar); const field = k.slice(bar + 1);
-      const sl = copy.slides[si]; if (!sl) continue;
-      const v = editsRef.current[k];
-      if (field.startsWith('bullet.')) { const bi = +field.slice(7); if (!Array.isArray(sl.bullets)) sl.bullets = []; sl.bullets[bi] = v; }
-      else (sl as unknown as Record<string, string>)[field] = v;
+      const sl = copy.slides[si] as unknown as Record<string, unknown>; if (!sl) continue;
+      const v = editsRef.current[k]; const p = field.split('.'); const n = (x: string) => parseInt(x, 10);
+      // Nested inline-edit paths so EVERY layout's fields are editable (columns, cards, timeline,
+      // pricing, team, logos, bullets), plus the flat fields (title/body/stat/quote…).
+      if (p[0] === 'bullet') { sl.bullets = at(sl.bullets as string[], n(p[1]), ''); (sl.bullets as string[])[n(p[1])] = v; }
+      else if (p[0] === 'col') { sl.columns = at(sl.columns as object[], n(p[1]), { heading: '', bullets: [] }); const c = (sl.columns as Array<{ heading: string; bullets: string[] }>)[n(p[1])]; if (p[2] === 'head') c.heading = v; else { c.bullets = at(c.bullets, n(p[3]), ''); c.bullets[n(p[3])] = v; } }
+      else if (p[0] === 'card') { sl.cards = at(sl.cards as object[], n(p[1]), { heading: '', body: '' }); const c = (sl.cards as Array<{ heading: string; body?: string }>)[n(p[1])]; if (p[2] === 'head') c.heading = v; else c.body = v; }
+      else if (p[0] === 'tl') { sl.timeline = at(sl.timeline as object[], n(p[1]), { label: '', text: '' }); const r = (sl.timeline as Array<{ label: string; text?: string }>)[n(p[1])]; if (p[2] === 'label') r.label = v; else r.text = v; }
+      else if (p[0] === 'plan') { sl.plans = at(sl.plans as object[], n(p[1]), { name: '' }); const pn = (sl.plans as Array<{ name: string; price?: string; bullets?: string[] }>)[n(p[1])]; if (p[2] === 'name') pn.name = v; else if (p[2] === 'price') pn.price = v; else { pn.bullets = at(pn.bullets, n(p[3]), ''); pn.bullets[n(p[3])] = v; } }
+      else if (p[0] === 'team') { sl.people = at(sl.people as object[], n(p[1]), { name: '' }); const m = (sl.people as Array<{ name: string; role?: string }>)[n(p[1])]; if (p[2] === 'name') m.name = v; else m.role = v; }
+      else if (p[0] === 'logo') { sl.logos = at(sl.logos as string[], n(p[1]), ''); (sl.logos as string[])[n(p[1])] = v; }
+      else sl[field] = v;
     }
     return copy;
   }, []);
@@ -5868,17 +5885,27 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                   // Don't double up the extension: a Brain node captured from "PRODUCT.MD"
                   // already carries it, so appending ".md" produced "PRODUCT.MD.md".
                   const brainFileName = /\.[a-z0-9]{1,5}$/i.test(n.title) ? n.title : `${n.title}.md`;
-                  setAttachedFiles((prev) => [...prev, { name: brainFileName, content, fromBrain: true }]);
-                  setShowBrainPick(false);
+                  // Don't re-attach the same Brain item twice; keep the picker OPEN so several
+                  // files can be attached in a row (it used to close after one — that's why only a
+                  // single file went through when the user wanted two).
+                  setAttachedFiles((prev) => prev.some((f) => f.name === brainFileName) ? prev : [...prev, { name: brainFileName, content, fromBrain: true }]);
+                };
+                const isAttached = (n: typeof items[number]) => {
+                  const nm = /\.[a-z0-9]{1,5}$/i.test(n.title) ? n.title : `${n.title}.md`;
+                  return attachedFiles.some((f) => f.name === nm);
                 };
                 return (
                   <div className="absolute bottom-9 left-0 w-64 max-h-72 overflow-y-auto rounded-xl border border-nv-border bg-nv-surface shadow-2xl z-50 p-1.5">
-                    <p className="text-[9px] font-mono text-nv-faint uppercase tracking-widest px-2 py-1">From your Brain · {items.length}</p>
+                    <div className="flex items-center justify-between px-2 py-1">
+                      <p className="text-[9px] font-mono text-nv-faint uppercase tracking-widest">From your Brain · {items.length} · pick several</p>
+                      <button type="button" onClick={() => setShowBrainPick(false)} className="text-[9px] font-mono text-accent hover:opacity-80">Done</button>
+                    </div>
                     {items.length === 0 && <p className="text-[11px] text-nv-faint px-2 py-2">Nothing in the Brain yet.</p>}
                     {items.map((n) => (
                       <button key={n.id} type="button"
                         onClick={() => attachFromBrain(n)}
                         className="w-full text-left flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-nv-surface2 transition-fast">
+                        <span className={`text-[10px] shrink-0 ${isAttached(n) ? 'text-accent' : 'text-nv-faint/40'}`}>{isAttached(n) ? '✓' : '＋'}</span>
                         <span className="text-[11px] text-nv-text truncate flex-1">{n.title}</span>
                         <span className="text-[8px] font-mono text-nv-faint shrink-0">{n.kind}</span>
                       </button>
