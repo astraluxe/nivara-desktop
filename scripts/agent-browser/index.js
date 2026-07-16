@@ -66,15 +66,9 @@ async function isBrowserRunning() {
   });
 }
 
-// Launch Chrome as a fully DETACHED independent process — it will outlive this node process.
-// This is the core technique used by browser-use / crawl4ai / crawlee:
-// keep the browser running persistently across all agent commands.
-// We NEVER use launchPersistentContext (Playwright kills Chrome on node exit).
-// We always connectOverCDP to the running Chrome instead.
-async function launchChromeDetached() {
-  var spawn = require('child_process').spawn;
-
-  // Find the system Chrome executable
+// Locate the system Chrome executable (shared by the detached launcher and the headless
+// PDF renderer). Returns the path or null.
+function findChromeExe() {
   var chromePaths = [];
   if (process.platform === 'win32') {
     var pf   = process.env['ProgramFiles']      || 'C:\\Program Files';
@@ -84,22 +78,28 @@ async function launchChromeDetached() {
       path.join(pf,   'Google', 'Chrome', 'Application', 'chrome.exe'),
       path.join(pf86, 'Google', 'Chrome', 'Application', 'chrome.exe'),
       la ? path.join(la, 'Google', 'Chrome', 'Application', 'chrome.exe') : '',
+      path.join(pf,   'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+      path.join(pf86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
     ].filter(Boolean);
   } else if (process.platform === 'darwin') {
     chromePaths = ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'];
   } else {
-    chromePaths = [
-      '/usr/bin/google-chrome-stable',
-      '/usr/bin/google-chrome',
-      '/usr/bin/chromium-browser',
-      '/usr/bin/chromium',
-    ];
+    chromePaths = ['/usr/bin/google-chrome-stable', '/usr/bin/google-chrome', '/usr/bin/chromium-browser', '/usr/bin/chromium'];
   }
-
-  var chromeExe = null;
   for (var i = 0; i < chromePaths.length; i++) {
-    try { if (chromePaths[i] && fs.existsSync(chromePaths[i])) { chromeExe = chromePaths[i]; break; } } catch (_) {}
+    try { if (chromePaths[i] && fs.existsSync(chromePaths[i])) return chromePaths[i]; } catch (_) {}
   }
+  return null;
+}
+
+// Launch Chrome as a fully DETACHED independent process — it will outlive this node process.
+// This is the core technique used by browser-use / crawl4ai / crawlee:
+// keep the browser running persistently across all agent commands.
+// We NEVER use launchPersistentContext (Playwright kills Chrome on node exit).
+// We always connectOverCDP to the running Chrome instead.
+async function launchChromeDetached() {
+  var spawn = require('child_process').spawn;
+  var chromeExe = findChromeExe();
   if (!chromeExe) return false; // Chrome not found — caller falls back
 
   var child = spawn(chromeExe, [
@@ -836,49 +836,51 @@ async function main() {
   }
 
   // ── printpdf <htmlFilePath> ─────────────────────────────────────────────────
-  // Render a deck's HTML file in real Chrome and export it with Chromium's OWN print engine
-  // (CDP Page.printToPDF). This is a NATIVE render — every gradient/shadow/mesh background, the
-  // exact fonts, and sharp vector text — one slide per page, nothing missing. Writes the PDF next
-  // to the html file and prints "PDF_OK:<path>". This is the reliable path html2canvas couldn't be.
+  // Render a deck's HTML with Chromium's OWN print engine and write a perfect PDF — every
+  // gradient/shadow/mesh background, exact fonts, sharp vector text, one slide per page, nothing
+  // missing. Runs in a HEADLESS Chrome (a dedicated, invisible instance — NOT the user's visible
+  // session, so no window pops up and no logins are touched), using Playwright's page.pdf(), which
+  // is the well-trodden reliable path. Writes the PDF next to the html file → "PDF_OK:<path>".
   if (cmd === 'printpdf') {
     var htmlPath = argv.slice(1).join(' ').replace(/^"|"$/g, '').trim();
     var fileUrl = 'file:///' + htmlPath.replace(/\\/g, '/').replace(/^\/+/, '');
-    var pconn = await ensureChrome();
-    var pctx  = pconn.context;
-    if (!pctx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
-    var ppage = pctx.pages().at(-1) || await pctx.newPage();
-    try { await ppage.goto(fileUrl, { waitUntil: 'networkidle', timeout: 25000 }); }
-    catch (_) { try { await ppage.goto(fileUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }); } catch (e2) {} }
-    try { await ppage.evaluate(function(){ return document.fonts && document.fonts.ready; }); } catch (_) {}
-    // Switch to print media so ALL slides lay out (each 1280x720, one per page), then run the same
-    // content auto-fit the on-screen deck uses — on EVERY slide — so long slides shrink to fit
-    // instead of clipping. (On screen only the active slide is fitted.)
-    try { await ppage.emulateMedia({ media: 'print' }); } catch (_) {}
-    try {
-      await ppage.evaluate(function() {
-        var avail = 720 - 96 - 96 - 6;
-        var sls = document.querySelectorAll('.slide');
-        for (var i = 0; i < sls.length; i++) {
-          var wrap = sls[i].querySelector(':scope > .fitwrap');
-          if (!wrap) continue;
-          wrap.style.transform = 'none';
-          var h = wrap.scrollHeight;
-          if (h > avail) wrap.style.transform = 'scale(' + Math.max(0.55, avail / h) + ')';
-        }
-      });
-    } catch (_) {}
-    await new Promise(function (r) { setTimeout(r, 350); });
     var pdfPath = htmlPath.replace(/\.html?$/i, '') + '.pdf';
+    var chromeExe = findChromeExe();
+    if (!chromeExe) { process.stdout.write('[pdf-failed] Chrome not found'); return; }
+    var hb = null;
     try {
-      var session = await pctx.newCDPSession(ppage);
-      var res = await session.send('Page.printToPDF', {
-        printBackground: true, preferCSSPageSize: true,
-        marginTop: 0, marginBottom: 0, marginLeft: 0, marginRight: 0,
+      hb = await chromium.launch({ headless: true, executablePath: chromeExe, args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'] });
+      var hp = await hb.newPage({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 2 });
+      try { await hp.goto(fileUrl, { waitUntil: 'networkidle', timeout: 25000 }); }
+      catch (_) { try { await hp.goto(fileUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }); } catch (e2) {} }
+      try { await hp.evaluate(function(){ return document.fonts && document.fonts.ready; }); } catch (_) {}
+      // Print media lays out ALL slides (each 1280x720, one per page); then run the on-screen
+      // content auto-fit on EVERY slide so long slides shrink to fit instead of clipping.
+      try { await hp.emulateMedia({ media: 'print' }); } catch (_) {}
+      try {
+        await hp.evaluate(function() {
+          var avail = 720 - 96 - 96 - 6;
+          var sls = document.querySelectorAll('.slide');
+          for (var i = 0; i < sls.length; i++) {
+            var wrap = sls[i].querySelector(':scope > .fitwrap');
+            if (!wrap) continue;
+            wrap.style.transform = 'none';
+            var h = wrap.scrollHeight;
+            if (h > avail) wrap.style.transform = 'scale(' + Math.max(0.55, avail / h) + ')';
+          }
+        });
+      } catch (_) {}
+      await new Promise(function (r) { setTimeout(r, 350); });
+      await hp.pdf({
+        path: pdfPath, printBackground: true, preferCSSPageSize: true,
+        width: '1280px', height: '720px', pageRanges: '',
+        margin: { top: '0', bottom: '0', left: '0', right: '0' },
       });
-      fs.writeFileSync(pdfPath, Buffer.from(res.data, 'base64'));
       process.stdout.write('PDF_OK:' + pdfPath);
     } catch (e) {
       process.stdout.write('[pdf-failed] ' + (e && e.message ? e.message : String(e)));
+    } finally {
+      if (hb) { try { await hb.close(); } catch (_) {} }
     }
     return;
   }

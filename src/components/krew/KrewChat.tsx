@@ -54,13 +54,13 @@ async function freshSessionToken(fallback: string | null): Promise<string | null
 //  • 'prompt' → drops a ready phrasing into the input (the user reviews and sends; it routes
 //    through the normal Krew flow / deterministic short-circuits).
 //  • 'nav'    → opens another module of the exe (via the global nv-navigate event App listens to).
-type SlashCmd = { cmd: string; label: string; desc: string; run: 'prompt' | 'nav' | 'research' | 'agents' | 'outreach'; value: string };
+type SlashCmd = { cmd: string; label: string; desc: string; run: 'prompt' | 'nav' | 'research' | 'agents' | 'outreach' | 'scan'; value: string };
 const SLASH_COMMANDS: SlashCmd[] = [
   // ── Actions that run in the chat ─────────────────────────────────────────
   { cmd: 'verify',   label: 'Verify LinkedIn',   desc: 'Open & check every LinkedIn in your lead list',   run: 'prompt', value: 'Go to <file name> and verify each and every LinkedIn — open and check each one, and fill it in properly if it exists.' },
   { cmd: 'enrich',   label: 'Fill contacts',     desc: 'Add missing LinkedIn, phone & email',             run: 'prompt', value: 'Fill in the missing LinkedIn, phone and email for the people already in <file name>.' },
   { cmd: 'findleads',label: 'Find prospects',    desc: 'Research new leads for your product',              run: 'prompt', value: 'Find new prospects for my product and add them to <file name> — do not duplicate anyone already there.' },
-  { cmd: 'scan',     label: 'Scan LinkedIn connections', desc: 'List who you\'re already connected with as warm leads', run: 'prompt', value: 'Use the linkedin_scan_connections tool to scan my LinkedIn connections (50 this run). Save them to the "LinkedIn connections" note in my Brain and, if I attached a file, link the list to it. Then tell me how many new people were added and flag which look like a fit for what I sell — keeping their real names exactly.' },
+  { cmd: 'scan',     label: 'Scan LinkedIn connections', desc: 'List who you\'re already connected with as warm leads', run: 'scan', value: '' },
   { cmd: 'expand',   label: 'Add more leads',    desc: 'Grow the list with new people',                   run: 'prompt', value: 'Add more prospects to <file name> — new people only, do not repeat anyone already there.' },
   { cmd: 'draft',    label: 'Draft outreach',    desc: 'Write DMs / emails for your list',                run: 'prompt', value: 'Write a LinkedIn DM and a short cold email for the people in <file name>, tailored by sector.' },
   { cmd: 'outreach', label: 'Send outreach (copilot)', desc: 'Draft LinkedIn messages & walk through sending them', run: 'prompt', value: 'Draft a personalised LinkedIn message for each person in <file name>, then open the outreach copilot so I can send them one by one.' },
@@ -421,22 +421,6 @@ function copyToClipboard(text: string): Promise<boolean> {
     }
   } catch { /* fall through */ }
   return Promise.resolve(fallback());
-}
-
-// Save a blob (e.g. a generated PDF) into the user's real Downloads folder via the Rust side —
-// a programmatic <a download> on a blob URL is silently ignored by WebView2 on Windows, which is
-// why "Download PDF" did nothing. This writes a real file and returns its path. Throws on failure
-// so callers can fall back. Reveals/opens the file so the user can see it landed.
-async function saveBlobToDownloads(blob: Blob, filename: string): Promise<string> {
-  const buf = await blob.arrayBuffer();
-  const bytes = new Uint8Array(buf);
-  // base64-encode in chunks (avoid call-stack overflow on large PDFs)
-  let bin = '';
-  const CH = 0x8000;
-  for (let i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + CH)));
-  const b64 = btoa(bin);
-  const path = await invoke<string>('save_to_downloads', { filename, dataBase64: b64 });
-  return path;
 }
 
 function renderInline(text: string): React.ReactNode[] {
@@ -1550,23 +1534,15 @@ function DeckResultBubble({ html, spec: specProp }: { html: string; spec: DeckSp
   // capture, then to open-in-browser print, so the user ALWAYS ends up with a PDF.
   async function downloadPdf() {
     setPdfState('opening');
-    // 1) Native Chrome print engine — the reliable, perfect one.
+    // Native headless-Chrome print — perfect, all design, sharp, nothing missing. No window opens.
     try {
       const path = await invoke<string>('deck_export_pdf', { html: finalHtml(), slug: slug() });
       try { await invoke('open_path', { path }); } catch { /* still saved */ }
       setPdfState('saved'); setTimeout(() => setPdfState('idle'), 4000);
       return;
     } catch { /* fall through */ }
-    // 2) html2canvas capture → Downloads.
-    try {
-      const { deckToPdfBlob } = await import('../../lib/deck');
-      const blob = await deckToPdfBlob(finalSpec());
-      const path = await saveBlobToDownloads(blob, `${slug()}.pdf`);
-      try { await invoke('open_path', { path }); } catch { /* still saved */ }
-      setPdfState('saved'); setTimeout(() => setPdfState('idle'), 4000);
-      return;
-    } catch { /* fall through */ }
-    // 3) Last resort: open in the browser to Save-as-PDF.
+    // Rare fallback (Chrome not found): open the deck in the browser to Save-as-PDF — still a
+    // native render. We do NOT use the html2canvas path here, since it can drop box text.
     try {
       const printHtml = finalHtml().replace('</body>', '<script>window.addEventListener("load",function(){setTimeout(function(){try{window.print()}catch(e){}},600)})<\/script></body>');
       const path = await invoke<string>('save_deck_files', { slug: slug() + '-pdf', html: printHtml, specJson: JSON.stringify(finalSpec()) });
@@ -1721,26 +1697,14 @@ function SavedDeckBubble({ html }: { html: string }) {
   const doPdf = useCallback(async () => {
     setPdfState('opening');
     const slug = ((html.match(/<title>([^<]*)<\/title>/i)?.[1] || 'deck').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)) || 'deck';
-    // 1) Native Chrome print engine — perfect, all design, sharp, nothing missing.
+    // Native headless-Chrome print — perfect, nothing missing, no window opens.
     try {
       const path = await invoke<string>('deck_export_pdf', { html, slug });
       try { await invoke('open_path', { path }); } catch { /* still saved */ }
       setPdfState('saved'); setTimeout(() => setPdfState('idle'), 4000);
       return;
     } catch { /* fall through */ }
-    // 2) html2canvas capture from the rebuilt spec.
-    try {
-      const { extractDeckSpec, deckToPdfBlob } = await import('../../lib/deck');
-      const spec = extractDeckSpec(html);
-      if (spec && spec.slides?.length) {
-        const blob = await deckToPdfBlob(spec);
-        const path = await saveBlobToDownloads(blob, `${slug}.pdf`);
-        try { await invoke('open_path', { path }); } catch { /* still saved */ }
-        setPdfState('saved'); setTimeout(() => setPdfState('idle'), 4000);
-        return;
-      }
-    } catch { /* fall through to the print flow */ }
-    // 3) Last resort: open the deck in the browser with auto-print so the user can Save-as-PDF.
+    // Rare fallback: open the deck in the browser to Save-as-PDF (still native). No html2canvas.
     try {
       const printHtml = html.replace(
         '</body>',
@@ -4090,6 +4054,37 @@ The prompt must be production-ready — specific enough for a motion designer to
     }
   }
 
+  // Deterministic LinkedIn-connections scan. Runs the linkedin_scan_connections tool DIRECTLY
+  // (never via the boss) — so /scan always scans the real connections and never gets re-routed
+  // into "analyse my product" or some other agent's output. Names are code-parsed from the page.
+  async function runConnectionScan(limit = 50) {
+    if (busy) return;
+    const sid = sidRef.current;
+    const linkTo = attachedFiles.find((f) => /\.(md|markdown|txt|pdf|docx?)$/i.test(f.name))?.name
+      || attachedFiles[0]?.name || focusedFile?.name || '';
+    addMsg({ role: 'user', content: `Scan my LinkedIn connections${linkTo ? ` (link to ${linkTo})` : ''}` });
+    if (sid) krewDb.saveMessage(sid, 'user', 'Scan my LinkedIn connections').catch(() => {});
+    addMsg({ role: 'assistant', content: 'Opening your LinkedIn connections and reading the list…', streaming: true });
+    setBusy(true); setBrowserActive(true);
+    const unlisten = await listen('agent-progress', (e) => {
+      const t = (e.payload as { text?: string } | undefined)?.text;
+      if (t) updateLastMsg(`${t}\n\n_Reading your connections in the browser…_`);
+    });
+    try {
+      const result = await executeTool('linkedin_scan_connections', { limit, link_to: linkTo }, creds, requestTerminalApproval, agent.key, user?.id ?? '', `${sidRef.current ?? 'main'}-scan`);
+      // The tool's return has a tail of instructions meant for the LLM — strip it for direct display.
+      const display = result.replace(/\n\nTell the user[\s\S]*$/, '').trim()
+        + '\n\n_Want me to flag which of these fit what you sell, or draft outreach for the good ones? Just ask._';
+      setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: display, streaming: false }; return c; });
+      if (sid) krewDb.saveMessage(sid, 'assistant', display).catch(() => {});
+    } catch (e) {
+      const msg = `Couldn't scan your connections: ${e instanceof Error ? e.message : String(e)}. Make sure you're signed in to LinkedIn in the ADRIS browser, then try again.`;
+      setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: msg, streaming: false }; return c; });
+    } finally {
+      unlisten(); setBusy(false); setBrowserActive(false); await closeAgentBrowserIfActive();
+    }
+  }
+
   // ── Slash commands ────────────────────────────────────────────────────────
   // The menu is open while the input is a single "/token" (no spaces yet). Matches by command
   // name OR label so "/link" finds "Verify LinkedIn" etc.
@@ -4110,6 +4105,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       else setInput('Draft a personalised LinkedIn message for each person in <file name>, then open the outreach copilot so I can send them one by one.');
       return;
     }
+    if (c.run === 'scan') { setInput(''); runConnectionScan(50); return; }        // deterministic — never via the boss
     // 'prompt' → drop the phrasing into the input, keep focus. If it contains a <file name>
     // placeholder, SELECT it (not just place the caret) so it's unmissable and the user's first
     // keystroke replaces it directly — a plain <textarea> can't render it in a different color, but

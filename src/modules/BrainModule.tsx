@@ -397,29 +397,14 @@ function DeckPreview({ path }: { path: string }) {
       } else if (d?.__deckPdf && html) {
         setPdfMsg('Making PDF…');
         const slug = ((html.match(/<title>([^<]*)<\/title>/i)?.[1] || 'deck').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)) || 'deck';
-        // 1) Native Chrome print engine — perfect, all design, nothing missing.
+        // Native headless-Chrome print — perfect, all design, nothing missing, no window opens.
         try {
           const saved = await invoke<string>('deck_export_pdf', { html, slug });
           try { await invoke('open_path', { path: saved }); } catch { /* still saved */ }
           setPdfMsg('✓ Saved to Downloads'); setTimeout(() => setPdfMsg(''), 3500);
           return;
         } catch { /* fall through */ }
-        // 2) html2canvas capture.
-        try {
-          const { extractDeckSpec, deckToPdfBlob } = await import('../lib/deck');
-          const spec = extractDeckSpec(html);
-          if (spec && spec.slides?.length) {
-            const blob = await deckToPdfBlob(spec);
-            const buf = new Uint8Array(await blob.arrayBuffer());
-            let bin = ''; const CH = 0x8000;
-            for (let i = 0; i < buf.length; i += CH) bin += String.fromCharCode.apply(null, Array.from(buf.subarray(i, i + CH)));
-            const saved = await invoke<string>('save_to_downloads', { filename: `${slug}.pdf`, dataBase64: btoa(bin) });
-            try { await invoke('open_path', { path: saved }); } catch { /* still saved */ }
-            setPdfMsg('✓ Saved to Downloads'); setTimeout(() => setPdfMsg(''), 3500);
-            return;
-          }
-        } catch { /* fall back to opening the html to print */ }
-        // 3) Last resort: open the saved .html so the user can Save-as-PDF.
+        // Rare fallback: open the saved .html so the user can Save-as-PDF (still native). No html2canvas.
         try { await invoke('open_path', { path }); setPdfMsg('Opened in your browser — use Save as PDF.'); setTimeout(() => setPdfMsg(''), 4000); }
         catch { setPdfMsg('Could not export the PDF.'); setTimeout(() => setPdfMsg(''), 3500); }
       }
