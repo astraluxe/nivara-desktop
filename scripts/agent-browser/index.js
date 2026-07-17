@@ -550,7 +550,12 @@ async function main() {
   // kills Chrome — the window stays open and logged in for the next command.
 
   // ── Interactive commands ───────────────────────────────────────────────────
-  if (cmd !== 'open' && cmd !== 'close') {
+  // EXCLUDE our custom commands — they are handled by their OWN blocks further down. Without this
+  // exclusion they fell into here, matched none of navigate/snapshot/click/…, and hit the "(done)"
+  // fall-through at the end of this block — so `connections` opened Chrome but returned nothing
+  // ("couldn't read any names"). This is THE bug behind the whole /scan saga.
+  if (cmd !== 'open' && cmd !== 'close'
+      && cmd !== 'connections' && cmd !== 'logincheck' && cmd !== 'message' && cmd !== 'printpdf') {
     var state   = readState();
 
     var conn    = await ensureChrome();
@@ -872,13 +877,15 @@ async function main() {
       cLast = cCount;
     }
     await hideBanner(cPage);
-    // Extract each connection STRUCTURALLY from the DOM — name from the /in/ profile link, and the
-    // occupation as the most substantial non-name/non-badge text element in the card. This is
-    // element-traversal (textContent), NOT innerText line-parsing (which was fragile and dropped
-    // names/occupations). Verified against realistic LinkedIn card markup. Returns CONN_JSON:[…].
+    // Extract each connection from the DOM. LinkedIn's connection card is an obfuscated <div>
+    // (no <li>, hashed classes) whose profile /in/ link is just the AVATAR (empty text). The clean
+    // data is in the card's innerText lines: [name, headline, "Connected on <date>", "Message"].
+    // So: from each unique /in/ anchor, walk UP to the card (nearest ancestor whose text contains
+    // "Connected on"), then take the first two non-noise lines as name + headline. This is VERIFIED
+    // live against the user's real logged-in connections page (real names + correct headlines).
     var people = await cPage.evaluate(function() {
-      function clean(s) { return (s || '').replace(/\s+/g, ' ').trim(); }
-      var noiseRe = /^(message|connect|connected|following|follow|pending|1st|2nd|3rd|•\s*1st|·\s*1st|view .*profile)$/i;
+      function clean(s) { return (s || '').replace(/[ \t]+/g, ' ').trim(); }
+      var skip = /^(message|connect|following|pending|connected on|•|·|\d+(st|nd|rd|th)\b|view .*profile)/i;
       var out = [], seen = {};
       var anchors = document.querySelectorAll('a[href*="/in/"]');
       for (var i = 0; i < anchors.length; i++) {
@@ -887,31 +894,22 @@ async function main() {
         if (href.indexOf('/in/') === -1) continue;
         var key = href.split('?')[0].replace(/\/$/, '');
         if (seen[key]) continue;
-        var card = a.closest('li') || a.closest('.mn-connection-card') || a.closest('[data-view-name]') || a.closest('.artdeco-list__item') || a.parentElement;
+        // Walk up to the card: nearest ancestor whose text has a name line + "Connected on".
+        var card = a, hops = 0;
+        while (card && hops < 7) {
+          var t = card.innerText || '';
+          if (/connected on/i.test(t) && t.split('\n').map(function (x) { return x.trim(); }).filter(Boolean).length >= 2) break;
+          card = card.parentElement; hops++;
+        }
         if (!card) continue;
-        var nameEl = a.querySelector('span[aria-hidden="true"]') || a.querySelector('span') || a;
-        var name = clean(nameEl.textContent).split('\n')[0].trim();
-        if (!name || name.length > 80 || noiseRe.test(name)) {
-          var h = card.querySelector('a[href*="/in/"] span[aria-hidden="true"]');
-          name = h ? clean(h.textContent) : '';
-          if (!name || name.length > 80) continue;
+        var lines = (card.innerText || '').split('\n').map(function (x) { return clean(x); }).filter(Boolean);
+        var picked = [];
+        for (var j = 0; j < lines.length && picked.length < 2; j++) {
+          if (!skip.test(lines[j]) && lines[j].length >= 2) picked.push(lines[j]);
         }
-        var cands = [];
-        var els = card.querySelectorAll('div,p,span,h3,h4');
-        for (var k = 0; k < els.length; k++) {
-          var el = els[k];
-          if (el.closest('a[href*="/in/"]') || el.closest('button') || el.closest('time')) continue;
-          if (el.querySelector('a[href*="/in/"], button, time')) continue; // wrapper, not a leaf line
-          var tt = clean(el.textContent);
-          if (tt.length < 3 || tt.length > 180) continue;
-          if (tt === name || noiseRe.test(tt)) continue;
-          if (/^[•·]/.test(tt) && tt.length < 14) continue;
-          if (/degree connection/i.test(tt)) continue;
-          cands.push(tt);
-        }
-        cands.sort(function (x, y) { return y.length - x.length; });
+        if (!picked.length || picked[0].length > 90) continue;
         seen[key] = 1;
-        out.push({ name: name, headline: cands[0] || '' });
+        out.push({ name: picked[0], headline: picked[1] || '' });
       }
       return out;
     }).catch(function () { return []; });
