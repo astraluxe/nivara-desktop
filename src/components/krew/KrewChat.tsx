@@ -4071,9 +4071,32 @@ The prompt must be production-ready — specific enough for a motion designer to
       if (t) updateLastMsg(`${t}\n\n_Reading your connections in the browser…_`);
     });
     try {
-      const result = await executeTool('linkedin_scan_connections', { limit, link_to: linkTo }, creds, requestTerminalApproval, agent.key, user?.id ?? '', `${sidRef.current ?? 'main'}-scan`);
+      const scanKey = `${sidRef.current ?? 'main'}-scan`;
+      let result = await executeTool('linkedin_scan_connections', { limit, link_to: linkTo }, creds, requestTerminalApproval, agent.key, user?.id ?? '', scanKey);
+      // Not signed in? Don't make the user re-run — WAIT for them to log in (poll the auth cookie,
+      // which doesn't disturb their login page), then continue the scan automatically.
+      if (result.startsWith('[NEEDS_LOGIN]')) {
+        updateLastMsg("Opened LinkedIn in the ADRIS browser — please sign in there. I'll detect it and read your connections automatically the moment you're in… _(press Stop to cancel)_");
+        const deadline = Date.now() + 180000; // wait up to 3 minutes for login
+        let loggedIn = false;
+        while (Date.now() < deadline && !stopRef.current) {
+          await new Promise((r) => setTimeout(r, 4000));
+          const chk = await invoke<string>('run_browser_persistent', { args: 'logincheck linkedin' }).catch(() => '');
+          if (chk.includes('LOGGED_IN')) { loggedIn = true; break; }
+        }
+        if (stopRef.current) {
+          setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: 'Stopped — run /scan again once you\'re signed in to LinkedIn.', streaming: false }; return c; });
+          return;
+        }
+        if (!loggedIn) {
+          setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: "I didn't detect a LinkedIn login in the ADRIS browser. Sign in there, then run /scan again.", streaming: false }; return c; });
+          return;
+        }
+        updateLastMsg('Signed in ✓ — reading your connections now…');
+        result = await executeTool('linkedin_scan_connections', { limit, link_to: linkTo }, creds, requestTerminalApproval, agent.key, user?.id ?? '', scanKey);
+      }
       // The tool's return has a tail of instructions meant for the LLM — strip it for direct display.
-      const base = result.replace(/\n\nTell the user[\s\S]*$/, '').trim();
+      const base = result.replace(/^\[NEEDS_LOGIN\]\s*/, '').replace(/\n\nTell the user[\s\S]*$/, '').trim();
       // Only offer the fit/outreach follow-up when we actually SAVED people (the result has a table).
       const display = /\n\|/.test(base)
         ? base + '\n\n_Want me to flag which of these fit what you sell, or draft outreach for the good ones? Just ask._'

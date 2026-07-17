@@ -1557,7 +1557,7 @@ async function executeToolCore(
     // Load a bit extra so that after removing already-saved people we still net ~limit new ones.
     const raw = await invoke<string>('run_browser_persistent', { args: `connections ${limit + existingNames.size + 10}` }).catch((e) => String(e));
     emit('agent-browser-idle', {}).catch(() => {});
-    if (raw.includes('[SIGN_IN_REQUIRED]')) return "I opened LinkedIn in the ADRIS browser but you're not signed in there. Please sign in to LinkedIn in that window (you only have to do it once — it's saved), then run /scan again.";
+    if (raw.includes('[SIGN_IN_REQUIRED]')) return "[NEEDS_LOGIN] I opened LinkedIn in the ADRIS browser — please sign in there (once; it's saved). I'll detect when you're in and continue automatically.";
     if (raw.startsWith('[browser-') || raw.includes('[agent-browser not installed')) {
       return "The ADRIS browser couldn't start just now. Make sure Google Chrome (or Edge) is installed, then run /scan again.";
     }
@@ -1570,7 +1570,7 @@ async function executeToolCore(
       try {
         const d = JSON.parse(raw.slice(diagIdx + 'CONN_DIAG:'.length).trim()) as { url?: string; anchors?: number; login?: boolean; title?: string; snippet?: string };
         if (d.login || /\/(login|authwall|checkpoint|uas)/.test(d.url || '')) {
-          return "You're not signed in to LinkedIn in the ADRIS browser. I opened it for you — please sign in there once (it's saved forever), then run /scan again.";
+          return "[NEEDS_LOGIN] You're not signed in to LinkedIn in the ADRIS browser. I opened it for you — please sign in there once (it's saved). I'll detect it and continue automatically.";
         }
         return `I opened LinkedIn but couldn't find your connections list on the page (found ${d.anchors ?? 0} profile links). It may not have finished loading, or LinkedIn showed a different page (title: "${d.title || '—'}"). Open the ADRIS browser window, make sure it's on your Connections page and signed in, scroll once, then run /scan again.`;
       } catch { /* fall through */ }

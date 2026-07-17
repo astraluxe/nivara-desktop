@@ -784,6 +784,23 @@ async function main() {
     return;
   }
 
+  // ── logincheck [linkedin] ───────────────────────────────────────────────────
+  // Non-disruptive login probe: checks the persistent browser's COOKIES for the site's auth
+  // cookie WITHOUT navigating anywhere — so we can poll for "has the user signed in yet?" while
+  // they're mid-login without yanking the page out from under them. LinkedIn's auth cookie is li_at.
+  if (cmd === 'logincheck') {
+    var dom = (argv[1] || 'linkedin').toLowerCase();
+    var lc = await ensureChrome();
+    var lctx = lc && lc.context;
+    if (!lctx) { process.stdout.write('LOGGED_OUT'); return; }
+    var cookies = []; try { cookies = await lctx.cookies(); } catch (_) {}
+    var authName = dom.indexOf('linkedin') !== -1 ? 'li_at' : (dom.indexOf('twitter') !== -1 || dom.indexOf('x.com') !== -1 ? 'auth_token' : 'li_at');
+    var hostPart = dom.indexOf('linkedin') !== -1 ? 'linkedin.com' : dom;
+    var logged = cookies.some(function (c) { return (c.domain || '').indexOf(hostPart) !== -1 && c.name === authName && c.value; });
+    process.stdout.write(logged ? 'LOGGED_IN' : 'LOGGED_OUT');
+    return;
+  }
+
   // ── connections [limit] ────────────────────────────────────────────────────
   // Load the "My Network → Connections" page, scroll + click "Load more" until we have
   // `limit` connections (bounded well under Rust's 30s cap), then return the RAW innerText
