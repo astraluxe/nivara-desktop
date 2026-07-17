@@ -1558,8 +1558,8 @@ async function executeToolCore(
     const raw = await invoke<string>('run_browser_persistent', { args: `connections ${limit + existingNames.size + 10}` }).catch((e) => String(e));
     emit('agent-browser-idle', {}).catch(() => {});
     if (raw.includes('[SIGN_IN_REQUIRED]')) return "[NEEDS_LOGIN] I opened LinkedIn in the ADRIS browser — please sign in there (once; it's saved). I'll detect when you're in and continue automatically.";
-    if (raw.startsWith('[browser-') || raw.includes('[agent-browser not installed')) {
-      return "The ADRIS browser couldn't start just now. Make sure Google Chrome (or Edge) is installed, then run /scan again.";
+    if (raw.startsWith('[browser-') || raw.includes('[agent-browser not installed') || raw.includes('[custom-browser-unavailable')) {
+      return "The ADRIS browser engine didn't respond just now. Make sure Google Chrome (or Edge) is installed, then run /scan again.";
     }
     if (raw.includes('[no-connections-text]')) {
       return "I opened your LinkedIn connections page but it hadn't rendered any people yet (LinkedIn can be slow to load the list). Open that window, scroll the list once, then run /scan again.";

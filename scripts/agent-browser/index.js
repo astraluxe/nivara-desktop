@@ -834,6 +834,7 @@ async function main() {
     // <main>, so it matches the extraction below and doesn't miss a differently-nested layout).
     try { await cPage.waitForSelector('a[href*="/in/"]', { timeout: 9000 }); } catch (_) {}
     try { await progressiveScroll(cPage); } catch (_) {}
+    try { await waitForContentStability(cPage, 300, 1500); } catch (_) {} // let the list settle (proven open-cmd helper)
     // Probe: distinguish not-signed-in / wrong-page from genuinely-no-connections so the message is
     // accurate. Fast — no polling.
     var probe = await cPage.evaluate(function() {

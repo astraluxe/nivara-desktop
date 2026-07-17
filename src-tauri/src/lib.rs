@@ -3090,6 +3090,17 @@ async fn run_browser_persistent(app: tauri::AppHandle, args: String) -> Result<S
         browser_debug_log(&format!("node script MISSING at '{}' — trying fallbacks", script_path.display()));
     }
 
+    // Our CUSTOM commands (connections/logincheck/message/printpdf/deckshots) only exist in OUR
+    // node script. The generic agent-browser.exe can't run them — it would just open its own BLANK
+    // window and return junk, which is exactly the "browser opens but nothing loads / couldn't read
+    // names" bug. So NEVER fall back to the exe for these; return a clear signal instead.
+    let first_word = args.trim().split_whitespace().next().unwrap_or("");
+    let is_custom = matches!(first_word, "connections" | "logincheck" | "message" | "printpdf" | "deckshots");
+    if is_custom {
+        browser_debug_log(&format!("custom cmd '{}' — NOT using generic exe fallback", first_word));
+        return Ok("[custom-browser-unavailable] The adris browser engine didn't respond. Make sure Google Chrome is installed and try again.".to_string());
+    }
+
     // FALLBACK: generic agent-browser in system PATH (only if our node script is unavailable)
     if let Some(r) = run_with_timeout("agent-browser".to_string(), args.clone(), persistent_dir.clone()).await {
         browser_debug_log("RETURNED via PATH agent-browser fallback");
