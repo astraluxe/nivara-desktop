@@ -4159,17 +4159,33 @@ The prompt must be production-ready — specific enough for a motion designer to
     const { brain } = await import('../../lib/knowledgeStore');
     const node = brain.findByTitle('LinkedIn connections');
     if (!node?.body) { addMsg({ role: 'assistant', content: 'You haven\'t scanned any LinkedIn connections yet — run **/scan** first, then I\'ll draft outreach and open the copilot.' }); return; }
+    // Parse the saved table ROBUSTLY: LinkedIn headlines contain '|' (e.g. "|| Co-Founder ||"),
+    // which breaks a naive 3-column regex (that's the "couldn't read your connections" bug). Names
+    // and profile URLs never contain '|', so: name = first cell, URL = last cell (if it's a /in/
+    // link), headline = everything in between.
     const contacts: { name: string; headline: string; url: string }[] = [];
-    for (const line of node.body.split('\n')) {
-      const m = line.match(/^\|\s*([^|]+?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|/);
-      if (!m) continue;
-      const name = m[1].trim(); const headline = m[2].trim(); const url = m[3].trim();
-      if (!name || /^name$/i.test(name) || /^-+$/.test(name)) continue;
+    for (const raw of node.body.split('\n')) {
+      const t = raw.trim();
+      if (!t.startsWith('|')) continue;
+      let cells = t.split('|').map((c) => c.trim());
+      if (cells[0] === '') cells = cells.slice(1);
+      if (cells.length && cells[cells.length - 1] === '') cells = cells.slice(0, -1);
+      if (!cells.length) continue;
+      const name = cells[0];
+      if (!name || /^name$/i.test(name) || /^:?-{2,}:?$/.test(name)) continue; // header / separator row
+      const last = cells[cells.length - 1] || '';
+      let url = '', headlineCells = cells.slice(1);
+      if (/linkedin\.com\/in\//i.test(last)) { url = last; headlineCells = cells.slice(1, -1); }
+      const headline = headlineCells.join(' ').replace(/\s+/g, ' ').trim();
       contacts.push({ name, headline, url });
     }
-    if (!contacts.length) { addMsg({ role: 'assistant', content: 'Couldn\'t read your saved connections — run **/scan** again, then try.' }); return; }
+    // Show the user's request now (before any early return) so it never disappears from the chat.
+    addMsg({ role: 'user', content: focus ? `Draft outreach for my LinkedIn connections — ${focus}` : 'Draft outreach for my LinkedIn connections and open the copilot' });
+    if (!contacts.length) {
+      addMsg({ role: 'assistant', content: 'Your "LinkedIn connections" note is there, but I couldn\'t read any rows out of it. Run **/scan** once more (it now saves them cleanly) and then ask again.' });
+      return;
+    }
     const pick = contacts.slice(0, max);
-    addMsg({ role: 'user', content: `Draft LinkedIn outreach for my connections${focus ? ` — ${focus}` : ''} and open the copilot` });
     addMsg({ role: 'assistant', content: `Drafting personalised messages for ${pick.length} connections and opening the outreach copilot…`, streaming: true });
     setBusy(true);
     // Give the drafter the user's own context (attached file / focus / saved product) so messages

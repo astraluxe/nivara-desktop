@@ -1592,8 +1592,11 @@ async function executeToolCore(
     const fresh = all.filter((c) => !existingNames.has(c.name.toLowerCase())).slice(0, limit);
     if (fresh.length === 0) return `Scanned your connections — all ${all.length} people I could load are already saved in the "${LIST_TITLE}" Brain note. To go further, say "scan the next 50" (I'll keep scrolling past the ones already saved) or "scan all".`;
     // Save a 3-column table incl. the profile URL — the outreach copilot uses the URL to open the
-    // exact chat. (Older 2-col notes still append cleanly; the extra column just renders as a cell.)
-    const rows = fresh.map((c) => `| ${c.name} | ${c.headline || '—'} | ${c.url || ''} |`).join('\n');
+    // exact chat. Replace any '|' inside a name/headline with '·' first: LinkedIn headlines are full
+    // of pipes ("|| Co-Founder ||"), which would otherwise corrupt the markdown table and make the
+    // outreach reader fail to parse the rows.
+    const cell = (s: string) => (s || '').replace(/\|/g, '·').replace(/\s+/g, ' ').trim();
+    const rows = fresh.map((c) => `| ${cell(c.name)} | ${cell(c.headline) || '—'} | ${c.url || ''} |`).join('\n');
     const block = `| Name | Role / Company / Headline | Profile |\n| --- | --- | --- |\n${rows}`;
     const body = existingNode?.body
       ? `${existingNode.body}\n${rows}`
