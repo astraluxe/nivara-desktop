@@ -798,36 +798,41 @@ async function main() {
     // Bring the window forward so the user actually SEES it working (and can log in if needed).
     try { await cPage.bringToFront(); } catch (_) {}
     var connUrl = 'https://www.linkedin.com/mynetwork/invite-connect/connections/';
-    try { await cPage.goto(connUrl, { waitUntil: 'domcontentloaded', timeout: 25000 }); } catch (_) {}
-    try { await cPage.waitForLoadState('networkidle', { timeout: 3500 }); } catch (_) {}
+    try { await cPage.goto(connUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }); } catch (_) {}
+    try { await cPage.waitForLoadState('networkidle', { timeout: 2500 }); } catch (_) {}
     var cFinal = cPage.url();
-    // Not signed in? Show the window on the login page and give the user time to log in, then reload.
+    // NOT SIGNED IN → do NOT wait/poll here (a long poll blows past the 45s process budget, which
+    // makes the node path time out and fall back to the generic agent-browser.exe — that opens a
+    // blank window and can't read LinkedIn, which is the "browser opens but nothing loads" bug).
+    // Instead leave the window open on the login page and tell the user to sign in + rerun. Fast.
     if (isAuthWall(cFinal)) {
-      await showBanner(cPage, 'Sign in to LinkedIn in THIS window — then it will read your connections. (Run /scan again if it closes.)');
-      var ok = await pollForLoginCompletion(cPage, 40000);
-      if (!ok) { writeState({ url: cFinal }); process.stdout.write('[SIGN_IN_REQUIRED] Opened LinkedIn in the ADRIS browser — please sign in there, then run /scan again.'); return; }
-      try { await cPage.goto(connUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }); } catch (_) {}
-      try { await cPage.waitForLoadState('networkidle', { timeout: 3500 }); } catch (_) {}
+      await showBanner(cPage, 'Sign in to LinkedIn in THIS window, then run /scan again — it reads your connections automatically.');
+      try { await cPage.bringToFront(); } catch (_) {}
+      writeState({ url: cFinal });
+      process.stdout.write('[SIGN_IN_REQUIRED] Opened LinkedIn in the ADRIS browser — please sign in there (once, it is saved), then run /scan again.');
+      return;
     }
     await showBanner(cPage, 'ADRIS is reading your LinkedIn connections — please don’t close this window.');
-    // Wait for the connection cards to actually render (the /in/ profile links).
-    try { await cPage.waitForSelector('main a[href*="/in/"]', { timeout: 12000 }); } catch (_) {}
-    // Nudge lazy-loading with a couple of scrolls before the main loop.
+    // Wait for the connection cards to render — the /in/ profile links (document-wide, not just
+    // <main>, so it matches the extraction below and doesn't miss a differently-nested layout).
+    try { await cPage.waitForSelector('a[href*="/in/"]', { timeout: 9000 }); } catch (_) {}
     try { await progressiveScroll(cPage); } catch (_) {}
-    // Still nothing? Distinguish "not logged in / wrong page" from "no connections" so the message
-    // is accurate instead of a generic "couldn't read".
+    // Probe: distinguish not-signed-in / wrong-page from genuinely-no-connections so the message is
+    // accurate. Fast — no polling.
     var probe = await cPage.evaluate(function() {
-      var n = document.querySelectorAll('main a[href*="/in/"]').length;
-      var login = !!(document.querySelector('input[name="session_key"], input#username, .login__form, a[href*="/uas/login"], a[href*="/login"]'));
+      var n = document.querySelectorAll('a[href*="/in/"]').length;
+      var login = !!(document.querySelector('input[name="session_key"], input#username, .login__form, a[href*="/uas/login"], a[href*="/login"], form[action*="login"]'))
+        || /\/(login|authwall|checkpoint|uas\/login)/.test(location.href);
       return { n: n, login: login };
     }).catch(function () { return { n: 0, login: false }; });
-    if (probe.n === 0) {
+    if (probe.n === 0 && probe.login) {
+      await showBanner(cPage, 'Sign in to LinkedIn in THIS window, then run /scan again.');
+      try { await cPage.bringToFront(); } catch (_) {}
       writeState({ url: cFinal });
-      if (probe.login) { process.stdout.write('[SIGN_IN_REQUIRED] Opened LinkedIn in the ADRIS browser — please sign in there, then run /scan again.'); return; }
-      // Give the page one more chance to load, then continue into the loop anyway.
-      await new Promise(function (r) { setTimeout(r, 2000); });
+      process.stdout.write('[SIGN_IN_REQUIRED] Opened LinkedIn in the ADRIS browser — please sign in there (once, it is saved), then run /scan again.');
+      return;
     }
-    var cDeadline = Date.now() + 20000; // stay under the 30s Rust process timeout
+    var cDeadline = Date.now() + 12000; // keep the WHOLE command well under the 45s process budget
     var cLast = 0, cStall = 0;
     while (Date.now() < cDeadline) {
       var cCount = await cPage.evaluate(function() { return document.querySelectorAll('a[href*="/in/"]').length; }).catch(function () { return 0; });
