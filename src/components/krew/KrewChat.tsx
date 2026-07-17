@@ -2664,7 +2664,7 @@ function MessageRow({ msg, agent }: { msg: DisplayMsg; agent: KrewAgent }) {
     return (
       <div className="flex flex-col items-end my-2">
         <div className="max-w-[80%] bg-accent/15 border border-accent/30 rounded-2xl rounded-tr-sm px-3 py-2">
-          {bodyText && <p className="text-[12px] text-nv-text whitespace-pre-wrap">{bodyText}</p>}
+          {bodyText && <p className="text-[12px] text-nv-text whitespace-pre-wrap select-text" style={{ userSelect: 'text' }}>{bodyText}</p>}
           {fileChips.length > 0 && (
             <div className={`flex flex-wrap gap-1.5 ${bodyText ? 'mt-1.5' : ''}`}>
               {fileChips.map((f, i) => (
@@ -4205,6 +4205,9 @@ The prompt must be production-ready — specific enough for a motion designer to
       if (sid) krewDb.saveMessage(sid, 'assistant', noConn).catch(() => {});
       return;
     }
+    // Put connections that HAVE a profile URL first — "Copy & open chat" opens their chat box
+    // directly; the ones without a URL only get a name-search, so they go last.
+    contacts.sort((a, b) => (b.url && /linkedin\.com\/in\//i.test(b.url) ? 1 : 0) - (a.url && /linkedin\.com\/in\//i.test(a.url) ? 1 : 0));
     const pick = contacts.slice(0, max);
     addMsg({ role: 'assistant', content: `Drafting personalised messages for ${pick.length} connections and opening the outreach copilot…`, streaming: true });
     setBusy(true);

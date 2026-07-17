@@ -146,10 +146,17 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
     setOpenNote('');
     await copyText(msg);
     setCopied('msg'); setTimeout(() => setCopied((c) => (c === 'msg' ? null : c)), 1600);
-    if (!hasProfile) { openLink(profileUrl(cur)); setOpenNote('Opened a LinkedIn search — pick the right person, hit Message, and paste.'); return; }
     setOpening(true);
     try {
       const { invoke } = await import('@tauri-apps/api/core');
+      // No saved profile URL for this person → open a LinkedIn people-search in the ADRIS browser
+      // (not the default browser), so the user finds them and hits Message there.
+      if (!hasProfile) {
+        try { await invoke('run_browser_persistent', { args: `open "${profileUrl(cur)}"` }); }
+        catch { openLink(profileUrl(cur)); }
+        setOpenNote('Opened a LinkedIn search in the ADRIS browser — click the right person, hit Message, then paste (Ctrl+V).');
+        return;
+      }
       const res = await invoke<string>('run_browser_persistent', { args: `message "${cur.linkedin_url}"` });
       if (typeof res === 'string' && res.includes('SIGN_IN_REQUIRED')) setOpenNote('Sign in to LinkedIn in the ADRIS browser window, then click again.');
       else if (typeof res === 'string' && res.includes('MESSAGE_BOX_OPENED')) setOpenNote('Chat box is open in the ADRIS browser — paste (Ctrl+V) and send.');
