@@ -1026,27 +1026,27 @@ async function main() {
     }
     await showBanner(mPage, 'ADRIS opened this chat for you — paste your message (Ctrl+V) and send.');
     try { await mPage.waitForLoadState('networkidle', { timeout: 4000 }); } catch (_) {}
-    await new Promise(function (r) { setTimeout(r, 1200); });
-    var mClicked = await mPage.evaluate(function() {
-      function vis(el) { if (!el) return false; var r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; }
-      var cands = [].slice.call(document.querySelectorAll('button, a'));
-      // Prefer the primary profile "Message" action; avoid "Message" links that are actually
-      // premium upsells or nav items.
-      var btn = null;
-      for (var i = 0; i < cands.length; i++) {
-        var el = cands[i];
-        if (!vis(el)) continue;
-        var al = (el.getAttribute('aria-label') || '').toLowerCase();
-        var tx = (el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
-        if (al.indexOf('premium') !== -1) continue;
-        if (al.indexOf('message ') === 0 || al === 'message' || tx === 'message') { btn = el; break; }
-      }
-      if (btn) { try { btn.scrollIntoView({ block: 'center' }); } catch (e) {} btn.click(); return true; }
-      return false;
-    }).catch(function () { return false; });
-    await new Promise(function (r) { setTimeout(r, 900); });
+    await new Promise(function (r) { setTimeout(r, 1500); });
+    // Use a REAL (trusted) Playwright click — a synthetic el.click() inside evaluate() is UNTRUSTED
+    // and LinkedIn's Message handler ignores it (the profile opened but no chat box popped). Target
+    // the in-<main> "Message" link/button whose text is exactly "Message" (never "Message with
+    // Premium"). Verified live: the compose box opens. Then confirm the box is actually present.
+    var composeSel = '.msg-form__contenteditable, [contenteditable="true"][role="textbox"], .msg-overlay-conversation-bubble';
+    var clicked = false;
+    try {
+      var loc = mPage.locator('main a', { hasText: /^Message$/ }).first();
+      await loc.scrollIntoViewIfNeeded({ timeout: 3000 });
+      await loc.click({ timeout: 5000 });
+      clicked = true;
+    } catch (_) {}
+    if (!clicked) { try { await mPage.getByRole('button', { name: /^Message$/ }).first().click({ timeout: 4000 }); clicked = true; } catch (_) {} }
+    if (!clicked) { try { await mPage.locator('a:has-text("Message"), button:has-text("Message")').first().click({ timeout: 4000 }); clicked = true; } catch (_) {} }
+    await new Promise(function (r) { setTimeout(r, 2500); });
+    var boxOpen = 0;
+    try { boxOpen = await mPage.locator(composeSel).count(); } catch (_) {}
+    if (boxOpen > 0) { try { await mPage.locator(composeSel).first().click({ timeout: 2000 }); } catch (_) {} } // focus so the user can paste
     writeState({ url: mFinal });
-    process.stdout.write(mClicked ? 'MESSAGE_BOX_OPENED' : 'PROFILE_OPENED');
+    process.stdout.write(boxOpen > 0 ? 'MESSAGE_BOX_OPENED' : 'PROFILE_OPENED');
     return;
   }
 
