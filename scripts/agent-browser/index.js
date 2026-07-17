@@ -915,7 +915,7 @@ async function main() {
         }
         if (!picked.length || picked[0].length > 90) continue;
         seen[key] = 1;
-        out.push({ name: picked[0], headline: picked[1] || '' });
+        out.push({ name: picked[0], headline: picked[1] || '', url: key });
       }
       return out;
     }).catch(function () { return []; });

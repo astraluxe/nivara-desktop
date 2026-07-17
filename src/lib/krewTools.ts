@@ -1577,22 +1577,24 @@ async function executeToolCore(
     }
     // The browser command returns structured JSON (CONN_JSON:[{name,headline}]) read straight from
     // the DOM — most reliable. Fall back to text-parsing the innerText if JSON isn't present.
-    let all: { name: string; headline: string }[] = [];
+    let all: { name: string; headline: string; url: string }[] = [];
     const jsonIdx = raw.indexOf('CONN_JSON:');
     if (jsonIdx >= 0) {
       try {
         const arr = JSON.parse(raw.slice(jsonIdx + 'CONN_JSON:'.length).trim());
         if (Array.isArray(arr)) all = arr
-          .map((p: { name?: unknown; headline?: unknown }) => ({ name: String(p?.name || '').trim(), headline: String(p?.headline || '').trim() }))
+          .map((p: { name?: unknown; headline?: unknown; url?: unknown }) => ({ name: String(p?.name || '').trim(), headline: String(p?.headline || '').trim(), url: String(p?.url || '').trim() }))
           .filter((p) => p.name && !/^(message|connect|following|pending|load more)$/i.test(p.name));
       } catch { /* fall through to text parse */ }
     }
-    if (all.length === 0) all = parseLinkedInConnections(raw);
+    if (all.length === 0) all = parseLinkedInConnections(raw).map((p) => ({ ...p, url: '' }));
     if (all.length === 0) return "Opened the connections page but couldn't read any names from it (LinkedIn may not have finished loading, or you're not signed in). Make sure you're logged into LinkedIn in the ADRIS browser, then try /scan again.";
     const fresh = all.filter((c) => !existingNames.has(c.name.toLowerCase())).slice(0, limit);
     if (fresh.length === 0) return `Scanned your connections — all ${all.length} people I could load are already saved in the "${LIST_TITLE}" Brain note. To go further, say "scan the next 50" (I'll keep scrolling past the ones already saved) or "scan all".`;
-    const rows = fresh.map((c) => `| ${c.name} | ${c.headline || '—'} |`).join('\n');
-    const block = `| Name | Role / Company / Headline |\n| --- | --- |\n${rows}`;
+    // Save a 3-column table incl. the profile URL — the outreach copilot uses the URL to open the
+    // exact chat. (Older 2-col notes still append cleanly; the extra column just renders as a cell.)
+    const rows = fresh.map((c) => `| ${c.name} | ${c.headline || '—'} | ${c.url || ''} |`).join('\n');
+    const block = `| Name | Role / Company / Headline | Profile |\n| --- | --- | --- |\n${rows}`;
     const body = existingNode?.body
       ? `${existingNode.body}\n${rows}`
       : `Your LinkedIn connections — your warmest potential clients (scanned ${new Date().toLocaleDateString()}).\n\n${block}`;

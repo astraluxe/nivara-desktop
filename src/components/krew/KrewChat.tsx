@@ -4130,6 +4130,62 @@ The prompt must be production-ready — specific enough for a motion designer to
     }
   }
 
+  // Deterministic outreach: draft a personalised LinkedIn message for each saved connection and
+  // OPEN THE COPILOT POPUP directly (setOutreachCampaign) — never relying on the LLM to call a tool
+  // (which is why the popup sometimes never appeared). Reads the "LinkedIn connections" Brain note
+  // (Name | Headline | Profile URL), so it works any time after /scan.
+  async function launchOutreachFromConnections(max = 12, focus = '') {
+    if (busy) return;
+    const sid = sidRef.current;
+    const { brain } = await import('../../lib/knowledgeStore');
+    const node = brain.findByTitle('LinkedIn connections');
+    if (!node?.body) { addMsg({ role: 'assistant', content: 'You haven\'t scanned any LinkedIn connections yet — run **/scan** first, then I\'ll draft outreach and open the copilot.' }); return; }
+    const contacts: { name: string; headline: string; url: string }[] = [];
+    for (const line of node.body.split('\n')) {
+      const m = line.match(/^\|\s*([^|]+?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|/);
+      if (!m) continue;
+      const name = m[1].trim(); const headline = m[2].trim(); const url = m[3].trim();
+      if (!name || /^name$/i.test(name) || /^-+$/.test(name)) continue;
+      contacts.push({ name, headline, url });
+    }
+    if (!contacts.length) { addMsg({ role: 'assistant', content: 'Couldn\'t read your saved connections — run **/scan** again, then try.' }); return; }
+    const pick = contacts.slice(0, max);
+    addMsg({ role: 'user', content: `Draft LinkedIn outreach for my connections${focus ? ` — ${focus}` : ''} and open the copilot` });
+    addMsg({ role: 'assistant', content: `Drafting personalised messages for ${pick.length} connections and opening the outreach copilot…`, streaming: true });
+    setBusy(true);
+    // Give the drafter the user's own context (attached file / focus / saved product) so messages
+    // are relevant, not generic.
+    const refFile = attachedFiles.find((f) => /\.(md|markdown|txt|pdf|docx?)$/i.test(f.name)) || attachedFiles[0];
+    let productCtx = focus;
+    if (refFile?.content) productCtx += `\n\n${refFile.content.slice(0, 5000)}`;
+    if (!productCtx.trim()) { try { const p = brain.findByTitle('PRODUCT') || brain.search('product').find((n) => /product/i.test(n.title)); if (p?.body) productCtx = p.body.slice(0, 4000); } catch { /* ignore */ } }
+    const sys = 'You write short, warm, PERSONALISED LinkedIn messages to the user\'s existing 1st-degree connections. Rules: under 55 words, reference something specific from THAT person\'s headline, one clear friendly ask, no "I hope this finds you well", no emojis unless natural, sign off casually. Return ONLY a valid JSON array: [{"name":"<exact name>","message":"<the message>"}] — use the EXACT names given, one object per person, nothing else.';
+    const usr = `WHAT I DO / WHY I\'M REACHING OUT:\n${productCtx.trim() || 'Reconnecting and exploring ways we could work together.'}\n\nWrite one message for each of these connections:\n${pick.map((c) => `- ${c.name} — ${c.headline || '(no headline)'}`).join('\n')}`;
+    try {
+      const { text } = await streamTurnWithRetry([{ role: 'user', content: usr }], sys, () => {});
+      let drafted: { name?: string; message?: string }[] = [];
+      const jm = text.match(/\[[\s\S]*\]/);
+      if (jm) { try { drafted = JSON.parse(jm[0]); } catch { /* ignore */ } }
+      const byName: Record<string, string> = {};
+      for (const d of drafted) if (d?.name) byName[String(d.name).toLowerCase().trim()] = String(d.message || '').trim();
+      const campaign: OutreachCampaign = {
+        title: `LinkedIn outreach — ${new Date().toLocaleDateString()}`,
+        channel: 'linkedin',
+        contacts: pick.map((c) => ({ name: c.name, company: c.headline, linkedin_url: c.url, linkedin_message: byName[c.name.toLowerCase()] || `Hi ${c.name.split(' ')[0]}, great to be connected! I'd love to hear more about what you're building${c.headline ? ` at ${c.headline.split(/[|·—-]/)[0].trim()}` : ''}. Open to a quick chat?` })),
+      };
+      setOutreachCampaign(campaign); // opens the popup deterministically
+      const done = `Opened the outreach copilot for ${pick.length} connections. For each one: tap **Copy message & open chat** — it copies the message and opens their LinkedIn chat box, then you just paste (Ctrl+V) and send.`;
+      setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: done, streaming: false }; return c; });
+      if (sid) krewDb.saveMessage(sid, 'assistant', done).catch(() => {});
+      setAttachedFiles([]);
+    } catch (e) {
+      const msg = `Couldn't draft the outreach: ${e instanceof Error ? e.message : String(e)}.`;
+      setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: msg, streaming: false }; return c; });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // ── Slash commands ────────────────────────────────────────────────────────
   // The menu is open while the input is a single "/token" (no spaces yet). Matches by command
   // name OR label so "/link" finds "Verify LinkedIn" etc.
@@ -4144,10 +4200,10 @@ The prompt must be production-ready — specific enough for a motion designer to
     if (c.run === 'research') { setInput(''); onOpenResearch?.(''); return; }   // open the Research workspace
     if (c.run === 'agents')   { setInput(''); onBrowseAgents?.(); return; }      // open the agent grid
     if (c.run === 'outreach') {
-      setInput('');
-      const saved = loadSavedCampaign();
-      if (saved) setOutreachCampaign(saved);                                     // reopen where they left off
-      else setInput('Draft a personalised LinkedIn message for each person in <file name>, then open the outreach copilot so I can send them one by one.');
+      // Fill the input (don't auto-run) so the user can attach a file / add focus, then Enter.
+      // send() detects this and deterministically drafts + opens the copilot.
+      setInput('Draft outreach for my LinkedIn connections');
+      setTimeout(() => { const el = inputRef.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0);
       return;
     }
     if (c.run === 'scan') {
@@ -4191,6 +4247,16 @@ The prompt must be production-ready — specific enough for a motion designer to
       const focus = text.replace(/^scan\s+(my\s+)?linkedin(\s+connections)?\b/i, '').replace(/^[\s:,-]+/, '').trim();
       setInput('');
       runConnectionScan(50, focus);
+      return;
+    }
+    // Deterministic outreach launcher — drafts messages for the saved connections and OPENS the
+    // copilot popup (never relies on the LLM calling a tool, which is why it sometimes didn't show).
+    if (/\b(draft|write|make|start|do)\b[^.]*\boutreach\b/i.test(text)
+        || /\bopen (the )?(outreach )?copilot\b/i.test(text)
+        || /\b(message|reach out to|write to|dm)\b[^.]*\b(these|them|my (linkedin )?connections)\b/i.test(text)) {
+      const focus = text.replace(/\b(draft|write|make|start|do)\b|\boutreach\b|\bfor my (linkedin )?connections\b|\bopen (the )?(outreach )?copilot\b|\band open the copilot\b/gi, '').replace(/^[\s:,-]+|[\s:,-]+$/g, '').trim();
+      setInput('');
+      launchOutreachFromConnections(12, focus);
       return;
     }
     // Proactively suggest a relevant skill the user hasn't installed yet.
