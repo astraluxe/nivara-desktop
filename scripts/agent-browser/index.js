@@ -855,10 +855,16 @@ async function main() {
       process.stdout.write('[SIGN_IN_REQUIRED] Opened LinkedIn in the ADRIS browser — please sign in there (once, it is saved), then run /scan again.');
       return;
     }
-    var cDeadline = Date.now() + 12000; // keep the WHOLE command well under the 45s process budget
+    var cDeadline = Date.now() + 26000; // enough scroll time to reach ~50, still under the 45s budget
     var cLast = 0, cStall = 0;
     while (Date.now() < cDeadline) {
-      var cCount = await cPage.evaluate(function() { return document.querySelectorAll('a[href*="/in/"]').length; }).catch(function () { return 0; });
+      // Count UNIQUE people (by profile href) — each card has ~2 /in/ anchors, so counting raw
+      // anchors made the loop stop at ~half the requested count (the "only 30 of 50" bug).
+      var cCount = await cPage.evaluate(function() {
+        var s = {}, a = document.querySelectorAll('a[href*="/in/"]');
+        for (var i = 0; i < a.length; i++) { var h = (a[i].getAttribute('href') || '').split('?')[0]; if (h.indexOf('/in/') > -1) s[h] = 1; }
+        return Object.keys(s).length;
+      }).catch(function () { return 0; });
       if (cCount >= wantN) break;
       await cPage.evaluate(function() {
         var m = document.querySelector('.scaffold-finite-scroll__content') || document.querySelector('.scaffold-layout__main') || document.querySelector('main') || document.body;

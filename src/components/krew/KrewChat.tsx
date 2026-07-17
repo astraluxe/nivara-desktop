@@ -4057,12 +4057,15 @@ The prompt must be production-ready — specific enough for a motion designer to
   // Deterministic LinkedIn-connections scan. Runs the linkedin_scan_connections tool DIRECTLY
   // (never via the boss) — so /scan always scans the real connections and never gets re-routed
   // into "analyse my product" or some other agent's output. Names are code-parsed from the page.
-  async function runConnectionScan(limit = 50) {
+  async function runConnectionScan(limit = 50, focus = '') {
     if (busy) return;
     const sid = sidRef.current;
-    const linkTo = attachedFiles.find((f) => /\.(md|markdown|txt|pdf|docx?)$/i.test(f.name))?.name
-      || attachedFiles[0]?.name || focusedFile?.name || '';
-    addMsg({ role: 'user', content: `Scan my LinkedIn connections${linkTo ? ` (link to ${linkTo})` : ''}` });
+    const refFile = attachedFiles.find((f) => /\.(md|markdown|txt|pdf|docx?)$/i.test(f.name)) || attachedFiles[0] || (focusedFile ? { name: focusedFile.name, content: focusedFile.content } : null);
+    const linkTo = refFile?.name || '';
+    // Context to match connections against: the user's extra words + the attached file's content.
+    const matchContext = [focus, refFile?.content ? `Reference (${refFile.name}):\n${refFile.content.slice(0, 6000)}` : ''].filter(Boolean).join('\n\n');
+    setAttachedFiles([]); // consumed — clear the chips
+    addMsg({ role: 'user', content: `Scan my LinkedIn connections${linkTo ? ` (using ${linkTo})` : ''}${focus ? ` — ${focus}` : ''}` });
     if (sid) krewDb.saveMessage(sid, 'user', 'Scan my LinkedIn connections').catch(() => {});
     addMsg({ role: 'assistant', content: 'Opening your LinkedIn connections and reading the list…', streaming: true });
     setBusy(true); setBrowserActive(true);
@@ -4097,12 +4100,28 @@ The prompt must be production-ready — specific enough for a motion designer to
       }
       // The tool's return has a tail of instructions meant for the LLM — strip it for direct display.
       const base = result.replace(/^\[NEEDS_LOGIN\]\s*/, '').replace(/\n\nTell the user[\s\S]*$/, '').trim();
-      // Only offer the fit/outreach follow-up when we actually SAVED people (the result has a table).
-      const display = /\n\|/.test(base)
+      const scanned = /\n\|/.test(base); // a real saved table (not a sign-in / error message)
+      const display = scanned && !matchContext
         ? base + '\n\n_Want me to flag which of these fit what you sell, or draft outreach for the good ones? Just ask._'
         : base;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: display, streaming: false }; return c; });
       if (sid) krewDb.saveMessage(sid, 'assistant', display).catch(() => {});
+      // If the user attached a file / gave a focus, MATCH the connections against it: flag the
+      // best-fit people so it's a targeted list, not just a dump.
+      if (scanned && matchContext) {
+        addMsg({ role: 'assistant', content: `Matching your connections against ${refFile ? refFile.name : 'what you described'}…`, streaming: true });
+        const table = base.slice(base.indexOf('\n|')); // the markdown table of name | headline
+        const relSys = 'You are a sharp B2B sales analyst. From a list of the user\'s LinkedIn connections (name — headline) and what they are looking for, pick the ones that are a GOOD FIT. Output ONLY a clean markdown table: | Name | Why they fit |. Use the EXACT names given — never invent or rename. If none fit, say so in one line. Be concise.';
+        const relUser = `WHAT I'M LOOKING FOR:\n${matchContext}\n\nMY CONNECTIONS:\n${table}\n\nWhich of these connections are the best fit for what I'm looking for? Keep names exactly as written.`;
+        try {
+          const { text: rel } = await streamTurnWithRetry([{ role: 'user', content: relUser }], relSys, () => {});
+          const relClean = (rel || '').replace(/<tool_call>[\s\S]*/g, '').trim() || 'Couldn\'t pick clear matches — the saved list is above.';
+          setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: `**Best-fit connections for ${refFile ? refFile.name : 'your goal'}:**\n\n${relClean}`, streaming: false }; return c; });
+          if (sid) krewDb.saveMessage(sid, 'assistant', relClean).catch(() => {});
+        } catch {
+          setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c.pop(); return c; });
+        }
+      }
     } catch (e) {
       const msg = `Couldn't scan your connections: ${e instanceof Error ? e.message : String(e)}. Make sure you're signed in to LinkedIn in the ADRIS browser, then try again.`;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: msg, streaming: false }; return c; });
@@ -4131,7 +4150,13 @@ The prompt must be production-ready — specific enough for a motion designer to
       else setInput('Draft a personalised LinkedIn message for each person in <file name>, then open the outreach copilot so I can send them one by one.');
       return;
     }
-    if (c.run === 'scan') { setInput(''); runConnectionScan(50); return; }        // deterministic — never via the boss
+    if (c.run === 'scan') {
+      // Don't run immediately — drop the phrasing in so the user can attach a file (to target the
+      // scan) and press Enter themselves. send() detects this and runs the deterministic scan.
+      setInput('Scan my LinkedIn connections');
+      setTimeout(() => { const el = inputRef.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0);
+      return;
+    }
     // 'prompt' → drop the phrasing into the input, keep focus. If it contains a <file name>
     // placeholder, SELECT it (not just place the caret) so it's unmissable and the user's first
     // keystroke replaces it directly — a plain <textarea> can't render it in a different color, but
@@ -4158,6 +4183,16 @@ The prompt must be production-ready — specific enough for a motion designer to
   async function send() {
     const text = input.trim();
     if ((!text && attachedFiles.length === 0) || busy) return;
+    // Deterministic LinkedIn-connections scan: "scan my linkedin connections" (from /scan or typed).
+    // Runs directly (never via the boss). Any attached file / extra words become the focus so the
+    // saved list is filtered/flagged to what the user's after. The user pressed Enter here, so they
+    // had the chance to attach a file first.
+    if (/^scan\s+(my\s+)?linkedin(\s+connections)?\b/i.test(text)) {
+      const focus = text.replace(/^scan\s+(my\s+)?linkedin(\s+connections)?\b/i, '').replace(/^[\s:,-]+/, '').trim();
+      setInput('');
+      runConnectionScan(50, focus);
+      return;
+    }
     // Proactively suggest a relevant skill the user hasn't installed yet.
     if (text) {
       const sk = detectSkill(text);
