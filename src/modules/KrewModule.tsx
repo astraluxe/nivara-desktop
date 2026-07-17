@@ -25,6 +25,9 @@ export default function KrewModule({ onViewOnCanvas, onOpenAutomations }: KrewMo
   const [view,         setView]         = useState<View>('chat');
   const [refreshToken, setRefreshToken] = useState(0);
   const [researchQuery, setResearchQuery] = useState('');
+  // Bumped on every "new chat" click so KrewChat resets even when the session is ALREADY null
+  // (e.g. right after a /scan that created no session) — otherwise setSessionId(null) is a no-op.
+  const [newChatNonce, setNewChatNonce] = useState(0);
 
   function handleSelectAgent(a: KrewAgent) {
     setAgent(a);
@@ -36,6 +39,7 @@ export default function KrewModule({ onViewOnCanvas, onOpenAutomations }: KrewMo
     setSessionId(null);
     setAgent(DEFAULT_AGENT);
     setView('chat');
+    setNewChatNonce((n) => n + 1);
   }
 
   function handleSessionCreated(id: string) {
@@ -132,6 +136,7 @@ export default function KrewModule({ onViewOnCanvas, onOpenAutomations }: KrewMo
           {view === 'chat' && (
             <KrewChat
               sessionId={sessionId}
+              newChatNonce={newChatNonce}
               agent={agent}
               onSessionCreated={handleSessionCreated}
               onOpenConnectApps={() => setView('apps')}

@@ -299,6 +299,7 @@ interface StudioRequest {
 
 interface Props {
   sessionId: string | null;
+  newChatNonce?: number;
   agent: KrewAgent;
   onSessionCreated: (id: string) => void;
   onOpenConnectApps?: () => void;
@@ -399,28 +400,20 @@ function openLink(url: string) {
   import('@tauri-apps/plugin-shell').then(({ open }) => open(url)).catch(() => window.open(url, '_blank'));
 }
 
-// Copy text to the clipboard, RELIABLY. navigator.clipboard.writeText rejects silently in
-// WebView2 when the document isn't focused or the permission isn't granted — which is why the
-// chat "Copy" buttons did nothing. Always fall back to a hidden-textarea execCommand copy, which
-// works in the webview. Resolves true/false and NEVER rejects, so `.then(() => setCopied(true))`
-// callers still light up on success.
-function copyToClipboard(text: string): Promise<boolean> {
-  const fallback = (): boolean => {
-    try {
-      const ta = document.createElement('textarea');
-      ta.value = text; ta.style.position = 'fixed'; ta.style.top = '0'; ta.style.opacity = '0';
-      document.body.appendChild(ta); ta.focus(); ta.select();
-      const ok = document.execCommand('copy');
-      document.body.removeChild(ta); return ok;
-    } catch { return false; }
-  };
+// Copy text to the clipboard, RELIABLY. In WebView2 navigator.clipboard can resolve WITHOUT actually
+// copying (and execCommand is deprecated), which is why the "Copy" buttons kept failing. So try the
+// OS clipboard via Rust FIRST (definitive on Windows), then navigator.clipboard, then a hidden-
+// textarea execCommand. Resolves true/false and never rejects, so `.then(() => setCopied(true))` works.
+async function copyToClipboard(text: string): Promise<boolean> {
+  try { await invoke('copy_text', { text }); return true; } catch { /* not Windows / failed → fall through */ }
+  try { const nav = navigator.clipboard; if (nav?.writeText) { await nav.writeText(text); return true; } } catch { /* fall through */ }
   try {
-    const nav = navigator.clipboard;
-    if (nav?.writeText) {
-      return nav.writeText(text).then(() => true, () => fallback());
-    }
-  } catch { /* fall through */ }
-  return Promise.resolve(fallback());
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.top = '0'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta); return ok;
+  } catch { return false; }
 }
 
 function renderInline(text: string): React.ReactNode[] {
@@ -2824,7 +2817,7 @@ function getStarterPrompts(agent: KrewAgent): string[] {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function KrewChat({ sessionId, agent, onSessionCreated, onOpenConnectApps, onBrowseAgents, onViewOnCanvas, onOpenStudio, onOpenResearch }: Props) {
+export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCreated, onOpenConnectApps, onBrowseAgents, onViewOnCanvas, onOpenStudio, onOpenResearch }: Props) {
   const { user, session, profile } = useAuth();
   const planCfg = getPlanConfig(profile?.plan ?? 'explore');
   type VoiceStatus = 'idle' | 'recording' | 'transcribing' | 'error';
@@ -3073,6 +3066,21 @@ const [studioExtracting, setStudioExtracting] = useState(false);
       setMessages(msgs);
     }).catch(() => {});
   }, [sessionId]);
+
+  // "New chat" (+) — force a clean slate even when the session id is ALREADY null (so clicking +
+  // after a /scan that created no session, or twice in a row, still opens a fresh chat).
+  const newChatFirst = useRef(true);
+  useEffect(() => {
+    if (newChatFirst.current) { newChatFirst.current = false; return; } // ignore the initial mount
+    setMessages([]);
+    sidRef.current = null;
+    freshSessionRef.current = null;
+    setInput('');
+    setBusy(false);
+    setAttachedFiles([]);
+    setFocusedFile(null);
+    setOutreachCampaign(null);
+  }, [newChatNonce]);
 
   // Load credentials
   const reloadCreds = useCallback(async () => {
@@ -4054,12 +4062,23 @@ The prompt must be production-ready — specific enough for a motion designer to
     }
   }
 
+  // Make sure a chat session exists (and is registered with the parent) BEFORE saving messages.
+  // The deterministic /scan and /outreach paths short-circuit before send()'s own session-ensure,
+  // so without this their messages were never persisted ("no conversation yet") and the sidebar/new-
+  // chat button got confused because the session id stayed null.
+  async function ensureSession(title: string): Promise<string | null> {
+    if (sidRef.current) return sidRef.current;
+    const sid = await krewDb.newSession(title.slice(0, 40), mode, agent.key, localModel).catch(() => null);
+    if (sid) { freshSessionRef.current = sid; onSessionCreated(sid); sidRef.current = sid; }
+    return sid;
+  }
+
   // Deterministic LinkedIn-connections scan. Runs the linkedin_scan_connections tool DIRECTLY
   // (never via the boss) — so /scan always scans the real connections and never gets re-routed
   // into "analyse my product" or some other agent's output. Names are code-parsed from the page.
   async function runConnectionScan(limit = 50, focus = '') {
     if (busy) return;
-    const sid = sidRef.current;
+    const sid = await ensureSession('LinkedIn connections scan');
     const refFile = attachedFiles.find((f) => /\.(md|markdown|txt|pdf|docx?)$/i.test(f.name)) || attachedFiles[0] || (focusedFile ? { name: focusedFile.name, content: focusedFile.content } : null);
     const linkTo = refFile?.name || '';
     // Context to match connections against: the user's extra words + the attached file's content.
@@ -4136,7 +4155,7 @@ The prompt must be production-ready — specific enough for a motion designer to
   // (Name | Headline | Profile URL), so it works any time after /scan.
   async function launchOutreachFromConnections(max = 12, focus = '') {
     if (busy) return;
-    const sid = sidRef.current;
+    const sid = await ensureSession('LinkedIn outreach');
     const { brain } = await import('../../lib/knowledgeStore');
     const node = brain.findByTitle('LinkedIn connections');
     if (!node?.body) { addMsg({ role: 'assistant', content: 'You haven\'t scanned any LinkedIn connections yet — run **/scan** first, then I\'ll draft outreach and open the copilot.' }); return; }

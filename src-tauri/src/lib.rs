@@ -411,6 +411,18 @@ fn save_to_downloads(app: tauri::AppHandle, filename: String, data_base64: Strin
     Ok(dest.to_string_lossy().to_string())
 }
 
+// Write text to the OS clipboard from the Rust side. The webview's navigator.clipboard is flaky in
+// WebView2 (it can resolve without actually copying), which is why the "Copy" buttons kept failing.
+// This is the definitive path on Windows; the frontend falls back to the webview clipboard if this
+// errors or on other platforms.
+#[tauri::command]
+fn copy_text(text: String) -> Result<(), String> {
+    #[cfg(windows)]
+    { clipboard_win::set_clipboard_string(&text).map_err(|e| format!("clipboard error: {}", e)) }
+    #[cfg(not(windows))]
+    { let _ = text; Err("handled by webview".to_string()) }
+}
+
 // Export a deck as a PERFECT PDF using real Chrome's own print engine. We write the deck HTML to a
 // temp file, have the agent-browser render it and run CDP Page.printToPDF (native — all gradients/
 // shadows/fonts, sharp vector text, one slide per page), then drop the finished PDF into Downloads
@@ -6439,6 +6451,7 @@ pub fn run() {
             brain_store_image,
             save_to_downloads,
             deck_export_pdf,
+            copy_text,
             file_size,
             models_import,
             studio_save_file,

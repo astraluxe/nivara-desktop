@@ -1,6 +1,29 @@
 ﻿import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { useAuth } from '../contexts/AuthContext';
+import UpgradeModal from '../components/UpgradeModal';
+
+// FREE tier — a curated set of genuinely capable models that run on a normal laptop (≤8GB), across
+// general / coding / reasoning / Indian-language / tiny use cases. Everything ELSE (the bigger,
+// most-capable, frontier and mesh models — "more power") requires a paid plan to download. This is
+// the freemium lever: free users get real value, upgrading unlocks the heavy hitters.
+const FREE_MODEL_IDS = new Set<string>([
+  'llama31-8b-q4',        // Llama 3.1 8B — great all-rounder
+  'qwen25-coder-7b-q4',   // best small coder
+  'mistral-7b-q4',        // solid all-round
+  'gemma2-9b-q4',         // strong 9B
+  'deepseek-r1-7b-q4',    // reasoning
+  'sarvam1-7b-q4',        // Indian languages (India market)
+  'deepseek-coder-6b-q4', // coding
+  'gemma3-4b-q4',         // modern small
+  'phi4-mini-q4',         // capable tiny
+  'qwen25-3b-q4',         // good small
+  'llama32-3b-q4',        // good small
+  'llama32-1b-q4',        // ultra-light taster
+]);
+function isPaidModel(m: { id: string }): boolean { return !FREE_MODEL_IDS.has(m.id); }
+const FREE_PLANS = new Set(['free', 'explore']);
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -463,6 +486,7 @@ function ModelCard({
   fitsSystem,
   sysRam,
   isNew,
+  locked,
   onDownload,
   onDelete,
   onRun,
@@ -473,6 +497,7 @@ function ModelCard({
   fitsSystem: boolean;
   sysRam: number;
   isNew?: boolean;
+  locked?: boolean;   // paid model + user on a free plan → show PRO gate
   onDownload: (m: RegistryModel) => void;
   onDelete: (id: string) => void;
   onRun: (filename: string) => void;
@@ -498,6 +523,11 @@ function ModelCard({
             {isNew && (
               <span className="text-[9px] px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-400 border border-sky-500/20 font-mono">
                 new
+              </span>
+            )}
+            {locked && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-accent/15 text-accent border border-accent/25 font-mono font-semibold">
+                PRO
               </span>
             )}
             {model.gated && (
@@ -607,6 +637,15 @@ function ModelCard({
           >
             Requires Mesh
           </button>
+        ) : locked ? (
+          <button
+            onClick={() => onDownload(model)}
+            title="This model needs a paid plan — upgrade to download it"
+            className="flex-1 text-[11px] py-1.5 rounded-lg bg-accent/10 border border-accent/40 text-accent hover:bg-accent/20 transition-fast flex items-center justify-center gap-1.5 font-medium"
+          >
+            <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M3 5V4a3 3 0 0 1 6 0v1M2.5 5h7v5h-7z" stroke="currentColor" strokeWidth="1.2" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            Upgrade to unlock
+          </button>
         ) : (
           <button
             onClick={() => onDownload(model)}
@@ -672,6 +711,10 @@ function GatedModal({ info, onCancel, onConfirm }: {
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function ModelsModule() {
+  const { profile } = useAuth();
+  const plan = profile?.plan ?? 'explore';
+  const isFreePlan = FREE_PLANS.has(plan);
+  const [showUpgrade, setShowUpgrade] = useState(false);
   const [tab, setTab] = useState<'hub' | 'mymodels' | 'compare' | 'lora'>('hub');
   const [registry, setRegistry] = useState<RegistryModel[]>([]);
   const [installed, setInstalled] = useState<InstalledModel[]>([]);
@@ -811,6 +854,9 @@ export default function ModelsModule() {
   // ─── Download handler ─────────────────────────────────────────────────────
 
   async function handleDownload(model: RegistryModel) {
+    // Paid-tier gate: free/explore users can download the curated free models; the bigger / most-
+    // capable / frontier ones need a paid plan. Show the upgrade modal instead of downloading.
+    if (isFreePlan && isPaidModel(model)) { setShowUpgrade(true); return; }
     try {
       const resp = await fetch(`${PULL_URL}?model=${model.id}`, { signal: AbortSignal.timeout(5000) });
       if (!resp.ok) throw new Error('not deployed');
@@ -1106,6 +1152,7 @@ export default function ModelsModule() {
                     fitsSystem={modelFitsPC(m)}
                     sysRam={sysRam}
                     isNew={newModelIds.has(m.id)}
+                    locked={isFreePlan && isPaidModel(m) && !installed.some(i => i.id === m.id)}
                     onDownload={handleDownload}
                     onDelete={handleDelete}
                     onRun={handleRun}
@@ -1384,6 +1431,16 @@ export default function ModelsModule() {
             await startDownload(pendingModel, url, pendingModel.hf_filename ?? '', pendingModel.size_gb, token);
             setPendingModel(null);
           }}
+        />
+      )}
+
+      {/* Paid-tier upgrade prompt (free user tapped a paid model) */}
+      {showUpgrade && (
+        <UpgradeModal
+          onClose={() => setShowUpgrade(false)}
+          currentPlan={plan}
+          highlightPlan="solo"
+          reason="This model needs a paid plan. Upgrade to download the larger, more capable models — the curated free models stay free."
         />
       )}
     </div>
