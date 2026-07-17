@@ -54,7 +54,7 @@ async function freshSessionToken(fallback: string | null): Promise<string | null
 //  • 'prompt' → drops a ready phrasing into the input (the user reviews and sends; it routes
 //    through the normal Krew flow / deterministic short-circuits).
 //  • 'nav'    → opens another module of the exe (via the global nv-navigate event App listens to).
-type SlashCmd = { cmd: string; label: string; desc: string; run: 'prompt' | 'nav' | 'research' | 'agents' | 'outreach' | 'scan'; value: string };
+type SlashCmd = { cmd: string; label: string; desc: string; run: 'prompt' | 'nav' | 'research' | 'agents' | 'outreach' | 'continue' | 'scan'; value: string };
 const SLASH_COMMANDS: SlashCmd[] = [
   // ── Actions that run in the chat ─────────────────────────────────────────
   { cmd: 'verify',   label: 'Verify LinkedIn',   desc: 'Open & check every LinkedIn in your lead list',   run: 'prompt', value: 'Go to <file name> and verify each and every LinkedIn — open and check each one, and fill it in properly if it exists.' },
@@ -63,8 +63,8 @@ const SLASH_COMMANDS: SlashCmd[] = [
   { cmd: 'scan',     label: 'Scan LinkedIn connections', desc: 'List who you\'re already connected with as warm leads', run: 'scan', value: '' },
   { cmd: 'expand',   label: 'Add more leads',    desc: 'Grow the list with new people',                   run: 'prompt', value: 'Add more prospects to <file name> — new people only, do not repeat anyone already there.' },
   { cmd: 'draft',    label: 'Draft outreach',    desc: 'Write DMs / emails for your list',                run: 'prompt', value: 'Write a LinkedIn DM and a short cold email for the people in <file name>, tailored by sector.' },
-  { cmd: 'outreach', label: 'Send outreach (copilot)', desc: 'Draft LinkedIn messages & walk through sending them', run: 'prompt', value: 'Draft a personalised LinkedIn message for each person in <file name>, then open the outreach copilot so I can send them one by one.' },
-  { cmd: 'continue', label: 'Continue outreach', desc: 'Reopen the outreach copilot where you left off',   run: 'outreach', value: '' },
+  { cmd: 'outreach', label: 'Send outreach (copilot)', desc: 'Draft LinkedIn messages & walk through sending them', run: 'outreach', value: '' },
+  { cmd: 'continue', label: 'Continue outreach', desc: 'Reopen the outreach copilot where you left off',   run: 'continue', value: '' },
   { cmd: 'deck',     label: 'Make a presentation', desc: 'Build a slide deck / PPT you can edit & export', run: 'prompt', value: 'Make a presentation about ' },
   { cmd: 'email',    label: 'Email a list',      desc: 'Send a personalised email to everyone on a list', run: 'prompt', value: 'Email everyone in <file name> a personalised message — one separate email each — and tell me exactly who it went to.' },
   { cmd: 'image',    label: 'Generate an image', desc: 'Create an image / logo / graphic',                run: 'prompt', value: 'Generate an image of ' },
@@ -2827,6 +2827,9 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
   const [showQuotaUpgrade,  setShowQuotaUpgrade]   = useState(false);
   const [monthlyUsed,       setMonthlyUsed]         = useState(0);
   const [outreachCampaign,  setOutreachCampaign]    = useState<OutreachCampaign | null>(null);
+  // When a "/" command needs a file (its value has a <file name> slot), we open a picker instead of
+  // dumping raw "<file name>" text — the user clicks a real file from their Brain / attachments.
+  const [filePickerCmd,     setFilePickerCmd]        = useState<SlashCmd | null>(null);
   // "Chat with this file" — when set, the conversation stays scoped to this Brain
   // file and the notes connected to it, every turn, until the user clears it.
   const [focusedFile, setFocusedFile] = useState<{ name: string; content: string; connected: number } | null>(null);
@@ -4076,7 +4079,7 @@ The prompt must be production-ready — specific enough for a motion designer to
   // Deterministic LinkedIn-connections scan. Runs the linkedin_scan_connections tool DIRECTLY
   // (never via the boss) — so /scan always scans the real connections and never gets re-routed
   // into "analyse my product" or some other agent's output. Names are code-parsed from the page.
-  async function runConnectionScan(limit = 50, focus = '') {
+  async function runConnectionScan(limit = 50, focus = '', userText = '') {
     if (busy) return;
     const sid = await ensureSession('LinkedIn connections scan');
     const refFile = attachedFiles.find((f) => /\.(md|markdown|txt|pdf|docx?)$/i.test(f.name)) || attachedFiles[0] || (focusedFile ? { name: focusedFile.name, content: focusedFile.content } : null);
@@ -4084,8 +4087,9 @@ The prompt must be production-ready — specific enough for a motion designer to
     // Context to match connections against: the user's extra words + the attached file's content.
     const matchContext = [focus, refFile?.content ? `Reference (${refFile.name}):\n${refFile.content.slice(0, 6000)}` : ''].filter(Boolean).join('\n\n');
     setAttachedFiles([]); // consumed — clear the chips
-    addMsg({ role: 'user', content: `Scan my LinkedIn connections${linkTo ? ` (using ${linkTo})` : ''}${focus ? ` — ${focus}` : ''}` });
-    if (sid) krewDb.saveMessage(sid, 'user', 'Scan my LinkedIn connections').catch(() => {});
+    const shown = userText || `Scan my LinkedIn connections${linkTo ? ` (using ${linkTo})` : ''}${focus ? ` — ${focus}` : ''}`;
+    addMsg({ role: 'user', content: shown + (linkTo && userText ? `\n📎 ${linkTo}` : '') });
+    if (sid) krewDb.saveMessage(sid, 'user', shown).catch(() => {});
     addMsg({ role: 'assistant', content: 'Opening your LinkedIn connections and reading the list…', streaming: true });
     setBusy(true); setBrowserActive(true);
     const unlisten = await listen('agent-progress', (e) => {
@@ -4153,36 +4157,40 @@ The prompt must be production-ready — specific enough for a motion designer to
   // OPEN THE COPILOT POPUP directly (setOutreachCampaign) — never relying on the LLM to call a tool
   // (which is why the popup sometimes never appeared). Reads the "LinkedIn connections" Brain note
   // (Name | Headline | Profile URL), so it works any time after /scan.
-  async function launchOutreachFromConnections(max = 12, focus = '') {
+  async function launchOutreachFromConnections(max = 12, focus = '', userText = '') {
     if (busy) return;
     const sid = await ensureSession('LinkedIn outreach');
+    // Show the user's ACTUAL message (so it's on screen and copyable), before any early return.
+    addMsg({ role: 'user', content: userText || (focus ? `Draft outreach for my LinkedIn connections — ${focus}` : 'Draft outreach for my LinkedIn connections and open the copilot') });
+    if (sid) krewDb.saveMessage(sid, 'user', userText || 'Draft outreach for my LinkedIn connections').catch(() => {});
     const { brain } = await import('../../lib/knowledgeStore');
-    const node = brain.findByTitle('LinkedIn connections');
-    if (!node?.body) { addMsg({ role: 'assistant', content: 'You haven\'t scanned any LinkedIn connections yet — run **/scan** first, then I\'ll draft outreach and open the copilot.' }); return; }
-    // Parse the saved table ROBUSTLY: LinkedIn headlines contain '|' (e.g. "|| Co-Founder ||"),
-    // which breaks a naive 3-column regex (that's the "couldn't read your connections" bug). Names
-    // and profile URLs never contain '|', so: name = first cell, URL = last cell (if it's a /in/
-    // link), headline = everything in between.
-    const contacts: { name: string; headline: string; url: string }[] = [];
-    for (const raw of node.body.split('\n')) {
-      const t = raw.trim();
-      if (!t.startsWith('|')) continue;
-      let cells = t.split('|').map((c) => c.trim());
-      if (cells[0] === '') cells = cells.slice(1);
-      if (cells.length && cells[cells.length - 1] === '') cells = cells.slice(0, -1);
-      if (!cells.length) continue;
-      const name = cells[0];
-      if (!name || /^name$/i.test(name) || /^:?-{2,}:?$/.test(name)) continue; // header / separator row
-      const last = cells[cells.length - 1] || '';
-      let url = '', headlineCells = cells.slice(1);
-      if (/linkedin\.com\/in\//i.test(last)) { url = last; headlineCells = cells.slice(1, -1); }
-      const headline = headlineCells.join(' ').replace(/\s+/g, ' ').trim();
-      contacts.push({ name, headline, url });
-    }
-    // Show the user's request now (before any early return) so it never disappears from the chat.
-    addMsg({ role: 'user', content: focus ? `Draft outreach for my LinkedIn connections — ${focus}` : 'Draft outreach for my LinkedIn connections and open the copilot' });
+    // PRIMARY source: the structured JSON the scan saved (never needs markdown parsing).
+    let contacts: { name: string; headline: string; url: string }[] = [];
+    try {
+      const arr = JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
+      if (Array.isArray(arr)) contacts = arr.filter((c) => c?.name).map((c) => ({ name: String(c.name), headline: String(c.headline || ''), url: String(c.url || '') }));
+    } catch { /* ignore */ }
+    // FALLBACK: parse the "LinkedIn connections" Brain note. Pipe-robust: name = first cell, URL =
+    // last cell (if a /in/ link), headline = everything between (LinkedIn headlines contain '|').
     if (!contacts.length) {
-      addMsg({ role: 'assistant', content: 'Your "LinkedIn connections" note is there, but I couldn\'t read any rows out of it. Run **/scan** once more (it now saves them cleanly) and then ask again.' });
+      const node = brain.findByTitle('LinkedIn connections');
+      for (const raw of (node?.body || '').split('\n')) {
+        const t = raw.trim();
+        if (!t.startsWith('|')) continue;
+        let cells = t.split('|').map((c) => c.trim());
+        if (cells[0] === '') cells = cells.slice(1);
+        if (cells.length && cells[cells.length - 1] === '') cells = cells.slice(0, -1);
+        if (!cells.length) continue;
+        const name = cells[0];
+        if (!name || /^name$/i.test(name) || /^:?-{2,}:?$/.test(name)) continue;
+        const last = cells[cells.length - 1] || '';
+        let url = '', headlineCells = cells.slice(1);
+        if (/linkedin\.com\/in\//i.test(last)) { url = last; headlineCells = cells.slice(1, -1); }
+        contacts.push({ name, headline: headlineCells.join(' ').replace(/\s+/g, ' ').trim(), url });
+      }
+    }
+    if (!contacts.length) {
+      addMsg({ role: 'assistant', content: 'I don\'t have any saved LinkedIn connections to reach out to yet. Run **/scan** first (it saves them), then ask me to draft outreach.' });
       return;
     }
     const pick = contacts.slice(0, max);
@@ -4221,6 +4229,29 @@ The prompt must be production-ready — specific enough for a motion designer to
     }
   }
 
+  // Files the /command file-picker offers: current attachments + the user's Brain files/lists/notes.
+  function pickerFiles(): { name: string; content: string; fromBrain: boolean }[] {
+    const out: { name: string; content: string; fromBrain: boolean }[] = [];
+    const seen = new Set<string>();
+    for (const f of attachedFiles) { if (!seen.has(f.name)) { seen.add(f.name); out.push({ name: f.name, content: f.content, fromBrain: !!f.fromBrain }); } }
+    try {
+      const nodes = brainStore.all().nodes.filter((n) => ['file', 'list', 'data', 'note', 'contact', 'outreach'].includes(n.kind) && (n.body || '').trim().length > 20);
+      nodes.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      for (const n of nodes) { if (!seen.has(n.title)) { seen.add(n.title); out.push({ name: n.title, content: nodeToMarkdown(n.body), fromBrain: true }); } }
+    } catch { /* Brain optional */ }
+    return out.slice(0, 40);
+  }
+  // Apply a picked file to the pending /command: fill the phrasing with the real file name and
+  // attach the file so Krew actually has its content.
+  function applyPickedFile(cmd: SlashCmd, file: { name: string; content: string; fromBrain: boolean }) {
+    setInput(cmd.value.replace(/<file name>/g, file.name));
+    if (file.content && !attachedFiles.some((f) => f.name === file.name)) {
+      setAttachedFiles((prev) => [...prev, { name: file.name, content: file.content, fromBrain: file.fromBrain }]);
+    }
+    setFilePickerCmd(null);
+    setTimeout(() => { const el = inputRef.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0);
+  }
+
   // ── Slash commands ────────────────────────────────────────────────────────
   // The menu is open while the input is a single "/token" (no spaces yet). Matches by command
   // name OR label so "/link" finds "Verify LinkedIn" etc.
@@ -4241,6 +4272,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       setTimeout(() => { const el = inputRef.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0);
       return;
     }
+    if (c.run === 'continue') { setInput(''); const saved = loadSavedCampaign(); if (saved) setOutreachCampaign(saved); else addMsg({ role: 'assistant', content: 'No outreach in progress yet — use **/outreach** to draft messages and open the copilot.' }); return; }
     if (c.run === 'scan') {
       // Don't run immediately — drop the phrasing in so the user can attach a file (to target the
       // scan) and press Enter themselves. send() detects this and runs the deterministic scan.
@@ -4248,6 +4280,9 @@ The prompt must be production-ready — specific enough for a motion designer to
       setTimeout(() => { const el = inputRef.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0);
       return;
     }
+    // A "prompt" command that references <file name> → open the file picker so the user CLICKS a
+    // real file (from their Brain or current attachments) instead of typing a filename.
+    if (c.run === 'prompt' && c.value.includes('<file name>')) { setInput(''); setFilePickerCmd(c); return; }
     // 'prompt' → drop the phrasing into the input, keep focus. If it contains a <file name>
     // placeholder, SELECT it (not just place the caret) so it's unmissable and the user's first
     // keystroke replaces it directly — a plain <textarea> can't render it in a different color, but
@@ -4281,7 +4316,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     if (/^scan\s+(my\s+)?linkedin(\s+connections)?\b/i.test(text)) {
       const focus = text.replace(/^scan\s+(my\s+)?linkedin(\s+connections)?\b/i, '').replace(/^[\s:,-]+/, '').trim();
       setInput('');
-      runConnectionScan(50, focus);
+      runConnectionScan(50, focus, text);   // pass the user's real message so it shows + is copyable
       return;
     }
     // Deterministic outreach launcher — drafts messages for the saved connections and OPENS the
@@ -4291,7 +4326,7 @@ The prompt must be production-ready — specific enough for a motion designer to
         || /\b(message|reach out to|write to|dm)\b[^.]*\b(these|them|my (linkedin )?connections)\b/i.test(text)) {
       const focus = text.replace(/\b(draft|write|make|start|do)\b|\boutreach\b|\bfor my (linkedin )?connections\b|\bopen (the )?(outreach )?copilot\b|\band open the copilot\b/gi, '').replace(/^[\s:,-]+|[\s:,-]+$/g, '').trim();
       setInput('');
-      launchOutreachFromConnections(12, focus);
+      launchOutreachFromConnections(12, focus, text);   // pass the user's real message so it shows
       return;
     }
     // Proactively suggest a relevant skill the user hasn't installed yet.
@@ -6189,6 +6224,33 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                 );
               })()}
             </div>
+            {filePickerCmd && (() => {
+              const files = pickerFiles();
+              return (
+                <div className="absolute bottom-full left-0 mb-2 w-[340px] max-h-[300px] overflow-y-auto rounded-xl border border-accent/40 bg-nv-surface shadow-xl z-40 py-1">
+                  <div className="px-3 py-1.5 flex items-center justify-between">
+                    <span className="text-[9px] font-mono uppercase tracking-wide text-accent">Pick a file for “{filePickerCmd.label}”</span>
+                    <button onClick={() => setFilePickerCmd(null)} className="text-nv-faint hover:text-nv-text text-[11px]">✕</button>
+                  </div>
+                  {files.length === 0 ? (
+                    <div className="px-3 py-3 text-[11px] text-nv-faint">No files yet — attach one, or save data to your Brain first.</div>
+                  ) : files.map((f) => (
+                    <button
+                      key={f.name}
+                      onClick={() => applyPickedFile(filePickerCmd, f)}
+                      className="w-full text-left flex items-center gap-2.5 px-3 py-1.5 text-nv-muted hover:bg-nv-surface2/60 hover:text-nv-text transition-fast"
+                    >
+                      <span className="w-4 flex items-center justify-center shrink-0 text-accent">📄</span>
+                      <span className="flex-1 min-w-0 truncate text-[12px]">{f.name}</span>
+                      {f.fromBrain && <span className="text-[8px] font-mono text-nv-faint border border-nv-border rounded px-1 shrink-0">Brain</span>}
+                    </button>
+                  ))}
+                  <div className="px-3 pt-1.5 pb-1 border-t border-nv-border/50 mt-1">
+                    <button onClick={() => { const c = filePickerCmd; setFilePickerCmd(null); setInput(c.value); setTimeout(() => inputRef.current?.focus(), 0); }} className="text-[10px] text-nv-faint hover:text-accent">…or type the file name myself</button>
+                  </div>
+                </div>
+              );
+            })()}
             {slashOpen && slashMatches.length > 0 && (
               <div className="absolute bottom-full left-0 mb-2 w-[300px] max-h-[280px] overflow-y-auto rounded-xl border border-nv-border bg-nv-surface shadow-xl z-30 py-1">
                 <div className="px-3 py-1 text-[9px] font-mono uppercase tracking-wide text-nv-faint">Commands</div>

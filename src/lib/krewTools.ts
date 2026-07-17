@@ -1602,6 +1602,19 @@ async function executeToolCore(
       ? `${existingNode.body}\n${rows}`
       : `Your LinkedIn connections — your warmest potential clients (scanned ${new Date().toLocaleDateString()}).\n\n${block}`;
     const node = brain.addNode({ title: LIST_TITLE, body, kind: 'list' });
+    // ALSO store the connections as STRUCTURED JSON (name/headline/url) in localStorage — the
+    // outreach flow reads THIS, so it never has to parse the markdown table (LinkedIn headlines are
+    // full of '|' which corrupts tables). Merge + dedupe by profile URL / name across runs.
+    try {
+      const KEY = 'nv-li-connections';
+      const prev: { name: string; headline: string; url: string }[] = JSON.parse(localStorage.getItem(KEY) || '[]');
+      const byKey: Record<string, { name: string; headline: string; url: string }> = {};
+      for (const p of [...(Array.isArray(prev) ? prev : []), ...fresh]) {
+        const k = (p.url || p.name || '').toLowerCase().trim();
+        if (k) byKey[k] = { name: p.name, headline: p.headline || '', url: p.url || '' };
+      }
+      localStorage.setItem(KEY, JSON.stringify(Object.values(byKey)));
+    } catch { /* localStorage optional */ }
     // Link the list to the reference file the user attached, if named (so it connects in the graph).
     const linkTo = str(args.link_to).trim();
     if (linkTo) { const t = brain.findByTitle(linkTo); if (t && t.id !== node.id) brain.link(t.id, node.id, 'connections'); }
