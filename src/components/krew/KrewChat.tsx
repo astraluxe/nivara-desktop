@@ -4160,48 +4160,59 @@ The prompt must be production-ready — specific enough for a motion designer to
   async function launchOutreachFromConnections(max = 12, focus = '', userText = '') {
     if (busy) return;
     const sid = await ensureSession('LinkedIn outreach');
-    // Show the user's ACTUAL message (so it's on screen and copyable), before any early return.
-    addMsg({ role: 'user', content: userText || (focus ? `Draft outreach for my LinkedIn connections — ${focus}` : 'Draft outreach for my LinkedIn connections and open the copilot') });
-    if (sid) krewDb.saveMessage(sid, 'user', userText || 'Draft outreach for my LinkedIn connections').catch(() => {});
-    const { brain } = await import('../../lib/knowledgeStore');
+    // Capture the reference file (attached / focused / saved PRODUCT) up front, and SHOW its chip
+    // in the user message so it's visibly attached.
+    const refFile = attachedFiles.find((f) => /\.(md|markdown|txt|pdf|docx?)$/i.test(f.name)) || attachedFiles[0] || (focusedFile ? { name: focusedFile.name, content: focusedFile.content } : undefined);
+    const chips = attachedFiles.map((f) => `📎 ${f.name}`).join('  ');
+    const shownUser = (userText || (focus ? `Draft outreach for my LinkedIn connections — ${focus}` : 'Draft outreach for my LinkedIn connections and open the copilot')) + (chips ? `\n${chips}` : '');
+    addMsg({ role: 'user', content: shownUser });
+    if (sid) krewDb.saveMessage(sid, 'user', shownUser).catch(() => {});
     // PRIMARY source: the structured JSON the scan saved (never needs markdown parsing).
     let contacts: { name: string; headline: string; url: string }[] = [];
     try {
       const arr = JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
       if (Array.isArray(arr)) contacts = arr.filter((c) => c?.name).map((c) => ({ name: String(c.name), headline: String(c.headline || ''), url: String(c.url || '') }));
     } catch { /* ignore */ }
-    // FALLBACK: parse the "LinkedIn connections" Brain note. Pipe-robust: name = first cell, URL =
-    // last cell (if a /in/ link), headline = everything between (LinkedIn headlines contain '|').
+    // FALLBACK: read the "LinkedIn connections" Brain note. Convert HTML→markdown first (opening the
+    // note in the Brain re-saves it as HTML, which the old parser couldn't read — that's the "no
+    // saved connections" bug). Robust: name = first cell, URL = any /in/ link found in the row,
+    // headline = the other cells (LinkedIn headlines contain '|', so we don't rely on column counts).
     if (!contacts.length) {
-      const node = brain.findByTitle('LinkedIn connections');
-      for (const raw of (node?.body || '').split('\n')) {
+      const node = brainStore.all().nodes.find((n) => /linkedin connections/i.test(n.title));
+      const md = node ? nodeToMarkdown(node.body || '') : '';
+      for (const raw of md.split('\n')) {
         const t = raw.trim();
         if (!t.startsWith('|')) continue;
         let cells = t.split('|').map((c) => c.trim());
         if (cells[0] === '') cells = cells.slice(1);
         if (cells.length && cells[cells.length - 1] === '') cells = cells.slice(0, -1);
         if (!cells.length) continue;
-        const name = cells[0];
+        const name = cells[0].replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').trim(); // strip md-link syntax
         if (!name || /^name$/i.test(name) || /^:?-{2,}:?$/.test(name)) continue;
-        const last = cells[cells.length - 1] || '';
-        let url = '', headlineCells = cells.slice(1);
-        if (/linkedin\.com\/in\//i.test(last)) { url = last; headlineCells = cells.slice(1, -1); }
-        contacts.push({ name, headline: headlineCells.join(' ').replace(/\s+/g, ' ').trim(), url });
+        const um = raw.match(/https?:\/\/[a-z.]*linkedin\.com\/in\/[A-Za-z0-9\-_%]+/i);
+        const url = um ? um[0] : '';
+        const headline = cells.slice(1)
+          .filter((c) => !/linkedin\.com\/in\//i.test(c))
+          .join(' ').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/\s+/g, ' ').trim();
+        contacts.push({ name, headline, url });
       }
+      // Migrate what we recovered into localStorage so it's instant + reliable next time.
+      if (contacts.length) { try { localStorage.setItem('nv-li-connections', JSON.stringify(contacts)); } catch { /* quota */ } }
     }
     if (!contacts.length) {
-      addMsg({ role: 'assistant', content: 'I don\'t have any saved LinkedIn connections to reach out to yet. Run **/scan** first (it saves them), then ask me to draft outreach.' });
+      const noConn = 'I don\'t have any saved LinkedIn connections to reach out to yet. Run **/scan** first (it saves them), then ask me to draft outreach.';
+      addMsg({ role: 'assistant', content: noConn });
+      if (sid) krewDb.saveMessage(sid, 'assistant', noConn).catch(() => {});
       return;
     }
     const pick = contacts.slice(0, max);
     addMsg({ role: 'assistant', content: `Drafting personalised messages for ${pick.length} connections and opening the outreach copilot…`, streaming: true });
     setBusy(true);
     // Give the drafter the user's own context (attached file / focus / saved product) so messages
-    // are relevant, not generic.
-    const refFile = attachedFiles.find((f) => /\.(md|markdown|txt|pdf|docx?)$/i.test(f.name)) || attachedFiles[0];
+    // are relevant, not generic. (refFile was captured at the top.)
     let productCtx = focus;
     if (refFile?.content) productCtx += `\n\n${refFile.content.slice(0, 5000)}`;
-    if (!productCtx.trim()) { try { const p = brain.findByTitle('PRODUCT') || brain.search('product').find((n) => /product/i.test(n.title)); if (p?.body) productCtx = p.body.slice(0, 4000); } catch { /* ignore */ } }
+    if (!productCtx.trim()) { try { const p = brainStore.findByTitle('PRODUCT') || brainStore.search('product').find((n) => /product/i.test(n.title)); if (p?.body) productCtx = nodeToMarkdown(p.body).slice(0, 4000); } catch { /* ignore */ } }
     const sys = 'You write short, warm, PERSONALISED LinkedIn messages to the user\'s existing 1st-degree connections. Rules: under 55 words, reference something specific from THAT person\'s headline, one clear friendly ask, no "I hope this finds you well", no emojis unless natural, sign off casually. Return ONLY a valid JSON array: [{"name":"<exact name>","message":"<the message>"}] — use the EXACT names given, one object per person, nothing else.';
     const usr = `WHAT I DO / WHY I\'M REACHING OUT:\n${productCtx.trim() || 'Reconnecting and exploring ways we could work together.'}\n\nWrite one message for each of these connections:\n${pick.map((c) => `- ${c.name} — ${c.headline || '(no headline)'}`).join('\n')}`;
     try {
