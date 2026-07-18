@@ -1,4 +1,5 @@
 ﻿import { useState } from 'react';
+import Icon from '../Icon';
 import { invoke } from '@tauri-apps/api/core';
 import { guardDb } from '../../lib/guardDb';
 import { credentialStore } from '../../lib/krewDb';
@@ -17,7 +18,9 @@ interface VulnFinding {
 async function saveVulnBriefingToBrain(repoName: string, summary: string, findings: VulnFinding[]) {
   const affected = findings.filter((f) => f.affected);
   if (affected.length === 0) return; // nothing worth keeping — a clean scan isn't a lasting record
-  const sevIcon = (s: string) => s === 'high' ? '🔴' : s === 'med' ? '🟡' : '🟢';
+  // Plain words, not coloured circles: this string goes into the copied/exported report,
+  // where an emoji renders differently in every editor the user pastes it into.
+  const sevIcon = (s: string) => s === 'high' ? '[HIGH]' : s === 'med' ? '[MED]' : '[LOW]';
   const body = [
     summary,
     '',
@@ -278,7 +281,7 @@ export default function VulnBriefing() {
             <div className="relative w-16 h-16">
               <div className="absolute inset-0 rounded-full border-2 border-accent/20 animate-ping" />
               <div className="absolute inset-0 rounded-full border-2 border-accent/40" style={{ animation: 'spin 1.5s linear infinite' }} />
-              <div className="absolute inset-0 flex items-center justify-center text-xl">🔎</div>
+              <div className="absolute inset-0 flex items-center justify-center"><Icon name="search" size={18} className="text-accent" /></div>
             </div>
             <p className="text-sm font-medium text-nv-text">Scanning {selected?.name}…</p>
             <p className="text-xs text-nv-faint">Reading dependency file and cross-checking against known CVEs</p>

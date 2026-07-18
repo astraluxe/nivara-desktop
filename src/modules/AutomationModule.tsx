@@ -1,4 +1,5 @@
 ﻿import { useState, useEffect, useCallback, useRef } from 'react';
+import Icon, { type IconName } from '../components/Icon';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../contexts/AuthContext';
 import { getPlanConfig } from '../lib/planConfig';
@@ -849,40 +850,40 @@ function SchedulePicker({ value, onChange }: { value: string; onChange: (cron: s
 // ─── Workflow Builder constants ───────────────────────────────────────────────
 
 const TRIGGER_OPTIONS = [
-  { type: 'schedule'        as TriggerType, icon: '⏰', label: 'Schedule',        desc: 'Run at a set time — daily, weekly, hourly' },
-  { type: 'file_watch'      as TriggerType, icon: '📁', label: 'File added',      desc: 'New file lands in a folder you choose' },
-  { type: 'email'           as TriggerType, icon: '✉',  label: 'Email received',  desc: 'Incoming email matches your filters' },
-  { type: 'webhook'         as TriggerType, icon: '🔗', label: 'Webhook',         desc: 'Another app sends a signal to adris.tech' },
-  { type: 'twitter_mention' as TriggerType, icon: '𝕏',  label: 'X mention',       desc: 'Someone @mentions you on X (Twitter)' },
-  { type: 'rss'             as TriggerType, icon: '📡', label: 'RSS Feed',        desc: 'New article published on a website' },
-  { type: 'github'          as TriggerType, icon: '⚙',  label: 'GitHub',          desc: 'New PR, issue, or push in a repo' },
-  { type: 'stripe'          as TriggerType, icon: '💳', label: 'Stripe payment',  desc: 'Payment received or subscription event' },
-  { type: 'google_calendar' as TriggerType, icon: '📅', label: 'Google Calendar', desc: 'Event starting soon on your calendar' },
+  { type: 'schedule'        as TriggerType, icon: 'clock', label: 'Schedule',        desc: 'Run at a set time — daily, weekly, hourly' },
+  { type: 'file_watch'      as TriggerType, icon: 'folder', label: 'File added',      desc: 'New file lands in a folder you choose' },
+  { type: 'email'           as TriggerType, icon: 'mail',  label: 'Email received',  desc: 'Incoming email matches your filters' },
+  { type: 'webhook'         as TriggerType, icon: 'link', label: 'Webhook',         desc: 'Another app sends a signal to adris.tech' },
+  { type: 'twitter_mention' as TriggerType, icon: 'chat',  label: 'X mention',       desc: 'Someone @mentions you on X (Twitter)' },
+  { type: 'rss'             as TriggerType, icon: 'rss', label: 'RSS Feed',        desc: 'New article published on a website' },
+  { type: 'github'          as TriggerType, icon: 'gear',  label: 'GitHub',          desc: 'New PR, issue, or push in a repo' },
+  { type: 'stripe'          as TriggerType, icon: 'card', label: 'Stripe payment',  desc: 'Payment received or subscription event' },
+  { type: 'google_calendar' as TriggerType, icon: 'calendar', label: 'Google Calendar', desc: 'Event starting soon on your calendar' },
 ];
 
 const ACTION_OPTIONS = [
-  { action: 'summarise' as ActionType, icon: '📝', label: 'Summarise',      desc: 'Turn content into bullet points',    ph: 'e.g. Summarise the key points in 3–5 bullets. Focus on decisions made and action items.' },
-  { action: 'reply'     as ActionType, icon: '↩',  label: 'Draft reply',    desc: 'Write a response to a message',      ph: 'e.g. Write a warm, professional reply. Acknowledge their request and give a realistic timeline. Under 150 words.' },
-  { action: 'extract'   as ActionType, icon: '🔍', label: 'Extract data',   desc: 'Pull out specific info',             ph: 'e.g. Extract: sender name, company, invoice amount, due date. Return as a simple list.' },
-  { action: 'classify'  as ActionType, icon: '🏷',  label: 'Classify',      desc: 'Sort into categories or priority',   ph: 'e.g. Classify as: billing / technical / feature request / complaint. Add urgency: low / medium / high.' },
-  { action: 'report'    as ActionType, icon: '📊', label: 'Generate report', desc: 'Create a structured document',       ph: 'e.g. Write a weekly report: Summary, Key metrics, Blockers, Next steps.' },
-  { action: 'translate' as ActionType, icon: '🌐', label: 'Translate',      desc: 'Convert to another language',        ph: 'e.g. Translate to Spanish. Keep the tone professional and formal.' },
+  { action: 'summarise' as ActionType, icon: 'note', label: 'Summarise',      desc: 'Turn content into bullet points',    ph: 'e.g. Summarise the key points in 3–5 bullets. Focus on decisions made and action items.' },
+  { action: 'reply'     as ActionType, icon: 'send',  label: 'Draft reply',    desc: 'Write a response to a message',      ph: 'e.g. Write a warm, professional reply. Acknowledge their request and give a realistic timeline. Under 150 words.' },
+  { action: 'extract'   as ActionType, icon: 'search', label: 'Extract data',   desc: 'Pull out specific info',             ph: 'e.g. Extract: sender name, company, invoice amount, due date. Return as a simple list.' },
+  { action: 'classify'  as ActionType, icon: 'tag',  label: 'Classify',      desc: 'Sort into categories or priority',   ph: 'e.g. Classify as: billing / technical / feature request / complaint. Add urgency: low / medium / high.' },
+  { action: 'report'    as ActionType, icon: 'chart', label: 'Generate report', desc: 'Create a structured document',       ph: 'e.g. Write a weekly report: Summary, Key metrics, Blockers, Next steps.' },
+  { action: 'translate' as ActionType, icon: 'globe', label: 'Translate',      desc: 'Convert to another language',        ph: 'e.g. Translate to Spanish. Keep the tone professional and formal.' },
 ];
 
 const OUTPUT_OPTIONS = [
-  { type: 'notification'  as OutputType, icon: '🔔', label: 'Desktop alert',  desc: 'Pop-up on your screen' },
-  { type: 'file'          as OutputType, icon: '💾', label: 'Save to file',   desc: 'Write result to a file' },
-  { type: 'email_reply'   as OutputType, icon: '✉',  label: 'Send email',     desc: 'Reply or send to an address' },
-  { type: 'notion'        as OutputType, icon: 'N',  label: 'Notion page',    desc: 'Create a page in Notion' },
-  { type: 'slack'         as OutputType, icon: '#',  label: 'Slack message',  desc: 'Post to a channel' },
-  { type: 'twitter_post'  as OutputType, icon: '𝕏',  label: 'X post',         desc: 'Tweet from your X account' },
-  { type: 'twitter_reply' as OutputType, icon: '𝕏↩', label: 'X reply',        desc: 'Reply to a specific tweet' },
-  { type: 'linkedin_post' as OutputType, icon: 'in', label: 'LinkedIn post',  desc: 'Publish to LinkedIn' },
-  { type: 'discord'       as OutputType, icon: '💬', label: 'Discord',        desc: 'Post to a Discord channel' },
-  { type: 'google_sheets' as OutputType, icon: '📊', label: 'Google Sheets',  desc: 'Append a row to a spreadsheet' },
-  { type: 'twilio_sms'    as OutputType, icon: '📱', label: 'SMS (Twilio)',    desc: 'Send an SMS message' },
-  { type: 'telegram'      as OutputType, icon: '✈',  label: 'Telegram',       desc: 'Send a Telegram bot message' },
-  { type: 'hubspot'       as OutputType, icon: '🏷',  label: 'HubSpot CRM',    desc: 'Create or update a contact' },
+  { type: 'notification'  as OutputType, icon: 'bell', label: 'Desktop alert',  desc: 'Pop-up on your screen' },
+  { type: 'file'          as OutputType, icon: 'save', label: 'Save to file',   desc: 'Write result to a file' },
+  { type: 'email_reply'   as OutputType, icon: 'mail',  label: 'Send email',     desc: 'Reply or send to an address' },
+  { type: 'notion'        as OutputType, icon: 'note',  label: 'Notion page',    desc: 'Create a page in Notion' },
+  { type: 'slack'         as OutputType, icon: 'chat',  label: 'Slack message',  desc: 'Post to a channel' },
+  { type: 'twitter_post'  as OutputType, icon: 'chat',  label: 'X post',         desc: 'Tweet from your X account' },
+  { type: 'twitter_reply' as OutputType, icon: 'chat', label: 'X reply',        desc: 'Reply to a specific tweet' },
+  { type: 'linkedin_post' as OutputType, icon: 'user', label: 'LinkedIn post',  desc: 'Publish to LinkedIn' },
+  { type: 'discord'       as OutputType, icon: 'chat', label: 'Discord',        desc: 'Post to a Discord channel' },
+  { type: 'google_sheets' as OutputType, icon: 'chart', label: 'Google Sheets',  desc: 'Append a row to a spreadsheet' },
+  { type: 'twilio_sms'    as OutputType, icon: 'phone', label: 'SMS (Twilio)',    desc: 'Send an SMS message' },
+  { type: 'telegram'      as OutputType, icon: 'send',  label: 'Telegram',       desc: 'Send a Telegram bot message' },
+  { type: 'hubspot'       as OutputType, icon: 'tag',  label: 'HubSpot CRM',    desc: 'Create or update a contact' },
 ];
 
 const CONDITIONS = [
@@ -1019,7 +1020,7 @@ function WorkflowBuilder({
                 {TRIGGER_OPTIONS.map(opt => (
                   <button key={opt.type} type="button" onClick={() => changeTriggerType(opt.type)}
                     className={`p-3 rounded-xl border text-left transition-fast ${triggerType === opt.type ? 'border-accent bg-accent/10' : 'border-nv-border bg-nv-surface hover:border-accent/40'}`}>
-                    <span className="text-lg mb-1 block">{opt.icon}</span>
+                    <Icon name={opt.icon as IconName} size={18} className="mb-1" />
                     <span className={`text-xs font-semibold block ${triggerType === opt.type ? 'text-accent' : 'text-nv-text'}`}>{opt.label}</span>
                     <span className="text-[10px] text-nv-muted leading-tight block mt-0.5">{opt.desc}</span>
                   </button>
@@ -1038,19 +1039,19 @@ function WorkflowBuilder({
                   <p className="text-[10px] text-nv-muted -mt-1">Choose a data source so the AI has real content to work with — otherwise it only knows the current time.</p>
                   <div className="grid grid-cols-2 gap-2">
                     {[
-                      { val: '',          label: 'None',          icon: '⏰', desc: 'Time only — no external data' },
-                      { val: 'gmail',     label: 'Gmail',         icon: '✉',  desc: 'Fetch unread emails' },
-                      { val: 'x_mentions',label: 'X Mentions',    icon: '𝕏',  desc: 'Fetch recent @mentions' },
-                      { val: 'rss',       label: 'RSS Feed',      icon: '📡', desc: 'Fetch latest feed items' },
-                      { val: 'github',    label: 'GitHub',        icon: '⚙',  desc: 'Fetch PRs, issues or commits' },
-                      { val: 'calendar',  label: 'Google Calendar',icon: '📅', desc: "Fetch today's events" },
+                      { val: '',          label: 'None',          icon: 'clock', desc: 'Time only — no external data' },
+                      { val: 'gmail',     label: 'Gmail',         icon: 'mail',  desc: 'Fetch unread emails' },
+                      { val: 'x_mentions',label: 'X Mentions',    icon: 'chat',  desc: 'Fetch recent @mentions' },
+                      { val: 'rss',       label: 'RSS Feed',      icon: 'rss', desc: 'Fetch latest feed items' },
+                      { val: 'github',    label: 'GitHub',        icon: 'gear',  desc: 'Fetch PRs, issues or commits' },
+                      { val: 'calendar',  label: 'Google Calendar',icon: 'calendar', desc: "Fetch today's events" },
                     ].map(opt => {
                       const active = (triggerConfig.data_source ?? '') === opt.val;
                       return (
                         <button key={opt.val || 'none'} type="button"
                           onClick={() => patchTC({ data_source: opt.val || undefined })}
                           className={`p-3 rounded-xl border text-left transition-fast ${active ? 'border-accent bg-accent/10' : 'border-nv-border bg-nv-surface hover:border-accent/40'}`}>
-                          <span className="text-lg mb-1 block">{opt.icon}</span>
+                          <Icon name={opt.icon as IconName} size={18} className="mb-1" />
                           <span className={`text-xs font-semibold block ${active ? 'text-accent' : 'text-nv-text'}`}>{opt.label}</span>
                           <span className="text-[10px] text-nv-muted leading-tight block mt-0.5">{opt.desc}</span>
                         </button>
@@ -1083,7 +1084,7 @@ function WorkflowBuilder({
                   {triggerConfig.data_source === 'rss' && (
                     <div className="space-y-2">
                       <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-orange-500/5 border border-orange-500/20">
-                        <span className="text-base mt-0.5">📡</span>
+                        <Icon name="rss" size={16} className="mt-0.5" />
                         <p className="text-[11px] text-orange-400/80 leading-relaxed">
                           Fetches the latest articles from an RSS feed each run. Great for competitor blogs, news sites, industry updates.
                         </p>
@@ -1123,7 +1124,7 @@ function WorkflowBuilder({
                   )}
                   {triggerConfig.data_source === 'calendar' && (
                     <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-blue-500/5 border border-blue-500/20">
-                      <span className="text-base mt-0.5">📅</span>
+                      <Icon name="calendar" size={16} className="mt-0.5" />
                       <p className="text-[11px] text-blue-400/80 leading-relaxed">
                         Fetches your upcoming calendar events each run. <strong>Connect Google Calendar in Connect Apps.</strong> Prompt: "Give me a brief overview of today's meetings and any prep I need."
                       </p>
@@ -1141,7 +1142,7 @@ function WorkflowBuilder({
                     {e0.includes('folder') && <RequiredBadge />}
                   </div>
                   <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-nv-muted text-sm">📁</span>
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-nv-muted text-sm"><Icon name="folder" size={13} /></span>
                     <input value={triggerConfig.folder ?? ''} onChange={e => patchTC({ folder: e.target.value })}
                       placeholder="C:\Users\you\Downloads"
                       className={`${iCls(e0.includes('folder'))} pl-8 font-mono`} />
@@ -1411,7 +1412,7 @@ function WorkflowBuilder({
                         {ACTION_OPTIONS.map(opt => (
                           <button key={opt.action} type="button" onClick={() => updateStep(s.id, { action: opt.action })}
                             className={`p-2.5 rounded-lg border text-left transition-fast ${s.action === opt.action ? 'border-accent bg-accent/10' : 'border-nv-border bg-nv-bg hover:border-accent/30'}`}>
-                            <span className="text-base block mb-1">{opt.icon}</span>
+                            <Icon name={opt.icon as IconName} size={16} className="mb-1" />
                             <span className={`text-[10px] font-semibold block leading-tight ${s.action === opt.action ? 'text-accent' : 'text-nv-text'}`}>{opt.label}</span>
                             <span className="text-[9px] text-nv-faint block mt-0.5 leading-tight">{opt.desc}</span>
                           </button>
@@ -1451,7 +1452,7 @@ function WorkflowBuilder({
                 return (
                   <div key={s.id} className="rounded-xl border border-nv-border bg-nv-surface p-4 space-y-3">
                     <div>
-                      <p className="text-[10px] font-mono text-nv-muted">Step {i + 1} — {aOpt?.icon} {aOpt?.label} result goes to…</p>
+                      <p className="text-[10px] font-mono text-nv-muted">Step {i + 1} — {aOpt?.label} result goes to…</p>
                     </div>
 
                     {/* Output type cards */}
@@ -1460,7 +1461,7 @@ function WorkflowBuilder({
                         <button key={opt.type} type="button"
                           onClick={() => updateStep(s.id, { output: opt.type, output_config: {} })}
                           className={`p-2 rounded-lg border text-center transition-fast ${s.output === opt.type ? 'border-accent bg-accent/10' : 'border-nv-border bg-nv-bg hover:border-accent/30'}`}>
-                          <span className="text-base block mb-0.5">{opt.icon}</span>
+                          <Icon name={opt.icon as IconName} size={16} className="mb-0.5" />
                           <span className={`text-[9px] font-semibold leading-tight block ${s.output === opt.type ? 'text-accent' : 'text-nv-text'}`}>{opt.label}</span>
                         </button>
                       ))}
@@ -1475,7 +1476,7 @@ function WorkflowBuilder({
                             placeholder="e.g. New invoice received" className={iCls(false)} />
                         </div>
                         <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-nv-bg border border-nv-border">
-                          <span className="text-xl shrink-0">🔔</span>
+                          <Icon name="bell" size={20} className="shrink-0" />
                           <div>
                             <p className="text-xs font-medium text-nv-text">{s.output_config?.notif_title || 'Automation result'}</p>
                             <p className="text-[10px] text-nv-muted">AI result will appear here as the notification body</p>
@@ -1806,11 +1807,11 @@ function AutomationCard({ automation, onToggle, onCloudToggle, onEdit, onDelete,
   const ds = cfg.data_source ?? '';
   const hasDataSource = automation.trigger_type === 'schedule' && !!ds;
   const DATA_SOURCE_BADGE: Record<string, { icon: string; label: string; color: string }> = {
-    gmail:      { icon: '✉',  label: 'Gmail',    color: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' },
-    x_mentions: { icon: '𝕏',  label: 'X/Twitter', color: 'bg-sky-500/15 text-sky-400 border-sky-500/30' },
-    rss:        { icon: '📡', label: 'RSS Feed',  color: 'bg-orange-500/15 text-orange-400 border-orange-500/30' },
-    github:     { icon: '⚙',  label: 'GitHub',   color: 'bg-violet-500/15 text-violet-400 border-violet-500/30' },
-    calendar:   { icon: '📅', label: 'Calendar', color: 'bg-blue-500/15 text-blue-400 border-blue-500/30' },
+    gmail:      { icon: 'mail',  label: 'Gmail',    color: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' },
+    x_mentions: { icon: 'chat',  label: 'X/Twitter', color: 'bg-sky-500/15 text-sky-400 border-sky-500/30' },
+    rss:        { icon: 'rss', label: 'RSS Feed',  color: 'bg-orange-500/15 text-orange-400 border-orange-500/30' },
+    github:     { icon: 'gear',  label: 'GitHub',   color: 'bg-violet-500/15 text-violet-400 border-violet-500/30' },
+    calendar:   { icon: 'calendar', label: 'Calendar', color: 'bg-blue-500/15 text-blue-400 border-blue-500/30' },
   };
   const needsGmailSource = automation.trigger_type === 'schedule' && !cfg.data_source &&
     steps.some(s => /email|gmail|inbox|unread/i.test(s.prompt));
@@ -1835,7 +1836,7 @@ function AutomationCard({ automation, onToggle, onCloudToggle, onEdit, onDelete,
             {hasDataSource && DATA_SOURCE_BADGE[ds] && (
               <span title={`Fetches live ${DATA_SOURCE_BADGE[ds].label} data before each run`}
                 className={`shrink-0 text-[9px] font-mono px-1.5 py-0.5 rounded-full border ${DATA_SOURCE_BADGE[ds].color}`}>
-                {DATA_SOURCE_BADGE[ds].icon} {DATA_SOURCE_BADGE[ds].label}
+                {DATA_SOURCE_BADGE[ds].label}
               </span>
             )}
           </div>
@@ -2577,7 +2578,7 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
       {/* In-app notification toast */}
       {notifToast && (
         <div className="fixed bottom-6 right-6 z-[999] max-w-sm w-full bg-nv-surface border border-nv-border rounded-xl shadow-2xl p-4 flex items-start gap-3 animate-in fade-in slide-in-from-bottom-4 duration-300">
-          <span className="text-xl shrink-0">🔔</span>
+          <Icon name="bell" size={20} className="shrink-0" />
           <div className="flex-1 min-w-0">
             <p className="text-sm font-semibold text-nv-text truncate">{notifToast.title}</p>
             <p className="text-xs text-nv-muted mt-1 leading-relaxed line-clamp-4">{notifToast.body}</p>

@@ -9,7 +9,9 @@ type ScanResult = GuardScanResult;
 // parsing needed (unlike Krew's freeform tables), so this can save deterministically every
 // time, no user action required.
 async function saveContractScanToBrain(fileLabel: string, r: GuardScanResult) {
-  const sevIcon = (s: string) => s === 'high' ? '🔴' : s === 'med' ? '🟡' : '🟢';
+  // Plain words, not coloured circles: this string goes into the copied/exported report,
+  // where an emoji renders differently in every editor the user pastes it into.
+  const sevIcon = (s: string) => s === 'high' ? '[HIGH]' : s === 'med' ? '[MED]' : '[LOW]';
   const body = [
     `**Risk score:** ${r.risk_score}/100`,
     `**Sections scanned:** ${r.chunksScanned}${r.truncated ? ' (truncated — document was very long)' : ''}`,

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import Icon from '../Icon';
 import { todos, isOverdue, isDueToday, isSameDay, TODO_EVENT, type TodoItem, type TodoPriority } from '../../lib/todoStore';
 
 type Filter = 'all' | 'today' | 'overdue' | 'done';
@@ -209,7 +210,7 @@ export default function TodoPanel({ onResume }: { onResume: (item: TodoItem) => 
                       </span>
                     )}
                     {t.remindAt !== undefined && !t.done && !t.remindedAt && (
-                      <span className="text-[9px] shrink-0 mt-0.5" title={`Reminder at ${new Date(t.remindAt).toLocaleString()}`}>🔔</span>
+                      <Icon name="bell" size={10} className="shrink-0 mt-1 text-nv-faint" />
                     )}
                   </div>
                 )}

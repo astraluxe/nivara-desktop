@@ -29,6 +29,7 @@ import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill
 import SkillsPanel from './SkillsPanel';
 import OutreachCopilot, { type OutreachCampaign, type OutreachContact, loadSavedCampaign } from './OutreachCopilot';
 import TodoPanel from './TodoPanel';
+import Icon, { type IconName } from '../Icon';
 import { loadSettings } from '../../modules/SettingsModule';
 import { todos, TODO_EVENT, type TodoItem } from '../../lib/todoStore';
 
@@ -384,7 +385,7 @@ function SearchResultBubble({ content }: { content: string }) {
   if (!Array.isArray(results) || results.length === 0) return null;
   return (
     <div className="my-2 ml-2">
-      <p className="text-[10px] text-nv-faint font-mono mb-2">🔍 {results.length} sources found</p>
+      <p className="text-[10px] text-nv-faint font-mono mb-2">{results.length} sources found</p>
       <div className="space-y-1.5">
         {results.slice(0, 4).map((r, i) => (
           <div key={i} className="rounded-lg border border-nv-border bg-nv-surface px-3 py-2">
@@ -893,11 +894,11 @@ function ProposalCard({ proposal, agentName, userId, onAccept, onDecline, onView
     } catch (e) { setErr(String(e)); setStatus('idle'); }
   }
 
-  const TI: Record<string, string> = { schedule: '⏰', email: '✉', file_watch: '📁', webhook: '🔗' };
+  const TI: Record<string, IconName> = { schedule: 'clock', email: 'mail', file_watch: 'folder', webhook: 'link' };
   const TL: Record<string, string> = { schedule: 'Schedule', email: 'Email received', file_watch: 'File added', webhook: 'Webhook' };
-  const AI: Record<string, string> = { summarise: '📝', reply: '↩', extract: '🔍', classify: '🏷', report: '📊', translate: '🌐' };
+  const AI: Record<string, IconName> = { summarise: 'note', reply: 'send', extract: 'search', classify: 'tag', report: 'chart', translate: 'globe' };
   const AL: Record<string, string> = { summarise: 'Summarise', reply: 'Draft reply', extract: 'Extract data', classify: 'Classify', report: 'Generate report', translate: 'Translate' };
-  const OI: Record<string, string> = { notification: '🔔', file: '💾', email_reply: '✉', notion: 'N', slack: '#' };
+  const OI: Record<string, IconName> = { notification: 'bell', file: 'save', email_reply: 'mail', notion: 'note', slack: 'chat' };
   const OL: Record<string, string> = { notification: 'Desktop alert', file: 'Save to file', email_reply: 'Send email', notion: 'Notion page', slack: 'Slack message' };
 
   if (status === 'declined') return null;
@@ -911,7 +912,7 @@ function ProposalCard({ proposal, agentName, userId, onAccept, onDecline, onView
     <div className="my-3 rounded-xl border border-accent/30 bg-nv-surface overflow-hidden text-left">
       <div className="flex items-center justify-between px-3 py-2.5 border-b border-nv-border/60 bg-nv-bg">
         <div className="flex items-center gap-2">
-          <span className="text-sm">🤖</span>
+          <Icon name="robot" size={14} className="text-accent" />
           <div>
             <p className="text-[9px] font-mono text-nv-faint">{agentName} proposes an automation</p>
             <p className="text-[12px] font-semibold text-nv-text">{proposal.name}</p>
@@ -928,7 +929,7 @@ function ProposalCard({ proposal, agentName, userId, onAccept, onDecline, onView
               className="w-full flex items-center justify-between px-2.5 py-2 text-left"
             >
               <div className="flex items-center gap-2">
-                <span className="text-sm">📚</span>
+                <Icon name="note" size={14} className="text-accent" />
                 <div>
                   <p className="text-[9px] text-nv-faint font-mono uppercase">Company Context</p>
                   <p className="text-[10px] text-nv-muted">
@@ -950,13 +951,13 @@ function ProposalCard({ proposal, agentName, userId, onAccept, onDecline, onView
           </div>
         )}
         <div className="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-nv-bg border border-nv-border">
-          <span className="text-base shrink-0">{TI[proposal.trigger_type] ?? '⚡'}</span>
+          <Icon name={TI[proposal.trigger_type] ?? 'bolt'} size={15} className="shrink-0" />
           <div><p className="text-[9px] text-nv-faint font-mono uppercase">Trigger</p><p className="text-[11px] font-semibold text-nv-text">{TL[proposal.trigger_type]}</p></div>
         </div>
         <div className="text-center text-nv-faint text-xs">↓</div>
         {proposal.steps.map((step, i) => (
           <div key={i} className="flex items-start gap-2 px-2.5 py-2 rounded-lg bg-nv-bg border border-nv-border">
-            <span className="text-base shrink-0">{AI[step.action] ?? '🤖'}</span>
+            <Icon name={AI[step.action] ?? 'robot'} size={15} className="shrink-0" />
             <div>
               <p className="text-[9px] text-nv-faint font-mono uppercase">Step {i + 1}</p>
               <p className="text-[11px] font-semibold text-nv-text">{AL[step.action] ?? step.action}</p>
@@ -967,7 +968,7 @@ function ProposalCard({ proposal, agentName, userId, onAccept, onDecline, onView
         {proposal.steps.length > 0 && (() => { const out = proposal.steps[proposal.steps.length - 1].output; return (
           <><div className="text-center text-nv-faint text-xs">↓</div>
           <div className="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-nv-bg border border-nv-border">
-            <span className="text-base shrink-0">{OI[out] ?? '📤'}</span>
+            <Icon name={OI[out] ?? 'send'} size={15} className="shrink-0" />
             <div><p className="text-[9px] text-nv-faint font-mono uppercase">Output</p><p className="text-[11px] font-semibold text-nv-text">{OL[out] ?? out}</p></div>
           </div></>
         ); })()}
@@ -1277,7 +1278,7 @@ function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled }: {
         : 'border-nv-border hover:border-accent/40 text-nv-muted hover:text-nv-text'
       }`}
     >
-      <p className="text-[11px] font-semibold mb-0.5 flex items-center gap-1">{title}{lock && <span>🔒</span>}</p>
+      <p className="text-[11px] font-semibold mb-0.5 flex items-center gap-1">{title}{lock && <Icon name="shield" size={11} className="text-nv-faint" />}</p>
       <p className="text-[9.5px] text-nv-faint leading-snug font-mono">{sub}</p>
     </button>
   );
@@ -1626,7 +1627,7 @@ function DeckResultBubble({ html, spec: specProp }: { html: string; spec: DeckSp
                 <button onClick={() => moveSlide(i, -1)} disabled={i === 0} title="Move up" className="text-[11px] px-1 text-nv-faint hover:text-nv-text disabled:opacity-30">↑</button>
                 <button onClick={() => moveSlide(i, 1)} disabled={i === liveSpec.slides.length - 1} title="Move down" className="text-[11px] px-1 text-nv-faint hover:text-nv-text disabled:opacity-30">↓</button>
                 <button onClick={() => setAddAt(addAt === i ? null : i)} title="Add a slide after this" className={`text-[11px] px-1 hover:text-accent ${addAt === i ? 'text-accent' : 'text-nv-faint'}`}>＋</button>
-                <button onClick={() => deleteSlide(i)} disabled={liveSpec.slides.length <= 1} title="Delete this slide" className="text-[11px] px-1 text-nv-faint hover:text-nv-red disabled:opacity-30">🗑</button>
+                <button onClick={() => deleteSlide(i)} disabled={liveSpec.slides.length <= 1} title="Delete this slide" className="text-[11px] px-1 text-nv-faint hover:text-nv-red disabled:opacity-30">Delete</button>
               </div>
               {addAt === i && (
                 <div className="flex flex-wrap gap-1 pl-7 pb-1.5">
@@ -4320,7 +4321,7 @@ The prompt must be production-ready — specific enough for a motion designer to
   async function launchOutreachFromConnections(max = 50, focus = '', userText = '') {
     if (busy) return;
     const sid = await ensureSession('LinkedIn outreach');
-    const chips = attachedFiles.map((f) => `📎 ${f.name}`).join('  ');
+    const chips = attachedFiles.map((f) => `${f.name}`).join('  ');
     const shownUser = (userText || (focus ? `Draft outreach for my LinkedIn connections — ${focus}` : 'Draft outreach for my LinkedIn connections and open the copilot')) + (chips ? `\n${chips}` : '');
     addMsg({ role: 'user', content: shownUser });
     if (sid) krewDb.saveMessage(sid, 'user', shownUser).catch(() => {});
@@ -4761,7 +4762,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     // part of this message — even though it lives in the persistent focus banner.
     const chipMarkers = [
       ...(focusedFile ? [`🔗 ${focusedFile.name}`] : []),
-      ...currentFiles.map(f => f.isImage ? `🖼 ${f.name}` : `📎 ${f.name}`),
+      ...currentFiles.map(f => f.isImage ? `${f.name}` : `${f.name}`),
     ];
     const displayText = chipMarkers.length > 0
       ? (text ? text + '\n' : '') + chipMarkers.join('  ')
@@ -5996,7 +5997,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
             reminder is always seen somewhere. */}
         {todoReminder && (
           <div className="mx-2 mb-1 flex items-center gap-2 shrink-0 rounded-lg border border-nv-yellow/40 bg-nv-yellow/10 px-2.5 py-1.5">
-            <span className="text-[12px] shrink-0">🔔</span>
+            <Icon name="bell" size={13} className="text-nv-yellow" />
             <span className="flex-1 min-w-0 text-[11px] text-nv-text break-words">{todoReminder}</span>
             <button onClick={() => setTodoReminder(null)} title="Dismiss" className="text-[11px] text-nv-faint hover:text-nv-text shrink-0">✕</button>
           </div>
@@ -6587,7 +6588,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                         onClick={() => applyPickedFile(filePickerCmd, f)}
                         className={`w-full text-left flex items-start gap-2.5 px-3 py-1.5 transition-fast ${idx === 0 && filePickerQuery ? 'bg-nv-surface2/70 text-nv-text' : 'text-nv-muted hover:bg-nv-surface2/60 hover:text-nv-text'}`}
                       >
-                        <span className="w-4 flex items-center justify-center shrink-0 text-accent mt-0.5">📄</span>
+                        <Icon name="file" size={13} className="text-accent mt-0.5" />
                         {/* Wrap instead of truncate — long Brain titles were unreadable as "Best-fit conn…" */}
                         <span className="flex-1 min-w-0 text-[12px] leading-snug break-words">{f.name}</span>
                         {f.fromBrain && <span className="text-[8px] font-mono text-nv-faint border border-nv-border rounded px-1 shrink-0 mt-0.5">Brain</span>}

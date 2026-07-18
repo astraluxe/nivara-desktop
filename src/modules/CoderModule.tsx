@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import Icon from '../components/Icon';
 import { invoke } from '@tauri-apps/api/core';
 import FileTree from '../components/coder/FileTree';
 import Editor from '../components/coder/Editor';
@@ -113,7 +114,7 @@ export default function CoderModule() {
     async function buildDirContext() {
       try {
         const entries = await invoke<FileEntry[]>('list_dir', { path: projectPath });
-        const lines = entries.slice(0, 50).map(e => `${e.is_dir ? '📁' : '📄'} ${e.name}`);
+        const lines = entries.slice(0, 50).map(e => `${e.is_dir ? '[dir]' : '[file]'} ${e.name}`);
         if (entries.length > 50) lines.push(`… and ${entries.length - 50} more`);
         setDirContext(lines.join('\n'));
       } catch { setDirContext(''); }
@@ -224,7 +225,7 @@ export default function CoderModule() {
                 ? 'border-nv-yellow/50 text-nv-yellow'
                 : 'border-nv-border text-nv-faint hover:text-nv-muted'
             }`}
-          >{isProtected(openFile) ? '🔒 Protected' : '🔓 Protect'}</button>
+          >{isProtected(openFile) ? 'Protected' : 'Protect'}</button>
         )}
         <button
           onClick={() => setShowAudit(true)}
@@ -329,7 +330,7 @@ export default function CoderModule() {
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => resolvePendingEdit(false)}>
           <div className="bg-nv-surface border border-nv-yellow/40 rounded-xl w-[460px] max-w-[90%] p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-2 mb-2">
-              <span className="text-nv-yellow text-base">🔒</span>
+              <Icon name="shield" size={15} className="text-nv-yellow" />
               <h3 className="text-[13px] font-semibold text-nv-text">Approve change to a protected file?</h3>
             </div>
             <p className="text-[11px] text-nv-muted leading-relaxed mb-1">
@@ -363,7 +364,7 @@ export default function CoderModule() {
                   <div className="flex flex-col gap-1">
                     {protectedFiles.map((p) => (
                       <div key={p} className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-nv-bg border border-nv-border">
-                        <span className="text-nv-yellow text-[11px]">🔒</span>
+                        <Icon name="shield" size={11} className="text-nv-yellow" />
                         <span className="text-[11px] text-nv-text font-mono truncate flex-1" title={p}>{p}</span>
                         <button onClick={() => toggleProtect(p)} className="text-[10px] px-2 py-0.5 rounded border border-nv-border text-nv-muted hover:border-nv-red hover:text-nv-red transition-fast shrink-0">Unprotect</button>
                       </div>

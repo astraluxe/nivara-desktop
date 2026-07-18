@@ -233,7 +233,7 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
   },
   reddit: {
     title: 'Connect Reddit',
-    icon: '👽',
+    icon: 'R',
     steps: [
       {
         title: 'Accept the Developer Policy',
@@ -312,7 +312,7 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
   },
   twilio: {
     title: 'Connect Twilio (SMS)',
-    icon: '📱',
+    icon: 'S',
     steps: [
       {
         title: 'Create a free Twilio account',
@@ -352,7 +352,7 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
   },
   shopify: {
     title: 'Connect Shopify',
-    icon: '🛍',
+    icon: 'Sh',
     steps: [
       {
         title: 'Create a custom app',
@@ -387,7 +387,7 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
   },
   jira: {
     title: 'Connect Jira',
-    icon: '🧩',
+    icon: 'M',
     steps: [
       {
         title: 'Enter your Jira site domain',
@@ -416,7 +416,7 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
   },
   figma: {
     title: 'Connect Figma',
-    icon: '🎨',
+    icon: 'C',
     steps: [
       {
         title: 'Generate a personal access token',
@@ -446,7 +446,7 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
   },
   hubspot: {
     title: 'Connect HubSpot CRM',
-    icon: '🏷',
+    icon: 'H',
     steps: [
       {
         title: 'Open HubSpot Private Apps',

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import Icon, { type IconName } from '../Icon';
 import { invoke } from '@tauri-apps/api/core';
 
 export interface AutomationProposal {
@@ -20,11 +21,11 @@ interface Props {
   onDecline:   () => void;
 }
 
-const TRIGGER_ICONS: Record<string, string> = {
-  schedule:   '⏰',
-  email:      '✉',
-  file_watch: '📁',
-  webhook:    '🔗',
+const TRIGGER_ICONS: Record<string, IconName> = {
+  schedule:   'clock',
+  email:      'mail',
+  file_watch: 'folder',
+  webhook:    'link',
 };
 
 const TRIGGER_LABELS: Record<string, string> = {
@@ -34,17 +35,17 @@ const TRIGGER_LABELS: Record<string, string> = {
   webhook:    'Webhook',
 };
 
-const ACTION_ICONS: Record<string, string> = {
-  summarise: '📝', reply: '↩', extract: '🔍',
-  classify: '🏷', report: '📊', translate: '🌐',
+const ACTION_ICONS: Record<string, IconName> = {
+  summarise: 'note', reply: 'send', extract: 'search',
+  classify: 'tag', report: 'chart', translate: 'globe',
 };
 const ACTION_LABELS: Record<string, string> = {
   summarise: 'Summarise', reply: 'Draft reply', extract: 'Extract data',
   classify: 'Classify', report: 'Generate report', translate: 'Translate',
 };
 
-const OUTPUT_ICONS: Record<string, string> = {
-  notification: '🔔', file: '💾', email_reply: '✉', notion: 'N', slack: '#',
+const OUTPUT_ICONS: Record<string, IconName> = {
+  notification: 'bell', file: 'save', email_reply: 'mail', notion: 'note', slack: 'chat',
 };
 const OUTPUT_LABELS: Record<string, string> = {
   notification: 'Desktop alert', file: 'Save to file',
@@ -123,7 +124,7 @@ export default function AutomationProposalModal({ proposal, agentName, userId, o
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-nv-border">
           <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-lg bg-accent/15 flex items-center justify-center text-accent text-sm">🤖</div>
+            <div className="w-7 h-7 rounded-lg bg-accent/15 flex items-center justify-center text-accent text-sm"></div>
             <div>
               <p className="text-[11px] text-nv-faint font-mono">{agentName} proposes an automation</p>
               <p className="text-sm font-semibold text-nv-text">{proposal.name}</p>
@@ -144,7 +145,7 @@ export default function AutomationProposalModal({ proposal, agentName, userId, o
           <div className="space-y-1.5">
             {/* Trigger */}
             <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-nv-surface border border-nv-border">
-              <span className="text-lg shrink-0">{TRIGGER_ICONS[proposal.trigger_type] ?? '⚡'}</span>
+              <Icon name={TRIGGER_ICONS[proposal.trigger_type] ?? 'bolt'} size={16} />
               <div className="flex-1 min-w-0">
                 <p className="text-[10px] text-nv-faint font-mono uppercase">Trigger</p>
                 <p className="text-xs font-semibold text-nv-text">{TRIGGER_LABELS[proposal.trigger_type]}</p>
@@ -158,7 +159,7 @@ export default function AutomationProposalModal({ proposal, agentName, userId, o
             {/* Steps */}
             {proposal.steps.map((step, i) => (
               <div key={i} className="flex items-start gap-3 px-3 py-2.5 rounded-xl bg-nv-surface border border-nv-border">
-                <span className="text-lg shrink-0 mt-0.5">{ACTION_ICONS[step.action] ?? '🤖'}</span>
+                <Icon name={ACTION_ICONS[step.action] ?? 'robot'} size={16} className="mt-0.5" />
                 <div className="flex-1 min-w-0">
                   <p className="text-[10px] text-nv-faint font-mono uppercase">Step {i + 1} · AI Action</p>
                   <p className="text-xs font-semibold text-nv-text">{ACTION_LABELS[step.action] ?? step.action}</p>
@@ -175,7 +176,7 @@ export default function AutomationProposalModal({ proposal, agentName, userId, o
               const out = proposal.steps[proposal.steps.length - 1].output;
               return (
                 <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-nv-surface border border-nv-border">
-                  <span className="text-lg shrink-0">{OUTPUT_ICONS[out] ?? '📤'}</span>
+                  <Icon name={OUTPUT_ICONS[out] ?? 'send'} size={16} />
                   <div>
                     <p className="text-[10px] text-nv-faint font-mono uppercase">Output</p>
                     <p className="text-xs font-semibold text-nv-text">{OUTPUT_LABELS[out] ?? out}</p>

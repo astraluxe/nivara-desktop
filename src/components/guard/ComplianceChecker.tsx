@@ -518,8 +518,8 @@ export default function ComplianceChecker({ onScanRun }: { onScanRun?: () => voi
                 <div className="grid grid-cols-2 gap-2">
                   {[
                     { icon: '{ }', label: 'Backend code', desc: 'server.js, app.py, main.go — checks for auth, logging, encryption patterns' },
-                    { icon: '⚙', label: 'Config files', desc: '.env.example, docker-compose.yml — checks for exposed secrets, secure settings' },
-                    { icon: '📄', label: 'Policy docs', desc: 'PRIVACY.md, TERMS.md, SECURITY.md — checks if required docs exist and are complete' },
+                    { icon: 'CFG', label: 'Config files', desc: '.env.example, docker-compose.yml — checks for exposed secrets, secure settings' },
+                    { icon: 'DOC', label: 'Policy docs', desc: 'PRIVACY.md, TERMS.md, SECURITY.md — checks if required docs exist and are complete' },
                     { icon: '{}', label: 'API / schema', desc: 'routes.ts, schema.prisma, api.yaml — checks for data validation, PII handling' },
                   ].map(({ icon, label, desc }) => (
                     <div key={label} className="flex items-start gap-2.5 p-3 rounded-xl bg-nv-surface border border-nv-border">

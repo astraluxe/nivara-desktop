@@ -57,6 +57,26 @@ function Example({ title, children }: { title: string; children: React.ReactNode
     </div>
   );
 }
+/** Command reference rows — the command, what it's called, and what it actually does. */
+function CmdTable({ rows }: { rows: [string, string, string][] }) {
+  return (
+    <div className="my-3 rounded-xl border border-nv-border overflow-hidden">
+      {rows.map(([cmd, name, desc], i) => (
+        <div
+          key={cmd}
+          className={`px-3.5 py-2.5 ${i % 2 ? 'bg-nv-surface/40' : ''} ${i ? 'border-t border-nv-border/70' : ''}`}
+        >
+          <div className="flex items-baseline gap-2 flex-wrap mb-0.5">
+            <code className="text-[12px] font-mono text-accent">{cmd}</code>
+            <span className="text-[12px] font-medium text-nv-text">{name}</span>
+          </div>
+          <p className="text-[12px] leading-[1.65] text-nv-muted">{desc}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function Note({ children }: { children: React.ReactNode }) {
   return (
     <div className="my-4 border-l-2 border-accent/50 pl-3.5 py-1">
@@ -181,19 +201,62 @@ export default function InfoModule() {
           <H id="commands">Slash commands</H>
           <P>
             Type <K>/</K> in the message box to see everything available. Commands are shortcuts, not a
-            separate language — you can always ask in plain words instead. The ones worth knowing:
+            separate language — you can always ask in plain words instead. Every command in the app is
+            listed below, grouped by what it's for.
           </P>
-          <ul className="list-disc pl-5 mb-3">
-            <Li><K>/scan</K> — read your LinkedIn connections and save them.</Li>
-            <Li><K>/outreach</K> — draft a personal message for each saved connection.</Li>
-            <Li><K>/continue</K> — reopen the outreach copilot exactly where you left off.</Li>
-            <Li><K>/research</K> — open the deep research workspace.</Li>
-            <Li><K>/brain</K>, <K>/coder</K>, <K>/models</K> — jump straight to that part of the app.</Li>
-          </ul>
           <P>
             When a command needs one of your files a picker appears. It has a search box, so it stays
             usable when you have hundreds of saved files — start typing and it narrows down.
           </P>
+
+          <H3>Finding and preparing leads</H3>
+          <CmdTable rows={[
+            ['/findleads', 'Find prospects', 'Researches brand-new leads that fit what you sell — real companies from open sources, not invented names.'],
+            ['/scan', 'Scan LinkedIn connections', 'Opens LinkedIn and reads your existing connections, saving names, headlines and profile links to your Brain. About fifty per run; later runs skip anyone already saved.'],
+            ['/expand', 'Add more leads', 'Grows a list you already have with additional people of the same type, instead of starting a new list.'],
+            ['/enrich', 'Fill contacts', 'Goes through a list and fills in the gaps — missing LinkedIn URLs, phone numbers and email addresses — in a single pass.'],
+            ['/verify', 'Verify LinkedIn', 'Opens every LinkedIn link in a lead list and checks it really belongs to that person. Leaves a field blank rather than guessing.'],
+          ]} />
+
+          <H3>Reaching out</H3>
+          <CmdTable rows={[
+            ['/outreach', 'Send outreach (copilot)', 'Writes a personal message for each saved connection and opens the copilot that walks you through sending them one by one. Skips anyone you have already messaged.'],
+            ['/continue', 'Continue outreach', 'Reopens the outreach copilot exactly where you left off, with everyone’s status intact.'],
+            ['/draft', 'Draft outreach', 'Writes the DMs or emails for a list without opening the sending copilot — useful when you just want the text.'],
+            ['/email', 'Email a list', 'Sends a personalised email to everyone on a list, written individually rather than mail-merged.'],
+            ['/reply', 'Draft a reply', 'Drafts a response to a message or email you paste in.'],
+            ['/inbox', 'Check inbox', 'Reads your Gmail and summarises what actually needs a reply.'],
+          ]} />
+
+          <H3>Making things</H3>
+          <CmdTable rows={[
+            ['/deck', 'Make a presentation', 'Builds a slide deck you can edit in place and export as a PDF.'],
+            ['/image', 'Generate an image', 'Creates an image, logo or graphic. Saved to the Pictures folder in your Brain.'],
+            ['/post', 'Write a post', 'Drafts a post for LinkedIn, X or another platform, tailored to that platform’s style.'],
+            ['/summarize', 'Summarise', 'Condenses a page, file or block of text down to what matters.'],
+            ['/automate', 'Build automation', 'Describe a repeating job in words and it builds the automation for you.'],
+          ]} />
+
+          <H3>Research and agents</H3>
+          <CmdTable rows={[
+            ['/research', 'Deep research', 'Opens the Research workspace: plans searches, reads your competitors’ websites and writes a full competitive report.'],
+            ['/agents', 'Browse agents', 'Shows every specialist agent so you can switch to one or add another.'],
+          ]} />
+
+          <H3>Opening a part of the app</H3>
+          <P>These simply jump you to a module — the same as clicking it in the sidebar.</P>
+          <CmdTable rows={[
+            ['/brain', 'Open Brain', 'Your knowledge graph — every note, list and file your agents share.'],
+            ['/coder', 'Open Coder', 'The AI code editor.'],
+            ['/models', 'Models', 'The local and cloud AI model catalogue.'],
+            ['/automations', 'Automation builder', 'The visual flow builder for automations.'],
+            ['/mesh', 'Open Mesh', 'Join machines together to run models too big for one computer.'],
+            ['/vault', 'Open Vault', 'DNS and connection privacy.'],
+            ['/guard', 'Open Guard', 'Compliance checks and threat scanning.'],
+            ['/connect', 'Connect apps', 'Link Gmail, LinkedIn, Notion, Slack and the rest.'],
+            ['/mcp', 'Connect MCP server', 'Add any MCP server by URL and use its tools inside Krew.'],
+            ['/settings', 'Settings', 'App preferences, stored on this device.'],
+          ]} />
 
           <H id="brain">Brain — shared memory</H>
           <P>

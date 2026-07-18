@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { useAuth } from '../../contexts/AuthContext';
 import { credentialStore } from '../../lib/krewDb';
 import type { Provider } from '../../lib/ai';
+import Icon from '../Icon';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -662,7 +663,7 @@ Write the competitive intelligence report now.`;
                 <div className="flex flex-wrap gap-1.5 mt-2.5">
                   {docs.map((d) => (
                     <span key={d.name} className="flex items-center gap-1.5 text-[11px] px-2 py-1 rounded-md bg-nv-surface border border-nv-border text-nv-muted">
-                      <span className="text-accent">📄</span>
+                      <Icon name="file" size={12} className="text-accent" />
                       <span className="max-w-[180px] truncate">{d.name}</span>
                       <span className="text-nv-faint font-mono text-[9px]">{Math.max(1, Math.round(d.content.length / 1000))}k</span>
                       <button onClick={() => setDocs((p) => p.filter((x) => x.name !== d.name))} className="text-nv-faint hover:text-red-400 ml-0.5">✕</button>
@@ -680,13 +681,14 @@ Write the competitive intelligence report now.`;
                   <button
                     key={g}
                     onClick={() => setGeo(g)}
-                    className={`text-[12px] px-4 py-2 rounded-lg border transition-fast ${
+                    className={`flex items-center gap-2 text-[12px] px-4 py-2 rounded-lg border transition-fast ${
                       geo === g
                         ? 'border-accent bg-accent/10 text-accent font-medium'
                         : 'border-nv-border text-nv-muted hover:border-nv-faint hover:text-nv-text'
                     }`}
                   >
-                    {g === 'india' ? '🇮🇳  India' : '🌍  Global'}
+                    <Icon name={g === 'india' ? 'india' : 'globe'} size={13} />
+                    {g === 'india' ? 'India' : 'Global'}
                   </button>
                 ))}
               </div>

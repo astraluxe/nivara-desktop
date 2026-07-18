@@ -3,6 +3,7 @@ import {
   forwardRef, useImperativeHandle, Component,
 } from 'react';
 import type { ReactNode, ErrorInfo } from 'react';
+import Icon, { type IconName } from '../Icon';
 import {
   ReactFlow,
   Background,
@@ -213,32 +214,33 @@ function NodeDeleteBtn({ id }: { id: string }) {
 }
 
 // ─── Service icon maps ─────────────────────────────────────────────────────
-const TRIGGER_ICON: Record<string, string> = {
-  schedule: '⏰', email: '✉', file_watch: '📁', webhook: '🔗', twitter_mention: '𝕏',
-  rss: '📡', github: '⚙', stripe: '💳', google_calendar: '📅',
+// Icon NAMES (rendered as SVG) rather than emoji — see components/Icon.tsx.
+const TRIGGER_ICON: Record<string, IconName> = {
+  schedule: 'clock', email: 'mail', file_watch: 'folder', webhook: 'link', twitter_mention: 'chat',
+  rss: 'rss', github: 'code', stripe: 'card', google_calendar: 'calendar',
 };
 const TRIGGER_SERVICE: Record<string, string> = {
   schedule: 'Scheduler', email: 'Gmail', file_watch: 'File System', webhook: 'HTTP', twitter_mention: 'X (Twitter)',
   rss: 'RSS Feed', github: 'GitHub', stripe: 'Stripe', google_calendar: 'Google Calendar',
 };
-const OUTPUT_ICON: Record<string, string> = {
-  notification: '🔔', file: '💾', email_reply: '✉', notion: 'N', slack: '#',
-  twitter_post: '𝕏', twitter_reply: '𝕏↩', linkedin_post: 'in',
-  discord: '💬', google_sheets: '📊', twilio_sms: '📱', telegram: '✈', hubspot: '🏷',
+const OUTPUT_ICON: Record<string, IconName> = {
+  notification: 'bell', file: 'save', email_reply: 'mail', notion: 'note', slack: 'chat',
+  twitter_post: 'chat', twitter_reply: 'chat', linkedin_post: 'user',
+  discord: 'chat', google_sheets: 'grid', twilio_sms: 'phone', telegram: 'send', hubspot: 'tag',
 };
 const OUTPUT_SERVICE: Record<string, string> = {
   notification: 'Desktop', file: 'File', email_reply: 'Gmail', notion: 'Notion', slack: 'Slack',
   twitter_post: 'X (Twitter)', twitter_reply: 'X (Twitter)', linkedin_post: 'LinkedIn',
   discord: 'Discord', google_sheets: 'Google Sheets', twilio_sms: 'Twilio', telegram: 'Telegram', hubspot: 'HubSpot',
 };
-const ACTION_ICON: Record<string, string> = {
-  summarise: '📝', reply: '↩', extract: '🔍', classify: '🏷', report: '📊', translate: '🌐',
+const ACTION_ICON: Record<string, IconName> = {
+  summarise: 'note', reply: 'send', extract: 'search', classify: 'tag', report: 'chart', translate: 'globe',
 };
 
 // ─── Node components ───────────────────────────────────────────────────────
 function TriggerNode({ id, data, selected }: { id: string; data: Record<string, any>; selected: boolean }) {
   const tType   = String(data.triggerType ?? '');
-  const icon    = TRIGGER_ICON[tType] ?? '⚡';
+  const icon    = TRIGGER_ICON[tType] ?? 'bolt';
   const service = TRIGGER_SERVICE[tType] ?? tType;
   const req     = TRIGGER_SERVICE_REQ[tType] ?? [];
   const missing = req.length > 0 && !checkConnected(req);
@@ -248,7 +250,7 @@ function TriggerNode({ id, data, selected }: { id: string; data: Record<string, 
     }`}>
       {/* Service badge strip */}
       <div className={`flex items-center gap-1.5 px-3 pt-2 pb-1.5 border-b ${missing ? 'border-nv-red/20 bg-nv-red/5' : 'border-nv-green/15 bg-nv-green/5'}`}>
-        <span className="text-[11px] leading-none">{icon}</span>
+        <Icon name={icon} size={12} />
         <span className={`text-[9px] font-mono font-semibold ${missing ? 'text-nv-red' : 'text-nv-green'}`}>{service}</span>
         {missing && <NotConnectedBadge label={req.join(', ')} />}
         <div className="flex-1" />
@@ -270,7 +272,7 @@ function TriggerNode({ id, data, selected }: { id: string; data: Record<string, 
 
 function AIActionNode({ id, data, selected }: { id: string; data: Record<string, any>; selected: boolean }) {
   const action  = String(data.action ?? '');
-  const icon    = ACTION_ICON[action] ?? '🤖';
+  const icon    = ACTION_ICON[action] ?? 'robot';
   const service = String(data.service ?? '');
   const noAI    = gConnected !== null && !checkConnected(AI_SERVICES);
   return (
@@ -280,7 +282,7 @@ function AIActionNode({ id, data, selected }: { id: string; data: Record<string,
       <Handle type="target" position={Position.Left} style={H} />
       {/* Header strip */}
       <div className={`flex items-center gap-1.5 px-3 pt-2 pb-1.5 border-b ${noAI ? 'border-nv-yellow/20 bg-nv-yellow/5' : 'border-accent/15 bg-accent/5'}`}>
-        <span className="text-[11px] leading-none">{icon}</span>
+        <Icon name={icon} size={12} />
         {service && <span className="text-[9px] font-mono text-accent/80 font-semibold">{service}</span>}
         {noAI && <NotConnectedBadge label="AI key" />}
         <div className="flex-1" />
@@ -404,7 +406,7 @@ function DataTransformNode({ id, data, selected }: { id: string; data: Record<st
     }`}>
       <Handle type="target" position={Position.Left} style={H} />
       <div className="flex items-center gap-1.5 px-3 pt-2 pb-1.5 border-b border-purple-400/15 bg-purple-400/5">
-        <span className="text-[11px] leading-none">⚡</span>
+        <Icon name="bolt" size={11} />
         <span className="text-[9px] font-mono text-purple-400 font-semibold">Transform</span>
         <div className="flex-1" />
         <span className="text-[8px] font-mono text-nv-muted uppercase tracking-widest">Transform</span>
@@ -430,7 +432,7 @@ function HumanApprovalNode({ id, data, selected }: { id: string; data: Record<st
     }`}>
       <Handle type="target" position={Position.Left} style={H} />
       <div className="flex items-center gap-1.5 px-3 pt-2 pb-1.5 border-b border-pink-400/15 bg-pink-400/5">
-        <span className="text-[11px] leading-none">👤</span>
+        <Icon name="user" size={11} />
         <span className="text-[9px] font-mono text-pink-400 font-semibold">Approval</span>
         <div className="flex-1" />
         <span className="text-[8px] font-mono text-nv-muted uppercase tracking-widest">Human Approval</span>
@@ -454,7 +456,7 @@ function SubAgentNode({ id, data, selected }: { id: string; data: Record<string,
     }`}>
       <Handle type="target" position={Position.Left} style={H} />
       <div className="flex items-center gap-1.5 px-3 pt-2 pb-1.5 border-b border-teal-400/15 bg-teal-400/5">
-        <span className="text-[11px] leading-none">🤖</span>
+        <Icon name="robot" size={11} />
         <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-full bg-teal-400/10 text-teal-400">{data.agentCount ?? 2} agents</span>
         <div className="flex-1" />
         <span className="text-[8px] font-mono text-nv-muted uppercase tracking-widest">Manager Agent</span>
@@ -473,7 +475,7 @@ function SubAgentNode({ id, data, selected }: { id: string; data: Record<string,
 
 function OutputNode({ id, data, selected }: { id: string; data: Record<string, any>; selected: boolean }) {
   const oType   = String(data.outputType ?? '');
-  const icon    = OUTPUT_ICON[oType] ?? '📤';
+  const icon    = OUTPUT_ICON[oType] ?? 'send';
   const service = OUTPUT_SERVICE[oType] ?? oType;
   const req     = OUTPUT_SERVICE_REQ[oType] ?? [];
   const missing = req.length > 0 && !checkConnected(req);
@@ -484,7 +486,7 @@ function OutputNode({ id, data, selected }: { id: string; data: Record<string, a
       <Handle type="target" position={Position.Left} style={H} />
       {/* Service badge strip */}
       <div className={`flex items-center gap-1.5 px-3 pt-2 pb-1.5 border-b ${missing ? 'border-nv-red/20 bg-nv-red/5' : 'border-sky-400/15 bg-sky-400/5'}`}>
-        <span className="text-[11px] leading-none">{icon}</span>
+        <Icon name={icon} size={12} />
         <span className={`text-[9px] font-mono font-semibold ${missing ? 'text-nv-red' : 'text-sky-400'}`}>{service}</span>
         {missing && <NotConnectedBadge label={req.join(', ')} />}
         <div className="flex-1" />
