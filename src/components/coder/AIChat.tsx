@@ -422,8 +422,10 @@ export default function AIChat({
       return;
     }
 
+    // Only the hosted adris.tech AI draws on the allowance — Own key and Local cost us nothing and
+    // must keep working after the quota is spent.
     const tokenCap = planCfg.monthlyTokens;
-    if (tokenCap !== null && monthlyUsed >= tokenCap) {
+    if (mode === 'nivara' && tokenCap !== null && monthlyUsed >= tokenCap) {
       setShowQuotaUpgrade(true);
       return;
     }

@@ -4650,8 +4650,12 @@ The prompt must be production-ready — specific enough for a motion designer to
       const sk = detectSkill(text);
       if (sk && !dismissedSkillsRef.current.has(sk.id)) setRecSkill(sk);
     }
+    // The allowance only covers adris.tech's own hosted AI. Own-key runs on the user's API key and
+    // Local runs on their hardware — neither costs us anything, so neither may be blocked. Gating
+    // them was also self-defeating: the quota dialog tells people to switch to Own key or Local,
+    // and that escape hatch did not actually work.
     const tokenCap = planCfg.monthlyTokens;
-    if (tokenCap !== null && monthlyUsed >= tokenCap) {
+    if (mode === 'nivara' && tokenCap !== null && monthlyUsed >= tokenCap) {
       setShowQuotaUpgrade(true);
       return;
     }
