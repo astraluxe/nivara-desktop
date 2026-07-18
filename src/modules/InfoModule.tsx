@@ -463,8 +463,9 @@ export default function InfoModule() {
 
           <div className="mt-14 pt-5 border-t border-nv-border">
             <p className="text-[12px] text-nv-faint leading-relaxed">
-              Still stuck, or something here does not match what you see? Email{' '}
-              <span className="text-nv-muted">hello@adris.tech</span>. This manual is updated with each release.
+              Still stuck, or something here does not match what you see? Get in touch through{' '}
+              <a href="https://adris.tech/partner" target="_blank" rel="noreferrer" className="text-accent hover:underline">adris.tech/partner</a>
+              {' '}— it reaches us directly. This manual is updated with each release.
             </p>
           </div>
         </article>

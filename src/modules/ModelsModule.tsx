@@ -901,7 +901,7 @@ export default function ModelsModule() {
       setDlError({
         modelId: model.id,
         msg: `Could not reach the download server (${e instanceof Error ? e.message : String(e)}). `
-           + `Check your internet connection and try again — if it keeps failing, contact hello@adris.tech`,
+           + `Check your internet connection and try again — if it keeps failing, get in touch at adris.tech/partner`,
       });
     }
   }
