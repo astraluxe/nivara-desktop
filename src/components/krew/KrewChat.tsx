@@ -2668,15 +2668,22 @@ function MessageRow({ msg, agent }: { msg: DisplayMsg; agent: KrewAgent }) {
   if (msg.role === 'tool_result') return <ToolResultBubble name={msg.toolName ?? 'tool'} content={msg.content} />;
   if (msg.role === 'delegation') return <DelegationBubble agentKey={msg.toolName ?? ''} content={msg.content} streaming={msg.streaming} />;
   if (msg.role === 'user') {
-    // Split out attachment chip lines (📎/🖼 name) so they render as proper file
-    // icons in the accent colour instead of raw emoji.
+    // Attachment chips are stored in the message text with a marker prefix and rendered here as
+    // proper icons — the marker itself is never shown. The emoji arm of this pattern is retained
+    // so messages already saved in the user's history keep rendering their chips.
     const lines = msg.content.split('\n');
     const textLines: string[] = [];
     const fileChips: { name: string; isImage: boolean; focus?: boolean }[] = [];
     for (const l of lines) {
-      const m = l.match(/^(📎|🖼|🔗)\s+(.+)$/);
-      if (m) fileChips.push({ name: m[2].trim(), isImage: m[1] === '🖼', focus: m[1] === '🔗' });
-      else textLines.push(l);
+      const m = l.match(/^(\[\[(?:file|image|ref)\]\]|📎|🖼|🔗)\s+(.+)$/);
+      if (m) {
+        const tag = m[1];
+        fileChips.push({
+          name: m[2].trim(),
+          isImage: tag === '[[image]]' || tag === '🖼',
+          focus:   tag === '[[ref]]'   || tag === '🔗',
+        });
+      } else textLines.push(l);
     }
     const bodyText = textLines.join('\n').trim();
     return (
@@ -4178,7 +4185,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     const matchContext = [focus, refFile?.content ? `Reference (${refFile.name}):\n${refFile.content.slice(0, 6000)}` : ''].filter(Boolean).join('\n\n');
     setAttachedFiles([]); // consumed — clear the chips
     const shown = userText || `Scan my LinkedIn connections${linkTo ? ` (using ${linkTo})` : ''}${focus ? ` — ${focus}` : ''}`;
-    addMsg({ role: 'user', content: shown + (linkTo && userText ? `\n📎 ${linkTo}` : '') });
+    addMsg({ role: 'user', content: shown + (linkTo && userText ? `\n[[file]] ${linkTo}` : '') });
     if (sid) krewDb.saveMessage(sid, 'user', shown).catch(() => {});
     addMsg({ role: 'assistant', content: 'Opening your LinkedIn connections and reading the list…', streaming: true });
     setBusy(true); setBrowserActive(true);
@@ -4321,7 +4328,8 @@ The prompt must be production-ready — specific enough for a motion designer to
   async function launchOutreachFromConnections(max = 50, focus = '', userText = '') {
     if (busy) return;
     const sid = await ensureSession('LinkedIn outreach');
-    const chips = attachedFiles.map((f) => `${f.name}`).join('  ');
+    const chips = attachedFiles.map((f) => `[[file]] ${f.name}`).join('
+');
     const shownUser = (userText || (focus ? `Draft outreach for my LinkedIn connections — ${focus}` : 'Draft outreach for my LinkedIn connections and open the copilot')) + (chips ? `\n${chips}` : '');
     addMsg({ role: 'user', content: shownUser });
     if (sid) krewDb.saveMessage(sid, 'user', shownUser).catch(() => {});
@@ -4758,11 +4766,13 @@ The prompt must be production-ready — specific enough for a motion designer to
     const apiText = focusBlock + fileBlock + (imageBlock ? imageBlock + '\n' : '') + text;
 
     // Chat bubble shows typed text + file/image name chips (not raw content).
-    // The focused Brain file is shown too (with a 🔗 marker) so the user can SEE it's
-    // part of this message — even though it lives in the persistent focus banner.
+    // The focused Brain file is listed too, so the user can SEE it's part of this
+    // message even though it lives in the persistent focus banner.
+    // These markers are parsed back out in MessageRow and drawn as icons — they are never
+    // displayed literally, so they must stay in sync with the pattern there.
     const chipMarkers = [
-      ...(focusedFile ? [`🔗 ${focusedFile.name}`] : []),
-      ...currentFiles.map(f => f.isImage ? `${f.name}` : `${f.name}`),
+      ...(focusedFile ? [`[[ref]] ${focusedFile.name}`] : []),
+      ...currentFiles.map((f) => `${f.isImage ? '[[image]]' : '[[file]]'} ${f.name}`),
     ];
     const displayText = chipMarkers.length > 0
       ? (text ? text + '\n' : '') + chipMarkers.join('  ')
