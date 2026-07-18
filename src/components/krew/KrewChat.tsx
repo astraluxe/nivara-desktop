@@ -6,7 +6,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
 import type { Node, Edge } from '@xyflow/react';
 import { krewDb, credentialStore, krewMemoryDb, type KrewMemory } from '../../lib/krewDb';
 import { listMcpServers, mcpToolDefs } from '../../lib/krewMcp';
-import { brain as brainStore, nodeToMarkdown } from '../../lib/knowledgeStore';
+import { brain as brainStore, nodeToMarkdown, BRAIN_EVENT } from '../../lib/knowledgeStore';
 import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, LEAD_TOOLS, buildKrewSystemPrompt, executeTool, needsCompression, resetBrowserRunState, closeAgentBrowserIfActive, markBrowserPrewarmed, requestLeadStop, resetLeadStop, isLeadStopRequested, KREW_PROFILE_KEY, type ToolDef } from '../../lib/krewTools';
 import { TaskProgress, type TaskPhase } from './TaskProgress';
 import { runParallelResearch } from '../../lib/researchSources';
@@ -28,6 +28,9 @@ import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining }
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
 import SkillsPanel from './SkillsPanel';
 import OutreachCopilot, { type OutreachCampaign, loadSavedCampaign } from './OutreachCopilot';
+import TodoPanel from './TodoPanel';
+import { loadSettings } from '../../modules/SettingsModule';
+import { todos, TODO_EVENT, type TodoItem } from '../../lib/todoStore';
 
 // Get the freshest Supabase access token right before a model call. A long browser/tool pass can
 // run for minutes and outlive the token captured at render — reusing that stale token 401'd the
@@ -2001,9 +2004,23 @@ function deriveListTitle(requestText: string): string {
 // under what name — replaces three copy-pasted blocks that each had the same bug: the plain
 // "\btech" check matched the "tech" inside "non tech", so a user asking for a NON-tech list got it
 // saved as "Tech lead list" (the exact opposite audience). non-tech is checked FIRST here.
+// Does the user explicitly say "keep using the list we already have"? This beats every other
+// signal, including the settings default — an instruction in the chat is the most specific thing
+// the user can tell us, so it must never be overridden by a preference.
+function saysContinueExistingList(text: string): boolean {
+  return /\b(continue|carry on|keep (?:going|adding)|resume)\b[^.]{0,40}\b(list|note|file|table|outreach)\b/i.test(text)
+      || /\b(same|existing|current|that|the) (list|note|file|table)\b/i.test(text)
+      || /\b(add|append|top(?:\s|-)?up|update)\b[^.]{0,30}\b(to )?(the )?(same|existing|current) (list|note|file|table)\b/i.test(text)
+      || /\bdon'?t (make|create)\b[^.]{0,20}\bnew\b[^.]{0,20}\b(list|note|file)\b/i.test(text);
+}
+
 function computeSeparateListTitle(text: string): string {
+  // 1. "continue the existing list" — explicit and absolute.
+  if (saysContinueExistingList(text)) return '';
   const custom = extractCustomListTitle(text);
   if (custom) return custom;
+  // 2. Settings default of "always start a new file", unless the request already named one.
+  if (loadSettings().listMode === 'new') return deriveGenericTableTitle(text);
   const isNonTech = /\bnon[\s-]?tech/i.test(text);
   const wantsSeparate =
     isNonTech ||
@@ -2827,9 +2844,68 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
   const [showQuotaUpgrade,  setShowQuotaUpgrade]   = useState(false);
   const [monthlyUsed,       setMonthlyUsed]         = useState(0);
   const [outreachCampaign,  setOutreachCampaign]    = useState<OutreachCampaign | null>(null);
+  // Reopen-pill state. `dismissed` lets the user hide the pill; `brainTick` forces the pill to
+  // re-evaluate whenever the Brain changes (so deleting the outreach note there removes it here too).
+  const [outreachPillDismissed, setOutreachPillDismissed] = useState(false);
+  const [brainTick, setBrainTick] = useState(0);
+  useEffect(() => {
+    const bump = () => setBrainTick((t) => t + 1);
+    window.addEventListener(BRAIN_EVENT, bump);
+    return () => window.removeEventListener(BRAIN_EVENT, bump);
+  }, []);
+  // Any time the popup opens (new draft OR reopen), un-hide the pill so it comes back after closing.
+  useEffect(() => { if (outreachCampaign) setOutreachPillDismissed(false); }, [outreachCampaign]);
+  // The last drafted outreach campaign, so we can offer a "Reopen copilot" button when the popup is
+  // closed. It reflects the MOST RECENT campaign (drafting more contacts overwrites it, so the count
+  // updates on the next run). Hidden if the user deleted its note from the Brain.
+  const savedOutreach = useMemo(() => {
+    if (outreachCampaign) return null; // popup already open
+    const saved = loadSavedCampaign();
+    if (!saved) return null;
+    // The saved campaign in localStorage is the source of truth — it holds the drafted messages and
+    // per-contact status. The Brain note is only a human-readable mirror, so it must NEVER gate
+    // access to the drafts: requiring an exact title + kind:'outreach' match there meant a single
+    // mismatch silently stranded a whole drafted campaign with no way back to it.
+    return saved;
+  }, [outreachCampaign, brainTick]);
   // When a "/" command needs a file (its value has a <file name> slot), we open a picker instead of
   // dumping raw "<file name>" text — the user clicks a real file from their Brain / attachments.
+  // ── To-do panel ───────────────────────────────────────────────────────────
+  // Auto-expands on app open when there is unfinished work, so the user lands on "here's where
+  // you left off" instead of a blank chat. Once opened/closed manually it stays as they left it
+  // for the rest of the session.
+  const [showTodos, setShowTodos] = useState(() => todos.openCount() > 0);
+  const [todoCount, setTodoCount] = useState(() => todos.openCount());
+  useEffect(() => {
+    const sync = () => setTodoCount(todos.openCount());
+    window.addEventListener(TODO_EVENT, sync);
+    return () => window.removeEventListener(TODO_EVENT, sync);
+  }, []);
+  // Reminders: check on mount and every 30s. Uses the OS notification when granted, and always
+  // falls back to the in-app banner so a reminder is never silently swallowed.
+  useEffect(() => {
+    const fire = () => {
+      for (const t of todos.dueReminders()) {
+        todos.markReminded(t.id);
+        try {
+          if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification('adris.tech — reminder', { body: t.text });
+            continue;
+          }
+        } catch { /* fall through to the in-app banner */ }
+        setTodoReminder(t.text);
+      }
+    };
+    fire();
+    const id = setInterval(fire, 30000);
+    return () => clearInterval(id);
+  }, []);
+  const [todoReminder, setTodoReminder] = useState<string | null>(null);
+
   const [filePickerCmd,     setFilePickerCmd]        = useState<SlashCmd | null>(null);
+  const [filePickerQuery,   setFilePickerQuery]      = useState('');
+  // Always open the picker on a clean search box, whichever way it was opened or dismissed.
+  useEffect(() => { setFilePickerQuery(''); }, [filePickerCmd]);
   // "Chat with this file" — when set, the conversation stays scoped to this Brain
   // file and the notes connected to it, every turn, until the user clears it.
   const [focusedFile, setFocusedFile] = useState<{ name: string; content: string; connected: number } | null>(null);
@@ -2919,6 +2995,12 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
   useEffect(() => { if (slashOpen) activeSlashRef.current?.scrollIntoView({ block: 'nearest' }); }, [slashIdx, slashOpen]);
   const [busy,          setBusy]          = useState(false);
   const [agentStep,     setAgentStep]     = useState<string | null>(null);
+  // Single invariant: the status bar only ever describes an in-flight turn. Any path that forgets
+  // to clear it can no longer strand a permanent "…taking longer than usual" banner.
+  useEffect(() => {
+    busyRef.current = busy;
+    if (!busy) { setAgentStep(null); setAgentTool(null); }
+  }, [busy]);
   const [agentTool,     setAgentTool]     = useState<string | null>(null);
   const [creds,         setCreds]         = useState<Record<string, Record<string, string>>>({});
   const [mcpTools,      setMcpTools]      = useState<ToolDef[]>([]);
@@ -2983,6 +3065,9 @@ const [studioExtracting, setStudioExtracting] = useState(false);
   } | null>(null);
 
   const stopRef            = useRef(false);
+  // Mirrors `busy` for the global 'agent-progress' listener, which is registered once on mount and
+  // would otherwise close over a stale `busy`.
+  const busyRef            = useRef(false);
   const bottomRef          = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const atBottomRef        = useRef(true);
@@ -3127,7 +3212,10 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     listen('agent-browser-idle',   () => setBrowserActive(false)).then(fn => { un2 = fn; });
     // Lead tools process the list in sub-batches and emit progress — surface it so the user sees
     // it working through the list ("Enriching 7–12 of 27…") instead of a silent long pass.
-    listen('agent-progress', (e) => { const t = (e.payload as { text?: string } | undefined)?.text; if (t) setAgentStep(t); }).then(fn => { un3 = fn; });
+    // Only reflect progress while a turn is actually running. A stray event from a background flow
+    // (or one arriving after a run ended) used to leave the status bar counting up forever with no
+    // way to dismiss it — it even survived opening a new chat.
+    listen('agent-progress', (e) => { const t = (e.payload as { text?: string } | undefined)?.text; if (t && busyRef.current) setAgentStep(t); }).then(fn => { un3 = fn; });
     return () => { un1?.(); un2?.(); un3?.(); };
   }, []);
 
@@ -4060,6 +4148,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       return false; // any failure → let the normal boss loop handle it instead of dead-ending
     } finally {
       unlisten();
+      setAgentStep(null); setAgentTool(null);
       setBrowserActive(false);
       await closeAgentBrowserIfActive();
     }
@@ -4149,7 +4238,11 @@ The prompt must be production-ready — specific enough for a motion designer to
       const msg = `Couldn't scan your connections: ${e instanceof Error ? e.message : String(e)}. Make sure you're signed in to LinkedIn in the ADRIS browser, then try again.`;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: msg, streaming: false }; return c; });
     } finally {
-      unlisten(); setBusy(false); setBrowserActive(false); await closeAgentBrowserIfActive();
+      // agentStep is set by the global 'agent-progress' listener; if we don't clear it here the
+      // status bar keeps counting "Opening your LinkedIn connections… — taking longer than usual"
+      // forever, across new chats, with no way for the user to dismiss it.
+      unlisten(); setBusy(false); setAgentStep(null); setAgentTool(null);
+      setBrowserActive(false); await closeAgentBrowserIfActive();
     }
   }
 
@@ -4157,94 +4250,229 @@ The prompt must be production-ready — specific enough for a motion designer to
   // OPEN THE COPILOT POPUP directly (setOutreachCampaign) — never relying on the LLM to call a tool
   // (which is why the popup sometimes never appeared). Reads the "LinkedIn connections" Brain note
   // (Name | Headline | Profile URL), so it works any time after /scan.
-  async function launchOutreachFromConnections(max = 12, focus = '', userText = '') {
+  // A connections file is one full of /in/ profile links or a Name|Role|Profile table — NOT a
+  // product/about doc. We must never feed it in as "what the user does" (that's the bug that made
+  // every message say "I'd love to hear what you're building at <their own headline>").
+  function looksLikeConnectionsFile(f?: { name?: string; content?: string }): boolean {
+    const b = f?.content || '';
+    if (!b) return false;
+    if (/linkedin connections|connections\.(md|csv|txt)/i.test(f?.name || '')) return true;
+    const links = (b.match(/linkedin\.com\/in\//gi) || []).length;
+    if (links >= 3) return true;
+    return /\bname\b[^\n]{0,40}\b(role|company|headline|profile)\b/i.test(b.slice(0, 400));
+  }
+  // Robust contact parser: handles pipe tables (Brain notes) AND tab / multi-space columns
+  // (a pasted or exported "Name  Role  Profile" list). Name = first cell, URL = any /in/ link on
+  // the row, headline = the remaining non-link cells.
+  function parseContactRows(text: string): { name: string; headline: string; url: string }[] {
+    const out: { name: string; headline: string; url: string }[] = [];
+    for (const line of text.split('\n')) {
+      const t = line.trim();
+      if (!t || /^\|?\s*:?-{2,}/.test(t)) continue; // blank or table separator row
+      let cells: string[];
+      if (t.includes('|')) {
+        cells = t.split('|').map((c) => c.trim());
+        if (cells[0] === '') cells = cells.slice(1);
+        if (cells.length && cells[cells.length - 1] === '') cells = cells.slice(0, -1);
+      } else {
+        cells = line.split(/\t|\s{2,}/).map((c) => c.trim()).filter(Boolean);
+      }
+      if (!cells.length) continue;
+      if (/^#{1,6}\s/.test(t) || /^>/.test(t)) continue;            // markdown heading / quote
+      const um = line.match(/https?:\/\/[a-z.]*linkedin\.com\/in\/[A-Za-z0-9\-_%]+/i);
+      const url = um ? um[0] : '';
+      // A real contact row is a TABLE row (≥2 cells) or carries a profile link. A single-cell line
+      // is prose — a section heading, an intro sentence, a "_Connected in Brain…_" footer — and
+      // used to be swallowed as a contact named after the whole sentence.
+      if (cells.length < 2 && !url) continue;
+      const name = cells[0]
+        .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+        .replace(/^[*_`]+|[*_`]+$/g, '')                            // strip **bold** / _italic_
+        .trim();
+      if (!name || /^(name|role|company|headline|profile)$/i.test(name)) continue;
+      if (name.endsWith(':')) continue;                             // "Best-fit connections for X:"
+      if (name.split(/\s+/).length > 6) continue;                   // a sentence, not a person
+      const headline = cells.slice(1)
+        .filter((c) => !/linkedin\.com/i.test(c))
+        .join(' ').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/\s+/g, ' ').trim();
+      out.push({ name, headline, url });
+    }
+    return out;
+  }
+  // First name with honorifics/titles stripped, so we greet "Sneha" not "Dr".
+  function firstNameOf(full: string): string {
+    const titles = /^(dr|mr|mrs|ms|miss|mx|prof|professor|sri|shri|smt|er|ca|adv|advocate|capt|col|gen|rev|sir|hon)\.?$/i;
+    const parts = (full || '').trim().split(/\s+/).filter(Boolean);
+    while (parts.length > 1 && titles.test(parts[0])) parts.shift();
+    return parts[0] || (full || '').trim();
+  }
+  // The most "reference-able" bit of a headline: the company after "at …", else the first real
+  // segment. Splits on every separator LinkedIn actually uses — including • (U+2022), which the old
+  // code missed, so it dumped the whole headline in as the company.
+  function headlineHook(headline: string): string {
+    const h = (headline || '').replace(/\s+/g, ' ').trim();
+    if (!h) return '';
+    const at = h.match(/\bat\s+([^•|·,•‣●\-–—]+)/i);
+    if (at && at[1].trim().length > 1) return at[1].trim();
+    return h.split(/[•|·,•‣●\-–—]/)[0].trim();
+  }
+
+  async function launchOutreachFromConnections(max = 50, focus = '', userText = '') {
     if (busy) return;
     const sid = await ensureSession('LinkedIn outreach');
-    // Capture the reference file (attached / focused / saved PRODUCT) up front, and SHOW its chip
-    // in the user message so it's visibly attached.
-    const refFile = attachedFiles.find((f) => /\.(md|markdown|txt|pdf|docx?)$/i.test(f.name)) || attachedFiles[0] || (focusedFile ? { name: focusedFile.name, content: focusedFile.content } : undefined);
     const chips = attachedFiles.map((f) => `📎 ${f.name}`).join('  ');
     const shownUser = (userText || (focus ? `Draft outreach for my LinkedIn connections — ${focus}` : 'Draft outreach for my LinkedIn connections and open the copilot')) + (chips ? `\n${chips}` : '');
     addMsg({ role: 'user', content: shownUser });
     if (sid) krewDb.saveMessage(sid, 'user', shownUser).catch(() => {});
-    // PRIMARY source: the structured JSON the scan saved (never needs markdown parsing).
+    // Split the attachments: the connections list (people to reach) vs the context doc (what the
+    // user does). The context doc is what feeds the drafter — NEVER the connections list.
+    const connFile = attachedFiles.find(looksLikeConnectionsFile)
+      || (looksLikeConnectionsFile(focusedFile ?? undefined) ? focusedFile ?? undefined : undefined);
+    const refFile = attachedFiles.find((f) => f.content && !looksLikeConnectionsFile(f) && /\.(md|markdown|txt|pdf|docx?)$/i.test(f.name))
+      || attachedFiles.find((f) => f.content && !looksLikeConnectionsFile(f))
+      || (focusedFile && !looksLikeConnectionsFile(focusedFile) ? { name: focusedFile.name, content: focusedFile.content } : undefined);
+
+    // Build the contact list.
     let contacts: { name: string; headline: string; url: string }[] = [];
-    try {
-      const arr = JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
-      if (Array.isArray(arr)) contacts = arr.filter((c) => c?.name).map((c) => ({ name: String(c.name), headline: String(c.headline || ''), url: String(c.url || '') }));
-    } catch { /* ignore */ }
-    // FALLBACK: read the "LinkedIn connections" Brain note. Convert HTML→markdown first (opening the
-    // note in the Brain re-saves it as HTML, which the old parser couldn't read — that's the "no
-    // saved connections" bug). Robust: name = first cell, URL = any /in/ link found in the row,
-    // headline = the other cells (LinkedIn headlines contain '|', so we don't rely on column counts).
-    if (!contacts.length) {
-      const node = brainStore.all().nodes.find((n) => /linkedin connections/i.test(n.title));
-      const md = node ? nodeToMarkdown(node.body || '') : '';
-      for (const raw of md.split('\n')) {
-        const t = raw.trim();
-        if (!t.startsWith('|')) continue;
-        let cells = t.split('|').map((c) => c.trim());
-        if (cells[0] === '') cells = cells.slice(1);
-        if (cells.length && cells[cells.length - 1] === '') cells = cells.slice(0, -1);
-        if (!cells.length) continue;
-        const name = cells[0].replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').trim(); // strip md-link syntax
-        if (!name || /^name$/i.test(name) || /^:?-{2,}:?$/.test(name)) continue;
-        const um = raw.match(/https?:\/\/[a-z.]*linkedin\.com\/in\/[A-Za-z0-9\-_%]+/i);
-        const url = um ? um[0] : '';
-        const headline = cells.slice(1)
-          .filter((c) => !/linkedin\.com\/in\//i.test(c))
-          .join(' ').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/\s+/g, ' ').trim();
-        contacts.push({ name, headline, url });
+    const seen = new Set<string>();
+    const add = (c: { name: string; headline: string; url: string }) => {
+      const k = c.name.toLowerCase().trim();
+      if (k && !seen.has(k)) { seen.add(k); contacts.push(c); }
+    };
+    if (connFile?.content) {
+      // The user explicitly attached a connections list → it is AUTHORITATIVE. Use ONLY the people
+      // in that file — do NOT merge in the whole scan history (that's what produced the confusing
+      // "50 connections — 416 more saved" when they only attached 50).
+      parseContactRows(connFile.content).forEach(add);
+    } else {
+      // No file attached → use the scan's saved JSON, then the Brain note.
+      try {
+        const arr = JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
+        if (Array.isArray(arr)) arr.filter((c) => c?.name).forEach((c) => add({ name: String(c.name), headline: String(c.headline || ''), url: String(c.url || '') }));
+      } catch { /* ignore */ }
+      if (!contacts.length) {
+        const node = brainStore.all().nodes.find((n) => /linkedin connections/i.test(n.title));
+        if (node) parseContactRows(nodeToMarkdown(node.body || '')).forEach(add);
+        if (contacts.length) { try { localStorage.setItem('nv-li-connections', JSON.stringify(contacts)); } catch { /* quota */ } }
       }
-      // Migrate what we recovered into localStorage so it's instant + reliable next time.
-      if (contacts.length) { try { localStorage.setItem('nv-li-connections', JSON.stringify(contacts)); } catch { /* quota */ } }
     }
     if (!contacts.length) {
-      const noConn = 'I don\'t have any saved LinkedIn connections to reach out to yet. Run **/scan** first (it saves them), then ask me to draft outreach.';
+      const noConn = 'I don\'t have any saved LinkedIn connections to reach out to yet. Run **/scan** first (it saves them), or attach your connections list — then ask me to draft outreach.';
       addMsg({ role: 'assistant', content: noConn });
       if (sid) krewDb.saveMessage(sid, 'assistant', noConn).catch(() => {});
       return;
     }
+
+    // Figure out the user's context + goal. goal = the free-text focus ("to get 5 beta testers");
+    // productCtx = the attached/saved doc describing what they do. If we have NEITHER, we can't
+    // write anything personal or purposeful, so ASK rather than send generic "great to be connected"
+    // filler to 50 people (which reads as spam and burns the connections).
+    const goal = focus.trim();
+    let productCtx = '';
+    if (refFile?.content) productCtx = refFile.content.slice(0, 6000).trim();
+    if (!productCtx) { try { const p = brainStore.findByTitle('PRODUCT') || brainStore.search('product').find((n) => /product/i.test(n.title)); if (p?.body) productCtx = nodeToMarkdown(p.body).slice(0, 4000).trim(); } catch { /* ignore */ } }
+    if (!goal && !productCtx) {
+      const ask = `Before I draft ${contacts.length} messages, two quick things so they land instead of reading like spam:\n\n1. **What are you reaching out for?** (e.g. get feedback on what you're building, find your first users/customers, hiring, a partnership, or just reconnecting)\n2. **What do you do / what are you building?** — a line is enough, or attach your **PRODUCT.md**.\n\nReply with those (or just tell me the goal) and I'll write one personalised message per connection and open the copilot.`;
+      addMsg({ role: 'assistant', content: ask });
+      if (sid) krewDb.saveMessage(sid, 'assistant', ask).catch(() => {});
+      return;
+    }
+
     // Put connections that HAVE a profile URL first — "Copy & open chat" opens their chat box
     // directly; the ones without a URL only get a name-search, so they go last.
     contacts.sort((a, b) => (b.url && /linkedin\.com\/in\//i.test(b.url) ? 1 : 0) - (a.url && /linkedin\.com\/in\//i.test(a.url) ? 1 : 0));
-    const pick = contacts.slice(0, max);
-    addMsg({ role: 'assistant', content: `Drafting personalised messages for ${pick.length} connections and opening the outreach copilot…`, streaming: true });
+    const pick = contacts.slice(0, Math.max(1, max));
+    const more = contacts.length - pick.length;
+    addMsg({ role: 'assistant', content: `Drafting personalised messages for ${pick.length} connection${pick.length === 1 ? '' : 's'}${more > 0 ? ` (of ${contacts.length})` : ''} and opening the outreach copilot…`, streaming: true });
     setBusy(true);
-    // Give the drafter the user's own context (attached file / focus / saved product) so messages
-    // are relevant, not generic. (refFile was captured at the top.)
-    let productCtx = focus;
-    if (refFile?.content) productCtx += `\n\n${refFile.content.slice(0, 5000)}`;
-    if (!productCtx.trim()) { try { const p = brainStore.findByTitle('PRODUCT') || brainStore.search('product').find((n) => /product/i.test(n.title)); if (p?.body) productCtx = nodeToMarkdown(p.body).slice(0, 4000); } catch { /* ignore */ } }
-    const sys = 'You write short, warm, PERSONALISED LinkedIn messages to the user\'s existing 1st-degree connections. Rules: under 55 words, reference something specific from THAT person\'s headline, one clear friendly ask, no "I hope this finds you well", no emojis unless natural, sign off casually. Return ONLY a valid JSON array: [{"name":"<exact name>","message":"<the message>"}] — use the EXACT names given, one object per person, nothing else.';
-    const usr = `WHAT I DO / WHY I\'M REACHING OUT:\n${productCtx.trim() || 'Reconnecting and exploring ways we could work together.'}\n\nWrite one message for each of these connections:\n${pick.map((c) => `- ${c.name} — ${c.headline || '(no headline)'}`).join('\n')}`;
+    const sys = [
+      'You write short, warm, genuinely PERSONALISED LinkedIn messages to the user\'s EXISTING 1st-degree connections (people who already accepted them).',
+      'Rules for every message:',
+      '- 30–50 words. Plain, human, specific. Never templated, never salesy, never a pitch dump.',
+      '- Greet by FIRST NAME ONLY — drop titles like Dr/Prof/Mr (write "Hi Sneha", not "Hi Dr").',
+      '- Reference ONE concrete thing from THAT person\'s headline (their company, role, or what they build) — never paste the whole headline back at them.',
+      '- Weave in what the user does ONLY where it fits naturally; the aim is to (re)start a real conversation, not to sell.',
+      '- End with ONE low-pressure, specific ask that matches the user\'s GOAL below.',
+      '- No "I hope this finds you well", no buzzwords, no hashtags, no emojis unless truly natural. Casual sign-off.',
+      'Return ONLY a valid JSON array: [{"name":"<exact name as given>","message":"<the message>"}] — one object per person, using the EXACT names given, nothing else.',
+    ].join('\n');
+    const usr = `MY GOAL FOR THIS OUTREACH:\n${goal || 'Reconnect and open a genuine conversation about a possible fit — no hard pitch.'}\n\nWHAT I DO / WHAT I\'M BUILDING:\n${productCtx || '(not specified — keep it about them and a friendly reconnect)'}\n\nWrite one message for each of these connections (use their exact name; personalise from their headline):\n${pick.map((c) => `- ${c.name} — ${c.headline || '(no headline)'}`).join('\n')}`;
     try {
       const { text } = await streamTurnWithRetry([{ role: 'user', content: usr }], sys, () => {});
       let drafted: { name?: string; message?: string }[] = [];
       const jm = text.match(/\[[\s\S]*\]/);
       if (jm) { try { drafted = JSON.parse(jm[0]); } catch { /* ignore */ } }
       const byName: Record<string, string> = {};
-      for (const d of drafted) if (d?.name) byName[String(d.name).toLowerCase().trim()] = String(d.message || '').trim();
+      const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+      for (const d of drafted) if (d?.name && d?.message) { byName[norm(String(d.name))] = String(d.message).trim(); byName[norm(firstNameOf(String(d.name)))] ??= String(d.message).trim(); }
+      const fallbackMsg = (c: { name: string; headline: string }) => {
+        const first = firstNameOf(c.name);
+        const hook = headlineHook(c.headline);
+        return `Hi ${first}, great to be connected! ${hook ? `Your work${/\bat\b/i.test(c.headline) ? ` at ${hook}` : ` on ${hook}`} caught my eye — ` : ''}I'd love to hear what you're focused on right now. Open to a quick chat?`.replace(/\s+/g, ' ').trim();
+      };
       const campaign: OutreachCampaign = {
         title: `LinkedIn outreach — ${new Date().toLocaleDateString()}`,
         channel: 'linkedin',
-        contacts: pick.map((c) => ({ name: c.name, company: c.headline, linkedin_url: c.url, linkedin_message: byName[c.name.toLowerCase()] || `Hi ${c.name.split(' ')[0]}, great to be connected! I'd love to hear more about what you're building${c.headline ? ` at ${c.headline.split(/[|·—-]/)[0].trim()}` : ''}. Open to a quick chat?` })),
+        contacts: pick.map((c) => ({ name: c.name, company: c.headline, linkedin_url: c.url, linkedin_message: byName[norm(c.name)] || byName[norm(firstNameOf(c.name))] || fallbackMsg(c) })),
       };
       setOutreachCampaign(campaign); // opens the popup deterministically
-      const done = `Opened the outreach copilot for ${pick.length} connections. For each one: tap **Copy message & open chat** — it copies the message and opens their LinkedIn chat box, then you just paste (Ctrl+V) and send.`;
+      const done = `Opened the outreach copilot for ${pick.length} connection${pick.length === 1 ? '' : 's'}${more > 0 ? ` — ${more} more are saved; say "draft outreach for all ${contacts.length}" to include them` : ''}. For each one: tap **Copy message & open chat** — it copies the message and opens their LinkedIn chat box, then you just paste (Ctrl+V) and send. Every message is editable in the panel before you send it.`;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: done, streaming: false }; return c; });
       if (sid) krewDb.saveMessage(sid, 'assistant', done).catch(() => {});
       setAttachedFiles([]);
     } catch (e) {
-      const msg = `Couldn't draft the outreach: ${e instanceof Error ? e.message : String(e)}.`;
-      setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: msg, streaming: false }; return c; });
+      const raw = e instanceof Error ? e.message : String(e);
+      // Out of monthly credits → drop the streaming bubble and OPEN the upgrade modal (same as the
+      // main chat path), so the user actually has a way to act — not just a dead-end error line.
+      if (/monthly.*token|reached.*monthly|token.*limit|upgrade.*(plan|to solo)|free ai credits|credits this month|adris\.tech\/pricing/i.test(raw)) {
+        setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c.pop(); return c; });
+        setShowQuotaUpgrade(true);
+      } else {
+        const msg = `Couldn't draft the outreach: ${raw}.`;
+        setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: msg, streaming: false }; return c; });
+      }
     } finally {
-      setBusy(false);
+      setBusy(false); setAgentStep(null); setAgentTool(null);
     }
   }
 
+  /**
+   * Selecting several Brain files for one request is the user saying "these belong together".
+   * Reflect that in the graph so the connection survives the chat: every pair of attached Brain
+   * files gets linked. Only touches nodes that already exist — never creates new ones.
+   */
+  function linkBrainAttachments(files: { name: string; fromBrain?: boolean }[]) {
+    try {
+      const ids = files
+        .filter((f) => f.fromBrain)
+        .map((f) => brainStore.all().nodes.find((n) => n.title === f.name)?.id)
+        .filter((id): id is string => !!id);
+      for (let i = 0; i < ids.length; i++)
+        for (let j = i + 1; j < ids.length; j++) brainStore.link(ids[i], ids[j], 'used together');
+    } catch { /* Brain optional — never block attaching a file */ }
+  }
+
+  /**
+   * Click "Continue" on a To-do resume card. Outreach reopens the saved copilot exactly where it
+   * was left (the campaign carries per-contact status); anything else navigates to its module.
+   */
+  function resumeTodo(item: TodoItem) {
+    const r = item.resume;
+    if (!r) return;
+    if (r.kind === 'outreach') {
+      const saved = loadSavedCampaign();
+      if (saved) { setOutreachCampaign(saved); return; }
+      addMsg({ role: 'assistant', content: 'That outreach campaign is no longer saved — run **/outreach** to draft a fresh one.' });
+      todos.removeBySource(item.sourceKey ?? '');
+      return;
+    }
+    emit('nv-navigate', { module: r.kind === 'coder' ? 'coder' : (r.target ?? 'krew') }).catch(() => {});
+  }
+
   // Files the /command file-picker offers: current attachments + the user's Brain files/lists/notes.
-  function pickerFiles(): { name: string; content: string; fromBrain: boolean }[] {
+  // `query` filters BEFORE the display cap — otherwise a user with 100+ Brain files could never
+  // reach the ones past the cap, no matter what they typed.
+  function pickerFiles(query = ''): { files: { name: string; content: string; fromBrain: boolean }[]; total: number } {
     const out: { name: string; content: string; fromBrain: boolean }[] = [];
     const seen = new Set<string>();
     for (const f of attachedFiles) { if (!seen.has(f.name)) { seen.add(f.name); out.push({ name: f.name, content: f.content, fromBrain: !!f.fromBrain }); } }
@@ -4253,14 +4481,22 @@ The prompt must be production-ready — specific enough for a motion designer to
       nodes.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
       for (const n of nodes) { if (!seen.has(n.title)) { seen.add(n.title); out.push({ name: n.title, content: nodeToMarkdown(n.body), fromBrain: true }); } }
     } catch { /* Brain optional */ }
-    return out.slice(0, 40);
+    const q = query.trim().toLowerCase();
+    // Match on every word typed, in any order, so "linkedin conn" finds "LinkedIn connections".
+    const terms = q ? q.split(/\s+/) : [];
+    const hits = terms.length ? out.filter((f) => terms.every((t) => f.name.toLowerCase().includes(t))) : out;
+    return { files: hits.slice(0, 60), total: hits.length };
   }
   // Apply a picked file to the pending /command: fill the phrasing with the real file name and
   // attach the file so Krew actually has its content.
   function applyPickedFile(cmd: SlashCmd, file: { name: string; content: string; fromBrain: boolean }) {
     setInput(cmd.value.replace(/<file name>/g, file.name));
     if (file.content && !attachedFiles.some((f) => f.name === file.name)) {
-      setAttachedFiles((prev) => [...prev, { name: file.name, content: file.content, fromBrain: file.fromBrain }]);
+      setAttachedFiles((prev) => {
+        const next = [...prev, { name: file.name, content: file.content, fromBrain: file.fromBrain }];
+        linkBrainAttachments(next);
+        return next;
+      });
     }
     setFilePickerCmd(null);
     setTimeout(() => { const el = inputRef.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0);
@@ -4339,8 +4575,12 @@ The prompt must be production-ready — specific enough for a motion designer to
         || /\bopen (the )?(outreach )?copilot\b/i.test(text)
         || /\b(message|reach out to|write to|dm)\b[^.]*\b(these|them|my (linkedin )?connections)\b/i.test(text)) {
       const focus = text.replace(/\b(draft|write|make|start|do)\b|\boutreach\b|\bfor my (linkedin )?connections\b|\bopen (the )?(outreach )?copilot\b|\band open the copilot\b/gi, '').replace(/^[\s:,-]+|[\s:,-]+$/g, '').trim();
+      // How many to draft: honour an explicit count ("top 20", "first 30 people", "all"), else 50.
+      const allMatch = /\ball\b|\beveryone\b|\beach\b/i.test(text);
+      const numMatch = text.match(/\b(?:top|first|draft(?:\s+for)?|next)?\s*(\d{1,3})\s*(?:people|connections|contacts|of them|messages)?\b/i);
+      const count = allMatch ? 1000 : (numMatch ? Math.max(1, parseInt(numMatch[1], 10)) : 50);
       setInput('');
-      launchOutreachFromConnections(12, focus, text);   // pass the user's real message so it shows
+      launchOutreachFromConnections(count, focus, text);   // pass the user's real message so it shows
       return;
     }
     // Proactively suggest a relevant skill the user hasn't installed yet.
@@ -5691,7 +5931,19 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
             </svg>
             Skill lib
           </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); setShowTodos((v) => !v); }}
+            title="To-do — your tasks, and anything you left unfinished"
+            className={`flex items-center gap-1 h-5 px-1.5 rounded transition-fast shrink-0 text-[9px] font-mono border ${showTodos ? 'text-accent bg-accent/10 border-accent/30' : 'text-nv-faint border-nv-border hover:text-nv-muted hover:bg-nv-surface'}`}
+          >
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M2 4.5l1.5 1.5L6 3.5M2 11.5L3.5 13 6 10.5M8.5 4.5H14M8.5 11.5H14" />
+            </svg>
+            To-do{todoCount > 0 ? ` ${todoCount}` : ''}
+          </button>
         </div>
+
+        {showTodos && <TodoPanel onResume={resumeTodo} />}
 
         {/* Agent status bar */}
         <AgentStatus step={agentStep} tool={agentTool} />
@@ -5708,6 +5960,38 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
             currentPlan={profile?.plan ?? 'explore'}
           />
         </div>
+
+        {/* Reminder banner — the fallback path when OS notifications aren't granted, so a due
+            reminder is always seen somewhere. */}
+        {todoReminder && (
+          <div className="mx-2 mb-1 flex items-center gap-2 shrink-0 rounded-lg border border-nv-yellow/40 bg-nv-yellow/10 px-2.5 py-1.5">
+            <span className="text-[12px] shrink-0">🔔</span>
+            <span className="flex-1 min-w-0 text-[11px] text-nv-text break-words">{todoReminder}</span>
+            <button onClick={() => setTodoReminder(null)} title="Dismiss" className="text-[11px] text-nv-faint hover:text-nv-text shrink-0">✕</button>
+          </div>
+        )}
+
+        {/* Reopen the outreach copilot — shows whenever a drafted campaign is saved but the popup is
+            closed, so the user can get it back without re-drafting (also available as /continue).
+            The ✕ hides it; it comes back next time outreach is drafted or reopened. */}
+        {savedOutreach && !outreachPillDismissed && (
+          <div className="mx-2 mb-1 flex items-center gap-1 shrink-0">
+            <button
+              onClick={() => setOutreachCampaign(savedOutreach)}
+              className="flex-1 flex items-center gap-2 text-[11px] px-2.5 py-1.5 rounded-lg border border-accent/40 bg-accent/10 text-accent hover:bg-accent/15 transition-fast min-w-0"
+            >
+              <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" fill="currentColor"><path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.14 1.45-2.14 2.94v5.67H9.34V9h3.42v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28zM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13zM7.12 20.45H3.56V9h3.56v11.45z"/></svg>
+              <span className="truncate">Reopen outreach copilot ({savedOutreach.contacts.length})</span>
+            </button>
+            <button
+              onClick={() => setOutreachPillDismissed(true)}
+              title="Hide"
+              className="p-1.5 rounded-lg border border-nv-border text-nv-faint hover:text-nv-text hover:bg-nv-surface2 transition-fast shrink-0"
+            >
+              <svg viewBox="0 0 24 24" className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+        )}
 
         {/* Active tools strip */}
         {agent.key === 'boss' ? (
@@ -6239,28 +6523,49 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
               })()}
             </div>
             {filePickerCmd && (() => {
-              const files = pickerFiles();
+              const { files, total } = pickerFiles(filePickerQuery);
               return (
-                <div className="absolute bottom-full left-0 mb-2 w-[340px] max-h-[300px] overflow-y-auto rounded-xl border border-accent/40 bg-nv-surface shadow-xl z-40 py-1">
-                  <div className="px-3 py-1.5 flex items-center justify-between">
+                <div className="absolute bottom-full left-0 mb-2 w-[420px] rounded-xl border border-accent/40 bg-nv-surface shadow-xl z-40 py-1 flex flex-col max-h-[420px]">
+                  <div className="px-3 py-1.5 flex items-center justify-between shrink-0">
                     <span className="text-[9px] font-mono uppercase tracking-wide text-accent">Pick a file for “{filePickerCmd.label}”</span>
                     <button onClick={() => setFilePickerCmd(null)} className="text-nv-faint hover:text-nv-text text-[11px]">✕</button>
                   </div>
-                  {files.length === 0 ? (
-                    <div className="px-3 py-3 text-[11px] text-nv-faint">No files yet — attach one, or save data to your Brain first.</div>
-                  ) : files.map((f) => (
-                    <button
-                      key={f.name}
-                      onClick={() => applyPickedFile(filePickerCmd, f)}
-                      className="w-full text-left flex items-center gap-2.5 px-3 py-1.5 text-nv-muted hover:bg-nv-surface2/60 hover:text-nv-text transition-fast"
-                    >
-                      <span className="w-4 flex items-center justify-center shrink-0 text-accent">📄</span>
-                      <span className="flex-1 min-w-0 truncate text-[12px]">{f.name}</span>
-                      {f.fromBrain && <span className="text-[8px] font-mono text-nv-faint border border-nv-border rounded px-1 shrink-0">Brain</span>}
-                    </button>
-                  ))}
-                  <div className="px-3 pt-1.5 pb-1 border-t border-nv-border/50 mt-1">
+                  {/* Search — the whole point of the picker once a user has dozens of Brain files. */}
+                  <div className="px-2 pb-1.5 shrink-0">
+                    <input
+                      autoFocus
+                      value={filePickerQuery}
+                      onChange={(e) => setFilePickerQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') { e.preventDefault(); setFilePickerCmd(null); }
+                        // Enter picks the only remaining match — type three letters, hit Enter, done.
+                        if (e.key === 'Enter' && files.length >= 1) { e.preventDefault(); applyPickedFile(filePickerCmd, files[0]); }
+                      }}
+                      placeholder="Search your files…"
+                      className="w-full bg-nv-surface2 border border-nv-border focus:border-accent rounded-lg px-2.5 py-1.5 text-[12px] text-nv-text placeholder:text-nv-faint outline-none transition-fast"
+                    />
+                  </div>
+                  <div className="flex-1 overflow-y-auto min-h-0">
+                    {files.length === 0 ? (
+                      <div className="px-3 py-3 text-[11px] text-nv-faint">
+                        {filePickerQuery ? <>No file matches “{filePickerQuery}”.</> : <>No files yet — attach one, or save data to your Brain first.</>}
+                      </div>
+                    ) : files.map((f, idx) => (
+                      <button
+                        key={f.name}
+                        onClick={() => applyPickedFile(filePickerCmd, f)}
+                        className={`w-full text-left flex items-start gap-2.5 px-3 py-1.5 transition-fast ${idx === 0 && filePickerQuery ? 'bg-nv-surface2/70 text-nv-text' : 'text-nv-muted hover:bg-nv-surface2/60 hover:text-nv-text'}`}
+                      >
+                        <span className="w-4 flex items-center justify-center shrink-0 text-accent mt-0.5">📄</span>
+                        {/* Wrap instead of truncate — long Brain titles were unreadable as "Best-fit conn…" */}
+                        <span className="flex-1 min-w-0 text-[12px] leading-snug break-words">{f.name}</span>
+                        {f.fromBrain && <span className="text-[8px] font-mono text-nv-faint border border-nv-border rounded px-1 shrink-0 mt-0.5">Brain</span>}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="px-3 pt-1.5 pb-1 border-t border-nv-border/50 mt-1 flex items-center justify-between gap-2 shrink-0">
                     <button onClick={() => { const c = filePickerCmd; setFilePickerCmd(null); setInput(c.value); setTimeout(() => inputRef.current?.focus(), 0); }} className="text-[10px] text-nv-faint hover:text-accent">…or type the file name myself</button>
+                    {total > files.length && <span className="text-[9px] font-mono text-nv-faint shrink-0">{files.length} of {total} — keep typing</span>}
                   </div>
                 </div>
               );

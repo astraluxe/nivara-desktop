@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { brain } from '../../lib/knowledgeStore';
+import { todos } from '../../lib/todoStore';
 
 // ─── Human-in-the-loop LinkedIn / email outreach ─────────────────────────────
 // Why this exists instead of full automation:
@@ -32,14 +33,16 @@ export interface OutreachCampaign {
 }
 
 const LS_KEY = 'nv-outreach-v1';
+// One stable key: re-running outreach refreshes the SAME To-do card instead of stacking a new one.
+const OUTREACH_TODO_KEY = 'outreach:current';
 
 const STATUS_META: Record<OutreachStatus, { label: string; cls: string }> = {
-  todo:     { label: 'To do',            cls: 'border-white/20 text-faint' },
-  connect:  { label: 'Connect requested', cls: 'border-amber-400/50 text-amber-300 bg-amber-400/10' },
-  sent:     { label: 'Message sent',      cls: 'border-sky-400/50 text-sky-300 bg-sky-400/10' },
-  accepted: { label: 'Accepted',          cls: 'border-emerald-400/50 text-emerald-300 bg-emerald-400/10' },
-  replied:  { label: 'Replied',           cls: 'border-violet-400/50 text-violet-300 bg-violet-400/10' },
-  skip:     { label: 'Skipped',           cls: 'border-white/15 text-faint/60 line-through' },
+  todo:     { label: 'To do',            cls: 'border-nv-border text-nv-faint' },
+  connect:  { label: 'Connect requested', cls: 'border-amber-500/60 text-amber-600 bg-amber-500/15' },
+  sent:     { label: 'Message sent',      cls: 'border-sky-600/60 text-sky-600 bg-sky-600/15' },
+  accepted: { label: 'Accepted',          cls: 'border-emerald-600/60 text-emerald-600 bg-emerald-600/15' },
+  replied:  { label: 'Replied',           cls: 'border-violet-600/60 text-violet-600 bg-violet-600/15' },
+  skip:     { label: 'Skipped',           cls: 'border-nv-border text-nv-faint/60 line-through' },
 };
 
 function openLink(url: string) {
@@ -89,6 +92,18 @@ export function saveCampaign(camp: OutreachCampaign) {
       `| Name | Company | Status |\n| --- | --- | --- |\n${rows}\n`;
     brain.addNode({ title: camp.title, kind: 'outreach', body });
   } catch { /* Brain optional */ }
+  // Mirror progress onto the To-do panel so "where did I leave off" survives closing the popup,
+  // deleting the chat, or restarting the app. Retired automatically once everyone is contacted.
+  try {
+    const done = camp.contacts.filter((c) => c.status === 'sent' || c.status === 'accepted' || c.status === 'replied').length;
+    const left = camp.contacts.length - done;
+    if (left <= 0) todos.removeBySource(OUTREACH_TODO_KEY);
+    else todos.upsertResume(
+      OUTREACH_TODO_KEY,
+      `${camp.title} — ${left} still to message (${done}/${camp.contacts.length} done)`,
+      { kind: 'outreach', label: camp.title },
+    );
+  } catch { /* To-do optional */ }
 }
 
 export function loadSavedCampaign(): OutreachCampaign | null {
@@ -170,19 +185,19 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
   }
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-stretch justify-end bg-black/40 backdrop-blur-[2px]" onClick={onClose}>
+    <div className="fixed inset-0 z-[60] flex items-stretch justify-end bg-black/60 backdrop-blur-md" onClick={onClose}>
       <div
-        className="w-full max-w-md h-full bg-panel border-l border-white/10 shadow-2xl flex flex-col animate-[slidein_.18s_ease-out]"
+        className="w-full max-w-md h-full bg-nv-surface border-l border-nv-border shadow-2xl flex flex-col animate-[slidein_.18s_ease-out]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="px-4 py-3 border-b border-white/10 flex items-center gap-2 shrink-0">
+        <div className="px-4 py-3 border-b border-nv-border flex items-center gap-2 shrink-0">
           <svg viewBox="0 0 24 24" className="w-4 h-4 text-accent shrink-0" fill="currentColor"><path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.14 1.45-2.14 2.94v5.67H9.34V9h3.42v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28zM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13zM7.12 20.45H3.56V9h3.56v11.45z"/></svg>
           <div className="min-w-0 flex-1">
             <div className="text-xs font-semibold truncate">Outreach copilot</div>
-            <div className="text-[10px] text-faint truncate">{contacts.length} contacts · you paste &amp; send</div>
+            <div className="text-[10px] text-nv-faint truncate">{contacts.length} contacts · you paste &amp; send</div>
           </div>
-          <button onClick={onClose} className="text-faint hover:text-fg p-1 rounded" title="Close">
+          <button onClick={onClose} className="text-nv-faint hover:text-nv-text p-1 rounded" title="Close">
             <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
           </button>
         </div>
@@ -195,7 +210,7 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
             <svg viewBox="0 0 24 24" className={`w-3 h-3 ml-auto transition-transform ${whyOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
           </button>
           {whyOpen && (
-            <p className="text-[10px] text-faint mt-1.5 leading-relaxed">
+            <p className="text-[10px] text-nv-faint mt-1.5 leading-relaxed">
               LinkedIn's rules forbid automated messaging and connecting — accounts that auto-DM get
               restricted or banned, which would wreck your reputation right when you're winning clients.
               So adris does everything around it (writes each message, opens the right profile, tracks who
@@ -205,26 +220,26 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
         </div>
 
         {/* Progress strip */}
-        <div className="px-4 py-2 flex items-center gap-1.5 text-[10px] border-b border-white/5 shrink-0 overflow-x-auto">
-          <span className="text-faint">Progress:</span>
-          <span className="text-sky-300">{progress.sent} sent</span>
-          <span className="text-faint">·</span>
-          <span className="text-emerald-300">{progress.accepted} accepted</span>
-          <span className="text-faint">·</span>
-          <span className="text-violet-300">{progress.replied} replied</span>
+        <div className="px-4 py-2 flex items-center gap-1.5 text-[10px] border-b border-nv-border shrink-0 overflow-x-auto">
+          <span className="text-nv-faint">Progress:</span>
+          <span className="text-sky-600 font-semibold">{progress.sent} sent</span>
+          <span className="text-nv-faint">·</span>
+          <span className="text-emerald-600 font-semibold">{progress.accepted} accepted</span>
+          <span className="text-nv-faint">·</span>
+          <span className="text-violet-600 font-semibold">{progress.replied} replied</span>
         </div>
 
         {/* Current contact */}
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
           <div className="flex items-baseline justify-between">
-            <div className="text-[10px] text-faint font-mono">Contact {idx + 1} of {contacts.length}</div>
+            <div className="text-[10px] text-nv-faint font-mono">Contact {idx + 1} of {contacts.length}</div>
             <span className={`text-[9.5px] px-1.5 py-0.5 rounded border ${STATUS_META[cur.status || 'todo'].cls}`}>
               {STATUS_META[cur.status || 'todo'].label}
             </span>
           </div>
           <div>
             <div className="text-sm font-semibold">{cur.name || 'Unknown contact'}</div>
-            {cur.company && <div className="text-xs text-faint">{cur.company}</div>}
+            {cur.company && <div className="text-xs text-nv-faint">{cur.company}</div>}
           </div>
 
           {/* Copy the message AND open the chat box in one click */}
@@ -241,7 +256,7 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
               </button>
               <button
                 onClick={() => { openLink(profileUrl(cur)); setOpenNote('Opened their profile — use this to connect first if you\'re not connected yet.'); }}
-                className="w-full text-[10.5px] px-3 py-1 rounded-lg border border-white/15 text-faint hover:bg-white/5 transition-fast"
+                className="w-full text-[10.5px] px-3 py-1 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
               >
                 {hasProfile ? 'Just open their profile' : 'Find them on LinkedIn'}
               </button>
@@ -253,7 +268,7 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
           {(channel === 'linkedin' || channel === 'both') && (
             <div>
               <div className="flex items-center justify-between mb-1">
-                <div className="text-[10px] text-faint uppercase tracking-wide">LinkedIn message</div>
+                <div className="text-[10px] text-nv-faint uppercase tracking-wide">LinkedIn message</div>
                 <button
                   onClick={() => doCopy('msg')}
                   className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${copied === 'msg' ? 'border-emerald-400/50 text-emerald-300 bg-emerald-400/10' : 'border-accent/40 text-accent hover:bg-accent/10'}`}
@@ -265,10 +280,10 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
                 value={msg}
                 onChange={(e) => setContacts((prev) => prev.map((c, i) => (i === idx ? { ...c, linkedin_message: e.target.value } : c)))}
                 rows={7}
-                className="w-full text-xs bg-black/20 border border-white/10 rounded-lg p-2.5 leading-relaxed resize-none focus:outline-none focus:border-accent/40 select-text"
+                className="w-full text-xs bg-nv-bg border border-nv-border rounded-lg p-2.5 leading-relaxed resize-none focus:outline-none focus:border-accent/40 select-text"
                 placeholder="No message drafted for this contact yet — type one, or ask Krew to draft it."
               />
-              <p className="text-[9.5px] text-faint mt-1">
+              <p className="text-[9.5px] text-nv-faint mt-1">
                 Not connected yet? Send a connection request with a short note first (free accounts can only
                 message 1st-degree connections). Mark <b>Connect requested</b> below, then come back once they accept.
               </p>
@@ -277,31 +292,31 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
 
           {/* Email secondary action */}
           {cur.email && (channel === 'email' || channel === 'both') && (
-            <div className="pt-1 border-t border-white/5">
+            <div className="pt-1 border-t border-nv-border">
               <div className="flex items-center justify-between mb-1">
-                <div className="text-[10px] text-faint uppercase tracking-wide">Email · {cur.email}</div>
-                <button onClick={() => doCopy('email')} className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${copied === 'email' ? 'border-emerald-400/50 text-emerald-300 bg-emerald-400/10' : 'border-white/20 text-faint hover:bg-white/5'}`}>
+                <div className="text-[10px] text-nv-faint uppercase tracking-wide">Email · {cur.email}</div>
+                <button onClick={() => doCopy('email')} className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${copied === 'email' ? 'border-emerald-400/50 text-emerald-300 bg-emerald-400/10' : 'border-nv-border text-nv-faint hover:bg-nv-surface2'}`}>
                   {copied === 'email' ? '✓ Copied' : 'Copy email'}
                 </button>
               </div>
-              <button onClick={() => openLink(gmailComposeUrl(cur))} className="w-full text-[11px] px-3 py-1.5 rounded-lg border border-white/15 text-faint hover:bg-white/5 transition-fast">
+              <button onClick={() => openLink(gmailComposeUrl(cur))} className="w-full text-[11px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast">
                 Open in Gmail compose
               </button>
               {campaign.deckAttached && (
-                <p className="text-[9.5px] text-faint mt-1">Tip: to auto-attach the deck PDF to every email, tell Krew "email these contacts with the deck attached" — it sends + attaches for you and reports who got it.</p>
+                <p className="text-[9.5px] text-nv-faint mt-1">Tip: to auto-attach the deck PDF to every email, tell Krew "email these contacts with the deck attached" — it sends + attaches for you and reports who got it.</p>
               )}
             </div>
           )}
 
           {/* Status */}
           <div>
-            <div className="text-[10px] text-faint uppercase tracking-wide mb-1.5">After you send, mark it</div>
+            <div className="text-[10px] text-nv-faint uppercase tracking-wide mb-1.5">After you send, mark it</div>
             <div className="flex flex-wrap gap-1.5">
               {(['connect', 'sent', 'accepted', 'replied', 'skip'] as OutreachStatus[]).map((s) => (
                 <button
                   key={s}
                   onClick={() => setStatus(cur.status === s ? 'todo' : s)}
-                  className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${cur.status === s ? STATUS_META[s].cls : 'border-white/15 text-faint hover:bg-white/5'}`}
+                  className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${cur.status === s ? STATUS_META[s].cls : 'border-nv-border text-nv-faint hover:bg-nv-surface2'}`}
                 >
                   {STATUS_META[s].label}
                 </button>
@@ -311,8 +326,8 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
         </div>
 
         {/* Nav */}
-        <div className="px-4 py-3 border-t border-white/10 flex items-center gap-2 shrink-0">
-          <button onClick={() => go(-1)} disabled={idx === 0} className="text-xs px-3 py-1.5 rounded-lg border border-white/15 text-faint hover:bg-white/5 disabled:opacity-30 transition-fast">← Prev</button>
+        <div className="px-4 py-3 border-t border-nv-border flex items-center gap-2 shrink-0">
+          <button onClick={() => go(-1)} disabled={idx === 0} className="text-xs px-3 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 disabled:opacity-30 transition-fast">← Prev</button>
           <div className="flex-1 h-1 rounded-full bg-white/10 overflow-hidden">
             <div className="h-full bg-accent transition-all" style={{ width: `${((idx + 1) / contacts.length) * 100}%` }} />
           </div>

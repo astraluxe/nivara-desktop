@@ -1317,9 +1317,20 @@ fn models_list_installed(app: tauri::AppHandle) -> Result<Vec<InstalledModel>, S
     Ok(load_installed_models(&dir))
 }
 
+/// Model ids the user has asked to cancel mid-download. The download loop checks this between
+/// chunks, then drops the partial file so a cancelled pull never leaves a half-written .gguf.
+struct ModelCancels(Mutex<std::collections::HashSet<String>>);
+
+#[tauri::command]
+fn models_cancel_download(state: tauri::State<'_, ModelCancels>, model_id: String) -> Result<(), String> {
+    state.0.lock().map_err(|e| e.to_string())?.insert(model_id);
+    Ok(())
+}
+
 #[tauri::command]
 async fn models_download(
     app:        tauri::AppHandle,
+    cancels:    tauri::State<'_, ModelCancels>,
     model_id:   String,
     model_name: String,
     url:        String,
@@ -1331,6 +1342,12 @@ async fn models_download(
 
     let dir = models_dir(&app)?;
     let dest = dir.join(&filename);
+
+    // Clear any stale cancel flag from a previous attempt on this model.
+    { cancels.0.lock().map_err(|e| e.to_string())?.remove(&model_id); }
+    let cancelled = |id: &str| -> bool {
+        cancels.0.lock().map(|s| s.contains(id)).unwrap_or(false)
+    };
 
     let client = reqwest::Client::new();
     let resp = client.get(&url)
@@ -1350,6 +1367,13 @@ async fn models_download(
         let chunk = chunk.map_err(|e| e.to_string())?;
         file.write_all(&chunk).await.map_err(|e| e.to_string())?;
         downloaded += chunk.len() as u64;
+        if cancelled(&model_id) {
+            drop(file);
+            let _ = tokio::fs::remove_file(&dest).await;
+            cancels.0.lock().map_err(|e| e.to_string())?.remove(&model_id);
+            let _ = app.emit("model_download_cancelled", serde_json::json!({ "model_id": model_id }));
+            return Ok(());
+        }
         if total > 0 {
             let pct = (downloaded as f64 / total as f64 * 100.0) as u32;
             let _ = app.emit("model_download_progress", serde_json::json!({
@@ -6211,6 +6235,7 @@ pub fn run() {
             app.manage(VaultState::new());
             app.manage(MeshExoProcess(Mutex::new(None)));
             app.manage(LlamaEngineProcess(Mutex::new(None)));
+            app.manage(ModelCancels(Mutex::new(std::collections::HashSet::new())));
             app.manage(VoiceState::new());
             app.manage(SessionKeyState::new());
             setup_tray(app)?;
@@ -6437,6 +6462,7 @@ pub fn run() {
             detect_gpu,
             models_list_installed,
             models_download,
+            models_cancel_download,
             models_delete,
             models_check_engine_installed,
             models_check_engine,

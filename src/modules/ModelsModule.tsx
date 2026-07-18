@@ -92,7 +92,11 @@ interface PullResponse {
 
 // Pull URL for when Vercel API routes are deployed (Phase 9).
 // Downloads are deferred until then — catalogue browsing is fully static/local.
-const PULL_URL = 'https://adris.tech/api/models/pull';
+// NOTE: must be the www host. The apex (adris.tech) 307-redirects to www, and that redirect
+// response carries no Access-Control-Allow-Origin — a cross-origin fetch from the webview fails
+// the CORS check on the redirect itself and throws before it ever reaches the real endpoint.
+const PULL_URL = 'https://www.adris.tech/api/models/pull';
+const REGISTRY_URL = 'https://www.adris.tech/api/models/registry';
 const SEEN_MODELS_KEY = 'nv-models-seen';
 
 const FILTER_LABELS: Record<string, string> = {
@@ -112,14 +116,14 @@ const DESKTOP_MODELS: RegistryModel[] = [
   // Mesh frontier (448+ GB RAM)
   { id:'deepseek-r1-671b-q4', name:'DeepSeek R1 671B', creator:'DeepSeek', params:'671B MoE', quantization:'Q4_K_M', size_gb:404.0, ram_min_gb:448, ram_recommended_gb:512, context_length:131072, best_for:['reasoning'], benchmark_mmlu:93, license:'MIT', gated:false, description:'Full DeepSeek R1 — o1 level reasoning. Most powerful open model. Mesh only.', mesh_required:true },
   { id:'deepseek-v3-671b-q4', name:'DeepSeek V3', creator:'DeepSeek', params:'671B MoE', quantization:'Q4_K_M', size_gb:404.0, ram_min_gb:448, ram_recommended_gb:512, context_length:131072, best_for:['coding','reasoning','chat'], benchmark_mmlu:91, license:'DeepSeek', gated:false, description:'DeepSeek 671B MoE frontier. GPT-4 class coding. Runs only on Mesh.', mesh_required:true },
-  { id:'llama31-405b-q4', name:'Llama 3.1 405B', creator:'Meta', params:'405B', quantization:'Q4_K_M', size_gb:244.0, ram_min_gb:256, ram_recommended_gb:320, context_length:131072, best_for:['chat','reasoning','writing','coding'], benchmark_mmlu:92, license:'Llama 3.1', gated:true, description:'Meta frontier model. GPT-4 tier quality. Requires Mesh across multiple machines.', mesh_required:true },
+  { id:'llama31-405b-q4', name:'Llama 3.1 405B', creator:'Meta', params:'405B', quantization:'Q4_K_M', size_gb:244.0, ram_min_gb:256, ram_recommended_gb:320, context_length:131072, best_for:['chat','reasoning','writing','coding'], benchmark_mmlu:92, license:'Llama 3.1', gated:false, description:'Meta frontier model. GPT-4 tier quality. Requires Mesh across multiple machines.', mesh_required:true },
   { id:'deepseek-v2-236b-q4', name:'DeepSeek V2 236B', creator:'DeepSeek', params:'236B MoE', quantization:'Q4_K_M', size_gb:142.0, ram_min_gb:160, ram_recommended_gb:192, context_length:131072, best_for:['coding','reasoning'], benchmark_mmlu:84, license:'DeepSeek', gated:false, description:'Previous DeepSeek flagship MoE. Excellent at scale with Mesh.', mesh_required:true },
   { id:'mixtral-8x22b-q4', name:'Mixtral 8×22B', creator:'Mistral AI', params:'141B MoE', quantization:'Q4_K_M', size_gb:87.0, ram_min_gb:96, ram_recommended_gb:128, context_length:65536, best_for:['chat','coding','reasoning'], benchmark_mmlu:78, license:'Apache 2.0', gated:false, description:'8-expert MoE at 22B each. Fast inference for its size via Mesh.', mesh_required:true },
   { id:'mistral-large-123b-q4', name:'Mistral Large 123B', creator:'Mistral AI', params:'123B', quantization:'Q4_K_M', size_gb:74.0, ram_min_gb:80, ram_recommended_gb:96, context_length:131072, best_for:['chat','reasoning','writing','coding'], benchmark_mmlu:84, license:'Mistral', gated:false, description:'Mistral flagship 123B with 128K context. Needs Mesh or high-VRAM workstation.', mesh_required:true },
   // 48+ GB RAM
   { id:'deepseek-r1-70b-q4', name:'DeepSeek R1 70B', creator:'DeepSeek', params:'70B', quantization:'Q4_K_M', size_gb:43.0, ram_min_gb:48, ram_recommended_gb:64, context_length:131072, best_for:['reasoning','coding'], benchmark_mmlu:90, license:'MIT', gated:false, description:'Near o1 quality reasoning on maths, science, and complex analysis.' },
   { id:'qwen25-72b-q4', name:'Qwen 2.5 72B', creator:'Alibaba', params:'72B', quantization:'Q4_K_M', size_gb:44.0, ram_min_gb:48, ram_recommended_gb:64, context_length:131072, best_for:['coding','reasoning','chat'], benchmark_mmlu:86, license:'Apache 2.0', gated:false, description:'Outperforms Llama 3.3 70B on coding and maths. 48 GB+ or Mesh.' },
-  { id:'llama33-70b-q4', name:'Llama 3.3 70B', creator:'Meta', params:'70B', quantization:'Q4_K_M', size_gb:43.0, ram_min_gb:48, ram_recommended_gb:64, context_length:131072, best_for:['chat','reasoning','writing','coding'], benchmark_mmlu:88, license:'Llama 3.3', gated:true, description:'Meta flagship. Competes directly with GPT-4. Needs 48 GB+ RAM or Mesh.' },
+  { id:'llama33-70b-q4', name:'Llama 3.3 70B', creator:'Meta', params:'70B', quantization:'Q4_K_M', size_gb:43.0, ram_min_gb:48, ram_recommended_gb:64, context_length:131072, best_for:['chat','reasoning','writing','coding'], benchmark_mmlu:88, license:'Llama 3.3', gated:false, description:'Meta flagship. Competes directly with GPT-4. Needs 48 GB+ RAM or Mesh.' },
   // 32 GB RAM
   { id:'falcon-40b-q4', name:'Falcon 40B', creator:'TII', params:'40B', quantization:'Q4_K_M', size_gb:24.0, ram_min_gb:32, ram_recommended_gb:40, context_length:2048, best_for:['chat'], license:'Apache 2.0', gated:false, description:'TII open-source 40B. Highly permissive Apache 2.0 licence for commercial use.' },
   { id:'mixtral-8x7b-q4', name:'Mixtral 8×7B', creator:'Mistral AI', params:'47B MoE', quantization:'Q4_K_M', size_gb:26.0, ram_min_gb:32, ram_recommended_gb:40, context_length:32768, best_for:['chat','coding','reasoning'], benchmark_mmlu:70, license:'Apache 2.0', gated:false, description:'8-expert MoE (7B each). Fast for its effective parameter count.' },
@@ -133,7 +137,7 @@ const DESKTOP_MODELS: RegistryModel[] = [
   { id:'aya-expanse-32b-q4', name:'Aya Expanse 32B', creator:'Cohere', params:'32B', quantization:'Q4_K_M', size_gb:19.0, ram_min_gb:24, ram_recommended_gb:28, context_length:131072, best_for:['chat','writing','indic'], license:'CC-BY-NC', gated:false, description:'Multilingual model covering 23 languages including Hindi, Arabic, Turkish.' },
   { id:'yi15-34b-q4', name:'Yi 1.5 34B', creator:'01.AI', params:'34B', quantization:'Q4_K_M', size_gb:19.5, ram_min_gb:24, ram_recommended_gb:28, context_length:4096, best_for:['chat','reasoning'], benchmark_mmlu:77, license:'Apache 2.0', gated:false, description:'Strong multilingual 34B from 01.AI. Competes with much larger models on reasoning.' },
   // 16–20 GB RAM
-  { id:'gemma3-27b-q4', name:'Gemma 3 27B', creator:'Google', params:'27B', quantization:'Q4_K_M', size_gb:16.0, ram_min_gb:20, ram_recommended_gb:24, context_length:131072, best_for:['chat','reasoning','indic'], benchmark_mmlu:83, license:'Gemma', gated:true, description:'Google powerful Gemma 3. Best Indian language support among open models.' },
+  { id:'gemma3-27b-q4', name:'Gemma 3 27B', creator:'Google', params:'27B', quantization:'Q4_K_M', size_gb:16.0, ram_min_gb:20, ram_recommended_gb:24, context_length:131072, best_for:['chat','reasoning','indic'], benchmark_mmlu:83, license:'Gemma', gated:false, description:'Google powerful Gemma 3. Best Indian language support among open models.' },
   { id:'internlm25-20b-q4', name:'InternLM 2.5 20B', creator:'Shanghai AI Lab', params:'20B', quantization:'Q4_K_M', size_gb:12.0, ram_min_gb:16, ram_recommended_gb:18, context_length:1000000, best_for:['reasoning','coding','chat'], benchmark_mmlu:79, license:'InternLM', gated:false, description:'1 million token context window. Exceptional for long document analysis.' },
   { id:'codestral-22b-q4', name:'Codestral 22B', creator:'Mistral AI', params:'22B', quantization:'Q4_K_M', size_gb:12.5, ram_min_gb:16, ram_recommended_gb:20, context_length:32768, best_for:['coding'], benchmark_humaneval:91, license:'MNPL', gated:false, description:'Mistral dedicated code model. Best-in-class completion across 80+ languages.' },
   { id:'phi4-22b-q4', name:'Phi-4 22B', creator:'Microsoft', params:'22B', quantization:'Q4_K_M', size_gb:13.5, ram_min_gb:16, ram_recommended_gb:20, context_length:16384, best_for:['reasoning','coding','chat'], benchmark_mmlu:87, license:'MIT', gated:false, description:'Near-GPT-4 reasoning at 22B. Outperforms many 70B models.' },
@@ -144,29 +148,29 @@ const DESKTOP_MODELS: RegistryModel[] = [
   { id:'deepseek-r1-14b-q4', name:'DeepSeek R1 14B', creator:'DeepSeek', params:'14B', quantization:'Q4_K_M', size_gb:8.5, ram_min_gb:12, ram_recommended_gb:14, context_length:131072, best_for:['reasoning','coding'], benchmark_mmlu:78, license:'MIT', gated:false, description:'Larger R1 distillation. Better reasoning than 7B, still fits in 12 GB RAM.' },
   { id:'deepseek-coder-v2-16b-q4', name:'DeepSeek Coder V2 16B', creator:'DeepSeek', params:'16B', quantization:'Q4_K_M', size_gb:9.4, ram_min_gb:12, ram_recommended_gb:16, context_length:131072, best_for:['coding'], benchmark_humaneval:90, license:'DeepSeek', gated:false, description:'MoE architecture — 16B active but near 30B+ quality on code.' },
   { id:'starcoder2-15b-q4', name:'StarCoder2 15B', creator:'BigCode', params:'15B', quantization:'Q4_K_M', size_gb:9.0, ram_min_gb:12, ram_recommended_gb:14, context_length:16384, best_for:['coding'], license:'BigCode RAIL', gated:false, description:'600+ programming languages. State of the art fill-in-middle code completion.' },
-  { id:'gemma3-12b-q4', name:'Gemma 3 12B', creator:'Google', params:'12B', quantization:'Q4_K_M', size_gb:7.5, ram_min_gb:10, ram_recommended_gb:12, context_length:131072, best_for:['chat','reasoning','indic'], benchmark_mmlu:76, license:'Gemma', gated:true, description:'Google mid-size Gemma 3. Excellent Indian language support.' },
-  { id:'llama32-11b-vision-q4', name:'Llama 3.2 11B Vision', creator:'Meta', params:'11B', quantization:'Q4_K_M', size_gb:7.0, ram_min_gb:10, ram_recommended_gb:12, context_length:131072, best_for:['chat','reasoning'], license:'Llama 3.2', gated:true, description:'Meta multimodal model — understands images alongside text.' },
+  { id:'gemma3-12b-q4', name:'Gemma 3 12B', creator:'Google', params:'12B', quantization:'Q4_K_M', size_gb:7.5, ram_min_gb:10, ram_recommended_gb:12, context_length:131072, best_for:['chat','reasoning','indic'], benchmark_mmlu:76, license:'Gemma', gated:false, description:'Google mid-size Gemma 3. Excellent Indian language support.' },
+  { id:'llama32-11b-vision-q4', name:'Llama 3.2 11B Vision', creator:'Meta', params:'11B', quantization:'Q4_K_M', size_gb:7.0, ram_min_gb:10, ram_recommended_gb:12, context_length:131072, best_for:['chat','reasoning'], license:'Llama 3.2', gated:false, description:'Meta multimodal model — understands images alongside text.' },
   { id:'mistral-nemo-12b-q4', name:'Mistral Nemo 12B', creator:'Mistral AI', params:'12B', quantization:'Q4_K_M', size_gb:7.2, ram_min_gb:10, ram_recommended_gb:12, context_length:131072, best_for:['coding','writing','chat'], license:'Apache 2.0', gated:false, description:'Mistral + NVIDIA collaboration. 128K context, strong coding and reasoning.' },
   // 6–10 GB RAM
-  { id:'gemma3-9b-q4', name:'Gemma 3 9B', creator:'Google', params:'9B', quantization:'Q4_K_M', size_gb:5.7, ram_min_gb:8, ram_recommended_gb:10, context_length:131072, best_for:['chat','writing','indic'], benchmark_mmlu:72, license:'Gemma', gated:true, description:'Google compact mid-size. Excellent multilingual instruction following.' },
-  { id:'gemma2-9b-q4', name:'Gemma 2 9B', creator:'Google', params:'9B', quantization:'Q4_K_M', size_gb:5.7, ram_min_gb:8, ram_recommended_gb:10, context_length:8192, best_for:['chat','reasoning'], benchmark_mmlu:71, license:'Gemma', gated:true, description:'Previous Gemma 2 generation. Solid for chat and reasoning tasks.' },
+  { id:'gemma3-9b-q4', name:'Gemma 3 9B', creator:'Google', params:'9B', quantization:'Q4_K_M', size_gb:5.7, ram_min_gb:8, ram_recommended_gb:10, context_length:131072, best_for:['chat','writing','indic'], benchmark_mmlu:72, license:'Gemma', gated:false, description:'Google compact mid-size. Excellent multilingual instruction following.' },
+  { id:'gemma2-9b-q4', name:'Gemma 2 9B', creator:'Google', params:'9B', quantization:'Q4_K_M', size_gb:5.7, ram_min_gb:8, ram_recommended_gb:10, context_length:8192, best_for:['chat','reasoning'], benchmark_mmlu:71, license:'Gemma', gated:false, description:'Previous Gemma 2 generation. Solid for chat and reasoning tasks.' },
   { id:'solar-10b-q4', name:'SOLAR 10.7B', creator:'Upstage', params:'10.7B', quantization:'Q4_K_M', size_gb:6.5, ram_min_gb:8, ram_recommended_gb:10, context_length:4096, best_for:['chat','reasoning'], license:'Apache 2.0', gated:false, description:'Outperforms Llama 2 70B despite being 10B, using depth upscaling.' },
   { id:'deepseek-r1-7b-q4', name:'DeepSeek R1 7B', creator:'DeepSeek', params:'7B', quantization:'Q4_K_M', size_gb:4.5, ram_min_gb:6, ram_recommended_gb:8, context_length:32768, best_for:['reasoning'], benchmark_mmlu:67, license:'MIT', gated:false, cpu_only:true, description:'Strong chain-of-thought reasoning at 7B. Best for maths, logic, analysis.' },
   { id:'qwen25-coder-7b-q4', name:'Qwen 2.5 Coder 7B', creator:'Alibaba', params:'7B', quantization:'Q4_K_M', size_gb:4.3, ram_min_gb:6, ram_recommended_gb:8, context_length:131072, best_for:['coding'], benchmark_humaneval:88, license:'Apache 2.0', gated:false, cpu_only:true, description:'Top coder at 7B — beats models 2× its size. 128K context.' },
   { id:'mistral-7b-q4', name:'Mistral 7B', creator:'Mistral AI', params:'7B', quantization:'Q4_K_M', size_gb:4.4, ram_min_gb:6, ram_recommended_gb:8, context_length:32768, best_for:['chat','writing','coding'], benchmark_mmlu:62, license:'Apache 2.0', gated:false, cpu_only:true, description:'Best quality-to-size at 7B. Great all-rounder for writing and chat.' },
   { id:'sarvam1-7b-q4', name:'Sarvam-1 7B', creator:'Sarvam AI', params:'7.3B', quantization:'Q4_K_M', size_gb:4.6, ram_min_gb:6, ram_recommended_gb:8, context_length:4096, best_for:['chat','indic'], license:'Apache 2.0', gated:false, description:'India-first model. Best Indic support — Hindi, Tamil, Telugu, Kannada, Bengali and more.' },
-  { id:'llama31-8b-q4', name:'Llama 3.1 8B', creator:'Meta', params:'8B', quantization:'Q4_K_M', size_gb:4.9, ram_min_gb:6, ram_recommended_gb:8, context_length:131072, best_for:['chat','writing','reasoning'], benchmark_mmlu:73, license:'Llama 3.1', gated:true, cpu_only:true, description:'Meta flagship small model. 128K context, 8-language support.' },
+  { id:'llama31-8b-q4', name:'Llama 3.1 8B', creator:'Meta', params:'8B', quantization:'Q4_K_M', size_gb:4.9, ram_min_gb:6, ram_recommended_gb:8, context_length:131072, best_for:['chat','writing','reasoning'], benchmark_mmlu:73, license:'Llama 3.1', gated:false, cpu_only:true, description:'Meta flagship small model. 128K context, 8-language support.' },
   { id:'deepseek-coder-6b-q4', name:'DeepSeek Coder 6.7B', creator:'DeepSeek', params:'6.7B', quantization:'Q4_K_M', size_gb:3.9, ram_min_gb:6, ram_recommended_gb:8, context_length:16384, best_for:['coding'], benchmark_humaneval:74, license:'DeepSeek', gated:false, cpu_only:true, description:'Code-specialised. Excellent Python, JavaScript, TypeScript generation.' },
   // 2–6 GB RAM
-  { id:'gemma3-4b-q4', name:'Gemma 3 4B', creator:'Google', params:'4B', quantization:'Q4_K_M', size_gb:3.0, ram_min_gb:4, ram_recommended_gb:6, context_length:131072, best_for:['chat','reasoning','indic'], benchmark_mmlu:72, license:'Gemma', gated:true, cpu_only:true, description:'Google compact model. Strong multilingual and reasoning per GB of RAM.' },
+  { id:'gemma3-4b-q4', name:'Gemma 3 4B', creator:'Google', params:'4B', quantization:'Q4_K_M', size_gb:3.0, ram_min_gb:4, ram_recommended_gb:6, context_length:131072, best_for:['chat','reasoning','indic'], benchmark_mmlu:72, license:'Gemma', gated:false, cpu_only:true, description:'Google compact model. Strong multilingual and reasoning per GB of RAM.' },
   { id:'phi4-mini-q4', name:'Phi-4 Mini', creator:'Microsoft', params:'3.8B', quantization:'Q4_K_M', size_gb:2.4, ram_min_gb:4, ram_recommended_gb:6, context_length:128000, best_for:['chat','reasoning','indic'], benchmark_mmlu:69, license:'MIT', gated:false, cpu_only:true, description:'Runs on 4 GB RAM, no GPU needed. Surprisingly capable. Best pick for office laptops.' },
   { id:'phi35-mini-q4', name:'Phi-3.5 Mini', creator:'Microsoft', params:'3.8B', quantization:'Q4_K_M', size_gb:2.4, ram_min_gb:4, ram_recommended_gb:4, context_length:131072, best_for:['chat','reasoning'], benchmark_mmlu:69, license:'MIT', gated:false, cpu_only:true, description:'128K context at 3.8B. No GPU needed. Ideal for CPU-only office laptops.' },
-  { id:'llama32-3b-q4', name:'Llama 3.2 3B', creator:'Meta', params:'3B', quantization:'Q4_K_M', size_gb:2.0, ram_min_gb:4, ram_recommended_gb:4, context_length:131072, best_for:['chat','quick'], license:'Llama 3.2', gated:true, cpu_only:true, description:'Meta small instruction model. Runs on 4 GB RAM. Fast on CPU.' },
+  { id:'llama32-3b-q4', name:'Llama 3.2 3B', creator:'Meta', params:'3B', quantization:'Q4_K_M', size_gb:2.0, ram_min_gb:4, ram_recommended_gb:4, context_length:131072, best_for:['chat','quick'], license:'Llama 3.2', gated:false, cpu_only:true, description:'Meta small instruction model. Runs on 4 GB RAM. Fast on CPU.' },
   { id:'qwen25-3b-q4', name:'Qwen 2.5 3B', creator:'Alibaba', params:'3B', quantization:'Q4_K_M', size_gb:2.0, ram_min_gb:4, ram_recommended_gb:4, context_length:32768, best_for:['coding','chat'], license:'Apache 2.0', gated:false, cpu_only:true, description:'Solid coding model for CPU-only devices. 4 GB RAM minimum.' },
-  { id:'gemma2-2b-q4', name:'Gemma 2 2B', creator:'Google', params:'2B', quantization:'Q4_K_M', size_gb:1.5, ram_min_gb:2, ram_recommended_gb:3, context_length:8192, best_for:['quick','chat'], license:'Gemma', gated:true, cpu_only:true, description:'Tiny but capable. Runs on 2 GB RAM. Good for simple tasks on any laptop.' },
+  { id:'gemma2-2b-q4', name:'Gemma 2 2B', creator:'Google', params:'2B', quantization:'Q4_K_M', size_gb:1.5, ram_min_gb:2, ram_recommended_gb:3, context_length:8192, best_for:['quick','chat'], license:'Gemma', gated:false, cpu_only:true, description:'Tiny but capable. Runs on 2 GB RAM. Good for simple tasks on any laptop.' },
   { id:'qwen25-1b-q4', name:'Qwen 2.5 1.5B', creator:'Alibaba', params:'1.5B', quantization:'Q4_K_M', size_gb:1.0, ram_min_gb:2, ram_recommended_gb:2, context_length:32768, best_for:['quick'], license:'Apache 2.0', gated:false, cpu_only:true, description:'Runs on 2 GB RAM. Emails, summaries, quick replies — no GPU at all.' },
   { id:'smollm2-1b-q4', name:'SmolLM2 1.7B', creator:'HF Research', params:'1.7B', quantization:'Q4_K_M', size_gb:1.1, ram_min_gb:2, ram_recommended_gb:2, context_length:8192, best_for:['quick'], license:'Apache 2.0', gated:false, cpu_only:true, description:'Built for on-device use. 1.1 GB file, no GPU, works on any machine.' },
-  { id:'llama32-1b-q4', name:'Llama 3.2 1B', creator:'Meta', params:'1B', quantization:'Q4_K_M', size_gb:0.8, ram_min_gb:2, ram_recommended_gb:2, context_length:131072, best_for:['quick'], license:'Llama 3.2', gated:true, cpu_only:true, description:'Meta ultra-tiny. 128K context window. Runs on any device with 2 GB RAM.' },
+  { id:'llama32-1b-q4', name:'Llama 3.2 1B', creator:'Meta', params:'1B', quantization:'Q4_K_M', size_gb:0.8, ram_min_gb:2, ram_recommended_gb:2, context_length:131072, best_for:['quick'], license:'Llama 3.2', gated:false, cpu_only:true, description:'Meta ultra-tiny. 128K context window. Runs on any device with 2 GB RAM.' },
   { id:'tinyllama-1b-q4', name:'TinyLlama 1.1B', creator:'TinyLlama', params:'1.1B', quantization:'Q4_K_M', size_gb:0.7, ram_min_gb:2, ram_recommended_gb:2, context_length:2048, best_for:['quick','chat'], license:'Apache 2.0', gated:false, cpu_only:true, description:'Smallest model in the hub. 700 MB. Works on any laptop, any OS, no GPU.' },
 ];
 
@@ -488,6 +492,7 @@ function ModelCard({
   isNew,
   locked,
   onDownload,
+  onCancel,
   onDelete,
   onRun,
 }: {
@@ -499,6 +504,7 @@ function ModelCard({
   isNew?: boolean;
   locked?: boolean;   // paid model + user on a free plan → show PRO gate
   onDownload: (m: RegistryModel) => void;
+  onCancel: (id: string) => void;
   onDelete: (id: string) => void;
   onRun: (filename: string) => void;
 }) {
@@ -626,9 +632,18 @@ function ModelCard({
             </button>
           </>
         ) : isDownloading ? (
-          <button disabled className="flex-1 text-[11px] py-1.5 rounded-lg bg-nv-surface2 text-nv-faint cursor-not-allowed">
-            Downloading…
-          </button>
+          <>
+            <button disabled className="flex-1 text-[11px] py-1.5 rounded-lg bg-nv-surface2 text-nv-faint cursor-not-allowed">
+              Downloading…
+            </button>
+            <button
+              onClick={() => onCancel(model.id)}
+              title="Stop this download and discard the partial file"
+              className="text-[11px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:border-red-500/40 hover:text-red-400 transition-fast"
+            >
+              Cancel
+            </button>
+          </>
         ) : model.mesh_required ? (
           <button
             disabled
@@ -721,6 +736,9 @@ export default function ModelsModule() {
   const [filter, setFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [downloading, setDownloading] = useState<Record<string, DownloadProgress>>({});
+  // Download failures used to go to alert(), which the webview swallows silently — a failed pull
+  // looked identical to nothing happening. Surface it in the UI instead.
+  const [dlError, setDlError] = useState<{ modelId: string; msg: string } | null>(null);
   const [sysInfo, setSysInfo] = useState<SysInfo | null>(null);
   const [gpuInfo, setGpuInfo] = useState<GpuInfo>({ name: 'Detecting…', vram_gb: 0 });
   const [ollamaOk, setOllamaOk] = useState<boolean | null>(null);
@@ -747,7 +765,7 @@ export default function ModelsModule() {
     // LIVE registry — adris.tech can fix a broken link or add a newly-scanned model any
     // time and every open app picks it up immediately, with no exe update needed.
     setRegistry(DESKTOP_MODELS);
-    fetch('https://adris.tech/api/models/registry', { signal: AbortSignal.timeout(6000) })
+    fetch(REGISTRY_URL, { signal: AbortSignal.timeout(6000) })
       .then(r => (r.ok ? r.json() : Promise.reject()))
       .then((data: { models?: RegistryModel[] }) => {
         if (!Array.isArray(data.models) || data.models.length === 0) return;
@@ -783,6 +801,9 @@ export default function ModelsModule() {
         [e.payload.model_id]: { pct: e.payload.pct, downloaded_gb: e.payload.downloaded_gb, total_gb: e.payload.total_gb },
       }))
     );
+    const unX = listen<{ model_id: string }>('model_download_cancelled', e => {
+      setDownloading(prev => { const n = { ...prev }; delete n[e.payload.model_id]; return n; });
+    });
     const unC = listen<{ model_id: string }>('model_download_complete', e => {
       setDownloading(prev => { const n = { ...prev }; delete n[e.payload.model_id]; return n; });
       refreshInstalled();
@@ -800,6 +821,7 @@ export default function ModelsModule() {
 
     return () => {
       unP.then(fn => fn());
+      unX.then(fn => fn());
       unC.then(fn => fn());
       unE.then(fn => fn());
     };
@@ -857,25 +879,30 @@ export default function ModelsModule() {
     // Paid-tier gate: free/explore users can download the curated free models; the bigger / most-
     // capable / frontier ones need a paid plan. Show the upgrade modal instead of downloading.
     if (isFreePlan && isPaidModel(model)) { setShowUpgrade(true); return; }
+    // Show the progress row the instant the button is clicked — resolving the download URL can
+    // take a few seconds, and without this the click looks like it did nothing at all.
+    setDlError(null);
+    setDownloading(prev => ({ ...prev, [model.id]: { pct: 0, downloaded_gb: 0, total_gb: model.size_gb } }));
     try {
       const resp = await fetch(`${PULL_URL}?model=${model.id}`, { signal: AbortSignal.timeout(5000) });
-      if (!resp.ok) throw new Error('not deployed');
+      if (!resp.ok) throw new Error(`server returned HTTP ${resp.status}`);
       const data: PullResponse = await resp.json();
 
       if (data.gated) {
+        clearDownloading(model.id);
         setPendingModel(model);
         setGatedModal(data);
         return;
       }
 
       startDownload(model, data.download_url!, data.filename!, model.size_gb);
-    } catch {
-      // Pull API not deployed yet — inform user how to get the model now
-      alert(
-        `Could not reach the download server. Check your internet connection and try again.\n\n` +
-        `If the problem continues, you can download this model manually:\n` +
-        `Try again in a moment. If the issue persists, contact hello@adris.tech`
-      );
+    } catch (e) {
+      clearDownloading(model.id);
+      setDlError({
+        modelId: model.id,
+        msg: `Could not reach the download server (${e instanceof Error ? e.message : String(e)}). `
+           + `Check your internet connection and try again — if it keeps failing, contact hello@adris.tech`,
+      });
     }
   }
 
@@ -883,6 +910,7 @@ export default function ModelsModule() {
     const downloadUrl = token
       ? url.replace('huggingface.co', `user:${token}@huggingface.co`)
       : url;
+    setDlError(null);
     setDownloading(prev => ({ ...prev, [model.id]: { pct: 0, downloaded_gb: 0, total_gb: size_gb } }));
     invoke('models_download', {
       modelId: model.id,
@@ -891,9 +919,20 @@ export default function ModelsModule() {
       filename,
       sizeGb: size_gb,
     }).catch(e => {
-      setDownloading(prev => { const n = { ...prev }; delete n[model.id]; return n; });
-      alert(`Download failed: ${e}`);
+      clearDownloading(model.id);
+      setDlError({ modelId: model.id, msg: `Download failed: ${e}` });
     });
+  }
+
+  async function handleCancel(modelId: string) {
+    // Flag it for the Rust loop, which drops the partial file and emits model_download_cancelled.
+    // Clear the row straight away so the button can't be double-clicked while that lands.
+    clearDownloading(modelId);
+    await invoke('models_cancel_download', { modelId }).catch(() => {});
+  }
+
+  function clearDownloading(modelId: string) {
+    setDownloading(prev => { const n = { ...prev }; delete n[modelId]; return n; });
   }
 
   async function handleDelete(modelId: string) {
@@ -1136,6 +1175,17 @@ export default function ModelsModule() {
 
           {/* Model grid */}
           <div className="flex-1 overflow-y-auto p-5">
+            {dlError && (
+              <div className="mb-4 max-w-3xl flex items-start gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2">
+                <p className="flex-1 text-[11px] text-red-400 leading-relaxed">{dlError.msg}</p>
+                <button
+                  onClick={() => setDlError(null)}
+                  className="text-[11px] text-nv-faint hover:text-nv-text transition-fast shrink-0"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
             {filteredModels.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full gap-2">
                 <p className="text-nv-faint text-sm">No models match your filters.</p>
@@ -1154,6 +1204,7 @@ export default function ModelsModule() {
                     isNew={newModelIds.has(m.id)}
                     locked={isFreePlan && isPaidModel(m) && !installed.some(i => i.id === m.id)}
                     onDownload={handleDownload}
+                    onCancel={handleCancel}
                     onDelete={handleDelete}
                     onRun={handleRun}
                   />

@@ -247,15 +247,28 @@ function Stage({ data, selectedId, onSelect, onMoveNode }: {
               }}
             >
               <div
-                className="flex items-center gap-2 rounded-xl px-2.5 py-2"
+                className="flex items-start gap-2 rounded-xl px-2.5 py-2"
                 style={{
                   background: 'var(--nv-surface)',
                   border: `1.5px solid ${sel ? KIND_COLOR[n.kind] : 'var(--nv-border)'}`,
                   boxShadow: sel ? `0 6px 22px ${KIND_COLOR[n.kind]}44` : '0 2px 8px rgba(0,0,0,.16)',
                 }}
+                title={n.title}
               >
-                <span className="w-2 h-2 rounded-full shrink-0" style={{ background: KIND_COLOR[n.kind] }} />
-                <span className="text-[11px] font-medium leading-tight truncate" style={{ color: 'var(--nv-text)' }}>{n.title}</span>
+                <span className="w-2 h-2 rounded-full shrink-0 mt-1" style={{ background: KIND_COLOR[n.kind] }} />
+                {/* Long titles wrap over up to 3 lines and the card grows to fit, instead of every
+                    note collapsing to an identical "Best-fit conn…" that can't be told apart.
+                    Selecting a node shows its title in full. */}
+                <span
+                  className="text-[11px] font-medium leading-tight break-words min-w-0"
+                  style={{
+                    color: 'var(--nv-text)',
+                    display: '-webkit-box',
+                    WebkitBoxOrient: 'vertical',
+                    WebkitLineClamp: sel ? 'unset' : 3,
+                    overflow: 'hidden',
+                  }}
+                >{n.title}</span>
               </div>
             </div>
           );
@@ -1127,9 +1140,9 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
             <div className="space-y-1.5">
               <label className={labelCls} style={{ color: 'var(--nv-muted)' }}>Connected · {connections.length}</label>
               {connections.map(({ edge, other }) => (
-                <div key={edge.id} className="flex items-center gap-2 rounded-lg px-2.5 py-1.5" style={inputStyle}>
-                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: KIND_COLOR[other!.kind] }} />
-                  <button onClick={() => { save(); onJump(other!.id); }} className="flex-1 text-left text-[11px] truncate hover:opacity-70" style={{ color: 'var(--nv-text)' }}>{other!.title}</button>
+                <div key={edge.id} className="flex items-start gap-2 rounded-lg px-2.5 py-1.5" style={inputStyle}>
+                  <span className="w-1.5 h-1.5 rounded-full shrink-0 mt-1.5" style={{ background: KIND_COLOR[other!.kind] }} />
+                  <button onClick={() => { save(); onJump(other!.id); }} title={other!.title} className="flex-1 min-w-0 text-left text-[11px] leading-snug break-words hover:opacity-70" style={{ color: 'var(--nv-text)' }}>{other!.title}</button>
                   <button onClick={() => brain.unlink(edge.id)} className="text-[10px] font-mono shrink-0" style={{ color: 'var(--nv-faint)' }}>✕</button>
                 </div>
               ))}

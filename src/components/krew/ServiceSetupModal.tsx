@@ -350,6 +350,100 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
       },
     ],
   },
+  shopify: {
+    title: 'Connect Shopify',
+    icon: '🛍',
+    steps: [
+      {
+        title: 'Create a custom app',
+        body: 'In your Shopify admin, go to Settings → Apps and sales channels → Develop apps → Create an app. Name it "adris".',
+        link: 'https://admin.shopify.com/settings/apps/development',
+      },
+      {
+        title: 'Grant Admin API read access',
+        body: 'Open your app → Configuration → Admin API integration → Configure. Enable read access for the scopes below, then Save.',
+        copyItems: [
+          { label: 'Scope 1', text: 'read_products' },
+          { label: 'Scope 2', text: 'read_orders' },
+          { label: 'Scope 3', text: 'read_customers' },
+        ],
+      },
+      {
+        title: 'Enter your store domain',
+        body: 'Your myshopify domain — e.g. mystore.myshopify.com (not your custom domain).',
+        field: 'shop_domain',
+        fieldLabel: 'Store domain',
+        fieldPlaceholder: 'mystore.myshopify.com',
+      },
+      {
+        title: 'Install & copy the access token',
+        body: 'Click "Install app", then under "Admin API access token" click Reveal and copy it. It starts with "shpat_".',
+        field: 'access_token',
+        fieldLabel: 'Admin API access token',
+        fieldPlaceholder: 'shpat_...',
+        secret: true,
+      },
+    ],
+  },
+  jira: {
+    title: 'Connect Jira',
+    icon: '🧩',
+    steps: [
+      {
+        title: 'Enter your Jira site domain',
+        body: 'Your Atlassian site — e.g. yourcompany.atlassian.net.',
+        field: 'domain',
+        fieldLabel: 'Site domain',
+        fieldPlaceholder: 'yourcompany.atlassian.net',
+      },
+      {
+        title: 'Enter your account email',
+        body: 'The email address you log into Jira with.',
+        field: 'email',
+        fieldLabel: 'Account email',
+        fieldPlaceholder: 'you@company.com',
+      },
+      {
+        title: 'Create an API token',
+        body: 'Open the link below → "Create API token" → give it a label → Copy the token and paste it here.',
+        link: 'https://id.atlassian.com/manage-profile/security/api-tokens',
+        field: 'api_token',
+        fieldLabel: 'API token',
+        fieldPlaceholder: 'ATATT...',
+        secret: true,
+      },
+    ],
+  },
+  figma: {
+    title: 'Connect Figma',
+    icon: '🎨',
+    steps: [
+      {
+        title: 'Generate a personal access token',
+        body: 'Open the link below (Figma → Settings → Security → Personal access tokens) → "Generate new token" → give it a name with read access → Copy it and paste here.',
+        link: 'https://www.figma.com/settings',
+        field: 'api_key',
+        fieldLabel: 'Personal access token',
+        fieldPlaceholder: 'figd_...',
+        secret: true,
+      },
+    ],
+  },
+  vercel: {
+    title: 'Connect Vercel',
+    icon: '▲',
+    steps: [
+      {
+        title: 'Create an access token',
+        body: 'Open the link below (Vercel → Account Settings → Tokens) → "Create Token" → name it "adris", scope "Full Account" → Copy it and paste here.',
+        link: 'https://vercel.com/account/tokens',
+        field: 'api_key',
+        fieldLabel: 'Access token',
+        fieldPlaceholder: 'xxxxxxxxxxxxxxxxxxxx',
+        secret: true,
+      },
+    ],
+  },
   hubspot: {
     title: 'Connect HubSpot CRM',
     icon: '🏷',

@@ -8,12 +8,17 @@ interface NvSettings {
   automationAutoRun: boolean;
   automationNotify:  boolean;
   automationRunMode: 'always' | 'app_open';  // 'app_open' = only while app is open (current default)
+  // Default behaviour when an agent produces a list/table that matches existing work:
+  // 'continue' tops up the existing Brain note, 'new' always starts a fresh one. Either way an
+  // explicit instruction in chat ("continue the existing list") wins over this default.
+  listMode: 'continue' | 'new';
 }
 
 const DEFAULTS: NvSettings = {
   automationAutoRun: true,
   automationNotify:  true,
   automationRunMode: 'app_open',
+  listMode:          'continue',
 };
 
 export function loadSettings(): NvSettings {
@@ -217,6 +222,36 @@ export default function SettingsModule() {
                 </button>
               ))}
             </div>
+          </div>
+          <div className="pt-3">
+            <p className="text-[12px] text-nv-text font-medium mb-2">Lists &amp; notes</p>
+            <div className="flex flex-col gap-2">
+              {[
+                { val: 'continue' as const, label: 'Continue the existing list', desc: 'When Krew produces a list that matches earlier work, it tops up that note instead of creating another one — so your outreach status and saved rows carry over.' },
+                { val: 'new'      as const, label: 'Always start a new list', desc: 'Every run saves to its own new note. Useful if you want a clean record of each session.' },
+              ].map((opt) => (
+                <button
+                  key={opt.val}
+                  onClick={() => update('listMode', opt.val)}
+                  className={`flex items-start gap-3 p-3 rounded-xl border text-left transition-fast ${
+                    settings.listMode === opt.val ? 'border-accent/50 bg-accent/5' : 'border-nv-border hover:border-nv-border/80'
+                  }`}
+                >
+                  <span className={`mt-0.5 w-3.5 h-3.5 rounded-full border-2 shrink-0 flex items-center justify-center ${
+                    settings.listMode === opt.val ? 'border-accent' : 'border-nv-faint'
+                  }`}>
+                    {settings.listMode === opt.val && <span className="w-1.5 h-1.5 rounded-full bg-accent" />}
+                  </span>
+                  <div>
+                    <p className={`text-[11px] font-medium ${settings.listMode === opt.val ? 'text-accent' : 'text-nv-text'}`}>{opt.label}</p>
+                    <p className="text-[10px] text-nv-muted mt-0.5">{opt.desc}</p>
+                  </div>
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] text-nv-faint mt-2 leading-relaxed">
+              Whatever you pick here, saying <span className="text-nv-muted">“continue the existing list”</span> in chat always wins for that request.
+            </p>
           </div>
         </Section>
 

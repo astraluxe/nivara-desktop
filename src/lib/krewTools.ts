@@ -1044,8 +1044,150 @@ const LINKEDIN_TOOLS: ToolDef[] = [
   },
 ];
 
+const HUBSPOT_TOOLS: ToolDef[] = [
+  {
+    name: 'hubspot_search_contacts',
+    description: 'Search contacts in the connected HubSpot CRM by name, email, or company.',
+    parameters: {
+      query: { type: 'string', description: 'Search term — name, email, or company.', required: true },
+      limit: { type: 'number', description: 'Max results. Default 10.', required: false },
+    },
+  },
+  {
+    name: 'hubspot_create_contact',
+    description: 'Create a new contact in HubSpot CRM.',
+    parameters: {
+      email:     { type: 'string', description: 'Contact email (required by HubSpot).', required: true },
+      firstname: { type: 'string', description: 'First name.', required: false },
+      lastname:  { type: 'string', description: 'Last name.',  required: false },
+      company:   { type: 'string', description: 'Company name.', required: false },
+      phone:     { type: 'string', description: 'Phone number.', required: false },
+    },
+  },
+  {
+    name: 'hubspot_create_deal',
+    description: 'Create a new deal in HubSpot CRM.',
+    parameters: {
+      dealname: { type: 'string', description: 'Deal name.', required: true },
+      amount:   { type: 'string', description: 'Deal amount (number as string).', required: false },
+      stage:    { type: 'string', description: 'Deal stage id (e.g. "appointmentscheduled"). Default that.', required: false },
+    },
+  },
+  {
+    name: 'hubspot_create_note',
+    description: 'Log a note in HubSpot, optionally attached to a contact.',
+    parameters: {
+      body:       { type: 'string', description: 'Note text.', required: true },
+      contact_id: { type: 'string', description: 'HubSpot contact id to attach the note to.', required: false },
+    },
+  },
+];
+
+const SHOPIFY_TOOLS: ToolDef[] = [
+  {
+    name: 'shopify_list_products',
+    description: 'List products from the connected Shopify store.',
+    parameters: { limit: { type: 'number', description: 'Max products. Default 20.', required: false } },
+  },
+  {
+    name: 'shopify_list_orders',
+    description: 'List recent orders from the connected Shopify store.',
+    parameters: {
+      status: { type: 'string', description: 'Order status: "any", "open", "closed", "cancelled". Default "any".', required: false },
+      limit:  { type: 'number', description: 'Max orders. Default 20.', required: false },
+    },
+  },
+  {
+    name: 'shopify_list_customers',
+    description: 'List customers from the connected Shopify store.',
+    parameters: { limit: { type: 'number', description: 'Max customers. Default 20.', required: false } },
+  },
+];
+
+const JIRA_TOOLS: ToolDef[] = [
+  {
+    name: 'jira_search_issues',
+    description: 'Search Jira issues with a JQL query (e.g. "project = ENG AND status = \\"To Do\\"").',
+    parameters: {
+      jql:   { type: 'string', description: 'JQL query string.', required: true },
+      limit: { type: 'number', description: 'Max issues. Default 20.', required: false },
+    },
+  },
+  {
+    name: 'jira_create_issue',
+    description: 'Create a new Jira issue.',
+    parameters: {
+      project_key: { type: 'string', description: 'Project key (e.g. "ENG").', required: true },
+      summary:     { type: 'string', description: 'Issue summary / title.', required: true },
+      description: { type: 'string', description: 'Issue description.', required: false },
+      issue_type:  { type: 'string', description: 'Issue type name. Default "Task".', required: false },
+    },
+  },
+  {
+    name: 'jira_add_comment',
+    description: 'Add a comment to an existing Jira issue.',
+    parameters: {
+      issue_key: { type: 'string', description: 'Issue key (e.g. "ENG-123").', required: true },
+      comment:   { type: 'string', description: 'Comment text.', required: true },
+    },
+  },
+];
+
+const FIGMA_TOOLS: ToolDef[] = [
+  {
+    name: 'figma_get_file',
+    description: 'Read a Figma file\'s document tree (pages, frames, layers) by its file key.',
+    parameters: {
+      file_key: { type: 'string', description: 'Figma file key (from the file URL: figma.com/file/<KEY>/...).', required: true },
+    },
+  },
+  {
+    name: 'figma_list_components',
+    description: 'List the published components in a Figma file.',
+    parameters: {
+      file_key: { type: 'string', description: 'Figma file key.', required: true },
+    },
+  },
+  {
+    name: 'figma_get_comments',
+    description: 'Read the comments on a Figma file.',
+    parameters: {
+      file_key: { type: 'string', description: 'Figma file key.', required: true },
+    },
+  },
+];
+
+const VERCEL_TOOLS: ToolDef[] = [
+  {
+    name: 'vercel_list_projects',
+    description: 'List projects in the connected Vercel account.',
+    parameters: { limit: { type: 'number', description: 'Max projects. Default 20.', required: false } },
+  },
+  {
+    name: 'vercel_list_deployments',
+    description: 'List recent deployments (optionally for one project).',
+    parameters: {
+      project_id: { type: 'string', description: 'Filter by project id or name.', required: false },
+      limit:      { type: 'number', description: 'Max deployments. Default 20.', required: false },
+    },
+  },
+  {
+    name: 'vercel_get_deployment',
+    description: 'Get the status and details of a specific Vercel deployment.',
+    parameters: {
+      deployment_id: { type: 'string', description: 'Deployment id (e.g. "dpl_...").', required: true },
+    },
+  },
+];
+
 export const SERVICE_TOOLS: Record<string, ToolDef[]> = {
   gmail:    GMAIL_TOOLS,
+  // Google Suite is stored under the single credential key `google` (ConnectApps → Google Suite),
+  // so the agent's toolset is assembled by `SERVICE_TOOLS[Object.keys(creds)]` — WITHOUT this key,
+  // connecting Google gave the agent zero Calendar/Sheets/Drive/Slides tools even though the
+  // executors read `creds.google`. Map it to all four Workspace tool groups.
+  google:   [...GCAL_TOOLS, ...GSHEETS_TOOLS, ...GDRIVE_TOOLS, ...GSLIDES_TOOLS],
+  // Kept for any credential saved under a per-app key; harmless when unused.
   gcal:     GCAL_TOOLS,
   gsheets:  GSHEETS_TOOLS,
   gdrive:   GDRIVE_TOOLS,
@@ -1057,6 +1199,11 @@ export const SERVICE_TOOLS: Record<string, ToolDef[]> = {
   airtable: AIRTABLE_TOOLS,
   twitter:  TWITTER_TOOLS,
   linkedin: LINKEDIN_TOOLS,
+  hubspot:  HUBSPOT_TOOLS,
+  shopify:  SHOPIFY_TOOLS,
+  jira:     JIRA_TOOLS,
+  figma:    FIGMA_TOOLS,
+  vercel:   VERCEL_TOOLS,
 };
 
 // ─── System prompt builder ────────────────────────────────────────────────────
@@ -1554,9 +1701,15 @@ async function executeToolCore(
     }
     emit('agent-browser-active', {}).catch(() => {});
     emit('agent-progress', { text: 'Opening your LinkedIn connections…' }).catch(() => {});
+    // This tool drives the persistent window directly, so it must claim it — otherwise
+    // closeAgentBrowserIfActive() sees no active browser and the window is left open forever.
+    _browserActiveThisRun = true;
     // Load a bit extra so that after removing already-saved people we still net ~limit new ones.
     const raw = await invoke<string>('run_browser_persistent', { args: `connections ${limit + existingNames.size + 10}` }).catch((e) => String(e));
     emit('agent-browser-idle', {}).catch(() => {});
+    // A sign-in prompt must keep the window open so the user can actually log in; anything else
+    // leaves it closable by the caller's finally.
+    _browserLoginPending = raw.includes('[SIGN_IN_REQUIRED]');
     if (raw.includes('[SIGN_IN_REQUIRED]')) return "[NEEDS_LOGIN] I opened LinkedIn in the ADRIS browser — please sign in there (once; it's saved). I'll detect when you're in and continue automatically.";
     if (raw.startsWith('[browser-') || raw.includes('[agent-browser not installed') || raw.includes('[custom-browser-unavailable')) {
       return "The ADRIS browser engine didn't respond just now. Make sure Google Chrome (or Edge) is installed, then run /scan again.";
@@ -2984,6 +3137,119 @@ async function executeToolCore(
       headers: { ...atHeaders, 'Content-Type': 'application/json' },
       body:    JSON.stringify({ records: [{ fields }] }),
     });
+  }
+
+  // ── HubSpot CRM ───────────────────────────────────────────────────────────
+  const hubspotKey = creds.hubspot?.api_key ?? '';
+  const hubspotHeaders = { 'Authorization': `Bearer ${hubspotKey}`, 'Content-Type': 'application/json' };
+  if (toolName === 'hubspot_search_contacts') {
+    if (!hubspotKey) return 'Connect HubSpot in ConnectApps first (Settings → ConnectApps → HubSpot), then I can search your CRM.';
+    return await invoke<string>('krew_http_call', {
+      method: 'POST', url: 'https://api.hubapi.com/crm/v3/objects/contacts/search',
+      headers: hubspotHeaders,
+      body: JSON.stringify({ query: str(args.query), limit: num(args.limit, 10), properties: ['firstname', 'lastname', 'email', 'company', 'phone'] }),
+    });
+  }
+  if (toolName === 'hubspot_create_contact') {
+    if (!hubspotKey) return 'Connect HubSpot in ConnectApps first.';
+    const properties: Record<string, string> = { email: str(args.email) };
+    for (const k of ['firstname', 'lastname', 'company', 'phone']) if (args[k]) properties[k] = str(args[k]);
+    return await invoke<string>('krew_http_call', {
+      method: 'POST', url: 'https://api.hubapi.com/crm/v3/objects/contacts',
+      headers: hubspotHeaders, body: JSON.stringify({ properties }),
+    });
+  }
+  if (toolName === 'hubspot_create_deal') {
+    if (!hubspotKey) return 'Connect HubSpot in ConnectApps first.';
+    const properties: Record<string, string> = { dealname: str(args.dealname), dealstage: str(args.stage) || 'appointmentscheduled' };
+    if (args.amount) properties.amount = str(args.amount);
+    return await invoke<string>('krew_http_call', {
+      method: 'POST', url: 'https://api.hubapi.com/crm/v3/objects/deals',
+      headers: hubspotHeaders, body: JSON.stringify({ properties }),
+    });
+  }
+  if (toolName === 'hubspot_create_note') {
+    if (!hubspotKey) return 'Connect HubSpot in ConnectApps first.';
+    const noteBody: Record<string, unknown> = { properties: { hs_note_body: str(args.body), hs_timestamp: Date.now() } };
+    if (args.contact_id) noteBody.associations = [{ to: { id: str(args.contact_id) }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 202 }] }];
+    return await invoke<string>('krew_http_call', {
+      method: 'POST', url: 'https://api.hubapi.com/crm/v3/objects/notes',
+      headers: hubspotHeaders, body: JSON.stringify(noteBody),
+    });
+  }
+
+  // ── Shopify ───────────────────────────────────────────────────────────────
+  const shopDomain = (creds.shopify?.shop_domain ?? '').replace(/^https?:\/\//, '').replace(/\/$/, '');
+  const shopConnected = !!(shopDomain && creds.shopify?.access_token);
+  const shopHeaders = { 'X-Shopify-Access-Token': creds.shopify?.access_token ?? '', 'Content-Type': 'application/json' };
+  const SHOPIFY_API = '2024-10';
+  if (toolName === 'shopify_list_products') {
+    if (!shopConnected) return 'Connect Shopify in ConnectApps first (store domain + Admin API access token).';
+    return await invoke<string>('krew_http_call', { method: 'GET', url: `https://${shopDomain}/admin/api/${SHOPIFY_API}/products.json?limit=${num(args.limit, 20)}`, headers: shopHeaders, body: null });
+  }
+  if (toolName === 'shopify_list_orders') {
+    if (!shopConnected) return 'Connect Shopify in ConnectApps first.';
+    return await invoke<string>('krew_http_call', { method: 'GET', url: `https://${shopDomain}/admin/api/${SHOPIFY_API}/orders.json?status=${str(args.status) || 'any'}&limit=${num(args.limit, 20)}`, headers: shopHeaders, body: null });
+  }
+  if (toolName === 'shopify_list_customers') {
+    if (!shopConnected) return 'Connect Shopify in ConnectApps first.';
+    return await invoke<string>('krew_http_call', { method: 'GET', url: `https://${shopDomain}/admin/api/${SHOPIFY_API}/customers.json?limit=${num(args.limit, 20)}`, headers: shopHeaders, body: null });
+  }
+
+  // ── Jira ──────────────────────────────────────────────────────────────────
+  const jiraDomain = (creds.jira?.domain ?? '').replace(/^https?:\/\//, '').replace(/\/$/, '');
+  const jiraAuth = creds.jira?.email && creds.jira?.api_token ? `Basic ${btoa(`${creds.jira.email}:${creds.jira.api_token}`)}` : '';
+  const jiraHeaders = { 'Authorization': jiraAuth, 'Content-Type': 'application/json', 'Accept': 'application/json' };
+  if (toolName === 'jira_search_issues') {
+    if (!jiraDomain || !jiraAuth) return 'Connect Jira in ConnectApps first (site domain + email + API token).';
+    return await invoke<string>('krew_http_call', { method: 'POST', url: `https://${jiraDomain}/rest/api/3/search`, headers: jiraHeaders, body: JSON.stringify({ jql: str(args.jql), maxResults: num(args.limit, 20), fields: ['summary', 'status', 'assignee', 'priority', 'issuetype'] }) });
+  }
+  if (toolName === 'jira_create_issue') {
+    if (!jiraDomain || !jiraAuth) return 'Connect Jira in ConnectApps first.';
+    const fields: Record<string, unknown> = {
+      project: { key: str(args.project_key) },
+      summary: str(args.summary),
+      issuetype: { name: str(args.issue_type) || 'Task' },
+    };
+    if (args.description) fields.description = { type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text: str(args.description) }] }] };
+    return await invoke<string>('krew_http_call', { method: 'POST', url: `https://${jiraDomain}/rest/api/3/issue`, headers: jiraHeaders, body: JSON.stringify({ fields }) });
+  }
+  if (toolName === 'jira_add_comment') {
+    if (!jiraDomain || !jiraAuth) return 'Connect Jira in ConnectApps first.';
+    const commentBody = { body: { type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text: str(args.comment) }] }] } };
+    return await invoke<string>('krew_http_call', { method: 'POST', url: `https://${jiraDomain}/rest/api/3/issue/${str(args.issue_key)}/comment`, headers: jiraHeaders, body: JSON.stringify(commentBody) });
+  }
+
+  // ── Figma ─────────────────────────────────────────────────────────────────
+  const figmaHeaders = { 'X-Figma-Token': creds.figma?.api_key ?? '' };
+  if (toolName === 'figma_get_file') {
+    if (!creds.figma?.api_key) return 'Connect Figma in ConnectApps first (personal access token).';
+    return fenceUntrusted('a Figma file', await invoke<string>('krew_http_call', { method: 'GET', url: `https://api.figma.com/v1/files/${str(args.file_key)}?depth=2`, headers: figmaHeaders, body: null }));
+  }
+  if (toolName === 'figma_list_components') {
+    if (!creds.figma?.api_key) return 'Connect Figma in ConnectApps first.';
+    return await invoke<string>('krew_http_call', { method: 'GET', url: `https://api.figma.com/v1/files/${str(args.file_key)}/components`, headers: figmaHeaders, body: null });
+  }
+  if (toolName === 'figma_get_comments') {
+    if (!creds.figma?.api_key) return 'Connect Figma in ConnectApps first.';
+    return fenceUntrusted('Figma comments', await invoke<string>('krew_http_call', { method: 'GET', url: `https://api.figma.com/v1/files/${str(args.file_key)}/comments`, headers: figmaHeaders, body: null }));
+  }
+
+  // ── Vercel ────────────────────────────────────────────────────────────────
+  const vercelHeaders = { 'Authorization': `Bearer ${creds.vercel?.api_key ?? ''}` };
+  if (toolName === 'vercel_list_projects') {
+    if (!creds.vercel?.api_key) return 'Connect Vercel in ConnectApps first (access token).';
+    return await invoke<string>('krew_http_call', { method: 'GET', url: `https://api.vercel.com/v9/projects?limit=${num(args.limit, 20)}`, headers: vercelHeaders, body: null });
+  }
+  if (toolName === 'vercel_list_deployments') {
+    if (!creds.vercel?.api_key) return 'Connect Vercel in ConnectApps first.';
+    let url = `https://api.vercel.com/v6/deployments?limit=${num(args.limit, 20)}`;
+    if (args.project_id) url += `&projectId=${encodeURIComponent(str(args.project_id))}`;
+    return await invoke<string>('krew_http_call', { method: 'GET', url, headers: vercelHeaders, body: null });
+  }
+  if (toolName === 'vercel_get_deployment') {
+    if (!creds.vercel?.api_key) return 'Connect Vercel in ConnectApps first.';
+    return await invoke<string>('krew_http_call', { method: 'GET', url: `https://api.vercel.com/v13/deployments/${str(args.deployment_id)}`, headers: vercelHeaders, body: null });
   }
 
   // ── Gmail IMAP ────────────────────────────────────────────────────────────
