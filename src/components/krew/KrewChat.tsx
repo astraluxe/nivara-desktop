@@ -27,7 +27,7 @@ import { getMonthlyUsage } from '../../lib/tokenTracker';
 import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining } from '../../lib/tokenTier';
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
 import SkillsPanel from './SkillsPanel';
-import OutreachCopilot, { type OutreachCampaign, loadSavedCampaign } from './OutreachCopilot';
+import OutreachCopilot, { type OutreachCampaign, type OutreachContact, loadSavedCampaign } from './OutreachCopilot';
 import TodoPanel from './TodoPanel';
 import { loadSettings } from '../../modules/SettingsModule';
 import { todos, TODO_EVENT, type TodoItem } from '../../lib/todoStore';
@@ -4378,12 +4378,35 @@ The prompt must be production-ready — specific enough for a motion designer to
       return;
     }
 
+    // Never message the same person twice. Anyone already marked sent/accepted/replied in the
+    // running campaign is dropped before drafting, so working through 700 connections 50 at a time
+    // never re-drafts someone you've already contacted — no need to attach anything by hand.
+    const nrm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+    const prior = loadSavedCampaign();
+    const carryOver = !!prior && loadSettings().listMode !== 'new';
+    const priorByName = new Map<string, OutreachContact>();
+    const contactedNames = new Set<string>();
+    if (carryOver && prior) {
+      for (const c of prior.contacts) {
+        priorByName.set(nrm(c.name), c);
+        if (c.status === 'sent' || c.status === 'accepted' || c.status === 'replied') contactedNames.add(nrm(c.name));
+      }
+    }
+    const alreadyDone = contacts.filter((c) => contactedNames.has(nrm(c.name))).length;
+    contacts = contacts.filter((c) => !contactedNames.has(nrm(c.name)));
+    if (!contacts.length) {
+      const allDone = `Everyone on this list has already been messaged (${alreadyDone} contacted). Run **/scan** to pull in your next batch of connections, then ask me to draft outreach again.`;
+      addMsg({ role: 'assistant', content: allDone });
+      if (sid) krewDb.saveMessage(sid, 'assistant', allDone).catch(() => {});
+      return;
+    }
+
     // Put connections that HAVE a profile URL first — "Copy & open chat" opens their chat box
     // directly; the ones without a URL only get a name-search, so they go last.
     contacts.sort((a, b) => (b.url && /linkedin\.com\/in\//i.test(b.url) ? 1 : 0) - (a.url && /linkedin\.com\/in\//i.test(a.url) ? 1 : 0));
     const pick = contacts.slice(0, Math.max(1, max));
     const more = contacts.length - pick.length;
-    addMsg({ role: 'assistant', content: `Drafting personalised messages for ${pick.length} connection${pick.length === 1 ? '' : 's'}${more > 0 ? ` (of ${contacts.length})` : ''} and opening the outreach copilot…`, streaming: true });
+    addMsg({ role: 'assistant', content: `Drafting personalised messages for ${pick.length} connection${pick.length === 1 ? '' : 's'}${more > 0 ? ` (of ${contacts.length})` : ''}${alreadyDone > 0 ? ` — skipping ${alreadyDone} you've already messaged` : ''} and opening the outreach copilot…`, streaming: true });
     setBusy(true);
     const sys = [
       'You write short, warm, genuinely PERSONALISED LinkedIn messages to the user\'s EXISTING 1st-degree connections (people who already accepted them).',
@@ -4410,13 +4433,21 @@ The prompt must be production-ready — specific enough for a motion designer to
         const hook = headlineHook(c.headline);
         return `Hi ${first}, great to be connected! ${hook ? `Your work${/\bat\b/i.test(c.headline) ? ` at ${hook}` : ` on ${hook}`} caught my eye — ` : ''}I'd love to hear what you're focused on right now. Open to a quick chat?`.replace(/\s+/g, ' ').trim();
       };
+      const newContacts: OutreachContact[] = pick.map((c) => ({ name: c.name, company: c.headline, linkedin_url: c.url, linkedin_message: byName[norm(c.name)] || byName[norm(firstNameOf(c.name))] || fallbackMsg(c) }));
+      // ONE running campaign by default: keep everyone already in it (with their status) and append
+      // the newly drafted people. That's what makes "50 at a time" work across a 700-connection list
+      // — progress accumulates instead of each run wiping the last one's statuses.
+      const merged: OutreachContact[] = carryOver && prior
+        ? [...prior.contacts, ...newContacts.filter((d) => !priorByName.has(nrm(d.name)))]
+        : newContacts;
       const campaign: OutreachCampaign = {
-        title: `LinkedIn outreach — ${new Date().toLocaleDateString()}`,
+        title: carryOver && prior ? prior.title : `LinkedIn outreach — ${new Date().toLocaleDateString()}`,
         channel: 'linkedin',
-        contacts: pick.map((c) => ({ name: c.name, company: c.headline, linkedin_url: c.url, linkedin_message: byName[norm(c.name)] || byName[norm(firstNameOf(c.name))] || fallbackMsg(c) })),
+        contacts: merged,
       };
       setOutreachCampaign(campaign); // opens the popup deterministically
-      const done = `Opened the outreach copilot for ${pick.length} connection${pick.length === 1 ? '' : 's'}${more > 0 ? ` — ${more} more are saved; say "draft outreach for all ${contacts.length}" to include them` : ''}. For each one: tap **Copy message & open chat** — it copies the message and opens their LinkedIn chat box, then you just paste (Ctrl+V) and send. Every message is editable in the panel before you send it.`;
+      const carried = merged.length - newContacts.length;
+      const done = `Opened the outreach copilot with ${pick.length} new message${pick.length === 1 ? '' : 's'}${carried > 0 ? ` (plus ${carried} already in this campaign — ${alreadyDone} of them done)` : ''}${more > 0 ? ` — ${more} more connections are saved; say "draft outreach for all ${contacts.length}" to include them` : ''}. For each one: tap **Copy message & open chat** — it copies the message and opens their LinkedIn chat box, then you just paste (Ctrl+V) and send. Every message is editable in the panel before you send it.`;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: done, streaming: false }; return c; });
       if (sid) krewDb.saveMessage(sid, 'assistant', done).catch(() => {});
       setAttachedFiles([]);

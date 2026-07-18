@@ -1,358 +1,410 @@
-﻿import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
-type Status = 'active' | 'idle' | 'off';
+// ─── The manual ───────────────────────────────────────────────────────────────
+// Written as one continuous page rather than a stack of dropdowns: someone who has
+// just installed adris.tech should be able to read this top to bottom and come away
+// knowing what the app does and how to get real work out of it. Every section that
+// describes a workflow carries a concrete example instead of an abstract summary.
 
-interface ModuleInfo {
-  id: string;
-  name: string;
-  tagline: string;
-  status: Status;
-  icon: React.ReactNode;
-  desc: string;
-  features: string[];
-  tip?: string;
-}
-
-const STATUS_DOT: Record<Status, string> = {
-  active: 'bg-nv-green',
-  idle:   'bg-nv-yellow',
-  off:    'bg-nv-faint',
-};
-const STATUS_TEXT: Record<Status, string> = {
-  active: 'text-nv-green',
-  idle:   'text-yellow-400',
-  off:    'text-nv-faint',
-};
-const STATUS_LABEL: Record<Status, string> = { active: 'Live', idle: 'Coming soon', off: 'Planned' };
-
-const MODULES: ModuleInfo[] = [
-  {
-    id: 'home',
-    name: 'Home',
-    tagline: 'Dashboard & quick access',
-    status: 'active',
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5">
-        <path d="M3 12L12 3l9 9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-        <path d="M9 21V12h6v9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-        <path d="M5 10v11h14V10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-      </svg>
-    ),
-    desc: 'Your starting point inside adris.tech. See all 9 modules at a glance, launch the guided tour, and jump straight to where you left off.',
-    features: [
-      'Overview of every module with live status',
-      'Quick navigation — one click to any section',
-      'Interactive first-run tour for new users',
-      'Smart shortcuts based on recent activity',
-    ],
-  },
-  {
-    id: 'automation',
-    name: 'Automation',
-    tagline: 'No-code workflows that run 24/7',
-    status: 'active',
-    icon: (
-      <svg viewBox="0 0 28 28" fill="none" className="w-5 h-5">
-        <path d="M16 3l-9 13h8l-3 9 9-13h-8l3-9z" fill="currentColor" />
-      </svg>
-    ),
-    desc: 'Build workflows that run automatically — even when adris.tech is closed. Set a trigger, add AI steps, and choose where the output goes.',
-    features: [
-      'Triggers: schedule (cron), email arrival, file change',
-      'AI steps: summarise, reply, extract, classify, report, translate',
-      'Outputs: desktop notification, Slack, Notion, email reply, file',
-      'Visual drag-and-drop flow canvas',
-      'Runs 24/7 as a background process',
-      'Offline run history — see what ran and what failed',
-    ],
-    tip: 'Ask Arjun.Boss or Kai.Ops in Krew to design and propose an automation for you — they build the flow and you just review before activating.',
-  },
-  {
-    id: 'krew',
-    name: 'Krew',
-    tagline: '45+ specialized AI agents',
-    status: 'active',
-    icon: (
-      <svg viewBox="0 0 28 28" fill="none" className="w-5 h-5">
-        <circle cx="14" cy="14" r="5" fill="currentColor"/>
-        <circle cx="14" cy="14" r="11" stroke="currentColor" strokeWidth="1.8" strokeDasharray="3 3" fill="none" opacity=".5"/>
-        <circle cx="25" cy="14" r="2" fill="currentColor" opacity=".7"/>
-        <circle cx="3"  cy="14" r="2" fill="currentColor" opacity=".7"/>
-        <circle cx="14" cy="3"  r="2" fill="currentColor" opacity=".7"/>
-        <circle cx="14" cy="25" r="2" fill="currentColor" opacity=".7"/>
-      </svg>
-    ),
-    desc: 'Your AI-powered office. Chat with 45+ specialist agents across 10 departments — from a Boss who delegates to experts, to coders, researchers, marketers, legal, and ops agents.',
-    features: [
-      'Boss agent (Arjun) — orchestrates multi-step work by delegating to specialists',
-      'Content & Marketing — captions, blogs, ads, email campaigns, SEO, social scheduling',
-      'Sales & Support — cold outreach, proposals, pricing, customer replies',
-      'Engineering — code writing, bug hunting, code review, docs, tests, deployments',
-      'Research — live web search, cited findings, competitor analysis',
-      'Data & Ops — data analysis, reports, automation management',
-      'Company Research screen — deep multi-source company intelligence',
-      'Creator Studio — AI-designed social media graphics and banners',
-      'Office View — see your whole Krew working together visually',
-      'All agents can use tools: web search, file access, terminal, connected apps',
-    ],
-    tip: 'Connect your apps (Gmail, Notion, Slack, GitHub…) in Connect Apps to unlock full agent capabilities — agents can then read, write, and post on your behalf.',
-  },
-  {
-    id: 'connect',
-    name: 'Connect Apps',
-    tagline: 'Link external services to your Krew',
-    status: 'active',
-    icon: (
-      <svg viewBox="0 0 28 28" fill="none" className="w-5 h-5">
-        <path d="M10 4v7M18 4v7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/>
-        <rect x="7" y="11" width="14" height="8" rx="3" fill="currentColor"/>
-        <path d="M14 19v5" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/>
-      </svg>
-    ),
-    desc: 'Connect your external services once — every Krew agent then has access to read, write, and act through them in real time.',
-    features: [
-      'Gmail — search emails, read threads, send replies',
-      'Notion — search pages, read databases, create pages',
-      'Slack — list channels, send messages, read history',
-      'GitHub — list repos, read files, create issues',
-      'Google Calendar — view events, create meetings',
-      'Google Drive & Sheets — read and append data',
-      'Twitter/X — post tweets, reply, search, DMs',
-      'Airtable & Linear — manage records and issues',
-      'Brave Search API — give agents live web results',
-      'Gemini, OpenAI, Claude — bring your own LLM key',
-      'Sarvam AI — Indian language voice and text AI',
-    ],
-    tip: 'Connect at minimum: Brave Search (for live web data) and one LLM (Gemini is free tier). That unlocks 80% of Krew\'s capability.',
-  },
-  {
-    id: 'coder',
-    name: 'Coder',
-    tagline: 'AI-assisted coding terminal',
-    status: 'active',
-    icon: (
-      <svg viewBox="0 0 28 28" fill="none" className="w-5 h-5">
-        <path d="M8 4H2v6m0 8v6h6M20 4h6v6m0 8v6h-6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="square" />
-        <rect x="10" y="12" width="8" height="4" fill="currentColor" />
-      </svg>
-    ),
-    desc: 'A full coding environment inside adris.tech. Browse your file system, edit code, run a terminal, and have an AI assistant that can read, write, and run code on your machine.',
-    features: [
-      'File tree browser — navigate any folder on your machine',
-      'Code editor with syntax highlighting',
-      'Integrated terminal — run commands, scripts, tests',
-      'AI chat sidebar — ask about code, request edits, debug',
-      'AI can read your files and suggest changes',
-      'Supports Ollama (local), Own Key, or adris.tech plan',
-      'Connection bar — switch between AI providers mid-session',
-    ],
-    tip: 'The AI in Coder uses the same models as Krew. Switch to Local mode + Ollama for fully private coding sessions.',
-  },
-  {
-    id: 'models',
-    name: 'Models',
-    tagline: 'Download & run local AI models',
-    status: 'active',
-    icon: (
-      <svg viewBox="0 0 28 28" fill="none" className="w-5 h-5">
-        <path d="M14 2 26 8 14 14 2 8 14 2Z" fill="currentColor" />
-        <path d="M2 14l12 6 12-6" stroke="currentColor" strokeWidth="2.2" />
-        <path d="M2 20l12 6 12-6" stroke="currentColor" strokeWidth="2.2" />
-      </svg>
-    ),
-    desc: 'Browse, download, and run open-source LLMs directly on your machine via Ollama. No internet required once downloaded — full privacy guaranteed.',
-    features: [
-      'Curated model catalogue with size, capability, and speed ratings',
-      'One-click download via Ollama',
-      'VRAM and RAM requirement indicators',
-      'Model cards showing benchmark scores and best use cases',
-      'Runs on CPU or GPU automatically',
-      'Works with Coder and Krew in Local mode',
-    ],
-    tip: 'Requires Ollama to be installed and running on localhost:11434. Download Ollama from ollama.com — it\'s free.',
-  },
-  {
-    id: 'vault',
-    name: 'Vault',
-    tagline: 'DNS-level network protection',
-    status: 'active',
-    icon: (
-      <svg viewBox="0 0 28 28" fill="none" className="w-5 h-5">
-        <path d="M14 2 4 6v8c0 6.5 4.3 11.5 10 12 5.7-.5 10-5.5 10-12V6L14 2Z" fill="currentColor" />
-        <path d="M10 14l3 3 5-5" stroke="var(--nv-bg)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    ),
-    desc: 'Block ads, trackers, and malware at the DNS level — before they reach your browser or apps. Works system-wide without a VPN.',
-    features: [
-      'DNS-based ad and tracker blocking',
-      'Malware and phishing domain protection',
-      'Curated blocklists with auto-updates',
-      'System-wide coverage (not just one browser)',
-      'No VPN overhead — zero impact on speed',
-      'Toggle on/off with one click',
-    ],
-    tip: 'Vault runs at the OS network layer. It protects every app on your machine — not just adris.tech.',
-  },
-  {
-    id: 'guard',
-    name: 'Guard',
-    tagline: 'Security intelligence suite',
-    status: 'active',
-    icon: (
-      <svg viewBox="0 0 28 28" fill="none" className="w-5 h-5">
-        <path d="M14 2 3 6v10c0 5 4.5 9.5 11 10 6.5-.5 11-5 11-10V6L14 2Z" fill="currentColor" />
-        <rect x="11" y="11" width="6" height="8" fill="var(--nv-bg)" />
-        <circle cx="14" cy="14" r="1.2" fill="currentColor" />
-      </svg>
-    ),
-    desc: 'Four security tools in one module: scan contracts for risk, get live vulnerability briefings, check compliance, and monitor threats.',
-    features: [
-      'Contract Scanner — paste any contract, get plain-English risk flags',
-      'Vulnerability Briefing — latest CVEs and security advisories for your stack',
-      'Threat Dashboard — real-time threat intelligence feed',
-      'Compliance Checker — check against GDPR, ISO 27001, SOC2, DPDP',
-      'Powered by Krew agents (Raj.PM, Nora.PM) under the hood',
-    ],
-    tip: 'Guard\'s contract scanner uses AI — not a lawyer. Always have a qualified legal professional review before signing.',
-  },
-  {
-    id: 'mesh',
-    name: 'Mesh',
-    tagline: 'Distributed RAM pooling (experimental)',
-    status: 'off',
-    icon: (
-      <svg viewBox="0 0 28 28" fill="none" className="w-5 h-5">
-        <circle cx="4"  cy="14" r="2.5" fill="currentColor" />
-        <circle cx="14" cy="4"  r="2.5" fill="currentColor" />
-        <circle cx="24" cy="14" r="2.5" fill="currentColor" />
-        <circle cx="14" cy="24" r="2.5" fill="currentColor" />
-        <circle cx="14" cy="14" r="2"   fill="currentColor" opacity=".6" />
-        <path d="M6 14h5M17 14h5M14 6v5M14 17v5" stroke="currentColor" strokeWidth="1.4" opacity=".4" />
-      </svg>
-    ),
-    desc: 'Pool RAM and compute across your local devices. Run large models that don\'t fit in a single machine\'s memory by distributing the load over Wi-Fi.',
-    features: [
-      'Auto-discovers adris.tech devices on the same network',
-      'Pools unused RAM from each connected device',
-      'Run LLMs larger than any single machine can handle',
-      'Zero-config local discovery — no server needed',
-      'Works alongside Ollama for distributed inference',
-    ],
-    tip: 'Mesh requires adris.tech installed on at least two devices on the same Wi-Fi. Open Mesh on both devices — they will auto-discover each other and start pooling RAM.',
-  },
+const SECTIONS: { id: string; label: string }[] = [
+  { id: 'what',       label: 'What adris.tech is' },
+  { id: 'start',      label: 'Getting started' },
+  { id: 'krew',       label: 'Krew — your agent team' },
+  { id: 'commands',   label: 'Slash commands' },
+  { id: 'brain',      label: 'Brain — shared memory' },
+  { id: 'todo',       label: 'To-do' },
+  { id: 'linkedin',   label: 'Worked example: LinkedIn outreach' },
+  { id: 'models',     label: 'Models — running AI locally' },
+  { id: 'coder',      label: 'Coder' },
+  { id: 'studio',     label: 'Studio & decks' },
+  { id: 'automation', label: 'Automations' },
+  { id: 'connect',    label: 'Connect apps & MCP' },
+  { id: 'vault',      label: 'Vault' },
+  { id: 'mesh',       label: 'Mesh' },
+  { id: 'quickbar',   label: 'Quick Bar' },
+  { id: 'privacy',    label: 'Privacy' },
+  { id: 'trouble',    label: 'When something goes wrong' },
 ];
 
-function ModuleCard({ mod }: { mod: ModuleInfo }) {
-  const [open, setOpen] = useState(false);
+function H({ id, children }: { id: string; children: React.ReactNode }) {
   return (
-    <div className="bg-nv-surface border border-nv-border rounded-xl overflow-hidden">
-      {/* Header */}
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-start gap-3 px-4 py-3.5 hover:bg-nv-surface2 transition-fast text-left"
-      >
-        <span className="text-nv-muted mt-0.5 shrink-0">{mod.icon}</span>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[13px] font-semibold text-nv-text">{mod.name}</span>
-            <span className={`flex items-center gap-1 text-[9px] font-mono uppercase tracking-wider ${STATUS_TEXT[mod.status]}`}>
-              <span className={`w-1 h-1 rounded-full ${STATUS_DOT[mod.status]}`} />
-              {STATUS_LABEL[mod.status]}
-            </span>
-          </div>
-          <p className="text-[10px] text-nv-faint mt-0.5 font-mono">{mod.tagline}</p>
-        </div>
-        <svg
-          viewBox="0 0 16 16" fill="none"
-          className={`w-3.5 h-3.5 text-nv-faint shrink-0 mt-1 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
-        >
-          <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
-      </button>
-
-      {/* Expanded body */}
-      {open && (
-        <div className="px-4 pb-4 border-t border-nv-border/50">
-          <p className="text-[12px] text-nv-muted leading-relaxed mt-3 mb-3">{mod.desc}</p>
-          <ul className="space-y-1 mb-3">
-            {mod.features.map((f, i) => (
-              <li key={i} className="flex items-start gap-2 text-[11px] text-nv-muted">
-                <span className="mt-1.5 w-1 h-1 rounded-full bg-accent/60 shrink-0" />
-                {f}
-              </li>
-            ))}
-          </ul>
-          {mod.tip && (
-            <div className="flex items-start gap-2 bg-accent/5 border border-accent/15 rounded-lg px-3 py-2">
-              <svg viewBox="0 0 16 16" fill="none" className="w-3.5 h-3.5 text-accent shrink-0 mt-0.5">
-                <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.3"/>
-                <path d="M8 5v1M8 7.5v4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-              </svg>
-              <p className="text-[11px] text-nv-muted leading-relaxed">{mod.tip}</p>
-            </div>
-          )}
-        </div>
-      )}
+    <h2 id={id} className="scroll-mt-6 text-[19px] font-semibold text-nv-text mt-11 mb-3 pb-2 border-b border-nv-border">
+      {children}
+    </h2>
+  );
+}
+function H3({ children }: { children: React.ReactNode }) {
+  return <h3 className="text-[14px] font-semibold text-nv-text mt-6 mb-2">{children}</h3>;
+}
+function P({ children }: { children: React.ReactNode }) {
+  return <p className="text-[13px] leading-[1.75] text-nv-muted mb-3">{children}</p>;
+}
+function Li({ children }: { children: React.ReactNode }) {
+  return <li className="text-[13px] leading-[1.75] text-nv-muted mb-1.5">{children}</li>;
+}
+/** Something the user literally types or clicks. */
+function K({ children }: { children: React.ReactNode }) {
+  return <code className="text-[12px] font-mono text-accent bg-accent/10 border border-accent/20 rounded px-1 py-[1px]">{children}</code>;
+}
+/** A real worked example — deliberately set apart from the prose. */
+function Example({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="my-4 rounded-xl border border-nv-border bg-nv-surface/70 overflow-hidden">
+      <div className="px-3.5 py-1.5 border-b border-nv-border bg-nv-surface2/50">
+        <span className="text-[9px] font-mono uppercase tracking-wider text-accent">Example · {title}</span>
+      </div>
+      <div className="px-3.5 py-3 text-[12.5px] leading-[1.7] text-nv-muted">{children}</div>
+    </div>
+  );
+}
+function Note({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="my-4 border-l-2 border-accent/50 pl-3.5 py-1">
+      <p className="text-[12.5px] leading-[1.7] text-nv-muted italic">{children}</p>
     </div>
   );
 }
 
 export default function InfoModule() {
-  const [search, setSearch] = useState('');
+  const [active, setActive] = useState(SECTIONS[0].id);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
-  const filtered = search.trim()
-    ? MODULES.filter(
-        (m) =>
-          m.name.toLowerCase().includes(search.toLowerCase()) ||
-          m.tagline.toLowerCase().includes(search.toLowerCase()) ||
-          m.desc.toLowerCase().includes(search.toLowerCase()) ||
-          m.features.some((f) => f.toLowerCase().includes(search.toLowerCase())),
-      )
-    : MODULES;
+  // Highlight whichever section is being read, so the contents list doubles as a
+  // progress marker on a long page.
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        const vis = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (vis[0]?.target.id) setActive(vis[0].target.id);
+      },
+      { root, rootMargin: '0px 0px -70% 0px', threshold: 0 },
+    );
+    SECTIONS.forEach((s) => { const el = document.getElementById(s.id); if (el) obs.observe(el); });
+    return () => obs.disconnect();
+  }, []);
+
+  function go(id: string) {
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 
   return (
-    <div className="h-full overflow-y-auto bg-nv-bg">
-      {/* Header */}
-      <div className="sticky top-0 z-10 bg-nv-bg border-b border-nv-border px-6 py-4">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <h1 className="text-[15px] font-semibold text-nv-text tracking-tight">What's Inside adris.tech</h1>
-            <p className="text-[10px] text-nv-faint font-mono mt-0.5">
-              {MODULES.length} modules · tap any card to expand
+    <div className="flex h-full overflow-hidden">
+      {/* Contents — a long page needs a spine, but it stays out of the way */}
+      <nav className="hidden lg:block w-56 shrink-0 border-r border-nv-border overflow-y-auto py-8 px-3">
+        <p className="text-[9px] font-mono uppercase tracking-wider text-nv-faint px-2 mb-2">Contents</p>
+        {SECTIONS.map((s) => (
+          <button
+            key={s.id}
+            onClick={() => go(s.id)}
+            className={`w-full text-left text-[11.5px] leading-snug px-2 py-1.5 rounded-md transition-fast break-words ${
+              active === s.id ? 'text-accent bg-accent/10 font-medium' : 'text-nv-faint hover:text-nv-muted hover:bg-nv-surface2/50'
+            }`}
+          >
+            {s.label}
+          </button>
+        ))}
+      </nav>
+
+      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+        <article className="max-w-[720px] mx-auto px-7 py-10 pb-24">
+          <p className="text-[10px] font-mono uppercase tracking-wider text-accent mb-2">User manual</p>
+          <h1 className="text-[30px] font-semibold text-nv-text leading-tight mb-3">How adris.tech works</h1>
+          <p className="text-[14px] leading-[1.7] text-nv-muted">
+            Everything the app can do, written to be read from start to finish. If you only have five
+            minutes, read <button onClick={() => go('krew')} className="text-accent hover:underline">Krew</button> and the{' '}
+            <button onClick={() => go('linkedin')} className="text-accent hover:underline">LinkedIn worked example</button> —
+            between them they cover how most people use adris.tech day to day.
+          </p>
+
+          <H id="what">What adris.tech is</H>
+          <P>
+            adris.tech is a private AI office that runs on your own computer. Instead of a single
+            chatbot you get a team of specialist agents — a researcher, a writer, a sales assistant, a
+            coder and others — that share one memory and can use real tools: a browser, your files and
+            your connected accounts.
+          </P>
+          <P>
+            The important word is <span className="text-nv-text">private</span>. Your files, notes and saved
+            lists live on this machine. When you run a local model nothing leaves the computer at all.
+            When you use the hosted AI, only the text of that request is sent — your documents are not
+            uploaded and nothing is used for training.
+          </P>
+
+          <H id="start">Getting started</H>
+          <P>
+            Sign in once with your adris.tech account. Your plan sets how much hosted AI you can use each
+            month and which models you can download. Everything else works the same on every plan.
+          </P>
+          <H3>The connection bar</H3>
+          <P>At the top of Krew is a bar that decides which brain answers you. It has three modes:</P>
+          <ul className="list-disc pl-5 mb-3">
+            <Li><span className="text-nv-text">adris.tech</span> — the hosted AI. Nothing to set up; counts against your monthly usage.</Li>
+            <Li><span className="text-nv-text">Own key</span> — your own OpenAI, Gemini or Anthropic key. Billed by them, unlimited by us.</Li>
+            <Li><span className="text-nv-text">Local</span> — a model running on your own hardware. Free, fully offline, as fast as your machine allows.</Li>
+          </ul>
+          <Note>
+            If you ever see “monthly limit reached”, switch the bar to Own key or Local and carry on
+            working. You do not have to upgrade to keep using the app.
+          </Note>
+
+          <H id="krew">Krew — your agent team</H>
+          <P>
+            Krew is the main screen. Type what you want in plain English and the right specialist picks
+            it up: ask for competitor research and the researcher answers, ask for a LinkedIn post and
+            the writer answers. Use <span className="text-nv-text">Switch</span> above the message box if you want
+            to choose the agent yourself.
+          </P>
+          <H3>Attaching your own files</H3>
+          <P>
+            Drag a file into the message box, or pick one you have already saved in your Brain. The agent
+            reads it before answering. This is the single biggest difference between generic output and
+            something specific to your business.
+          </P>
+          <Example title="Attaching context">
+            Attach <K>PRODUCT.md</K> — a page describing what you sell — and ask{' '}
+            <span className="text-nv-text">“which of these connections would actually care about this?”</span> The
+            answer references your real product instead of inventing one. Attach two Brain files together
+            and adris.tech also links them in your Brain, because using them together says they belong
+            together.
+          </Example>
+          <H3>Skills</H3>
+          <P>
+            The <span className="text-nv-text">Skill lib</span> button holds reusable abilities you can switch on,
+            such as a house writing style or a research method. Once installed, every agent uses them
+            automatically.
+          </P>
+
+          <H id="commands">Slash commands</H>
+          <P>
+            Type <K>/</K> in the message box to see everything available. Commands are shortcuts, not a
+            separate language — you can always ask in plain words instead. The ones worth knowing:
+          </P>
+          <ul className="list-disc pl-5 mb-3">
+            <Li><K>/scan</K> — read your LinkedIn connections and save them.</Li>
+            <Li><K>/outreach</K> — draft a personal message for each saved connection.</Li>
+            <Li><K>/continue</K> — reopen the outreach copilot exactly where you left off.</Li>
+            <Li><K>/research</K> — open the deep research workspace.</Li>
+            <Li><K>/brain</K>, <K>/coder</K>, <K>/models</K> — jump straight to that part of the app.</Li>
+          </ul>
+          <P>
+            When a command needs one of your files a picker appears. It has a search box, so it stays
+            usable when you have hundreds of saved files — start typing and it narrows down.
+          </P>
+
+          <H id="brain">Brain — shared memory</H>
+          <P>
+            Brain is the app's long-term memory: notes joined by links, drawn as a graph. Every agent can
+            read from it and write to it, which is why you do not have to explain your business again in
+            every new chat.
+          </P>
+          <P>
+            Things arrive there on their own — scanned connections, lead tables, drafted posts, generated
+            images, files you attach — and you can write notes yourself. Click a note to open, edit or
+            delete it, and drag the cards to arrange them however makes sense to you.
+          </P>
+          <Note>
+            By default, related work updates the note that already exists rather than creating a new one
+            each time, so your lists do not fragment. You can change this in Settings, and you can
+            override it for a single request by saying “continue the existing list”.
+          </Note>
+
+          <H id="todo">To-do</H>
+          <P>The <span className="text-nv-text">To-do</span> tab next to Skill lib holds two kinds of item.</P>
+          <P>
+            The first is your own tasks. Type one and press Enter; tick it off when it is done and it is
+            crossed out. You can set a priority and a due date on the same line as you type:
+          </P>
+          <Example title="Adding a task">
+            Typing <K>Reply to Sonali !high today</K> creates a task called “Reply to Sonali”, marks it high
+            priority and sets it due today. The filters along the top — All, Today, Overdue, Done — show
+            just what matters now, and anything overdue turns red.
+          </Example>
+          <P>
+            The second kind appears by itself. When you leave a piece of work unfinished, adris.tech puts
+            a card at the top of the list with a <span className="text-nv-text">Continue</span> button — for
+            example an outreach campaign with people still to message. These cards survive closing the
+            window, deleting the chat and restarting the app, so there is always a way back to unfinished
+            work.
+          </P>
+
+          <H id="linkedin">Worked example: LinkedIn outreach</H>
+          <P>
+            This is the workflow most people run, and it is worth reading in full because it shows how the
+            pieces fit together. The goal: message a few hundred of your existing connections with
+            something genuinely personal, without ever messaging the same person twice.
+          </P>
+          <H3>Step 1 — scan your connections</H3>
+          <P>
+            Type <K>/scan</K>. A browser window opens, loads your connections and reads the real names and
+            headlines from the page. They are saved to a Brain note called{' '}
+            <span className="text-nv-text">LinkedIn connections</span>, and the window closes on its own when it
+            finishes. If you are not signed in to LinkedIn, sign in once in that window — it is remembered
+            from then on.
+          </P>
+          <P>
+            A scan reads about fifty people at a time. Run it again later and it scrolls past everyone
+            already saved, collects the next fifty, and appends them to the same note. Nobody is ever saved
+            twice.
+          </P>
+          <H3>Step 2 — draft the messages</H3>
+          <P>
+            Attach the document describing what you do and type <K>/outreach</K>. Each message is written
+            individually: it greets the person by first name, refers to something real from their own
+            headline, and ends with one low-pressure ask. Nothing is sent automatically.
+          </P>
+          <H3>Step 3 — send</H3>
+          <P>
+            The outreach copilot opens. For each person press{' '}
+            <span className="text-nv-text">Copy message &amp; open chat</span>: the message is copied and their
+            LinkedIn chat opens, so you paste with Ctrl+V and send. Every message can be edited first. Mark
+            each one as sent as you go — that is what keeps the next run honest.
+          </P>
+          <Note>
+            LinkedIn is not automated on purpose. Tools that send messages for you put your account at real
+            risk of restriction. adris.tech does everything except the final keystroke.
+          </Note>
+          <H3>Doing it again next week — and why nobody is messaged twice</H3>
+          <P>
+            This is what makes the workflow safe to repeat, and it needs nothing from you: no attaching
+            files, no keeping track yourself.
+          </P>
+          <ul className="list-disc pl-5 mb-3">
+            <Li>A new <K>/scan</K> skips everyone already in your connections note and saves only new people.</Li>
+            <Li>A new <K>/outreach</K> skips everyone you have marked as messaged and drafts only for the rest.</Li>
+            <Li>There is one running campaign rather than one per run, so your progress keeps adding up instead of resetting.</Li>
+          </ul>
+          <Example title="700 connections, fifty at a time">
+            Week 1 — <K>/scan</K> saves 50 people; <K>/outreach</K> drafts 50 messages; you send them and mark them sent.<br />
+            Week 2 — <K>/scan</K> saves people 51–100, skipping the first 50; <K>/outreach</K> drafts 50 new
+            messages and leaves last week's alone.<br />
+            Carry on to the end of the list. If you run <K>/outreach</K> without scanning anyone new,
+            adris.tech tells you everyone has already been messaged instead of repeating people.
+          </Example>
+          <P>
+            One honest limitation: every scan has to scroll past what is already saved, so once you are
+            several hundred deep a scan takes noticeably longer. It still works — it is simply slower the
+            further down your list you go.
+          </P>
+
+          <H id="models">Models — running AI locally</H>
+          <P>
+            The Models tab is a catalogue of open models you can download and run on this machine. Local
+            models cost nothing to run, work with no internet, and send nothing anywhere.
+          </P>
+          <P>
+            Each card shows how much memory the model needs, so you can see at a glance what your computer
+            can handle. Press <span className="text-nv-text">Pull</span> to download; you get live progress in
+            gigabytes and a <span className="text-nv-text">Cancel</span> button that stops the download and removes
+            the partial file. Downloaded models appear under My Models and can be chosen in the connection
+            bar.
+          </P>
+          <Note>
+            A rough guide: a 4B model runs comfortably on almost any laptop, 12B wants around 12&nbsp;GB of
+            memory, and 27B wants 24&nbsp;GB or more. One that fits your machine feels fast; one that does not
+            will crawl.
+          </Note>
+
+          <H id="coder">Coder</H>
+          <P>
+            A full code editor with an AI pair beside it. Open a folder, describe the change you want, and
+            the agent edits the real files while you watch each change land in the editor. It has a
+            built-in terminal, so it can install packages and run tests as it works.
+          </P>
+
+          <H id="studio">Studio &amp; decks</H>
+          <P>
+            Ask for a presentation in plain words and you get a real slide deck back. Edit it in place —
+            click any text to change it, recolour it, add or remove slides — and export it as a PDF. Your
+            own pictures and logo can be placed on slides, and on paid plans slides can carry
+            AI-generated imagery. Studio also makes videos, screen recordings and banners.
+          </P>
+          <Example title="Making a deck">
+            <span className="text-nv-text">“Make a 10-slide investor deck from PRODUCT.md, use our brand colours,
+            put our logo on every slide.”</span> Then refine it by talking: “make slide 4 about pricing”,
+            “remove the last slide”, “put this photo on slide 2”.
+          </Example>
+
+          <H id="automation">Automations</H>
+          <P>
+            Work that should happen without you asking. Build it as a simple form or by drawing a flow on a
+            canvas, with branches, loops and steps that run in parallel. A daily inbox summary or a weekly
+            report takes a few minutes to set up. In Settings you choose whether automations run only while
+            the app is open or continue in the background.
+          </P>
+
+          <H id="connect">Connect apps &amp; MCP</H>
+          <P>
+            Connect Gmail, Notion, Slack, GitHub, Linear, Airtable, LinkedIn and others, and your agents can
+            use them directly — reading your inbox, filing a page in Notion, opening an issue. Connect an
+            account once and it is remembered.
+          </P>
+          <P>
+            adris.tech also speaks MCP, an open standard for AI tools. Paste the address of any MCP server
+            and its tools join everything else your agents can use.
+          </P>
+
+          <H id="vault">Vault</H>
+          <P>
+            Vault protects the connection itself by switching your computer to private DNS, so the sites you
+            visit are not visible to your network provider. Toggle it from Vault or the tray icon. It checks
+            that a server is actually reachable before switching, so turning it on cannot leave you without
+            internet.
+          </P>
+
+          <H id="mesh">Mesh</H>
+          <P>
+            Mesh joins several computers together so they can run a model too large for any one of them. If
+            you have more than one machine, this is how you run the big models without buying hardware.
+          </P>
+
+          <H id="quickbar">Quick Bar</H>
+          <P>
+            A small always-on-top window for quick questions without opening the full app. It shares your
+            account, your Brain and your theme, and can start automatically when your computer does.
+          </P>
+
+          <H id="privacy">Privacy</H>
+          <P>
+            Your Brain, files, chats, saved lists and downloaded models all stay on this computer. Local
+            models send nothing anywhere. The hosted AI receives only the text of the request you make, and
+            your content is never used for training. Connected accounts are used only when an agent needs
+            them for something you asked for.
+          </P>
+
+          <H id="trouble">When something goes wrong</H>
+          <H3>A scan finds nobody</H3>
+          <P>
+            Usually you are not signed in to LinkedIn in the adris.tech browser window, or the page had not
+            finished loading. Open that window, sign in, scroll the list once, then run <K>/scan</K> again.
+          </P>
+          <H3>The outreach panel disappeared</H3>
+          <P>
+            Nothing is lost — drafts and progress are saved continuously. Bring it back with the{' '}
+            <span className="text-nv-text">Reopen outreach copilot</span> button above the message box, by typing{' '}
+            <K>/continue</K>, or from the Continue button on the To-do tab.
+          </P>
+          <H3>A download does not start</H3>
+          <P>
+            Check you are online and try again; a clear message appears if the download server cannot be
+            reached. Make sure you have room, too — the larger models are 15&nbsp;GB and more.
+          </P>
+          <H3>The AI stops mid-task</H3>
+          <P>
+            If your connection drops, adris.tech reconnects and carries on by itself. If you have run out of
+            monthly usage, switch the connection bar to Own key or Local and keep working.
+          </P>
+
+          <div className="mt-14 pt-5 border-t border-nv-border">
+            <p className="text-[12px] text-nv-faint leading-relaxed">
+              Still stuck, or something here does not match what you see? Email{' '}
+              <span className="text-nv-muted">hello@adris.tech</span>. This manual is updated with each release.
             </p>
           </div>
-          <div className="relative">
-            <svg viewBox="0 0 16 16" fill="none" className="w-3.5 h-3.5 text-nv-faint absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
-              <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.4"/>
-              <path d="M11 11l3 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-            </svg>
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search modules…"
-              className="bg-nv-surface border border-nv-border rounded-lg pl-8 pr-3 py-1.5 text-[12px] text-nv-text placeholder-nv-faint outline-none focus:border-accent transition-fast w-48"
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* Module grid */}
-      <div className="px-6 py-5 grid grid-cols-1 gap-3 max-w-3xl">
-        {filtered.length === 0 && (
-          <p className="text-[12px] text-nv-faint text-center py-12">No modules match "{search}"</p>
-        )}
-        {filtered.map((mod) => (
-          <ModuleCard key={mod.id} mod={mod} />
-        ))}
-      </div>
-
-      {/* Footer note */}
-      <div className="px-6 pb-8 max-w-3xl">
-        <div className="flex items-center gap-2 text-[10px] text-nv-faint font-mono">
-          <span className="w-1 h-1 rounded-full bg-nv-faint" />
-          adris.tech · All AI processing is local or through your own keys unless you use the adris.tech plan
-          <span className="w-1 h-1 rounded-full bg-nv-faint" />
-        </div>
+        </article>
       </div>
     </div>
   );

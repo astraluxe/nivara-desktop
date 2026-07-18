@@ -1,6 +1,6 @@
 [package]
 name = "nivara-desktop"
-version = "1.5.0"
+version = "1.5.1"
 description = "adris.tech Desktop — India's AI operating system"
 authors = ["adris.tech"]
 edition = "2021"
