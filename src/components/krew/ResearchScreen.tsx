@@ -7,7 +7,64 @@ import type { Provider } from '../../lib/ai';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
-type Stage = 'idle' | 'planning' | 'searching' | 'analyzing' | 'done' | 'error';
+type Stage = 'idle' | 'planning' | 'searching' | 'reading' | 'analyzing' | 'done' | 'error';
+
+// Files we can read reliably and instantly. Everything here is plain text under the hood, so it
+// goes straight into the model with no conversion step and no parsing that can silently fail.
+// Binary formats (PDF, DOCX, images) are deliberately excluded — a half-decoded PDF produces
+// garbage context that quietly poisons the report, which is worse than not attaching anything.
+const ATTACH_ACCEPT = '.md,.markdown,.txt,.csv,.tsv,.json,.yml,.yaml,.html';
+const ATTACH_LABEL  = 'MD, TXT, CSV, JSON, YAML, HTML';
+const ATTACH_MAX    = 200_000; // characters kept per file
+
+interface AttachedDoc { name: string; content: string }
+
+/** One competitor's public branding, read from their live homepage. */
+interface BrandSignal {
+  domain: string;
+  title: string;
+  description: string;
+  colors: string[];
+  headline: string;
+}
+
+/** Domains that are never competitors — directories, social, marketplaces, news aggregators. */
+const SKIP_DOMAINS = /(google|bing|duckduckgo|wikipedia|youtube|facebook|twitter|x|linkedin|instagram|reddit|medium|quora|github|g2|capterra|crunchbase|producthunt|glassdoor|indeed|amazon|flipkart|yelp|tracxn|owler|zaubacorp)\./i;
+
+/** Pull candidate competitor homepages out of the raw search results. */
+function extractDomains(blobs: string[], limit = 5): string[] {
+  const counts = new Map<string, number>();
+  for (const blob of blobs) {
+    for (const m of blob.matchAll(/https?:\/\/([a-z0-9-]+(?:\.[a-z0-9-]+)+)/gi)) {
+      const host = m[1].toLowerCase().replace(/^www\./, '');
+      if (SKIP_DOMAINS.test(host + '.')) continue;
+      if (host.split('.').length > 3) continue;           // deep subdomains are rarely the brand
+      counts.set(host, (counts.get(host) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([d]) => d);
+}
+
+/** Normalise the colours a site actually paints itself with, most-used first. */
+function extractColors(html: string): string[] {
+  const counts = new Map<string, number>();
+  const theme = html.match(/<meta[^>]+name=["']theme-color["'][^>]+content=["']([^"']+)["']/i)?.[1];
+  if (theme) counts.set(theme.trim().toLowerCase(), 100); // declared brand colour outranks any usage count
+  for (const m of html.matchAll(/#([0-9a-f]{6}|[0-9a-f]{3})\b/gi)) {
+    let hex = m[1].toLowerCase();
+    if (hex.length === 3) hex = hex.split('').map((c) => c + c).join('');
+    // Ignore near-black/near-white/greys — every site uses them, so they say nothing about a brand.
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16));
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    if (max - min < 25) continue;
+    counts.set(`#${hex}`, (counts.get(`#${hex}`) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([c]) => c);
+}
+
+function stripTags(s: string): string {
+  return s.replace(/<[^>]+>/g, ' ').replace(/&[a-z]+;/gi, ' ').replace(/\s+/g, ' ').trim();
+}
 
 interface SearchResult {
   query: string;
@@ -126,6 +183,29 @@ export default function ResearchScreen({ initialQuery }: { initialQuery?: string
   const [error,            setError]            = useState<string | null>(null);
   const [planStatus,       setPlanStatus]       = useState('');
   const [savedResearches,  setSavedResearches]  = useState<SavedResearch[]>(loadHistory);
+  const [brands,           setBrands]           = useState<BrandSignal[]>([]);
+  const [docs,             setDocs]             = useState<AttachedDoc[]>([]);
+  const [attachError,      setAttachError]      = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function addFiles(list: FileList | null) {
+    if (!list?.length) return;
+    setAttachError(null);
+    const next: AttachedDoc[] = [];
+    for (const f of Array.from(list)) {
+      if (!new RegExp(`(${ATTACH_ACCEPT.split(',').join('|')})$`, 'i').test(f.name)) {
+        setAttachError(`“${f.name}” isn't a readable text file. Allowed: ${ATTACH_LABEL}.`);
+        continue;
+      }
+      try {
+        const text = await f.text();
+        next.push({ name: f.name, content: text.slice(0, ATTACH_MAX) });
+      } catch {
+        setAttachError(`Couldn't read “${f.name}”.`);
+      }
+    }
+    if (next.length) setDocs((prev) => [...prev.filter((p) => !next.some((n) => n.name === p.name)), ...next]);
+  }
 
   function toggleFocus(id: string) {
     setFocus(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
@@ -171,6 +251,37 @@ export default function ResearchScreen({ initialQuery }: { initialQuery?: string
     } catch {
       return '[Search unavailable — AI will use training knowledge]';
     }
+  }
+
+  /**
+   * Visit each competitor's homepage and read what they actually say and how they look. Search
+   * snippets tell you a company exists; the homepage tells you how they position themselves and
+   * what their brand looks like — which is what makes the report specific rather than generic.
+   * Failures are silent by design: one unreachable site must never stop the research.
+   */
+  async function readBrandSignals(domains: string[]): Promise<BrandSignal[]> {
+    const out: BrandSignal[] = [];
+    for (const domain of domains) {
+      try {
+        const html = await invoke<string>('krew_http_call', {
+          method: 'GET',
+          url: `https://${domain}`,
+          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; adris-research/1.0)', 'Accept': 'text/html' },
+          body: null,
+        });
+        if (!html || html.length < 200) continue;
+        const title = stripTags(html.match(/<title[^>]*>([\s\S]{0,200}?)<\/title>/i)?.[1] ?? '').slice(0, 120);
+        const description = stripTags(
+          html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']{0,300})["']/i)?.[1]
+          ?? html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']{0,300})["']/i)?.[1]
+          ?? '',
+        ).slice(0, 240);
+        const headline = stripTags(html.match(/<h1[^>]*>([\s\S]{0,200}?)<\/h1>/i)?.[1] ?? '').slice(0, 140);
+        out.push({ domain, title, description, headline, colors: extractColors(html) });
+        setBrands([...out]);
+      } catch { /* unreachable or blocked — skip this one */ }
+    }
+    return out;
   }
 
   async function streamAI(
@@ -289,6 +400,7 @@ Cover these 6 angles (use these as the basis for your queries):
     setSearches([]);
     setReport('');
     setError(null);
+    setBrands([]);
     setPlanStatus('Planning research strategy…');
 
     const geography = geo === 'india' ? 'India' : 'Global';
@@ -325,6 +437,11 @@ Cover these 6 angles (use these as the basis for your queries):
       }
     }
 
+    // Read the competitors' own sites before analysing — positioning and branding come from the
+    // homepage, not from a search snippet.
+    setStage('reading');
+    const brandSignals = await readBrandSignals(extractDomains(results)).catch(() => [] as BrandSignal[]);
+
     setStage('analyzing');
 
     const focusNote = focus.length
@@ -356,16 +473,38 @@ Report structure (use these exact headers):
 (Concrete positioning advice for THIS business — not generic "differentiate yourself" — but specific angles against specific competitors)
 
 ## 5 Key Takeaways
-(Five actionable bullets. Things the founder can act on this week or this month.)`;
+(Five actionable bullets. Things the founder can act on this week or this month.)
+
+When homepage data is supplied, ALSO include this section before the takeaways:
+
+## How They Present Themselves
+(You have been given each competitor's real homepage headline, description and brand colours, read
+from their live sites. Use it to say what they have in COMMON — the words they all lean on, the
+promises they all make, the colour palette the category defaults to — and then where the gaps are.
+Name the shared cliché and tell the founder how to look different, in both language and visual
+identity. Refer to actual colours by their hex value and describe them in plain words, e.g.
+"#1a73e8 — the same corporate blue three of them use". Be concrete; never invent a colour or a
+tagline you were not given.)`;
 
     const searchContext = queries.map((q, i) => `### Query: "${q}"\n${results[i] || '[no data]'}`).join('\n\n');
+
+    const brandContext = brandSignals.length
+      ? `\n\nCompetitor homepages I read directly (live sites):\n\n${brandSignals.map((b) =>
+          `### ${b.domain}\nPage title: ${b.title || '—'}\nHeadline: ${b.headline || '—'}\nDescription: ${b.description || '—'}\nBrand colours: ${b.colors.length ? b.colors.join(', ') : '—'}`,
+        ).join('\n\n')}`
+      : '';
+
+    const docContext = docs.length
+      ? `\n\nMy own documents (treat as authoritative about MY business):\n\n${docs.map((d) =>
+          `### ${d.name}\n${d.content.slice(0, 12000)}`).join('\n\n')}`
+      : '';
 
     const userMsg = `${nameContext}My business: ${description.trim()}
 Geography: ${geography}${focusNote}
 
 Here is the gathered market data:
 
-${searchContext}
+${searchContext}${brandContext}${docContext}
 
 Write the competitive intelligence report now.`;
 
@@ -423,7 +562,7 @@ Write the competitive intelligence report now.`;
     setSavedResearches(updated);
   }
 
-  const isRunning = stage === 'planning' || stage === 'searching' || stage === 'analyzing';
+  const isRunning = stage === 'planning' || stage === 'searching' || stage === 'reading' || stage === 'analyzing';
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-nv-bg">
@@ -447,68 +586,120 @@ Write the competitive intelligence report now.`;
 
         {/* ── Idle form ── */}
         {stage === 'idle' && (
-          <div className="max-w-xl">
+          <div className="max-w-[680px] mx-auto">
 
-            <p className="text-[12px] text-nv-muted mb-5 leading-relaxed">
-              Describe your business below. We'll plan targeted searches, find your competitors, and generate a report that tells you exactly where you stand and how to win.
+            {/* Title block — reads like a page, not a form */}
+            <p className="text-[10px] font-mono uppercase tracking-wider text-accent mb-2">Competitive intelligence</p>
+            <h1 className="text-[26px] font-semibold text-nv-text leading-tight mb-2.5">Know exactly who you're up against</h1>
+            <p className="text-[13px] leading-[1.7] text-nv-muted mb-8">
+              Tell us what you do. We plan targeted searches, read your competitors' own websites — their
+              positioning, their language, even their brand colours — and write you a report on where you
+              stand and how to win. It's saved to your Brain so your agents can use it later.
             </p>
 
-            {/* Business name — optional */}
-            <div className="mb-3">
-              <label className="text-[10px] text-nv-faint uppercase tracking-widest font-mono block mb-1.5">
-                Your business name <span className="normal-case text-nv-faint/60">(optional)</span>
-              </label>
+            {/* Business name */}
+            <label className="block mb-5">
+              <span className="text-[12px] font-medium text-nv-text block mb-1.5">
+                Your business name <span className="text-nv-faint font-normal">— optional</span>
+              </span>
               <input
                 value={businessName}
                 onChange={e => setBusinessName(e.target.value)}
-                placeholder="e.g. adris.tech, Meesho, Cred…"
-                className="w-full bg-nv-surface border border-nv-border rounded-xl px-4 py-2.5 text-[13px] text-nv-text placeholder-nv-faint outline-none focus:border-accent transition-fast"
+                placeholder="adris.tech"
+                className="w-full bg-nv-surface border border-nv-border rounded-xl px-3.5 py-2.5 text-[13px] text-nv-text placeholder:text-nv-faint outline-none focus:border-accent transition-fast"
               />
-            </div>
+            </label>
 
-            {/* Description — main input */}
-            <div className="mb-4">
-              <label className="text-[10px] text-nv-faint uppercase tracking-widest font-mono block mb-1.5">
-                Describe your business <span className="text-red-400/70">*</span>
-              </label>
+            {/* Description */}
+            <label className="block mb-5">
+              <span className="text-[12px] font-medium text-nv-text block mb-1.5">
+                What does your business do? <span className="text-accent">*</span>
+              </span>
+              <span className="text-[11.5px] leading-[1.6] text-nv-muted block mb-2">
+                Who is your customer, what problem do you solve, and what are your main features? The more
+                specific you are, the more specific the report — a vague description produces vague advice.
+              </span>
               <textarea
                 value={description}
                 onChange={e => setDescription(e.target.value)}
-                placeholder={`What does your business do? Who's your customer? What problem do you solve?\n\ne.g. "We're building an AI productivity app for Indian SMBs — helps with workflow automation, AI agents for marketing tasks, and running AI models locally. Target: 10–200 person companies in India who want AI but can't afford enterprise tools."`}
+                placeholder={'We\'re building an AI productivity app for Indian SMBs — workflow automation, AI agents for marketing, and running AI models locally. Target: 10–200 person companies in India who want AI but can\'t afford enterprise tools.'}
                 rows={5}
                 autoFocus
-                className="w-full bg-nv-surface border border-nv-border rounded-xl px-4 py-3 text-[13px] text-nv-text placeholder-nv-faint outline-none focus:border-accent transition-fast resize-none leading-relaxed"
+                className="w-full bg-nv-surface border border-nv-border rounded-xl px-3.5 py-3 text-[13px] leading-[1.65] text-nv-text placeholder:text-nv-faint outline-none focus:border-accent transition-fast resize-none"
               />
-              <p className="text-[10px] text-nv-faint mt-1.5 font-mono">
-                More detail = better competitor analysis. Include your target customer, problem you solve, and key features.
-              </p>
+            </label>
+
+            {/* Attachments */}
+            <div className="mb-5">
+              <span className="text-[12px] font-medium text-nv-text block mb-1.5">
+                Attach your own documents <span className="text-nv-faint font-normal">— optional</span>
+              </span>
+              <span className="text-[11.5px] leading-[1.6] text-nv-muted block mb-2">
+                A product brief, pitch notes or a pricing sheet makes the analysis far sharper. Accepted:{' '}
+                <span className="text-nv-text">{ATTACH_LABEL}</span> — plain-text formats we can read instantly
+                and exactly. PDFs and Word files aren't accepted, because partially-decoded text quietly
+                corrupts the report; paste the relevant part into the box above instead.
+              </span>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept={ATTACH_ACCEPT}
+                onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }}
+                className="hidden"
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="flex items-center gap-2 text-[12px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:border-accent hover:text-accent transition-fast"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+                </svg>
+                Choose files
+              </button>
+              {attachError && <p className="text-[11px] text-red-400 mt-2">{attachError}</p>}
+              {docs.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-2.5">
+                  {docs.map((d) => (
+                    <span key={d.name} className="flex items-center gap-1.5 text-[11px] px-2 py-1 rounded-md bg-nv-surface border border-nv-border text-nv-muted">
+                      <span className="text-accent">📄</span>
+                      <span className="max-w-[180px] truncate">{d.name}</span>
+                      <span className="text-nv-faint font-mono text-[9px]">{Math.max(1, Math.round(d.content.length / 1000))}k</span>
+                      <button onClick={() => setDocs((p) => p.filter((x) => x.name !== d.name))} className="text-nv-faint hover:text-red-400 ml-0.5">✕</button>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Geography */}
-            <div className="mb-4">
-              <label className="text-[10px] text-nv-faint uppercase tracking-widest font-mono block mb-1.5">Geography focus</label>
+            <div className="mb-5">
+              <span className="text-[12px] font-medium text-nv-text block mb-2">Which market?</span>
               <div className="flex gap-2">
                 {(['india', 'global'] as const).map(g => (
                   <button
                     key={g}
                     onClick={() => setGeo(g)}
-                    className={`text-[11px] px-4 py-2 rounded-lg border font-mono transition-fast capitalize ${
+                    className={`text-[12px] px-4 py-2 rounded-lg border transition-fast ${
                       geo === g
-                        ? 'border-accent bg-accent/10 text-accent'
-                        : 'border-nv-border text-nv-faint hover:border-nv-muted hover:text-nv-muted'
+                        ? 'border-accent bg-accent/10 text-accent font-medium'
+                        : 'border-nv-border text-nv-muted hover:border-nv-faint hover:text-nv-text'
                     }`}
                   >
-                    {g === 'india' ? '🇮🇳 India' : '🌍 Global'}
+                    {g === 'india' ? '🇮🇳  India' : '🌍  Global'}
                   </button>
                 ))}
               </div>
             </div>
 
             {/* Focus areas */}
-            <div className="mb-6">
-              <p className="text-[10px] text-nv-faint uppercase tracking-widest font-mono mb-2">
-                Extra focus areas <span className="normal-case text-nv-faint/60">(optional)</span>
-              </p>
+            <div className="mb-8">
+              <span className="text-[12px] font-medium text-nv-text block mb-1.5">
+                Go deeper on <span className="text-nv-faint font-normal">— optional</span>
+              </span>
+              <span className="text-[11.5px] leading-[1.6] text-nv-muted block mb-2">
+                Pick any that matter and we'll aim the searches at them.
+              </span>
               <div className="flex flex-wrap gap-2">
                 {FOCUS_OPTIONS.map(opt => {
                   const active = focus.includes(opt.id);
@@ -516,10 +707,10 @@ Write the competitive intelligence report now.`;
                     <button
                       key={opt.id}
                       onClick={() => toggleFocus(opt.id)}
-                      className={`text-[11px] px-3 py-1.5 rounded-lg border transition-fast font-mono ${
+                      className={`text-[12px] px-3 py-1.5 rounded-lg border transition-fast ${
                         active
-                          ? 'border-accent/50 bg-accent/10 text-accent'
-                          : 'border-nv-border text-nv-faint hover:border-nv-muted hover:text-nv-muted'
+                          ? 'border-accent/50 bg-accent/10 text-accent font-medium'
+                          : 'border-nv-border text-nv-muted hover:border-nv-faint hover:text-nv-text'
                       }`}
                     >
                       {active && <span className="mr-1">✓</span>}{opt.label}
@@ -532,7 +723,7 @@ Write the competitive intelligence report now.`;
             <button
               onClick={handleResearch}
               disabled={!description.trim()}
-              className="flex items-center gap-2 px-5 py-2.5 bg-accent text-white text-[12px] font-semibold rounded-xl hover:bg-accent-dim transition-fast disabled:opacity-40 disabled:cursor-not-allowed"
+              className="flex items-center gap-2 px-5 py-2.5 bg-accent text-white text-[12.5px] font-semibold rounded-xl hover:bg-accent-dim transition-fast disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <svg viewBox="0 0 16 16" fill="none" className="w-3.5 h-3.5">
                 <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.6"/>
@@ -540,6 +731,7 @@ Write the competitive intelligence report now.`;
               </svg>
               Research my market
             </button>
+            <p className="text-[11px] text-nv-faint mt-2">Usually takes one to two minutes.</p>
 
             {savedResearches.length > 0 && (
               <div className="mt-8">
@@ -623,7 +815,41 @@ Write the competitive intelligence report now.`;
               </div>
             )}
 
-            {/* Step 2: Analysis */}
+            {/* Step 2: Reading competitor sites */}
+            {(stage === 'reading' || stage === 'analyzing' || stage === 'done' || stage === 'error') && brands.length > 0 && (
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <div className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 ${stage === 'reading' ? 'bg-accent/20' : 'bg-nv-green/20'}`}>
+                    {stage === 'reading' ? (
+                      <span className="w-2 h-2 rounded-full bg-accent" style={{ animation: 'pulse 1s ease-in-out infinite' }} />
+                    ) : (
+                      <svg viewBox="0 0 12 12" fill="none" className="w-2.5 h-2.5">
+                        <path d="M2 6l3 3 5-5" stroke="#22c55e" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    )}
+                  </div>
+                  <span className="text-[11px] font-semibold text-nv-text font-mono">
+                    {stage === 'reading' ? 'Reading competitor websites…' : `Read ${brands.length} competitor site${brands.length === 1 ? '' : 's'}`}
+                  </span>
+                </div>
+                <div className="ml-6 space-y-1.5">
+                  {brands.map((b) => (
+                    <div key={b.domain} className="flex items-center gap-2">
+                      <div className="mt-0 w-1.5 h-1.5 rounded-full shrink-0 bg-nv-green" />
+                      <span className="text-[11px] text-nv-muted font-mono truncate max-w-[220px]">{b.domain}</span>
+                      {/* Their actual palette, so the report's colour claims are visibly grounded */}
+                      <span className="flex gap-1 shrink-0">
+                        {b.colors.map((c) => (
+                          <span key={c} title={c} className="w-3 h-3 rounded-sm border border-nv-border" style={{ background: c }} />
+                        ))}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Step 3: Analysis */}
             {(stage === 'analyzing' || stage === 'done' || stage === 'error') && (
               <div>
                 <div className="flex items-center gap-2 mb-1">
