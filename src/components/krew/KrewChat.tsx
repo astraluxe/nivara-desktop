@@ -4328,8 +4328,7 @@ The prompt must be production-ready — specific enough for a motion designer to
   async function launchOutreachFromConnections(max = 50, focus = '', userText = '') {
     if (busy) return;
     const sid = await ensureSession('LinkedIn outreach');
-    const chips = attachedFiles.map((f) => `[[file]] ${f.name}`).join('
-');
+    const chips = attachedFiles.map((f) => `[[file]] ${f.name}`).join('\n');
     const shownUser = (userText || (focus ? `Draft outreach for my LinkedIn connections — ${focus}` : 'Draft outreach for my LinkedIn connections and open the copilot')) + (chips ? `\n${chips}` : '');
     addMsg({ role: 'user', content: shownUser });
     if (sid) krewDb.saveMessage(sid, 'user', shownUser).catch(() => {});
