@@ -56,28 +56,33 @@ const TABS: { id: Tab; label: string; sub: string; icon: React.ReactNode }[] = [
   },
 ];
 
-function UpgradeWall({ title, body }: { title: string; body: string }) {
+function UpgradeWall({ title, body, points }: { title: string; body: string; points?: string[] }) {
   return (
-    <div className="flex flex-col items-center justify-center h-full gap-5 p-8 text-center">
-      <div className="w-14 h-14 rounded-2xl flex items-center justify-center bg-accent/10">
-        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-accent">
-          <path d="M12 2 3 6v7c0 5 3.9 9.3 9 10 5.1-.7 9-5 9-10V6z"/>
-          <path d="M9 12l2 2 4-4"/>
-        </svg>
+    <div className="h-full overflow-y-auto">
+      <div className="max-w-[520px] mx-auto px-7 py-14">
+        <div className="w-12 h-12 rounded-2xl flex items-center justify-center bg-accent/10 mb-5">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-accent">
+            <path d="M12 2 3 6v7c0 5 3.9 9.3 9 10 5.1-.7 9-5 9-10V6z" />
+            <path d="M9 12l2 2 4-4" />
+          </svg>
+        </div>
+        <h1 className="nv-title mb-2.5">{title}</h1>
+        <p className="nv-prose mb-5">{body}</p>
+        {points && (
+          <ul className="list-disc pl-5 mb-6">
+            {points.map((p) => <li key={p} className="nv-prose mb-1.5">{p}</li>)}
+          </ul>
+        )}
+        <a
+          href="https://adris.tech/pricing"
+          target="_blank"
+          rel="noreferrer"
+          className="inline-block px-5 py-2.5 rounded-xl text-[12.5px] font-semibold text-white transition-opacity hover:opacity-90"
+          style={{ background: 'var(--accent)' }}
+        >
+          See plans
+        </a>
       </div>
-      <div>
-        <p className="text-[16px] font-semibold text-nv-text tracking-tight">{title}</p>
-        <p className="text-[12px] text-nv-muted mt-1.5 max-w-xs leading-relaxed">{body}</p>
-      </div>
-      <a
-        href="https://adris.tech/pricing"
-        target="_blank"
-        rel="noreferrer"
-        className="px-5 py-2.5 rounded-xl text-[13px] font-semibold text-white transition-opacity hover:opacity-90"
-        style={{ background: 'var(--accent)' }}
-      >
-        Upgrade to Builder →
-      </a>
     </div>
   );
 }
@@ -110,8 +115,14 @@ export default function GuardModule() {
   if (!planCfg.guardAccess) {
     return (
       <UpgradeWall
-        title="Guard is on Builder+"
-        body="Contract scanning, threat monitoring, and compliance checks are available on the Builder plan and above."
+        title="Guard keeps an eye on the risky parts"
+        body="Guard reads the documents and systems most likely to cost you money or trust, and tells you in plain language what to fix. It's available on Builder and above."
+        points={[
+          'Contract scanning — what a contract actually commits you to, and the clauses worth pushing back on.',
+          'Threat monitoring — suspicious email and account activity, flagged before it becomes a problem.',
+          'Dependency briefing — known vulnerabilities in the packages your project depends on.',
+          'Compliance checks — whether your policy docs and config files say what they need to.',
+        ]}
       />
     );
   }
@@ -119,8 +130,8 @@ export default function GuardModule() {
   if (isSoloLimited && usesThisMonth > limit!) {
     return (
       <UpgradeWall
-        title="You've used all 10 Guard scans this month"
-        body="Upgrade to Builder to get unlimited Guard access — contract scanning, compliance checks, and threat monitoring with no monthly cap."
+        title="You've used this month's Guard scans"
+        body={`Your plan includes ${limit} scans a month and they're all used. The allowance resets at the start of next month, or Builder removes the cap entirely.`}
       />
     );
   }
@@ -129,6 +140,27 @@ export default function GuardModule() {
 
   return (
     <div className="flex flex-col h-full bg-nv-bg">
+      {/* Page header — says what this module is for before showing four unexplained tabs */}
+      <div className="px-5 pt-4 pb-3 border-b border-nv-border shrink-0">
+        <div className="flex items-start gap-3">
+          <div className="flex-1 min-w-0">
+            <p className="nv-eyebrow text-accent mb-1">Security</p>
+            <h1 className="text-[18px] font-semibold text-nv-text leading-tight">Guard</h1>
+            <p className="nv-prose-sm mt-1 max-w-[560px]">
+              Reads your contracts, dependencies, inbox and config for the things that quietly cost you
+              money or trust — and explains each finding in plain language.
+            </p>
+          </div>
+          {usesLeft !== null && (
+            <span className={`text-[10px] font-mono px-2 py-1 rounded-lg border shrink-0 ${
+              usesLeft <= 2 ? 'text-nv-bad border-nv-bad/40 bg-nv-bad/10' : 'text-nv-muted border-nv-border'
+            }`}>
+              {usesLeft} of {limit} scans left
+            </span>
+          )}
+        </div>
+      </div>
+
       {/* Tab bar */}
       <div className="flex items-stretch border-b border-nv-border px-3 shrink-0 bg-nv-surface">
         {TABS.map(t => (
@@ -145,21 +177,18 @@ export default function GuardModule() {
               {t.icon}
             </span>
             <div className="flex flex-col items-start">
-              <span className="text-[11px] font-medium leading-tight">{t.label}</span>
-              <span className="text-[9px] font-mono opacity-60 leading-tight">{t.sub}</span>
+              <span className="text-[12px] font-medium leading-tight">{t.label}</span>
+              <span className="text-[10px] leading-tight opacity-70">{t.sub}</span>
             </div>
           </button>
         ))}
-        <div className="ml-auto flex items-center gap-3 pr-3">
-          {usesLeft !== null && (
-            <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full border ${
-              usesLeft <= 2 ? 'text-nv-bad border-nv-bad/40 bg-nv-bad/10' : 'text-nv-faint border-nv-border'
-            }`}>
-              {usesLeft}/{limit} left · <a href="https://adris.tech/pricing" target="_blank" rel="noreferrer" className="underline hover:text-accent">upgrade</a>
-            </span>
-          )}
-          <span className="text-[9px] font-mono text-nv-faint tracking-widest uppercase">Guard · Security Suite</span>
-        </div>
+        {usesLeft !== null && usesLeft <= 2 && (
+          <div className="ml-auto flex items-center pr-3">
+            <a href="https://adris.tech/pricing" target="_blank" rel="noreferrer" className="text-[10px] text-accent hover:underline">
+              Remove the cap
+            </a>
+          </div>
+        )}
       </div>
 
       {/* Tab content */}

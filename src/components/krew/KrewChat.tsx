@@ -30,6 +30,15 @@ import SkillsPanel from './SkillsPanel';
 import OutreachCopilot, { type OutreachCampaign, type OutreachContact, loadSavedCampaign } from './OutreachCopilot';
 import TodoPanel from './TodoPanel';
 import Icon, { type IconName } from '../Icon';
+
+// Which saved campaign the user has hidden the reopen-pill for. Stored rather than kept in state
+// because KrewChat unmounts whenever the user leaves the chat view.
+const PILL_DISMISS_KEY = 'nv-outreach-pill-dismissed';
+/** Identity of a campaign for dismissal purposes: a NEW draft (more people) shows the pill again,
+ *  but merely marking people as sent does not. */
+function campaignSig(c: OutreachCampaign): string {
+  return `${c.title}|${c.contacts.length}`;
+}
 import { loadSettings } from '../../modules/SettingsModule';
 import { todos, TODO_EVENT, type TodoItem } from '../../lib/todoStore';
 
@@ -2852,9 +2861,18 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
   const [showQuotaUpgrade,  setShowQuotaUpgrade]   = useState(false);
   const [monthlyUsed,       setMonthlyUsed]         = useState(0);
   const [outreachCampaign,  setOutreachCampaign]    = useState<OutreachCampaign | null>(null);
-  // Reopen-pill state. `dismissed` lets the user hide the pill; `brainTick` forces the pill to
-  // re-evaluate whenever the Brain changes (so deleting the outreach note there removes it here too).
-  const [outreachPillDismissed, setOutreachPillDismissed] = useState(false);
+  // Reopen-pill state. The dismissal must be PERSISTED, not component state: KrewModule mounts this
+  // component as `{view === 'chat' && <KrewChat/>}`, so visiting the agent grid, Connect Apps or
+  // Research unmounts it — plain state reset to false and the pill reappeared, which read as the ✕
+  // simply not working. Keyed by campaign so a newly drafted one shows the pill again.
+  const [pillDismissedSig, setPillDismissedSig] = useState<string>(
+    () => { try { return localStorage.getItem(PILL_DISMISS_KEY) ?? ''; } catch { return ''; } },
+  );
+  function dismissOutreachPill(camp: OutreachCampaign) {
+    const sig = campaignSig(camp);
+    setPillDismissedSig(sig);
+    try { localStorage.setItem(PILL_DISMISS_KEY, sig); } catch { /* quota */ }
+  }
   const [brainTick, setBrainTick] = useState(0);
   useEffect(() => {
     const bump = () => setBrainTick((t) => t + 1);
@@ -2862,7 +2880,11 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
     return () => window.removeEventListener(BRAIN_EVENT, bump);
   }, []);
   // Any time the popup opens (new draft OR reopen), un-hide the pill so it comes back after closing.
-  useEffect(() => { if (outreachCampaign) setOutreachPillDismissed(false); }, [outreachCampaign]);
+  useEffect(() => {
+    if (!outreachCampaign) return;
+    setPillDismissedSig('');
+    try { localStorage.removeItem(PILL_DISMISS_KEY); } catch { /* ignore */ }
+  }, [outreachCampaign]);
   // The last drafted outreach campaign, so we can offer a "Reopen copilot" button when the popup is
   // closed. It reflects the MOST RECENT campaign (drafting more contacts overwrites it, so the count
   // updates on the next run). Hidden if the user deleted its note from the Brain.
@@ -2874,8 +2896,9 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
     // per-contact status. The Brain note is only a human-readable mirror, so it must NEVER gate
     // access to the drafts: requiring an exact title + kind:'outreach' match there meant a single
     // mismatch silently stranded a whole drafted campaign with no way back to it.
+    if (campaignSig(saved) === pillDismissedSig) return null;   // user hid this one
     return saved;
-  }, [outreachCampaign, brainTick]);
+  }, [outreachCampaign, brainTick, pillDismissedSig]);
   // When a "/" command needs a file (its value has a <file name> slot), we open a picker instead of
   // dumping raw "<file name>" text — the user clicks a real file from their Brain / attachments.
   // ── To-do panel ───────────────────────────────────────────────────────────
@@ -6015,7 +6038,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
         {/* Reopen the outreach copilot — shows whenever a drafted campaign is saved but the popup is
             closed, so the user can get it back without re-drafting (also available as /continue).
             The ✕ hides it; it comes back next time outreach is drafted or reopened. */}
-        {savedOutreach && !outreachPillDismissed && (
+        {savedOutreach && (
           <div className="mx-2 mb-1 flex items-center gap-1 shrink-0">
             <button
               onClick={() => setOutreachCampaign(savedOutreach)}
@@ -6025,7 +6048,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
               <span className="truncate">Reopen outreach copilot ({savedOutreach.contacts.length})</span>
             </button>
             <button
-              onClick={() => setOutreachPillDismissed(true)}
+              onClick={() => dismissOutreachPill(savedOutreach)}
               title="Hide"
               className="p-1.5 rounded-lg border border-nv-border text-nv-faint hover:text-nv-text hover:bg-nv-surface2 transition-fast shrink-0"
             >

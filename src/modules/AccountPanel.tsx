@@ -38,10 +38,16 @@ export default function AccountPanel() {
   const [tokenUsed, setTokenUsed] = useState<number | null>(null);
 
   useEffect(() => {
-    getMonthlyUsage().then((used) => setTokenUsed(used)).catch(() => {});
+    // Free/explore quotas are LIFETIME, not monthly. Passing the flag matters: without it this
+    // panel counted only the current month while Home, Krew and Coder counted lifetime, so the
+    // same allowance was reported as two different numbers depending on where you looked.
+    const pl = profile?.plan ?? 'explore';
+    getMonthlyUsage(pl === 'free' || pl === 'explore').then((used) => setTokenUsed(used)).catch(() => {});
     const un = listen<{ tokens: number }>('nivara-tokens', (e) => setTokenUsed((p) => (p ?? 0) + (e.payload?.tokens || 0)));
     return () => { un.then((f) => f()).catch(() => {}); };
-  }, []);
+    // Re-read once the profile arrives — the plan decides monthly vs lifetime, and on first render
+    // it is still null.
+  }, [profile?.plan]);
 
   async function runDiag() {
     setDiagRunning(true);
