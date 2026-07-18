@@ -288,7 +288,7 @@ Content/theme: ${description}`;
 
             {/* Format picker */}
             <div>
-              <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-2">Format</p>
+              <p className="nv-eyebrow text-nv-muted mb-2">Format</p>
               <div className="grid grid-cols-1 gap-1.5">
                 {FORMATS.map((f) => (
                   <button
@@ -317,7 +317,7 @@ Content/theme: ${description}`;
 
             {/* Style picker */}
             <div>
-              <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-2">Style</p>
+              <p className="nv-eyebrow text-nv-muted mb-2">Style</p>
               <div className="grid grid-cols-1 gap-1.5">
                 {STYLES.map((s) => (
                   <button
@@ -345,7 +345,7 @@ Content/theme: ${description}`;
 
             {/* Description */}
             <div>
-              <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-2">Content description</p>
+              <p className="nv-eyebrow text-nv-muted mb-2">Content description</p>
               <textarea
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}

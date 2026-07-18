@@ -258,7 +258,7 @@ export default function HomeModule({ onNavigate, onStartTour }: Props) {
 
           {/* Continue project */}
           <div className="bg-nv-surface border border-nv-border rounded-xl p-4 flex flex-col shrink-0">
-            <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-3">Continue</p>
+            <p className="nv-eyebrow text-nv-muted mb-3">Continue</p>
             {lastProject ? (
               <>
                 <div className="flex items-center gap-2 mb-0.5 min-w-0">
@@ -288,7 +288,7 @@ export default function HomeModule({ onNavigate, onStartTour }: Props) {
           {/* Tasks */}
           <div className="bg-nv-surface border border-nv-border rounded-xl p-4 shrink-0">
             <div className="flex items-center justify-between mb-2">
-              <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono">Tasks</p>
+              <p className="nv-eyebrow text-nv-muted">Tasks</p>
               <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${PLAN_STYLE[plan] ?? PLAN_STYLE.explore}`}>{plan}</span>
             </div>
             {(() => {
@@ -316,7 +316,7 @@ export default function HomeModule({ onNavigate, onStartTour }: Props) {
 
           {/* Recent sessions */}
           <div className="bg-nv-surface border border-nv-border rounded-xl p-4 flex-1 min-h-0 overflow-hidden flex flex-col">
-            <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-2 shrink-0">Recent sessions</p>
+            <p className="nv-eyebrow text-nv-muted mb-2 shrink-0">Recent sessions</p>
             <div className="flex-1 overflow-y-auto space-y-2">
               {!sessionsLoaded ? (
                 <>
@@ -342,7 +342,7 @@ export default function HomeModule({ onNavigate, onStartTour }: Props) {
 
         {/* CENTRE — Module grid (2×3) */}
         <div className="p-4 overflow-hidden">
-          <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-3">Modules</p>
+          <p className="nv-eyebrow text-nv-muted mb-3">Modules</p>
           <div className="grid grid-cols-3 gap-3 overflow-y-auto content-start" style={{ maxHeight: 'calc(100% - 28px)' }}>
             {MODULE_CARDS.map((card) => (
               <div
@@ -374,10 +374,10 @@ export default function HomeModule({ onNavigate, onStartTour }: Props) {
 
         {/* RIGHT col — System info */}
         <div className="flex flex-col gap-3 p-4 border-l border-nv-border overflow-hidden">
-          <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono shrink-0">System</p>
+          <p className="nv-eyebrow text-nv-muted shrink-0">System</p>
 
           <div className="bg-nv-surface border border-nv-border rounded-xl p-4 shrink-0">
-            <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-2">RAM</p>
+            <p className="nv-eyebrow text-nv-muted mb-2">RAM</p>
             {sysInfo ? (
               <>
                 <div className="flex items-baseline justify-between mb-1.5">
@@ -396,7 +396,7 @@ export default function HomeModule({ onNavigate, onStartTour }: Props) {
           </div>
 
           <div className="bg-nv-surface border border-nv-border rounded-xl p-4 shrink-0">
-            <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-2">CPU</p>
+            <p className="nv-eyebrow text-nv-muted mb-2">CPU</p>
             {sysInfo ? (
               <>
                 <p className="text-nv-text text-[13px] font-semibold">{sysInfo.cpu_count} cores</p>
@@ -411,7 +411,7 @@ export default function HomeModule({ onNavigate, onStartTour }: Props) {
           </div>
 
           <div className="bg-nv-surface border border-nv-border rounded-xl p-4 shrink-0">
-            <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-2">Sessions</p>
+            <p className="nv-eyebrow text-nv-muted mb-2">Sessions</p>
             <p className="text-nv-text text-[13px] font-semibold">{sessions.length}</p>
             <p className="text-nv-faint text-[10px] mt-1">local only</p>
           </div>
@@ -441,7 +441,7 @@ export default function HomeModule({ onNavigate, onStartTour }: Props) {
             </div>
             <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
               <p className="text-[11px] text-nv-muted leading-relaxed">{detailCard.desc}</p>
-              <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono pt-1">How to use</p>
+              <p className="nv-eyebrow text-nv-muted pt-1">How to use</p>
               <ol className="space-y-2.5">
                 {detailCard.guide.map((step, i) => (
                   <li key={i} className="flex gap-3">

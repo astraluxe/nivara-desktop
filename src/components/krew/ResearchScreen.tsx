@@ -83,13 +83,13 @@ const FOCUS_OPTIONS = [
 // ─── Minimal markdown renderer ──────────────────────────────────────────────────
 
 function renderLine(line: string, i: number): React.ReactNode {
-  if (/^## /.test(line))  return <h2 key={i} className="text-[14px] font-bold text-nv-text mt-6 mb-2">{line.slice(3)}</h2>;
-  if (/^### /.test(line)) return <h3 key={i} className="text-[12px] font-semibold text-nv-text mt-4 mb-1">{line.slice(4)}</h3>;
+  if (/^## /.test(line))  return <h2 key={i} className="nv-heading mt-7 mb-2.5 pb-1.5 border-b border-nv-border">{line.slice(3)}</h2>;
+  if (/^### /.test(line)) return <h3 key={i} className="text-[13px] font-semibold text-nv-text mt-5 mb-1.5">{line.slice(4)}</h3>;
   if (/^- /.test(line) || /^\* /.test(line)) {
     const text = line.slice(2);
     const parts = text.split(/(\*\*[^*]+\*\*)/g);
     return (
-      <li key={i} className="text-[12px] text-nv-muted ml-4 list-disc leading-relaxed">
+      <li key={i} className="nv-prose ml-5 list-disc mb-1">
         {parts.map((p, j) => p.startsWith('**') && p.endsWith('**')
           ? <strong key={j} className="text-nv-text font-semibold">{p.slice(2, -2)}</strong>
           : p
@@ -101,7 +101,7 @@ function renderLine(line: string, i: number): React.ReactNode {
     const text = line.replace(/^\d+\. /, '');
     const parts = text.split(/(\*\*[^*]+\*\*)/g);
     return (
-      <li key={i} className="text-[12px] text-nv-muted ml-4 list-decimal leading-relaxed">
+      <li key={i} className="nv-prose ml-5 list-decimal mb-1">
         {parts.map((p, j) => p.startsWith('**') && p.endsWith('**')
           ? <strong key={j} className="text-nv-text font-semibold">{p.slice(2, -2)}</strong>
           : p
@@ -112,7 +112,7 @@ function renderLine(line: string, i: number): React.ReactNode {
   if (!line.trim()) return <div key={i} className="h-2" />;
   const parts = line.split(/(\*\*[^*]+\*\*)/g);
   return (
-    <p key={i} className="text-[12px] text-nv-muted leading-relaxed">
+    <p key={i} className="nv-prose mb-2">
       {parts.map((p, j) => p.startsWith('**') && p.endsWith('**')
         ? <strong key={j} className="text-nv-text font-semibold">{p.slice(2, -2)}</strong>
         : p
@@ -735,7 +735,7 @@ Write the competitive intelligence report now.`;
 
             {savedResearches.length > 0 && (
               <div className="mt-8">
-                <p className="text-[10px] text-nv-faint uppercase tracking-widest font-mono mb-2">Previous research</p>
+                <p className="nv-eyebrow text-nv-muted mb-2">Previous research</p>
                 <div className="space-y-1.5">
                   {savedResearches.map(item => (
                     <div key={item.id} className="flex items-center gap-2 group">

@@ -9,8 +9,13 @@
   --nv-surface2: #1e1e1e;
   --nv-border:   #2a2a2a;
   --nv-text:     #f2f2f2;
-  --nv-muted:    #a1a1aa;
-  --nv-faint:    #6b6b6b;
+  /* Body copy. Lifted slightly so long passages stay comfortable on the near-black background. */
+  --nv-muted:    #b0b0ba;
+  /* Tertiary text. The old #6b6b6b measured 3.7:1 against --nv-bg — below the 4.5:1 needed for
+     readable small text — and much of the app uses it for real prose, not just captions, which is
+     why most modules looked washed out next to the ones written with --nv-muted. #8b8b95 is
+     5.8:1 and still clearly recedes behind --nv-muted. */
+  --nv-faint:    #8b8b95;
   --nv-red:      239 68 68;   /* space-separated for Tailwind opacity */
   --scrollbar:   #333333;
   --scrollbar-h: #555555;
@@ -67,6 +72,50 @@ input, textarea, [data-selectable], .select-text, [contenteditable="true"],
 p, li, td, th, pre, code, blockquote, h1, h2, h3, h4, h5, h6, .font-serif, .font-mono {
   user-select: text;
   -webkit-user-select: text;
+}
+
+/* ─── Typography scale ────────────────────────────────────────────────────────
+   The Info and Research pages read better than the rest of the app for three
+   reasons, none of them exotic: body copy is 13px with generous line-height
+   instead of 10–11px, it sits in --nv-muted instead of --nv-faint, and section
+   labels are plain medium-weight text instead of tiny uppercase monospace.
+   These classes make that reusable so modules stop re-deriving it by hand. */
+
+.nv-title {
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  color: var(--nv-text);
+}
+.nv-eyebrow {                     /* small accent line that sits above a title */
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.nv-heading {                     /* section heading inside a page */
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--nv-text);
+}
+.nv-label {                       /* the thing a field is called */
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--nv-text);
+}
+.nv-prose {                       /* explanatory copy — the main upgrade */
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--nv-muted);
+}
+.nv-prose-sm {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--nv-muted);
 }
 
 [data-tauri-drag-region] {

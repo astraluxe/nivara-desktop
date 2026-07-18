@@ -42,7 +42,7 @@ export default function ConversationList({ activeId, onSelect, onNew, onOpenApps
     <aside className="flex flex-col w-[200px] shrink-0 border-r border-nv-border bg-nv-bg h-full">
       {/* Header */}
       <div className="flex items-center justify-between px-3 h-10 border-b border-nv-border shrink-0">
-        <span className="text-[10px] text-nv-faint uppercase tracking-widest font-mono">Krew</span>
+        <span className="nv-eyebrow text-nv-muted">Krew</span>
         <button
           onClick={onNew}
           title="New conversation"

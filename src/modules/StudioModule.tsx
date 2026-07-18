@@ -2385,7 +2385,7 @@ Rules:
 
           {/* Marketing agents */}
           <section>
-            <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-1.5 px-1">Agents</p>
+            <p className="nv-eyebrow text-nv-muted mb-1.5 px-1">Agents</p>
             <div className="flex flex-wrap gap-1 mb-1">
               {STUDIO_AGENTS.map((a) => (
                 <button
@@ -2435,7 +2435,7 @@ Rules:
 
           {/* Project type */}
           <section>
-            <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-1.5 px-1">Type</p>
+            <p className="nv-eyebrow text-nv-muted mb-1.5 px-1">Type</p>
             {(['video', 'screen', 'banner', 'component'] as ProjectType[]).map((t) => (
               <button
                 key={t}
@@ -2453,7 +2453,7 @@ Rules:
 
           {/* Format */}
           <section>
-            <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-1.5 px-1">Format</p>
+            <p className="nv-eyebrow text-nv-muted mb-1.5 px-1">Format</p>
             {FORMATS[type].map((f) => (
               <button
                 key={f.id}
@@ -2471,7 +2471,7 @@ Rules:
           {/* Duration (video only) */}
           {type === 'video' && (
             <section>
-              <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-1.5 px-1">Duration</p>
+              <p className="nv-eyebrow text-nv-muted mb-1.5 px-1">Duration</p>
               <div className="flex flex-wrap gap-1">
                 {DURATIONS.map((d) => (
                   <button
@@ -2491,7 +2491,7 @@ Rules:
           {/* Style (non-video) */}
           {type !== 'video' && (
             <section>
-              <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-1.5 px-1">Style</p>
+              <p className="nv-eyebrow text-nv-muted mb-1.5 px-1">Style</p>
               {STYLES.map((s) => (
                 <button
                   key={s.id}
@@ -2511,7 +2511,7 @@ Rules:
           {history.length > 0 && (
             <section>
               <div className="flex items-center justify-between px-1 mb-1.5">
-                <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono">History</p>
+                <p className="nv-eyebrow text-nv-muted">History</p>
                 <button
                   onClick={() => setHistory([])}
                   className="text-[8px] text-nv-faint/50 hover:text-red-400 font-mono transition-fast"
@@ -3048,7 +3048,7 @@ Rules:
             )}
           </div>        ) : (
           <div className="flex-1 overflow-y-auto p-2.5">
-            <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-2 px-1">
+            <p className="nv-eyebrow text-nv-muted mb-2 px-1">
               {html ? 'Quick edits' : 'Examples'}
             </p>
             {(html ? REFINE_SUGGESTIONS[type] : EXAMPLES[type]).map((item, i) => (

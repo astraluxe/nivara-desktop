@@ -83,7 +83,7 @@ export default function FileTree({ projectPath, openFile, onFileOpen, onOpenFold
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <div className="flex items-center justify-between px-3 h-8 border-b border-nv-border shrink-0">
-        <span className="text-[10px] text-nv-faint uppercase tracking-widest font-mono">Explorer</span>
+        <span className="nv-eyebrow text-nv-muted">Explorer</span>
         <button
           onClick={openFolder}
           title="Open folder"

@@ -57,7 +57,7 @@ function Toggle({ on, onChange, label, desc }: { on: boolean; onChange: (v: bool
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="bg-nv-surface border border-nv-border rounded-xl p-5 mb-4">
-      <p className="text-[9px] text-nv-faint uppercase tracking-widest font-mono mb-3">{title}</p>
+      <p className="nv-eyebrow text-nv-muted mb-3">{title}</p>
       {children}
     </div>
   );
