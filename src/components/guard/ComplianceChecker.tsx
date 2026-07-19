@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react';
+import Icon from '../Icon';
 import { invoke } from '@tauri-apps/api/core';
 import { guardDb } from '../../lib/guardDb';
 import { callAutomationAI } from '../../lib/automationRunner';
@@ -312,7 +313,7 @@ export default function ComplianceChecker({ onScanRun }: { onScanRun?: () => voi
 
         {/* Scanning state */}
         {checking && (
-          <div className="flex flex-col items-center justify-center h-full gap-4">
+          <div className="flex flex-col items-center justify-center min-h-full gap-4 py-6">
             <div className="relative w-16 h-16">
               <div className="absolute inset-0 rounded-full border-2 border-accent/20 animate-ping" />
               <div className="absolute inset-0 rounded-full border-2 border-accent/40" style={{ animation: 'spin 1.5s linear infinite' }} />
@@ -436,7 +437,7 @@ export default function ComplianceChecker({ onScanRun }: { onScanRun?: () => voi
 
         {/* Empty / file drop state */}
         {!checking && !result && (
-          <div className="flex flex-col items-center justify-center h-full gap-5 p-8">
+          <div className="flex flex-col items-center justify-center min-h-full gap-5 p-8">
 
             {/* Drop zone */}
             <div
@@ -517,16 +518,16 @@ export default function ComplianceChecker({ onScanRun }: { onScanRun?: () => voi
                 <p className="text-[9px] font-mono text-nv-faint tracking-widest uppercase text-center mb-3">What to scan</p>
                 <div className="grid grid-cols-2 gap-2">
                   {[
-                    { icon: '{ }', label: 'Backend code', desc: 'server.js, app.py, main.go — checks for auth, logging, encryption patterns' },
-                    { icon: 'CFG', label: 'Config files', desc: '.env.example, docker-compose.yml — checks for exposed secrets, secure settings' },
-                    { icon: 'DOC', label: 'Policy docs', desc: 'PRIVACY.md, TERMS.md, SECURITY.md — checks if required docs exist and are complete' },
-                    { icon: '{}', label: 'API / schema', desc: 'routes.ts, schema.prisma, api.yaml — checks for data validation, PII handling' },
+                    { icon: 'code'   as const, label: 'Backend code', desc: 'server.js, app.py, main.go — checks auth, logging and encryption patterns' },
+                    { icon: 'gear'   as const, label: 'Config files', desc: '.env.example, docker-compose.yml — checks for exposed secrets and unsafe defaults' },
+                    { icon: 'file'   as const, label: 'Policy docs',  desc: 'PRIVACY.md, TERMS.md, SECURITY.md — checks the required docs exist and are complete' },
+                    { icon: 'grid'   as const, label: 'API / schema', desc: 'routes.ts, schema.prisma, api.yaml — checks data validation and PII handling' },
                   ].map(({ icon, label, desc }) => (
                     <div key={label} className="flex items-start gap-2.5 p-3 rounded-xl bg-nv-surface border border-nv-border">
-                      <span className="text-base shrink-0 mt-0.5 w-5 text-center">{icon}</span>
-                      <div>
-                        <p className="text-[11px] font-semibold text-nv-text">{label}</p>
-                        <p className="text-[9px] text-nv-faint leading-relaxed mt-0.5">{desc}</p>
+                      <Icon name={icon} size={15} className="shrink-0 mt-0.5 text-accent" />
+                      <div className="min-w-0">
+                        <p className="text-[11.5px] font-semibold text-nv-text leading-snug">{label}</p>
+                        <p className="text-[10.5px] text-nv-muted leading-relaxed mt-1 break-words">{desc}</p>
                       </div>
                     </div>
                   ))}

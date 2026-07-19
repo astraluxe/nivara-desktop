@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { startGuardWatch, GUARD_ALERT_EVENT, type GuardAlert } from './lib/guardWatch';
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
@@ -162,6 +163,7 @@ function AppShell() {
   const [showTour, setShowTour] = useState(false);
   const [canvasFlow, setCanvasFlow] = useState<{ nodes: Node[]; edges: Edge[] } | null>(null);
   const [missedRuns, setMissedRuns] = useState<MissedRun[]>([]);
+  const [guardAlert, setGuardAlert] = useState<GuardAlert | null>(null);
   const [meshActive, setMeshActive] = useState(false);
   const [announcement, setAnnouncement] = useState<Announcement | null>(null);
   const [showFirstRun, setShowFirstRun] = useState(false);
@@ -301,6 +303,24 @@ function AppShell() {
       })
       .catch(() => {/* silent */});
   }, [session]);
+
+  // Guard inbox watch — the product promises Guard "checks what arrives" and alerts you when
+  // something matters. Runs only while signed in; it no-ops unless Gmail is connected and the
+  // watch is left enabled in Guard.
+  useEffect(() => {
+    if (!session) return;
+    try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch { /* ignore */ }
+    const stop = startGuardWatch();
+    return () => stop();
+  }, [session]);
+
+  // Suspicious-email banner — the in-app half of the alert, so a warning is never lost just
+  // because OS notifications are denied.
+  useEffect(() => {
+    const onAlert = (e: Event) => setGuardAlert((e as CustomEvent).detail as GuardAlert);
+    window.addEventListener(GUARD_ALERT_EVENT, onAlert);
+    return () => window.removeEventListener(GUARD_ALERT_EVENT, onAlert);
+  }, []);
 
   // Desktop heartbeat — fires immediately on login, then every 60s
   useEffect(() => {
@@ -459,6 +479,34 @@ function AppShell() {
           onDismiss={() => setMissedRuns([])}
           onView={() => { setActiveModule("automation"); setMissedRuns([]); }}
         />
+      )}
+      {guardAlert && (
+        <div className="flex items-start gap-3 px-4 py-2.5 border-b shrink-0 border-red-500/40 bg-red-500/10">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9"
+            strokeLinecap="round" strokeLinejoin="round" className="text-nv-bad shrink-0 mt-0.5">
+            <path d="M12 2 3 6v7c0 5 3.9 9.3 9 10 5.1-.7 9-5 9-10V6z" /><path d="M12 8v5M12 16h.01" />
+          </svg>
+          <div className="flex-1 min-w-0">
+            <p className="text-[12px] font-semibold text-nv-text">
+              Guard flagged a suspicious email
+              <span className="ml-2 text-[9px] font-mono px-1.5 py-0.5 rounded-full border border-nv-bad/40 text-nv-bad align-middle">
+                {guardAlert.severity.toUpperCase()}
+              </span>
+            </p>
+            <p className="text-[11px] text-nv-muted leading-snug break-words mt-0.5">
+              <span className="text-nv-text">{guardAlert.subject || '(no subject)'}</span> — from {guardAlert.from}
+            </p>
+            <p className="text-[11px] text-nv-muted leading-snug break-words">{guardAlert.reason}</p>
+          </div>
+          <button
+            onClick={() => { setActiveModule('guard'); setGuardAlert(null); }}
+            className="text-[11px] px-2.5 py-1 rounded-lg bg-nv-bad/15 border border-nv-bad/40 text-nv-bad hover:bg-nv-bad/25 transition-fast shrink-0"
+          >
+            Open Guard
+          </button>
+          <button onClick={() => setGuardAlert(null)} title="Dismiss"
+            className="text-[11px] text-nv-faint hover:text-nv-text shrink-0 px-1">✕</button>
+        </div>
       )}
       <div className="flex flex-1 overflow-hidden">
         <Sidebar activeModule={activeModule} onModuleChange={setActiveModule} meshSessionActive={meshActive} />

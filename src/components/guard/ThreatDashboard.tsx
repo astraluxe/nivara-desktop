@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { guardDb, type GuardEvent, type GuardStats } from '../../lib/guardDb';
 import { credentialStore } from '../../lib/krewDb';
 import { callAutomationAI } from '../../lib/automationRunner';
+import { isWatchEnabled, setWatchEnabled, runWatchCycle, lastRunAt } from '../../lib/guardWatch';
 
 const SEV: Record<string, { text: string; bg: string; border: string }> = {
   low:  { text: 'text-nv-ok',   bg: 'bg-emerald-500/10', border: 'border-emerald-500/25' },
@@ -138,12 +139,36 @@ function StatCard({ value, label, color, icon }: { value: number; label: string;
   );
 }
 
+/**
+ * gmail_fetch_emails returns blocks of "UID/From/Subject/Date/Preview" separated by "---".
+ * Parsing it here keeps the Rust command's single text contract (shared with the Krew tool)
+ * while giving this screen the structured rows it needs.
+ */
+interface InboxEmail { uid: string; from: string; subject: string; date: string; snippet: string }
+
+export function parseEmailBlocks(raw: string): InboxEmail[] {
+  if (!raw || /^No emails found/i.test(raw.trim())) return [];
+  const field = (block: string, name: string) =>
+    (block.match(new RegExp('^' + name + ':\\s*(.*)$', 'im'))?.[1] ?? '').trim();
+  return raw
+    .split(/\n\s*---\s*\n/)
+    .map((b) => ({
+      uid:     field(b, 'UID'),
+      from:    field(b, 'From'),
+      subject: field(b, 'Subject'),
+      date:    field(b, 'Date'),
+      snippet: field(b, 'Preview'),
+    }))
+    .filter((e) => e.from || e.subject);
+}
+
 export default function ThreatDashboard({ onScanRun }: { onScanRun?: () => void }) {
   const [stats,      setStats]      = useState<GuardStats | null>(null);
   const [events,     setEvents]     = useState<GuardEvent[]>([]);
   const [scanning,   setScanning]   = useState(false);
   const [scanMsg,    setScanMsg]    = useState('');
   const [scanErr,    setScanErr]    = useState('');
+  const [watchOn,    setWatchOn]    = useState(isWatchEnabled);
   const [clearing,   setClearing]   = useState(false);
 
   const reload = useCallback(async () => {
@@ -181,15 +206,21 @@ export default function ThreatDashboard({ onScanRun }: { onScanRun?: () => void 
     try {
       const creds = await credentialStore.get('gmail').catch(() => null);
       if (!creds?.email || !creds?.app_password) {
-        setScanErr('Gmail not connected. Go to Connect Apps.');
+        setScanErr('Gmail is not connected yet. Open Connect Apps, add your Gmail address and an app password, then run the scan again.');
         return;
       }
       setScanMsg('Fetching emails…');
-      const emails = await invoke<{ subject: string; from: string; snippet: string }[]>(
-        'gmail_fetch_emails',
-        { email: creds.email, appPassword: creds.app_password, filter: '', maxCount: 20 }
-      );
-      if (!emails.length) { setScanMsg('No emails found.'); return; }
+      // gmail_fetch_emails takes `query`/`limit` (this passed `filter`/`maxCount`, so every scan
+      // failed with "missing required key query") and returns FORMATTED TEXT, not an array — the
+      // old code called .length on a string and then iterated it one character at a time.
+      const raw = await invoke<string>('gmail_fetch_emails', {
+        email:       creds.email,
+        appPassword: creds.app_password,
+        query:       'ALL',
+        limit:       20,
+      });
+      const emails = parseEmailBlocks(raw);
+      if (!emails.length) { setScanMsg('No emails found in your inbox to scan.'); return; }
 
       setScanMsg(`Analyzing ${emails.length} emails…`);
       let found = 0;
@@ -298,6 +329,41 @@ export default function ThreatDashboard({ onScanRun }: { onScanRun?: () => void 
             </button>
             {scanMsg && <p className={`text-[10px] font-mono px-2 py-1 rounded-lg ${scanMsg.startsWith('⚠') ? 'text-nv-warn bg-amber-400/8 border border-amber-400/20' : 'text-nv-ok bg-emerald-500/8 border border-emerald-500/20'}`}>{scanMsg}</p>}
             {scanErr && <p className="text-[10px] font-mono text-nv-bad px-2 py-1 rounded-lg bg-red-500/8 border border-red-500/20">{scanErr}</p>}
+
+            {/* Continuous watch — the thing the website actually promises ("Guard checks what
+                arrives"). Manual scanning alone never delivered that. */}
+            <div className="mt-1 rounded-xl border border-nv-border bg-nv-surface p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="text-[11.5px] font-medium text-nv-text">Watch my inbox</p>
+                  <p className="text-[10.5px] text-nv-muted leading-relaxed mt-0.5">
+                    Checks new mail every 10 minutes while adris.tech is open and warns you the moment
+                    something looks like phishing. Each message is judged once.
+                  </p>
+                </div>
+                <button
+                  onClick={() => { setWatchEnabled(!watchOn); setWatchOn(!watchOn); }}
+                  role="switch"
+                  aria-checked={watchOn}
+                  className={`relative shrink-0 w-9 h-5 rounded-full transition-colors duration-200 ${watchOn ? 'bg-accent' : 'bg-nv-surface2'}`}
+                >
+                  <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform duration-200 ${watchOn ? 'translate-x-4' : 'translate-x-0'}`} />
+                </button>
+              </div>
+              {watchOn && (
+                <div className="flex items-center gap-2 mt-2 pt-2 border-t border-nv-border/60">
+                  <span className="text-[10px] text-nv-faint font-mono">
+                    {lastRunAt() ? `last checked ${new Date(lastRunAt()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'first check shortly after launch'}
+                  </span>
+                  <button
+                    onClick={async () => { setScanMsg('Checking new mail…'); const n = await runWatchCycle(); setScanMsg(n > 0 ? `⚠ ${n} new suspicious email${n > 1 ? 's' : ''}` : '✓ Nothing suspicious in new mail'); reload(); }}
+                    className="ml-auto text-[10px] text-accent hover:underline shrink-0"
+                  >
+                    Check now
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="flex-1" />

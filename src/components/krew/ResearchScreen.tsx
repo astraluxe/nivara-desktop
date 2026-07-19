@@ -83,48 +83,95 @@ const FOCUS_OPTIONS = [
 
 // ─── Minimal markdown renderer ──────────────────────────────────────────────────
 
-function renderLine(line: string, i: number): React.ReactNode {
-  if (/^## /.test(line))  return <h2 key={i} className="nv-heading mt-7 mb-2.5 pb-1.5 border-b border-nv-border">{line.slice(3)}</h2>;
-  if (/^### /.test(line)) return <h3 key={i} className="text-[13px] font-semibold text-nv-text mt-5 mb-1.5">{line.slice(4)}</h3>;
-  if (/^- /.test(line) || /^\* /.test(line)) {
-    const text = line.slice(2);
-    const parts = text.split(/(\*\*[^*]+\*\*)/g);
+/** **bold**, `code`, and markdown escapes like \$ — rendered inline. */
+function renderInline(text: string): React.ReactNode[] {
+  const unescaped = text.replace(/\\([$*_`~#])/g, '$1');
+  return unescaped.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).filter(Boolean).map((p, j) => {
+    if (p.startsWith('**') && p.endsWith('**')) {
+      return <strong key={j} className="text-nv-text font-semibold">{p.slice(2, -2)}</strong>;
+    }
+    if (p.startsWith('`') && p.endsWith('`') && p.length > 2) {
+      return <code key={j} className="text-[12px] font-mono text-accent bg-accent/10 border border-accent/20 rounded px-1">{p.slice(1, -1)}</code>;
+    }
+    return <span key={j}>{p}</span>;
+  });
+}
+
+interface ListItem { text: string; depth: number }
+
+/**
+ * Block-level renderer.
+ *
+ * The previous version emitted bare <li> elements with no <ol>/<ul> around them. Browsers still
+ * drew them, but the numbering ran CONTINUOUSLY through the whole document — which is why the
+ * "5 Key Takeaways" section came out numbered 26–30. Consecutive items are now collected into a
+ * real list element, so every list restarts at 1.
+ *
+ * It also accepts INDENTED bullets ("  * Pricing: …"). The old pattern was anchored with /^\* /,
+ * so nested lines fell through to the paragraph branch and showed their raw asterisk.
+ */
+function renderMarkdown(text: string): React.ReactNode[] {
+  const lines = text.split('\n');
+  const out: React.ReactNode[] = [];
+  let i = 0;
+
+  const listBlock = (ordered: boolean, items: ListItem[], key: number) => {
+    const Tag = ordered ? 'ol' : 'ul';
     return (
-      <li key={i} className="nv-prose ml-5 list-disc mb-1">
-        {parts.map((p, j) => p.startsWith('**') && p.endsWith('**')
-          ? <strong key={j} className="text-nv-text font-semibold">{p.slice(2, -2)}</strong>
-          : p
-        )}
-      </li>
+      <Tag key={key} className={`${ordered ? 'list-decimal' : 'list-disc'} pl-5 my-2 space-y-1`}>
+        {items.map((it, n) => (
+          <li key={n} className="nv-prose" style={it.depth > 0 ? { marginLeft: it.depth * 16 } : undefined}>
+            {renderInline(it.text)}
+          </li>
+        ))}
+      </Tag>
     );
+  };
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const bullet  = line.match(/^(\s*)[-*•]\s+(.*)$/);
+    const ordered = line.match(/^(\s*)\d+[.)]\s+(.*)$/);
+
+    if (bullet || ordered) {
+      const isOrdered = !!ordered && !bullet;
+      const items: ListItem[] = [];
+      // Consume the whole run, including blank lines that merely separate items.
+      while (i < lines.length) {
+        const b = lines[i].match(/^(\s*)[-*•]\s+(.*)$/);
+        const o = lines[i].match(/^(\s*)\d+[.)]\s+(.*)$/);
+        const m = b || o;
+        if (m) {
+          if (!!o && !b !== isOrdered) break;   // a different list kind starts — close this one
+          items.push({ text: m[2], depth: Math.min(2, Math.floor(m[1].length / 2)) });
+          i++;
+        } else if (!lines[i].trim() && (lines[i + 1]?.match(/^(\s*)([-*•]|\d+[.)])\s+/))) {
+          i++;                                   // blank line inside the list
+        } else break;
+      }
+      out.push(listBlock(isOrdered, items, i));
+      continue;
+    }
+
+    if (/^#{1,3} /.test(line)) {
+      const level = line.match(/^(#{1,3}) /)![1].length;
+      const body = line.replace(/^#{1,3} /, '');
+      out.push(level <= 2
+        ? <h2 key={i} className="nv-heading mt-7 mb-2.5 pb-1.5 border-b border-nv-border">{body}</h2>
+        : <h3 key={i} className="text-[13px] font-semibold text-nv-text mt-5 mb-1.5">{body}</h3>);
+      i++; continue;
+    }
+
+    if (!line.trim()) { out.push(<div key={i} className="h-2" />); i++; continue; }
+
+    out.push(<p key={i} className="nv-prose mb-2">{renderInline(line)}</p>);
+    i++;
   }
-  if (/^\d+\. /.test(line)) {
-    const text = line.replace(/^\d+\. /, '');
-    const parts = text.split(/(\*\*[^*]+\*\*)/g);
-    return (
-      <li key={i} className="nv-prose ml-5 list-decimal mb-1">
-        {parts.map((p, j) => p.startsWith('**') && p.endsWith('**')
-          ? <strong key={j} className="text-nv-text font-semibold">{p.slice(2, -2)}</strong>
-          : p
-        )}
-      </li>
-    );
-  }
-  if (!line.trim()) return <div key={i} className="h-2" />;
-  const parts = line.split(/(\*\*[^*]+\*\*)/g);
-  return (
-    <p key={i} className="nv-prose mb-2">
-      {parts.map((p, j) => p.startsWith('**') && p.endsWith('**')
-        ? <strong key={j} className="text-nv-text font-semibold">{p.slice(2, -2)}</strong>
-        : p
-      )}
-    </p>
-  );
+  return out;
 }
 
 function ReportView({ text, streaming }: { text: string; streaming: boolean }) {
   const [copied, setCopied] = useState(false);
-  const lines = text.split('\n');
   return (
     <div className="relative">
       {text && !streaming && (
@@ -136,7 +183,7 @@ function ReportView({ text, streaming }: { text: string; streaming: boolean }) {
         </button>
       )}
       <div className="pr-20">
-        {lines.map((line, i) => renderLine(line, i))}
+        {renderMarkdown(text)}
         {streaming && (
           <span className="inline-flex items-center gap-1 ml-1 mt-2">
             {[0, 1, 2].map(j => (
@@ -451,6 +498,35 @@ Cover these 6 angles (use these as the basis for your queries):
 
     const nameContext = businessName.trim() ? `Business name: ${businessName.trim()}\n` : '';
 
+    // Only ask for the branding section when homepages were ACTUALLY read. Without this guard the
+    // model happily produced confident hex codes it had never been given — the search fallback can
+    // return no usable URLs, so brandSignals comes back empty and the whole section was invented.
+    const brandSection = brandSignals.length > 0
+      ? `\nALSO include this section before the takeaways:
+
+## How They Present Themselves
+(You have been given ${brandSignals.length} competitor homepage(s) — headline, description and brand
+colours read from the live sites. Say what they have in COMMON: the words they all lean on, the
+promises they all make, the palette the category defaults to. Then name the shared cliché and tell
+the founder how to look different, in language and in visual identity. Refer to colours by the hex
+values you were given, e.g. "#1a73e8 — the same corporate blue two of them use". Use ONLY the
+domains, taglines and colours supplied below. Do not add a competitor or a colour that is not in
+that list.)`
+      : `\nNo competitor homepages could be read this run. DO NOT include a "How They Present
+Themselves" section, and do NOT state any brand colours, hex codes or homepage taglines anywhere in
+the report — you have not seen them and guessing them would be presented to the founder as fact.`;
+
+    // Sections the user explicitly asked for. Without these the chosen focus areas only steered the
+    // SEARCH queries; the report itself had nowhere to put funding or news, so they vanished.
+    const wants = (id: string) => focus.includes(id);
+    const focusSections = [
+      wants('funding')  ? '\n\n## Funding & Investors\n(Who has raised what, from whom, and when — with amounts and dates where the data supports it. Say plainly if funding data was not found rather than guessing.)' : '',
+      wants('news')     ? '\n\n## Recent News\n(Launches, pivots, price changes and announcements from the last 12–18 months, newest first, each with roughly when it happened.)' : '',
+      wants('pricing')  ? '\n\n## Pricing Teardown\n(Every competitor\'s actual price points and packaging side by side, and where this founder can undercut or out-package them.)' : '',
+      wants('products') ? '\n\n## Feature Comparison\n(A markdown TABLE: features as rows, competitors as columns, this founder\'s product as the first column. Mark gaps honestly.)' : '',
+      wants('india')    ? '\n\n## India Specifics\n(Local pricing expectations, payment rails, compliance such as DPDP, language needs, and which competitors actually have an India presence.)' : '',
+    ].join('');
+
     const systemPrompt = `You are a senior market intelligence analyst advising a startup founder on their competitive landscape.
 
 The user has described THEIR OWN business. Your job is NOT to research some other company — it is to map the competitive landscape for THIS founder and give them actionable intelligence about who they're competing against and how to win.
@@ -476,16 +552,7 @@ Report structure (use these exact headers):
 ## 5 Key Takeaways
 (Five actionable bullets. Things the founder can act on this week or this month.)
 
-When homepage data is supplied, ALSO include this section before the takeaways:
-
-## How They Present Themselves
-(You have been given each competitor's real homepage headline, description and brand colours, read
-from their live sites. Use it to say what they have in COMMON — the words they all lean on, the
-promises they all make, the colour palette the category defaults to — and then where the gaps are.
-Name the shared cliché and tell the founder how to look different, in both language and visual
-identity. Refer to actual colours by their hex value and describe them in plain words, e.g.
-"#1a73e8 — the same corporate blue three of them use". Be concrete; never invent a colour or a
-tagline you were not given.)`;
+${brandSection}${focusSections}`;
 
     const searchContext = queries.map((q, i) => `### Query: "${q}"\n${results[i] || '[no data]'}`).join('\n\n');
 
@@ -818,6 +885,21 @@ Write the competitive intelligence report now.`;
             )}
 
             {/* Step 2: Reading competitor sites */}
+            {/* Say so when no homepage could be read — otherwise the step silently vanishes and it
+                looks like the browser stage never ran. */}
+            {(stage === 'analyzing' || stage === 'done') && brands.length === 0 && (
+              <div className="flex items-start gap-2">
+                <div className="w-4 h-4 rounded-full flex items-center justify-center shrink-0 bg-nv-yellow/20 mt-0.5">
+                  <span className="w-2 h-2 rounded-full bg-nv-yellow" />
+                </div>
+                <p className="text-[11px] text-nv-muted leading-relaxed max-w-[520px]">
+                  Couldn't read any competitor homepages this run — the search step returned no usable
+                  site links. The report is written from search results only, and deliberately leaves out
+                  brand colours and taglines rather than guessing them.
+                  {' '}Adding a Brave Search key in Connect Apps gives far richer results here.
+                </p>
+              </div>
+            )}
             {(stage === 'reading' || stage === 'analyzing' || stage === 'done' || stage === 'error') && brands.length > 0 && (
               <div>
                 <div className="flex items-center gap-2 mb-2">
