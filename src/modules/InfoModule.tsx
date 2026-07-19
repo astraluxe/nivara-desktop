@@ -22,9 +22,21 @@ const SECTIONS: { id: string; label: string }[] = [
   { id: 'vault',      label: 'Vault' },
   { id: 'mesh',       label: 'Mesh' },
   { id: 'quickbar',   label: 'Quick Bar' },
+  { id: 'guard',      label: 'Guard — security watch' },
+  { id: 'rules',      label: 'How things actually work' },
   { id: 'privacy',    label: 'Privacy' },
   { id: 'trouble',    label: 'When something goes wrong' },
 ];
+
+/** A precise question-and-answer pair — the sort of detail that saves a support message. */
+function QA({ q, children }: { q: string; children: React.ReactNode }) {
+  return (
+    <div className="my-3.5 pl-3.5 border-l-2 border-nv-border">
+      <p className="text-[12.5px] font-semibold text-nv-text mb-1">{q}</p>
+      <div className="text-[12.5px] leading-[1.7] text-nv-muted">{children}</div>
+    </div>
+  );
+}
 
 function H({ id, children }: { id: string; children: React.ReactNode }) {
   return (
@@ -429,6 +441,116 @@ export default function InfoModule() {
             A small always-on-top window for quick questions without opening the full app. It shares your
             account, your Brain and your theme, and can start automatically when your computer does.
           </P>
+
+          <H id="guard">Guard — security watch</H>
+          <P>
+            Guard is the security analyst a small business normally cannot afford. It has four parts,
+            and it is worth knowing which of them run on their own and which you start yourself.
+          </P>
+          <H3>Inbox watch — the automatic one</H3>
+          <P>
+            Turn on <span className="text-nv-text">Watch my inbox</span> in Guard and, while adris.tech is
+            open, it checks for new mail every ten minutes. Anything that looks like phishing, a spoofed
+            sender or payment fraud raises a warning banner at the top of the app and a desktop
+            notification, and is written to the event trail.
+          </P>
+          <ul className="list-disc pl-5 mb-3">
+            <Li>It needs Gmail connected in Connect Apps, using an app password rather than your main password.</Li>
+            <Li>Each message is judged once. You will never be warned twice about the same email.</Li>
+            <Li>It only reads mail that is still unread, and at most eight new messages per check.</Li>
+            <Li>It runs only while the app is open — this is not a server watching your inbox overnight.</Li>
+            <Li><span className="text-nv-text">Check now</span> forces an immediate pass if you don't want to wait.</Li>
+          </ul>
+          <H3>Contract scanner, vulnerabilities, compliance — you start these</H3>
+          <P>
+            The contract scanner reads an agreement and tells you in plain English what you are actually
+            committing to and which clauses are worth pushing back on. Vulnerabilities reads the
+            dependency files in your GitHub repositories and reports only the CVEs that affect the
+            versions you really use. Compliance checks code, config or policy documents against the
+            requirements you pick, and gives you a pass or warning for each with what to fix.
+          </P>
+          <Note>
+            Guard never deletes, moves or quarantines anything. It tells you and records it; every action
+            stays yours.
+          </Note>
+
+          <H id="rules">How things actually work</H>
+          <P>
+            The details that are easy to guess wrong. If something behaves differently from what you
+            expected, the answer is probably here.
+          </P>
+
+          <H3>Lists and /scan</H3>
+          <QA q="If I attach my connections list and run /scan, does it continue that list?">
+            It continues the list, but not because you attached it. <K>/scan</K> always reads the Brain
+            note named exactly <span className="text-nv-text">LinkedIn connections</span>, skips everyone
+            already in it, and appends the new people to it. Two consequences: attaching a
+            <em> different</em> list will not redirect the scan to it, and if you <em>rename</em> that note,
+            the scan will not find it and will start a fresh list from zero.
+          </QA>
+          <QA q="Does /outreach behave the same way?">
+            No — and this difference matters. If you attach a connections list to <K>/outreach</K>, that
+            file is authoritative and only those people are used. With nothing attached, it falls back to
+            your saved connections. So: attach for outreach, don't bother for scanning.
+          </QA>
+          <QA q="Will /outreach message the same person twice?">
+            No, provided you mark people as sent in the copilot. That status is what the next run reads.
+            There is one running campaign rather than one per run, so progress accumulates instead of
+            resetting. If you skip marking, those people look un-contacted and will be drafted again.
+          </QA>
+          <QA q="Why do I sometimes get a new note instead of my existing one updated?">
+            By default related work updates the note that already exists. You can change that in Settings
+            under Lists &amp; notes. Whatever the setting says, telling Krew
+            <span className="text-nv-text"> "continue the existing list"</span> in the chat wins for that
+            request.
+          </QA>
+
+          <H3>Research</H3>
+          <QA q="Does research really open competitor websites?">
+            It fetches their homepages directly and reads the title, hero line, description and brand
+            colours. If the search step returns no usable site links it will say so, and the report is
+            written from search results alone — it will not state brand colours it could not read.
+            Adding a Brave Search key in Connect Apps produces far better results here.
+          </QA>
+          <QA q="What do the extra focus areas actually change?">
+            Each one you tick aims the searches at that topic <em>and</em> adds a matching section to the
+            report — funding, recent news, a pricing teardown, a feature-comparison table, or India
+            specifics. Ticking none gives you the standard six-section report.
+          </QA>
+          <QA q="Which files can I attach?">
+            Plain-text formats only: MD, TXT, CSV, TSV, JSON, YAML, HTML. PDFs and Word files are refused
+            on purpose — partially decoded text quietly corrupts the analysis, which is worse than
+            attaching nothing. Paste the relevant part into the description box instead.
+          </QA>
+
+          <H3>Your allowance</H3>
+          <QA q="What uses up my monthly tokens?">
+            Only the hosted adris.tech AI. Running your own API key or a local model costs you nothing
+            from the allowance, and neither is ever blocked when the allowance runs out — so when you see
+            "limit reached", switching the connection bar to Own key or Local genuinely keeps you working.
+          </QA>
+          <QA q="Why does the number differ between screens?">
+            It shouldn't any more. Free and Explore allowances are counted for the lifetime of the account;
+            paid plans are counted per calendar month. Every screen now uses the rule that matches your
+            plan.
+          </QA>
+
+          <H3>Windows and panels</H3>
+          <QA q="I turned the Quick Bar off and can't get it back.">
+            Go to <span className="text-nv-text">Settings › Interface</span> and switch Quick Bar back on —
+            it reappears immediately, no restart needed. The bar's own menu turns it off but the switch to
+            bring it back lives in Settings.
+          </QA>
+          <QA q="I closed the outreach copilot — are my drafts gone?">
+            No. Drafts and per-person status save continuously. Get it back from the
+            <span className="text-nv-text"> Reopen outreach copilot</span> button above the message box, by
+            typing <K>/continue</K>, or from the Continue button on the To-do tab. The To-do card is the
+            one that survives deleting the chat and restarting the app.
+          </QA>
+          <QA q="Does the app keep working after I close the window?">
+            Automations can, if you set Run mode to 24/7 background in Settings. The Guard inbox watch does
+            not — it runs only while the app is open.
+          </QA>
 
           <H id="privacy">Privacy</H>
           <P>

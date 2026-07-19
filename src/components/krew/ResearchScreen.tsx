@@ -15,7 +15,7 @@ type Stage = 'idle' | 'planning' | 'searching' | 'reading' | 'analyzing' | 'done
 // Binary formats (PDF, DOCX, images) are deliberately excluded — a half-decoded PDF produces
 // garbage context that quietly poisons the report, which is worse than not attaching anything.
 const ATTACH_ACCEPT = '.md,.markdown,.txt,.csv,.tsv,.json,.yml,.yaml,.html';
-const ATTACH_LABEL  = 'MD, TXT, CSV, JSON, YAML, HTML';
+const ATTACH_LABEL  = 'MD, TXT, CSV, TSV, JSON, YAML, HTML';
 const ATTACH_MAX    = 200_000; // characters kept per file
 
 interface AttachedDoc { name: string; content: string }

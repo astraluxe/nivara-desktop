@@ -92,7 +92,9 @@ export default function VulnBriefing() {
       const res = await invoke<string>('krew_http_call', {
         url: 'https://api.github.com/user/repos?per_page=30&sort=updated',
         method: 'GET',
-        headers: JSON.stringify({ Authorization: `token ${creds.api_key}`, Accept: 'application/vnd.github+json' }),
+        // krew_http_call takes headers as a MAP, not a JSON string — passing a string made Tauri
+            // reject the call with "invalid args", so this tab never worked.
+            headers: { Authorization: `token ${creds.api_key}`, Accept: 'application/vnd.github+json', 'User-Agent': 'adris.tech-guard' },
         body: null,
       });
       const data = JSON.parse(res) as Repo[];
@@ -125,7 +127,9 @@ export default function VulnBriefing() {
           const res = await invoke<string>('krew_http_call', {
             url: `https://api.github.com/repos/${repo.full_name}/contents/${fname}`,
             method: 'GET',
-            headers: JSON.stringify({ Authorization: `token ${creds.api_key}`, Accept: 'application/vnd.github+json' }),
+            // krew_http_call takes headers as a MAP, not a JSON string — passing a string made Tauri
+            // reject the call with "invalid args", so this tab never worked.
+            headers: { Authorization: `token ${creds.api_key}`, Accept: 'application/vnd.github+json', 'User-Agent': 'adris.tech-guard' },
             body: null,
           });
           const file = JSON.parse(res);
