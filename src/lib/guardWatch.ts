@@ -6,13 +6,13 @@ import { getGuardUses, incrementGuardUse } from '../modules/GuardModule';
 import { getPlanConfig } from './planConfig';
 import { supabase } from './supabase';
 
-/** The signed-in user's plan, for the inbox-check allowance. Falls back to the safest option. */
-async function emailCheckLimit(): Promise<number | null> {
+/** The signed-in user's Guard allowance. Falls back to the safest option. */
+async function guardCheckLimit(): Promise<number | null> {
   try {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.user?.id) return 0;
     const { data } = await supabase.from('users').select('plan').eq('id', session.user.id).single();
-    return getPlanConfig((data?.plan as string) ?? 'free').guardEmailChecks;
+    return getPlanConfig((data?.plan as string) ?? 'free').guardChecks;
   } catch { return 0; }
 }
 
@@ -194,10 +194,11 @@ export async function runWatchCycle(deep = false): Promise<number> {
   // genuinely dangerous is worth a model call. `deep` (an explicit user action) skips the filter.
   const suspicious = deep ? unseen : unseen.filter((e) => triageEmail(e).score >= AI_THRESHOLD);
 
-  // Plan allowance. Only messages that actually reach the MODEL are counted — locally-cleared mail
-  // costs nothing, so a Solo user's 50 checks buy far more than 50 emails of protection.
-  const limit = await emailCheckLimit();
-  const remaining = limit === null ? Infinity : Math.max(0, limit - getGuardUses('email'));
+  // Guard's single monthly pool, shared with contract scans and compliance runs. Only messages that
+  // actually reach the MODEL are counted — locally-cleared mail costs nothing, so the allowance buys
+  // far more than its number in emails of protection.
+  const limit = await guardCheckLimit();
+  const remaining = limit === null ? Infinity : Math.max(0, limit - getGuardUses());
   if (remaining <= 0) {
     try { localStorage.setItem(LAST_RUN_KEY, String(Date.now())); } catch { /* quota */ }
     rememberUids(unseen.map((e) => e.uid));
@@ -205,7 +206,7 @@ export async function runWatchCycle(deep = false): Promise<number> {
   }
 
   const fresh = suspicious.slice(0, Math.min(MAX_PER_CYCLE, remaining));
-  if (fresh.length) incrementGuardUse('email', fresh.length);
+  if (fresh.length) incrementGuardUse(fresh.length);
   let flagged = 0;
 
   for (const em of fresh) {

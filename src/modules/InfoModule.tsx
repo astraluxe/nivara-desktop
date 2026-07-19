@@ -469,6 +469,18 @@ export default function InfoModule() {
             versions you really use. Compliance checks code, config or policy documents against the
             requirements you pick, and gives you a pass or warning for each with what to fix.
           </P>
+          <H3>What a "check" costs you</H3>
+          <P>
+            On Solo, Guard includes <span className="text-nv-text">50 checks a month</span>, and everything
+            Guard does draws from that one pool — a contract scan, a compliance run, a vulnerability
+            briefing, or a suspicious email that needed a closer look. When the pool is empty Guard stops
+            until the month resets. Builder and above are unlimited.
+          </P>
+          <P>
+            Most of your inbox never touches it. Every message is first judged by rules running on this
+            machine, and only genuinely suspicious mail costs a check — so 50 buys far more than 50 emails
+            of protection.
+          </P>
           <Note>
             Guard never deletes, moves or quarantines anything. It tells you and records it; every action
             stays yours.
