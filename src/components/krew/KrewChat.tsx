@@ -2879,12 +2879,18 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
     window.addEventListener(BRAIN_EVENT, bump);
     return () => window.removeEventListener(BRAIN_EVENT, bump);
   }, []);
-  // Any time the popup opens (new draft OR reopen), un-hide the pill so it comes back after closing.
-  useEffect(() => {
-    if (!outreachCampaign) return;
+  // Un-hiding is now an EXPLICIT action (see undismissOutreachPill), called when the user drafts a
+  // new campaign or deliberately reopens the copilot.
+  //
+  // It used to be an effect keyed on `outreachCampaign`: any time that became non-null the
+  // dismissal was wiped. Opening the copilot — including the transient set/unset that happens when
+  // a campaign is drafted or resumed — therefore undid the ✕ the user had just clicked, and the
+  // pill came straight back. The dismissal was being written to storage correctly; something else
+  // kept deleting it.
+  function undismissOutreachPill() {
     setPillDismissedSig('');
     try { localStorage.removeItem(PILL_DISMISS_KEY); } catch { /* ignore */ }
-  }, [outreachCampaign]);
+  }
   // The last drafted outreach campaign, so we can offer a "Reopen copilot" button when the popup is
   // closed. It reflects the MOST RECENT campaign (drafting more contacts overwrites it, so the count
   // updates on the next run). Hidden if the user deleted its note from the Brain.
@@ -4476,6 +4482,7 @@ The prompt must be production-ready — specific enough for a motion designer to
         channel: 'linkedin',
         contacts: merged,
       };
+      undismissOutreachPill();       // a new draft is new work — the pill is relevant again
       setOutreachCampaign(campaign); // opens the popup deterministically
       const carried = merged.length - newContacts.length;
       const done = `Opened the outreach copilot with ${pick.length} new message${pick.length === 1 ? '' : 's'}${carried > 0 ? ` (plus ${carried} already in this campaign — ${alreadyDone} of them done)` : ''}${more > 0 ? ` — ${more} more connections are saved; say "draft outreach for all ${contacts.length}" to include them` : ''}. For each one: tap **Copy message & open chat** — it copies the message and opens their LinkedIn chat box, then you just paste (Ctrl+V) and send. Every message is editable in the panel before you send it.`;
@@ -4523,7 +4530,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     if (!r) return;
     if (r.kind === 'outreach') {
       const saved = loadSavedCampaign();
-      if (saved) { setOutreachCampaign(saved); return; }
+      if (saved) { undismissOutreachPill(); setOutreachCampaign(saved); return; }
       addMsg({ role: 'assistant', content: 'That outreach campaign is no longer saved — run **/outreach** to draft a fresh one.' });
       todos.removeBySource(item.sourceKey ?? '');
       return;
@@ -4584,7 +4591,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       setTimeout(() => { const el = inputRef.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0);
       return;
     }
-    if (c.run === 'continue') { setInput(''); const saved = loadSavedCampaign(); if (saved) setOutreachCampaign(saved); else addMsg({ role: 'assistant', content: 'No outreach in progress yet — use **/outreach** to draft messages and open the copilot.' }); return; }
+    if (c.run === 'continue') { setInput(''); const saved = loadSavedCampaign(); if (saved) { undismissOutreachPill(); setOutreachCampaign(saved); } else addMsg({ role: 'assistant', content: 'No outreach in progress yet — use **/outreach** to draft messages and open the copilot.' }); return; }
     if (c.run === 'scan') {
       // Don't run immediately — drop the phrasing in so the user can attach a file (to target the
       // scan) and press Enter themselves. send() detects this and runs the deterministic scan.
