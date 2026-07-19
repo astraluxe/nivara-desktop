@@ -363,6 +363,26 @@ export default function ThreatDashboard({ onScanRun }: { onScanRun?: () => void 
                   </button>
                 </div>
               )}
+              {watchOn && (
+                <div className="mt-2 pt-2 border-t border-nv-border/60">
+                  <p className="text-[10.5px] text-nv-muted leading-relaxed">
+                    Routine checks cost you nothing: every message is first judged by rules running on this
+                    machine, and only genuinely suspicious mail is sent to the AI. Ordinary newsletters,
+                    offers and statements never reach a model.
+                  </p>
+                  <button
+                    onClick={async () => {
+                      setScanMsg('Deep scan — reading every new message with AI…');
+                      const n = await runWatchCycle(true);
+                      setScanMsg(n > 0 ? `⚠ ${n} suspicious email${n > 1 ? 's' : ''} found` : '✓ Deep scan clear');
+                      reload();
+                    }}
+                    className="mt-1.5 text-[10px] text-nv-muted hover:text-accent transition-fast underline underline-offset-2"
+                  >
+                    Run a deep scan instead — sends every new message to the AI (uses tokens)
+                  </button>
+                </div>
+              )}
             </div>
           </div>
 

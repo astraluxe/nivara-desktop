@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import ThreatDashboard  from '../components/guard/ThreatDashboard';
 import ContractScanner  from '../components/guard/ContractScanner';
 import VulnBriefing     from '../components/guard/VulnBriefing';
@@ -6,15 +6,25 @@ import ComplianceChecker from '../components/guard/ComplianceChecker';
 import { useAuth } from '../contexts/AuthContext';
 import { getPlanConfig } from '../lib/planConfig';
 
-// ── Guard usage tracking (solo plan monthly limit) ────────────────────────────
-const GUARD_USE_KEY = () => `nv-guard-uses-${new Date().toISOString().slice(0, 7)}`;
+// ── Guard usage tracking ──────────────────────────────────────────────────────
+// Contract scans and inbox checks are metered SEPARATELY: exhausting one must never disable the
+// other. Both counters reset with the calendar month (the month is part of the key).
+export type GuardMeter = 'contract' | 'email';
 
-export function getGuardUsesThisMonth(): number {
-  try { return parseInt(localStorage.getItem(GUARD_USE_KEY()) ?? '0'); } catch { return 0; }
+const meterKey = (m: GuardMeter) => `nv-guard-${m}-uses-${new Date().toISOString().slice(0, 7)}`;
+
+export function getGuardUses(meter: GuardMeter): number {
+  try { return parseInt(localStorage.getItem(meterKey(meter)) ?? '0', 10) || 0; } catch { return 0; }
 }
 
-export function incrementGuardUse(): void {
-  try { localStorage.setItem(GUARD_USE_KEY(), String(getGuardUsesThisMonth() + 1)); } catch {}
+export function incrementGuardUse(meter: GuardMeter, by = 1): void {
+  try { localStorage.setItem(meterKey(meter), String(getGuardUses(meter) + by)); } catch { /* quota */ }
+}
+
+/** Is this metered feature still available on the current plan? */
+export function guardMeterLeft(limit: number | null, meter: GuardMeter): number | null {
+  if (limit === null) return null;                       // unlimited
+  return Math.max(0, limit - getGuardUses(meter));
 }
 
 type Tab = 'dashboard' | 'contract' | 'vulns' | 'compliance';
@@ -89,28 +99,22 @@ function UpgradeWall({ title, body, points }: { title: string; body: string; poi
 
 export default function GuardModule() {
   const [tab, setTab] = useState<Tab>('dashboard');
-  const [usesThisMonth, setUsesThisMonth] = useState(getGuardUsesThisMonth);
+  const [contractUsed, setContractUsed] = useState(() => getGuardUses('contract'));
   const { profile } = useAuth();
   const planCfg = getPlanConfig(profile?.plan ?? 'free');
-  const limit = planCfg.guardLimit;
-  const isSoloLimited = planCfg.guardAccess && limit !== null;
+  const contractLimit = planCfg.guardContractScans;
 
-  // Count one use when Guard is first opened each session
-  useEffect(() => {
-    if (!planCfg.guardAccess || limit === null) return;
-    const sessionKey = 'nv-guard-session-counted';
-    if (!sessionStorage.getItem(sessionKey)) {
-      sessionStorage.setItem(sessionKey, '1');
-      incrementGuardUse();
-      setUsesThisMonth(getGuardUsesThisMonth());
-    }
-  }, [planCfg.guardAccess, limit]);
+  // Opening Guard deliberately costs NOTHING. It used to consume one of the monthly scans just for
+  // looking at the screen, so a Solo user could exhaust all ten without ever scanning anything.
+  // Only a real scan counts — see onScanRun.
 
+  // Only the contract/agreement scanner spends this meter. The inbox watch has its own, and the
+  // vulnerability + compliance tabs are not metered at all.
   const onScanRun = useCallback(() => {
-    if (limit === null) return;
-    incrementGuardUse();
-    setUsesThisMonth(getGuardUsesThisMonth());
-  }, [limit]);
+    if (contractLimit === null) return;
+    incrementGuardUse('contract');
+    setContractUsed(getGuardUses('contract'));
+  }, [contractLimit]);
 
   if (!planCfg.guardAccess) {
     return (
@@ -127,16 +131,9 @@ export default function GuardModule() {
     );
   }
 
-  if (isSoloLimited && usesThisMonth > limit!) {
-    return (
-      <UpgradeWall
-        title="You've used this month's Guard scans"
-        body={`Your plan includes ${limit} scans a month and they're all used. The allowance resets at the start of next month, or Builder removes the cap entirely.`}
-      />
-    );
-  }
-
-  const usesLeft = isSoloLimited ? Math.max(0, limit! - usesThisMonth + 1) : null;
+  // NOTE: running out of contract scans no longer walls off the whole module — the inbox watch,
+  // vulnerability briefing and compliance checks all keep working. Only the contract tab is gated.
+  const contractLeft = contractLimit === null ? null : Math.max(0, contractLimit - contractUsed);
 
   return (
     <div className="flex flex-col h-full bg-nv-bg">
@@ -151,11 +148,11 @@ export default function GuardModule() {
               money or trust — and explains each finding in plain language.
             </p>
           </div>
-          {usesLeft !== null && (
+          {contractLeft !== null && (
             <span className={`text-[10px] font-mono px-2 py-1 rounded-lg border shrink-0 ${
-              usesLeft <= 2 ? 'text-nv-bad border-nv-bad/40 bg-nv-bad/10' : 'text-nv-muted border-nv-border'
+              contractLeft <= 2 ? 'text-nv-bad border-nv-bad/40 bg-nv-bad/10' : 'text-nv-muted border-nv-border'
             }`}>
-              {usesLeft} of {limit} scans left
+              {contractLeft} of {contractLimit} contract scans left
             </span>
           )}
         </div>
@@ -182,7 +179,7 @@ export default function GuardModule() {
             </div>
           </button>
         ))}
-        {usesLeft !== null && usesLeft <= 2 && (
+        {contractLeft !== null && contractLeft <= 2 && (
           <div className="ml-auto flex items-center pr-3">
             <a href="https://adris.tech/pricing" target="_blank" rel="noreferrer" className="text-[10px] text-accent hover:underline">
               Remove the cap
@@ -194,7 +191,12 @@ export default function GuardModule() {
       {/* Tab content */}
       <div className="flex-1 overflow-hidden relative">
         {tab === 'dashboard'  && <ThreatDashboard onScanRun={onScanRun} />}
-        {tab === 'contract'   && <ContractScanner onScanRun={onScanRun} />}
+        {tab === 'contract' && (contractLeft === null || contractLeft > 0
+          ? <ContractScanner onScanRun={onScanRun} />
+          : <UpgradeWall
+              title="You've used this month's contract scans"
+              body={`Your plan includes ${contractLimit} contract scans a month and they're all used. The allowance resets at the start of next month; Builder removes the cap. Inbox monitoring, vulnerabilities and compliance are unaffected and still working.`}
+            />)}
         {tab === 'vulns'      && <VulnBriefing />}
         {tab === 'compliance' && <ComplianceChecker onScanRun={onScanRun} />}
       </div>

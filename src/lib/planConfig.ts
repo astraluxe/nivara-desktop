@@ -9,7 +9,10 @@ export interface PlanConfig {
   canJoinMesh:      boolean;
   meshDevices:      number;        // max devices in a Mesh session
   guardAccess:      boolean;
-  guardLimit:       number | null; // null = unlimited; solo gets 10/month as a taste
+  // Guard's two metered features are counted SEPARATELY — running out of contract scans must not
+  // switch off inbox monitoring, and vice versa. null = unlimited.
+  guardContractScans: number | null;  // document/agreement scans per month
+  guardEmailChecks:   number | null;  // emails examined by the inbox watch per month
   contractScanning: boolean;
   auditExport:      boolean;
   voiceToCode:      boolean;
@@ -28,7 +31,8 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     canJoinMesh:      true,
     meshDevices:      3,
     guardAccess:      false,
-    guardLimit:       null,
+    guardContractScans: null,
+    guardEmailChecks:   null,
     contractScanning: false,
     auditExport:      false,
     voiceToCode:      false,
@@ -46,7 +50,8 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     canJoinMesh:      true,
     meshDevices:      3,
     guardAccess:      false,
-    guardLimit:       null,
+    guardContractScans: null,
+    guardEmailChecks:   null,
     contractScanning: false,
     auditExport:      false,
     voiceToCode:      false,
@@ -64,7 +69,8 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     canJoinMesh:      true,
     meshDevices:      10,
     guardAccess:      true,        // Solo gets Guard as a taste — 10 scans/month
-    guardLimit:       10,
+    guardContractScans: 10,      // Solo: contract/agreement scanning is a taste
+    guardEmailChecks:   50,      // Solo: inbox watch examines up to 50 mails a month
     contractScanning: false,
     auditExport:      false,
     voiceToCode:      false,
@@ -82,7 +88,8 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     canJoinMesh:      true,
     meshDevices:      25,
     guardAccess:      true,
-    guardLimit:       null,        // unlimited
+    guardContractScans: null,    // unlimited
+    guardEmailChecks:   null,    // unlimited
     contractScanning: true,
     auditExport:      false,
     voiceToCode:      true,
@@ -100,7 +107,8 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     canJoinMesh:      true,
     meshDevices:      50,
     guardAccess:      true,
-    guardLimit:       null,
+    guardContractScans: null,
+    guardEmailChecks:   null,
     contractScanning: true,
     auditExport:      true,
     voiceToCode:      true,
@@ -118,7 +126,8 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     canJoinMesh:      true,
     meshDevices:      50,
     guardAccess:      true,
-    guardLimit:       null,
+    guardContractScans: null,
+    guardEmailChecks:   null,
     contractScanning: true,
     auditExport:      true,
     voiceToCode:      true,

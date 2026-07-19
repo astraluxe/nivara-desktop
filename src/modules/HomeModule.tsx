@@ -218,6 +218,21 @@ export default function HomeModule({ onNavigate, onStartTour }: Props) {
     return () => { un.then((f) => f()).catch(() => {}); };
   }, []);
 
+  // The live event alone is not enough: spend that happens while this module is unmounted (or in
+  // the Quick Bar, or an automation running in the background) never reaches the listener, so the
+  // meter could sit on the same number all session. Re-read the real total from the server on
+  // focus and on a timer — the same treatment the Krew meter already gets.
+  useEffect(() => {
+    const pl = profile?.plan ?? 'free';
+    const isLifetime = pl === 'free' || pl === 'explore';
+    const refresh = () => getMonthlyUsage(isLifetime).then(setMonthlyUsed).catch(() => {});
+    refresh();
+    const onFocus = () => refresh();
+    window.addEventListener('focus', onFocus);
+    const iv = setInterval(refresh, 60_000);
+    return () => { window.removeEventListener('focus', onFocus); clearInterval(iv); };
+  }, [profile?.plan]);
+
   const projectName  = lastProject?.path.split(/[/\\]/).pop() ?? null;
   const fileName     = lastProject?.file?.split(/[/\\]/).pop() ?? null;
   const ramUsedPct   = sysInfo

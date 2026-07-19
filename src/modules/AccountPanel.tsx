@@ -44,7 +44,13 @@ export default function AccountPanel() {
     const pl = profile?.plan ?? 'explore';
     getMonthlyUsage(pl === 'free' || pl === 'explore').then((used) => setTokenUsed(used)).catch(() => {});
     const un = listen<{ tokens: number }>('nivara-tokens', (e) => setTokenUsed((p) => (p ?? 0) + (e.payload?.tokens || 0)));
-    return () => { un.then((f) => f()).catch(() => {}); };
+    // Spend that happened elsewhere (Guard, Research, an automation) never reaches the listener,
+    // so re-read the authoritative total periodically instead of trusting one snapshot.
+    const refresh = () => getMonthlyUsage(pl === 'free' || pl === 'explore').then(setTokenUsed).catch(() => {});
+    const onFocus = () => refresh();
+    window.addEventListener('focus', onFocus);
+    const iv = setInterval(refresh, 60_000);
+    return () => { window.removeEventListener('focus', onFocus); clearInterval(iv); un.then((f) => f()).catch(() => {}); };
     // Re-read once the profile arrives — the plan decides monthly vs lifetime, and on first render
     // it is still null.
   }, [profile?.plan]);
