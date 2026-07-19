@@ -42,10 +42,23 @@ export async function getMonthlyUsage(isLifetime = false): Promise<number> {
       .select('tokens_consumed')
       .eq('user_id', session.user.id);
     if (!isLifetime) {
-      const monthStart = new Date();
-      monthStart.setUTCDate(1);
-      monthStart.setUTCHours(0, 0, 0, 0);
-      query = query.gte('created_at', monthStart.toISOString());
+      // Count from the BILLING period, not the calendar month. A subscription that renews on the
+      // 22nd used to get a partial allowance in its first month and then reset mid-cycle; the
+      // anchor moves when the subscription renews, so the meter returns to zero at the right time.
+      // Falls back to the calendar month for accounts that have never been stamped.
+      let periodStart: string | null = null;
+      try {
+        const { data } = await supabase
+          .from('users').select('usage_period_start').eq('id', session.user.id).single();
+        periodStart = (data?.usage_period_start as string | null) ?? null;
+      } catch { /* fall back below */ }
+      if (!periodStart) {
+        const monthStart = new Date();
+        monthStart.setUTCDate(1);
+        monthStart.setUTCHours(0, 0, 0, 0);
+        periodStart = monthStart.toISOString();
+      }
+      query = query.gte('created_at', periodStart);
     }
     const { data, error } = await query;
     if (error) return 0;
