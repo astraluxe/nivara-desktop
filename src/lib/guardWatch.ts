@@ -152,6 +152,14 @@ export function triageEmail(e: { from: string; subject: string; snippet: string 
 /** Below this, nothing is sent to a model. Tuned so ordinary promo mail never crosses it. */
 export const AI_THRESHOLD = 4;
 
+/** What each severity means, in the user's words — shown next to the badge in Guard. */
+export const SEVERITY_MEANING: Record<string, string> = {
+  high: 'Do not act on this. It asks for credentials, payment or personal details, and the sender does not check out.',
+  med:  'Treat with caution. Something is off — verify with the sender through a channel you already trust before acting.',
+  low:  'Probably fine, worth a glance. One weak signal matched but nothing else supports it.',
+  crit: 'Active threat. Do not click anything in this message.',
+};
+
 function notify(alert: GuardAlert): void {
   // OS notification when granted; the in-app event always fires so an alert is never lost.
   try {
@@ -214,7 +222,8 @@ export async function runWatchCycle(deep = false): Promise<number> {
 
       const sev = (verdict.severity === 'high' || verdict.severity === 'low') ? verdict.severity : 'med';
       await guardDb.log('phishing_detected', sev, `Phishing · ${em.from} · ${em.subject}`,
-        { from: em.from, subject: em.subject, reason: verdict.reason ?? '' });
+        { from: em.from, subject: em.subject, reason: verdict.reason ?? '',
+          signals: triageEmail(em).signals });
       notify({ from: em.from, subject: em.subject, severity: sev, reason: verdict.reason ?? 'Looks like phishing.' });
       flagged++;
     } catch { /* one bad message must not stop the cycle */ }

@@ -3,7 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { guardDb, type GuardEvent, type GuardStats } from '../../lib/guardDb';
 import { credentialStore } from '../../lib/krewDb';
 import { callAutomationAI } from '../../lib/automationRunner';
-import { isWatchEnabled, setWatchEnabled, runWatchCycle, lastRunAt } from '../../lib/guardWatch';
+import { isWatchEnabled, setWatchEnabled, runWatchCycle, lastRunAt,
+         parseEmailBlocks, triageEmail, AI_THRESHOLD, SEVERITY_MEANING } from '../../lib/guardWatch';
 
 const SEV: Record<string, { text: string; bg: string; border: string }> = {
   low:  { text: 'text-nv-ok',   bg: 'bg-emerald-500/10', border: 'border-emerald-500/25' },
@@ -49,8 +50,19 @@ function EventRow({ ev, onDelete }: { ev: GuardEvent; onDelete: (id: string) => 
   const date = new Date(ev.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' });
   const [copied, setCopied] = useState(false);
 
+  // metadata carries the analyst's reason and the local signals that escalated the message.
+  const meta = (() => {
+    try { return JSON.parse(ev.metadata ?? '{}') as { reason?: string; signals?: string[] }; }
+    catch { return {}; }
+  })();
+  const reason  = (meta.reason ?? '').trim();
+  const signals = Array.isArray(meta.signals) ? meta.signals.slice(0, 4) : [];
+
   function copyText() {
-    const txt = `[${ev.severity.toUpperCase()}] ${TYPE_LABEL[ev.event_type] ?? ev.event_type}\n${ev.description}\n${date} ${ts}`;
+    const txt = `[${ev.severity.toUpperCase()}] ${TYPE_LABEL[ev.event_type] ?? ev.event_type}\n${ev.description}`
+      + (reason ? `\nWhy: ${reason}` : '')
+      + (signals.length ? `\nSignals: ${signals.join(', ')}` : '')
+      + `\n${date} ${ts}`;
     navigator.clipboard.writeText(txt);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
@@ -65,6 +77,16 @@ function EventRow({ ev, onDelete }: { ev: GuardEvent; onDelete: (id: string) => 
         <div className="flex items-center gap-2 mb-0.5">
           <span className="text-[11px] font-medium text-nv-text truncate">{ev.description}</span>
         </div>
+        {/* Why this was flagged. A severity badge with no explanation reads as arbitrary — the
+            reason is already stored on the event, it just was not being shown. */}
+        {reason && <p className="text-[10.5px] text-nv-muted leading-relaxed mb-1 break-words">{reason}</p>}
+        {signals.length > 0 && (
+          <div className="flex flex-wrap gap-1 mb-1">
+            {signals.map((sg) => (
+              <span key={sg} className="text-[9px] px-1.5 py-0.5 rounded-md border border-nv-border text-nv-faint">{sg}</span>
+            ))}
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <span className="text-[9px] font-mono text-nv-faint">{TYPE_LABEL[ev.event_type] ?? ev.event_type}</span>
           <span className="text-[9px] text-nv-faint opacity-40">·</span>
@@ -88,7 +110,10 @@ function EventRow({ ev, onDelete }: { ev: GuardEvent; onDelete: (id: string) => 
           ✕
         </button>
       </div>
-      <span className={`text-[9px] font-mono font-semibold px-2 py-0.5 rounded-full border shrink-0 ${s.text} ${s.bg} ${s.border}`}>
+      <span
+        title={SEVERITY_MEANING[ev.severity] ?? ''}
+        className={`text-[9px] font-mono font-semibold px-2 py-0.5 rounded-full border shrink-0 cursor-help ${s.text} ${s.bg} ${s.border}`}
+      >
         {ev.severity.toUpperCase()}
       </span>
     </div>
@@ -137,29 +162,6 @@ function StatCard({ value, label, color, icon }: { value: number; label: string;
       </div>
     </div>
   );
-}
-
-/**
- * gmail_fetch_emails returns blocks of "UID/From/Subject/Date/Preview" separated by "---".
- * Parsing it here keeps the Rust command's single text contract (shared with the Krew tool)
- * while giving this screen the structured rows it needs.
- */
-interface InboxEmail { uid: string; from: string; subject: string; date: string; snippet: string }
-
-export function parseEmailBlocks(raw: string): InboxEmail[] {
-  if (!raw || /^No emails found/i.test(raw.trim())) return [];
-  const field = (block: string, name: string) =>
-    (block.match(new RegExp('^' + name + ':\\s*(.*)$', 'im'))?.[1] ?? '').trim();
-  return raw
-    .split(/\n\s*---\s*\n/)
-    .map((b) => ({
-      uid:     field(b, 'UID'),
-      from:    field(b, 'From'),
-      subject: field(b, 'Subject'),
-      date:    field(b, 'Date'),
-      snippet: field(b, 'Preview'),
-    }))
-    .filter((e) => e.from || e.subject);
 }
 
 export default function ThreatDashboard({ onScanRun }: { onScanRun?: () => void }) {
@@ -222,13 +224,24 @@ export default function ThreatDashboard({ onScanRun }: { onScanRun?: () => void 
       const emails = parseEmailBlocks(raw);
       if (!emails.length) { setScanMsg('No emails found in your inbox to scan.'); return; }
 
-      setScanMsg(`Analyzing ${emails.length} emails…`);
+      // Same local triage the background watch uses. This button had its OWN copy of the pipeline
+      // with no MIME decoding and no triage, so it sent every message to the model and judged
+      // base64 subjects — which is how routine transactional mail (payment receipts, UPI alerts,
+      // a job-application reply) came back as HIGH-severity phishing.
+      const worthChecking = emails.filter((em) => triageEmail(em).score >= AI_THRESHOLD);
+      if (!worthChecking.length) {
+        setScanMsg(`✓ Inbox clear — ${emails.length} messages checked, none suspicious`);
+        await reload();
+        return;
+      }
+
+      setScanMsg(`Analyzing ${worthChecking.length} of ${emails.length} emails…`);
       let found = 0;
-      for (const em of emails) {
+      for (const em of worthChecking) {
         try {
           const raw = await callAutomationAI(
             `Subject: ${em.subject}\nFrom: ${em.from}\nPreview: ${em.snippet}\n\nReturn ONLY JSON: {"is_phishing": true/false, "severity": "low"|"med"|"high", "reason": "<one sentence>"}`,
-            'You are a cybersecurity analyst. Respond only with valid JSON.'
+            'You are a cautious security analyst. Flag ONLY genuine phishing: credential harvesting, spoofed or lookalike senders, and payment redirection. Transactional and promotional mail from a real company — receipts, payment or UPI alerts, statements, job replies, newsletters, offers — is NOT phishing even when urgent. When unsure, answer false. Respond only with valid JSON.'
           );
           const cleanedThreat = raw.replace(/```json|```/g, '').trim();
           const jsonMatchThreat = cleanedThreat.match(/\{[\s\S]*\}/);
@@ -237,12 +250,13 @@ export default function ThreatDashboard({ onScanRun }: { onScanRun?: () => void 
           if (result.is_phishing) {
             await guardDb.log('phishing_detected', result.severity ?? 'med',
               `Phishing · ${em.from} · ${em.subject}`,
-              { from: em.from, subject: em.subject, reason: result.reason });
+              { from: em.from, subject: em.subject, reason: result.reason,
+                signals: triageEmail(em).signals });
             found++;
           }
         } catch { }
       }
-      setScanMsg(found > 0 ? `⚠ Found ${found} suspicious email${found > 1 ? 's' : ''}` : '✓ Inbox clear — no phishing detected');
+      setScanMsg(found > 0 ? `⚠ Found ${found} suspicious email${found > 1 ? 's' : ''}` : `✓ Inbox clear — ${emails.length} messages checked`);
       await reload();
     } catch (e) {
       setScanErr(`Scan failed: ${e}`);
