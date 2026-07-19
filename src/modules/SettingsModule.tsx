@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, emit } from '@tauri-apps/api/event';
 import { getVersion } from '@tauri-apps/api/app';
 import { useAuth } from '../contexts/AuthContext';
+import AiSourcePicker from '../components/AiSourcePicker';
 
 interface NvSettings {
   automationAutoRun: boolean;
@@ -253,6 +254,16 @@ export default function SettingsModule() {
               Whatever you pick here, saying <span className="text-nv-muted">“continue the existing list”</span> in chat always wins for that request.
             </p>
           </div>
+        </Section>
+
+        {/* AI source — governs every module that runs AI in the background */}
+        <Section title="Where AI runs">
+          <p className="text-[11.5px] leading-[1.6] text-nv-muted mb-3">
+            Guard scans, automations and other background work use this. Pick the hosted AI, your own
+            API key, or a model running on this machine — your own key and local models never touch
+            your monthly allowance. The Krew chat keeps its own switch in the connection bar.
+          </p>
+          <AiSourcePicker compact />
         </Section>
 
         {/* Interface */}

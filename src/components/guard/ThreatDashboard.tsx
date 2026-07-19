@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { guardDb, type GuardEvent, type GuardStats } from '../../lib/guardDb';
 import { credentialStore } from '../../lib/krewDb';
 import { callAutomationAI } from '../../lib/automationRunner';
+import AiSourcePicker from '../AiSourcePicker';
 import { isWatchEnabled, setWatchEnabled, runWatchCycle, lastRunAt,
          parseEmailBlocks, triageEmail, AI_THRESHOLD, SEVERITY_MEANING } from '../../lib/guardWatch';
 
@@ -343,6 +344,11 @@ export default function ThreatDashboard({ onScanRun }: { onScanRun?: () => void 
             </button>
             {scanMsg && <p className={`text-[10px] font-mono px-2 py-1 rounded-lg ${scanMsg.startsWith('⚠') ? 'text-nv-warn bg-amber-400/8 border border-amber-400/20' : 'text-nv-ok bg-emerald-500/8 border border-emerald-500/20'}`}>{scanMsg}</p>}
             {scanErr && <p className="text-[10px] font-mono text-nv-bad px-2 py-1 rounded-lg bg-red-500/8 border border-red-500/20">{scanErr}</p>}
+
+            {/* Where Guard's AI runs — the user's choice, not a hidden default. */}
+            <div className="mt-1">
+              <AiSourcePicker />
+            </div>
 
             {/* Continuous watch — the thing the website actually promises ("Guard checks what
                 arrives"). Manual scanning alone never delivered that. */}

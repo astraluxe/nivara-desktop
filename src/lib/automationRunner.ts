@@ -1,8 +1,8 @@
 ﻿import { invoke } from '@tauri-apps/api/core';
+import { resolveAiSource } from './aiSource';
 import { listen, emit } from '@tauri-apps/api/event';
 import { credentialStore } from './krewDb';
 import { buildTwitterOAuthHeader } from './krewTools';
-import { supabase } from './supabase';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -82,40 +82,18 @@ function uuid() { return crypto.randomUUID(); }
 
 export async function callAutomationAI(userMessage: string, systemPrompt: string): Promise<string> {
   const callId = uuid();
-  let mode = 'local';
-  let apiKey: string | null = null;
-  let provider: string | null = null;
-  let modelName: string | null = null;
 
-  try {
-    const services = await credentialStore.list();
-    const preferred = ['gemini', 'openai', 'claude'];
-    for (const svc of preferred) {
-      if (services.includes(svc)) {
-        const d = await credentialStore.get(svc).catch(() => null);
-        const key = d?.api_key || d?.access_token;
-        if (key) {
-          mode = 'own_key'; apiKey = key; provider = svc;
-          if (svc === 'gemini') modelName = 'gemini-2.5-flash-lite';
-          if (svc === 'openai') modelName = 'gpt-4o-mini';
-          if (svc === 'claude') modelName = 'claude-3-5-haiku-20241022';
-          break;
-        }
-      }
-    }
-  } catch (_e) { /* no credentials — fall back below */ }
-
-  // No BYOK key found — use adris.tech AI if user is logged in
-  let sessionToken: string | null = null;
-  if (mode === 'local') {
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.access_token) {
-        mode = 'nivara';
-        sessionToken = session.access_token;
-      }
-    } catch (_e) { /* not logged in — stay on local */ }
-  }
+  // Honour the user's explicit choice of where AI runs (Settings, or the picker in Guard).
+  // 'auto' reproduces the old behaviour: own key -> adris.tech -> local. Previously this was
+  // hardcoded with no way to see or change it, and local mode always asked for 'llama3'
+  // regardless of which model was actually downloaded.
+  const src = await resolveAiSource();
+  const mode         = src.mode;
+  const apiKey       = src.apiKey;
+  const provider     = src.provider;
+  const modelName    = src.modelName;
+  const sessionToken = src.sessionToken;
+  const localModel   = src.localModel;
 
   return new Promise<string>(async (resolve, reject) => {
     let fullText = '';
@@ -139,7 +117,7 @@ export async function callAutomationAI(userMessage: string, systemPrompt: string
       callId, mode, systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
       apiKey, provider, modelName,
-      localModel: mode === 'local' ? 'llama3' : null,
+      localModel,
       baseUrl: null, sessionToken,
     }).catch(e => { cleanup(); reject(e); });
   });
