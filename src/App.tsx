@@ -158,7 +158,7 @@ function AnnouncementModal({ ann, onClose }: { ann: Announcement; onClose: () =>
 const DISMISSED_KEY = 'nv-dismissed-announcements';
 
 function AppShell() {
-  const { session, loading } = useAuth();
+  const { session, loading, profile } = useAuth();
   const [activeModule, setActiveModule] = useState<Module>("home");
   const [showTour, setShowTour] = useState(false);
   const [canvasFlow, setCanvasFlow] = useState<{ nodes: Node[]; edges: Edge[] } | null>(null);
@@ -525,7 +525,21 @@ function AppShell() {
           {activeModule === "mesh"    && <MeshModule onSessionChange={setMeshActive} />}
           {activeModule === "brain"   && <BrainModule />}
           <BrainToKrewBridge onGoKrew={() => setActiveModule("krew")} />
-          {activeModule === "head"    && <HeadModule />}
+          {/* Head is head-only. The sidebar merely HIDES the entry, which is not a check — anything
+              that sets the active module (a nv-navigate event, a restored value) would otherwise
+              render it. The real boundary is RLS: a non-admin's queries return only their own rows,
+              and a self-promotion attempt is reverted by protect_billing_columns. This is the
+              second lock, so the screen never even appears for anyone else. */}
+          {activeModule === "head"    && (profile?.admin_level === 'head'
+            ? <HeadModule />
+            : <div className="h-full flex items-center justify-center px-8">
+                <div className="max-w-sm text-center">
+                  <p className="text-[15px] font-semibold text-nv-text mb-1.5">Not available</p>
+                  <p className="text-[12.5px] leading-relaxed text-nv-muted">
+                    This area is restricted to the account owner.
+                  </p>
+                </div>
+              </div>)}
           {activeModule === "info"     && <InfoModule />}
           {activeModule === "account"  && <AccountPanel />}
           {activeModule === "settings" && <SettingsModule />}

@@ -32,7 +32,7 @@ const PLAN_STYLE: Record<string, string> = {
 // client-side from two selects — no new tables, no new endpoints.
 
 interface PlatformStats {
-  users: number;
+  userCount: number;
   newThisWeek: number;
   activeThisMonth: number;
   byPlan: { plan: string; count: number }[];
@@ -41,6 +41,18 @@ interface PlatformStats {
   callsThisMonth: number;
   topUsers: { email: string; plan: string; tokens: number }[];
   nearingLimit: { email: string; plan: string; used: number; cap: number }[];
+  users: HeadUser[];
+}
+
+export interface HeadUser {
+  id: string;
+  email: string;
+  plan: string;
+  status: string | null;
+  blocked: boolean;
+  usedThisPeriod: number;
+  periodStart: string | null;
+  createdAt: string;
 }
 
 const PLAN_CAPS: Record<string, number> = {
@@ -50,7 +62,7 @@ const PLAN_CAPS: Record<string, number> = {
 async function loadPlatformStats(): Promise<PlatformStats | null> {
   try {
     const [{ data: users }, { data: usage }] = await Promise.all([
-      supabase.from('users').select('id, email, plan, created_at'),
+      supabase.from('users').select('id, email, plan, created_at, subscription_status, is_blocked, usage_period_start'),
       supabase.from('token_usage').select('user_id, tokens_consumed, created_at'),
     ]);
     // A non-admin only sees their own rows; that isn't a platform view, so show nothing.
@@ -85,12 +97,25 @@ async function loadPlatformStats(): Promise<PlatformStats | null> {
       .sort((a, b) => b.month - a.month);
 
     return {
-      users: users.length,
+      userCount: users.length,
       newThisWeek: users.filter((u) => new Date(u.created_at as string).getTime() >= weekAgo).length,
       activeThisMonth: activeIds.size,
       byPlan: [...planCounts.entries()].map(([plan, count]) => ({ plan, count })).sort((a, b) => b.count - a.count),
       tokensThisMonth, tokensLifetime, callsThisMonth,
       topUsers: enriched.slice(0, 5).map((e) => ({ email: e.email, plan: e.plan, tokens: e.month })),
+      users: (users as Record<string, unknown>[]).map((u) => {
+        const start = (u.usage_period_start as string | null) ?? null;
+        const since = start ? new Date(start).getTime() : monthStart.getTime();
+        const mine = rows.filter((r) => r.user_id === u.id && new Date(r.created_at).getTime() >= since);
+        return {
+          id: String(u.id), email: String(u.email ?? '—'), plan: String(u.plan ?? 'free'),
+          status: (u.subscription_status as string | null) ?? null,
+          blocked: u.is_blocked === true,
+          usedThisPeriod: mine.reduce((a, r) => a + (r.tokens_consumed ?? 0), 0),
+          periodStart: start,
+          createdAt: String(u.created_at ?? ''),
+        };
+      }).sort((a, b) => b.usedThisPeriod - a.usedThisPeriod),
       // Who is about to hit a wall — the thing worth acting on before they complain.
       nearingLimit: enriched
         .map((e) => ({ email: e.email, plan: e.plan, used: e.month, cap: PLAN_CAPS[e.plan] ?? 100_000 }))
@@ -113,6 +138,79 @@ function Stat({ label, value, hint }: { label: string; value: string; hint?: str
   );
 }
 
+// ─── Head actions ─────────────────────────────────────────────────────────────
+// Every write goes through the normal client with the Head's own JWT, so RLS decides whether it is
+// allowed — the UI never grants permission, it only offers the button. A non-head who somehow
+// reached this screen would have every one of these rejected by the database.
+const PLANS = ['free', 'explore', 'solo', 'builder', 'business', 'custom'];
+
+async function setUserPlan(id: string, plan: string) {
+  const { error } = await supabase.from('users').update({ plan }).eq('id', id);
+  if (error) throw new Error(error.message);
+}
+async function setUserBlocked(id: string, blocked: boolean) {
+  const { error } = await supabase.from('users').update({ is_blocked: blocked }).eq('id', id);
+  if (error) throw new Error(error.message);
+}
+/** Start a fresh usage period — the non-destructive way to give someone a clean slate. */
+async function resetUsagePeriod(id: string) {
+  const { error } = await supabase.from('users').update({ usage_period_start: new Date().toISOString() }).eq('id', id);
+  if (error) throw new Error(error.message);
+}
+
+function UserRow({ u, onDone }: { u: HeadUser; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr]   = useState('');
+  const cap = PLAN_CAPS[u.plan] ?? 100_000;
+  const pct = cap > 0 ? Math.min(100, Math.round((u.usedThisPeriod / cap) * 100)) : 0;
+
+  async function run(fn: () => Promise<void>) {
+    setBusy(true); setErr('');
+    try { await fn(); onDone(); }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="px-3 py-2.5 border-b border-nv-border/60 last:border-0">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[11.5px] text-nv-text flex-1 min-w-0 truncate">{u.email}</span>
+        {u.blocked && <span className="text-[9px] font-mono px-1.5 py-0.5 rounded-full border border-nv-bad/40 text-nv-bad">BLOCKED</span>}
+        <span className="text-[10px] font-mono text-nv-faint shrink-0">{fmt(u.usedThisPeriod)} · {pct}%</span>
+      </div>
+      <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+        <select
+          value={u.plan}
+          disabled={busy}
+          onChange={(e) => run(() => setUserPlan(u.id, e.target.value))}
+          className="text-[10.5px] bg-nv-surface2 border border-nv-border rounded-md px-1.5 py-0.5 text-nv-text outline-none focus:border-accent disabled:opacity-50"
+        >
+          {PLANS.map((p) => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <button
+          disabled={busy}
+          onClick={() => run(() => resetUsagePeriod(u.id))}
+          title="Start a fresh usage period. Keeps their history — only changes what counts from now."
+          className="text-[10px] px-2 py-0.5 rounded-md border border-nv-border text-nv-muted hover:text-accent hover:border-accent/40 transition-fast disabled:opacity-50"
+        >
+          Reset usage
+        </button>
+        <button
+          disabled={busy}
+          onClick={() => run(() => setUserBlocked(u.id, !u.blocked))}
+          className={`text-[10px] px-2 py-0.5 rounded-md border transition-fast disabled:opacity-50 ${
+            u.blocked ? 'border-nv-ok/40 text-nv-ok hover:bg-nv-ok/10' : 'border-nv-border text-nv-muted hover:text-nv-bad hover:border-nv-bad/40'
+          }`}
+        >
+          {u.blocked ? 'Unblock' : 'Block'}
+        </button>
+        {u.status && <span className="text-[9px] font-mono text-nv-faint">{u.status}</span>}
+      </div>
+      {err && <p className="text-[10px] text-nv-bad mt-1">{err}</p>}
+    </div>
+  );
+}
+
 const fmt = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(2)}M` : n >= 1_000 ? `${(n / 1_000).toFixed(1)}k` : String(n);
 
 export default function HeadModule() {
@@ -123,6 +221,7 @@ export default function HeadModule() {
   const [tokenUsed, setTokenUsed] = useState<number | null>(null);
 
   const [stats, setStats] = useState<PlatformStats | null>(null);
+  const [userQuery, setUserQuery] = useState('');
 
   async function load() {
     setLoading(true);
@@ -178,7 +277,7 @@ export default function HeadModule() {
       {stats && (
         <div className="px-4 py-3 border-b border-nv-border shrink-0 bg-nv-surface/40 space-y-3">
           <div className="flex flex-wrap gap-2">
-            <Stat label="Users"          value={String(stats.users)}              hint={stats.newThisWeek > 0 ? `+${stats.newThisWeek} this week` : 'no signups this week'} />
+            <Stat label="Users"          value={String(stats.userCount)}              hint={stats.newThisWeek > 0 ? `+${stats.newThisWeek} this week` : 'no signups this week'} />
             <Stat label="Active"         value={String(stats.activeThisMonth)}    hint="used AI this month" />
             <Stat label="Tokens · month" value={fmt(stats.tokensThisMonth)}       hint={`${stats.callsThisMonth} calls`} />
             <Stat label="Tokens · total" value={fmt(stats.tokensLifetime)}        hint="all time" />
@@ -222,6 +321,30 @@ export default function HeadModule() {
                 );
               })}
             </div>
+          </div>
+
+          {/* Manage people directly — plan, block, usage reset. */}
+          <div>
+            <div className="flex items-center gap-2 mb-1.5">
+              <p className="nv-eyebrow text-nv-muted">Users ({stats.users.length})</p>
+              <input
+                value={userQuery}
+                onChange={(e) => setUserQuery(e.target.value)}
+                placeholder="Filter by email or plan…"
+                className="ml-auto flex-1 max-w-[240px] bg-nv-surface2 border border-nv-border focus:border-accent rounded-md px-2 py-1 text-[11px] text-nv-text placeholder:text-nv-faint outline-none transition-fast"
+              />
+            </div>
+            <div className="rounded-xl border border-nv-border overflow-hidden max-h-[260px] overflow-y-auto">
+              {stats.users
+                .filter((u) => !userQuery.trim()
+                  || u.email.toLowerCase().includes(userQuery.toLowerCase())
+                  || u.plan.toLowerCase().includes(userQuery.toLowerCase()))
+                .map((u) => <UserRow key={u.id} u={u} onDone={load} />)}
+            </div>
+            <p className="text-[10px] text-nv-faint mt-1.5">
+              Every action here is authorised by the database, not by this screen — the same request from
+              a non-head account is rejected.
+            </p>
           </div>
 
           {tokenUsed !== null && (
