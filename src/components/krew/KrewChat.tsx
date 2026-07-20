@@ -6,7 +6,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
 import type { Node, Edge } from '@xyflow/react';
 import { krewDb, credentialStore, krewMemoryDb, type KrewMemory } from '../../lib/krewDb';
 import { listMcpServers, mcpToolDefs } from '../../lib/krewMcp';
-import { brain as brainStore, nodeToMarkdown, BRAIN_EVENT } from '../../lib/knowledgeStore';
+import { brain as brainStore, nodeToMarkdown } from '../../lib/knowledgeStore';
 import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, LEAD_TOOLS, getAutopilotTools, buildKrewSystemPrompt, executeTool, needsCompression, resetBrowserRunState, closeAgentBrowserIfActive, markBrowserPrewarmed, requestLeadStop, resetLeadStop, isLeadStopRequested, KREW_PROFILE_KEY, type ToolDef } from '../../lib/krewTools';
 import { TaskProgress, type TaskPhase } from './TaskProgress';
 import { runParallelResearch } from '../../lib/researchSources';
@@ -30,15 +30,6 @@ import SkillsPanel from './SkillsPanel';
 import OutreachCopilot, { type OutreachCampaign, type OutreachContact, loadSavedCampaign, loadResumableCampaign, saveCampaign, bestProfileUrl } from './OutreachCopilot';
 import TodoPanel from './TodoPanel';
 import Icon, { type IconName } from '../Icon';
-
-// Which saved campaign the user has hidden the reopen-pill for. Stored rather than kept in state
-// because KrewChat unmounts whenever the user leaves the chat view.
-const PILL_DISMISS_KEY = 'nv-outreach-pill-dismissed';
-/** Identity of a campaign for dismissal purposes: a NEW draft (more people) shows the pill again,
- *  but merely marking people as sent does not. */
-function campaignSig(c: OutreachCampaign): string {
-  return `${c.title}|${c.contacts.length}`;
-}
 import { loadSettings } from '../../modules/SettingsModule';
 import { todos, TODO_EVENT, type TodoItem } from '../../lib/todoStore';
 
@@ -2904,57 +2895,6 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
   const [showQuotaUpgrade,  setShowQuotaUpgrade]   = useState(false);
   const [monthlyUsed,       setMonthlyUsed]         = useState(0);
   const [outreachCampaign,  setOutreachCampaign]    = useState<OutreachCampaign | null>(null);
-  // Reopen-pill state. The dismissal must be PERSISTED, not component state: KrewModule mounts this
-  // component as `{view === 'chat' && <KrewChat/>}`, so visiting the agent grid, Connect Apps or
-  // Research unmounts it — plain state reset to false and the pill reappeared, which read as the ✕
-  // simply not working. Keyed by campaign so a newly drafted one shows the pill again.
-  const [pillDismissedSig, setPillDismissedSig] = useState<string>(
-    () => { try { return localStorage.getItem(PILL_DISMISS_KEY) ?? ''; } catch { return ''; } },
-  );
-  function dismissOutreachPill(camp?: OutreachCampaign) {
-    // Dismiss the campaign that is ACTUALLY saved right now — read from the same source the
-    // visibility memo uses (loadSavedCampaign), not the value captured when the pill last rendered.
-    // If those two ever disagree (the copilot auto-saved a changed count, a re-draft happened, or
-    // /verifylinks re-saved the campaign between render and click), the stored "dismissed" signature
-    // would never match what the memo recomputes and the ✕ would appear to do nothing. Reading fresh
-    // here guarantees the signature we store is exactly the one the memo will compare against.
-    const cur = loadResumableCampaign() || loadSavedCampaign() || camp;
-    if (!cur) return;
-    const sig = campaignSig(cur);
-    setPillDismissedSig(sig);
-    try { localStorage.setItem(PILL_DISMISS_KEY, sig); } catch { /* quota */ }
-  }
-  const [brainTick, setBrainTick] = useState(0);
-  useEffect(() => {
-    const bump = () => setBrainTick((t) => t + 1);
-    window.addEventListener(BRAIN_EVENT, bump);
-    return () => window.removeEventListener(BRAIN_EVENT, bump);
-  }, []);
-  // Un-hiding is now an EXPLICIT action (see undismissOutreachPill), called when the user drafts a
-  // new campaign or deliberately reopens the copilot.
-  //
-  // It used to be an effect keyed on `outreachCampaign`: any time that became non-null the
-  // dismissal was wiped. Opening the copilot — including the transient set/unset that happens when
-  // a campaign is drafted or resumed — therefore undid the ✕ the user had just clicked, and the
-  // pill came straight back. The dismissal was being written to storage correctly; something else
-  // kept deleting it.
-  function undismissOutreachPill() {
-    setPillDismissedSig('');
-    try { localStorage.removeItem(PILL_DISMISS_KEY); } catch { /* ignore */ }
-  }
-  // The last drafted outreach campaign, so we can offer a "Reopen copilot" button when the popup is
-  // closed. It reflects the MOST RECENT campaign (drafting more contacts overwrites it, so the count
-  // updates on the next run). Hidden if the user deleted its note from the Brain.
-  const savedOutreach = useMemo(() => {
-    if (outreachCampaign) return null; // popup already open
-    // Offer the campaign with the MOST people still to contact — so after a 1-person reply (which
-    // overwrites the "current" slot) the pill still brings you back to the 35-person outreach, and it
-    // hides once everything is done. Falls back to the last-saved campaign.
-    const saved = loadResumableCampaign() || loadSavedCampaign();
-    if (!saved) return null;
-    if (campaignSig(saved) === pillDismissedSig) return null;   // user hid this one
-    return saved;
-  }, [outreachCampaign, brainTick, pillDismissedSig]);
   // When a "/" command needs a file (its value has a <file name> slot), we open a picker instead of
   // dumping raw "<file name>" text — the user clicks a real file from their Brain / attachments.
   // ── To-do panel ───────────────────────────────────────────────────────────
@@ -4594,7 +4534,6 @@ The prompt must be production-ready — specific enough for a motion designer to
         channel: 'linkedin',
         contacts: [...carriedPrior, ...built],
       };
-      undismissOutreachPill();       // resuming/drafting is active work — the pill is relevant again
       setOutreachCampaign(campaign); // opens the popup deterministically, positioned on the first to-do
       const done = `Opened the outreach copilot with ${pick.length} message${pick.length === 1 ? '' : 's'} to send${alreadyDone > 0 ? ` — ${alreadyDone} already done are kept with their status` : ''}${more > 0 ? `; ${more} more still to do (say "draft outreach for all" to include them)` : ''}. For each: tap **Copy message & open chat**, paste (Ctrl+V) and send, then mark it. Every message is editable before you send.`;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: done, streaming: false }; return c; });
@@ -4725,7 +4664,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: summary, streaming: false }; return c; });
     if (sid) krewDb.saveMessage(sid, 'assistant', summary).catch(() => {});
     // Reopen the copilot with the corrected links so the user can carry on immediately.
-    if (fixed > 0 && campaign) { undismissOutreachPill(); setOutreachCampaign({ ...campaign, contacts }); }
+    if (fixed > 0 && campaign) { setOutreachCampaign({ ...campaign, contacts }); }
   }
 
   /**
@@ -4753,7 +4692,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     if (!r) return;
     if (r.kind === 'outreach') {
       const saved = loadResumableCampaign() || loadSavedCampaign();
-      if (saved) { undismissOutreachPill(); setOutreachCampaign(saved); return; }
+      if (saved) { setOutreachCampaign(saved); return; }
       addMsg({ role: 'assistant', content: 'That outreach campaign is no longer saved — run **/outreach** to draft a fresh one.' });
       todos.removeBySource(item.sourceKey ?? '');
       return;
@@ -4814,7 +4753,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       setTimeout(() => { const el = inputRef.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0);
       return;
     }
-    if (c.run === 'continue') { setInput(''); const saved = loadResumableCampaign() || loadSavedCampaign(); if (saved) { undismissOutreachPill(); setOutreachCampaign(saved); } else addMsg({ role: 'assistant', content: 'No outreach in progress yet — use **/outreach** to draft messages and open the copilot.' }); return; }
+    if (c.run === 'continue') { setInput(''); const saved = loadResumableCampaign() || loadSavedCampaign(); if (saved) { setOutreachCampaign(saved); } else addMsg({ role: 'assistant', content: 'No outreach in progress yet — use **/outreach** to draft messages and open the copilot.' }); return; }
     if (c.run === 'verifylinks') { setInput(''); verifyOutreachLinks(); return; }
     if (c.run === 'toggleSetting') {
       setInput('');
@@ -6303,28 +6242,6 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
           </div>
         )}
 
-        {/* Reopen the outreach copilot — shows whenever a drafted campaign is saved but the popup is
-            closed, so the user can get it back without re-drafting (also available as /continue).
-            The ✕ hides it; it comes back next time outreach is drafted or reopened. */}
-        {savedOutreach && (
-          <div className="mx-2 mb-1 flex items-center gap-1 shrink-0">
-            <button
-              onClick={() => setOutreachCampaign(savedOutreach)}
-              className="flex-1 flex items-center gap-2 text-[11px] px-2.5 py-1.5 rounded-lg border border-accent/40 bg-accent/10 text-accent hover:bg-accent/15 transition-fast min-w-0"
-            >
-              <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" fill="currentColor"><path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.14 1.45-2.14 2.94v5.67H9.34V9h3.42v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28zM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13zM7.12 20.45H3.56V9h3.56v11.45z"/></svg>
-              <span className="truncate">Reopen outreach copilot ({savedOutreach.contacts.length})</span>
-            </button>
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); e.preventDefault(); dismissOutreachPill(savedOutreach); }}
-              title="Hide"
-              className="p-1.5 rounded-lg border border-nv-border text-nv-faint hover:text-nv-text hover:bg-nv-surface2 transition-fast shrink-0"
-            >
-              <svg viewBox="0 0 24 24" className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
-            </button>
-          </div>
-        )}
 
         {/* Active tools strip */}
         {agent.key === 'boss' ? (

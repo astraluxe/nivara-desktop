@@ -554,10 +554,9 @@ export default function InfoModule() {
             bring it back lives in Settings.
           </QA>
           <QA q="I closed the outreach copilot — are my drafts gone?">
-            No. Drafts and per-person status save continuously. Get it back from the
-            <span className="text-nv-text"> Reopen outreach copilot</span> button above the message box, by
-            typing <K>/continue</K>, or from the Continue button on the To-do tab. The To-do card is the
-            one that survives deleting the chat and restarting the app.
+            No. Drafts and per-person status save continuously. Get it back by typing <K>/continue</K>, or
+            from the Continue button on the To-do tab — that card is the one that survives deleting the
+            chat and restarting the app.
           </QA>
           <QA q="Does the app keep working after I close the window?">
             Automations can, if you set Run mode to 24/7 background in Settings. The Guard inbox watch does
@@ -580,8 +579,7 @@ export default function InfoModule() {
           </P>
           <H3>The outreach panel disappeared</H3>
           <P>
-            Nothing is lost — drafts and progress are saved continuously. Bring it back with the{' '}
-            <span className="text-nv-text">Reopen outreach copilot</span> button above the message box, by typing{' '}
+            Nothing is lost — drafts and progress are saved continuously. Bring it back by typing{' '}
             <K>/continue</K>, or from the Continue button on the To-do tab.
           </P>
           <H3>A download does not start</H3>
