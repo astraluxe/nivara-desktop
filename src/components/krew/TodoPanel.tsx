@@ -12,6 +12,10 @@ const PRIORITY_META: Record<TodoPriority, { label: string; cls: string }> = {
 };
 const PRIORITY_RANK: Record<TodoPriority, number> = { high: 0, med: 1, low: 2 };
 
+function openLink(url: string): void {
+  import('@tauri-apps/plugin-shell').then(({ open }) => open(url)).catch(() => window.open(url, '_blank'));
+}
+
 /** "today" / "tomorrow" / "18 Jul" — short enough to sit inline on a row. */
 function dueLabel(ms: number): string {
   const now = Date.now();
@@ -164,7 +168,7 @@ export default function TodoPanel({ onResume }: { onResume: (item: TodoItem) => 
           return (
             <div
               key={t.id}
-              className={`group flex items-start gap-2 rounded-lg px-2 py-1.5 hover:bg-nv-surface2/60 transition-fast ${t.resume && !t.done ? 'border border-accent/30 bg-accent/[0.06] mb-1' : ''}`}
+              className={`group flex items-start gap-2 rounded-lg px-2 py-1.5 hover:bg-nv-surface2/60 transition-fast ${(t.resume || t.url) && !t.done ? 'border border-accent/30 bg-accent/[0.06] mb-1' : ''}`}
             >
               <button
                 onClick={() => { todos.toggle(t.id); setItems(todos.all()); }}
@@ -216,9 +220,10 @@ export default function TodoPanel({ onResume }: { onResume: (item: TodoItem) => 
                 )}
               </div>
 
-              {t.resume && !t.done && (
+              {(t.resume || t.url) && !t.done && (
                 <button
-                  onClick={() => onResume(t)}
+                  onClick={() => { if (t.resume) onResume(t); else if (t.url) openLink(t.url); }}
+                  title={t.url && !t.resume ? t.url : undefined}
                   className="text-[10px] px-2 py-0.5 rounded-md bg-accent text-white hover:bg-accent-dim transition-fast shrink-0 font-medium"
                 >
                   Continue

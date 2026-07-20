@@ -322,12 +322,16 @@ function AppShell() {
     return () => window.removeEventListener(GUARD_ALERT_EVENT, onAlert);
   }, []);
 
-  // Desktop heartbeat — fires immediately on login, then every 60s
+  // Desktop heartbeat — fires immediately on login, then every 5 min.
+  // Was every 60s: at ~23k UPDATEs against a 10-row `users` table, this single heartbeat was a
+  // top disk-IO consumer on the free Supabase plan (each UPDATE forces a full WAL write under
+  // Postgres MVCC). "Online status" doesn't need second-level freshness, so 5 min cuts this
+  // write volume 5x for free with no visible UX change.
   useEffect(() => {
     if (!session) return;
     const ping = async () => { try { await supabase.from('users').update({ last_desktop_ping: new Date().toISOString() }).eq('id', session.user.id); } catch {} };
     ping();
-    const id = setInterval(ping, 60_000);
+    const id = setInterval(ping, 300_000);
     return () => clearInterval(id);
   }, [session]);
 

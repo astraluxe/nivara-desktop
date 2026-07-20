@@ -6,7 +6,7 @@
 // SAME store. Agents save results here and recall them later instead of
 // re-fetching → fewer tokens, and nothing is forgotten between turns.
 
-export type BrainNodeKind = 'note' | 'file' | 'data' | 'list' | 'outreach' | 'contact' | 'source' | 'image';
+export type BrainNodeKind = 'note' | 'file' | 'data' | 'list' | 'outreach' | 'contact' | 'source' | 'image' | 'skill';
 
 // Title of the single hub node that all saved pictures (logos, photos the user drops in
 // chat) connect to — the Brain's "Pictures folder".

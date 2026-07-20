@@ -7,7 +7,7 @@ import type { Node, Edge } from '@xyflow/react';
 import { krewDb, credentialStore, krewMemoryDb, type KrewMemory } from '../../lib/krewDb';
 import { listMcpServers, mcpToolDefs } from '../../lib/krewMcp';
 import { brain as brainStore, nodeToMarkdown, BRAIN_EVENT } from '../../lib/knowledgeStore';
-import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, LEAD_TOOLS, buildKrewSystemPrompt, executeTool, needsCompression, resetBrowserRunState, closeAgentBrowserIfActive, markBrowserPrewarmed, requestLeadStop, resetLeadStop, isLeadStopRequested, KREW_PROFILE_KEY, type ToolDef } from '../../lib/krewTools';
+import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, LEAD_TOOLS, getAutopilotTools, buildKrewSystemPrompt, executeTool, needsCompression, resetBrowserRunState, closeAgentBrowserIfActive, markBrowserPrewarmed, requestLeadStop, resetLeadStop, isLeadStopRequested, KREW_PROFILE_KEY, type ToolDef } from '../../lib/krewTools';
 import { TaskProgress, type TaskPhase } from './TaskProgress';
 import { runParallelResearch } from '../../lib/researchSources';
 import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, type KrewAgent } from '../../lib/krewAgents';
@@ -67,7 +67,7 @@ async function freshSessionToken(fallback: string | null): Promise<string | null
 //  • 'prompt' → drops a ready phrasing into the input (the user reviews and sends; it routes
 //    through the normal Krew flow / deterministic short-circuits).
 //  • 'nav'    → opens another module of the exe (via the global nv-navigate event App listens to).
-type SlashCmd = { cmd: string; label: string; desc: string; run: 'prompt' | 'nav' | 'research' | 'agents' | 'outreach' | 'continue' | 'scan' | 'verifylinks'; value: string };
+type SlashCmd = { cmd: string; label: string; desc: string; run: 'prompt' | 'nav' | 'research' | 'agents' | 'outreach' | 'continue' | 'scan' | 'verifylinks' | 'toggleSetting'; value: string };
 const SLASH_COMMANDS: SlashCmd[] = [
   // ── Actions that run in the chat ─────────────────────────────────────────
   { cmd: 'verify',   label: 'Verify LinkedIn',   desc: 'Open & check every LinkedIn in your lead list',   run: 'prompt', value: 'Go to <file name> and verify each and every LinkedIn — open and check each one, and fill it in properly if it exists.' },
@@ -89,6 +89,9 @@ const SLASH_COMMANDS: SlashCmd[] = [
   { cmd: 'summarize',label: 'Summarise',         desc: 'Summarise a page, file, or text',                 run: 'prompt', value: 'Summarise this: ' },
   { cmd: 'research', label: 'Deep research',     desc: 'Open the Research workspace',                     run: 'research', value: '' },
   { cmd: 'agents',   label: 'Browse agents',     desc: 'Switch or add a specialist agent',                run: 'agents', value: '' },
+  { cmd: 'linkedin', label: 'Check LinkedIn messages', desc: 'Read replies & draft answers, no auto-send', run: 'prompt', value: 'Check my LinkedIn messages and draft replies for anything that needs one.' },
+  { cmd: 'autopilot',label: 'Toggle Web Autopilot', desc: 'Let Krew explore any site & learn skills (Settings → Advanced)', run: 'toggleSetting', value: 'webAutopilot' },
+  { cmd: 'skills',   label: 'Learned skills',    desc: 'See what Krew has learned to do on its own',      run: 'nav', value: 'brain' },
   // ── Open a feature / module of the app ───────────────────────────────────
   { cmd: 'mesh',       label: 'Open Mesh',          desc: 'Distributed compute mesh',           run: 'nav', value: 'mesh' },
   { cmd: 'automations',label: 'Automation builder', desc: 'Visual automation flows',            run: 'nav', value: 'automation' },
@@ -133,6 +136,9 @@ function SlashIcon({ name }: { name: string }) {
     connect:     <><path d="M9 15l6-6" /><path d="M11 6l1-1a3.5 3.5 0 0 1 5 5l-1 1M13 18l-1 1a3.5 3.5 0 0 1-5-5l1-1" /></>,
     mcp:         <><path d="M9 2v6M15 2v6M7 8h10v3a5 5 0 0 1-10 0zM12 16v6" /></>,
     models:      <><rect x="7" y="7" width="10" height="10" rx="1.5" /><path d="M10 4v3M14 4v3M10 17v3M14 17v3M4 10h3M4 14h3M17 10h3M17 14h3" /></>,
+    linkedin:    <><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M7.5 10v7M7.5 7v.01M11.5 17v-4.5a2.5 2.5 0 0 1 5 0V17" /></>,
+    autopilot:   <><circle cx="12" cy="12" r="8" /><path d="M12 8v4l3 2" /></>,
+    skills:      <><path d="M12 3l2.5 5 5.5.8-4 3.9.9 5.5-4.9-2.6-4.9 2.6.9-5.5-4-3.9 5.5-.8z" /></>,
   };
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
@@ -180,7 +186,7 @@ interface ChoiceSet {
 }
 
 interface DisplayMsg {
-  role:      'user' | 'assistant' | 'tool_call' | 'tool_result' | 'delegation' | 'proposal' | 'choices' | 'deck_setup' | 'deck_result' | 'social_schedule';
+  role:      'user' | 'assistant' | 'tool_call' | 'tool_result' | 'delegation' | 'proposal' | 'choices' | 'deck_setup' | 'deck_result' | 'social_schedule' | 'next_task';
   content:   string;
   toolName?: string;
   streaming?: boolean;
@@ -188,6 +194,7 @@ interface DisplayMsg {
   choices?:  ChoiceSet;
   deckSpec?: DeckSpec;
   deckHtml?: string;
+  nextTask?: { suggestion: string; prompt: string };
 }
 
 // Detect "schedule / publish these posts" so we can offer the schedule + connect card.
@@ -2850,6 +2857,41 @@ function getStarterPrompts(agent: KrewAgent): string[] {
   ];
 }
 
+// A proactive one-click nudge (suggest_next_task) — never auto-runs anything, only pre-fills the
+// input so the user gets a final look/edit before it goes, matching the /scan and /outreach
+// slash-command convention elsewhere in this file.
+function NextTaskCard({ suggestion, onAccept, onDismiss }: { suggestion: string; onAccept: () => void; onDismiss: () => void }) {
+  const [dismissed, setDismissed] = useState(false);
+  if (dismissed) return null;
+  return (
+    <div className="my-3 rounded-xl border border-accent/30 bg-accent/[0.05] overflow-hidden text-left">
+      <div className="px-3.5 py-2.5 flex items-start gap-2.5">
+        <span className="w-5 h-5 rounded-full bg-accent/15 flex items-center justify-center shrink-0 mt-0.5">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#7C5CFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="8" /><path d="M12 8v4l3 2" /></svg>
+        </span>
+        <div className="flex-1 min-w-0">
+          <p className="text-[10px] text-accent font-medium uppercase tracking-wide mb-0.5">Next up</p>
+          <p className="text-[12px] text-nv-text leading-relaxed">{suggestion}</p>
+          <div className="flex items-center gap-2 mt-2">
+            <button
+              onClick={onAccept}
+              className="text-[10.5px] px-2.5 py-1 rounded-md bg-accent text-white hover:bg-accent-dim transition-fast font-medium"
+            >
+              Yes, let's do it
+            </button>
+            <button
+              onClick={() => { setDismissed(true); onDismiss(); }}
+              className="text-[10.5px] px-2.5 py-1 rounded-md text-nv-faint hover:text-nv-muted transition-fast"
+            >
+              No thanks
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCreated, onOpenConnectApps, onBrowseAgents, onViewOnCanvas, onOpenStudio, onOpenResearch }: Props) {
@@ -3181,6 +3223,16 @@ const [studioExtracting, setStudioExtracting] = useState(false);
             return { role: 'choices' as const, content: '', choices };
           } catch { return null; }
         }
+        // Next-task suggestion cards are stored as a plain tool_result (tool_name 'suggest_next_task')
+        // with the marker prefix used everywhere else in this codebase for structured tool output.
+        if (r.tool_name === 'suggest_next_task') {
+          const idx = r.content.indexOf('NEXTTASK_JSON:');
+          if (idx < 0) return null; // old/errored row with no marker — drop rather than show raw text
+          try {
+            const nt = JSON.parse(r.content.slice(idx + 'NEXTTASK_JSON:'.length).trim()) as { suggestion: string; prompt: string };
+            return nt?.suggestion && nt?.prompt ? { role: 'next_task' as const, content: '', nextTask: nt } : null;
+          } catch { return null; }
+        }
         const rawContent = r.role === 'assistant'
           ? r.content.replace(/<tool_call>[\s\S]*/g, '').replace(/<tool_code>[\s\S]*/g, '').replace(/CHOICES_BLOCK:[\s\S]*/g, '').trim()
           : r.content;
@@ -3318,6 +3370,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     }
     if (agent.category === 'Ops') tools.push(...AUTOMATION_TOOLS);
     tools.push(...BROWSER_TOOLS); // every agent can open the browser
+    tools.push(...getAutopilotTools()); // opt-in (Settings → Advanced → Web Autopilot): file upload + local file search
     tools.push(...LEAD_TOOLS);    // every agent can verify/enrich a lead list (so none fakes it)
     if (agent.key === 'research_agent' || agent.category === 'Sales' || agent.category === 'Content') tools.push(...RESEARCH_TOOLS);
     tools.push(...mcpTools); // user-connected MCP servers (any external tool)
@@ -4763,6 +4816,22 @@ The prompt must be production-ready — specific enough for a motion designer to
     }
     if (c.run === 'continue') { setInput(''); const saved = loadResumableCampaign() || loadSavedCampaign(); if (saved) { undismissOutreachPill(); setOutreachCampaign(saved); } else addMsg({ role: 'assistant', content: 'No outreach in progress yet — use **/outreach** to draft messages and open the copilot.' }); return; }
     if (c.run === 'verifylinks') { setInput(''); verifyOutreachLinks(); return; }
+    if (c.run === 'toggleSetting') {
+      setInput('');
+      try {
+        const raw = JSON.parse(localStorage.getItem('nv-settings') ?? '{}');
+        const key = c.value as string;
+        const next = { ...raw, [key]: !raw?.[key] };
+        localStorage.setItem('nv-settings', JSON.stringify(next));
+        const on = next[key] === true;
+        addMsg({ role: 'assistant', content: key === 'webAutopilot'
+          ? (on
+            ? 'Web Autopilot is now **on**. I can explore sites I have no specific tool for, attach local files to forms, and learn a reusable skill once you approve a task — I still never submit/send/pay/delete anything without asking first. Turn it off any time in Settings → Advanced, or say /autopilot again.'
+            : 'Web Autopilot is now **off**. I\'ll stick to the sites and services I have specific tools for.')
+          : `Setting "${key}" is now ${on ? 'on' : 'off'}.` });
+      } catch { addMsg({ role: 'assistant', content: "Couldn't update that setting — try Settings → Advanced instead." }); }
+      return;
+    }
     if (c.run === 'scan') {
       // Don't run immediately — drop the phrasing in so the user can attach a file (to target the
       // scan) and press Enter themselves. send() detects this and runs the deterministic scan.
@@ -5357,6 +5426,7 @@ The prompt must be production-ready — specific enough for a motion designer to
               }
               if (targetAgent.category === 'Ops') delegateTools.push(...AUTOMATION_TOOLS);
               delegateTools.push(...BROWSER_TOOLS); // every agent can open the browser
+              delegateTools.push(...getAutopilotTools()); // opt-in Web Autopilot tools
               delegateTools.push(...LEAD_TOOLS);    // every agent can verify/enrich a lead list (so none fakes it)
               if (targetKey === 'research_agent' || targetAgent.category === 'Sales' || targetAgent.category === 'Content') delegateTools.push(...RESEARCH_TOOLS);
               delegateTools.push(...mcpTools); // user-connected MCP servers
@@ -5914,7 +5984,14 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
         }
 
         // Show result bubble (skip for delegation — it already has its own bubble)
-        if (!isDelegation) addMsg({ role: 'tool_result', content: toolResult, toolName: tool });
+        if (!isDelegation && tool === 'suggest_next_task' && toolResult.includes('NEXTTASK_JSON:')) {
+          try {
+            const nt = JSON.parse(toolResult.slice(toolResult.indexOf('NEXTTASK_JSON:') + 'NEXTTASK_JSON:'.length).trim()) as { suggestion: string; prompt: string };
+            if (nt?.suggestion && nt?.prompt) addMsg({ role: 'next_task', content: '', nextTask: nt });
+          } catch { /* malformed — just drop it, not worth surfacing an error for a proactive nudge */ }
+        } else if (!isDelegation) {
+          addMsg({ role: 'tool_result', content: toolResult, toolName: tool });
+        }
         // GUARANTEE Brain save on the BOSS-DIRECT path too. The delegate, plan_workflow and
         // direct-fill paths all auto-save a produced lead table — this path (boss calls the lead
         // tool itself) was the one gap where a finished, browser-verified list reached the chat
@@ -6432,6 +6509,17 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                   initial={extractLastSocialPosts(messages)}
                   canSchedule={planCfg.socialScheduling}
                   onOpenConnectApps={onOpenConnectApps}
+                />
+              ) : msg.role === 'next_task' && msg.nextTask ? (
+                <NextTaskCard
+                  key={i}
+                  suggestion={msg.nextTask.suggestion}
+                  onAccept={() => {
+                    setInput(msg.nextTask!.prompt);
+                    setMessages((prev) => prev.filter((m) => m !== msg));
+                    setTimeout(() => { const el = inputRef.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0);
+                  }}
+                  onDismiss={() => setMessages((prev) => prev.filter((m) => m !== msg))}
                 />
               ) : (
                 <MessageRow key={i} msg={msg} agent={agent} />

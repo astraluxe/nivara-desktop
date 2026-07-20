@@ -556,7 +556,7 @@ async function main() {
   // ("couldn't read any names"). This is THE bug behind the whole /scan saga.
   if (cmd !== 'open' && cmd !== 'close'
       && cmd !== 'connections' && cmd !== 'logincheck' && cmd !== 'message' && cmd !== 'printpdf'
-      && cmd !== 'findprofile') {
+      && cmd !== 'findprofile' && cmd !== 'messages' && cmd !== 'typemsg') {
     var state   = readState();
 
     var conn    = await ensureChrome();
@@ -732,6 +732,25 @@ async function main() {
       await page.keyboard.press(pressKey);
       try { await page.waitForLoadState('networkidle', { timeout: 3000 }); } catch (_) {}
       process.stdout.write('Pressed ' + pressKey + '. Page: ' + page.url());
+      return;
+    }
+
+    // ── upload <selector> <filePath> ────────────────────────────────────────────
+    // Attach a local file to a <input type="file"> the agent found via snapshot (@ref) or a CSS
+    // selector — same ref-resolution convention as click/fill. Only sets the input's value; it
+    // never submits anything, same safety boundary as fill.
+    if (cmd === 'upload') {
+      var upSel  = argv[1] || '';
+      var upPath = argv.slice(2).join(' ').replace(/^"|"$/g, '').trim();
+      if (!upSel || !upPath) { process.stdout.write('upload: missing selector or file path'); return; }
+      var upTarget = upSel.startsWith('@') ? '[data-aref="' + upSel.slice(1) + '"]' : upSel;
+      try {
+        await page.setInputFiles(upTarget, upPath, { timeout: 10000 });
+        writeState({ url: page.url() });
+        process.stdout.write('Attached "' + upPath + '" to "' + upSel + '". Nothing was submitted — the file is only staged in the form field.');
+      } catch (e) {
+        process.stdout.write('upload-error: ' + (e && e.message ? String(e.message).slice(0, 200) : String(e)));
+      }
       return;
     }
 
@@ -936,6 +955,118 @@ async function main() {
     return;
   }
 
+  // ── messages [limit] ─────────────────────────────────────────────────────────
+  // Read the REAL text of the user's LinkedIn conversations (not a guess) so replies can be
+  // grounded in what the other person actually said. Lists threads in the left rail (unread
+  // first), opens each one, and pulls the last few messages with their sender label straight
+  // from the DOM. `.msg-conversation-listitem` / `.msg-s-message-list__event` /
+  // `.msg-s-event-listitem__body` are LinkedIn's long-stable messaging classes (unlike the
+  // hashed classes on the feed/profile pages), same family as `.msg-form__contenteditable`
+  // already relied on by the `message` command below.
+  if (cmd === 'messages') {
+    var wantN = parseInt(argv[1], 10) || 10;
+    var mxConn = await ensureChrome();
+    var mxCtx  = mxConn.context;
+    if (!mxCtx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
+    var mxPage = mxCtx.pages().at(-1) || await mxCtx.newPage();
+    try { await mxPage.bringToFront(); } catch (_) {}
+    var inboxUrl = 'https://www.linkedin.com/messaging/';
+    try { await mxPage.goto(inboxUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }); } catch (_) {}
+    try { await mxPage.waitForLoadState('networkidle', { timeout: 2500 }); } catch (_) {}
+    var mxFinal = mxPage.url();
+    if (isAuthWall(mxFinal)) {
+      await showBanner(mxPage, 'Sign in to LinkedIn in THIS window, then ask me to check your messages again.');
+      try { await mxPage.bringToFront(); } catch (_) {}
+      writeState({ url: mxFinal });
+      process.stdout.write('[SIGN_IN_REQUIRED] Opened LinkedIn in the ADRIS browser — please sign in there (once, it is saved), then try again.');
+      return;
+    }
+    await showBanner(mxPage, 'ADRIS is reading your LinkedIn messages — please don’t close this window.');
+    try { await mxPage.waitForSelector('li.msg-conversation-listitem, .msg-conversations-container__convo-item-link', { timeout: 9000 }); } catch (_) {}
+    try { await waitForContentStability(mxPage, 300, 1500); } catch (_) {}
+
+    var threadInfo = await mxPage.evaluate(function() {
+      function clean(s) { return (s || '').replace(/[ \t]+/g, ' ').trim(); }
+      var items = document.querySelectorAll('li.msg-conversation-listitem');
+      var out = [];
+      for (var i = 0; i < items.length; i++) {
+        var el = items[i];
+        var nameEl = el.querySelector('.msg-conversation-listitem__participant-names');
+        var name = clean(nameEl ? nameEl.innerText : '');
+        if (!name) continue;
+        var unread = !!el.querySelector('.notification-badge__count, [class*="unread-count"]')
+          || /unread/i.test(el.className || '');
+        out.push({ name: name, unread: unread });
+      }
+      return out;
+    }).catch(function () { return []; });
+
+    if (!threadInfo.length) {
+      var diagI = await mxPage.evaluate(function() {
+        var m = document.querySelector('main') || document.body;
+        return { url: location.href, title: document.title, snippet: ((m && m.innerText) || '').replace(/\s+/g, ' ').trim().slice(0, 200) };
+      }).catch(function () { return {}; });
+      await hideBanner(mxPage);
+      writeState({ url: mxPage.url() });
+      process.stdout.write('MSGS_DIAG:' + JSON.stringify(diagI));
+      return;
+    }
+
+    // Unread first, capped so the whole pass stays inside the 45s process budget.
+    var ordered = threadInfo.slice().sort(function(a, b) { return (b.unread ? 1 : 0) - (a.unread ? 1 : 0); }).slice(0, wantN);
+    var results = [];
+    for (var t = 0; t < ordered.length; t++) {
+      var target = ordered[t];
+      var handles = await mxPage.$$('li.msg-conversation-listitem');
+      var matchHandle = null;
+      for (var h = 0; h < handles.length; h++) {
+        var hn = await handles[h].evaluate(function(el) {
+          var n = el.querySelector('.msg-conversation-listitem__participant-names');
+          return n ? n.innerText.replace(/[ \t]+/g, ' ').trim() : '';
+        }).catch(function () { return ''; });
+        if (hn === target.name) { matchHandle = handles[h]; break; }
+      }
+      if (!matchHandle) continue;
+      try { await matchHandle.click({ timeout: 4000 }); } catch (_) { continue; }
+      await new Promise(function (r) { setTimeout(r, 1400); });
+      try { await mxPage.waitForSelector('.msg-s-message-list-container, .msg-s-message-list__event', { timeout: 6000 }); } catch (_) {}
+      await new Promise(function (r) { setTimeout(r, 500); });
+
+      var convo = await mxPage.evaluate(function(participant) {
+        function clean(s) { return (s || '').replace(/[ \t]+/g, ' ').trim(); }
+        var groups = document.querySelectorAll('li.msg-s-message-list__event, .msg-s-message-list__event');
+        var out = [];
+        var lastSender = '';
+        for (var i = 0; i < groups.length; i++) {
+          var g = groups[i];
+          var nameEl = g.querySelector('.msg-s-message-group__name, .msg-s-message-group__profile-link');
+          var name = nameEl ? clean(nameEl.innerText) : '';
+          if (name) lastSender = name;
+          var bodyEls = g.querySelectorAll('.msg-s-event-listitem__body');
+          for (var j = 0; j < bodyEls.length; j++) {
+            var text = clean(bodyEls[j].innerText);
+            if (!text) continue;
+            out.push({ from: lastSender || 'Unknown', text: text });
+          }
+        }
+        // The other participant's profile link — reliably scoped to the thread header, unlike the
+        // message bodies which link BOTH participants' avatars (so a generic /in/ query would be
+        // ambiguous in a 1:1 chat).
+        var profileEl = document.querySelector('.msg-thread__link-to-profile, a.msg-thread__link-to-profile');
+        var profileUrl = profileEl ? (profileEl.getAttribute('href') || '').split('?')[0] : '';
+        return { messages: out.slice(-8), profileUrl: profileUrl };
+      }, target.name).catch(function () { return { messages: [], profileUrl: '' }; });
+
+      results.push({ name: target.name, unread: target.unread, url: convo.profileUrl, messages: convo.messages });
+    }
+
+    await hideBanner(mxPage);
+    writeState({ url: mxPage.url() });
+    if (!results.length) { process.stdout.write("Opened LinkedIn messaging but couldn't read any conversation content — the page may not have finished loading. Try again in a moment."); return; }
+    process.stdout.write('MSGS_JSON:' + JSON.stringify(results));
+    return;
+  }
+
   // ── findprofile <query> ─────────────────────────────────────────────────────
   // Search LinkedIn People for <query> (usually a connection's name) and return the top few
   // REAL results as JSON — {name, headline, url, degree} read straight from the results page.
@@ -1126,6 +1257,67 @@ async function main() {
     if (boxOpen > 0) { try { await mPage.locator(composeSel).first().click({ timeout: 2000 }); } catch (_) {} } // focus so the user can paste
     writeState({ url: mFinal });
     process.stdout.write(boxOpen > 0 ? 'MESSAGE_BOX_OPENED' : 'PROFILE_OPENED');
+    return;
+  }
+
+  // ── typemsg <url> ::: <text> ────────────────────────────────────────────────
+  // Same as `message` (open profile → click "Message"), then TYPE the drafted reply into the
+  // compose box using real per-character keystrokes (pressSequentially — a scripted .fill() on a
+  // contenteditable div doesn't fire the input events LinkedIn's React state listens for, same
+  // reason the click above must be a trusted Playwright click and not a synthetic one). It never
+  // sends — the user reviews the pre-filled box and presses Enter/Send themselves.
+  if (cmd === 'typemsg') {
+    var tRaw = argv.slice(1).join(' ').replace(/^"|"$/g, '').trim();
+    var tSplitIdx = tRaw.indexOf(' ::: ');
+    var tUrlRaw = tSplitIdx >= 0 ? tRaw.slice(0, tSplitIdx).trim() : tRaw;
+    var tText   = tSplitIdx >= 0 ? tRaw.slice(tSplitIdx + 5).trim() : '';
+    var tUrl = tUrlRaw.startsWith('http') ? tUrlRaw : 'https://' + tUrlRaw;
+    if (!tText) { process.stdout.write('[typemsg-error] No message text was given to type.'); return; }
+    var tConn = await ensureChrome();
+    var tCtx  = tConn.context;
+    if (!tCtx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
+    var tPage = tCtx.pages().at(-1) || await tCtx.newPage();
+    try { await tPage.goto(tUrl, { waitUntil: 'domcontentloaded', timeout: 25000 }); } catch (_) {}
+    var tFinal = tPage.url();
+    if (isAuthWall(tFinal)) {
+      var tok = await pollForLoginCompletion(tPage, 30000);
+      if (!tok) { writeState({ url: tFinal }); process.stdout.write('[SIGN_IN_REQUIRED] Please sign in to LinkedIn in the ADRIS browser window that just opened, then try again.'); return; }
+    }
+    await showBanner(tPage, 'ADRIS drafted a reply here — review it, then press Enter/Send yourself.');
+    try { await tPage.waitForLoadState('networkidle', { timeout: 4000 }); } catch (_) {}
+    await new Promise(function (r) { setTimeout(r, 1500); });
+    // IMPORTANT: try the actual editable input FIRST, on its own — `.msg-overlay-conversation-bubble`
+    // is an ANCESTOR wrapper (it contains the whole thread + the input), not itself editable. A
+    // combined comma-selector's `.first()` resolves in DOM order, so it grabbed the wrapper instead
+    // of the input and typed text landed nowhere (verified live — the "typed" text never appeared
+    // in the box). Only fall back to the generic textbox role if the specific input isn't found.
+    var tClicked = false;
+    try {
+      var tLoc = tPage.locator('main a', { hasText: /^Message$/ }).first();
+      await tLoc.scrollIntoViewIfNeeded({ timeout: 3000 });
+      await tLoc.click({ timeout: 5000 });
+      tClicked = true;
+    } catch (_) {}
+    if (!tClicked) { try { await tPage.getByRole('button', { name: /^Message$/ }).first().click({ timeout: 4000 }); tClicked = true; } catch (_) {} }
+    if (!tClicked) { try { await tPage.locator('a:has-text("Message"), button:has-text("Message")').first().click({ timeout: 4000 }); tClicked = true; } catch (_) {} }
+    await new Promise(function (r) { setTimeout(r, 2500); });
+    var tInputBox = tPage.locator('.msg-form__contenteditable').first();
+    var tBoxOpen = await tInputBox.count().catch(function () { return 0; });
+    if (tBoxOpen === 0) {
+      tInputBox = tPage.locator('[contenteditable="true"][role="textbox"]').first();
+      tBoxOpen = await tInputBox.count().catch(function () { return 0; });
+    }
+    writeState({ url: tFinal });
+    if (tBoxOpen === 0) { process.stdout.write('PROFILE_OPENED_NO_BOX Opened the profile but could not find the message compose box (may not be a 1st-degree connection yet). The draft was NOT typed anywhere — nothing was sent.'); return; }
+    var tTyped = false;
+    try {
+      await tInputBox.click({ timeout: 3000 });
+      await tInputBox.pressSequentially(tText, { delay: 12, timeout: 30000 });
+      var landedText = await tInputBox.innerText().catch(function () { return ''; });
+      tTyped = landedText.trim().length > 0;
+    } catch (_) {}
+    if (!tTyped) { process.stdout.write('PROFILE_OPENED_NO_BOX The compose box opened but typing into it failed. The draft was NOT sent — tell the user to paste it manually.'); return; }
+    process.stdout.write('MESSAGE_DRAFTED — the reply is now sitting in the open chat box, unsent. Tell the user to review it and press Enter (or click Send) themselves.');
     return;
   }
 

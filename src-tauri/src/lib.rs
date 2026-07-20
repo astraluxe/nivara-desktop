@@ -3131,7 +3131,7 @@ async fn run_browser_persistent(app: tauri::AppHandle, args: String) -> Result<S
     // window and return junk, which is exactly the "browser opens but nothing loads / couldn't read
     // names" bug. So NEVER fall back to the exe for these; return a clear signal instead.
     let first_word = args.trim().split_whitespace().next().unwrap_or("");
-    let is_custom = matches!(first_word, "connections" | "logincheck" | "message" | "printpdf" | "deckshots" | "findprofile");
+    let is_custom = matches!(first_word, "connections" | "logincheck" | "message" | "printpdf" | "deckshots" | "findprofile" | "messages" | "typemsg");
     if is_custom {
         browser_debug_log(&format!("custom cmd '{}' — NOT using generic exe fallback", first_word));
         return Ok("[custom-browser-unavailable] The adris browser engine didn't respond. Make sure Google Chrome is installed and try again.".to_string());
@@ -3280,6 +3280,56 @@ async fn read_browser_history(query: String, limit: Option<u32>) -> Result<Strin
     } else {
         Ok(format!("Browser history for '{}':\n{}", query, rows.join("\n")))
     }
+}
+
+// ── Search the user's own personal folders for a file by name (Web Autopilot) ─────────────────
+// Deliberately restricted to Desktop/Downloads/Documents/Pictures ONLY — the caller never passes
+// an arbitrary root, so this can never become a general filesystem crawler. Bounded by depth,
+// total-entries-visited and result count so a huge personal folder can't hang the UI.
+#[tauri::command]
+fn search_local_files(app: tauri::AppHandle, query: String, limit: Option<u32>) -> Result<Vec<FileEntry>, String> {
+    use tauri::Manager;
+    let q = query.trim().to_lowercase();
+    if q.is_empty() { return Ok(vec![]); }
+    let cap = limit.unwrap_or(20).max(1).min(100) as usize;
+
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(d) = app.path().desktop_dir()  { roots.push(d); }
+    if let Ok(d) = app.path().download_dir() { roots.push(d); }
+    if let Ok(d) = app.path().document_dir() { roots.push(d); }
+    if let Ok(d) = app.path().picture_dir()  { roots.push(d); }
+    if roots.is_empty() {
+        if let Ok(h) = app.path().home_dir() {
+            roots.push(h.join("Desktop"));
+            roots.push(h.join("Downloads"));
+            roots.push(h.join("Documents"));
+        }
+    }
+
+    let mut results: Vec<FileEntry> = Vec::new();
+    let mut visited: usize = 0;
+    const MAX_VISITED: usize = 8000;
+    const MAX_DEPTH: u32 = 6;
+
+    let mut stack: Vec<(std::path::PathBuf, u32)> = roots.into_iter().map(|r| (r, 0)).collect();
+    while let Some((dir, depth)) = stack.pop() {
+        if visited > MAX_VISITED || results.len() >= cap || depth > MAX_DEPTH { continue; }
+        let entries = match std::fs::read_dir(&dir) { Ok(e) => e, Err(_) => continue };
+        for entry in entries.flatten() {
+            if visited > MAX_VISITED || results.len() >= cap { break; }
+            visited += 1;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') { continue; }
+            let is_dir = entry.metadata().map(|m| m.is_dir()).unwrap_or(false);
+            if is_dir {
+                if matches!(name.as_str(), "node_modules" | "target" | ".git" | "dist" | ".next" | "out" | "$RECYCLE.BIN" | "System Volume Information") { continue; }
+                stack.push((entry.path(), depth + 1));
+            } else if name.to_lowercase().contains(&q) {
+                results.push(FileEntry { name, path: entry.path().to_string_lossy().to_string(), is_dir: false });
+            }
+        }
+    }
+    Ok(results)
 }
 
 #[tauri::command]
@@ -6441,6 +6491,7 @@ pub fn run() {
             open_in_system_browser,
             fetch_page_text,
             read_browser_history,
+            search_local_files,
             krew_http_call,
             mcp_http_call,
             gmail_fetch_emails,

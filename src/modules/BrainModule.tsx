@@ -5,12 +5,12 @@ import { brain, BRAIN_EVENT, nodeToMarkdown, type BrainNode, type BrainNodeKind,
 // ─── Kind metadata ────────────────────────────────────────────────────────────
 const KIND_COLOR: Record<BrainNodeKind, string> = {
   note: '#7C5CFF', file: '#38bdf8', data: '#34d399', list: '#f59e0b',
-  outreach: '#f472b6', contact: '#a78bfa', source: '#94a3b8', image: '#f97316',
+  outreach: '#f472b6', contact: '#a78bfa', source: '#94a3b8', image: '#f97316', skill: '#22d3ee',
 };
 const KIND_LABEL: Record<BrainNodeKind, string> = {
-  note: 'Note', file: 'File', data: 'Data', list: 'List', outreach: 'Outreach', contact: 'Contact', source: 'Source', image: 'Picture',
+  note: 'Note', file: 'File', data: 'Data', list: 'List', outreach: 'Outreach', contact: 'Contact', source: 'Source', image: 'Picture', skill: 'Skill',
 };
-const KINDS: BrainNodeKind[] = ['note', 'file', 'data', 'list', 'outreach', 'contact', 'source', 'image'];
+const KINDS: BrainNodeKind[] = ['note', 'file', 'data', 'list', 'outreach', 'contact', 'source', 'image', 'skill'];
 
 const NODE_W = 150, NODE_H = 38;
 

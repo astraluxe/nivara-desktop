@@ -398,7 +398,7 @@ export const SYSTEM_TOOLS: ToolDef[] = [
     parameters: {
       title:      { type: 'string', description: 'Short unique title, e.g. "Bangalore buyer list", "Outreach — tech founders", "Contact: Sumadhura Group".', required: true },
       body:       { type: 'string', description: 'The content to store (the list, the draft, the notes, the progress).', required: true },
-      kind:       { type: 'string', description: 'One of: list, outreach, contact, data, note, source. Default note.', required: false },
+      kind:       { type: 'string', description: 'One of: list, outreach, contact, data, note, source, skill. Use "skill" to remember a repeatable web task you just completed (see the Web Autopilot section below) — title it "Skill: <what it does>" and put the step-by-step recipe (site, selectors/labels used, values) in body. Default note.', required: false },
       connect_to: { type: 'string', description: 'Optional title of an existing Brain item to link this to (e.g. connect a contact list to the product file, or a finding to the file it came from).', required: false },
       append:     { type: 'boolean', description: 'If true and an item with this title already exists, ADD this content to it (continue/extend the data) instead of overwriting. Use this to keep building on stored data.', required: false },
     },
@@ -429,6 +429,21 @@ export const SYSTEM_TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'create_todo',
+    description: "Add one or more items to the user's To-do panel — a real task list they see and check off, separate from chat. Use it whenever real-world follow-up now exists: a meeting got confirmed, someone is waiting on a reply, a multi-step task is left half-done, a form needs the user's review before it can be submitted. You can create SEVERAL at once (e.g. one per pending conversation) — don't limit yourself to one call per turn. If a to-do is about a specific page (a LinkedIn chat, a form waiting for approval, a doc), pass its url so the user's \"Continue\" button takes them straight there.",
+    parameters: {
+      items: { type: 'string', description: 'JSON array of to-dos: [{"text":"Reply to Kevin once he confirms Wednesday","priority":"high","url":"https://www.linkedin.com/in/...","due":"2026-07-22"}]. Only "text" is required. priority is one of high/med/low. due is an ISO date (YYYY-MM-DD) or omitted. url is optional — an external link the Continue button should open.', required: true },
+    },
+  },
+  {
+    name: 'suggest_next_task',
+    description: "Proactively offer ONE obvious next step as a card the user can accept with one click, instead of just stopping after finishing the task they actually asked for. Use this SPARINGLY — only when what you just did clearly implies a next action a reasonable person would want (e.g. you just read LinkedIn messages and drafted a reply for one person, but two others are also waiting; you just confirmed a meeting and their calendar has no reminder set; a list you built has an obvious next step like 'draft outreach for these'). Call it AT MOST ONCE per turn, as your LAST action, after your normal answer — never in place of actually answering what was asked, never for trivial/obvious follow-ups, and never two turns in a row if the user ignored the last suggestion. The user can accept it, or just ignore it and type whatever they actually want next — never assume accepted.",
+    parameters: {
+      suggestion: { type: 'string', description: 'Short, specific description of the next step shown on the card, e.g. "Draft replies for the 2 other unread LinkedIn messages too?"', required: true },
+      prompt:     { type: 'string', description: 'The exact instruction to run if the user accepts — written as if the user typed it themselves, e.g. "Draft replies for my other unread LinkedIn messages."', required: true },
+    },
+  },
+  {
     name: 'recall_memory',
     description: 'Look up a specific memory by key. Returns the stored value or "not found".',
     parameters: {
@@ -444,12 +459,12 @@ export const SYSTEM_TOOLS: ToolDef[] = [
   },
   {
     name: 'open_connect_apps',
-    description: 'Open the Connect Apps panel in adris.tech so the user can link services. Use this when the user wants to connect any service or MCP server, or when a task fails because a service is not connected.',
+    description: 'Open the Connect Apps panel in adris.tech so the user can link services. Use this when the user EXPLICITLY asks to connect a service — never as a workaround when a different tool would do the job without it. In particular: for "reply to my LinkedIn messages" / "schedule a meeting from LinkedIn", use read_linkedin_messages + draft_linkedin_reply instead — propose/confirm the time inside the LinkedIn reply text. Do NOT call this just because Google Calendar isn\'t connected; only offer it if the user asks to actually add something to their calendar and you have said so out loud first.',
     parameters: {},
   },
   {
     name: 'open_service_setup',
-    description: 'Open the step-by-step setup guide for a specific service inside adris.tech — the app will navigate directly to that service\'s connection wizard. Use this to help users connect a specific service. Supported service IDs: gemini, openai, claude, brave, gmail, google, notion, slack, github, linkedin, twitter, instagram, stripe, discord, figma, airtable, reddit, shopify, serper, elevenlabs, heygen, did, higgsfield, runway, linear.',
+    description: 'Open the step-by-step setup guide for a specific service inside adris.tech — the app will navigate directly to that service\'s connection wizard. Use this ONLY when the user explicitly asks to connect a service, or after you\'ve told them in your response that a specific feature needs it AND they agreed. Supported service IDs: gemini, openai, claude, brave, gmail, google, notion, slack, github, linkedin, twitter, instagram, stripe, discord, figma, airtable, reddit, shopify, serper, elevenlabs, heygen, did, higgsfield, runway, linear. NEVER call this for LinkedIn scheduling/replies — that never needs a connected service (see read_linkedin_messages / draft_linkedin_reply).',
     parameters: {
       service: { type: 'string', description: 'Service ID from the supported list, e.g. "gmail", "notion", "github"', required: true },
     },
@@ -558,6 +573,21 @@ export const RESEARCH_TOOLS: ToolDef[] = [
       link_to: { type: 'string',  description: "Optional: the exact title of a Brain note to connect this list to — e.g. the reference file the user attached (\"PRODUCT.md\"). Pass it so the connections list links to that file in the graph.", required: false },
     },
   },
+  {
+    name: 'read_linkedin_messages',
+    description: "Read the user's ACTUAL LinkedIn message threads (unread first) straight from the DOM — real text, not a guess. Returns each thread's other-participant name, their profile URL, and the last few messages with who said what. ALWAYS call this before drafting a reply or 'checking messages' — never invent or assume what someone said. If a message mentions a meeting/time, use the REAL times quoted here (cross-checked against the user's stated availability) instead of making one up.",
+    parameters: {
+      limit: { type: 'number', description: 'Max number of conversation threads to read this run. Default 10.', required: false },
+    },
+  },
+  {
+    name: 'draft_linkedin_reply',
+    description: "Open a specific person's LinkedIn chat and TYPE a reply into the compose box for the user to review — it does NOT send. The user reads it and presses Enter/Send themselves (LinkedIn bans accounts that auto-send DMs, and the user wants to review every message before it goes out). Use this after read_linkedin_messages has given you the real thread content and profile_url for that person. If the reply proposes a meeting time, base it on read_linkedin_messages' real content + the user's stated availability — never call open_service_setup/open_connect_apps for this, scheduling via a LinkedIn reply needs no calendar connection.",
+    parameters: {
+      profile_url: { type: 'string', description: "The person's LinkedIn profile URL, from read_linkedin_messages' `url` field for that thread.", required: true },
+      message:     { type: 'string', description: 'The full reply text to type into the compose box.', required: true },
+    },
+  },
 ];
 
 // ─── Browser tools (via agent-browser CLI — opens visible Chrome window) ─────
@@ -644,6 +674,43 @@ export const BROWSER_TOOLS: ToolDef[] = [
     },
   },
 ];
+
+// ─── Web Autopilot tools (opt-in, Settings → Advanced) ───────────────────────
+// These extend the always-on BROWSER_TOOLS with the two pieces needed for a site Krew has no
+// specific integration for: attaching a local file to a form, and finding that file on the
+// user's own computer in the first place. Neither one submits/sends anything by itself — that
+// still goes through browser_click, which already auto-gates any consequential-looking click
+// (CONSEQUENTIAL_RE above) behind a real approval modal regardless of which tool got it there.
+export const AUTOPILOT_TOOLS: ToolDef[] = [
+  {
+    name: 'browser_upload_file',
+    description: "Attach a local file to a file-upload field on the CURRENT page (a <input type=\"file\">). Only stages the file in the form — it does NOT submit anything. Get the selector from browser_snapshot first (an @ref) or use a CSS selector. If you don't know the file's exact path, call search_local_files first to find it — never guess a path.",
+    parameters: {
+      selector:  { type: 'string', description: 'Ref from browser_snapshot (@e4) or a CSS selector for the file input.', required: true },
+      file_path: { type: 'string', description: 'Full local path to the file to attach.', required: true },
+    },
+  },
+  {
+    name: 'search_local_files',
+    description: "Search the user's own Desktop, Downloads, Documents and Pictures folders for a file by name (e.g. \"resume\", \"invoice.pdf\", \"headshot\"). Use this to find a file the user refers to before attaching it with browser_upload_file — never fabricate a path. Cannot see or search anywhere else on the device.",
+    parameters: {
+      query: { type: 'string', description: 'Filename or partial filename to search for.', required: true },
+      limit: { type: 'number', description: 'Max results. Default 20.', required: false },
+    },
+  },
+];
+
+function isWebAutopilotEnabled(): boolean {
+  try {
+    const raw = JSON.parse(localStorage.getItem('nv-settings') ?? '{}');
+    return raw?.webAutopilot === true;
+  } catch { return false; }
+}
+
+/** Returns AUTOPILOT_TOOLS if the user has switched on Settings → Advanced → Web Autopilot, else []. */
+export function getAutopilotTools(): ToolDef[] {
+  return isWebAutopilotEnabled() ? AUTOPILOT_TOOLS : [];
+}
 
 // ─── Boss-only delegation tool ────────────────────────────────────────────────
 
@@ -878,12 +945,13 @@ const GCAL_TOOLS: ToolDef[] = [
   },
   {
     name: 'gcal_create_event',
-    description: 'Create a new event in Google Calendar.',
+    description: 'Create a new event in Google Calendar and (if attendees are given) email them an invite. This shows the user a confirmation card with the full event details FIRST and only creates/sends it once they explicitly approve — it never fires silently. Fill in every field you have (summary, times, attendees) before calling; do not call this speculatively to "see what happens".',
     parameters: {
       summary:     { type: 'string', description: 'Event title.',                                    required: true  },
       start:       { type: 'string', description: 'Start time as ISO 8601 string.',                  required: true  },
       end:         { type: 'string', description: 'End time as ISO 8601 string.',                    required: true  },
       description: { type: 'string', description: 'Event description.',                             required: false },
+      attendees:   { type: 'string', description: 'Comma-separated email addresses to invite. If given, Google emails them a real calendar invite once the user approves.', required: false },
       calendar_id: { type: 'string', description: 'Calendar ID. Default "primary".',                required: false },
     },
   },
@@ -1215,6 +1283,18 @@ export function buildKrewSystemPrompt(activeTools: ToolDef[]): string {
       .join('\n');
     return `### ${t.name}\n${t.description}${params ? `\nParameters:\n${params}` : ''}`;
   }).join('\n\n');
+  const hasAutopilot = activeTools.some((t) => t.name === 'browser_upload_file');
+  const autopilotSection = hasAutopilot ? `
+
+## Web Autopilot — handling a site you have no specific tool for
+The user turned this on, which means: when a request needs a website that isn't covered by one of your specific tools above (LinkedIn/Gmail/Calendar/etc.), don't refuse and don't tell the user to do it manually — figure the site out yourself, the way a person would on their first visit to it.
+1. **Check for a known recipe first.** Call recall_from_brain for "Skill: <the site or task>" before exploring blind. If a matching skill note exists, its body has the steps (fields, button labels, selectors/approach) you used successfully before — follow it, adapting values to the current request, rather than re-discovering the page from scratch.
+2. **If no skill exists, explore.** browser_navigate/browser_open to the page, then browser_snapshot to see the actual clickable/fillable elements (refs like @e3). Read it like a person would — work out which field is which from labels/placeholders, don't guess blindly.
+3. **Missing information — STOP and ask, don't fabricate.** If a form needs something you don't know (a preference, an account detail, which option to pick), do NOT invent a value or leave it blank and hope. End your turn with a clear, specific question to the user. When they answer in their next message, resume exactly where you left off using what they told you — don't restart the whole task.
+4. **Attaching a file:** if the user refers to a file you don't have the exact path for, call search_local_files first (it only sees Desktop/Downloads/Documents/Pictures) and confirm with the user if more than one result could match, then browser_upload_file. Never guess a file path.
+5. **NEVER submit/send/pay/delete/confirm without approval — no exceptions, ever, even mid-skill-replay.** browser_click already auto-detects consequential-looking buttons and blocks on a real approval modal, but you must also proactively call browser_confirm yourself before that final click, stating exactly what will happen. If the user denies it, stop and tell them — do not retry a different way to force it through.
+6. **After a task finishes with the user's approval, save what you learned.** Call save_to_brain with kind "skill", title "Skill: <short description of the task/site>", and a body describing the site, the fields/buttons involved and how you identified them, and any values that are always the same vs. always ask-the-user. This is what makes the NEXT similar request faster instead of re-exploring from zero.
+7. **Anything with a real-world outcome the user should track** (a form now sitting there awaiting their review, a task that's half-done, someone waiting on a reply) — call create_todo so it shows up in their To-do panel, with url set to the relevant page if there is one.` : '';
 
   return `You are Krew, a powerful AI agent running locally inside the adris.tech desktop app. You have access to the user's machine and connected apps.
 
@@ -1287,6 +1367,21 @@ The user's OWN connections are their warmest potential clients. When they ask to
 - If the user attached a reference file (e.g. their PRODUCT.md), pass its exact title as link_to so the connections list connects to that file in the graph.
 - The tool returns the real names it saved. NEVER rename, anonymise, or replace any of them, and NEVER emit placeholder names like "[Name Found]" or fence markers like "UNTRUSTED EXTERNAL CONTENT". Just relay how many were added and offer the next step: "scan the next 50" for more, or draft outreach for the good-fit people (which opens the outreach copilot).
 - To assess fit, read the headlines the tool returned and add a short note on which suit what the user sells — but keep the names EXACTLY as returned.
+
+## Replying to existing LinkedIn conversations + scheduling from them
+This is DIFFERENT from cold outreach above — here the user already has a conversation and wants you to read it and reply. Different tools, different rule:
+- To check/read LinkedIn messages ("check my LinkedIn", "any replies?", "read my messages"): call read_linkedin_messages. It returns the REAL text of each thread. Never guess or reconstruct what someone said from memory — always call this tool first and quote it accurately.
+- To draft a reply: call draft_linkedin_reply with that thread's profile url + your drafted message. It TYPES the text into their open chat box and stops — it does NOT press Enter or click Send (unlike the auto-DM ban above, typing-without-sending is fine because a human always reviews it before it goes out). Tell the user afterward that the draft is sitting there ready for them to review and send.
+- Scheduling a meeting mentioned in a LinkedIn reply needs NO calendar connection — just work out a time from what they said + the user's stated availability and put it directly in the reply text via draft_linkedin_reply. Do NOT call open_service_setup or open_connect_apps for this; forcing a "connect Google" prompt in the middle of a scheduling request is broken behavior, not a feature.
+- ONLY if Google Calendar is ALREADY connected (gcal_create_event is in your tool list) may you also create an actual calendar event for a confirmed meeting — pass the attendee's email as the attendees parameter if you have it so they get a real invite. gcal_create_event always shows the user the full details and waits for their explicit approval before it creates or emails anything, so it's safe to call once you've confirmed a time — but if Google Calendar is NOT connected, just skip the calendar step silently and rely on the LinkedIn reply alone. Never interrupt the flow to ask them to connect it.
+- Whenever you propose or confirm a meeting time with someone over LinkedIn, ALSO call save_to_brain with title "Meeting: <their name>" and the person, proposed/confirmed time, and status (proposed / confirmed / needs their reply) in the body. This is what lets you answer "what's still pending with X" correctly in a later session instead of re-reading every thread or re-asking the user — check recall_from_brain for an existing "Meeting: <name>" note before proposing a NEW time so you don't contradict what was already offered.
+${autopilotSection}
+
+## Keeping the user's To-do panel useful
+create_todo is available in every conversation, not just Web Autopilot ones. Use it whenever a request leaves something outstanding in the real world — not for every little step, only things the user actually needs to come back to: a meeting proposed but not yet confirmed, someone waiting on a reply, a task blocked on information only they have, a draft/form sitting somewhere waiting for their review. Create several in one call if several things are pending (e.g. one per person you're mid-conversation with) rather than a single vague item. Set url whenever the to-do is about a specific page so their "Continue" button jumps straight there.
+
+## Thinking one step ahead
+After you finish answering what the user actually asked, briefly consider: is there an obvious next step they'd want, given what you just did? If yes AND it's genuinely non-trivial (not "should I say hi back" obvious), call suggest_next_task as your last action so they see a one-click card for it. If there's no clear next step, or you already offered one in your last couple of turns and they didn't take it, say nothing — do not suggest something every single turn, that gets annoying fast. This is a small proactive nudge, not a replacement for actually answering the request.
 
 ## Privacy — do NOT read the user's inbox unless asked
 - NEVER call gmail_search / read the user's Gmail, inbox, or messages unless the user EXPLICITLY asks about their email ("check my inbox", "read my emails", "brief me on my email"). A request for "leads", "companies", "contacts", or "emails of OTHER businesses" is NOT permission to read the user's own inbox — finding a prospect's email address is web research, not inbox reading. If you ever catch yourself about to summarise the user's own inbox when they didn't ask, STOP.
@@ -1565,7 +1660,7 @@ async function executeToolCore(
   // ── Brain (shared knowledge graph) ────────────────────────────────────────
   if (toolName === 'save_to_brain') {
     const { brain } = await import('./knowledgeStore');
-    const validKind = ['list', 'outreach', 'contact', 'data', 'note', 'source', 'file'];
+    const validKind = ['list', 'outreach', 'contact', 'data', 'note', 'source', 'file', 'skill'];
     const kind = validKind.includes(str(args.kind)) ? (str(args.kind) as 'note') : 'note';
     const title = str(args.title).trim();
     const append = args.append === true || str(args.append) === 'true';
@@ -1645,6 +1740,35 @@ async function executeToolCore(
     if (!a || !b) return `Could not find both Brain items to link (looked for "${str(args.from)}" and "${str(args.to)}").`;
     brain.link(a.id, b.id, str(args.label) || undefined);
     return `Linked "${a.title}" ↔ "${b.title}" in the Brain.`;
+  }
+  if (toolName === 'create_todo') {
+    let items: { text?: unknown; priority?: unknown; due?: unknown; url?: unknown }[] = [];
+    try {
+      const parsed = JSON.parse(str(args.items));
+      if (Array.isArray(parsed)) items = parsed;
+      else if (parsed && typeof parsed === 'object') items = [parsed];
+    } catch { return 'items must be a JSON array, e.g. [{"text":"..."}]. Try again with valid JSON.'; }
+    if (!items.length) return 'No to-do items given.';
+    const { todos } = await import('./todoStore');
+    const created: string[] = [];
+    for (const raw of items) {
+      const text = String(raw?.text || '').trim();
+      if (!text) continue;
+      const priority = ['high', 'med', 'low'].includes(String(raw?.priority)) ? (String(raw.priority) as 'high' | 'med' | 'low') : undefined;
+      const dueStr = String(raw?.due || '').trim();
+      const dueAt = dueStr && !Number.isNaN(Date.parse(dueStr)) ? Date.parse(dueStr) : undefined;
+      const url = String(raw?.url || '').trim() || undefined;
+      const item = todos.add(text, { priority, dueAt, url });
+      if (item) created.push(text);
+    }
+    if (!created.length) return 'None of the given items had usable text — nothing was added.';
+    return `Added ${created.length} to-do${created.length === 1 ? '' : 's'}:\n${created.map((t) => `- ${t}`).join('\n')}\n\nVisible in the user's To-do panel now.`;
+  }
+  if (toolName === 'suggest_next_task') {
+    const suggestion = str(args.suggestion).trim();
+    const prompt = str(args.prompt).trim();
+    if (!suggestion || !prompt) return 'Both suggestion and prompt are required — nothing shown to the user.';
+    return `NEXTTASK_JSON:${JSON.stringify({ suggestion, prompt })}`;
   }
   if (toolName === 'recall_memory') {
     const mems = await krewMemoryDb.getAll(agentKey);
@@ -1773,6 +1897,66 @@ async function executeToolCore(
     if (linkTo) { const t = brain.findByTitle(linkTo); if (t && t.id !== node.id) brain.link(t.id, node.id, 'connections'); }
     const totalSaved = existingNames.size + fresh.length;
     return `Saved ${fresh.length} new connection${fresh.length === 1 ? '' : 's'} to the "${LIST_TITLE}" Brain note (${totalSaved} total now)${linkTo ? `, linked to "${linkTo}"` : ''}. These are REAL names read straight from the page:\n\n${block}\n\nTell the user how many were added and that they can say "scan the next 50" for more, or ask you to draft outreach for the good-fit ones (which opens the LinkedIn outreach copilot). Do NOT rename anyone.`;
+  }
+
+  if (toolName === 'read_linkedin_messages') {
+    const limit = Math.max(1, Math.min(30, num(args.limit, 10)));
+    emit('agent-browser-active', {}).catch(() => {});
+    emit('agent-progress', { text: 'Reading your LinkedIn messages…' }).catch(() => {});
+    _browserActiveThisRun = true;
+    const raw = await invoke<string>('run_browser_persistent', { args: `messages ${limit}` }).catch((e) => String(e));
+    emit('agent-browser-idle', {}).catch(() => {});
+    _browserLoginPending = raw.includes('[SIGN_IN_REQUIRED]');
+    if (raw.includes('[SIGN_IN_REQUIRED]')) return "[NEEDS_LOGIN] I opened LinkedIn in the ADRIS browser — please sign in there (once; it's saved). I'll detect when you're in and continue automatically.";
+    if (raw.startsWith('[browser-') || raw.includes('[agent-browser not installed') || raw.includes('[custom-browser-unavailable')) {
+      return "The ADRIS browser engine didn't respond just now. Make sure Google Chrome (or Edge) is installed, then try again.";
+    }
+    if (raw.includes('MSGS_DIAG:')) {
+      return "Opened LinkedIn messaging but couldn't find any conversation threads on the page. It may not have finished loading — open the ADRIS browser window and check, then try again.";
+    }
+    const jsonIdx = raw.indexOf('MSGS_JSON:');
+    if (jsonIdx < 0) return raw || "Couldn't read your LinkedIn messages just now — try again.";
+    let threads: { name: string; unread: boolean; url: string; messages: { from: string; text: string }[] }[] = [];
+    try {
+      const arr = JSON.parse(raw.slice(jsonIdx + 'MSGS_JSON:'.length).trim());
+      if (Array.isArray(arr)) threads = arr;
+    } catch { return "Read your LinkedIn messages but couldn't parse the result — try again."; }
+    if (threads.length === 0) return "You have no LinkedIn conversations to read right now.";
+    const lines = threads.map((t) => {
+      const tag = t.unread ? ' [UNREAD]' : '';
+      const convo = (t.messages || []).map((m) => `  ${m.from}: ${m.text}`).join('\n');
+      return `### ${t.name}${tag}\nProfile: ${t.url || '(not found — ask the user or use linkedin_scan_connections)'}\n${convo}`;
+    }).join('\n\n');
+    return `Read ${threads.length} REAL LinkedIn conversation${threads.length === 1 ? '' : 's'} straight from the page (unread first). Use the exact text below — do NOT invent or paraphrase what anyone said when quoting it back:\n\n${lines}\n\nWhen drafting a reply, call draft_linkedin_reply with the matching \`url\` from above — it opens their chat and types the reply for the user to review and send themselves. If a reply proposes a meeting time, ground it in what was ACTUALLY said here plus the user's stated availability — never call open_service_setup/open_connect_apps for a LinkedIn scheduling reply.`;
+  }
+
+  if (toolName === 'draft_linkedin_reply') {
+    const profileUrl = str(args.profile_url).trim();
+    const message = str(args.message).trim();
+    if (!profileUrl) return 'No profile_url given — call read_linkedin_messages first to get the correct URL for this person.';
+    if (!message) return 'No message text given to draft.';
+    emit('agent-browser-active', {}).catch(() => {});
+    emit('agent-progress', { text: 'Opening the chat and drafting your reply…' }).catch(() => {});
+    _browserActiveThisRun = true;
+    const raw = await invoke<string>('run_browser_persistent', { args: `typemsg ${profileUrl} ::: ${message}` }).catch((e) => String(e));
+    emit('agent-browser-idle', {}).catch(() => {});
+    _browserLoginPending = raw.includes('[SIGN_IN_REQUIRED]');
+    if (raw.includes('[SIGN_IN_REQUIRED]')) return "[NEEDS_LOGIN] I opened LinkedIn in the ADRIS browser — please sign in there (once; it's saved), then ask me to draft the reply again.";
+    if (raw.startsWith('[browser-') || raw.includes('[agent-browser not installed') || raw.includes('[custom-browser-unavailable')) {
+      return "The ADRIS browser engine didn't respond just now. Make sure Google Chrome is installed and try again.";
+    }
+    if (raw.startsWith('[typemsg-error]')) return raw;
+    if (raw.startsWith('PROFILE_OPENED_NO_BOX')) return `Opened the profile but couldn't find/fill the message box — they may not be a 1st-degree connection yet. Nothing was typed or sent. Tell the user this reply so they can paste it manually:\n\n${message}`;
+    // Log to Brain so the reply history persists across sessions — avoids re-drafting the same thing.
+    try {
+      const { brain } = await import('./knowledgeStore');
+      const TITLE = 'LinkedIn reply history';
+      const existing = brain.findByTitle(TITLE);
+      const entry = `- ${new Date().toLocaleString()} — drafted (unsent) to ${profileUrl}:\n  "${message.replace(/\n/g, ' ')}"`;
+      const body = existing?.body ? `${existing.body}\n${entry}` : `Log of LinkedIn replies drafted by the agent — all require the user to press Send themselves; this only records what was drafted and when.\n\n${entry}`;
+      brain.addNode({ title: TITLE, body, kind: 'list' });
+    } catch { /* Brain logging is best-effort */ }
+    return `Drafted the reply into ${profileUrl}'s open chat box — it is NOT sent. Tell the user to review it and press Enter/Send themselves.`;
   }
 
   // ── Connect Apps navigation ───────────────────────────────────────────────
@@ -2938,6 +3122,24 @@ async function executeToolCore(
     const key = str(args.key).replace(/"/g, '\\"');
     return await runBrowser(`press "${key}"`);
   }
+  if (toolName === 'browser_upload_file') {
+    const sel = str(args.selector);
+    const filePath = str(args.file_path).replace(/"/g, '\\"');
+    if (!filePath) return 'No file_path given. Use search_local_files first if you do not know the exact path.';
+    return await runBrowser(`upload "${sel}" "${filePath}"`);
+  }
+  if (toolName === 'search_local_files') {
+    const query = str(args.query).trim();
+    if (!query) return 'No search query given.';
+    const limit = Math.max(1, Math.min(100, num(args.limit, 20)));
+    try {
+      const results = await invoke<{ name: string; path: string; is_dir: boolean }[]>('search_local_files', { query, limit });
+      if (!results.length) return `No files matching "${query}" found in Desktop, Downloads, Documents or Pictures.`;
+      return `Found ${results.length} file${results.length === 1 ? '' : 's'} matching "${query}":\n${results.map((f) => `- ${f.name} — ${f.path}`).join('\n')}\n\nConfirm with the user which one they mean if more than one could match, then pass the exact path to browser_upload_file.`;
+    } catch (e) {
+      return `Couldn't search local files: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
   if (toolName === 'browser_get_text') {
     const sel = str(args.selector) || 'body';
     const raw = await runBrowser(`get text "${sel}"`);
@@ -3358,11 +3560,28 @@ async function executeToolCore(
   }
   if (toolName === 'gcal_create_event') {
     const calId = encodeURIComponent(str(args.calendar_id) || 'primary');
+    const summary = str(args.summary);
+    const start = str(args.start);
+    const end = str(args.end);
+    const description = str(args.description);
+    const attendeeEmails = str(args.attendees).split(',').map((e) => e.trim()).filter(Boolean);
+    // Never create/invite silently — show the user exactly what will be created and require an
+    // explicit approval click (same real modal browser_confirm uses) before it touches the API.
+    const previewLines = [
+      `Event: ${summary || '(untitled)'}`,
+      `When: ${start} → ${end}`,
+      description ? `Notes: ${description}` : '',
+      attendeeEmails.length ? `Invite: ${attendeeEmails.join(', ')} (they will get a real email invite)` : 'No attendees — event only on your own calendar.',
+    ].filter(Boolean).join('\n');
+    const approved = await requestBrowserApproval('create_calendar_event', previewLines);
+    if (!approved) return 'The user did NOT approve creating this calendar event. Do not create it, do not retry silently — tell them it was cancelled and ask if they want to change anything.';
+    const body: Record<string, unknown> = { summary, description, start: { dateTime: start }, end: { dateTime: end } };
+    if (attendeeEmails.length) body.attendees = attendeeEmails.map((email) => ({ email }));
     return await invoke<string>('krew_http_call', {
       method:  'POST',
-      url:     `https://www.googleapis.com/calendar/v3/calendars/${calId}/events`,
+      url:     `https://www.googleapis.com/calendar/v3/calendars/${calId}/events${attendeeEmails.length ? '?sendUpdates=all' : ''}`,
       headers: { ...authHeader, 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ summary: str(args.summary), description: str(args.description), start: { dateTime: str(args.start) }, end: { dateTime: str(args.end) } }),
+      body:    JSON.stringify(body),
     });
   }
   if (toolName === 'sheets_read') {

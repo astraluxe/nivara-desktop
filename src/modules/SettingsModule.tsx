@@ -13,6 +13,12 @@ interface NvSettings {
   // 'continue' tops up the existing Brain note, 'new' always starts a fresh one. Either way an
   // explicit instruction in chat ("continue the existing list") wins over this default.
   listMode: 'continue' | 'new';
+  // Advanced/experimental — Krew can explore an arbitrary website (snapshot → click → fill) and
+  // learn a reusable "skill" from what it did, instead of only using pre-built site integrations.
+  // Off by default: opt-in, since it lets the agent interact with sites it has no specific
+  // instructions for. It still NEVER submits/sends/pays without an explicit approval click either
+  // way — this setting only controls whether the exploratory tools exist at all.
+  webAutopilot: boolean;
 }
 
 const DEFAULTS: NvSettings = {
@@ -20,6 +26,7 @@ const DEFAULTS: NvSettings = {
   automationNotify:  true,
   automationRunMode: 'app_open',
   listMode:          'continue',
+  webAutopilot:      false,
 };
 
 export function loadSettings(): NvSettings {
@@ -33,6 +40,19 @@ export function loadSettings(): NvSettings {
 function saveSettings(s: NvSettings) {
   localStorage.setItem('nv-settings', JSON.stringify(s));
 }
+
+// Short, human-readable "what changed" notes for the current version — shown in About below.
+// Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
+const WHATS_NEW: { version: string; items: string[] } = {
+  version: '1.6.6',
+  items: [
+    'Krew can now read your actual LinkedIn messages and draft grounded replies straight into the chat box for you to review and send — it no longer guesses what someone said.',
+    'Scheduling a meeting over LinkedIn no longer forces a "connect Google" prompt. If Calendar is connected, Krew can still create the event, but always shows you the full details and waits for your approval before it sends any invite.',
+    'New: Web Autopilot (off by default — Settings → Advanced). When on, Krew can work through a website it has no specific integration for — reading the page, filling forms, attaching a file it finds on your computer — and remembers how it did it as a reusable skill. It always stops and asks for your approval before submitting, sending, or paying for anything.',
+    'To-dos are more useful: Krew can now create several at once and link one to the exact page it\'s about, so "Continue" takes you straight there.',
+    'Fixed: the Connect Apps setup wizard no longer loses your place if you switch tabs and come back.',
+  ],
+};
 
 function Toggle({ on, onChange, label, desc }: { on: boolean; onChange: (v: boolean) => void; label: string; desc?: string }) {
   return (
@@ -256,6 +276,16 @@ export default function SettingsModule() {
           </div>
         </Section>
 
+        {/* Advanced / experimental */}
+        <Section title="Advanced">
+          <Toggle
+            on={settings.webAutopilot}
+            onChange={(v) => update('webAutopilot', v)}
+            label="Web Autopilot"
+            desc="Let Krew figure out sites it wasn't specifically built for: it reads the page, works out which fields/buttons matter, fills things in, and can attach a file it finds on your computer. It always shows you the finished action and waits for your approval before anything is actually sent, submitted, or paid — never automatically. Once you approve a task, Krew remembers how it did it as a reusable skill for next time (visible in Brain, say /skills)."
+          />
+        </Section>
+
         {/* AI source — governs every module that runs AI in the background */}
         <Section title="Where AI runs">
           <p className="text-[11.5px] leading-[1.6] text-nv-muted mb-3">
@@ -369,6 +399,19 @@ export default function SettingsModule() {
               <span className="text-nv-muted">Built in</span>
               <span className="text-nv-text font-mono">India</span>
             </div>
+          </div>
+
+          {/* What's new */}
+          <div className="pt-3 border-t border-nv-border/60 mb-1">
+            <p className="text-[12px] text-nv-text font-medium mb-2">What's new in v{WHATS_NEW.version}</p>
+            <ul className="space-y-1.5">
+              {WHATS_NEW.items.map((it, i) => (
+                <li key={i} className="text-[10.5px] text-nv-muted leading-relaxed flex gap-1.5">
+                  <span className="text-accent shrink-0">•</span>
+                  <span>{it}</span>
+                </li>
+              ))}
+            </ul>
           </div>
 
           {/* Update checker */}

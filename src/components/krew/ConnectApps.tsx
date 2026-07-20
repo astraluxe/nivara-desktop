@@ -2,7 +2,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { credentialStore } from '../../lib/krewDb';
 import ServiceSetupModal from './ServiceSetupModal';
-import { consumeServiceRequest } from '../../lib/connectAppsRequest';
+import { peekServiceRequest, requestServiceSetup, clearServiceRequest } from '../../lib/connectAppsRequest';
 import { listMcpServers, connectMcpServer, removeMcpServer, refreshMcpServer, type McpServer } from '../../lib/krewMcp';
 import { useAuth } from '../../contexts/AuthContext';
 import { getPlanConfig } from '../../lib/planConfig';
@@ -176,9 +176,10 @@ export default function ConnectApps({ onClose }: Props) {
 
   useEffect(() => { reload(); }, [reload]);
 
-  // Auto-open setup modal if a tool pre-selected a service
+  // Auto-open setup modal if a tool pre-selected a service — PEEK (not consume), so switching to
+  // another tab and back re-opens the same wizard instead of losing it (see connectAppsRequest.ts).
   useEffect(() => {
-    const pending = consumeServiceRequest();
+    const pending = peekServiceRequest();
     if (pending) setSetup(pending);
   }, []);
 
@@ -202,6 +203,7 @@ export default function ConnectApps({ onClose }: Props) {
       return;
     }
     setSetup(id);
+    requestServiceSetup(id); // persist so a tab switch + return resumes on this same service
   }
 
   const filtered = SERVICES.filter(s => {
@@ -299,7 +301,7 @@ export default function ConnectApps({ onClose }: Props) {
       </div>
 
       {setup && (
-        <ServiceSetupModal service={setup} onDone={() => { setSetup(null); reload(); }} onClose={() => setSetup(null)} />
+        <ServiceSetupModal service={setup} onDone={() => { setSetup(null); clearServiceRequest(); reload(); }} onClose={() => { setSetup(null); clearServiceRequest(); }} />
       )}
     </>
   );

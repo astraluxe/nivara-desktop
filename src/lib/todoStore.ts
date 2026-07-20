@@ -27,6 +27,9 @@ export interface TodoItem {
   resume?: { kind: 'outreach' | 'coder' | 'module'; label: string; target?: string };
   /** Stable key so a resume card updates in place instead of piling up duplicates. */
   sourceKey?: string;
+  /** External link this to-do is about (e.g. the LinkedIn chat for a confirmed meeting). If set,
+   *  the "Continue" button opens it in the system browser instead of (or alongside) resume. */
+  url?: string;
 }
 
 const KEY = 'nv-todos-v1';

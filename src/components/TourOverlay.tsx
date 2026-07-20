@@ -56,7 +56,7 @@ const STEPS: Step[] = [
   {
     id: 'done',
     title: "You're all set",
-    body: 'Open Connect Apps to link Gmail, Notion, Slack and more. Then just ask Arjun to do things. You can replay this tour anytime.',
+    body: 'Open Connect Apps to link Gmail, Notion, Slack and more. Then just ask Arjun to do things. Want Krew to figure out sites it has no built-in integration for — reading pages, filling forms — and learn from what it does? Turn on Web Autopilot in Settings → Advanced (say /autopilot). You can replay this tour anytime.',
     target: null,
   },
 ];
