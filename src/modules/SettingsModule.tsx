@@ -44,13 +44,13 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.6',
+  version: '1.6.7',
   items: [
+    'Removed the "Reopen outreach copilot" pill above the message box — its ✕ had been broken across two prior fixes, and it was fully redundant with the To-do panel\'s Continue button and /continue, both already there.',
     'Krew can now read your actual LinkedIn messages and draft grounded replies straight into the chat box for you to review and send — it no longer guesses what someone said.',
     'Scheduling a meeting over LinkedIn no longer forces a "connect Google" prompt. If Calendar is connected, Krew can still create the event, but always shows you the full details and waits for your approval before it sends any invite.',
     'New: Web Autopilot (off by default — Settings → Advanced). When on, Krew can work through a website it has no specific integration for — reading the page, filling forms, attaching a file it finds on your computer — and remembers how it did it as a reusable skill. It always stops and asks for your approval before submitting, sending, or paying for anything.',
     'To-dos are more useful: Krew can now create several at once and link one to the exact page it\'s about, so "Continue" takes you straight there.',
-    'Fixed: the Connect Apps setup wizard no longer loses your place if you switch tabs and come back.',
   ],
 };
 
