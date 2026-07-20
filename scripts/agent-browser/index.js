@@ -555,7 +555,8 @@ async function main() {
   // fall-through at the end of this block — so `connections` opened Chrome but returned nothing
   // ("couldn't read any names"). This is THE bug behind the whole /scan saga.
   if (cmd !== 'open' && cmd !== 'close'
-      && cmd !== 'connections' && cmd !== 'logincheck' && cmd !== 'message' && cmd !== 'printpdf') {
+      && cmd !== 'connections' && cmd !== 'logincheck' && cmd !== 'message' && cmd !== 'printpdf'
+      && cmd !== 'findprofile') {
     var state   = readState();
 
     var conn    = await ensureChrome();
@@ -932,6 +933,84 @@ async function main() {
       return { url: u, anchors: anchors, login: login, title: (document.title || '').slice(0, 80), snippet: ((m && m.innerText) || '').replace(/\s+/g, ' ').trim().slice(0, 160) };
     }).catch(function () { return { url: cFinal, anchors: 0, login: false, title: '', snippet: '' }; });
     process.stdout.write('CONN_DIAG:' + JSON.stringify(diag));
+    return;
+  }
+
+  // ── findprofile <query> ─────────────────────────────────────────────────────
+  // Search LinkedIn People for <query> (usually a connection's name) and return the top few
+  // REAL results as JSON — {name, headline, url, degree} read straight from the results page.
+  // Used by /verifylinks to repair outreach contacts whose saved profile link is missing/wrong:
+  // the caller matches the returned names against the contact and writes the correct /in/ URL back.
+  // Opens fast and returns quickly (no deep scroll) to stay well under the 45s process budget.
+  if (cmd === 'findprofile') {
+    var fq = argv.slice(1).join(' ').replace(/^"|"$/g, '').trim();
+    if (!fq) { process.stdout.write('PROFILE_JSON:[]'); return; }
+    var fConn = await ensureChrome();
+    var fCtx  = fConn.context;
+    if (!fCtx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
+    var fPage = fCtx.pages().at(-1) || await fCtx.newPage();
+    try { await fPage.bringToFront(); } catch (_) {}
+    var searchUrl = 'https://www.linkedin.com/search/results/people/?keywords=' + encodeURIComponent(fq);
+    try { await fPage.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }); } catch (_) {}
+    var fFinal = fPage.url();
+    if (isAuthWall(fFinal)) {
+      await showBanner(fPage, 'Sign in to LinkedIn in THIS window, then run /verifylinks again.');
+      try { await fPage.bringToFront(); } catch (_) {}
+      writeState({ url: fFinal });
+      process.stdout.write('[SIGN_IN_REQUIRED] Opened LinkedIn in the ADRIS browser — please sign in there, then try again.');
+      return;
+    }
+    await showBanner(fPage, 'ADRIS is finding the correct LinkedIn profile — please don’t close this window.');
+    // Let the results list render. People-search results are always /in/ anchors inside the list.
+    try { await fPage.waitForSelector('a[href*="/in/"]', { timeout: 9000 }); } catch (_) {}
+    try { await waitForContentStability(fPage, 300, 1200); } catch (_) {}
+    await new Promise(function (r) { setTimeout(r, 800); });
+    var results = await fPage.evaluate(function() {
+      function clean(s) { return (s || '').replace(/[ \t]+/g, ' ').trim(); }
+      var noise = /^(message|connect|follow|following|pending|view .*profile|• 1st|• 2nd|• 3rd|status is|current company|save|more)/i;
+      // Prefer the search results container so we skip the sidebar / "people you may know" rails.
+      var scope = document.querySelector('.search-results-container') || document.querySelector('main') || document.body;
+      var out = [], seen = {};
+      var anchors = scope.querySelectorAll('a[href*="/in/"]');
+      for (var i = 0; i < anchors.length && out.length < 6; i++) {
+        var a = anchors[i];
+        var href = (a.getAttribute('href') || '');
+        if (href.indexOf('/in/') === -1) continue;
+        var url = href.split('?')[0].replace(/\/$/, '');
+        if (!/^https?:/i.test(url)) url = 'https://www.linkedin.com' + url;
+        var key = url.toLowerCase();
+        if (seen[key]) continue;
+        // Walk up to the result card (nearest ancestor with a name line + a degree/headline).
+        var card = a, hops = 0;
+        while (card && hops < 6) {
+          var ct = card.innerText || '';
+          if (ct.split('\n').map(function (x) { return x.trim(); }).filter(Boolean).length >= 2) break;
+          card = card.parentElement; hops++;
+        }
+        var scopeText = (card && card.innerText) || a.innerText || '';
+        var lines = scopeText.split('\n').map(function (x) { return clean(x); }).filter(Boolean);
+        // Name = anchor's own text (first meaningful line), with any "View …’s profile" / degree stripped.
+        var nameRaw = clean((a.innerText || '').split('\n')[0] || (lines[0] || ''));
+        nameRaw = nameRaw.replace(/\bView\b.*$/i, '').replace(/•\s*\d+(st|nd|rd|th).*$/i, '').replace(/\s+\d+(st|nd|rd|th)\b.*$/i, '').trim();
+        if (!nameRaw || nameRaw.length > 90 || noise.test(nameRaw)) continue;
+        var degMatch = scopeText.match(/\b(1st|2nd|3rd)\b/i);
+        var degree = degMatch ? degMatch[1].toLowerCase() : '';
+        // Headline = first line after the name that isn't the degree/location/noise.
+        var headline = '';
+        for (var j = 1; j < lines.length; j++) {
+          var ln = lines[j];
+          if (noise.test(ln) || /^\d+(st|nd|rd|th)\b/i.test(ln) || ln === nameRaw) continue;
+          if (/^(1st|2nd|3rd)$/i.test(ln)) continue;
+          headline = ln; break;
+        }
+        seen[key] = 1;
+        out.push({ name: nameRaw, headline: headline, url: url, degree: degree });
+      }
+      return out;
+    }).catch(function () { return []; });
+    await hideBanner(fPage);
+    writeState({ url: fFinal });
+    process.stdout.write('PROFILE_JSON:' + JSON.stringify(results || []));
     return;
   }
 

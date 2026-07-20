@@ -27,7 +27,7 @@ import { getMonthlyUsage } from '../../lib/tokenTracker';
 import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining } from '../../lib/tokenTier';
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
 import SkillsPanel from './SkillsPanel';
-import OutreachCopilot, { type OutreachCampaign, type OutreachContact, loadSavedCampaign } from './OutreachCopilot';
+import OutreachCopilot, { type OutreachCampaign, type OutreachContact, loadSavedCampaign, saveCampaign } from './OutreachCopilot';
 import TodoPanel from './TodoPanel';
 import Icon, { type IconName } from '../Icon';
 
@@ -67,7 +67,7 @@ async function freshSessionToken(fallback: string | null): Promise<string | null
 //  • 'prompt' → drops a ready phrasing into the input (the user reviews and sends; it routes
 //    through the normal Krew flow / deterministic short-circuits).
 //  • 'nav'    → opens another module of the exe (via the global nv-navigate event App listens to).
-type SlashCmd = { cmd: string; label: string; desc: string; run: 'prompt' | 'nav' | 'research' | 'agents' | 'outreach' | 'continue' | 'scan'; value: string };
+type SlashCmd = { cmd: string; label: string; desc: string; run: 'prompt' | 'nav' | 'research' | 'agents' | 'outreach' | 'continue' | 'scan' | 'verifylinks'; value: string };
 const SLASH_COMMANDS: SlashCmd[] = [
   // ── Actions that run in the chat ─────────────────────────────────────────
   { cmd: 'verify',   label: 'Verify LinkedIn',   desc: 'Open & check every LinkedIn in your lead list',   run: 'prompt', value: 'Go to <file name> and verify each and every LinkedIn — open and check each one, and fill it in properly if it exists.' },
@@ -78,6 +78,7 @@ const SLASH_COMMANDS: SlashCmd[] = [
   { cmd: 'draft',    label: 'Draft outreach',    desc: 'Write DMs / emails for your list',                run: 'prompt', value: 'Write a LinkedIn DM and a short cold email for the people in <file name>, tailored by sector.' },
   { cmd: 'outreach', label: 'Send outreach (copilot)', desc: 'Draft LinkedIn messages & walk through sending them', run: 'outreach', value: '' },
   { cmd: 'continue', label: 'Continue outreach', desc: 'Reopen the outreach copilot where you left off',   run: 'continue', value: '' },
+  { cmd: 'verifylinks', label: 'Fix outreach links', desc: 'Check every saved profile link & repair the wrong ones', run: 'verifylinks', value: '' },
   { cmd: 'deck',     label: 'Make a presentation', desc: 'Build a slide deck / PPT you can edit & export', run: 'prompt', value: 'Make a presentation about ' },
   { cmd: 'email',    label: 'Email a list',      desc: 'Send a personalised email to everyone on a list', run: 'prompt', value: 'Email everyone in <file name> a personalised message — one separate email each — and tell me exactly who it went to.' },
   { cmd: 'image',    label: 'Generate an image', desc: 'Create an image / logo / graphic',                run: 'prompt', value: 'Generate an image of ' },
@@ -2868,8 +2869,16 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
   const [pillDismissedSig, setPillDismissedSig] = useState<string>(
     () => { try { return localStorage.getItem(PILL_DISMISS_KEY) ?? ''; } catch { return ''; } },
   );
-  function dismissOutreachPill(camp: OutreachCampaign) {
-    const sig = campaignSig(camp);
+  function dismissOutreachPill(camp?: OutreachCampaign) {
+    // Dismiss the campaign that is ACTUALLY saved right now — read from the same source the
+    // visibility memo uses (loadSavedCampaign), not the value captured when the pill last rendered.
+    // If those two ever disagree (the copilot auto-saved a changed count, a re-draft happened, or
+    // /verifylinks re-saved the campaign between render and click), the stored "dismissed" signature
+    // would never match what the memo recomputes and the ✕ would appear to do nothing. Reading fresh
+    // here guarantees the signature we store is exactly the one the memo will compare against.
+    const cur = loadSavedCampaign() || camp;
+    if (!cur) return;
+    const sig = campaignSig(cur);
     setPillDismissedSig(sig);
     try { localStorage.setItem(PILL_DISMISS_KEY, sig); } catch { /* quota */ }
   }
@@ -4506,6 +4515,133 @@ The prompt must be production-ready — specific enough for a motion designer to
   }
 
   /**
+   * Verify & repair the profile links saved for outreach. Symptom this fixes: after the first
+   * several contacts, "Copy message & open chat" opened a LinkedIn *search* (often "No results
+   * found") instead of the person's chat — because the scan didn't capture a real `/in/` URL for
+   * them, so the copilot fell back to a name+headline search (and the headline could be a generated
+   * fit-description, which is what produced the garbled search query the user saw).
+   *
+   * For every saved contact WITHOUT a real `linkedin.com/in/…` URL, this searches LinkedIn by the
+   * person's NAME (name only — never the polluted headline), picks the best-matching result
+   * (first-name must match + ≥half the name tokens overlap, 1st-degree preferred), and writes the
+   * correct profile URL back into the saved campaign AND the scanned-connections JSON. Contacts that
+   * already have a good `/in/` link are left untouched — the messages are never changed, only links.
+   */
+  async function verifyOutreachLinks() {
+    if (busy) return;
+    const sid = await ensureSession('Verify outreach links');
+    addMsg({ role: 'user', content: 'Verify & fix the LinkedIn profile links saved for outreach' });
+    if (sid) krewDb.saveMessage(sid, 'user', 'Verify & fix the LinkedIn profile links saved for outreach').catch(() => {});
+
+    // Source of truth: the saved outreach campaign (what the copilot opens). If there's no campaign
+    // yet, fall back to the scanned-connections list so /verifylinks still helps right after /scan.
+    const campaign = loadSavedCampaign();
+    let contacts: OutreachContact[] = campaign ? campaign.contacts.map((c) => ({ ...c })) : [];
+    if (!contacts.length) {
+      try {
+        const arr = JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
+        if (Array.isArray(arr)) contacts = arr.filter((c) => c?.name).map((c) => ({ name: String(c.name), company: String(c.headline || ''), linkedin_url: String(c.url || '') }));
+      } catch { /* ignore */ }
+    }
+    if (!contacts.length) {
+      const none = 'I don\'t have any saved outreach contacts to check yet. Run **/outreach** (or **/scan**) first, then use **/verifylinks**.';
+      addMsg({ role: 'assistant', content: none });
+      if (sid) krewDb.saveMessage(sid, 'assistant', none).catch(() => {});
+      return;
+    }
+
+    const isRealProfile = (u?: string) => !!(u && /linkedin\.com\/in\//i.test(u));
+    const todo = contacts.filter((c) => !isRealProfile(c.linkedin_url));
+    if (!todo.length) {
+      const ok = `All ${contacts.length} saved contacts already have a real profile link (\`linkedin.com/in/…\`) — nothing to fix. "Copy message & open chat" will land on the right person for each.`;
+      addMsg({ role: 'assistant', content: ok });
+      if (sid) krewDb.saveMessage(sid, 'assistant', ok).catch(() => {});
+      return;
+    }
+
+    addMsg({ role: 'assistant', content: `Checking ${contacts.length} saved link${contacts.length === 1 ? '' : 's'} — ${todo.length} need a correct profile URL. Finding each on LinkedIn (opening the ADRIS browser)…`, streaming: true });
+    setBusy(true); setBrowserActive(true);
+    const nameNorm = (s: string) => (s || '').toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
+    let fixed = 0; const failed: string[] = []; let signInHit = false;
+    try {
+      for (let i = 0; i < todo.length; i++) {
+        if (stopRef.current) break;
+        const c = todo[i];
+        updateLastMsg(`Finding the right LinkedIn profile for **${c.name}** (${i + 1}/${todo.length})… _(opening the ADRIS browser — press Stop to cancel)_`);
+        // Search by NAME ONLY — the headline/company field can be a generated fit-description, which
+        // is exactly what garbled the old search URL. A 1st-degree connection's name is enough.
+        const q = c.name.replace(/["\n\r]/g, ' ').replace(/\s+/g, ' ').trim();
+        if (!q) { failed.push(c.name || '(unnamed)'); continue; }
+        let raw = '';
+        try { raw = await invoke<string>('run_browser_persistent', { args: `findprofile "${q}"` }); } catch (e) { raw = String(e); }
+        if (raw.includes('SIGN_IN_REQUIRED') || raw.includes('[NEEDS_LOGIN]')) { signInHit = true; break; }
+        let results: { name: string; headline: string; url: string; degree: string }[] = [];
+        const pj = raw.indexOf('PROFILE_JSON:');
+        if (pj >= 0) { try { const a = JSON.parse(raw.slice(pj + 'PROFILE_JSON:'.length).trim()); if (Array.isArray(a)) results = a; } catch { /* ignore */ } }
+        // Best match: first name must match and ≥half the contact's name tokens must overlap, so we
+        // never point the button at a stranger who merely shares a surname. 1st-degree is preferred
+        // (these are the user's own connections), then higher token overlap.
+        const cTokens = nameNorm(c.name).split(' ').filter(Boolean);
+        const cTokenSet = new Set(cTokens);
+        const cFirst = firstNameOf(c.name).toLowerCase();
+        let best: { name: string; headline: string; url: string; degree: string } | null = null;
+        let bestScore = 0;
+        for (const r of results) {
+          if (!r?.url || !/linkedin\.com\/in\//i.test(r.url)) continue;
+          const rTokens = nameNorm(r.name).split(' ').filter(Boolean);
+          if (!rTokens.length) continue;
+          const overlap = rTokens.filter((t) => cTokenSet.has(t)).length;
+          const ratio = overlap / Math.max(cTokens.length, 1);
+          const firstOk = !!cFirst && (rTokens.includes(cFirst) || r.name.toLowerCase().includes(cFirst));
+          if (!firstOk || ratio < 0.5) continue;
+          const score = ratio + (r.degree === '1st' ? 0.3 : 0);
+          if (score > bestScore) { bestScore = score; best = r; }
+        }
+        if (best) { c.linkedin_url = best.url.split('?')[0]; fixed++; }
+        else failed.push(c.name);
+        await new Promise((r) => setTimeout(r, 400)); // gentle pacing — never hammer LinkedIn
+      }
+    } finally {
+      setBusy(false); setBrowserActive(false); setAgentStep(null); setAgentTool(null);
+      await closeAgentBrowserIfActive();
+    }
+
+    // Persist the repaired URLs. `todo` holds the SAME objects as `contacts` (filter keeps refs), so
+    // `contacts` already reflects every fix. Save back to the campaign the copilot reads, and also
+    // patch the scanned-connections JSON (by name) so future /outreach drafts get the right link too.
+    if (fixed > 0) {
+      if (campaign) saveCampaign({ ...campaign, contacts });
+      try {
+        const arr = JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
+        if (Array.isArray(arr)) {
+          const fixedByName = new Map<string, string>();
+          for (const c of contacts) if (c.linkedin_url && isRealProfile(c.linkedin_url)) fixedByName.set(nameNorm(c.name), c.linkedin_url);
+          let touched = false;
+          for (const row of arr) {
+            const u = fixedByName.get(nameNorm(String(row?.name || '')));
+            if (u && (!row.url || !/linkedin\.com\/in\//i.test(String(row.url)))) { row.url = u; touched = true; }
+          }
+          if (touched) localStorage.setItem('nv-li-connections', JSON.stringify(arr));
+        }
+      } catch { /* localStorage optional */ }
+    }
+
+    const stopped = stopRef.current;
+    const failLine = failed.length
+      ? `\n\nCouldn't confidently match ${failed.length} (LinkedIn search didn't return a clear 1st-degree profile): ${failed.slice(0, 12).join(', ')}${failed.length > 12 ? `, +${failed.length - 12} more` : ''}. For these, use **Find them on LinkedIn** in the copilot and open the right person by hand.`
+      : '';
+    const summary = signInHit
+      ? `You're not signed in to LinkedIn in the ADRIS browser, so I couldn't verify the links. I fixed ${fixed} before that. Sign in there, then run **/verifylinks** again.`
+      : stopped
+        ? `Stopped — fixed ${fixed} link${fixed === 1 ? '' : 's'} before you cancelled. Run **/verifylinks** again to finish the rest.${failLine}`
+        : `Done. Fixed **${fixed}** of ${todo.length} broken link${todo.length === 1 ? '' : 's'} — each now points to the person's real profile, so "Copy message & open chat" opens their actual chat instead of a search.${failLine}`;
+    setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: summary, streaming: false }; return c; });
+    if (sid) krewDb.saveMessage(sid, 'assistant', summary).catch(() => {});
+    // Reopen the copilot with the corrected links so the user can carry on immediately.
+    if (fixed > 0 && campaign) { undismissOutreachPill(); setOutreachCampaign({ ...campaign, contacts }); }
+  }
+
+  /**
    * Selecting several Brain files for one request is the user saying "these belong together".
    * Reflect that in the graph so the connection survives the chat: every pair of attached Brain
    * files gets linked. Only touches nodes that already exist — never creates new ones.
@@ -4592,6 +4728,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       return;
     }
     if (c.run === 'continue') { setInput(''); const saved = loadSavedCampaign(); if (saved) { undismissOutreachPill(); setOutreachCampaign(saved); } else addMsg({ role: 'assistant', content: 'No outreach in progress yet — use **/outreach** to draft messages and open the copilot.' }); return; }
+    if (c.run === 'verifylinks') { setInput(''); verifyOutreachLinks(); return; }
     if (c.run === 'scan') {
       // Don't run immediately — drop the phrasing in so the user can attach a file (to target the
       // scan) and press Enter themselves. send() detects this and runs the deterministic scan.
@@ -4636,6 +4773,15 @@ The prompt must be production-ready — specific enough for a motion designer to
       const focus = text.replace(/^scan\s+(my\s+)?linkedin(\s+connections)?\b/i, '').replace(/^[\s:,-]+/, '').trim();
       setInput('');
       runConnectionScan(50, focus, text);   // pass the user's real message so it shows + is copyable
+      return;
+    }
+    // Deterministic link-repair — checks the saved outreach profile links and fixes the wrong/missing
+    // ones by searching LinkedIn for the right profile. Kept BEFORE the outreach launcher so
+    // "verify/fix the outreach links" never gets swallowed by the "…outreach" draft trigger below.
+    if (/\b(verify|check|fix|repair|correct|validate)\b[^.]*\b(link|links|url|urls|profile|profiles)\b/i.test(text)
+        && /\b(outreach|connection|connections|contact|contacts|copilot|saved)\b/i.test(text)) {
+      setInput('');
+      verifyOutreachLinks();
       return;
     }
     // Deterministic outreach launcher — drafts messages for the saved connections and OPENS the
@@ -6059,7 +6205,8 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
               <span className="truncate">Reopen outreach copilot ({savedOutreach.contacts.length})</span>
             </button>
             <button
-              onClick={() => dismissOutreachPill(savedOutreach)}
+              type="button"
+              onClick={(e) => { e.stopPropagation(); e.preventDefault(); dismissOutreachPill(savedOutreach); }}
               title="Hide"
               className="p-1.5 rounded-lg border border-nv-border text-nv-faint hover:text-nv-text hover:bg-nv-surface2 transition-fast shrink-0"
             >

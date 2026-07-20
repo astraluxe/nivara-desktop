@@ -3131,7 +3131,7 @@ async fn run_browser_persistent(app: tauri::AppHandle, args: String) -> Result<S
     // window and return junk, which is exactly the "browser opens but nothing loads / couldn't read
     // names" bug. So NEVER fall back to the exe for these; return a clear signal instead.
     let first_word = args.trim().split_whitespace().next().unwrap_or("");
-    let is_custom = matches!(first_word, "connections" | "logincheck" | "message" | "printpdf" | "deckshots");
+    let is_custom = matches!(first_word, "connections" | "logincheck" | "message" | "printpdf" | "deckshots" | "findprofile");
     if is_custom {
         browser_debug_log(&format!("custom cmd '{}' — NOT using generic exe fallback", first_word));
         return Ok("[custom-browser-unavailable] The adris browser engine didn't respond. Make sure Google Chrome is installed and try again.".to_string());
