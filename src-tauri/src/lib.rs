@@ -6151,8 +6151,18 @@ async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, St
         Err(e) => return Err(e.to_string()),
     }
     // 2) Fallback — the Tauri endpoint said "none". Double-check via the GitHub API so a
-    // still-propagating release isn't mistaken for "you're already up to date".
-    if let Some(tag) = github_latest_version().await {
+    // still-propagating release isn't mistaken for "you're already up to date". Retry a couple
+    // times on a transient failure (network hiccup, brief rate limit) — a single failed fallback
+    // call right after a fresh release used to fall straight through to a false "you're on the
+    // latest", which is exactly the case this fallback exists to prevent.
+    let mut gh_tag = github_latest_version().await;
+    for attempt in 0..2 {
+        if gh_tag.is_some() { break; }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        gh_tag = github_latest_version().await;
+        let _ = attempt;
+    }
+    if let Some(tag) = gh_tag {
         if parse_semver(&tag) > parse_semver(&current) {
             return Ok(serde_json::json!({
                 "available": true,
