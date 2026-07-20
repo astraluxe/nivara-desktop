@@ -33,8 +33,32 @@ export interface OutreachCampaign {
 }
 
 const LS_KEY = 'nv-outreach-v1';
+// A title-keyed archive of every campaign's latest state. The single LS_KEY "current" slot gets
+// overwritten by whatever campaign was opened last — so drafting a 1-person REPLY used to clobber a
+// 35-person outreach still in progress. The archive keeps each campaign recoverable, and
+// loadResumableCampaign() below picks the one with the most people still to contact.
+const CAMPAIGNS_KEY = 'nv-outreach-campaigns-v1';
 // One stable key: re-running outreach refreshes the SAME To-do card instead of stacking a new one.
 const OUTREACH_TODO_KEY = 'outreach:current';
+
+/** People not yet handled (anything other than sent/accepted/replied/skip). */
+function remainingOf(c: OutreachCampaign): number {
+  return c.contacts.filter((x) => !(x.status === 'sent' || x.status === 'accepted' || x.status === 'replied' || x.status === 'skip')).length;
+}
+function loadCampaignArchive(): Record<string, OutreachCampaign> {
+  try {
+    const r = JSON.parse(localStorage.getItem(CAMPAIGNS_KEY) || '{}');
+    return (r && typeof r === 'object' && !Array.isArray(r)) ? (r as Record<string, OutreachCampaign>) : {};
+  } catch { return {}; }
+}
+function saveCampaignArchive(map: Record<string, OutreachCampaign>): void {
+  // Keep only the 12 most-recent campaigns so this can never grow without bound.
+  const entries = Object.entries(map)
+    .filter(([, c]) => c && Array.isArray(c.contacts) && c.contacts.length)
+    .sort((a, b) => (b[1].updatedAt || 0) - (a[1].updatedAt || 0))
+    .slice(0, 12);
+  try { localStorage.setItem(CAMPAIGNS_KEY, JSON.stringify(Object.fromEntries(entries))); } catch { /* quota */ }
+}
 
 const STATUS_META: Record<OutreachStatus, { label: string; cls: string }> = {
   todo:     { label: 'To do',            cls: 'border-nv-border text-nv-faint' },
@@ -61,11 +85,42 @@ async function copyText(t: string): Promise<boolean> {
 }
 
 function profileUrl(c: OutreachContact): string {
-  if (c.linkedin_url && /linkedin\.com/i.test(c.linkedin_url)) return c.linkedin_url;
-  // No profile URL saved → open a LinkedIn people-search for their name + company so the
-  // user lands on (or one click from) the right person instead of a dead link.
-  const q = encodeURIComponent([c.name, c.company].filter(Boolean).join(' '));
+  if (c.linkedin_url && /linkedin\.com\/in\//i.test(c.linkedin_url)) return c.linkedin_url;
+  // No profile URL saved → open a LinkedIn people-search for their name ONLY (never the company/
+  // headline, which can be a generated fit-description that garbles the query) so the user lands on
+  // or one click from the right person instead of a dead "no results" search.
+  const q = encodeURIComponent((c.name || '').trim());
   return `https://www.linkedin.com/search/results/people/?keywords=${q}`;
+}
+
+/** Pick the best LinkedIn profile from findprofile results for a given contact name: the first name
+ *  OR surname must match and at least half the name tokens must overlap; a 1st-degree connection
+ *  wins ties. Returns the clean /in/ URL, or '' if nothing matches confidently (so we never point a
+ *  button at a stranger who merely shares a surname). Shared by the copilot's self-heal and
+ *  /verifylinks so both behave identically. */
+const NAME_HONORIFICS = new Set(['dr', 'mr', 'mrs', 'ms', 'miss', 'mx', 'prof', 'professor', 'sri', 'shri', 'smt', 'er', 'ca', 'adv', 'advocate', 'capt', 'col', 'gen', 'rev', 'sir', 'hon']);
+export function bestProfileUrl(results: Array<{ name?: string; url?: string; degree?: string }>, contactName: string): string {
+  const toks = (s: string) => (s || '').toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim().split(' ').filter((t) => t && !NAME_HONORIFICS.has(t));
+  const cTokens = toks(contactName);
+  if (!cTokens.length) return '';
+  const cSet = new Set(cTokens);
+  let best = '';
+  let bestScore = -1;
+  for (const r of results) {
+    if (!r?.url || !/linkedin\.com\/in\//i.test(r.url)) continue;
+    const rTokens = toks(r.name || '');
+    if (!rTokens.length) continue;
+    const rSet = new Set(rTokens);
+    // Require one name to be a token-subset of the other — so "Syed Zubair" matches "Syed Zubair
+    // Ahmed" but NEVER "Rahul Kumar" for a "Nirmesh Kumar" (a shared surname alone isn't enough).
+    const cInR = cTokens.every((t) => rSet.has(t));
+    const rInC = rTokens.every((t) => cSet.has(t));
+    if (!cInR && !rInC) continue;
+    const overlap = cTokens.filter((t) => rSet.has(t)).length;
+    const score = overlap + (r.degree === '1st' ? 0.5 : 0); // prefer a 1st-degree connection on ties
+    if (score > bestScore) { bestScore = score; best = r.url.split('?')[0]; }
+  }
+  return best;
 }
 function gmailComposeUrl(c: OutreachContact): string {
   const su = encodeURIComponent(fillTokens(c.email_subject || '', c));
@@ -80,6 +135,9 @@ function fillTokens(t: string, c: OutreachContact): string {
 export function saveCampaign(camp: OutreachCampaign) {
   const stamped = { ...camp, updatedAt: Date.now() };
   try { localStorage.setItem(LS_KEY, JSON.stringify(stamped)); } catch { /* quota */ }
+  // Archive by title so this campaign is always recoverable even after a different (e.g. a 1-person
+  // reply) campaign is opened and overwrites the "current" slot.
+  try { if (stamped.title) { const arch = loadCampaignArchive(); arch[stamped.title] = stamped; saveCampaignArchive(arch); } } catch { /* quota */ }
   // Human-readable mirror in the Brain (kind 'outreach') so the user can SEE progress and
   // any agent can recall who's already been contacted — de-duped by title so it updates in
   // place rather than piling up a new node every status change.
@@ -93,16 +151,23 @@ export function saveCampaign(camp: OutreachCampaign) {
     brain.addNode({ title: camp.title, kind: 'outreach', body });
   } catch { /* Brain optional */ }
   // Mirror progress onto the To-do panel so "where did I leave off" survives closing the popup,
-  // deleting the chat, or restarting the app. Retired automatically once everyone is contacted.
+  // deleting the chat, or restarting the app. The card tracks the campaign with the MOST people
+  // still to contact (not just the one being saved) — so finishing a small reply can't wipe the
+  // card for a bigger campaign still in progress. `done: false` un-ticks a stale card whenever
+  // there is genuinely fresh work, fixing the "the next task showed up already done" bug.
   try {
-    const done = camp.contacts.filter((c) => c.status === 'sent' || c.status === 'accepted' || c.status === 'replied').length;
-    const left = camp.contacts.length - done;
-    if (left <= 0) todos.removeBySource(OUTREACH_TODO_KEY);
-    else todos.upsertResume(
-      OUTREACH_TODO_KEY,
-      `${camp.title} — ${left} still to message (${done}/${camp.contacts.length} done)`,
-      { kind: 'outreach', label: camp.title },
-    );
+    const best = loadResumableCampaign();
+    if (!best) todos.removeBySource(OUTREACH_TODO_KEY);
+    else {
+      const left = remainingOf(best);
+      const done = best.contacts.length - left;
+      todos.upsertResume(
+        OUTREACH_TODO_KEY,
+        `${best.title} — ${left} still to message (${done}/${best.contacts.length} done)`,
+        { kind: 'outreach', label: best.title },
+        { done: false },
+      );
+    }
   } catch { /* To-do optional */ }
 }
 
@@ -114,10 +179,41 @@ export function loadSavedCampaign(): OutreachCampaign | null {
   return null;
 }
 
+/** The best campaign to RESUME: the one with the most people still to contact (ties → most recent).
+ *  Reads the archive as well as the current slot, so drafting a 1-person reply — which overwrites the
+ *  "current" slot — never hides a 35-person campaign the user is still working through. */
+export function loadResumableCampaign(): OutreachCampaign | null {
+  const byTitle = new Map<string, OutreachCampaign>();
+  const consider = (c: OutreachCampaign | null) => {
+    if (!c || !Array.isArray(c.contacts) || !c.contacts.length) return;
+    const k = c.title || '';
+    const ex = byTitle.get(k);
+    if (!ex || (c.updatedAt || 0) >= (ex.updatedAt || 0)) byTitle.set(k, c);
+  };
+  consider(loadSavedCampaign());
+  for (const c of Object.values(loadCampaignArchive())) consider(c);
+  let best: OutreachCampaign | null = null;
+  let bestScore = -1;
+  for (const c of byTitle.values()) {
+    const rem = remainingOf(c);
+    if (rem <= 0) continue;
+    const score = rem * 1e13 + (c.updatedAt || 0); // most remaining first, then most recent
+    if (score > bestScore) { bestScore = score; best = c; }
+  }
+  return best;
+}
+
+// Where to land when the copilot opens / a campaign loads: the FIRST person still to contact, so
+// resuming drops you on the next to-do instead of back at contact #1 (which you may have long done).
+function firstUndoneIdx(arr: OutreachContact[]): number {
+  const i = arr.findIndex((c) => !(c.status === 'sent' || c.status === 'accepted' || c.status === 'replied' || c.status === 'skip'));
+  return i >= 0 ? i : 0;
+}
+
 export default function OutreachCopilot({ campaign, onClose }: { campaign: OutreachCampaign; onClose: () => void }) {
   const [contacts, setContacts] = useState<OutreachContact[]>(
     campaign.contacts.map((c) => ({ ...c, status: c.status || 'todo' })));
-  const [idx, setIdx] = useState(0);
+  const [idx, setIdx] = useState(() => firstUndoneIdx(campaign.contacts));
   const [copied, setCopied] = useState<'msg' | 'email' | null>(null);
   const [whyOpen, setWhyOpen] = useState(false);
   const [opening, setOpening] = useState(false);
@@ -125,6 +221,16 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
 
   const cur = contacts[idx];
   const channel = campaign.channel || 'linkedin';
+
+  // When the parent opens a DIFFERENT campaign object (resume, /verifylinks re-open, a fresh draft),
+  // resync the local contacts + jump to the first to-do. The prop reference only changes when
+  // setOutreachCampaign is called with a new object — normal auto-saves don't touch it — so this
+  // never fights the user's edits, it just refreshes when a genuinely new/updated campaign arrives.
+  useEffect(() => {
+    const next = campaign.contacts.map((c) => ({ ...c, status: c.status || 'todo' }));
+    setContacts(next);
+    setIdx(firstUndoneIdx(next));
+  }, [campaign]);
 
   // Auto-save the campaign (with live statuses) whenever it changes.
   useEffect(() => {
@@ -164,18 +270,40 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
     setOpening(true);
     try {
       const { invoke } = await import('@tauri-apps/api/core');
-      // No saved profile URL for this person → open a LinkedIn people-search in the ADRIS browser
-      // (not the default browser), so the user finds them and hits Message there.
-      if (!hasProfile) {
-        try { await invoke('run_browser_persistent', { args: `open "${profileUrl(cur)}"` }); }
-        catch { openLink(profileUrl(cur)); }
-        setOpenNote('Opened a LinkedIn search in the ADRIS browser — click the right person, hit Message, then paste (Ctrl+V).');
-        return;
+      // No saved profile URL for this person → FIND them by name first, SAVE the correct profile URL
+      // onto the contact (so this and every later open goes straight to their chat), then open it.
+      // Only falls back to a people-search if we can't confidently match — this is what stops the
+      // recurring "opened a search that says No results" and makes the fix stick.
+      let targetUrl = cur.linkedin_url && /linkedin\.com\/in\//i.test(cur.linkedin_url) ? cur.linkedin_url : '';
+      if (!targetUrl) {
+        setOpenNote('Finding the right profile…');
+        try {
+          const raw = await invoke<string>('run_browser_persistent', { args: `findprofile "${(cur.name || '').replace(/["\n\r]/g, ' ').trim()}"` });
+          if (raw.includes('SIGN_IN_REQUIRED') || raw.includes('[NEEDS_LOGIN]')) {
+            setOpenNote('Sign in to LinkedIn in the ADRIS browser window, then click again.');
+            return;
+          }
+          const pj = raw.indexOf('PROFILE_JSON:');
+          if (pj >= 0) { const arr = JSON.parse(raw.slice(pj + 'PROFILE_JSON:'.length).trim()); targetUrl = bestProfileUrl(Array.isArray(arr) ? arr : [], cur.name); }
+        } catch { /* fall through to the search below */ }
+        if (targetUrl) {
+          // Persist the corrected URL onto this contact — the auto-save effect mirrors it to storage
+          // and the Brain, so next time hasProfile is true and it opens directly.
+          const fixed = targetUrl;
+          setContacts((prev) => prev.map((c, i) => (i === idx ? { ...c, linkedin_url: fixed } : c)));
+        } else {
+          // Couldn't match confidently → open a name-only people-search as before.
+          try { await invoke('run_browser_persistent', { args: `open "${profileUrl(cur)}"` }); }
+          catch { openLink(profileUrl(cur)); }
+          setOpenNote('Opened a LinkedIn search in the ADRIS browser — click the right person, hit Message, then paste (Ctrl+V).');
+          return;
+        }
       }
-      const res = await invoke<string>('run_browser_persistent', { args: `message "${cur.linkedin_url}"` });
+      const res = await invoke<string>('run_browser_persistent', { args: `message "${targetUrl}"` });
+      const savedNote = !hasProfile ? ' (Saved their profile link for next time.)' : '';
       if (typeof res === 'string' && res.includes('SIGN_IN_REQUIRED')) setOpenNote('Sign in to LinkedIn in the ADRIS browser window, then click again.');
-      else if (typeof res === 'string' && res.includes('MESSAGE_BOX_OPENED')) setOpenNote('Chat box is open in the ADRIS browser — paste (Ctrl+V) and send.');
-      else setOpenNote('Opened their profile in the ADRIS browser — click Message, then paste & send. (If you\'re not connected yet, send a connection request first.)');
+      else if (typeof res === 'string' && res.includes('MESSAGE_BOX_OPENED')) setOpenNote(`Chat box is open in the ADRIS browser — paste (Ctrl+V) and send.${savedNote}`);
+      else setOpenNote(`Opened their profile in the ADRIS browser — click Message, then paste & send.${savedNote} (If you\'re not connected yet, send a connection request first.)`);
     } catch {
       openLink(profileUrl(cur));
       setOpenNote('Opened their profile in your browser — click Message and paste.');

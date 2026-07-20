@@ -27,7 +27,7 @@ import { getMonthlyUsage } from '../../lib/tokenTracker';
 import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining } from '../../lib/tokenTier';
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
 import SkillsPanel from './SkillsPanel';
-import OutreachCopilot, { type OutreachCampaign, type OutreachContact, loadSavedCampaign, saveCampaign } from './OutreachCopilot';
+import OutreachCopilot, { type OutreachCampaign, type OutreachContact, loadSavedCampaign, loadResumableCampaign, saveCampaign, bestProfileUrl } from './OutreachCopilot';
 import TodoPanel from './TodoPanel';
 import Icon, { type IconName } from '../Icon';
 
@@ -2876,7 +2876,7 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
     // /verifylinks re-saved the campaign between render and click), the stored "dismissed" signature
     // would never match what the memo recomputes and the ✕ would appear to do nothing. Reading fresh
     // here guarantees the signature we store is exactly the one the memo will compare against.
-    const cur = loadSavedCampaign() || camp;
+    const cur = loadResumableCampaign() || loadSavedCampaign() || camp;
     if (!cur) return;
     const sig = campaignSig(cur);
     setPillDismissedSig(sig);
@@ -2905,12 +2905,11 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
   // updates on the next run). Hidden if the user deleted its note from the Brain.
   const savedOutreach = useMemo(() => {
     if (outreachCampaign) return null; // popup already open
-    const saved = loadSavedCampaign();
+    // Offer the campaign with the MOST people still to contact — so after a 1-person reply (which
+    // overwrites the "current" slot) the pill still brings you back to the 35-person outreach, and it
+    // hides once everything is done. Falls back to the last-saved campaign.
+    const saved = loadResumableCampaign() || loadSavedCampaign();
     if (!saved) return null;
-    // The saved campaign in localStorage is the source of truth — it holds the drafted messages and
-    // per-contact status. The Brain note is only a human-readable mirror, so it must NEVER gate
-    // access to the drafts: requiring an exact title + kind:'outreach' match there meant a single
-    // mismatch silently stranded a whole drafted campaign with no way back to it.
     if (campaignSig(saved) === pillDismissedSig) return null;   // user hid this one
     return saved;
   }, [outreachCampaign, brainTick, pillDismissedSig]);
@@ -2986,8 +2985,8 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
       if (camp && Array.isArray(camp.contacts) && camp.contacts.length) {
         setOutreachCampaign({ ...camp, title: camp.title || `LinkedIn outreach — ${new Date().toLocaleDateString()}` });
       } else {
-        // No payload → resume the last saved campaign if there is one.
-        const saved = loadSavedCampaign();
+        // No payload → resume the campaign with the most still to do.
+        const saved = loadResumableCampaign() || loadSavedCampaign();
         if (saved) setOutreachCampaign(saved);
       }
     });
@@ -4302,16 +4301,31 @@ The prompt must be production-ready — specific enough for a motion designer to
   function looksLikeConnectionsFile(f?: { name?: string; content?: string }): boolean {
     const b = f?.content || '';
     if (!b) return false;
-    if (/linkedin connections|connections\.(md|csv|txt)/i.test(f?.name || '')) return true;
+    if (/linkedin connections|connections\.(md|csv|txt)|linkedin outreach|outreach progress/i.test(f?.name || '')) return true;
     const links = (b.match(/linkedin\.com\/in\//gi) || []).length;
     if (links >= 3) return true;
-    return /\bname\b[^\n]{0,40}\b(role|company|headline|profile)\b/i.test(b.slice(0, 400));
+    // A Name | … | (Company/Headline/Profile/Status) table — includes the outreach-progress mirror
+    // (Name | Company | Status), so re-attaching that note is recognised as a people list.
+    return /\bname\b[^\n]{0,40}\b(role|company|headline|profile|status)\b/i.test(b.slice(0, 400));
+  }
+  // A cell that is a saved outreach status label → the OutreachStatus it maps to (else undefined).
+  // Lets parseContactRows read the Status column of the outreach-progress note so re-attaching it
+  // continues from where the user left off instead of re-drafting people already contacted.
+  function rowStatusOf(cell: string): OutreachContact['status'] | undefined {
+    const t = (cell || '').trim().toLowerCase();
+    if (/^message sent$|^sent$/.test(t)) return 'sent';
+    if (/^replied$|^reply$/.test(t)) return 'replied';
+    if (/^accepted$|^connected$/.test(t)) return 'accepted';
+    if (/^connect requested$|^invite sent$|^pending$/.test(t)) return 'connect';
+    if (/^skipped$|^skip$/.test(t)) return 'skip';
+    if (/^to ?do$|^todo$/.test(t)) return 'todo';
+    return undefined;
   }
   // Robust contact parser: handles pipe tables (Brain notes) AND tab / multi-space columns
   // (a pasted or exported "Name  Role  Profile" list). Name = first cell, URL = any /in/ link on
-  // the row, headline = the remaining non-link cells.
-  function parseContactRows(text: string): { name: string; headline: string; url: string }[] {
-    const out: { name: string; headline: string; url: string }[] = [];
+  // the row, headline = the remaining non-link cells, status = a trailing status-label cell if any.
+  function parseContactRows(text: string): { name: string; headline: string; url: string; status?: OutreachContact['status'] }[] {
+    const out: { name: string; headline: string; url: string; status?: OutreachContact['status'] }[] = [];
     for (const line of text.split('\n')) {
       const t = line.trim();
       if (!t || /^\|?\s*:?-{2,}/.test(t)) continue; // blank or table separator row
@@ -4325,23 +4339,32 @@ The prompt must be production-ready — specific enough for a motion designer to
       }
       if (!cells.length) continue;
       if (/^#{1,6}\s/.test(t) || /^>/.test(t)) continue;            // markdown heading / quote
+      if (/^#{1,6}\s/.test(cells[0])) continue;                     // "### LinkedIn connections" as a cell
       const um = line.match(/https?:\/\/[a-z.]*linkedin\.com\/in\/[A-Za-z0-9\-_%]+/i);
       const url = um ? um[0] : '';
+      // Pull a trailing Status cell off the row (Message sent / Replied / To do / …) BEFORE reading
+      // the headline, so the status neither pollutes the company text nor gets re-drafted.
+      let status: OutreachContact['status'] | undefined;
+      if (cells.length >= 2) {
+        const st = rowStatusOf(cells[cells.length - 1]);
+        if (st) { status = st; cells = cells.slice(0, -1); }
+      }
       // A real contact row is a TABLE row (≥2 cells) or carries a profile link. A single-cell line
       // is prose — a section heading, an intro sentence, a "_Connected in Brain…_" footer — and
       // used to be swallowed as a contact named after the whole sentence.
       if (cells.length < 2 && !url) continue;
       const name = cells[0]
         .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+        .replace(/^#{1,6}\s*/, '')                                  // strip a leading markdown heading
         .replace(/^[*_`]+|[*_`]+$/g, '')                            // strip **bold** / _italic_
         .trim();
-      if (!name || /^(name|role|company|headline|profile)$/i.test(name)) continue;
+      if (!name || /^(name|role|company|headline|profile|status)$/i.test(name)) continue;
       if (name.endsWith(':')) continue;                             // "Best-fit connections for X:"
       if (name.split(/\s+/).length > 6) continue;                   // a sentence, not a person
       const headline = cells.slice(1)
-        .filter((c) => !/linkedin\.com/i.test(c))
+        .filter((c) => !/linkedin\.com/i.test(c) && c !== '—' && c !== '-')
         .join(' ').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/\s+/g, ' ').trim();
-      out.push({ name, headline, url });
+      out.push({ name, headline, url, status });
     }
     return out;
   }
@@ -4370,26 +4393,32 @@ The prompt must be production-ready — specific enough for a motion designer to
     const shownUser = (userText || (focus ? `Draft outreach for my LinkedIn connections — ${focus}` : 'Draft outreach for my LinkedIn connections and open the copilot')) + (chips ? `\n${chips}` : '');
     addMsg({ role: 'user', content: shownUser });
     if (sid) krewDb.saveMessage(sid, 'user', shownUser).catch(() => {});
-    // Split the attachments: the connections list (people to reach) vs the context doc (what the
-    // user does). The context doc is what feeds the drafter — NEVER the connections list.
-    const connFile = attachedFiles.find(looksLikeConnectionsFile)
-      || (looksLikeConnectionsFile(focusedFile ?? undefined) ? focusedFile ?? undefined : undefined);
+    // Split the attachments: connections list(s) (people to reach) vs the context doc (what the
+    // user does). MULTIPLE connection files may be attached — merge them all. The context doc is
+    // what feeds the drafter — NEVER a connections list.
+    const attachedConn = attachedFiles.filter((f) => f.content && looksLikeConnectionsFile(f));
+    if (!attachedConn.length && focusedFile && looksLikeConnectionsFile(focusedFile)) attachedConn.push({ name: focusedFile.name, content: focusedFile.content });
     const refFile = attachedFiles.find((f) => f.content && !looksLikeConnectionsFile(f) && /\.(md|markdown|txt|pdf|docx?)$/i.test(f.name))
       || attachedFiles.find((f) => f.content && !looksLikeConnectionsFile(f))
       || (focusedFile && !looksLikeConnectionsFile(focusedFile) ? { name: focusedFile.name, content: focusedFile.content } : undefined);
 
-    // Build the contact list.
-    let contacts: { name: string; headline: string; url: string }[] = [];
+    // Build the contact list (name + headline + profile URL + any saved status).
+    type ParsedContact = { name: string; headline: string; url: string; status?: OutreachContact['status'] };
+    const contacts: ParsedContact[] = [];
     const seen = new Set<string>();
-    const add = (c: { name: string; headline: string; url: string }) => {
+    const add = (c: ParsedContact) => {
       const k = c.name.toLowerCase().trim();
-      if (k && !seen.has(k)) { seen.add(k); contacts.push(c); }
+      if (!k) return;
+      if (!seen.has(k)) { seen.add(k); contacts.push(c); return; }
+      // Same person on two rows (e.g. an outreach table AND an appended connections list): keep the
+      // row that carries a real status / URL / longer headline so progress isn't lost to a bare dup.
+      const ex = contacts.find((x) => x.name.toLowerCase().trim() === k);
+      if (ex) { if (!ex.status && c.status) ex.status = c.status; if (!ex.url && c.url) ex.url = c.url; if (c.headline && c.headline.length > ex.headline.length) ex.headline = c.headline; }
     };
-    if (connFile?.content) {
-      // The user explicitly attached a connections list → it is AUTHORITATIVE. Use ONLY the people
-      // in that file — do NOT merge in the whole scan history (that's what produced the confusing
-      // "50 connections — 416 more saved" when they only attached 50).
-      parseContactRows(connFile.content).forEach(add);
+    if (attachedConn.length) {
+      // The user explicitly attached connection list(s) → AUTHORITATIVE. Use ONLY those people
+      // (merged across every attached file), not the whole scan history.
+      attachedConn.forEach((f) => parseContactRows(f.content).forEach(add));
     } else {
       // No file attached → use the scan's saved JSON, then the Brain note.
       try {
@@ -4399,7 +4428,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       if (!contacts.length) {
         const node = brainStore.all().nodes.find((n) => /linkedin connections/i.test(n.title));
         if (node) parseContactRows(nodeToMarkdown(node.body || '')).forEach(add);
-        if (contacts.length) { try { localStorage.setItem('nv-li-connections', JSON.stringify(contacts)); } catch { /* quota */ } }
+        if (contacts.length) { try { localStorage.setItem('nv-li-connections', JSON.stringify(contacts.map((c) => ({ name: c.name, headline: c.headline, url: c.url })))); } catch { /* quota */ } }
       }
     }
     if (!contacts.length) {
@@ -4424,35 +4453,39 @@ The prompt must be production-ready — specific enough for a motion designer to
       return;
     }
 
-    // Never message the same person twice. Anyone already marked sent/accepted/replied in the
-    // running campaign is dropped before drafting, so working through 700 connections 50 at a time
-    // never re-drafts someone you've already contacted — no need to attach anything by hand.
+    // Continue, don't restart. Read every saved status — from the attached list's Status column AND
+    // the running campaign — so anyone already messaged/accepted/replied/skipped is kept with that
+    // status and NOT re-drafted. This is what makes re-attaching the outreach note resume the work
+    // instead of starting the whole list over (the bug the user hit).
     const nrm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
-    const prior = loadSavedCampaign();
+    const prior = loadResumableCampaign() || loadSavedCampaign();
     const carryOver = !!prior && loadSettings().listMode !== 'new';
+    const mergePrior = carryOver && !!prior && attachedConn.length === 0; // an attached list is authoritative
     const priorByName = new Map<string, OutreachContact>();
-    const contactedNames = new Set<string>();
-    if (carryOver && prior) {
-      for (const c of prior.contacts) {
-        priorByName.set(nrm(c.name), c);
-        if (c.status === 'sent' || c.status === 'accepted' || c.status === 'replied') contactedNames.add(nrm(c.name));
-      }
-    }
-    const alreadyDone = contacts.filter((c) => contactedNames.has(nrm(c.name))).length;
-    contacts = contacts.filter((c) => !contactedNames.has(nrm(c.name)));
-    if (!contacts.length) {
-      const allDone = `Everyone on this list has already been messaged (${alreadyDone} contacted). Run **/scan** to pull in your next batch of connections, then ask me to draft outreach again.`;
+    if (prior) for (const c of prior.contacts) priorByName.set(nrm(c.name), c);
+    const isDoneStatus = (s?: OutreachContact['status']) => s === 'sent' || s === 'accepted' || s === 'replied' || s === 'skip';
+    // Status per person: the attached list wins, else the running campaign.
+    const statusByName = new Map<string, OutreachContact['status']>();
+    for (const c of contacts) if (c.status) statusByName.set(nrm(c.name), c.status);
+    if (carryOver && prior) for (const c of prior.contacts) { const k = nrm(c.name); if (!statusByName.get(k) && c.status) statusByName.set(k, c.status); }
+    const isDone = (name: string) => isDoneStatus(statusByName.get(nrm(name)));
+
+    const alreadyDone = contacts.filter((c) => isDone(c.name)).length;
+    const todoAll = contacts.filter((c) => !isDone(c.name));
+    if (!todoAll.length) {
+      const allDone = `Everyone on this list has already been messaged or handled (${alreadyDone} done). Run **/scan** to pull in your next batch of connections, or attach a fresh list — then ask me to draft outreach again.`;
       addMsg({ role: 'assistant', content: allDone });
       if (sid) krewDb.saveMessage(sid, 'assistant', allDone).catch(() => {});
       return;
     }
 
-    // Put connections that HAVE a profile URL first — "Copy & open chat" opens their chat box
-    // directly; the ones without a URL only get a name-search, so they go last.
-    contacts.sort((a, b) => (b.url && /linkedin\.com\/in\//i.test(b.url) ? 1 : 0) - (a.url && /linkedin\.com\/in\//i.test(a.url) ? 1 : 0));
-    const pick = contacts.slice(0, Math.max(1, max));
-    const more = contacts.length - pick.length;
-    addMsg({ role: 'assistant', content: `Drafting personalised messages for ${pick.length} connection${pick.length === 1 ? '' : 's'}${more > 0 ? ` (of ${contacts.length})` : ''}${alreadyDone > 0 ? ` — skipping ${alreadyDone} you've already messaged` : ''} and opening the outreach copilot…`, streaming: true });
+    // Draft only the people still to do; profile-URL people first ("Copy & open chat" opens their
+    // chat box directly), the URL-less ones last.
+    const draftQueue = [...todoAll].sort((a, b) => (b.url && /linkedin\.com\/in\//i.test(b.url) ? 1 : 0) - (a.url && /linkedin\.com\/in\//i.test(a.url) ? 1 : 0));
+    const pick = draftQueue.slice(0, Math.max(1, max));
+    const pickSet = new Set(pick.map((c) => nrm(c.name)));
+    const more = todoAll.length - pick.length;
+    addMsg({ role: 'assistant', content: `${alreadyDone > 0 ? `Continuing your outreach — ${alreadyDone} already done, ` : ''}drafting ${pick.length} message${pick.length === 1 ? '' : 's'}${more > 0 ? ` (${more} more still to do)` : ''} and opening the copilot…`, streaming: true });
     setBusy(true);
     const sys = [
       'You write short, warm, genuinely PERSONALISED LinkedIn messages to the user\'s EXISTING 1st-degree connections (people who already accepted them).',
@@ -4479,22 +4512,38 @@ The prompt must be production-ready — specific enough for a motion designer to
         const hook = headlineHook(c.headline);
         return `Hi ${first}, great to be connected! ${hook ? `Your work${/\bat\b/i.test(c.headline) ? ` at ${hook}` : ` on ${hook}`} caught my eye — ` : ''}I'd love to hear what you're focused on right now. Open to a quick chat?`.replace(/\s+/g, ' ').trim();
       };
-      const newContacts: OutreachContact[] = pick.map((c) => ({ name: c.name, company: c.headline, linkedin_url: c.url, linkedin_message: byName[norm(c.name)] || byName[norm(firstNameOf(c.name))] || fallbackMsg(c) }));
-      // ONE running campaign by default: keep everyone already in it (with their status) and append
-      // the newly drafted people. That's what makes "50 at a time" work across a 700-connection list
-      // — progress accumulates instead of each run wiping the last one's statuses.
-      const merged: OutreachContact[] = carryOver && prior
-        ? [...prior.contacts, ...newContacts.filter((d) => !priorByName.has(nrm(d.name)))]
-        : newContacts;
+      const draftFor = (c: ParsedContact) => byName[norm(c.name)] || byName[norm(firstNameOf(c.name))] || fallbackMsg(c);
+      // Assemble the campaign in list order: keep everyone with their real status, fill a fresh draft
+      // only for the people we just drafted, and preserve any message a person already had.
+      const built: OutreachContact[] = [];
+      const usedNames = new Set<string>();
+      for (const c of contacts) {
+        const k = nrm(c.name);
+        const priorC = priorByName.get(k);
+        const st = statusByName.get(k);
+        if (isDone(c.name)) {
+          built.push({ name: c.name, company: c.headline || priorC?.company, linkedin_url: c.url || priorC?.linkedin_url, linkedin_message: priorC?.linkedin_message || '', status: st });
+          usedNames.add(k);
+        } else if (pickSet.has(k)) {
+          built.push({ name: c.name, company: c.headline || priorC?.company, linkedin_url: c.url || priorC?.linkedin_url, linkedin_message: priorC?.linkedin_message || draftFor(c), status: st });
+          usedNames.add(k);
+        }
+        // an undrafted to-do beyond the cap is left for a later "draft the rest" run
+      }
+      // Accumulate across batches when NO file was attached: carry forward anyone from the running
+      // campaign we didn't just rebuild, so working a big list 50 at a time keeps prior drafts.
+      const carriedPrior: OutreachContact[] = mergePrior && prior ? prior.contacts.filter((c) => !usedNames.has(nrm(c.name))) : [];
+      // Reuse the attached note's own title so re-attaching "LinkedIn outreach — 18/7/2026" updates
+      // THAT campaign (same Brain note + resume slot) instead of spawning a fresh dated one.
+      const attachedTitle = attachedConn.map((f) => f.name).find((n) => /outreach/i.test(n));
       const campaign: OutreachCampaign = {
-        title: carryOver && prior ? prior.title : `LinkedIn outreach — ${new Date().toLocaleDateString()}`,
+        title: attachedTitle || (carryOver && prior ? prior.title : `LinkedIn outreach — ${new Date().toLocaleDateString()}`),
         channel: 'linkedin',
-        contacts: merged,
+        contacts: [...carriedPrior, ...built],
       };
-      undismissOutreachPill();       // a new draft is new work — the pill is relevant again
-      setOutreachCampaign(campaign); // opens the popup deterministically
-      const carried = merged.length - newContacts.length;
-      const done = `Opened the outreach copilot with ${pick.length} new message${pick.length === 1 ? '' : 's'}${carried > 0 ? ` (plus ${carried} already in this campaign — ${alreadyDone} of them done)` : ''}${more > 0 ? ` — ${more} more connections are saved; say "draft outreach for all ${contacts.length}" to include them` : ''}. For each one: tap **Copy message & open chat** — it copies the message and opens their LinkedIn chat box, then you just paste (Ctrl+V) and send. Every message is editable in the panel before you send it.`;
+      undismissOutreachPill();       // resuming/drafting is active work — the pill is relevant again
+      setOutreachCampaign(campaign); // opens the popup deterministically, positioned on the first to-do
+      const done = `Opened the outreach copilot with ${pick.length} message${pick.length === 1 ? '' : 's'} to send${alreadyDone > 0 ? ` — ${alreadyDone} already done are kept with their status` : ''}${more > 0 ? `; ${more} more still to do (say "draft outreach for all" to include them)` : ''}. For each: tap **Copy message & open chat**, paste (Ctrl+V) and send, then mark it. Every message is editable before you send.`;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: done, streaming: false }; return c; });
       if (sid) krewDb.saveMessage(sid, 'assistant', done).catch(() => {});
       setAttachedFiles([]);
@@ -4533,9 +4582,9 @@ The prompt must be production-ready — specific enough for a motion designer to
     addMsg({ role: 'user', content: 'Verify & fix the LinkedIn profile links saved for outreach' });
     if (sid) krewDb.saveMessage(sid, 'user', 'Verify & fix the LinkedIn profile links saved for outreach').catch(() => {});
 
-    // Source of truth: the saved outreach campaign (what the copilot opens). If there's no campaign
-    // yet, fall back to the scanned-connections list so /verifylinks still helps right after /scan.
-    const campaign = loadSavedCampaign();
+    // Source of truth: the campaign with the most still to do (what the copilot resumes). If there's
+    // no campaign yet, fall back to the scanned-connections list so /verifylinks helps after /scan.
+    const campaign = loadResumableCampaign() || loadSavedCampaign();
     let contacts: OutreachContact[] = campaign ? campaign.contacts.map((c) => ({ ...c })) : [];
     if (!contacts.length) {
       try {
@@ -4575,29 +4624,14 @@ The prompt must be production-ready — specific enough for a motion designer to
         let raw = '';
         try { raw = await invoke<string>('run_browser_persistent', { args: `findprofile "${q}"` }); } catch (e) { raw = String(e); }
         if (raw.includes('SIGN_IN_REQUIRED') || raw.includes('[NEEDS_LOGIN]')) { signInHit = true; break; }
-        let results: { name: string; headline: string; url: string; degree: string }[] = [];
+        let results: { name?: string; url?: string; degree?: string }[] = [];
         const pj = raw.indexOf('PROFILE_JSON:');
         if (pj >= 0) { try { const a = JSON.parse(raw.slice(pj + 'PROFILE_JSON:'.length).trim()); if (Array.isArray(a)) results = a; } catch { /* ignore */ } }
-        // Best match: first name must match and ≥half the contact's name tokens must overlap, so we
-        // never point the button at a stranger who merely shares a surname. 1st-degree is preferred
-        // (these are the user's own connections), then higher token overlap.
-        const cTokens = nameNorm(c.name).split(' ').filter(Boolean);
-        const cTokenSet = new Set(cTokens);
-        const cFirst = firstNameOf(c.name).toLowerCase();
-        let best: { name: string; headline: string; url: string; degree: string } | null = null;
-        let bestScore = 0;
-        for (const r of results) {
-          if (!r?.url || !/linkedin\.com\/in\//i.test(r.url)) continue;
-          const rTokens = nameNorm(r.name).split(' ').filter(Boolean);
-          if (!rTokens.length) continue;
-          const overlap = rTokens.filter((t) => cTokenSet.has(t)).length;
-          const ratio = overlap / Math.max(cTokens.length, 1);
-          const firstOk = !!cFirst && (rTokens.includes(cFirst) || r.name.toLowerCase().includes(cFirst));
-          if (!firstOk || ratio < 0.5) continue;
-          const score = ratio + (r.degree === '1st' ? 0.3 : 0);
-          if (score > bestScore) { bestScore = score; best = r; }
-        }
-        if (best) { c.linkedin_url = best.url.split('?')[0]; fixed++; }
+        // Shared matcher (same one the "Copy & open chat" self-heal uses): first name OR surname must
+        // match + ≥half the name tokens overlap, 1st-degree preferred — so we never point a button at
+        // a stranger who merely shares a surname.
+        const foundUrl = bestProfileUrl(results, c.name);
+        if (foundUrl) { c.linkedin_url = foundUrl; fixed++; }
         else failed.push(c.name);
         await new Promise((r) => setTimeout(r, 400)); // gentle pacing — never hammer LinkedIn
       }
@@ -4665,7 +4699,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     const r = item.resume;
     if (!r) return;
     if (r.kind === 'outreach') {
-      const saved = loadSavedCampaign();
+      const saved = loadResumableCampaign() || loadSavedCampaign();
       if (saved) { undismissOutreachPill(); setOutreachCampaign(saved); return; }
       addMsg({ role: 'assistant', content: 'That outreach campaign is no longer saved — run **/outreach** to draft a fresh one.' });
       todos.removeBySource(item.sourceKey ?? '');
@@ -4727,7 +4761,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       setTimeout(() => { const el = inputRef.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0);
       return;
     }
-    if (c.run === 'continue') { setInput(''); const saved = loadSavedCampaign(); if (saved) { undismissOutreachPill(); setOutreachCampaign(saved); } else addMsg({ role: 'assistant', content: 'No outreach in progress yet — use **/outreach** to draft messages and open the copilot.' }); return; }
+    if (c.run === 'continue') { setInput(''); const saved = loadResumableCampaign() || loadSavedCampaign(); if (saved) { undismissOutreachPill(); setOutreachCampaign(saved); } else addMsg({ role: 'assistant', content: 'No outreach in progress yet — use **/outreach** to draft messages and open the copilot.' }); return; }
     if (c.run === 'verifylinks') { setInput(''); verifyOutreachLinks(); return; }
     if (c.run === 'scan') {
       // Don't run immediately — drop the phrasing in so the user can attach a file (to target the
