@@ -1529,18 +1529,37 @@ async fn models_download_engine(app: tauri::AppHandle) -> Result<(), String> {
     tokio::fs::create_dir_all(&dest_dir).await.map_err(|e| e.to_string())?;
     let exe_name = if cfg!(target_os = "windows") { "adris-engine.exe" } else { "adris-engine" };
     let dest_exe = dest_dir.join(exe_name);
-    if dest_exe.exists() { return Ok(()); }
 
-    let _ = app.emit("engine_download_progress",
-        serde_json::json!({ "step": "Setting up local AI engine…", "pct": 10 }));
-
-    // Extract the zip bundled inside the installer (no network required)
     let zip_path = app.path().resource_dir()
         .map_err(|e| e.to_string())?
         .join("adris-engine.zip");
     if !zip_path.exists() {
         return Err("Bundled engine not found. Please reinstall the app.".into());
     }
+
+    // Re-extract whenever the bundled engine differs from what is already on disk.
+    //
+    // This used to be `if dest_exe.exists() { return Ok(()) }`, so the engine files were written
+    // exactly once and never refreshed. Anyone who set the engine up on an older build kept those
+    // files forever: when a later version shipped a llama.cpp that needs an extra DLL, that DLL was
+    // never written and the engine died with a bare Windows "<name>.dll was not found" box. Stamping
+    // the zip's size + mtime lets an app update repair the folder on its own.
+    let stamp_path = dest_dir.join(".engine-stamp");
+    let stamp_now = std::fs::metadata(&zip_path).ok().map(|m| {
+        let secs = m.modified().ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs()).unwrap_or(0);
+        format!("{}-{}", m.len(), secs)
+    }).unwrap_or_default();
+    if dest_exe.exists()
+        && !stamp_now.is_empty()
+        && std::fs::read_to_string(&stamp_path).unwrap_or_default() == stamp_now
+    {
+        return Ok(());
+    }
+
+    let _ = app.emit("engine_download_progress",
+        serde_json::json!({ "step": "Setting up local AI engine…", "pct": 10 }));
 
     let _ = app.emit("engine_download_progress",
         serde_json::json!({ "step": "Extracting AI engine files…", "pct": 30 }));
@@ -1554,6 +1573,7 @@ async fn models_download_engine(app: tauri::AppHandle) -> Result<(), String> {
         let name = entry.name().to_string();
         if name.ends_with('/') { continue; }
         let out_path = dest_dir.join(&name);
+        if let Some(parent) = out_path.parent() { let _ = std::fs::create_dir_all(parent); }
         let mut buf = Vec::new();
         entry.read_to_end(&mut buf).map_err(|e| e.to_string())?;
         std::fs::write(&out_path, &buf).map_err(|e| e.to_string())?;
@@ -1561,6 +1581,9 @@ async fn models_download_engine(app: tauri::AppHandle) -> Result<(), String> {
         let _ = app.emit("engine_download_progress",
             serde_json::json!({ "step": format!("Extracting… {}/{}", i + 1, total), "pct": pct }));
     }
+
+    // Stamp only after every file landed, so a half-written folder is retried next launch.
+    let _ = std::fs::write(&stamp_path, &stamp_now);
 
     let _ = app.emit("engine_download_progress",
         serde_json::json!({ "step": "Engine ready ✓", "pct": 100 }));
