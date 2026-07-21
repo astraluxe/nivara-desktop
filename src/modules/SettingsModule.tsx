@@ -44,7 +44,7 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.12',
+  version: '1.6.13',
   items: [
     'Upgrading now opens the checkout on adris.tech in your browser instead of doing nothing. Payment is deliberately handled only on the website: the app never processes money and never grants a plan by itself, so a tampered copy cannot fake one. Pay signed in with the same email, then press “I’ve paid — check my plan” and it updates.',
     'Fixed: asking for DMs or cold emails “for the people in <file>” now opens the outreach copilot with the drafted messages. Without the literal word “outreach” it used to be routed to a strategy agent, which replied with a market-analysis report instead of the messages.',
