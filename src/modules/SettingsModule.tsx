@@ -54,7 +54,7 @@ const WHATS_NEW: { version: string; items: string[] } = {
     'Ticking a to-do off keeps it in Done rather than removing it, and each completed item now has a visible ✕ so you decide when it goes.',
     'Asking Krew to update your to-do no longer tells you to connect Google Calendar — the to-do list is local and needs no connected account.',
     'Fixed: text typed into "Your reference note" in the Brain is no longer lost when you close the panel with Escape or the ✕ — it used to save only if you clicked out of the box first.',
-    'Renaming a Brain note now renames any to-do that pointed at it, so the two cannot drift apart.',
+    'Renaming a Brain note now renames it everywhere: the to-do that points at it, and — for an outreach note — the campaign itself. Previously the campaign kept its old name internally, so it recreated a second note under the old title and the to-do never updated.',
     'Fixed: replying to one person no longer renames your whole outreach campaign after them. A one-person errand saves a campaign too, and the next full run was inheriting its name — which is how a 52-person list ended up filed under a single contact.',
   ],
 };

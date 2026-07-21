@@ -172,6 +172,44 @@ export function saveCampaign(camp: OutreachCampaign) {
   } catch { /* To-do optional */ }
 }
 
+/**
+ * Rename a saved campaign everywhere it is stored.
+ *
+ * A campaign's title lives in THREE places that must move together: the "current" slot, the
+ * title-keyed archive, and the Brain note. Renaming only the Brain note left the campaign still
+ * calling itself the old name — so the next save happily recreated a second note under the old
+ * title, and the To-do card kept showing it. Returns true if anything was actually renamed.
+ */
+export function renameCampaign(oldTitle: string, newTitle: string): boolean {
+  const from = (oldTitle || '').trim();
+  const to = (newTitle || '').trim();
+  if (!from || !to || from === to) return false;
+  let changed = false;
+  try {
+    const cur = loadSavedCampaign();
+    if (cur && (cur.title || '').trim() === from) {
+      localStorage.setItem(LS_KEY, JSON.stringify({ ...cur, title: to }));
+      changed = true;
+    }
+    const arch = loadCampaignArchive();
+    if (arch[from]) {
+      arch[to] = { ...arch[from], title: to };
+      delete arch[from];
+      saveCampaignArchive(arch);
+      changed = true;
+    }
+    // Re-point the resume card at the new name so "Continue" still resumes this campaign.
+    if (changed) {
+      for (const t of todos.all()) {
+        if (t.resume?.kind === 'outreach' && t.resume.label === from) {
+          todos.update(t.id, { resume: { ...t.resume, label: to }, text: t.text.split(from).join(to) });
+        }
+      }
+    }
+  } catch { /* storage optional — a failed rename must never break the note rename itself */ }
+  return changed;
+}
+
 export function loadSavedCampaign(): OutreachCampaign | null {
   try {
     const r = JSON.parse(localStorage.getItem(LS_KEY) || 'null');

@@ -893,22 +893,31 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
   // sort/blur was itself a freeze).
   const readOnlyFile = isPdf || isDeck || isImage;
   const skipBodyWrite = readOnlyFile || largeBody;
+  // Renaming a note must carry through to everything that refers to it BY NAME, or the rename is
+  // only cosmetic: the To-do card keeps the old title, and an outreach campaign — whose own title
+  // lives in localStorage, not in the note — carries on calling itself the old name and RECREATES
+  // a second note under it on its next save. Shared by save() and the unmount flush so it can't be
+  // skipped by closing the panel with Escape or the ✕.
+  const syncRename = (from: string, to: string) => {
+    if (!from || !to || from === to) return;
+    try {
+      for (const t of todos.all()) {
+        const patch: Partial<TodoItem> = {};
+        if (t.resume?.label === from) patch.resume = { ...t.resume, label: to };
+        if (t.text.includes(from)) patch.text = t.text.split(from).join(to);
+        if (Object.keys(patch).length) todos.update(t.id, patch);
+      }
+    } catch { /* best-effort — never block the rename itself */ }
+    // Outreach campaigns keep their own copy of the title; move it too.
+    import('../components/krew/OutreachCopilot')
+      .then(({ renameCampaign }) => renameCampaign(from, to))
+      .catch(() => { /* copilot not loaded — nothing to rename */ });
+  };
   const save = () => {
     const newTitle = title.trim() || 'Untitled';
+    const from = node.title;
     brain.updateNode(node.id, { title: newTitle, ...(skipBodyWrite ? {} : { body: readBody() }), ref, kind });
-    // Renaming a note should carry through to anything pointing AT it by name — otherwise the
-    // To-do panel keeps showing (and resuming) the old title, which then looks like a second,
-    // phantom piece of work.
-    if (newTitle !== node.title) {
-      try {
-        for (const t of todos.all()) {
-          const patch: Partial<TodoItem> = {};
-          if (t.resume?.label === node.title) patch.resume = { ...t.resume, label: newTitle };
-          if (t.text.includes(node.title)) patch.text = t.text.split(node.title).join(newTitle);
-          if (Object.keys(patch).length) todos.update(t.id, patch);
-        }
-      } catch { /* to-do sync is best-effort — never block the rename itself */ }
-    }
+    if (newTitle !== from) syncRename(from, newTitle);
   };
   // Flush on unmount. `ref`/title/kind only saved on blur, so closing the panel with Escape, the ✕,
   // or a backdrop click could unmount before blur ever fired — losing whatever had just been typed
@@ -924,6 +933,9 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
     if (newTitle === node.title && l.ref === (node.ref ?? '') && l.kind === node.kind) return;
     try {
       brain.updateNode(node.id, { title: newTitle, ref: l.ref, kind: l.kind });
+      // Renaming then closing with Escape/✕ never fired save(), so the rename used to land on the
+      // note alone and leave the to-do and campaign behind.
+      if (newTitle !== node.title) syncRename(node.title, newTitle);
     } catch { /* closing anyway */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
