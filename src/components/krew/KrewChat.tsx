@@ -5260,19 +5260,20 @@ The prompt must be production-ready — specific enough for a motion designer to
     // answer and that would be our fault, not theirs. At most once every few days; never blocks.
     if (mode === 'nivara' && tokenCap !== null && monthlyUsed >= tokenCap * 0.25 && shouldSuggestLocal()) {
       const verdict = classifyTask(text);
-      if (verdict.local) {
-        markLocalAdviceShown();
-        (async () => {
-          try {
-            const hw = await invoke<{ total_ram_gb: number; free_disk_gb: number }>('get_system_info');
-            const { pick, reason } = recommendLocalModel(hw);
-            const pct = Math.round((monthlyUsed / tokenCap) * 100);
-            addMsg({ role: 'assistant', content: pick
-              ? `_You've used about ${pct}% of this month's allowance — and this kind of task doesn't need to spend it._\n\n${verdict.why}\n\n**Suggested: ${pick.label}** · ${pick.sizeGb} GB download\n${pick.blurb}\n_${reason}_\n\nOpen **Models** to download it, then choose **Local** next to the message box. Anything that needs the web, Maps, or several steps in a row will still use adris.tech — that genuinely can't run offline.`
-              : `_You've used about ${pct}% of this month's allowance._ ${reason}` });
-          } catch { /* no hardware info — skip the suggestion rather than guess */ }
-        })();
-      }
+      markLocalAdviceShown();
+      (async () => {
+        try {
+          const hw = await invoke<{ total_ram_gb: number; free_disk_gb: number }>('get_system_info');
+          const { pick, reason } = recommendLocalModel(hw, verdict.demand);
+          const pct = Math.round((monthlyUsed / tokenCap) * 100);
+          const toolNote = verdict.usesTools
+            ? ' Your local model uses the same browser, search and Maps tools this app already has — nothing is taken away by running it yourself.'
+            : '';
+          addMsg({ role: 'assistant', content: pick
+            ? `_You've used about ${pct}% of this month's allowance — and this task doesn't have to spend it._\n\n${verdict.why}\n\n**Suggested: ${pick.label}** · ${pick.sizeGb} GB download\n${pick.blurb}\n_${reason}_\n\nOpen **Models** to download it, then choose **Local** next to the message box.${toolNote}`
+            : `_You've used about ${pct}% of this month's allowance._\n\n${verdict.why}\n\n${reason}` });
+        } catch { /* no hardware info — skip rather than guess */ }
+      })();
     }
     // Gate ADVANCED search (browser verify/enrich) by plan. Free/low tiers get a monthly quota so
     // they can't run unlimited browser verification — which is the expensive, abusable part
