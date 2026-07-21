@@ -46,6 +46,7 @@ function saveSettings(s: NvSettings) {
 const WHATS_NEW: { version: string; items: string[] } = {
   version: '1.6.13',
   items: [
+    'Fixed: people added by a later /scan now get messages. Attaching a campaign file made it the whole list of people, so anyone scanned afterwards could never be drafted for, however many times you ran outreach. A campaign file records how far you got, not who you know — so the roster is now topped up from your saved connections, and everyone you have already messaged keeps their status and is not drafted again.',
     'Upgrading now opens the checkout on adris.tech in your browser instead of doing nothing. Payment is deliberately handled only on the website: the app never processes money and never grants a plan by itself, so a tampered copy cannot fake one. Pay signed in with the same email, then press “I’ve paid — check my plan” and it updates.',
     'Fixed: asking for DMs or cold emails “for the people in <file>” now opens the outreach copilot with the drafted messages. Without the literal word “outreach” it used to be routed to a strategy agent, which replied with a market-analysis report instead of the messages.',
     '/outreach now asks two questions before it starts: which list of people to message, then which campaign note to save into (or a new one you name). It no longer guesses either — guessing is what put a 52-person list under one contact’s name. It remembers the note you last chose and marks it “last used”.',

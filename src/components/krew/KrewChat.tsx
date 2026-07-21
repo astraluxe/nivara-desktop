@@ -27,7 +27,7 @@ import { getMonthlyUsage } from '../../lib/tokenTracker';
 import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining } from '../../lib/tokenTier';
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
 import SkillsPanel from './SkillsPanel';
-import OutreachCopilot, { type OutreachCampaign, type OutreachContact, loadSavedCampaign, loadResumableCampaign, saveCampaign, bestProfileUrl } from './OutreachCopilot';
+import OutreachCopilot, { type OutreachCampaign, type OutreachContact, loadSavedCampaign, loadResumableCampaign, loadCampaignByTitle, saveCampaign, bestProfileUrl } from './OutreachCopilot';
 import TodoPanel from './TodoPanel';
 import Icon, { type IconName } from '../Icon';
 import { loadSettings } from '../../modules/SettingsModule';
@@ -4680,10 +4680,30 @@ The prompt must be production-ready — specific enough for a motion designer to
       const ex = contacts.find((x) => x.name.toLowerCase().trim() === k);
       if (ex) { if (!ex.status && c.status) ex.status = c.status; if (!ex.url && c.url) ex.url = c.url; if (c.headline && c.headline.length > ex.headline.length) ex.headline = c.headline; }
     };
+    // An outreach PROGRESS file (a campaign note: Name | Company | Status) records HOW FAR YOU GOT
+    // — it is not the universe of people you know. A connections list is. Telling them apart
+    // matters: treating a progress file as the full population meant that after a /scan added 100
+    // new people, running outreach with the campaign attached drafted for the original 52 only and
+    // the new ones could never be messaged, no matter how many times you ran it.
+    const isProgressFile = (f: { name?: string; content?: string }) =>
+      /outreach|campaign/i.test(f.name || '')
+      || /\|\s*status\s*\|/i.test(f.content || '')
+      || /message sent|to do\s*\|/i.test(f.content || '');
+
     if (attachedConn.length) {
-      // The user explicitly attached connection list(s) → AUTHORITATIVE. Use ONLY those people
-      // (merged across every attached file), not the whole scan history.
+      // Everything the user attached counts (statuses included — add() keeps them on dedupe).
       attachedConn.forEach((f) => parseContactRows(f.content).forEach(add));
+      // If ALL they gave us was progress, top the roster up from the saved connections so anyone
+      // added by a later scan is included. Existing people keep the status just parsed above,
+      // because add() only fills gaps on a duplicate rather than overwriting.
+      if (attachedConn.every(isProgressFile)) {
+        try {
+          const arr = JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
+          if (Array.isArray(arr)) arr.filter((c) => c?.name).forEach((c) => add({ name: String(c.name), headline: String(c.headline || ''), url: String(c.url || '') }));
+        } catch { /* ignore */ }
+        const node = brainStore.all().nodes.find((n) => n.title.trim().toLowerCase() === 'linkedin connections');
+        if (node) parseContactRows(nodeToMarkdown(node.body || '')).forEach(add);
+      }
     } else {
       // No file attached → use the scan's saved JSON, then the Brain note.
       try {
@@ -4723,7 +4743,10 @@ The prompt must be production-ready — specific enough for a motion designer to
     // status and NOT re-drafted. This is what makes re-attaching the outreach note resume the work
     // instead of starting the whole list over (the bug the user hit).
     const nrm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
-    const prior = loadResumableCampaign() || loadSavedCampaign();
+    // When the user PICKED a destination, resume THAT campaign — not whichever has the most left.
+    // Otherwise choosing an older campaign to add to would silently inherit a different one's
+    // statuses and re-draft people already messaged there.
+    const prior = (destTitle ? loadCampaignByTitle(destTitle) : null) || loadResumableCampaign() || loadSavedCampaign();
     const carryOver = !!prior && loadSettings().listMode !== 'new';
     const mergePrior = carryOver && !!prior && attachedConn.length === 0; // an attached list is authoritative
     const priorByName = new Map<string, OutreachContact>();

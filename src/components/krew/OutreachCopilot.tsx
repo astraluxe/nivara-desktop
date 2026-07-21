@@ -210,6 +210,21 @@ export function renameCampaign(oldTitle: string, newTitle: string): boolean {
   return changed;
 }
 
+/** The campaign saved under an exact title — used when the user PICKS a destination, so its
+ *  statuses are the ones we resume rather than whichever campaign happens to be largest. */
+export function loadCampaignByTitle(title: string): OutreachCampaign | null {
+  const want = (title || '').trim().toLowerCase();
+  if (!want) return null;
+  try {
+    const cur = loadSavedCampaign();
+    if (cur && (cur.title || '').trim().toLowerCase() === want) return cur;
+    for (const c of Object.values(loadCampaignArchive())) {
+      if ((c?.title || '').trim().toLowerCase() === want) return c;
+    }
+  } catch { /* storage optional */ }
+  return null;
+}
+
 export function loadSavedCampaign(): OutreachCampaign | null {
   try {
     const r = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
