@@ -77,7 +77,7 @@ const SLASH_COMMANDS: SlashCmd[] = [
   { cmd: 'reply',    label: 'Draft a reply',     desc: 'Reply to a message / email',                      run: 'prompt', value: 'Draft a reply to this: ' },
   { cmd: 'automate', label: 'Build automation',  desc: 'Describe an automation to build',                 run: 'prompt', value: 'Build an automation that ' },
   { cmd: 'inbox',    label: 'Check inbox',       desc: 'Summarise Gmail that needs a reply',              run: 'prompt', value: 'Check my Gmail inbox and summarise the emails that need a reply.' },
-  { cmd: 'summarize',label: 'Summarise',         desc: 'Summarise a page, file, or text',                 run: 'prompt', value: 'Summarise this: ' },
+  { cmd: 'summarize',label: 'Summarise',         desc: 'Summarise a saved file — pick it from the list',  run: 'prompt', value: 'Summarise <file name> — the key points only.' },
   { cmd: 'research', label: 'Deep research',     desc: 'Open the Research workspace',                     run: 'research', value: '' },
   { cmd: 'agents',   label: 'Browse agents',     desc: 'Switch or add a specialist agent',                run: 'agents', value: '' },
   { cmd: 'linkedin', label: 'Check LinkedIn messages', desc: 'Read replies & draft answers, no auto-send', run: 'prompt', value: 'Check my LinkedIn messages and draft replies for anything that needs one.' },
@@ -2931,6 +2931,13 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
   }, []);
   const [todoReminder, setTodoReminder] = useState<string | null>(null);
 
+  // /outreach asks two questions in order: WHICH list of people, then WHERE to save the campaign.
+  // Guessing either one is how a scan ended up merged into the wrong note and a 52-person campaign
+  // got filed under one contact's name — so both are now chosen explicitly, once, up front.
+  type OutreachPick = { step: 'source' | 'dest'; source?: { name: string; content: string; fromBrain: boolean } };
+  const [outreachPick, setOutreachPick] = useState<OutreachPick | null>(null);
+  const [destName, setDestName] = useState('');
+  const DEST_PREF_KEY = 'nv-outreach-dest-pref';
   const [filePickerCmd,     setFilePickerCmd]        = useState<SlashCmd | null>(null);
   const [filePickerQuery,   setFilePickerQuery]      = useState('');
   // Always open the picker on a clean search box, whichever way it was opened or dismissed.
@@ -4644,7 +4651,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     return h.split(/[•|·,•‣●\-–—]/)[0].trim();
   }
 
-  async function launchOutreachFromConnections(max = 50, focus = '', userText = '') {
+  async function launchOutreachFromConnections(max = 50, focus = '', userText = '', destTitle = '') {
     if (busy) return;
     const sid = await ensureSession('LinkedIn outreach');
     const chips = attachedFiles.map((f) => `[[file]] ${f.name}`).join('\n');
@@ -4800,7 +4807,10 @@ The prompt must be production-ready — specific enough for a motion designer to
         // campaign, and its LLM-chosen title — e.g. "Scheduling - Magaranthakannan K" — was then
         // inherited by the next full run, so a 52-person list ended up filed under one person's
         // name. A 1-contact prior is never a campaign name worth keeping.
-        title: attachedTitle
+        // An explicit destination chosen in the /outreach picker always wins — the user has said
+        // in so many words where this campaign belongs, so nothing inferred may override it.
+        title: destTitle
+          || attachedTitle
           || (carryOver && prior && prior.contacts.length > 1 ? prior.title : `LinkedIn outreach — ${new Date().toLocaleDateString()}`),
         channel: 'linkedin',
         contacts: [...carriedPrior, ...built],
@@ -4989,6 +4999,31 @@ The prompt must be production-ready — specific enough for a motion designer to
     const hits = terms.length ? out.filter((f) => terms.every((t) => f.name.toLowerCase().includes(t))) : out;
     return { files: hits.slice(0, 60), total: hits.length };
   }
+  /** Existing campaign notes the user could add to, newest first. */
+  function outreachDestinations(): string[] {
+    try {
+      return brainStore.all().nodes
+        .filter((n) => n.kind === 'outreach' || /outreach|campaign/i.test(n.title))
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+        .map((n) => n.title)
+        .slice(0, 12);
+    } catch { return []; }
+  }
+
+  /** Step 2 of /outreach — run it with the chosen source list and destination note. */
+  function startOutreachWith(source: { name: string; content: string; fromBrain: boolean }, dest: string) {
+    const title = dest.trim();
+    try { localStorage.setItem(DEST_PREF_KEY, title); } catch { /* preference is optional */ }
+    setOutreachPick(null);
+    setDestName('');
+    // The launcher reads the people from the attachments, so hand it exactly the one list the user
+    // picked — no guessing from scan history, no merging in a file they didn't choose.
+    setAttachedFiles([{ name: source.name, content: source.content, fromBrain: source.fromBrain }]);
+    setTimeout(() => {
+      launchOutreachFromConnections(50, '', `Draft outreach from ${source.name} → saving to "${title}"`, title);
+    }, 0);
+  }
+
   // Apply a picked file to the pending /command: fill the phrasing with the real file name and
   // attach the file so Krew actually has its content.
   function applyPickedFile(cmd: SlashCmd, file: { name: string; content: string; fromBrain: boolean }) {
@@ -5018,10 +5053,11 @@ The prompt must be production-ready — specific enough for a motion designer to
     if (c.run === 'research') { setInput(''); onOpenResearch?.(''); return; }   // open the Research workspace
     if (c.run === 'agents')   { setInput(''); onBrowseAgents?.(); return; }      // open the agent grid
     if (c.run === 'outreach') {
-      // Fill the input (don't auto-run) so the user can attach a file / add focus, then Enter.
-      // send() detects this and deterministically drafts + opens the copilot.
-      setInput('Draft outreach for my LinkedIn connections');
-      setTimeout(() => { const el = inputRef.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0);
+      // Ask which list, then where to save — rather than assuming the last scan and inventing a
+      // note name. Both were sources of real mix-ups.
+      setInput('');
+      setFilePickerQuery('');
+      setOutreachPick({ step: 'source' });
       return;
     }
     if (c.run === 'continue') { setInput(''); const saved = loadResumableCampaign() || loadSavedCampaign(); if (saved) { setOutreachCampaign(saved); } else addMsg({ role: 'assistant', content: 'No outreach in progress yet — use **/outreach** to draft messages and open the copilot.' }); return; }
@@ -7141,6 +7177,105 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                     <button onClick={() => { const c = filePickerCmd; setFilePickerCmd(null); setInput(c.value); setTimeout(() => inputRef.current?.focus(), 0); }} className="text-[10px] text-nv-faint hover:text-accent">…or type the file name myself</button>
                     {total > files.length && <span className="text-[9px] font-mono text-nv-faint shrink-0">{files.length} of {total} — keep typing</span>}
                   </div>
+                </div>
+              );
+            })()}
+            {/* /outreach — two ordered questions: which people, then where the campaign is saved. */}
+            {outreachPick && (() => {
+              const { files, total } = pickerFiles(filePickerQuery);
+              const dests = outreachDestinations();
+              const pref = (() => { try { return localStorage.getItem(DEST_PREF_KEY) || ''; } catch { return ''; } })();
+              const close = () => { setOutreachPick(null); setDestName(''); setFilePickerQuery(''); };
+              const isSource = outreachPick.step === 'source';
+              return (
+                <div className="absolute bottom-full left-0 mb-2 w-[440px] rounded-xl border border-accent/40 bg-nv-surface shadow-xl z-40 py-1 flex flex-col max-h-[440px]">
+                  <div className="px-3 py-1.5 flex items-center justify-between shrink-0">
+                    <span className="text-[9px] font-mono uppercase tracking-wide text-accent">
+                      Outreach · step {isSource ? '1 of 2 — who to message' : '2 of 2 — where to save it'}
+                    </span>
+                    <button onClick={close} className="text-nv-faint hover:text-nv-text text-[11px]">✕</button>
+                  </div>
+
+                  {isSource ? (
+                    <>
+                      <p className="px-3 pb-1 text-[10.5px] text-nv-faint leading-relaxed shrink-0">
+                        Pick the list of people — usually the <span className="text-nv-muted">LinkedIn connections</span> note that <span className="text-nv-muted">/scan</span> saves.
+                      </p>
+                      <div className="px-2 pb-1.5 shrink-0">
+                        <input
+                          autoFocus
+                          value={filePickerQuery}
+                          onChange={(e) => setFilePickerQuery(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Escape') { e.preventDefault(); close(); }
+                            if (e.key === 'Enter' && files.length >= 1) { e.preventDefault(); setFilePickerQuery(''); setOutreachPick({ step: 'dest', source: files[0] }); setDestName(''); }
+                          }}
+                          placeholder="Search your files…"
+                          className="w-full bg-nv-surface2 border border-nv-border focus:border-accent rounded-lg px-2.5 py-1.5 text-[12px] text-nv-text placeholder:text-nv-faint outline-none transition-fast"
+                        />
+                      </div>
+                      <div className="flex-1 overflow-y-auto min-h-0">
+                        {files.length === 0 ? (
+                          <div className="px-3 py-3 text-[11px] text-nv-faint">
+                            {filePickerQuery ? <>No file matches “{filePickerQuery}”.</> : <>No lists yet — run <span className="text-nv-muted">/scan</span> first, or attach a file.</>}
+                          </div>
+                        ) : files.map((f, idx) => (
+                          <button
+                            key={f.name}
+                            onClick={() => { setFilePickerQuery(''); setOutreachPick({ step: 'dest', source: f }); setDestName(''); }}
+                            className={`w-full text-left flex items-start gap-2.5 px-3 py-1.5 transition-fast ${idx === 0 && filePickerQuery ? 'bg-nv-surface2/70 text-nv-text' : 'text-nv-muted hover:bg-nv-surface2/60 hover:text-nv-text'}`}
+                          >
+                            <Icon name="file" size={13} className="text-accent mt-0.5" />
+                            <span className="flex-1 min-w-0 text-[12px] leading-snug break-words">{f.name}</span>
+                            {f.fromBrain && <span className="text-[8px] font-mono text-nv-faint border border-nv-border rounded px-1 shrink-0 mt-0.5">Brain</span>}
+                          </button>
+                        ))}
+                      </div>
+                      {total > files.length && <div className="px-3 py-1 text-[9px] font-mono text-nv-faint shrink-0">{files.length} of {total} — keep typing</div>}
+                    </>
+                  ) : (
+                    <>
+                      <p className="px-3 pb-1.5 text-[10.5px] text-nv-faint leading-relaxed shrink-0">
+                        Messaging <span className="text-nv-muted">{outreachPick.source?.name}</span>. Add this campaign to an existing note, or start a new one.
+                      </p>
+                      <div className="flex-1 overflow-y-auto min-h-0">
+                        {dests.map((d) => (
+                          <button
+                            key={d}
+                            onClick={() => outreachPick.source && startOutreachWith(outreachPick.source, d)}
+                            className="w-full text-left flex items-start gap-2.5 px-3 py-1.5 text-nv-muted hover:bg-nv-surface2/60 hover:text-nv-text transition-fast"
+                          >
+                            <Icon name="file" size={13} className="text-accent mt-0.5" />
+                            <span className="flex-1 min-w-0 text-[12px] leading-snug break-words">{d}</span>
+                            {d === pref && <span className="text-[8px] font-mono text-accent border border-accent/40 rounded px-1 shrink-0 mt-0.5">last used</span>}
+                          </button>
+                        ))}
+                        {dests.length === 0 && (
+                          <div className="px-3 py-2 text-[11px] text-nv-faint">No campaigns yet — name a new one below.</div>
+                        )}
+                      </div>
+                      <div className="px-2 pt-1.5 pb-1 border-t border-nv-border/50 mt-1 shrink-0 flex items-center gap-1.5">
+                        <input
+                          autoFocus
+                          value={destName}
+                          onChange={(e) => setDestName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Escape') { e.preventDefault(); close(); }
+                            if (e.key === 'Enter' && destName.trim() && outreachPick.source) { e.preventDefault(); startOutreachWith(outreachPick.source, destName); }
+                          }}
+                          placeholder={`New campaign — e.g. LinkedIn outreach — ${new Date().toLocaleDateString()}`}
+                          className="flex-1 bg-nv-surface2 border border-nv-border focus:border-accent rounded-lg px-2.5 py-1.5 text-[11.5px] text-nv-text placeholder:text-nv-faint outline-none transition-fast"
+                        />
+                        <button
+                          onClick={() => outreachPick.source && startOutreachWith(outreachPick.source, destName.trim() || `LinkedIn outreach — ${new Date().toLocaleDateString()}`)}
+                          className="shrink-0 text-[11px] px-2.5 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-medium"
+                        >
+                          Start
+                        </button>
+                      </div>
+                      <button onClick={() => { setFilePickerQuery(''); setOutreachPick({ step: 'source' }); }} className="px-3 pb-1 text-left text-[10px] text-nv-faint hover:text-accent shrink-0">← back to choosing the list</button>
+                    </>
+                  )}
                 </div>
               );
             })()}

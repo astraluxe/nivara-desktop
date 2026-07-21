@@ -244,7 +244,7 @@ export default function InfoModule() {
           <CmdTable rows={[
             ['/linkedin', 'Check LinkedIn messages', 'Opens your LinkedIn inbox, reads each conversation in full, and drafts a reply only where something is genuinely still outstanding. Add your availability in the same sentence and it will answer proposed times against it. Nothing is ever sent for you.', 'Check my LinkedIn messages — I’m free Wednesday after 1:30 PM IST'],
             ['—', 'Send a drafted reply', 'After it drafts replies, say this to have it type that reply into the person’s LinkedIn chat box. It stops there — you read it and press Send yourself.', 'Send the reply to Kevin'],
-            ['/outreach', 'Send outreach (copilot)', 'Writes a personal message for each saved connection and opens the copilot that walks you through sending them one by one. Skips anyone you have already messaged.', 'Draft outreach for my LinkedIn connections'],
+            ['/outreach', 'Send outreach (copilot)', 'Asks two things first — which list of people to message, then which campaign note to save into (or a new one you name) — then writes a personal message for each person and opens the copilot that walks you through sending them one by one. Skips anyone you have already messaged, and remembers the note you last saved to.', 'Type /outreach, pick “LinkedIn connections”, then pick or name the campaign'],
             ['/continue', 'Continue outreach', 'Reopens the outreach copilot exactly where you left off, with everyone’s status intact.', '/continue'],
             ['/verifylinks', 'Fix outreach links', 'Checks every saved profile link in your outreach list and repairs the wrong or missing ones by searching LinkedIn for the right person.', 'Verify and fix the outreach links'],
             ['/draft', 'Draft outreach', 'Writes the DMs or emails for a list without opening the sending copilot — useful when you just want the text.', 'Write a LinkedIn DM and a short cold email for the people in Tech leads.md'],
@@ -258,7 +258,7 @@ export default function InfoModule() {
             ['/deck', 'Make a presentation', 'Builds a slide deck you can edit in place and export as a PDF.', 'Make a presentation about our Q3 product launch'],
             ['/image', 'Generate an image', 'Creates an image, logo or graphic. Saved to the Pictures folder in your Brain.', 'Generate an image of a minimal logo for a coffee brand'],
             ['/post', 'Write a post', 'Drafts a post for LinkedIn, X or another platform, tailored to that platform’s style.', 'Write a LinkedIn post about shipping our first release'],
-            ['/summarize', 'Summarise', 'Condenses a page, file or block of text down to what matters.', 'Summarise this: <paste text, or attach a file>'],
+            ['/summarize', 'Summarise', 'Condenses a saved file down to what matters — pick it from the searchable list.', 'Summarise PRODUCT.md — the key points only.'],
             ['/automate', 'Build automation', 'Describe a repeating job in words and it builds the automation for you.', 'Build an automation that emails me a summary of my inbox every morning'],
           ]} />
 
@@ -423,9 +423,15 @@ export default function InfoModule() {
           </P>
           <H3>Step 2 — draft the messages</H3>
           <P>
-            Attach the document describing what you do and type <K>/outreach</K>. Each message is written
-            individually: it greets the person by first name, refers to something real from their own
-            headline, and ends with one low-pressure ask. Nothing is sent automatically.
+            Type <K>/outreach</K>. It asks two things before starting, so nothing is guessed: first{' '}
+            <span className="text-nv-text">which list of people</span> to message — normally the
+            “LinkedIn connections” note from step 1 — then{' '}
+            <span className="text-nv-text">which campaign note to save into</span>, either one you
+            already have or a new name you type. The note you last chose is marked “last used”, so
+            repeat runs take two keystrokes. Attach the document describing what you do as well, and
+            each message is written individually: it greets the person by first name, refers to
+            something real from their own headline, and ends with one low-pressure ask. Nothing is
+            sent automatically.
           </P>
           <H3>Step 3 — send</H3>
           <P>

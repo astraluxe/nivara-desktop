@@ -44,8 +44,10 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.11',
+  version: '1.6.12',
   items: [
+    '/outreach now asks two questions before it starts: which list of people to message, then which campaign note to save into (or a new one you name). It no longer guesses either — guessing is what put a 52-person list under one contact’s name. It remembers the note you last chose and marks it “last used”.',
+    'The same searchable file picker now opens for /summarize as well as /verify, /enrich, /findleads, /expand, /draft, /email and /repair-table — pick a saved file instead of typing its name.',
     'Fixed: long AI replies no longer come back with words missing from the middle of sentences. The streaming reader parsed each network packet on its own, so any message split across a packet boundary failed to decode and was silently thrown away — taking a chunk of the answer with it. Text now survives the boundary intact, including accented and non-English characters.',
     'Web Autopilot is much better at unfamiliar forms: Krew now reads every field — its label, whether it is required, and a dropdown’s real options — before filling anything, and can set dropdowns, tick checkboxes and choose radio buttons, which it simply could not do before. Fields labelled the normal way, or with no label at all, are no longer invisible to it.',
     'Skills are now saved as a step-by-step recipe — the site, which fields to fill, what to ask you for, and which step needs your approval — so repeating a task follows what worked last time instead of working the page out again. Krew will not build or run a skill for anything unlawful or abusive.',
