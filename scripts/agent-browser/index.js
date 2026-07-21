@@ -699,12 +699,33 @@ async function main() {
         }
 
         function getLabel(el) {
+          // A <label for="x"> / wrapping <label> is how most real forms name their fields. Without
+          // this an <input id="email"> with its caption in a sibling <label> looked completely
+          // anonymous — and, because unnamed fields were skipped entirely below, never appeared in
+          // the snapshot at all. That is why filling an unfamiliar form used to be guesswork.
+          var viaLabel = '';
+          try {
+            var id = el.getAttribute('id');
+            if (id) {
+              var lab = document.querySelector('label[for="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
+              if (lab) viaLabel = lab.innerText || lab.textContent || '';
+            }
+            if (!viaLabel && el.closest) {
+              var wrap = el.closest('label');
+              if (wrap) viaLabel = wrap.innerText || wrap.textContent || '';
+            }
+            if (!viaLabel) viaLabel = el.getAttribute('aria-labelledby')
+              ? ((document.getElementById(el.getAttribute('aria-labelledby')) || {}).innerText || '')
+              : '';
+          } catch (_) {}
           return (
             el.getAttribute('aria-label') ||
+            viaLabel ||
             el.innerText || el.textContent ||
             el.getAttribute('placeholder') ||
+            el.getAttribute('name') ||
             el.getAttribute('title') || ''
-          ).trim().replace(/\n/g, ' ').slice(0, 100);
+          ).trim().replace(/\s+/g, ' ').slice(0, 100);
         }
 
         function walk(el, depth) {
@@ -714,7 +735,11 @@ async function main() {
           var line = '';
           if (isInteractive(el)) {
             var label = getLabel(el);
-            if (label || el.getAttribute('placeholder')) {
+            // A form control is worth listing even with no label at all — it still has to be filled.
+            // Previously anonymous inputs were dropped, which is precisely the field the agent then
+            // could not complete.
+            var isField = ['input', 'select', 'textarea'].indexOf(tag) !== -1;
+            if (label || el.getAttribute('placeholder') || isField) {
               el.setAttribute('data-aref', 'e' + (++idx));
               var indent = '  '.repeat(Math.min(depth, 6));
               var type  = el.getAttribute('type')        ? ' type='         + el.getAttribute('type')         : '';
@@ -722,7 +747,27 @@ async function main() {
               var href  = el.getAttribute('href')        ? ' href="'        + (el.getAttribute('href')||'').slice(0,60) + '"' : '';
               var role  = el.getAttribute('role')        ? ' role='         + el.getAttribute('role')         : '';
               var chk   = el.checked !== undefined && el.checked ? ' checked' : '';
-              line = indent + '[@' + el.getAttribute('data-aref') + '] <' + tag + type + ph + href + role + chk + '> ' + label + '\n';
+              var req   = (el.required || el.getAttribute('aria-required') === 'true') ? ' REQUIRED' : '';
+              var nm    = el.getAttribute('name')        ? ' name='         + el.getAttribute('name')         : '';
+              // Current value, so the agent can tell an already-filled field from an empty one and
+              // not clobber something the user typed.
+              var val = '';
+              try {
+                if (tag === 'input' && ['checkbox', 'radio', 'file', 'password'].indexOf((el.getAttribute('type') || '').toLowerCase()) === -1 && el.value) val = ' value="' + String(el.value).slice(0, 40) + '"';
+                else if (tag === 'textarea' && el.value) val = ' value="' + String(el.value).slice(0, 40) + '"';
+              } catch (_) {}
+              // A <select> is unusable without knowing what may be chosen — list the options so the
+              // agent picks a real one instead of inventing a value the form will reject.
+              var opts = '';
+              if (tag === 'select') {
+                try {
+                  var os = Array.prototype.slice.call(el.options || []).slice(0, 25)
+                    .map(function (o) { return (o.text || o.value || '').trim(); }).filter(Boolean);
+                  if (os.length) opts = ' options=[' + os.join(' | ').slice(0, 300) + ']';
+                  if (el.value) val = ' selected="' + String(el.value).slice(0, 40) + '"';
+                } catch (_) {}
+              }
+              line = indent + '[@' + el.getAttribute('data-aref') + '] <' + tag + type + nm + ph + href + role + chk + req + val + opts + '> ' + label + '\n';
             }
           }
           return line + Array.from(el.children).map(function(c) { return walk(c, depth + 1); }).join('');
@@ -809,6 +854,76 @@ async function main() {
       await page.keyboard.press(pressKey);
       try { await page.waitForLoadState('networkidle', { timeout: 3000 }); } catch (_) {}
       process.stdout.write('Pressed ' + pressKey + '. Page: ' + page.url());
+      return;
+    }
+
+    // ── select <selector> <option> ──────────────────────────────────────────────
+    // Choose an option in a <select>. page.fill() does nothing to a dropdown, so before this a form
+    // with a country/plan/category picker simply could not be completed. Matches by visible label
+    // first, then by value, then case-insensitively — the agent reads labels off the snapshot, but
+    // the underlying value is often a code ("IN" for "India").
+    if (cmd === 'select') {
+      var selSel = argv[1] || '';
+      var selVal = argv.slice(2).join(' ').replace(/^"|"$/g, '').trim();
+      if (!selSel || !selVal) { process.stdout.write('select: missing selector or option'); return; }
+      var selTarget = selSel.startsWith('@') ? '[data-aref="' + selSel.slice(1) + '"]' : selSel;
+      var chosen = null;
+      var attempts = [{ label: selVal }, { value: selVal }];
+      for (var ai = 0; ai < attempts.length && !chosen; ai++) {
+        try { await page.selectOption(selTarget, attempts[ai], { timeout: 6000 }); chosen = selVal; } catch (_) {}
+      }
+      if (!chosen) {
+        // Last resort: case/whitespace-insensitive match against the real option list.
+        try {
+          var match = await page.evaluate(function (a) {
+            var el = document.querySelector(a.sel);
+            if (!el || !el.options) return null;
+            var want = a.want.toLowerCase().trim();
+            for (var i = 0; i < el.options.length; i++) {
+              var o = el.options[i];
+              if ((o.text || '').toLowerCase().trim() === want || (o.value || '').toLowerCase().trim() === want) return o.value;
+            }
+            for (var j = 0; j < el.options.length; j++) {
+              if ((el.options[j].text || '').toLowerCase().indexOf(want) !== -1) return el.options[j].value;
+            }
+            return null;
+          }, { sel: selTarget, want: selVal });
+          if (match !== null) { await page.selectOption(selTarget, { value: match }, { timeout: 5000 }); chosen = match; }
+        } catch (_) {}
+      }
+      if (!chosen) {
+        var avail = await page.evaluate(function (s) {
+          var el = document.querySelector(s);
+          return el && el.options ? Array.prototype.slice.call(el.options).map(function (o) { return o.text; }).slice(0, 25) : [];
+        }, selTarget).catch(function () { return []; });
+        process.stdout.write('select-error: no option matching "' + selVal + '".' + (avail.length ? ' Available: ' + avail.join(' | ') : ' (could not read the options)'));
+        return;
+      }
+      writeState({ url: page.url() });
+      process.stdout.write('Selected "' + selVal + '" in "' + selSel + '". Nothing was submitted.');
+      return;
+    }
+
+    // ── check <selector> [on|off] ───────────────────────────────────────────────
+    // Tick or untick a checkbox / choose a radio. Clicking these blindly TOGGLES them, so asking
+    // for a state (rather than a click) is what makes a re-run safe: setting an already-ticked box
+    // to "on" must leave it ticked, not turn it off.
+    if (cmd === 'check') {
+      var ckSel = argv[1] || '';
+      var ckWant = (argv[2] || 'on').replace(/^"|"$/g, '').trim().toLowerCase();
+      if (!ckSel) { process.stdout.write('check: missing selector'); return; }
+      var ckTarget = ckSel.startsWith('@') ? '[data-aref="' + ckSel.slice(1) + '"]' : ckSel;
+      var wantOn = !(ckWant === 'off' || ckWant === 'false' || ckWant === 'uncheck' || ckWant === 'no');
+      try {
+        var loc = page.locator(ckTarget).first();
+        if (wantOn) await loc.check({ timeout: 6000 });
+        else await loc.uncheck({ timeout: 6000 });
+      } catch (e) {
+        process.stdout.write('check-error: ' + (e && e.message ? String(e.message).slice(0, 200) : String(e)));
+        return;
+      }
+      writeState({ url: page.url() });
+      process.stdout.write((wantOn ? 'Ticked ' : 'Unticked ') + '"' + ckSel + '". Nothing was submitted.');
       return;
     }
 

@@ -700,6 +700,22 @@ export const AUTOPILOT_TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'browser_select',
+    description: "Choose an option in a dropdown (<select>) on the current page. Typing into a dropdown does nothing, so use this for country/plan/category pickers. browser_snapshot lists each dropdown's real options — pick one of those exactly rather than inventing a value the form will reject. Sets the field only; submits nothing.",
+    parameters: {
+      selector: { type: 'string', description: 'Ref from browser_snapshot (@e3) or a CSS selector for the <select>.', required: true },
+      option:   { type: 'string', description: 'The option to choose, exactly as shown in the snapshot (its visible label, or its value).', required: true },
+    },
+  },
+  {
+    name: 'browser_check',
+    description: "Tick or untick a checkbox, or choose a radio button. Use this instead of browser_click for these — a click TOGGLES, so clicking an already-ticked box turns it off, whereas this sets the state you actually want and is safe to repeat. Sets the field only; submits nothing.",
+    parameters: {
+      selector: { type: 'string', description: 'Ref from browser_snapshot (@e5) or a CSS selector.', required: true },
+      state:    { type: 'string', description: '"on" to tick / select (default), "off" to untick.', required: false },
+    },
+  },
+  {
     name: 'search_local_files',
     description: "Search the user's own Desktop, Downloads, Documents and Pictures folders for a file by name (e.g. \"resume\", \"invoice.pdf\", \"headshot\"). Use this to find a file the user refers to before attaching it with browser_upload_file — never fabricate a path. Cannot see or search anywhere else on the device.",
     parameters: {
@@ -1298,12 +1314,29 @@ export function buildKrewSystemPrompt(activeTools: ToolDef[]): string {
 ## Web Autopilot — handling a site you have no specific tool for
 The user turned this on, which means: when a request needs a website that isn't covered by one of your specific tools above (LinkedIn/Gmail/Calendar/etc.), don't refuse and don't tell the user to do it manually — figure the site out yourself, the way a person would on their first visit to it.
 1. **Check for a known recipe first.** Call recall_from_brain for "Skill: <the site or task>" before exploring blind. If a matching skill note exists, its body has the steps (fields, button labels, selectors/approach) you used successfully before — follow it, adapting values to the current request, rather than re-discovering the page from scratch.
-2. **If no skill exists, explore.** browser_navigate/browser_open to the page, then browser_snapshot to see the actual clickable/fillable elements (refs like @e3). Read it like a person would — work out which field is which from labels/placeholders, don't guess blindly.
+2. **If no skill exists, explore.** browser_navigate/browser_open to the page, then browser_snapshot to see the actual clickable/fillable elements (refs like @e3). The snapshot gives you each field's label, name, type, whether it is REQUIRED, its current value, and for a dropdown its real options — read it properly and fill from it rather than guessing. Use the right tool per control: browser_fill for text, **browser_select for dropdowns** (typing into one does nothing), **browser_check for checkboxes and radios** (browser_click toggles them, so clicking an already-ticked box turns it off), browser_upload_file for file inputs. Re-snapshot after a step that changes the page — refs are only valid for the snapshot that produced them.
 3. **Missing information — STOP and ask, don't fabricate.** If a form needs something you don't know (a preference, an account detail, which option to pick), do NOT invent a value or leave it blank and hope. End your turn with a clear, specific question to the user. When they answer in their next message, resume exactly where you left off using what they told you — don't restart the whole task.
 4. **Attaching a file:** if the user refers to a file you don't have the exact path for, call search_local_files first (it only sees Desktop/Downloads/Documents/Pictures) and confirm with the user if more than one result could match, then browser_upload_file. Never guess a file path.
 5. **NEVER submit/send/pay/delete/confirm without approval — no exceptions, ever, even mid-skill-replay.** browser_click already auto-detects consequential-looking buttons and blocks on a real approval modal, but you must also proactively call browser_confirm yourself before that final click, stating exactly what will happen. If the user denies it, stop and tell them — do not retry a different way to force it through.
-6. **After a task finishes with the user's approval, save what you learned.** Call save_to_brain with kind "skill", title "Skill: <short description of the task/site>", and a body describing the site, the fields/buttons involved and how you identified them, and any values that are always the same vs. always ask-the-user. This is what makes the NEXT similar request faster instead of re-exploring from zero.
-7. **Anything with a real-world outcome the user should track** (a form now sitting there awaiting their review, a task that's half-done, someone waiting on a reply) — call create_todo so it shows up in their To-do panel, with url set to the relevant page if there is one.` : '';
+6. **After a task finishes with the user's approval, write the skill down as a REPLAYABLE RECIPE — not prose.** Call save_to_brain with kind "skill", title "Skill: <short description of the task/site>", and a body in exactly this shape, so next time it can be followed step by step instead of re-derived:
+
+\`\`\`
+SITE: <the url you start from>
+WHEN TO USE: <one line — the kind of request this handles>
+INPUTS: <the things that change per run, e.g. company name, invoice amount — mark any you must ASK the user for>
+FIXED: <values that are always the same, e.g. Country = India>
+STEPS:
+1. navigate <url>
+2. fill <field label as it appears in the snapshot> = <INPUT name or fixed value>
+3. select <dropdown label> = <option>
+4. check <checkbox label> = on/off
+5. click <button label>   ← mark the submitting step "NEEDS APPROVAL"
+NOTES: <anything that tripped you up — a field that only appears after another is set, a slow page, a confirmation step>
+\`\`\`
+
+Identify fields by their visible LABEL, not by @ref — refs are regenerated per snapshot and are meaningless next time. On a later run: recall the skill, re-snapshot the live page, map the labels to the current refs, and follow the steps — adapting if the page has changed rather than forcing a stale recipe.
+7. **NEVER build or run a skill for anything unlawful or abusive**, regardless of how it's framed. Refuse and say plainly why: no creating accounts in bulk or under false identity, no getting around CAPTCHAs, paywalls, rate limits or login walls, no scraping personal data at scale, no accessing an account that isn't the user's own, no credential testing, no fake reviews/engagement, no impersonating a real person or organisation, and nothing that breaks a site's terms in a way that would get the user banned. Automating the user's OWN legitimate work on sites they have a right to use is the entire point; anything that only makes sense as deception or evasion is not, and a saved skill must never encode one.
+8. **Anything with a real-world outcome the user should track** (a form now sitting there awaiting their review, a task that's half-done, someone waiting on a reply) — call create_todo so it shows up in their To-do panel, with url set to the relevant page if there is one.` : '';
 
   return `You are Krew, a powerful AI agent running locally inside the adris.tech desktop app. You have access to the user's machine and connected apps.
 
@@ -3177,6 +3210,18 @@ async function executeToolCore(
   if (toolName === 'browser_press') {
     const key = str(args.key).replace(/"/g, '\\"');
     return await runBrowser(`press "${key}"`);
+  }
+  if (toolName === 'browser_select') {
+    const sel = str(args.selector);
+    const option = str(args.option).replace(/"/g, '\\"');
+    if (!sel || !option) return 'browser_select needs both a selector and an option.';
+    return await runBrowser(`select "${sel}" "${option}"`);
+  }
+  if (toolName === 'browser_check') {
+    const sel = str(args.selector);
+    const state = /^(off|false|uncheck|no)$/i.test(str(args.state)) ? 'off' : 'on';
+    if (!sel) return 'browser_check needs a selector.';
+    return await runBrowser(`check "${sel}" ${state}`);
   }
   if (toolName === 'browser_upload_file') {
     const sel = str(args.selector);

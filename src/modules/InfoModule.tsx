@@ -313,17 +313,39 @@ export default function InfoModule() {
             stopped. Before the form is actually submitted it shows you exactly what will happen and
             waits for you to approve.
           </Example>
+          <P>
+            It reads a form properly before touching it — every field’s label, whether it is required,
+            what is already filled in, and for a dropdown the actual list of choices — then uses the
+            right control for each one: typing into text boxes, picking from dropdowns, ticking
+            checkboxes, choosing radio buttons, attaching files. Ticking is set to the state it wants
+            rather than clicked, so running the same step twice cannot undo it.
+          </P>
           <Note>
             It never submits, sends, pays or deletes anything on its own — those always stop for your
             approval, whether the task is new or a skill it has run before. Searching your computer for
             a file is limited to Desktop, Downloads, Documents and Pictures.
           </Note>
           <P>
-            Once you approve a task, Krew writes down how it did it as a{' '}
-            <span className="text-nv-text">Skill</span> note in your Brain — the site, which fields
-            mattered, and what to ask you next time. The next similar request reuses that instead of
-            working the page out again. Type <K>/skills</K> to see what it has learned.
+            There are things it will not do at all, however it is asked: creating accounts in bulk or
+            under a false identity, getting around CAPTCHAs, paywalls or login walls, harvesting
+            personal data at scale, signing into an account that is not yours, posting fake reviews or
+            engagement, or impersonating a real person or company. It will say so rather than quietly
+            attempt a workaround.
           </P>
+          <P>
+            Once you approve a task, Krew writes down how it did it as a{' '}
+            <span className="text-nv-text">Skill</span> note in your Brain — not a vague description
+            but a numbered recipe: the page to start from, which field takes which value, what it must
+            ask you for each time, what is always the same, and which step is the one that needs your
+            approval. The next similar request follows that instead of working the page out again.
+            Type <K>/skills</K> to see what it has learned, and edit a recipe like any other note if
+            you want to correct a step.
+          </P>
+          <Example title="A skill after one approved run">
+            <span className="font-mono text-[11px]">SITE: supplier portal · INPUTS: company name, GST
+            number (ask each time) · FIXED: Country = India · STEPS: 1 fill Company name · 2 select
+            Country · 3 tick I accept the terms · 4 click Submit ← needs approval</span>
+          </Example>
 
           <H id="brain">Brain — shared memory</H>
           <P>
