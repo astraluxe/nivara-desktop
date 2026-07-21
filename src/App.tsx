@@ -575,7 +575,13 @@ function AppShell() {
           {activeModule === "settings" && <SettingsModule />}
         </main>
       </div>
-      {showTour && <TourOverlay userId={session.user.id} onDone={() => setShowTour(false)} />}
+      {showTour && (
+        <TourOverlay
+          userId={session.user.id}
+          onDone={() => setShowTour(false)}
+          onOpenGuide={() => { setShowTour(false); setActiveModule('info'); }}
+        />
+      )}
       {showFirstRun && <FirstRunSetup userId={session.user.id} onDone={() => {
         setShowFirstRun(false);
         if (!isTourDone(session.user.id)) setShowTour(true);

@@ -253,11 +253,24 @@ export default function HomeModule({ onNavigate, onStartTour }: Props) {
             </h1>
             <p className="text-nv-muted text-[11px] font-mono">India's AI operating system</p>
           </div>
-          {onStartTour && (
-            <button onClick={onStartTour} className="text-[10px] text-nv-faint hover:text-accent transition-fast font-mono">
-              Show me around →
+          {/* Was a faint 10px link nobody noticed — the one place that explains how the app works
+              should not be the least visible thing on the page. */}
+          <div className="flex items-center gap-2">
+            {onStartTour && (
+              <button
+                onClick={onStartTour}
+                className="text-[11px] px-2.5 py-1 rounded-lg border border-accent/50 text-accent hover:bg-accent/10 transition-fast"
+              >
+                Show me around
+              </button>
+            )}
+            <button
+              onClick={() => onNavigate('info')}
+              className="text-[11px] px-2.5 py-1 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:border-nv-faint transition-fast"
+            >
+              Guide &amp; commands
             </button>
-          )}
+          </div>
         </div>
         <span className={`text-[10px] px-2.5 py-1 rounded-full border font-mono uppercase tracking-wider shrink-0
           ${PLAN_STYLE[plan] ?? PLAN_STYLE.explore}`}>

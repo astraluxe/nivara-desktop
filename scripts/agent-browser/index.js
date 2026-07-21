@@ -1025,6 +1025,11 @@ async function main() {
   // can NEVER rewrite/hallucinate them (the bug where 8 fake "Gupta" names got saved).
   if (cmd === 'connections') {
     var wantN = parseInt(argv[1], 10) || 50;
+    // RESUME: keep the already-loaded list and carry on scrolling from where the last pass stopped.
+    // Without this every pass reloads the page and has to re-scroll past everyone already saved, so
+    // once a few hundred people are stored a pass spends its whole budget re-reading known names and
+    // returns almost nobody new. Chrome is persistent, so the list is still on screen between calls.
+    var cResume = /resume/i.test(argv[2] || '');
     var cConn = await ensureChrome();
     var cCtx  = cConn.context;
     if (!cCtx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
@@ -1032,8 +1037,18 @@ async function main() {
     // Bring the window forward so the user actually SEES it working (and can log in if needed).
     try { await cPage.bringToFront(); } catch (_) {}
     var connUrl = 'https://www.linkedin.com/mynetwork/invite-connect/connections/';
-    try { await cPage.goto(connUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }); } catch (_) {}
-    try { await cPage.waitForLoadState('networkidle', { timeout: 2500 }); } catch (_) {}
+    // Only reload when we are not already sitting on a populated connections list.
+    var cOnList = false;
+    if (cResume) {
+      try {
+        cOnList = /\/mynetwork\/invite-connect\/connections/.test(cPage.url())
+          && (await cPage.evaluate(function () { return document.querySelectorAll('a[href*="/in/"]').length; })) > 0;
+      } catch (_) { cOnList = false; }
+    }
+    if (!cOnList) {
+      try { await cPage.goto(connUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }); } catch (_) {}
+      try { await cPage.waitForLoadState('networkidle', { timeout: 2500 }); } catch (_) {}
+    }
     var cFinal = cPage.url();
     // NOT SIGNED IN → do NOT wait/poll here (a long poll blows past the 45s process budget, which
     // makes the node path time out and fall back to the generic agent-browser.exe — that opens a
@@ -1050,8 +1065,10 @@ async function main() {
     // Wait for the connection cards to render — the /in/ profile links (document-wide, not just
     // <main>, so it matches the extraction below and doesn't miss a differently-nested layout).
     try { await cPage.waitForSelector('a[href*="/in/"]', { timeout: 9000 }); } catch (_) {}
-    try { await progressiveScroll(cPage); } catch (_) {}
-    try { await waitForContentStability(cPage, 300, 1500); } catch (_) {} // let the list settle (proven open-cmd helper)
+    if (!cOnList) {
+      try { await progressiveScroll(cPage); } catch (_) {}
+      try { await waitForContentStability(cPage, 300, 1500); } catch (_) {} // let the list settle (proven open-cmd helper)
+    }
     // Probe: distinguish not-signed-in / wrong-page from genuinely-no-connections so the message is
     // accurate. Fast — no polling.
     var probe = await cPage.evaluate(function() {
@@ -1067,7 +1084,10 @@ async function main() {
       process.stdout.write('[SIGN_IN_REQUIRED] Opened LinkedIn in the ADRIS browser — please sign in there (once, it is saved), then run /scan again.');
       return;
     }
-    var cDeadline = Date.now() + 26000; // enough scroll time to reach ~50, still under the 45s budget
+    // A resume pass skips the navigation + settle work above, so it can spend that time scrolling
+    // instead. A fresh pass keeps the old, proven budget — the whole process must stay under Rust's
+    // 45s cap or run_browser_persistent falls back to the blank-window exe.
+    var cDeadline = Date.now() + (cOnList ? 34000 : 26000);
     var cLast = 0, cStall = 0;
     while (Date.now() < cDeadline) {
       // Count UNIQUE people (by profile href) — each card has ~2 /in/ anchors, so counting raw

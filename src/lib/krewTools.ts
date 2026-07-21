@@ -1909,7 +1909,26 @@ async function executeToolCore(
     // closeAgentBrowserIfActive() sees no active browser and the window is left open forever.
     _browserActiveThisRun = true;
     // Load a bit extra so that after removing already-saved people we still net ~limit new ones.
-    const raw = await invoke<string>('run_browser_persistent', { args: `connections ${limit + existingNames.size + 10}` }).catch((e) => String(e));
+    const target = limit + existingNames.size + 10;
+    let raw = await invoke<string>('run_browser_persistent', { args: `connections ${target}` }).catch((e) => String(e));
+    // Keep going in further passes when the first one ran out of time before reaching `target`.
+    // One pass is capped by Rust's 45s budget, which on a large network is nowhere near enough to
+    // scroll past everyone already saved — that is why a scan of a 700-person network kept
+    // returning a single new name. Each resume pass continues from the list already on screen, so
+    // progress accumulates instead of restarting. Stops early the moment a pass adds nobody.
+    const countPeople = (s: string): number => {
+      const i = s.indexOf('CONN_JSON:');
+      if (i < 0) return 0;
+      try { const a = JSON.parse(s.slice(i + 'CONN_JSON:'.length).trim()); return Array.isArray(a) ? a.length : 0; } catch { return 0; }
+    };
+    for (let pass = 0; pass < 6; pass++) {
+      const got = countPeople(raw);
+      if (got === 0 || got >= target) break;                       // failed, or we have enough
+      emit('agent-progress', { text: `Loaded ${got} connections — scrolling for more…` }).catch(() => {});
+      const more = await invoke<string>('run_browser_persistent', { args: `connections ${target} resume` }).catch(() => '');
+      if (countPeople(more) <= got) break;                          // no further progress
+      raw = more;
+    }
     emit('agent-browser-idle', {}).catch(() => {});
     // A sign-in prompt must keep the window open so the user can actually log in; anything else
     // leaves it closable by the caller's finally.

@@ -18,45 +18,55 @@ interface Step {
   placement?: 'right' | 'bottom';
 }
 
+// The tour used to describe the furniture — "this is the sidebar, this is the theme toggle" —
+// and never once explained what the app DOES. People (including the founder) came away unsure how
+// lead generation worked or that slash commands existed at all. It now walks the actual workflow
+// end to end and hands off to the full written guide.
 const STEPS: Step[] = [
   {
     id: 'welcome',
-    title: 'Welcome to adris.tech',
-    body: "Your AI operating system — 43 agents, a dev terminal, automation, and more in one app. Let's take a quick tour.",
+    title: 'Krew is an office, not a chatbot',
+    body: "adris.tech runs an AI office on your laptop. Arjun is the boss — you tell him the outcome you want, and he assigns the specialists who do it. You never have to know which agent is which.",
     target: null,
   },
   {
-    id: 'sidebar-nav',
-    title: 'All your modules, one sidebar',
-    body: 'Every tool lives here. Krew for AI agents, Coder for dev work, Models for local LLMs, and more coming soon.',
-    target: 'tour-sidebar-nav',
-    placement: 'right',
-  },
-  {
     id: 'nav-krew',
-    title: 'Krew — your AI team',
-    body: '43 specialist agents with names, roles, and real tools. Arjun is your boss agent — he delegates to the right specialist automatically.',
+    title: 'Talk to Arjun here',
+    body: 'Ask in plain words — "find me 20 solar companies in Pune", "check my LinkedIn messages and reply". He works out the steps, uses a real browser when he needs one, and shows you the result.',
     target: 'tour-nav-krew',
     placement: 'right',
   },
   {
-    id: 'theme',
-    title: 'Paper or Ink',
-    body: 'Toggle between light (Paper) and dark (Ink) mode at any time. Preference is saved across launches.',
-    target: 'tour-theme-toggle',
+    id: 'slash',
+    title: 'Type / for the shortcuts',
+    body: 'Slash commands run a whole workflow in one go instead of you explaining it. /scan, /verify, /enrich, /outreach, /repair-table, /autopilot — press / in the chat box to see them all with descriptions.',
+    target: 'tour-nav-krew',
     placement: 'right',
   },
   {
-    id: 'home',
-    title: 'Your dashboard',
-    body: 'Last project, token balance, recent AI sessions, and system info — all at a glance every time you open the app.',
-    target: 'tour-home-greeting',
-    placement: 'bottom',
+    id: 'leadgen',
+    title: 'How lead generation actually works',
+    body: 'Four steps, in order. /scan reads your LinkedIn connections. /verify checks that a lead is real. /enrich fills in email, phone and LinkedIn. /outreach drafts a message per person and opens the copilot. Each step feeds the next — run them in that order.',
+    target: 'tour-nav-krew',
+    placement: 'right',
+  },
+  {
+    id: 'brain',
+    title: 'Everything is saved in Brain',
+    body: 'Results become notes you can open, edit and reuse — connections land in a note called "LinkedIn connections". Agents read Brain before asking you to repeat yourself, so the work compounds instead of vanishing with the chat.',
+    target: 'tour-nav-krew',
+    placement: 'right',
+  },
+  {
+    id: 'approval',
+    title: 'Nothing goes out without you',
+    body: 'Krew drafts and fills, then stops. Messages are typed into the chat box for you to read and send yourself; forms wait for your approval. Anything left hanging shows up in your To-do list.',
+    target: null,
   },
   {
     id: 'done',
-    title: "You're all set",
-    body: 'Open Connect Apps to link Gmail, Notion, Slack and more. Then just ask Arjun to do things. Want Krew to figure out sites it has no built-in integration for — reading pages, filling forms — and learn from what it does? Turn on Web Autopilot in Settings → Advanced (say /autopilot). You can replay this tour anytime.',
+    title: 'Read the full guide',
+    body: 'Every module, every slash command and a worked LinkedIn example are written up in Info — including where each thing gets saved. Worth ten minutes; it is the fastest way to stop guessing.',
     target: null,
   },
 ];
@@ -73,9 +83,11 @@ interface SpotlightRect {
 interface Props {
   onDone: () => void;
   userId?: string;
+  /** Sends the user to the written guide in Info — the tour is an orientation, not the manual. */
+  onOpenGuide?: () => void;
 }
 
-export default function TourOverlay({ onDone, userId }: Props) {
+export default function TourOverlay({ onDone, userId, onOpenGuide }: Props) {
   const [step, setStep] = useState(0);
   const [spotRect, setSpotRect] = useState<SpotlightRect | null>(null);
 
@@ -240,12 +252,22 @@ export default function TourOverlay({ onDone, userId }: Props) {
               ← Back
             </button>
           )}
-          <button
-            onClick={next}
-            className="text-[12px] px-4 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast"
-          >
-            {isLast ? 'Done' : 'Next →'}
-          </button>
+          <div className="flex items-center gap-2">
+            {isLast && onOpenGuide && (
+              <button
+                onClick={() => { markTourDone(userId); onOpenGuide(); onDone(); }}
+                className="text-[12px] px-3 py-1.5 rounded-lg border border-accent/50 text-accent hover:bg-accent/10 transition-fast"
+              >
+                Open the full guide
+              </button>
+            )}
+            <button
+              onClick={next}
+              className="text-[12px] px-4 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast"
+            >
+              {isLast ? 'Done' : 'Next →'}
+            </button>
+          </div>
         </div>
       </div>
     </>

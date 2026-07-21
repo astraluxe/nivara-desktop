@@ -1,5 +1,6 @@
 ﻿import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { recommendLocalModel } from '../lib/localModelAdvice';
 import { listen } from '@tauri-apps/api/event';
 import { useAuth } from '../contexts/AuthContext';
 import UpgradeModal from '../components/UpgradeModal';
@@ -69,6 +70,9 @@ interface SysInfo {
   available_ram_gb: number;
   cpu_count: number;
   os_name: string;
+  /** Free space where models land. get_system_info has always returned this; it was simply
+   *  missing from this interface, so the recommendation had no disk figure to reason with. */
+  free_disk_gb: number;
 }
 
 interface DownloadProgress {
@@ -1175,6 +1179,61 @@ export default function ModelsModule() {
 
           {/* Model grid */}
           <div className="flex-1 overflow-y-auto p-5">
+            {/* "Which one should I pick?" — 51 models is paralysing without an answer. This reads
+                the machine's real memory + free disk and names ONE model, always visible, rather
+                than only surfacing as an occasional chat nudge nobody ever saw. */}
+            {sysInfo && (() => {
+              const rec = recommendLocalModel(
+                { total_ram_gb: sysInfo.total_ram_gb, free_disk_gb: sysInfo.free_disk_gb },
+                'heavy',
+              );
+              const target = rec.pick ?? rec.bestFit;
+              if (!target) {
+                return (
+                  <div className="mb-4 max-w-3xl rounded-lg border border-nv-border bg-nv-surface/50 px-4 py-3">
+                    <p className="text-[11px] text-nv-muted leading-relaxed">
+                      <span className="text-nv-text font-medium">Running a model here isn’t practical yet.</span>{' '}
+                      {rec.reason}
+                    </p>
+                  </div>
+                );
+              }
+              const inRegistry = registry.find((m) => m.id === target.id);
+              const already = installed.some((i) => i.id === target.id);
+              const locked = isFreePlan && target.paid;
+              return (
+                <div className="mb-4 max-w-3xl rounded-lg border border-accent/40 bg-accent/5 px-4 py-3">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <p className="text-[10px] uppercase tracking-wider text-accent font-mono mb-1">
+                        Recommended for your machine
+                      </p>
+                      <p className="text-[13px] text-nv-text font-medium">
+                        {target.label} · {target.sizeGb} GB
+                      </p>
+                      <p className="text-[11px] text-nv-muted mt-1 leading-relaxed">{target.blurb}</p>
+                      <p className="text-[10px] text-nv-faint mt-1.5 font-mono">
+                        {sysInfo.total_ram_gb.toFixed(0)} GB memory · {sysInfo.free_disk_gb.toFixed(0)} GB free
+                        {rec.pick ? '' : ' — the strongest size this machine runs comfortably'}
+                      </p>
+                    </div>
+                    {already ? (
+                      <span className="text-[10px] text-nv-faint font-mono shrink-0 mt-1">Installed ✓</span>
+                    ) : locked ? (
+                      <button
+                        onClick={() => setShowUpgrade(true)}
+                        className="text-[11px] px-3 py-1.5 rounded-lg border border-accent/50 text-accent hover:bg-accent/10 transition-fast shrink-0"
+                      >Paid plan</button>
+                    ) : inRegistry ? (
+                      <button
+                        onClick={() => handleDownload(inRegistry)}
+                        className="text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white hover:opacity-90 transition-fast shrink-0"
+                      >Download</button>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })()}
             {dlError && (
               <div className="mb-4 max-w-3xl flex items-start gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2">
                 <p className="flex-1 text-[11px] text-red-400 leading-relaxed">{dlError.msg}</p>
