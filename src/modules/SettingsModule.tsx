@@ -44,29 +44,16 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.10',
+  version: '1.6.11',
   items: [
     'Fixed: "block Tuesday" and similar now go through the calendar tool, which shows you the event and waits for your approval. Krew was instead driving the Google Calendar website by hand, which left a half-filled form it could never safely save — so nothing was created and you were never asked.',
-    'When a task stops before producing anything, there is now a Continue button — no need to retype the request. The message it leaves also no longer talks about lead lists when the task had nothing to do with leads.',
+    'When a task stops before producing anything there is now a Continue button, so you do not have to retype the request. The message it leaves also no longer talks about lead lists when the task had nothing to do with leads.',
     'Fixed: to-dos created by Krew no longer show a literal "!high" in the task name.',
     'Ticking a to-do off keeps it in Done rather than removing it, and each completed item now has a visible ✕ so you decide when it goes.',
-    'Asking Krew to update your to-do no longer tells you to connect Google Calendar — the to-do list needs no connected account.',
-    'Fixed: text typed into "Your reference note" in the Brain is no longer lost when you close the panel with Escape or the ✕ — it used to save only when you clicked out of the box first.',
-    'Renaming a Brain note now renames any to-do that pointed at it, so the two can\'t drift apart.',
-    'Fixed: replying to one person no longer renames your whole outreach campaign after them. A one-person side errand saves a campaign too, and the next full run was inheriting its name — which is how a 52-person list ended up filed under a single contact.',
-    'New: /repair-table. If a saved table ever collapses into one long row, pick the note and this rebuilds it — every row back on its own line, with a count of how many it recovered. Only line breaks are rebuilt; no cell text is changed, and it is safe to run on a note that is already fine.',
-    'The Info page now has a "What\'s new" section explaining each recent feature with examples, and every slash command lists a real example of how to use it.',
-    'Fixed: the browser no longer closes itself while you are working through outreach. Opening someone\'s chat now holds the window open until you close it — there is a "Close browser" button in the copilot — so a background task finishing can never yank the chat away before you have pasted and sent.',
-    'Fixed: scanning your LinkedIn connections a second time no longer breaks the table in your Brain. Once you open a note in the Brain editor it is stored as rich text, and the new rows were being appended as plain text into it — so they ran together on one line. Appends now match whatever format the note is already in, and the "already saved" check reads it correctly again too.',
-    'Fixed: "Copy message & open chat" now actually opens the chat box. LinkedIn changed that button into a normal link, so clicking it navigated away and the box never appeared — worse, the old check could report success with no box on screen. It now goes straight to the compose page and puts the cursor in the box, so Ctrl+V lands where you expect.',
-    'Reading your LinkedIn messages now considers each conversation in full rather than just the newest message — so it won\'t re-propose a time you already agreed, and won\'t miss a thread where you owe someone something.',
-    'The Info page now shows a usage example for every slash command, documents /linkedin, /verifylinks, /skills and /autopilot, and has a new Web Autopilot section.',
-    'Fixed: "check my LinkedIn messages and reply" now actually reads your inbox. It used to get handed to a lead-research agent, which answered about your lead list instead — it now runs the inbox reader directly, drafts a reply per thread from the real conversation, and adds a to-do per pending reply linked to that chat.',
-    'Say "send the reply to <name>" and Krew types that draft into their LinkedIn chat box for you to review — it still never presses Send itself.',
-    'Fixed: Research reports now render tables properly instead of showing raw "|" rows, and stray ** / * markdown no longer leaks into the text.',
-    'Fixed: Arjun (the boss agent) can now create to-dos and suggest a next step — those tools were missing from its list, so the "Next up" card could never appear in normal use.',
-    'Fixed: a LinkedIn scan can no longer merge into a similarly-named file you attached; the scan always saves to the Brain note titled exactly "LinkedIn connections".',
-    'Web Autopilot (Settings → Advanced, off by default) lets Krew work through sites it has no built-in integration for, and remember how it did it as a reusable skill.',
+    'Asking Krew to update your to-do no longer tells you to connect Google Calendar — the to-do list is local and needs no connected account.',
+    'Fixed: text typed into "Your reference note" in the Brain is no longer lost when you close the panel with Escape or the ✕ — it used to save only if you clicked out of the box first.',
+    'Renaming a Brain note now renames any to-do that pointed at it, so the two cannot drift apart.',
+    'Fixed: replying to one person no longer renames your whole outreach campaign after them. A one-person errand saves a campaign too, and the next full run was inheriting its name — which is how a 52-person list ended up filed under a single contact.',
   ],
 };
 
