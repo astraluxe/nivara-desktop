@@ -6347,6 +6347,10 @@ pub fn run() {
                 for delay in [2u64, 8, 20] {
                     tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
                     if let Some(badge) = badge_handle.get_webview_window("quickbadge") {
+                        // Place the badge on the FIRST pass only. Its own script restores whatever
+                        // position the user dragged it to, and re-imposing the default corner on
+                        // every pass would yank it back out from under them seconds later.
+                        if delay == 2 {
                         if let Ok(Some(mon)) = badge.primary_monitor() {
                             let sf = mon.scale_factor();
                             let pos = mon.position();
@@ -6354,6 +6358,7 @@ pub fn run() {
                             let x = pos.x + size.width as i32 - (56.0 * sf) as i32 - (10.0 * sf) as i32;
                             let y = pos.y + (size.height as f64 * 0.32) as i32;
                             let _ = badge.set_position(tauri::PhysicalPosition::new(x, y));
+                        }
                         }
                         let _ = badge.show();
                         let _ = badge.set_always_on_top(true);

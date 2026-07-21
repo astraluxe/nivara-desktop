@@ -31,10 +31,29 @@ window.addEventListener('storage', (e) => { if (e.key === 'nv-theme') applyTheme
 // currentMonitor() can return null for a still-HIDDEN window (it's derived from the
 // window's position) — that silently skipped positioning before. Fall back to the
 // primary monitor so the badge always lands at a real corner.
+const POS_KEY = 'nv-quickbadge-pos';
+/** A position the user dragged the badge to, if it is still on a real monitor. */
+function savedPos(): { x: number; y: number } | null {
+  try {
+    const r = JSON.parse(localStorage.getItem(POS_KEY) || 'null');
+    if (r && Number.isFinite(r.x) && Number.isFinite(r.y)) return { x: Math.round(r.x), y: Math.round(r.y) };
+  } catch { /* ignore */ }
+  return null;
+}
 async function positionCorner() {
   try {
     const mon = (await currentMonitor().catch(() => null)) || (await primaryMonitor().catch(() => null));
     if (!mon) return;
+    // A position the user chose wins over the default corner — but only if it still lands on the
+    // monitor. Screens change (docking, a laptop opened without its external display) and a stale
+    // coordinate would otherwise park the badge off-screen, which reads as "the badge is gone".
+    const sp = savedPos();
+    if (sp) {
+      const w = mon.size.width, h = mon.size.height, ox = mon.position.x, oy = mon.position.y;
+      const onScreen = sp.x >= ox - 20 && sp.y >= oy - 20 && sp.x <= ox + w - 20 && sp.y <= oy + h - 20;
+      if (onScreen) { await win.setPosition(new PhysicalPosition(sp.x, sp.y)); return; }
+      try { localStorage.removeItem(POS_KEY); } catch { /* ignore */ }
+    }
     const sf = mon.scaleFactor || 1;
     const x = Math.round(mon.position.x + mon.size.width - BADGE_W * sf - 10 * sf);
     const y = Math.round(mon.position.y + mon.size.height * 0.32);
@@ -127,7 +146,38 @@ async function closeMenu() {
 }
 
 // ── Wiring ───────────────────────────────────────────────────────────────────
+// Drag to move, click to open. The badge used to be pinned to one spot, which is unusable when it
+// lands over something the user needs (or off-screen on a different-sized display). A movement
+// threshold keeps a normal click working: below it this is a click, above it a drag.
+let dragStart: { x: number; y: number } | null = null;
+let didDrag = false;
+badgeEl.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  dragStart = { x: e.screenX, y: e.screenY };
+  didDrag = false;
+});
+window.addEventListener('mousemove', async (e) => {
+  if (!dragStart) return;
+  if (!didDrag && Math.hypot(e.screenX - dragStart.x, e.screenY - dragStart.y) < 4) return;
+  if (!didDrag) {
+    didDrag = true;
+    // Hand off to the OS window drag: it tracks the cursor even outside our tiny window, which a
+    // manual setPosition loop cannot do reliably.
+    try { await win.startDragging(); } catch { /* ignore */ }
+  }
+});
+window.addEventListener('mouseup', async () => {
+  if (dragStart && didDrag) {
+    // Remember where they put it.
+    try {
+      const p = await win.outerPosition();
+      localStorage.setItem(POS_KEY, JSON.stringify({ x: p.x, y: p.y }));
+    } catch { /* ignore */ }
+  }
+  dragStart = null;
+});
 badgeEl.addEventListener('click', () => {
+  if (didDrag) { didDrag = false; return; }   // that was a move, not a click
   // Open the chat overlay over whatever app the user is in.
   emit('nv-quickbadge-open', {}).catch(() => {});
 });

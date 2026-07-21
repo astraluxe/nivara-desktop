@@ -158,7 +158,7 @@ function AnnouncementModal({ ann, onClose }: { ann: Announcement; onClose: () =>
 const DISMISSED_KEY = 'nv-dismissed-announcements';
 
 function AppShell() {
-  const { session, loading, profile } = useAuth();
+  const { session, loading, profile, refreshSession } = useAuth();
   const [activeModule, setActiveModule] = useState<Module>("home");
   const [showTour, setShowTour] = useState(false);
   const [canvasFlow, setCanvasFlow] = useState<{ nodes: Node[]; edges: Edge[] } | null>(null);
@@ -321,6 +321,32 @@ function AppShell() {
     window.addEventListener(GUARD_ALERT_EVENT, onAlert);
     return () => window.removeEventListener(GUARD_ALERT_EVENT, onAlert);
   }, []);
+
+  // Re-check the plan whenever the user comes back to the window.
+  //
+  // Upgrades are applied by the Razorpay webhook, server-side, while the user is off in their
+  // browser paying. The app learns about it through a realtime subscription — but that channel
+  // silently stops delivering if it drops (laptop sleep, network change), and nothing re-checked
+  // afterwards. The result was a customer who had genuinely paid still being shown "upgrade",
+  // which invites them to pay twice. Window focus is exactly the moment they return from paying,
+  // costs nothing while they are away, and needs no polling (this app's Supabase disk-IO budget
+  // has already been hurt once by a background interval).
+  useEffect(() => {
+    if (!session) return;
+    let last = 0;
+    const recheck = () => {
+      if (document.hidden) return;
+      if (Date.now() - last < 20_000) return;   // debounce rapid focus/blur
+      last = Date.now();
+      refreshSession().catch(() => {});
+    };
+    window.addEventListener('focus', recheck);
+    document.addEventListener('visibilitychange', recheck);
+    return () => {
+      window.removeEventListener('focus', recheck);
+      document.removeEventListener('visibilitychange', recheck);
+    };
+  }, [session, refreshSession]);
 
   // Desktop heartbeat — fires immediately on login, then every 5 min.
   // Was every 60s: at ~23k UPDATEs against a 10-row `users` table, this single heartbeat was a

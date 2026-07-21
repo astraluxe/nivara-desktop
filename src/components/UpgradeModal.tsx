@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { getPlanConfig } from "../lib/planConfig";
 import { useAuth } from "../contexts/AuthContext";
 import { supabase } from "../lib/supabase";
@@ -80,6 +80,28 @@ export default function UpgradeModal({ onClose, currentPlan, highlightPlan, reas
 
   const plan = PLANS.find(p => p.key === selected)!;
 
+  // Never invite someone to pay for something they already have.
+  //
+  // The plan is granted server-side by the Razorpay webhook while the user is off paying in their
+  // browser. If the app's cached profile is stale (a dropped realtime channel, a laptop that
+  // slept), a paid customer was still shown the upgrade screen — which is how someone ends up
+  // paying twice. Ask the server on open and say so plainly instead.
+  const [serverPlan, setServerPlan] = useState<string | null>(null);
+  useEffect(() => {
+    if (!session?.user) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await supabase.from('users').select('plan').eq('id', session.user.id).single();
+        if (!cancelled) setServerPlan(String(data?.plan ?? ''));
+      } catch { /* offline — fall through to the normal screen */ }
+    })();
+    return () => { cancelled = true; };
+  }, [session?.user?.id]);
+  const alreadyPaid = !!serverPlan && !['free', 'explore', ''].includes(serverPlan);
+  const staleView = alreadyPaid && ['free', 'explore'].includes(currentPlan);
+
+
   // Payment happens on the WEBSITE, never inside this app — deliberately.
   //
   // Razorpay Checkout is a hosted script that expects a real browser; loading it inside the Tauri
@@ -134,6 +156,27 @@ export default function UpgradeModal({ onClose, currentPlan, highlightPlan, reas
     setChecking(false);
     if (plan && plan !== 'free' && plan !== 'explore') { setDone(true); setTimeout(onClose, 1500); }
     else setErrMsg('No payment showing on your account yet — it can take a minute after paying. Press Check again, or make sure you paid while signed in as ' + (session.user.email ?? 'this same email') + '.');
+  }
+
+  if (staleView) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
+        onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+        <div className="w-full max-w-sm rounded-2xl border p-7 flex flex-col items-center gap-3 text-center" style={{ background: 'var(--nv-bg)', borderColor: 'var(--nv-rule)' }}>
+          <div className="w-11 h-11 rounded-full flex items-center justify-center" style={{ background: 'rgba(16,185,129,0.15)' }}>
+            <svg width="20" height="20" viewBox="0 0 22 22" fill="none"><path d="M5 11l4.5 4.5L17 7" stroke="#10B981" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </div>
+          <h3 className="text-[16px] font-semibold text-nv-text">You're already on {serverPlan!.charAt(0).toUpperCase() + serverPlan!.slice(1)}</h3>
+          <p className="text-[12px] text-nv-muted leading-relaxed">
+            Your payment came through — this app just hadn't picked it up yet. Nothing more to pay.
+          </p>
+          <button onClick={async () => { await refreshSession(); onClose(); }}
+            className="mt-1 w-full py-2.5 rounded-xl text-[12.5px] font-semibold" style={{ background: '#7C5CFF', color: '#fff' }}>
+            Continue
+          </button>
+        </div>
+      </div>
+    );
   }
 
   if (done) {
