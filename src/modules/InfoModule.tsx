@@ -24,6 +24,7 @@ const SECTIONS: { id: string; label: string }[] = [
   { id: 'mesh',       label: 'Mesh' },
   { id: 'quickbar',   label: 'Quick Bar' },
   { id: 'guard',      label: 'Guard — security watch' },
+  { id: 'whatsnew',   label: 'What’s new' },
   { id: 'rules',      label: 'How things actually work' },
   { id: 'privacy',    label: 'Privacy' },
   { id: 'trouble',    label: 'When something goes wrong' },
@@ -268,6 +269,16 @@ export default function InfoModule() {
             ['/skills', 'Learned skills', 'Opens the Brain filtered to what Krew has taught itself — each “Skill” note is a website task it worked out once and can now repeat.', '/skills'],
             ['/autopilot', 'Toggle Web Autopilot', 'Turns Web Autopilot on or off (the same switch as Settings → Advanced). See the Web Autopilot section below for what it changes.', '/autopilot'],
           ]} />
+
+          <H3>Fixing your saved data</H3>
+          <CmdTable rows={[
+            ['/repair-table', 'Repair a broken table', 'Picks a Brain note and rebuilds a table whose rows have run together onto one line, so it reads as a proper table again. Only the line breaks are rebuilt — no cell is edited, reordered or removed — and running it on a note that is already fine changes nothing.', 'Repair the table in LinkedIn connections'],
+          ]} />
+          <Note>
+            If a table ever looks like one enormous row with pipes through the middle of it, this is the
+            fix. Pick the note, run it, and open the Brain to check the result — it will tell you exactly
+            how many rows it recovered.
+          </Note>
 
           <H3>Opening a part of the app</H3>
           <P>These simply jump you to a module — the same as clicking it in the sidebar.</P>
@@ -559,6 +570,67 @@ export default function InfoModule() {
             Guard never deletes, moves or quarantines anything. It tells you and records it; every action
             stays yours.
           </Note>
+
+          <H id="whatsnew">What’s new</H>
+          <P>
+            The most recent additions, and what each one is actually for. Settings → About always shows
+            the notes for the exact version you are running.
+          </P>
+
+          <H3>Reading and replying to LinkedIn messages</H3>
+          <P>
+            Krew can open your LinkedIn inbox and read your conversations properly — the real text, from
+            the page. It reads each thread <span className="text-nv-text">in full</span> rather than
+            glancing at the newest message, so it can tell a thread that still needs something from you
+            apart from one where everything is already settled, and it drafts a reply only where one is
+            genuinely needed.
+          </P>
+          <Example title="Answering a proposed time">
+            Say <K>Check my LinkedIn messages — I’m free Wednesday after 1:30 PM IST</K>. If someone
+            offered “Mon–Wed, 10am–2pm EST”, the draft answers those real times against yours and shows
+            both zones. It will not re-offer a slot you already agreed earlier in the thread.
+          </Example>
+          <P>
+            Each pending reply also becomes a to-do linked to that person’s chat. When a draft looks
+            right, say <K>Send the reply to Kevin</K> — Krew types it into the chat box and stops there.
+            You read it and press Send. Nothing is ever sent for you.
+          </P>
+
+          <H3>Web Autopilot</H3>
+          <P>
+            Covered in full in its own section above. In short: turn it on and Krew can work through a
+            website nobody built a specific integration for — reading the page, filling the form,
+            attaching a file from your computer — asking you whenever it does not know something, and
+            always stopping for your approval before anything is submitted or sent. What it works out
+            is saved as a reusable skill.
+          </P>
+
+          <H3>To-dos that know where they point</H3>
+          <P>
+            Krew now adds to-dos itself when a request leaves something outstanding, and can add several
+            at once rather than one vague catch-all. Where a task is about a particular page,{' '}
+            <span className="text-nv-text">Continue</span> opens that page. You may also see a{' '}
+            <span className="text-nv-text">Next up</span> card offering one sensible follow-on step —
+            take it with a click, or ignore it and type what you actually want.
+          </P>
+
+          <H3>The browser stays yours while you work</H3>
+          <P>
+            When you open someone’s chat from the outreach copilot, the browser window is now held open
+            until <span className="text-nv-text">you</span> close it — there is a{' '}
+            <span className="text-nv-text">Close browser</span> button in the copilot. Previously a
+            background task finishing could close the window while you were still part-way through
+            pasting a message. Work down the list at your own pace and mark each person Sent as you go;
+            that is what stops them being drafted again next time.
+          </P>
+
+          <H3>Repairing a broken table</H3>
+          <P>
+            If a saved table ever collapses into one long row, <K>/repair-table</K> rebuilds it. Pick the
+            note and it puts every row back on its own line, telling you how many it recovered. It only
+            rebuilds line breaks — no cell text is changed — and it is safe to run on a note that is
+            already fine.
+          </P>
 
           <H id="rules">How things actually work</H>
           <P>

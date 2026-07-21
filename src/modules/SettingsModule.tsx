@@ -46,6 +46,8 @@ function saveSettings(s: NvSettings) {
 const WHATS_NEW: { version: string; items: string[] } = {
   version: '1.6.10',
   items: [
+    'New: /repair-table. If a saved table ever collapses into one long row, pick the note and this rebuilds it — every row back on its own line, with a count of how many it recovered. Only line breaks are rebuilt; no cell text is changed, and it is safe to run on a note that is already fine.',
+    'The Info page now has a "What\'s new" section explaining each recent feature with examples, and every slash command lists a real example of how to use it.',
     'Fixed: the browser no longer closes itself while you are working through outreach. Opening someone\'s chat now holds the window open until you close it — there is a "Close browser" button in the copilot — so a background task finishing can never yank the chat away before you have pasted and sent.',
     'Fixed: scanning your LinkedIn connections a second time no longer breaks the table in your Brain. Once you open a note in the Brain editor it is stored as rich text, and the new rows were being appended as plain text into it — so they ran together on one line. Appends now match whatever format the note is already in, and the "already saved" check reads it correctly again too.',
     'Fixed: "Copy message & open chat" now actually opens the chat box. LinkedIn changed that button into a normal link, so clicking it navigated away and the box never appeared — worse, the old check could report success with no box on screen. It now goes straight to the compose page and puts the cursor in the box, so Ctrl+V lands where you expect.',

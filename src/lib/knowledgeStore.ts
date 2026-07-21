@@ -131,6 +131,64 @@ export function appendToBody(existingBody: string | undefined, markdownToAdd: st
   return `${nodeToMarkdown(prev)}${separator}${markdownToAdd}`;
 }
 
+/** Cells of one markdown table row, without the empty edges the outer pipes create. */
+function splitCells(line: string): string[] {
+  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+}
+
+/**
+ * Repair a markdown table whose rows have been run together onto one line.
+ *
+ * This happens when rows were appended to a body that had become HTML (see appendToBody): the
+ * newlines separating them are lost, leaving "| a | b | c | | d | e | f |" as a single line that
+ * renders as one enormous row. Knowing the column count from the header, the cells can be
+ * re-chunked back into the correct rows — the data itself is all still there, only the line
+ * breaks were destroyed.
+ *
+ * Returns the repaired text plus how many rows were recovered, so the caller can report honestly
+ * rather than claiming a fix that did nothing.
+ */
+export function repairMarkdownTables(md: string): { text: string; rowsRecovered: number } {
+  const lines = md.split('\n');
+  const out: string[] = [];
+  let rowsRecovered = 0;
+  let cols = 0; // column count of the table currently being read
+
+  for (const raw of lines) {
+    const line = raw.trim();
+
+    // A non-blank, non-table line ends the current table — the next one may have a different shape.
+    if (!line.startsWith('|') || !line.endsWith('|')) {
+      if (line) cols = 0;
+      out.push(raw);
+      continue;
+    }
+
+    const cells = splitCells(line);
+    const isSeparator = /^\|[\s:|-]+\|$/.test(line) && line.includes('-');
+    if (isSeparator || cols === 0) {   // separator, or the header that starts this table
+      cols = cells.length;
+      out.push(raw);
+      continue;
+    }
+    if (cells.length <= cols) { out.push(raw); continue; }   // already a single well-formed row
+
+    // Run-on row: take `cols` cells at a time. Consecutive rows are separated by one empty token
+    // (the "||" where one row's closing pipe meets the next row's opening pipe).
+    let i = 0;
+    let added = 0;
+    while (i < cells.length) {
+      const row = cells.slice(i, i + cols);
+      if (row.length === cols && row.some((c) => c)) { out.push(`| ${row.join(' | ')} |`); added++; }
+      i += cols;
+      if (i < cells.length && cells[i] === '') i++;
+    }
+    if (added > 1) rowsRecovered += added - 1;
+  }
+
+  return { text: out.join('\n'), rowsRecovered };
+}
+
 export const brain = {
   all: read,
 

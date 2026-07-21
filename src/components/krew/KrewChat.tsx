@@ -83,6 +83,7 @@ const SLASH_COMMANDS: SlashCmd[] = [
   { cmd: 'linkedin', label: 'Check LinkedIn messages', desc: 'Read replies & draft answers, no auto-send', run: 'prompt', value: 'Check my LinkedIn messages and draft replies for anything that needs one.' },
   { cmd: 'autopilot',label: 'Toggle Web Autopilot', desc: 'Let Krew explore any site & learn skills (Settings → Advanced)', run: 'toggleSetting', value: 'webAutopilot' },
   { cmd: 'skills',   label: 'Learned skills',    desc: 'See what Krew has learned to do on its own',      run: 'nav', value: 'brain' },
+  { cmd: 'repair-table', label: 'Repair a broken table', desc: 'Fix a Brain note whose table rows ran together onto one line', run: 'prompt', value: 'Repair the table in <file name>' },
   // ── Open a feature / module of the app ───────────────────────────────────
   { cmd: 'mesh',       label: 'Open Mesh',          desc: 'Distributed compute mesh',           run: 'nav', value: 'mesh' },
   { cmd: 'automations',label: 'Automation builder', desc: 'Visual automation flows',            run: 'nav', value: 'automation' },
@@ -130,6 +131,7 @@ function SlashIcon({ name }: { name: string }) {
     linkedin:    <><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M7.5 10v7M7.5 7v.01M11.5 17v-4.5a2.5 2.5 0 0 1 5 0V17" /></>,
     autopilot:   <><circle cx="12" cy="12" r="8" /><path d="M12 8v4l3 2" /></>,
     skills:      <><path d="M12 3l2.5 5 5.5.8-4 3.9.9 5.5-4.9-2.6-4.9 2.6.9-5.5-4-3.9 5.5-.8z" /></>,
+    'repair-table': <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 10h18M9 10v10" /><path d="M14.5 16.5l2 2 4-4" /></>,
   };
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
@@ -4444,6 +4446,55 @@ The prompt must be production-ready — specific enough for a motion designer to
   }
 
   /**
+   * Deterministic "repair the table in <note>" — fixes a Brain note whose table rows were run
+   * together onto one line. Pure data repair, so it runs in code: handing a mangled table to a
+   * model to "fix" invites it to silently drop or reword rows, which is the opposite of what
+   * repairing data should do. The cell contents are never touched, only the row boundaries.
+   */
+  async function runRepairTable(noteTitle: string) {
+    if (busy) return;
+    const sid = await ensureSession('Repair table');
+    addMsg({ role: 'user', content: `Repair the table in ${noteTitle}` });
+    if (sid) krewDb.saveMessage(sid, 'user', `Repair the table in ${noteTitle}`).catch(() => {});
+    setAttachedFiles([]);
+    try {
+      const { brain, nodeToMarkdown: toMd, repairMarkdownTables } = await import('../../lib/knowledgeStore');
+      const want = noteTitle.trim().toLowerCase();
+      const node = brain.all().nodes.find((n) => n.title.trim().toLowerCase() === want)
+        ?? brain.all().nodes.find((n) => n.title.trim().toLowerCase().includes(want));
+      if (!node) {
+        const msg = `I couldn't find a Brain note called "${noteTitle}". Open the Brain to check its exact name, then try again.`;
+        addMsg({ role: 'assistant', content: msg });
+        if (sid) krewDb.saveMessage(sid, 'assistant', msg).catch(() => {});
+        return;
+      }
+      const before = node.body || '';
+      const normalised = toMd(before);            // HTML → markdown, if the note was edited in Brain
+      const { text: repaired, rowsRecovered } = repairMarkdownTables(normalised);
+      const wasHtml = normalised.trim() !== before.trim();
+
+      if (!rowsRecovered && !wasHtml) {
+        const msg = `"${node.title}" looks fine already — every row is on its own line, so there was nothing to repair. Nothing was changed.`;
+        addMsg({ role: 'assistant', content: msg });
+        if (sid) krewDb.saveMessage(sid, 'assistant', msg).catch(() => {});
+        return;
+      }
+      brain.updateNode(node.id, { body: repaired });
+      const dataRows = repaired.split('\n').filter((l) => l.trim().startsWith('|') && !/^\|[\s:|-]+\|$/.test(l.trim())).length;
+      const parts = [
+        rowsRecovered ? `recovered **${rowsRecovered}** row${rowsRecovered === 1 ? '' : 's'} that had been crushed onto one line` : '',
+        wasHtml ? 'converted the note back to clean markdown' : '',
+      ].filter(Boolean).join(', and ');
+      const msg = `Repaired **${node.title}** — ${parts}. It now has ${dataRows - 1} data rows, each on its own line.\n\nOnly the line breaks were rebuilt: no cell text was edited, reordered or removed. Open the Brain to check it over.`;
+      addMsg({ role: 'assistant', content: msg });
+      if (sid) krewDb.saveMessage(sid, 'assistant', msg).catch(() => {});
+    } catch (e) {
+      const msg = `Couldn't repair that note: ${e instanceof Error ? e.message : String(e)}`;
+      addMsg({ role: 'assistant', content: msg });
+    }
+  }
+
+  /**
    * Deterministic "send/type the reply to <name>" — types an already-drafted reply into that
    * person's LinkedIn chat box (never sends it). Reads the drafts from this chat's own history so
    * the user can just say the name instead of re-pasting the message.
@@ -5013,7 +5064,9 @@ The prompt must be production-ready — specific enough for a motion designer to
   // Called from the textarea onChange — opens/closes the menu as the user types.
   function onInputChange(v: string) {
     setInput(v);
-    const open = /^\/[a-z]*$/i.test(v.trim()); // "/", "/ver", … but not once a space is typed
+    // "/", "/ver", "/repair-table" … but not once a space is typed. Hyphens are allowed so a
+    // two-word command name doesn't close the menu the moment the user types the hyphen.
+    const open = /^\/[a-z-]*$/i.test(v.trim());
     setSlashOpen(open);
     if (open) setSlashIdx(0);
   }
@@ -5029,6 +5082,13 @@ The prompt must be production-ready — specific enough for a motion designer to
       const focus = text.replace(/^scan\s+(my\s+)?linkedin(\s+connections)?\b/i, '').replace(/^[\s:,-]+/, '').trim();
       setInput('');
       runConnectionScan(50, focus, text);   // pass the user's real message so it shows + is copyable
+      return;
+    }
+    // "Repair the table in <note>" — deterministic data repair, never routed through a model.
+    const repairMatch = text.match(/^\s*(?:repair|fix)\s+(?:the\s+)?tables?\s+(?:in|of|for)\s+(.+?)\s*$/i);
+    if (repairMatch) {
+      setInput('');
+      runRepairTable(repairMatch[1].replace(/^["'“]|["'”]$/g, '').trim());
       return;
     }
     // "Send/type the reply to <name>" — types a reply already drafted in this chat into that
