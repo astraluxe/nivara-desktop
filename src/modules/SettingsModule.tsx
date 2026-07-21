@@ -46,6 +46,8 @@ function saveSettings(s: NvSettings) {
 const WHATS_NEW: { version: string; items: string[] } = {
   version: '1.6.12',
   items: [
+    'Upgrading now opens the checkout on adris.tech in your browser instead of doing nothing. Payment is deliberately handled only on the website: the app never processes money and never grants a plan by itself, so a tampered copy cannot fake one. Pay signed in with the same email, then press “I’ve paid — check my plan” and it updates.',
+    'Fixed: asking for DMs or cold emails “for the people in <file>” now opens the outreach copilot with the drafted messages. Without the literal word “outreach” it used to be routed to a strategy agent, which replied with a market-analysis report instead of the messages.',
     '/outreach now asks two questions before it starts: which list of people to message, then which campaign note to save into (or a new one you name). It no longer guesses either — guessing is what put a 52-person list under one contact’s name. It remembers the note you last chose and marks it “last used”.',
     'The same searchable file picker now opens for /summarize as well as /verify, /enrich, /findleads, /expand, /draft, /email and /repair-table — pick a saved file instead of typing its name.',
     'Fixed: long AI replies no longer come back with words missing from the middle of sentences. The streaming reader parsed each network packet on its own, so any message split across a packet boundary failed to decode and was silently thrown away — taking a chunk of the answer with it. Text now survives the boundary intact, including accented and non-English characters.',

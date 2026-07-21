@@ -2,7 +2,6 @@ import { useState } from "react";
 import { getPlanConfig } from "../lib/planConfig";
 import { useAuth } from "../contexts/AuthContext";
 
-const SUPABASE_URL = 'https://xkkqcqsacgdrfwbwdqsp.supabase.co';
 
 interface Plan {
   key:        string;
@@ -62,23 +61,6 @@ const PLANS: Plan[] = [
   },
 ];
 
-declare global {
-  interface Window {
-    Razorpay: new (options: Record<string, unknown>) => { open(): void };
-  }
-}
-
-function loadRazorpayScript(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (window.Razorpay) { resolve(); return; }
-    const s = document.createElement('script');
-    s.src = 'https://checkout.razorpay.com/v1/checkout.js';
-    s.onload  = () => resolve();
-    s.onerror = () => reject(new Error('Failed to load Razorpay checkout'));
-    document.head.appendChild(s);
-  });
-}
-
 interface Props {
   onClose:       () => void;
   currentPlan:   string;
@@ -87,69 +69,59 @@ interface Props {
 }
 
 export default function UpgradeModal({ onClose, currentPlan, highlightPlan, reason }: Props) {
-  const { session, refreshSession } = useAuth();
+  const { session, profile, refreshSession } = useAuth();
   const [selected,  setSelected]  = useState(highlightPlan ?? "builder");
   const [paying,    setPaying]    = useState(false);
   const [done,      setDone]      = useState(false);
   const [errMsg,    setErrMsg]    = useState<string | null>(null);
+  const [sentToSite, setSentToSite] = useState(false);
+  const [checking,   setChecking]   = useState(false);
 
   const plan = PLANS.find(p => p.key === selected)!;
 
+  // Payment happens on the WEBSITE, never inside this app — deliberately.
+  //
+  // Razorpay Checkout is a hosted script that expects a real browser; loading it inside the Tauri
+  // webview is what made the Pay button appear to do nothing. More importantly, a desktop build is
+  // a file on someone's disk: anything it decides about entitlement can be tampered with. So the
+  // exe never handles money and never grants a plan. It hands off to the site, Razorpay charges
+  // the card, and Razorpay's server-to-server webhook is the ONLY thing that writes `plan` in the
+  // database (the billing columns are protected against client writes). The app just re-reads what
+  // the server says. A faked "payment" in a patched exe therefore changes nothing.
   async function handleSubscribe() {
-    if (!session) return; // should never happen — modal only shown when logged in
+    if (!session) return;
     setErrMsg(null);
     setPaying(true);
-
     try {
-      await loadRazorpayScript();
-
-      // Create order server-side (login required — JWT verified by Edge Function)
-      const res = await fetch(`${SUPABASE_URL}/functions/v1/razorpay-create-order`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({ plan: selected }),
-      });
-
-      const data = await res.json();
-      if (!res.ok || data.error) {
-        setErrMsg(data.error ?? 'Failed to create payment order. Try again.');
-        setPaying(false);
-        return;
-      }
-
-      // Open Razorpay Checkout modal
-      const rzp = new window.Razorpay({
-        key:         data.key_id,
-        order_id:    data.order_id,
-        amount:      data.amount,
-        currency:    data.currency,
-        name:        'adris.tech',
-        description: `${plan.label} plan — ${plan.price}/month`,
-        prefill: {
-          email: session.user.email ?? '',
-        },
-        theme: { color: '#7C5CFF' },
-        modal: { ondismiss: () => setPaying(false) },
-        handler: async () => {
-          // Payment captured — webhook will update DB; refresh profile to pick it up
-          setDone(true);
-          // Poll up to 6s for plan update
-          for (let i = 0; i < 3; i++) {
-            await new Promise(r => setTimeout(r, 2000));
-            await refreshSession();
-          }
-          setTimeout(onClose, 1000);
-        },
-      });
-      rzp.open();
-
-    } catch (e) {
-      setErrMsg(e instanceof Error ? e.message : 'Something went wrong. Try again.');
+      const email = session.user.email ?? '';
+      // www, not the apex — the apex 307-redirects and drops params/headers on the way.
+      const url = `https://www.adris.tech/pricing.html?plan=${encodeURIComponent(selected)}`
+        + (email ? `&email=${encodeURIComponent(email)}` : '')
+        + '&from=app';
+      const { open } = await import('@tauri-apps/plugin-shell');
+      await open(url);
+      setSentToSite(true);
+    } catch {
+      // Shell open unavailable (unlikely) — show the address so the user can still get there.
+      setErrMsg('Could not open your browser. Go to www.adris.tech/pricing and sign in with this same email to upgrade.');
+    } finally {
       setPaying(false);
     }
+  }
+
+  /** After paying on the site, pull the plan the SERVER now reports. */
+  async function recheckPlan() {
+    setChecking(true);
+    setErrMsg(null);
+    let upgraded = false;
+    for (let i = 0; i < 4 && !upgraded; i++) {
+      await refreshSession();
+      await new Promise((r) => setTimeout(r, 1500));
+      upgraded = (profile?.plan ?? 'free') !== 'free';
+    }
+    setChecking(false);
+    if (upgraded) { setDone(true); setTimeout(onClose, 1500); }
+    else setErrMsg('No payment showing on your account yet. It can take a minute — press Check again, or make sure you paid while signed in with ' + (session?.user.email ?? 'this same email') + '.');
   }
 
   if (done) {
@@ -272,8 +244,10 @@ export default function UpgradeModal({ onClose, currentPlan, highlightPlan, reas
             >
               {paying && <span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin shrink-0" />}
               {paying
-                ? 'Opening payment…'
-                : `Subscribe to ${plan.label} — ${plan.price}/mo`}
+                ? 'Opening the site…'
+                : sentToSite
+                  ? `Reopen checkout for ${plan.label}`
+                  : `Subscribe to ${plan.label} — ${plan.price}/mo`}
             </button>
           )}
           <button
@@ -284,8 +258,31 @@ export default function UpgradeModal({ onClose, currentPlan, highlightPlan, reas
           >Keep {currentPlan}</button>
         </div>
 
+        {/* Payment happens on the website — say so plainly, and give them the way back. */}
+        {sentToSite && (
+          <div className="px-6 pb-3">
+            <div className="rounded-xl border px-3.5 py-3" style={{ borderColor: 'rgba(124,92,255,0.4)', background: 'rgba(124,92,255,0.07)' }}>
+              <p className="text-[11.5px] text-nv-text font-medium mb-1.5">Finish paying in your browser</p>
+              <ul className="text-[11px] text-nv-muted leading-[1.7] mb-2.5 list-disc pl-4">
+                <li>Sign in there with <span className="text-nv-text">{session?.user.email ?? 'this same email'}</span> — the plan is tied to that account.</li>
+                <li>Complete the Razorpay payment on the page that opened.</li>
+                <li>Come back here and press Check — your plan updates automatically.</li>
+              </ul>
+              <button
+                onClick={recheckPlan}
+                disabled={checking}
+                className="w-full py-2 rounded-lg text-[12px] font-semibold transition-opacity hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
+                style={{ background: '#7C5CFF', color: '#fff' }}
+              >
+                {checking && <span className="w-3.5 h-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin shrink-0" />}
+                {checking ? 'Checking your account…' : "I've paid — check my plan"}
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="px-6 pb-4 text-[10px] text-nv-faint text-center">
-          Payments secured by Razorpay · INR only · Cancel anytime
+          Payment is completed on adris.tech, secured by Razorpay · INR only · Cancel anytime
         </div>
       </div>
     </div>

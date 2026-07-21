@@ -5165,9 +5165,16 @@ The prompt must be production-ready — specific enough for a motion designer to
     }
     // Deterministic outreach launcher — drafts messages for the saved connections and OPENS the
     // copilot popup (never relies on the LLM calling a tool, which is why it sometimes didn't show).
-    if (/\b(draft|write|make|start|do)\b[^.]*\boutreach\b/i.test(text)
+    // The last clause catches the /draft phrasing ("write a LinkedIn DM and a short cold email for
+    // the people in <file>"). That IS an outreach run in every respect, but without the literal
+    // word "outreach" it fell through to the boss, which handed it to a strategy agent and returned
+    // a GTM report — ICP, positioning, 30-day plan — instead of the messages and the copilot.
+    if (/\b(draft|write|make|start|do|continue)\b[^.]*\boutreach\b/i.test(text)
         || /\bopen (the )?(outreach )?copilot\b/i.test(text)
-        || /\b(message|reach out to|write to|dm)\b[^.]*\b(these|them|my (linkedin )?connections)\b/i.test(text)) {
+        || /\b(message|reach out to|write to|dm)\b[^.]*\b(these|them|my (linkedin )?connections)\b/i.test(text)
+        || (/\b(write|draft|make|prepare)\b/i.test(text)
+            && /\b(dm|dms|message|messages|cold email|cold emails|email)\b/i.test(text)
+            && /\bfor (the )?(people|everyone|each|those)\b|\bfor my (linkedin )?connections\b|\bfor these\b/i.test(text))) {
       const focus = text.replace(/\b(draft|write|make|start|do)\b|\boutreach\b|\bfor my (linkedin )?connections\b|\bopen (the )?(outreach )?copilot\b|\band open the copilot\b/gi, '').replace(/^[\s:,-]+|[\s:,-]+$/g, '').trim();
       // How many to draft: honour an explicit count ("top 20", "first 30 people", "all"), else 50.
       const allMatch = /\ball\b|\beveryone\b|\beach\b/i.test(text);
