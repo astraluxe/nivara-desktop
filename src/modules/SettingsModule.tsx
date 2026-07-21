@@ -44,8 +44,10 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.9',
+  version: '1.6.10',
   items: [
+    'Fixed: the browser no longer closes itself while you are working through outreach. Opening someone\'s chat now holds the window open until you close it — there is a "Close browser" button in the copilot — so a background task finishing can never yank the chat away before you have pasted and sent.',
+    'Fixed: scanning your LinkedIn connections a second time no longer breaks the table in your Brain. Once you open a note in the Brain editor it is stored as rich text, and the new rows were being appended as plain text into it — so they ran together on one line. Appends now match whatever format the note is already in, and the "already saved" check reads it correctly again too.',
     'Fixed: "Copy message & open chat" now actually opens the chat box. LinkedIn changed that button into a normal link, so clicking it navigated away and the box never appeared — worse, the old check could report success with no box on screen. It now goes straight to the compose page and puts the cursor in the box, so Ctrl+V lands where you expect.',
     'Reading your LinkedIn messages now considers each conversation in full rather than just the newest message — so it won\'t re-propose a time you already agreed, and won\'t miss a thread where you owe someone something.',
     'The Info page now shows a usage example for every slash command, documents /linkedin, /verifylinks, /skills and /autopilot, and has a new Web Autopilot section.',

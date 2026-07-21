@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { brain } from '../../lib/knowledgeStore';
 import { todos } from '../../lib/todoStore';
+import { setAgentBrowserHold } from '../../lib/krewTools';
 
 // ─── Human-in-the-loop LinkedIn / email outreach ─────────────────────────────
 // Why this exists instead of full automation:
@@ -218,6 +219,23 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
   const [whyOpen, setWhyOpen] = useState(false);
   const [opening, setOpening] = useState(false);
   const [openNote, setOpenNote] = useState('');
+  // True once we've opened a chat for this session — the browser window is now the user's
+  // workspace, so it must not be auto-closed under them by a background run finishing.
+  const [browserOpen, setBrowserOpen] = useState(false);
+
+  // Release the hold if the copilot goes away for any reason (Done, Esc, unmount) — otherwise the
+  // browser could never be auto-closed again for the rest of the session.
+  useEffect(() => () => { setAgentBrowserHold(false); }, []);
+
+  async function closeBrowserNow() {
+    setAgentBrowserHold(false);
+    setBrowserOpen(false);
+    setOpenNote('');
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('run_browser_persistent', { args: 'close' });
+    } catch { /* already gone */ }
+  }
 
   const cur = contacts[idx];
   const channel = campaign.channel || 'linkedin';
@@ -265,6 +283,10 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
   // auto-typed or auto-sent, so the account stays safe. Falls back to opening the profile.
   async function copyAndOpenChat() {
     setOpenNote('');
+    // Claim the window BEFORE it opens: the user is about to paste and send in it, and any Krew
+    // run finishing in the background would otherwise auto-close it mid-task.
+    setAgentBrowserHold(true);
+    setBrowserOpen(true);
     await copyText(msg);
     setCopied('msg'); setTimeout(() => setCopied((c) => (c === 'msg' ? null : c)), 1600);
     setOpening(true);
@@ -302,7 +324,7 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
       const res = await invoke<string>('run_browser_persistent', { args: `message "${targetUrl}"` });
       const savedNote = !hasProfile ? ' (Saved their profile link for next time.)' : '';
       if (typeof res === 'string' && res.includes('SIGN_IN_REQUIRED')) setOpenNote('Sign in to LinkedIn in the ADRIS browser window, then click again.');
-      else if (typeof res === 'string' && res.includes('MESSAGE_BOX_OPENED')) setOpenNote(`Chat box is open in the ADRIS browser — paste (Ctrl+V) and send.${savedNote}`);
+      else if (typeof res === 'string' && res.includes('MESSAGE_BOX_OPENED')) setOpenNote(`Chat box is open and focused in the ADRIS browser — paste (Ctrl+V) and send, then mark them Sent below.${savedNote}`);
       else setOpenNote(`Opened their profile in the ADRIS browser — click Message, then paste & send.${savedNote} (If you\'re not connected yet, send a connection request first.)`);
     } catch {
       openLink(profileUrl(cur));
@@ -389,6 +411,19 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
                 {hasProfile ? 'Just open their profile' : 'Find them on LinkedIn'}
               </button>
               {openNote && <p className="text-[10px] text-emerald-300/90 leading-relaxed">{openNote}</p>}
+              {browserOpen && (
+                <div className="flex items-center gap-2 pt-0.5">
+                  <span className="flex-1 text-[10px] text-nv-faint leading-relaxed">
+                    The browser stays open while you work through the list — nothing closes it but you.
+                  </span>
+                  <button
+                    onClick={closeBrowserNow}
+                    className="shrink-0 text-[10px] px-2 py-1 rounded-lg border border-nv-border text-nv-faint hover:text-nv-text hover:bg-nv-surface2 transition-fast"
+                  >
+                    Close browser
+                  </button>
+                </div>
+              )}
             </div>
           )}
 

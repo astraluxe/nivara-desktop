@@ -89,7 +89,12 @@ export function nodeToMarkdown(body: string): string {
           const cells = Array.from(tr.querySelectorAll('th,td')).map((c) => {
             const a = c.querySelector('a');
             const href = a?.getAttribute('href');
-            if (href && a?.textContent) return `[${a.textContent.trim()}](${href})`;
+            // A bare URL cell (the Profile column) round-trips as a plain URL, not "[url](url)" —
+            // the outreach reader wants the raw link, and the doubled form is noise for the user.
+            if (href && a?.textContent) {
+              const t = a.textContent.trim();
+              return t === href ? href : `[${t}](${href})`;
+            }
             return (c.textContent || '').trim().replace(/\|/g, '/');
           });
           md += '| ' + cells.join(' | ') + ' |\n';
@@ -106,6 +111,24 @@ export function nodeToMarkdown(body: string): string {
   } catch {
     return body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   }
+}
+
+/**
+ * Append markdown to a note body that might be EITHER markdown or HTML.
+ *
+ * A note's stored body starts as markdown, but the Brain editor is a contentEditable that saves
+ * `innerHTML` — so the moment a user opens and edits a note, its body becomes HTML for good.
+ * Appending raw markdown to that HTML produced the "table breaks on the second scan" bug: the
+ * HTML part still rendered as a table while the appended pipe rows collapsed onto a single line,
+ * because HTML ignores the newlines separating them.
+ *
+ * Normalising the existing body back to markdown first keeps ONE consistent format in the note,
+ * so appends stay parseable no matter how the note was last touched.
+ */
+export function appendToBody(existingBody: string | undefined, markdownToAdd: string, separator = '\n'): string {
+  const prev = (existingBody || '').trim();
+  if (!prev) return markdownToAdd;
+  return `${nodeToMarkdown(prev)}${separator}${markdownToAdd}`;
 }
 
 export const brain = {

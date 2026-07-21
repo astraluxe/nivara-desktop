@@ -198,8 +198,17 @@ export function resetBrowserRunState(): void {
   _browserPrewarmed     = false;
 }
 
+// The user is working IN the browser window right now (e.g. pasting and sending LinkedIn messages
+// one by one from the outreach copilot). Auto-close must not yank it away mid-task: a Krew run
+// finishing in the background would otherwise close the very chat they were about to send, which
+// is exactly what happened. Whoever sets this owns releasing it.
+let _browserHold = false;
+export function setAgentBrowserHold(on: boolean): void { _browserHold = on; }
+export function isAgentBrowserHeld(): boolean { return _browserHold; }
+
 /** Close the agent browser window if it was used OR pre-warmed this run and no login is pending. */
 export async function closeAgentBrowserIfActive(): Promise<boolean> {
+  if (_browserHold) return false;             // the user is mid-task in that window
   if ((!_browserActiveThisRun && !_browserPrewarmed) || _browserLoginPending) return false;
   _browserActiveThisRun = false;
   _browserPrewarmed     = false;
@@ -1691,7 +1700,12 @@ async function executeToolCore(
         || (isLeadTable ? brain.all().nodes.find((n) => n.kind === 'list' && /lead|prospect|compan/i.test(n.title)) : undefined);
       if (existing) {
         finalTitle = existing.title;
-        if (existing.body) finalBody = `${existing.body}\n\n${body}`;
+        // Normalise first — see appendToBody: an edited note's body is HTML, and appending raw
+        // markdown to it collapses the new rows onto one line.
+        if (existing.body) {
+          const { appendToBody } = await import('./knowledgeStore');
+          finalBody = appendToBody(existing.body, body, '\n\n');
+        }
       }
     }
     const node = brain.addNode({ title: finalTitle, body: finalBody, kind });
@@ -1834,7 +1848,12 @@ async function executeToolCore(
     // never subject to markdown formatting quirks). Relying on the table alone previously let a
     // parsing mismatch silently zero out the "already have" set, which both under-reported the
     // running total and risked re-adding people who were already saved.
-    const existingNames = new Set<string>(existingNode?.body ? parseRowNames(existingNode.body) : []);
+    // Parse names from the NORMALISED body — if the user has opened this note in the Brain editor
+    // its body is now HTML, whose rows the pipe-matching regex would never see, silently emptying
+    // the "already saved" set and letting people be re-added.
+    const { nodeToMarkdown, appendToBody } = await import('./knowledgeStore');
+    const existingMd = existingNode?.body ? nodeToMarkdown(existingNode.body) : '';
+    const existingNames = new Set<string>(existingMd ? parseRowNames(existingMd) : []);
     try {
       const prevJson: { name?: string }[] = JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
       for (const p of prevJson) if (p?.name) existingNames.add(p.name.trim().toLowerCase());
@@ -1892,7 +1911,7 @@ async function executeToolCore(
     const rows = fresh.map((c) => `| ${cell(c.name)} | ${cell(c.headline) || '—'} | ${c.url || ''} |`).join('\n');
     const block = `| Name | Role / Company / Headline | Profile |\n| --- | --- | --- |\n${rows}`;
     const body = existingNode?.body
-      ? `${existingNode.body}\n${rows}`
+      ? appendToBody(existingNode.body, rows)
       : `Your LinkedIn connections — your warmest potential clients (scanned ${new Date().toLocaleDateString()}).\n\n${block}`;
     const node = brain.addNode({ title: LIST_TITLE, body, kind: 'list' });
     // ALSO store the connections as STRUCTURED JSON (name/headline/url) in localStorage — the
@@ -1974,11 +1993,11 @@ async function executeToolCore(
     if (raw.startsWith('PROFILE_OPENED_NO_BOX')) return `Opened the profile but couldn't find/fill the message box — they may not be a 1st-degree connection yet. Nothing was typed or sent. Tell the user this reply so they can paste it manually:\n\n${message}`;
     // Log to Brain so the reply history persists across sessions — avoids re-drafting the same thing.
     try {
-      const { brain } = await import('./knowledgeStore');
+      const { brain, appendToBody } = await import('./knowledgeStore');
       const TITLE = 'LinkedIn reply history';
       const existing = brain.findByTitle(TITLE);
       const entry = `- ${new Date().toLocaleString()} — drafted (unsent) to ${profileUrl}:\n  "${message.replace(/\n/g, ' ')}"`;
-      const body = existing?.body ? `${existing.body}\n${entry}` : `Log of LinkedIn replies drafted by the agent — all require the user to press Send themselves; this only records what was drafted and when.\n\n${entry}`;
+      const body = existing?.body ? appendToBody(existing.body, entry) : `Log of LinkedIn replies drafted by the agent — all require the user to press Send themselves; this only records what was drafted and when.\n\n${entry}`;
       brain.addNode({ title: TITLE, body, kind: 'list' });
     } catch { /* Brain logging is best-effort */ }
     return `Drafted the reply into ${profileUrl}'s open chat box — it is NOT sent. Tell the user to review it and press Enter/Send themselves.`;
