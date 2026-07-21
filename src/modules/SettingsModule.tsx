@@ -44,8 +44,12 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.14',
+  version: '1.6.15',
   items: [
+    'Fixed: local models could not start at all. A file the AI engine needs (mtmd.dll) was missing from the app, so Windows stopped it before it began — the “code execution cannot proceed” box. The engine is now complete and has been tested end to end: it loads a model and replies. Engine files are also refreshed automatically by future updates, which previously never happened, so a broken engine could not repair itself.',
+    'The recommended local model is now shown permanently at the top of the Models tab, based on your machine’s actual memory and free disk. It used to appear only as an occasional chat message after you had used a quarter of your monthly allowance, so most people never saw it at all.',
+    '“Show me around” now explains how the app works instead of pointing at the sidebar and the theme toggle. It walks the real sequence — how Krew works, how to use slash commands, and the /scan → /verify → /enrich → /outreach order for lead generation — and opens the full written guide in Info.',
+    'Fixed: /scan on a large network returned almost nobody new. Every run reloaded your connections page and scrolled from the very top, so once a few hundred people were saved it spent all its time re-reading names it already had. It now carries on from where it stopped and keeps going over several passes.',
     'Fixed: using a local model no longer shows “internet disconnected, reconnecting”. A local model runs on your own machine and sends nothing online — that message came from mistaking “the local engine isn’t running” for a dropped connection, and it then retried ten times. It now tells you plainly to check the Models tab.',
     'Local models can do everything adris.tech does — including web lookups, Google Maps and LinkedIn scanning. Those tools belong to the app, not to the cloud AI, so a local model drives the same ones. What changes is size: writing and summaries run on a small model, while lookups, multi-step runs and research need a larger one. Krew now checks your memory and free disk and names the right model for the task, and only suggests adris.tech when your machine genuinely cannot hold a model big enough.',
     'Your plan now refreshes the moment you return to the window after paying, and the upgrade screen checks with the server first — so nobody who has already paid is asked to pay again.',
