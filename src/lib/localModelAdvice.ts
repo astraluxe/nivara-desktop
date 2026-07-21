@@ -86,16 +86,19 @@ export interface LocalModelPick {
   /** The heaviest work this size handles dependably. */
   handles: Demand;
   blurb: string;
+  /** Only downloadable on a paid plan — do not offer this as the answer to a free user. */
+  paid?: boolean;
 }
 
-// Conservative on purpose. A model that technically fits but leaves the machine swapping is a
-// worse experience than recommending nothing.
+// ids/sizes/ram MUST match DESKTOP_MODELS in ModelsModule.tsx, otherwise we send people to the
+// Models tab looking for a model that isn't there. These were previously invented ids
+// ('qwen2.5:3b' and friends) that matched nothing in the catalogue.
 const CATALOGUE: LocalModelPick[] = [
-  { id: 'qwen2.5:3b',  label: 'Qwen2.5 3B',   sizeGb: 2.0, minRamGb: 6,  handles: 'light',
+  { id: 'qwen25-3b-q4',  label: 'Qwen 2.5 3B',  sizeGb: 2.0, minRamGb: 4,  handles: 'light',
     blurb: 'Light and quick. Writing, rewriting and summaries.' },
-  { id: 'llama3.1:8b', label: 'Llama 3.1 8B', sizeGb: 4.7, minRamGb: 12, handles: 'medium',
+  { id: 'llama31-8b-q4', label: 'Llama 3.1 8B', sizeGb: 4.9, minRamGb: 6,  handles: 'medium',
     blurb: 'The sweet spot for most laptops — better writing, and it can follow simple tool steps.' },
-  { id: 'qwen2.5:14b', label: 'Qwen2.5 14B',  sizeGb: 9.0, minRamGb: 24, handles: 'heavy',
+  { id: 'qwen25-14b-q4', label: 'Qwen 2.5 14B', sizeGb: 8.5, minRamGb: 12, handles: 'heavy', paid: true,
     blurb: 'Handles the full job — web lookups, multi-step runs and research — entirely on your machine.' },
 ];
 
