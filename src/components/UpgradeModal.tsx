@@ -244,10 +244,10 @@ export default function UpgradeModal({ onClose, currentPlan, highlightPlan, reas
             >
               {paying && <span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin shrink-0" />}
               {paying
-                ? 'Opening the site…'
+                ? 'Opening your browser…'
                 : sentToSite
-                  ? `Reopen checkout for ${plan.label}`
-                  : `Subscribe to ${plan.label} — ${plan.price}/mo`}
+                  ? `Reopen checkout in browser`
+                  : `Pay in browser — ${plan.label} ${plan.price}/mo`}
             </button>
           )}
           <button

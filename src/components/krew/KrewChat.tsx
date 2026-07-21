@@ -4767,14 +4767,23 @@ The prompt must be production-ready — specific enough for a motion designer to
       return;
     }
 
-    // Draft only the people still to do; profile-URL people first ("Copy & open chat" opens their
-    // chat box directly), the URL-less ones last.
-    const draftQueue = [...todoAll].sort((a, b) => (b.url && /linkedin\.com\/in\//i.test(b.url) ? 1 : 0) - (a.url && /linkedin\.com\/in\//i.test(a.url) ? 1 : 0));
+    // Someone who ALREADY has a drafted message doesn't need one written again — their text is
+    // reused below either way. Leaving them in the batch just burned the run's 50 slots on work
+    // already done, which is why people added by a later scan kept waiting their turn. Spend the
+    // batch on those with no message yet; everyone else keeps what they have.
+    const hasDraft = (name: string) => !!priorByName.get(nrm(name))?.linkedin_message?.trim();
+    const needsDraft = todoAll.filter((c) => !hasDraft(c.name));
+    const alreadyDrafted = todoAll.length - needsDraft.length;
+    // Profile-URL people first ("Copy & open chat" opens their chat box directly), URL-less last.
+    const draftQueue = [...needsDraft].sort((a, b) => (b.url && /linkedin\.com\/in\//i.test(b.url) ? 1 : 0) - (a.url && /linkedin\.com\/in\//i.test(a.url) ? 1 : 0));
     const pick = draftQueue.slice(0, Math.max(1, max));
     const pickSet = new Set(pick.map((c) => nrm(c.name)));
-    const more = todoAll.length - pick.length;
-    addMsg({ role: 'assistant', content: `${alreadyDone > 0 ? `Continuing your outreach — ${alreadyDone} already done, ` : ''}drafting ${pick.length} message${pick.length === 1 ? '' : 's'}${more > 0 ? ` (${more} more still to do)` : ''} and opening the copilot…`, streaming: true });
+    const more = needsDraft.length - pick.length;
+    addMsg({ role: 'assistant', content: `${alreadyDone > 0 ? `Continuing your outreach — ${alreadyDone} already sent, ` : ''}${alreadyDrafted > 0 ? `${alreadyDrafted} already written (keeping those), ` : ''}writing ${pick.length} new message${pick.length === 1 ? '' : 's'}${more > 0 ? ` — ${more} still without one after this` : ''} and opening the copilot…`, streaming: true });
     setBusy(true);
+    // Real name for the sign-off, taken from the signed-in account.
+    const senderName = [profile?.first_name, profile?.last_name].filter(Boolean).join(' ').trim()
+      || (user?.email ? user.email.split('@')[0].replace(/[._-]+/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase()) : '');
     const sys = [
       'You write short, warm, genuinely PERSONALISED LinkedIn messages to the user\'s EXISTING 1st-degree connections (people who already accepted them).',
       'Rules for every message:',
@@ -4784,6 +4793,11 @@ The prompt must be production-ready — specific enough for a motion designer to
       '- Weave in what the user does ONLY where it fits naturally; the aim is to (re)start a real conversation, not to sell.',
       '- End with ONE low-pressure, specific ask that matches the user\'s GOAL below.',
       '- No "I hope this finds you well", no buzzwords, no hashtags, no emojis unless truly natural. Casual sign-off.',
+      // Messages were going out signed "Best, [Your Name]" — a placeholder is worse than no
+      // sign-off at all if the user pastes it without noticing. We know who they are; use it.
+      senderName
+        ? `- Sign off with the sender's REAL name: ${senderName}. Never write a placeholder like "[Your Name]".`
+        : '- Do NOT invent or placeholder a signature. End with the message itself — never "Best, [Your Name]" or any bracketed placeholder.',
       'Return ONLY a valid JSON array: [{"name":"<exact name as given>","message":"<the message>"}] — one object per person, using the EXACT names given, nothing else.',
     ].join('\n');
     const usr = `MY GOAL FOR THIS OUTREACH:\n${goal || 'Reconnect and open a genuine conversation about a possible fit — no hard pitch.'}\n\nWHAT I DO / WHAT I\'M BUILDING:\n${productCtx || '(not specified — keep it about them and a friendly reconnect)'}\n\nWrite one message for each of these connections (use their exact name; personalise from their headline):\n${pick.map((c) => `- ${c.name} — ${c.headline || '(no headline)'}`).join('\n')}`;
@@ -4814,6 +4828,12 @@ The prompt must be production-ready — specific enough for a motion designer to
           usedNames.add(k);
         } else if (pickSet.has(k)) {
           built.push({ name: c.name, company: c.headline || priorC?.company, linkedin_url: c.url || priorC?.linkedin_url, linkedin_message: priorC?.linkedin_message || draftFor(c), status: st });
+          usedNames.add(k);
+        } else if (hasDraft(c.name)) {
+          // Already had a message from an earlier run and wasn't re-drafted this time — keep them
+          // in the campaign with the text they already have, or they would silently vanish from
+          // the copilot the moment the batch got spent on other people.
+          built.push({ name: c.name, company: c.headline || priorC?.company, linkedin_url: c.url || priorC?.linkedin_url, linkedin_message: priorC?.linkedin_message || '', status: st });
           usedNames.add(k);
         }
         // an undrafted to-do beyond the cap is left for a later "draft the rest" run
