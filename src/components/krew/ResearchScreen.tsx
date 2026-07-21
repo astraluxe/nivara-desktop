@@ -86,16 +86,31 @@ const FOCUS_OPTIONS = [
 /** **bold**, `code`, and markdown escapes like \$ — rendered inline. */
 function renderInline(text: string): React.ReactNode[] {
   const unescaped = text.replace(/\\([$*_`~#])/g, '$1');
-  return unescaped.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).filter(Boolean).map((p, j) => {
-    if (p.startsWith('**') && p.endsWith('**')) {
+  // Bold, italic and code. `*italic*` was previously unhandled, so single asterisks leaked through
+  // as literal "*" characters in the report; the bold pattern also now tolerates an inner "*".
+  const parts = unescaped.split(/(\*\*[\s\S]+?\*\*|\*[^*\n]+\*|`[^`]+`)/g).filter(Boolean);
+  return parts.map((p, j) => {
+    if (p.length > 4 && p.startsWith('**') && p.endsWith('**')) {
       return <strong key={j} className="text-nv-text font-semibold">{p.slice(2, -2)}</strong>;
+    }
+    if (p.length > 2 && p.startsWith('*') && p.endsWith('*')) {
+      return <em key={j} className="italic">{p.slice(1, -1)}</em>;
     }
     if (p.startsWith('`') && p.endsWith('`') && p.length > 2) {
       return <code key={j} className="text-[12px] font-mono text-accent bg-accent/10 border border-accent/20 rounded px-1">{p.slice(1, -1)}</code>;
     }
-    return <span key={j}>{p}</span>;
+    // Any ** that never found a partner would otherwise render as literal asterisks mid-sentence.
+    return <span key={j}>{p.replace(/\*\*/g, '')}</span>;
   });
 }
+
+/** Split one markdown table row into cells, dropping the empty edges from the outer pipes. */
+function splitRow(line: string): string[] {
+  const cells = line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|');
+  return cells.map((c) => c.trim());
+}
+const isTableRow = (l: string) => /^\s*\|.*\|\s*$/.test(l);
+const isTableSep = (l: string) => /^\s*\|[\s:|-]+\|\s*$/.test(l) && l.includes('-');
 
 interface ListItem { text: string; depth: number }
 
@@ -130,6 +145,59 @@ function renderMarkdown(text: string): React.ReactNode[] {
 
   while (i < lines.length) {
     const line = lines[i];
+
+    // ── Tables ────────────────────────────────────────────────────────────────
+    // Previously absent entirely: every "| a | b |" line fell through to the paragraph branch and
+    // rendered as raw pipe text, which is why report tables looked broken while the same content
+    // saved to the Brain looked fine. Blank lines BETWEEN rows are tolerated because the model
+    // routinely emits them, which would otherwise end the table after its header.
+    if (isTableRow(line) && !isTableSep(line)) {
+      let j = i + 1;
+      while (j < lines.length && !lines[j].trim()) j++;      // skip blanks before the separator
+      if (j < lines.length && isTableSep(lines[j])) {
+        const header = splitRow(line);
+        const rows: string[][] = [];
+        let k = j + 1;
+        while (k < lines.length) {
+          if (!lines[k].trim()) {                            // blank line — continue only if more rows follow
+            let n = k + 1;
+            while (n < lines.length && !lines[n].trim()) n++;
+            if (n < lines.length && isTableRow(lines[n]) && !isTableSep(lines[n])) { k = n; continue; }
+            break;
+          }
+          if (!isTableRow(lines[k])) break;
+          if (!isTableSep(lines[k])) rows.push(splitRow(lines[k]));
+          k++;
+        }
+        out.push(
+          <div key={i} className="my-3 overflow-x-auto rounded-lg border border-nv-border">
+            <table className="w-full text-[11.5px] border-collapse">
+              <thead>
+                <tr className="bg-nv-surface2/60">
+                  {header.map((h, n) => (
+                    <th key={n} className="text-left font-semibold text-nv-text px-2.5 py-1.5 border-b border-nv-border whitespace-nowrap">
+                      {renderInline(h)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, rn) => (
+                  <tr key={rn} className="border-b border-nv-border/50 last:border-0 align-top">
+                    {header.map((_, cn) => (
+                      <td key={cn} className="px-2.5 py-1.5 text-nv-muted">{renderInline(r[cn] ?? '')}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>,
+        );
+        i = k;
+        continue;
+      }
+    }
+
     const bullet  = line.match(/^(\s*)[-*•]\s+(.*)$/);
     const ordered = line.match(/^(\s*)\d+[.)]\s+(.*)$/);
 
@@ -153,9 +221,9 @@ function renderMarkdown(text: string): React.ReactNode[] {
       continue;
     }
 
-    if (/^#{1,3} /.test(line)) {
-      const level = line.match(/^(#{1,3}) /)![1].length;
-      const body = line.replace(/^#{1,3} /, '');
+    if (/^#{1,6} /.test(line)) {
+      const level = line.match(/^(#{1,6}) /)![1].length;
+      const body = line.replace(/^#{1,6} /, '');
       out.push(level <= 2
         ? <h2 key={i} className="nv-heading mt-7 mb-2.5 pb-1.5 border-b border-nv-border">{body}</h2>
         : <h3 key={i} className="text-[13px] font-semibold text-nv-text mt-5 mb-1.5">{body}</h3>);

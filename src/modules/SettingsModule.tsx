@@ -44,13 +44,14 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.7',
+  version: '1.6.8',
   items: [
-    'Removed the "Reopen outreach copilot" pill above the message box — its ✕ had been broken across two prior fixes, and it was fully redundant with the To-do panel\'s Continue button and /continue, both already there.',
-    'Krew can now read your actual LinkedIn messages and draft grounded replies straight into the chat box for you to review and send — it no longer guesses what someone said.',
-    'Scheduling a meeting over LinkedIn no longer forces a "connect Google" prompt. If Calendar is connected, Krew can still create the event, but always shows you the full details and waits for your approval before it sends any invite.',
-    'New: Web Autopilot (off by default — Settings → Advanced). When on, Krew can work through a website it has no specific integration for — reading the page, filling forms, attaching a file it finds on your computer — and remembers how it did it as a reusable skill. It always stops and asks for your approval before submitting, sending, or paying for anything.',
-    'To-dos are more useful: Krew can now create several at once and link one to the exact page it\'s about, so "Continue" takes you straight there.',
+    'Fixed: "check my LinkedIn messages and reply" now actually reads your inbox. It used to get handed to a lead-research agent, which answered about your lead list instead — it now runs the inbox reader directly, drafts a reply per thread from the real conversation, and adds a to-do per pending reply linked to that chat.',
+    'Say "send the reply to <name>" and Krew types that draft into their LinkedIn chat box for you to review — it still never presses Send itself.',
+    'Fixed: Research reports now render tables properly instead of showing raw "|" rows, and stray ** / * markdown no longer leaks into the text.',
+    'Fixed: Arjun (the boss agent) can now create to-dos and suggest a next step — those tools were missing from its list, so the "Next up" card could never appear in normal use.',
+    'Fixed: a LinkedIn scan can no longer merge into a similarly-named file you attached; the scan always saves to the Brain note titled exactly "LinkedIn connections".',
+    'Web Autopilot (Settings → Advanced, off by default) lets Krew work through sites it has no built-in integration for, and remember how it did it as a reusable skill.',
   ],
 };
 

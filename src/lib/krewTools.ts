@@ -1814,15 +1814,31 @@ async function executeToolCore(
     const limit = Math.max(1, Math.min(200, num(args.limit, 50)));
     const { brain } = await import('./knowledgeStore');
     const LIST_TITLE = 'LinkedIn connections';
-    // Everyone already saved (first table column) — so we append only NEW people across runs.
-    const existingNode = brain.findByTitle(LIST_TITLE);
-    const existingNames = new Set<string>();
-    if (existingNode?.body) {
-      for (const line of existingNode.body.split('\n')) {
+    // EXACT title match only — brain.findByTitle() falls back to a SUBSTRING match, which is
+    // dangerous here: if the user has (or attaches) a differently-named note that merely
+    // CONTAINS "linkedin connections" (e.g. a reference file literally named "LinkedIn
+    // connections.md", extension kept in the title), findByTitle would silently treat THAT node
+    // as this one — appending scraped people into someone else's file and, via addNode's own
+    // extension-stripping dedupe, permanently merging the two. Only an exact match is safe here.
+    const existingNode = brain.all().nodes.find((n) => n.title.trim().toLowerCase() === LIST_TITLE.toLowerCase());
+    const parseRowNames = (body: string): string[] => {
+      const names: string[] = [];
+      for (const line of body.split('\n')) {
         const m = line.match(/^\|\s*([^|]+?)\s*\|/);
-        if (m && !/^\s*name\s*$/i.test(m[1]) && !/^-+$/.test(m[1].trim())) existingNames.add(m[1].trim().toLowerCase());
+        if (m && !/^\s*name\s*$/i.test(m[1]) && !/^-+$/.test(m[1].trim())) names.push(m[1].trim().toLowerCase());
       }
-    }
+      return names;
+    };
+    // Everyone already known, from TWO sources unioned — the markdown table (can go stale/odd if
+    // ever hand-edited) AND the structured JSON mirror this tool also maintains (nv-li-connections,
+    // never subject to markdown formatting quirks). Relying on the table alone previously let a
+    // parsing mismatch silently zero out the "already have" set, which both under-reported the
+    // running total and risked re-adding people who were already saved.
+    const existingNames = new Set<string>(existingNode?.body ? parseRowNames(existingNode.body) : []);
+    try {
+      const prevJson: { name?: string }[] = JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
+      for (const p of prevJson) if (p?.name) existingNames.add(p.name.trim().toLowerCase());
+    } catch { /* JSON mirror optional */ }
     emit('agent-browser-active', {}).catch(() => {});
     emit('agent-progress', { text: 'Opening your LinkedIn connections…' }).catch(() => {});
     // This tool drives the persistent window directly, so it must claim it — otherwise
@@ -1893,10 +1909,19 @@ async function executeToolCore(
       localStorage.setItem(KEY, JSON.stringify(Object.values(byKey)));
     } catch { /* localStorage optional */ }
     // Link the list to the reference file the user attached, if named (so it connects in the graph).
+    // Same exact-match rule as the lookup above — never let a substring match silently fold a
+    // differently-named file into this node.
     const linkTo = str(args.link_to).trim();
-    if (linkTo) { const t = brain.findByTitle(linkTo); if (t && t.id !== node.id) brain.link(t.id, node.id, 'connections'); }
-    const totalSaved = existingNames.size + fresh.length;
-    return `Saved ${fresh.length} new connection${fresh.length === 1 ? '' : 's'} to the "${LIST_TITLE}" Brain note (${totalSaved} total now)${linkTo ? `, linked to "${linkTo}"` : ''}. These are REAL names read straight from the page:\n\n${block}\n\nTell the user how many were added and that they can say "scan the next 50" for more, or ask you to draft outreach for the good-fit ones (which opens the LinkedIn outreach copilot). Do NOT rename anyone.`;
+    let linkedNote = '';
+    if (linkTo) {
+      const t = brain.all().nodes.find((n) => n.title.trim().toLowerCase() === linkTo.toLowerCase());
+      if (t && t.id !== node.id) { brain.link(t.id, node.id, 'connections'); linkedNote = t.title; }
+    }
+    // Count directly from what actually got saved — NOT existingNames.size + fresh.length. Those
+    // two numbers come from different parsing passes and can drift apart if either one ever
+    // undercounts; counting the real rows in the final body is self-correcting and can't drift.
+    const totalSaved = new Set(parseRowNames(body)).size;
+    return `Saved ${fresh.length} new connection${fresh.length === 1 ? '' : 's'} to the Brain note titled exactly "${LIST_TITLE}" (${totalSaved} total now)${linkedNote ? `, linked to "${linkedNote}"` : ''}. These are REAL names read straight from the page:\n\n${block}\n\nTell the user how many were added, that it's saved in their Brain under the note "${LIST_TITLE}" (separate from any reference file they attached), and that they can say "scan the next 50" for more, or ask you to draft outreach for the good-fit ones (which opens the LinkedIn outreach copilot). Do NOT rename anyone.`;
   }
 
   if (toolName === 'read_linkedin_messages') {

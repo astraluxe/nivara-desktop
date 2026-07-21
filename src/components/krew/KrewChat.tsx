@@ -3299,7 +3299,11 @@ const [studioExtracting, setStudioExtracting] = useState(false);
         // all and could only guess, which is how a fabricated "yes, saved as X" answer led
         // the user to an empty/wrong note. save_to_brain itself stays off boss's list —
         // saving is still the deterministic/specialist path, not something boss does.
-        ...SYSTEM_TOOLS.filter(t => ['save_memory', 'recall_memory', 'forget_memory', 'recall_from_brain'].includes(t.name)),
+        // create_todo + suggest_next_task belong to the CONVERSATION, not to any specialist's
+        // subject matter: they're about what the user should do next after any turn. Boss is the
+        // agent the user actually talks to, so leaving these off its list meant they could never
+        // fire in normal use — which is exactly why no next-step card or to-do ever appeared.
+        ...SYSTEM_TOOLS.filter(t => ['save_memory', 'recall_memory', 'forget_memory', 'recall_from_brain', 'create_todo', 'suggest_next_task'].includes(t.name)),
         ...BOSS_TOOLS,
         ...BROWSER_TOOLS,
       ];
@@ -4284,6 +4288,213 @@ The prompt must be production-ready — specific enough for a motion designer to
     }
   }
 
+  /**
+   * Deterministic "read my LinkedIn messages and reply" — runs read_linkedin_messages directly,
+   * then drafts a reply per thread from the REAL text it read.
+   *
+   * This must NOT go through the boss/LLM tool loop. When it did, the boss delegated the request
+   * to a lead-gen specialist whose system prompt is dominated by lead-list instructions, and that
+   * agent ran enrich_lead_list instead — answering "the updated list is in the table above and
+   * saved to your Tech lead list" to a request about inbox replies. Same reasoning (and the same
+   * shape) as runConnectionScan and launchOutreachFromConnections above: when there is exactly one
+   * correct tool for a phrasing, call it in code rather than hoping the model picks it.
+   */
+  async function runLinkedInMessages(userText = '') {
+    if (busy) return;
+    const sid = await ensureSession('LinkedIn messages');
+    // Anything the user said beyond "check my messages" is their reply guidance — availability,
+    // tone, what to agree to. It is the whole reason a reply can be drafted correctly.
+    const guidance = userText
+      .replace(/\b(go to|open|check|read|see|look at)\b/gi, ' ')
+      .replace(/\bmy\b|\bthe\b|\bfor\b|\bwhich\b|\bi have got\b|\bi got\b/gi, ' ')
+      .replace(/\blinked\s?in\b|\bmessages?\b|\breply\b|\breplies\b|\brespond\b/gi, ' ')
+      .replace(/\s+/g, ' ').trim();
+    addMsg({ role: 'user', content: userText || 'Check my LinkedIn messages and draft replies' });
+    if (sid) krewDb.saveMessage(sid, 'user', userText || 'Check my LinkedIn messages and draft replies').catch(() => {});
+    addMsg({ role: 'assistant', content: 'Opening LinkedIn and reading your messages…', streaming: true });
+    setBusy(true); setBrowserActive(true);
+    const unlisten = await listen('agent-progress', (e) => {
+      const t = (e.payload as { text?: string } | undefined)?.text;
+      if (t) updateLastMsg(`${t}\n\n_Reading your inbox in the browser…_`);
+    });
+    try {
+      const msgKey = `${sidRef.current ?? 'main'}-limsg`;
+      let result = await executeTool('read_linkedin_messages', { limit: 10 }, creds, requestTerminalApproval, agent.key, user?.id ?? '', msgKey);
+      // Same wait-for-login flow the scan uses, so a signed-out user never has to re-run the command.
+      if (result.startsWith('[NEEDS_LOGIN]')) {
+        updateLastMsg("Opened LinkedIn in the ADRIS browser — please sign in there. I'll read your messages the moment you're in… _(press Stop to cancel)_");
+        const deadline = Date.now() + 180000;
+        let loggedIn = false;
+        while (Date.now() < deadline && !stopRef.current) {
+          await new Promise((r) => setTimeout(r, 4000));
+          const chk = await invoke<string>('run_browser_persistent', { args: 'logincheck linkedin' }).catch(() => '');
+          if (chk.includes('LOGGED_IN')) { loggedIn = true; break; }
+        }
+        if (stopRef.current) {
+          setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: 'Stopped — ask me again once you\'re signed in to LinkedIn.', streaming: false }; return c; });
+          return;
+        }
+        if (!loggedIn) {
+          setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: "I didn't detect a LinkedIn login in the ADRIS browser. Sign in there, then ask me again.", streaming: false }; return c; });
+          return;
+        }
+        updateLastMsg('Signed in ✓ — reading your messages now…');
+        result = await executeTool('read_linkedin_messages', { limit: 10 }, creds, requestTerminalApproval, agent.key, user?.id ?? '', msgKey);
+      }
+      // Anything that isn't a real read (error / no conversations) — show it and stop.
+      if (!result.includes('### ')) {
+        const plain = result.replace(/^\[NEEDS_LOGIN\]\s*/, '').replace(/\n\nWhen drafting a reply[\s\S]*$/, '').trim();
+        setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: plain, streaming: false }; return c; });
+        if (sid) krewDb.saveMessage(sid, 'assistant', plain).catch(() => {});
+        return;
+      }
+      // Strip the trailing block of instructions meant for the model, keep the real threads.
+      const threadsText = result.replace(/\n\nWhen drafting a reply[\s\S]*$/, '').replace(/^Read \d+ REAL[^\n]*\n+/, '').trim();
+      updateLastMsg('Read your messages ✓ — drafting replies…');
+
+      const today = new Date();
+      const replySys = [
+        'You draft LinkedIn replies on behalf of the user, from the REAL conversation text you are given.',
+        'ABSOLUTE RULES:',
+        '- Reply ONLY to threads where the OTHER person sent the most recent message, or where they asked something still unanswered. If the user already sent the last message and nothing is pending, SKIP that thread entirely — do not invent a reason to follow up.',
+        '- Ground every reply in what was ACTUALLY said in that thread. Never invent a claim, a time, or a commitment nobody made.',
+        '- If they proposed times, answer those SPECIFIC times against the user\'s stated availability. If a proposed time does not work, say so plainly and offer one that does. Convert time zones carefully and show both (e.g. "9:00 PM IST / 10:30 AM EDT").',
+        '- 40–80 words. Warm, direct, human. First name only. No "I hope this finds you well", no buzzwords, no emojis unless natural.',
+        'OUTPUT FORMAT — for each thread that needs a reply, output exactly:',
+        '### <Person name>',
+        'WHY: <one short line — what they asked / why this needs a reply>',
+        'REPLY: <the full reply text, one paragraph>',
+        'Nothing else. No preamble, no summary, no closing remarks. If NO thread needs a reply, output exactly: NONE',
+      ].join('\n');
+      const replyUser = [
+        `TODAY IS: ${today.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
+        guidance ? `\nMY INSTRUCTIONS / AVAILABILITY (use these exactly — they override anything you assume):\n${guidance}` : '',
+        `\nMY REAL LINKEDIN THREADS (most recent messages last in each):\n${threadsText}`,
+        '\nDraft a reply for each thread that genuinely needs one, in the exact format specified.',
+      ].filter(Boolean).join('\n');
+
+      const { text: drafted } = await streamTurnWithRetry([{ role: 'user', content: replyUser }], replySys, () => {});
+      const clean = (drafted || '').replace(/<tool_call>[\s\S]*/g, '').trim();
+
+      // Parse "### Name / WHY: / REPLY:" blocks so each reply becomes its own actionable card.
+      const parsed: { name: string; why: string; reply: string }[] = [];
+      for (const blk of clean.split(/^###\s+/m).slice(1)) {
+        const nl = blk.indexOf('\n');
+        const name = (nl >= 0 ? blk.slice(0, nl) : blk).trim();
+        const rest = nl >= 0 ? blk.slice(nl + 1) : '';
+        const why = (rest.match(/^WHY:\s*(.+)$/mi)?.[1] ?? '').trim();
+        const reply = (rest.match(/^REPLY:\s*([\s\S]+)$/mi)?.[1] ?? '').split(/\n(?=###\s)/)[0].trim();
+        if (name && reply) parsed.push({ name, why, reply });
+      }
+
+      // Map each drafted reply back to the profile URL read from that thread, so "open the chat"
+      // targets the right person instead of guessing a slug.
+      const urlByName = new Map<string, string>();
+      for (const seg of threadsText.split(/^###\s+/m).slice(1)) {
+        const nm = seg.slice(0, seg.indexOf('\n')).replace(/\s*\[UNREAD\]\s*$/i, '').trim();
+        const u = seg.match(/^Profile:\s*(\S+)/mi)?.[1] ?? '';
+        if (nm && u.startsWith('http')) urlByName.set(nm.toLowerCase(), u);
+      }
+
+      if (!parsed.length || /^NONE$/im.test(clean)) {
+        const none = `I read your LinkedIn messages — nothing is currently waiting on a reply from you.\n\n${threadsText}`;
+        setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: none, streaming: false }; return c; });
+        if (sid) krewDb.saveMessage(sid, 'assistant', none).catch(() => {});
+        return;
+      }
+
+      const body = parsed.map((p) => `### ${p.name}\n${p.why ? `_${p.why}_\n\n` : ''}\`\`\`email ${p.name}\n${p.reply}\n\`\`\``).join('\n\n');
+      const head = `I read your LinkedIn inbox and drafted ${parsed.length} repl${parsed.length === 1 ? 'y' : 'ies'} from what was actually said in each thread:`;
+      const tail = '\n\n_Say **"send the reply to <name>"** and I\'ll type it into their chat box for you to review and send — I never send anything myself._';
+      const finalMsg = `${head}\n\n${body}${tail}`;
+      setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: finalMsg, streaming: false }; return c; });
+      if (sid) krewDb.saveMessage(sid, 'assistant', finalMsg).catch(() => {});
+
+      // Persist so this survives closing the chat: a to-do per pending reply, deep-linked to that
+      // person's chat, plus a Brain note of the drafts themselves.
+      try {
+        for (const p of parsed) {
+          const url = urlByName.get(p.name.toLowerCase());
+          todos.upsertResume(
+            `li-reply:${p.name.toLowerCase()}`,
+            `Reply to ${p.name} on LinkedIn${p.why ? ` — ${p.why}` : ''}`,
+            undefined,
+            { priority: 'high', url },
+          );
+        }
+      } catch { /* to-dos optional */ }
+      try {
+        const { brain } = await import('../../lib/knowledgeStore');
+        brain.addNode({
+          title: 'LinkedIn replies — drafted',
+          kind: 'outreach',
+          body: `Replies drafted ${today.toLocaleString()} from your real LinkedIn threads. None of these were sent — you review and send each one.\n\n${body}`,
+        });
+      } catch { /* Brain optional */ }
+    } catch (e) {
+      const msg = `Couldn't read your LinkedIn messages: ${e instanceof Error ? e.message : String(e)}. Make sure you're signed in to LinkedIn in the ADRIS browser, then try again.`;
+      setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: msg, streaming: false }; return c; });
+    } finally {
+      unlisten(); setBusy(false); setAgentStep(null); setAgentTool(null);
+      setBrowserActive(false); await closeAgentBrowserIfActive();
+    }
+  }
+
+  /**
+   * Deterministic "send/type the reply to <name>" — types an already-drafted reply into that
+   * person's LinkedIn chat box (never sends it). Reads the drafts from this chat's own history so
+   * the user can just say the name instead of re-pasting the message.
+   */
+  async function runSendLinkedInReply(who: string) {
+    if (busy) return;
+    const target = who.trim().toLowerCase();
+    // Find the most recent drafted reply for this person in the visible conversation.
+    let reply = '', name = '';
+    for (let i = messages.length - 1; i >= 0 && !reply; i--) {
+      const m = messages[i];
+      if (m.role !== 'assistant' || !m.content.includes('```email')) continue;
+      for (const seg of m.content.split(/^###\s+/m).slice(1)) {
+        const nm = seg.slice(0, seg.indexOf('\n')).trim();
+        if (!nm.toLowerCase().includes(target) && !target.includes(nm.toLowerCase())) continue;
+        const fence = seg.match(/```email[^\n]*\n([\s\S]*?)```/);
+        if (fence) { reply = fence[1].trim(); name = nm; break; }
+      }
+    }
+    if (!reply) {
+      addMsg({ role: 'assistant', content: `I don't have a drafted reply for "${who}" in this chat yet. Ask me to check your LinkedIn messages first, then I'll draft one.` });
+      return;
+    }
+    // The profile URL comes from the saved connections list — never a guessed slug.
+    let url = '';
+    try {
+      const conns: { name?: string; url?: string }[] = JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
+      url = conns.find((c) => (c.name || '').toLowerCase() === name.toLowerCase())?.url
+        || conns.find((c) => (c.name || '').toLowerCase().includes(target))?.url || '';
+    } catch { /* ignore */ }
+    if (!url) {
+      addMsg({ role: 'assistant', content: `I have the draft for ${name}, but not their profile link — run **/scan** once so I know their LinkedIn URL, then ask again. Here's the draft to paste manually:\n\n\`\`\`email ${name}\n${reply}\n\`\`\`` });
+      return;
+    }
+    addMsg({ role: 'user', content: `Send the reply to ${name}` });
+    addMsg({ role: 'assistant', content: `Opening ${name}'s chat and typing the reply…`, streaming: true });
+    setBusy(true); setBrowserActive(true);
+    try {
+      const res = await executeTool('draft_linkedin_reply', { profile_url: url, message: reply }, creds, requestTerminalApproval, agent.key, user?.id ?? '', `${sidRef.current ?? 'main'}-lisend`);
+      const done = res.includes('Drafted the reply')
+        ? `Typed the reply into ${name}'s LinkedIn chat — **it is not sent**. Review it in the browser window and press Enter (or click Send) yourself.`
+        : res;
+      setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: done, streaming: false }; return c; });
+      if (sidRef.current) krewDb.saveMessage(sidRef.current, 'assistant', done).catch(() => {});
+      if (res.includes('Drafted the reply')) { try { todos.removeBySource(`li-reply:${name.toLowerCase()}`); } catch { /* ignore */ } }
+    } catch (e) {
+      const msg = `Couldn't open that chat: ${e instanceof Error ? e.message : String(e)}`;
+      setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: msg, streaming: false }; return c; });
+    } finally {
+      setBusy(false); setAgentStep(null); setAgentTool(null);
+      setBrowserActive(false); await closeAgentBrowserIfActive();
+    }
+  }
+
   // Deterministic outreach: draft a personalised LinkedIn message for each saved connection and
   // OPEN THE COPILOT POPUP directly (setOutreachCampaign) — never relying on the LLM to call a tool
   // (which is why the popup sometimes never appeared). Reads the "LinkedIn connections" Brain note
@@ -4815,6 +5026,27 @@ The prompt must be production-ready — specific enough for a motion designer to
       const focus = text.replace(/^scan\s+(my\s+)?linkedin(\s+connections)?\b/i, '').replace(/^[\s:,-]+/, '').trim();
       setInput('');
       runConnectionScan(50, focus, text);   // pass the user's real message so it shows + is copyable
+      return;
+    }
+    // "Send/type the reply to <name>" — types a reply already drafted in this chat into that
+    // person's LinkedIn chat box (never sends). Kept ABOVE the inbox-read route so asking to send
+    // a reply doesn't re-read the whole inbox instead.
+    const sendReplyMatch = text.match(/^\s*(?:send|type|paste|put)\s+(?:the\s+|that\s+|my\s+)?(?:reply|message|draft|response)\s+(?:to|for)\s+(.+?)\s*$/i);
+    if (sendReplyMatch) {
+      setInput('');
+      runSendLinkedInReply(sendReplyMatch[1].replace(/\bon linkedin\b|['"]/gi, '').trim());
+      return;
+    }
+    // Deterministic LinkedIn INBOX read + reply drafting. Requires an explicit LinkedIn mention AND
+    // a message/inbox word, so it can never swallow a connections scan or an outreach draft.
+    // This exists because routing it through the boss produced a lead-list answer to an inbox
+    // question — see runLinkedInMessages for the full reasoning.
+    if (/\blinked\s?in\b/i.test(text)
+        && /\b(messages?|inbox|dms?|replies|reply|responded|replied)\b/i.test(text)
+        && /\b(check|read|see|look|any|go to|open|reply|replies|respond|answer|draft|new)\b/i.test(text)
+        && !/\bconnections\b/i.test(text)) {
+      setInput('');
+      runLinkedInMessages(text);
       return;
     }
     // Deterministic link-repair — checks the saved outreach profile links and fixes the wrong/missing
