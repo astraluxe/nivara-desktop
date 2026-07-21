@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { getPlanConfig } from "../lib/planConfig";
 import { useAuth } from "../contexts/AuthContext";
+import { supabase } from "../lib/supabase";
 
 
 interface Plan {
@@ -69,7 +70,7 @@ interface Props {
 }
 
 export default function UpgradeModal({ onClose, currentPlan, highlightPlan, reason }: Props) {
-  const { session, profile, refreshSession } = useAuth();
+  const { session, refreshSession } = useAuth();
   const [selected,  setSelected]  = useState(highlightPlan ?? "builder");
   const [paying,    setPaying]    = useState(false);
   const [done,      setDone]      = useState(false);
@@ -109,19 +110,30 @@ export default function UpgradeModal({ onClose, currentPlan, highlightPlan, reas
     }
   }
 
-  /** After paying on the site, pull the plan the SERVER now reports. */
+  /**
+   * After paying on the site, ask the SERVER what plan it now has.
+   *
+   * Queries the row directly rather than reading `profile` from React state: setProfile inside
+   * refreshSession does not update this closure's `profile` variable, so checking it here would
+   * always still see the old plan and wrongly tell a paying customer nothing had come through.
+   */
   async function recheckPlan() {
+    if (!session?.user) return;
     setChecking(true);
     setErrMsg(null);
-    let upgraded = false;
-    for (let i = 0; i < 4 && !upgraded; i++) {
-      await refreshSession();
-      await new Promise((r) => setTimeout(r, 1500));
-      upgraded = (profile?.plan ?? 'free') !== 'free';
+    let plan = 'free';
+    for (let i = 0; i < 4; i++) {
+      try {
+        const { data } = await supabase.from('users').select('plan').eq('id', session.user.id).single();
+        plan = String(data?.plan ?? 'free');
+      } catch { /* network hiccup — try again below */ }
+      if (plan && plan !== 'free' && plan !== 'explore') break;
+      await new Promise((r) => setTimeout(r, 2000));
     }
+    await refreshSession();   // push the confirmed plan into the rest of the app
     setChecking(false);
-    if (upgraded) { setDone(true); setTimeout(onClose, 1500); }
-    else setErrMsg('No payment showing on your account yet. It can take a minute — press Check again, or make sure you paid while signed in with ' + (session?.user.email ?? 'this same email') + '.');
+    if (plan && plan !== 'free' && plan !== 'explore') { setDone(true); setTimeout(onClose, 1500); }
+    else setErrMsg('No payment showing on your account yet — it can take a minute after paying. Press Check again, or make sure you paid while signed in as ' + (session.user.email ?? 'this same email') + '.');
   }
 
   if (done) {
