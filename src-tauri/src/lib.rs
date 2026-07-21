@@ -800,10 +800,12 @@ async fn ai_stream(
                 .post("http://127.0.0.1:8080/v1/chat/completions")
                 .json(&body).send().await
                 .map_err(|e| { let s = format!("Local AI engine not running. Load a model first in the Models tab. ({})", e); emit_error(s.clone()); s })?;
+            let mut sse_buf: Vec<u8> = Vec::new();
             let mut stream = resp.bytes_stream();
             while let Some(chunk) = stream.next().await {
                 let bytes = chunk.map_err(|e| e.to_string())?;
-                for line in String::from_utf8_lossy(&bytes).lines() {
+                for line in sse_take_lines(&mut sse_buf, &bytes) {
+                    let line = line.as_str();
                     if let Some(data) = line.strip_prefix("data: ") {
                         if data.trim() == "[DONE]" { emit_done(); return Ok(()); }
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
@@ -1048,10 +1050,12 @@ async fn ai_stream(
                     emit_error(format!("{} — {}", status, body_text.chars().take(300).collect::<String>()));
                     return Ok(());
                 }
+                let mut sse_buf: Vec<u8> = Vec::new();
                 let mut stream = resp.bytes_stream();
                 while let Some(chunk) = stream.next().await {
                     let bytes = chunk.map_err(|e| { let s = format!("Stream interrupted: {}", e); emit_error(s.clone()); s })?;
-                    for line in String::from_utf8_lossy(&bytes).lines() {
+                    for line in sse_take_lines(&mut sse_buf, &bytes) {
+                        let line = line.as_str();
                         if let Some(data) = line.strip_prefix("data: ") {
                             if data == "[DONE]" { emit_done(); return Ok(()); }
                             if data == "[TRUNCATED]" { continue; }
@@ -3282,6 +3286,32 @@ async fn read_browser_history(query: String, limit: Option<u32>) -> Result<Strin
     }
 }
 
+/// Feed raw bytes from an SSE stream in, get back only the COMPLETE lines.
+///
+/// An HTTP body arrives in arbitrary chunks, so a single `data: {...}` event is routinely split
+/// across two of them. Parsing each chunk on its own (`from_utf8_lossy(&bytes).lines()`) meant the
+/// half-line failed `serde_json::from_str`, was silently discarded by an `if let Ok(..)`, and its
+/// continuation — not starting with `data: ` — was discarded too. The result was replies missing
+/// text from the MIDDLE of sentences ("…tool-switching?ogh Misra"), which read like the model had
+/// glitched when in fact whole events had been dropped on chunk boundaries.
+///
+/// Buffering BYTES rather than a String also fixes the other half: a chunk can split a multi-byte
+/// UTF-8 character, and `from_utf8_lossy` would turn it into U+FFFD. A UTF-8 continuation byte is
+/// never 0x0A, so splitting on newlines here is safe and the character gets reassembled intact.
+fn sse_take_lines(buf: &mut Vec<u8>, bytes: &[u8]) -> Vec<String> {
+    buf.extend_from_slice(bytes);
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    for i in 0..buf.len() {
+        if buf[i] == b'\n' {
+            out.push(String::from_utf8_lossy(&buf[start..i]).trim_end_matches('\r').to_string());
+            start = i + 1;
+        }
+    }
+    if start > 0 { buf.drain(..start); }
+    out
+}
+
 // ── Search the user's own personal folders for a file by name (Web Autopilot) ─────────────────
 // Deliberately restricted to Desktop/Downloads/Documents/Pictures ONLY — the caller never passes
 // an arbitrary root, so this can never become a general filesystem crawler. Bounded by depth,
@@ -3973,10 +4003,12 @@ async fn krew_ai_stream(
                 .post("http://127.0.0.1:8080/v1/chat/completions")
                 .json(&body).send().await
                 .map_err(|e| { let s = format!("Local AI engine not running. Load a model first in the Models tab. ({})", e); emit_error(s.clone()); s })?;
+            let mut sse_buf: Vec<u8> = Vec::new();
             let mut stream = resp.bytes_stream();
             while let Some(chunk) = stream.next().await {
                 let bytes = chunk.map_err(|e| e.to_string())?;
-                for line in String::from_utf8_lossy(&bytes).lines() {
+                for line in sse_take_lines(&mut sse_buf, &bytes) {
+                    let line = line.as_str();
                     if let Some(data) = line.strip_prefix("data: ") {
                         if data.trim() == "[DONE]" { emit_done(); return Ok(()); }
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
@@ -4142,6 +4174,7 @@ async fn krew_ai_stream(
                 let mut chars = 0i64;
                 let mut api_total_tokens: Option<i64> = None; // usageMetadata.totalTokenCount (input + output)
                 let mut stream = resp.bytes_stream();
+                let mut sse_buf: Vec<u8> = Vec::new();
                 'outer_krew: while let Some(chunk) = stream.next().await {
                     // A network hiccup mid-stream must NOT discard the partial answer or drop
                     // the token count on the floor. If a chunk errors, mark the reply truncated,
@@ -4152,7 +4185,8 @@ async fn krew_ai_stream(
                         Ok(b) => b,
                         Err(_) => { emit_truncated(); break 'outer_krew; }
                     };
-                    for line in String::from_utf8_lossy(&bytes).lines() {
+                    for line in sse_take_lines(&mut sse_buf, &bytes) {
+                        let line = line.as_str();
                         if let Some(data) = line.strip_prefix("data: ") {
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
                                 // Capture accurate total token count (input + output) from Gemini metadata
@@ -4226,10 +4260,12 @@ async fn krew_ai_stream(
                     let toks = ((input_chars + extra) / 4).max(1);
                     let _ = app.emit("nivara-tokens", serde_json::json!({ "tokens": toks }));
                 }};
+                let mut sse_buf: Vec<u8> = Vec::new();
                 let mut stream = resp.bytes_stream();
                 while let Some(chunk) = stream.next().await {
                     let bytes = chunk.map_err(|e| { let s = format!("Stream interrupted: {}", e); emit_error(s.clone()); s })?;
-                    for line in String::from_utf8_lossy(&bytes).lines() {
+                    for line in sse_take_lines(&mut sse_buf, &bytes) {
+                        let line = line.as_str();
                         if let Some(data) = line.strip_prefix("data: ") {
                             if data == "[DONE]" { bill(out_chars); emit_done(); return Ok(()); }
                             if data == "[TRUNCATED]" { emit_truncated(); continue; }

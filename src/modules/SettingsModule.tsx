@@ -46,6 +46,7 @@ function saveSettings(s: NvSettings) {
 const WHATS_NEW: { version: string; items: string[] } = {
   version: '1.6.11',
   items: [
+    'Fixed: long AI replies no longer come back with words missing from the middle of sentences. The streaming reader parsed each network packet on its own, so any message split across a packet boundary failed to decode and was silently thrown away — taking a chunk of the answer with it. Text now survives the boundary intact, including accented and non-English characters.',
     'Web Autopilot is much better at unfamiliar forms: Krew now reads every field — its label, whether it is required, and a dropdown’s real options — before filling anything, and can set dropdowns, tick checkboxes and choose radio buttons, which it simply could not do before. Fields labelled the normal way, or with no label at all, are no longer invisible to it.',
     'Skills are now saved as a step-by-step recipe — the site, which fields to fill, what to ask you for, and which step needs your approval — so repeating a task follows what worked last time instead of working the page out again. Krew will not build or run a skill for anything unlawful or abusive.',
     'Fixed: "block Tuesday" and similar now go through the calendar tool, which shows you the event and waits for your approval. Krew was instead driving the Google Calendar website by hand, which left a half-filled form it could never safely save — so nothing was created and you were never asked.',
