@@ -44,8 +44,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.8',
+  version: '1.6.9',
   items: [
+    'Fixed: "Copy message & open chat" now actually opens the chat box. LinkedIn changed that button into a normal link, so clicking it navigated away and the box never appeared — worse, the old check could report success with no box on screen. It now goes straight to the compose page and puts the cursor in the box, so Ctrl+V lands where you expect.',
+    'Reading your LinkedIn messages now considers each conversation in full rather than just the newest message — so it won\'t re-propose a time you already agreed, and won\'t miss a thread where you owe someone something.',
+    'The Info page now shows a usage example for every slash command, documents /linkedin, /verifylinks, /skills and /autopilot, and has a new Web Autopilot section.',
     'Fixed: "check my LinkedIn messages and reply" now actually reads your inbox. It used to get handed to a lead-research agent, which answered about your lead list instead — it now runs the inbox reader directly, drafts a reply per thread from the real conversation, and adds a to-do per pending reply linked to that chat.',
     'Say "send the reply to <name>" and Krew types that draft into their LinkedIn chat box for you to review — it still never presses Send itself.',
     'Fixed: Research reports now render tables properly instead of showing raw "|" rows, and stray ** / * markdown no longer leaks into the text.',

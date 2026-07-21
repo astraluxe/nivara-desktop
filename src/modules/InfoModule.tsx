@@ -11,6 +11,7 @@ const SECTIONS: { id: string; label: string }[] = [
   { id: 'start',      label: 'Getting started' },
   { id: 'krew',       label: 'Krew — your agent team' },
   { id: 'commands',   label: 'Slash commands' },
+  { id: 'autopilot',  label: 'Web Autopilot' },
   { id: 'brain',      label: 'Brain — shared memory' },
   { id: 'todo',       label: 'To-do' },
   { id: 'linkedin',   label: 'Worked example: LinkedIn outreach' },
@@ -70,10 +71,12 @@ function Example({ title, children }: { title: string; children: React.ReactNode
   );
 }
 /** Command reference rows — the command, what it's called, and what it actually does. */
-function CmdTable({ rows }: { rows: [string, string, string][] }) {
+/** A command row. The optional 4th entry is a concrete "type this" example — the fastest way for
+ *  someone to understand what a command actually does is to see one real use of it. */
+function CmdTable({ rows }: { rows: [string, string, string, string?][] }) {
   return (
     <div className="my-3 rounded-xl border border-nv-border overflow-hidden">
-      {rows.map(([cmd, name, desc], i) => (
+      {rows.map(([cmd, name, desc, example], i) => (
         <div
           key={cmd}
           className={`px-3.5 py-2.5 ${i % 2 ? 'bg-nv-surface/40' : ''} ${i ? 'border-t border-nv-border/70' : ''}`}
@@ -83,6 +86,12 @@ function CmdTable({ rows }: { rows: [string, string, string][] }) {
             <span className="text-[12px] font-medium text-nv-text">{name}</span>
           </div>
           <p className="text-[12px] leading-[1.65] text-nv-muted">{desc}</p>
+          {example && (
+            <p className="mt-1.5 text-[11.5px] leading-[1.6] text-nv-faint">
+              <span className="text-nv-muted">Example: </span>
+              <span className="font-mono text-nv-muted">{example}</span>
+            </p>
+          )}
         </div>
       ))}
     </div>
@@ -223,36 +232,41 @@ export default function InfoModule() {
 
           <H3>Finding and preparing leads</H3>
           <CmdTable rows={[
-            ['/findleads', 'Find prospects', 'Researches brand-new leads that fit what you sell — real companies from open sources, not invented names.'],
-            ['/scan', 'Scan LinkedIn connections', 'Opens LinkedIn and reads your existing connections, saving names, headlines and profile links to your Brain. About fifty per run; later runs skip anyone already saved.'],
-            ['/expand', 'Add more leads', 'Grows a list you already have with additional people of the same type, instead of starting a new list.'],
-            ['/enrich', 'Fill contacts', 'Goes through a list and fills in the gaps — missing LinkedIn URLs, phone numbers and email addresses — in a single pass.'],
-            ['/verify', 'Verify LinkedIn', 'Opens every LinkedIn link in a lead list and checks it really belongs to that person. Leaves a field blank rather than guessing.'],
+            ['/findleads', 'Find prospects', 'Researches brand-new leads that fit what you sell — real companies from open sources, not invented names.', 'Find new prospects for my product and add them to Tech leads.md'],
+            ['/scan', 'Scan LinkedIn connections', 'Opens LinkedIn and reads your existing connections, saving names, headlines and profile links to the Brain note “LinkedIn connections”. About fifty per run; later runs skip anyone already saved.', 'Scan my LinkedIn connections — then “scan the next 50” for more'],
+            ['/expand', 'Add more leads', 'Grows a list you already have with additional people of the same type, instead of starting a new list.', 'Add more prospects to Tech leads.md — new people only'],
+            ['/enrich', 'Fill contacts', 'Goes through a list and fills in the gaps — missing LinkedIn URLs, phone numbers and email addresses — in a single pass.', 'Fill in the missing phone and email for the people in Tech leads.md'],
+            ['/verify', 'Verify LinkedIn', 'Opens every LinkedIn link in a lead list and checks it really belongs to that person. Leaves a field blank rather than guessing.', 'Go to Tech leads.md and verify each and every LinkedIn'],
           ]} />
 
-          <H3>Reaching out</H3>
+          <H3>LinkedIn messages and outreach</H3>
           <CmdTable rows={[
-            ['/outreach', 'Send outreach (copilot)', 'Writes a personal message for each saved connection and opens the copilot that walks you through sending them one by one. Skips anyone you have already messaged.'],
-            ['/continue', 'Continue outreach', 'Reopens the outreach copilot exactly where you left off, with everyone’s status intact.'],
-            ['/draft', 'Draft outreach', 'Writes the DMs or emails for a list without opening the sending copilot — useful when you just want the text.'],
-            ['/email', 'Email a list', 'Sends a personalised email to everyone on a list, written individually rather than mail-merged.'],
-            ['/reply', 'Draft a reply', 'Drafts a response to a message or email you paste in.'],
-            ['/inbox', 'Check inbox', 'Reads your Gmail and summarises what actually needs a reply.'],
+            ['/linkedin', 'Check LinkedIn messages', 'Opens your LinkedIn inbox, reads each conversation in full, and drafts a reply only where something is genuinely still outstanding. Add your availability in the same sentence and it will answer proposed times against it. Nothing is ever sent for you.', 'Check my LinkedIn messages — I’m free Wednesday after 1:30 PM IST'],
+            ['—', 'Send a drafted reply', 'After it drafts replies, say this to have it type that reply into the person’s LinkedIn chat box. It stops there — you read it and press Send yourself.', 'Send the reply to Kevin'],
+            ['/outreach', 'Send outreach (copilot)', 'Writes a personal message for each saved connection and opens the copilot that walks you through sending them one by one. Skips anyone you have already messaged.', 'Draft outreach for my LinkedIn connections'],
+            ['/continue', 'Continue outreach', 'Reopens the outreach copilot exactly where you left off, with everyone’s status intact.', '/continue'],
+            ['/verifylinks', 'Fix outreach links', 'Checks every saved profile link in your outreach list and repairs the wrong or missing ones by searching LinkedIn for the right person.', 'Verify and fix the outreach links'],
+            ['/draft', 'Draft outreach', 'Writes the DMs or emails for a list without opening the sending copilot — useful when you just want the text.', 'Write a LinkedIn DM and a short cold email for the people in Tech leads.md'],
+            ['/email', 'Email a list', 'Sends a personalised email to everyone on a list, written individually rather than mail-merged.', 'Email everyone in Tech leads.md a personalised message'],
+            ['/reply', 'Draft a reply', 'Drafts a response to a message or email you paste in.', 'Draft a reply to this: <paste the message>'],
+            ['/inbox', 'Check inbox', 'Reads your Gmail and summarises what actually needs a reply.', 'Check my Gmail inbox and summarise what needs a reply'],
           ]} />
 
           <H3>Making things</H3>
           <CmdTable rows={[
-            ['/deck', 'Make a presentation', 'Builds a slide deck you can edit in place and export as a PDF.'],
-            ['/image', 'Generate an image', 'Creates an image, logo or graphic. Saved to the Pictures folder in your Brain.'],
-            ['/post', 'Write a post', 'Drafts a post for LinkedIn, X or another platform, tailored to that platform’s style.'],
-            ['/summarize', 'Summarise', 'Condenses a page, file or block of text down to what matters.'],
-            ['/automate', 'Build automation', 'Describe a repeating job in words and it builds the automation for you.'],
+            ['/deck', 'Make a presentation', 'Builds a slide deck you can edit in place and export as a PDF.', 'Make a presentation about our Q3 product launch'],
+            ['/image', 'Generate an image', 'Creates an image, logo or graphic. Saved to the Pictures folder in your Brain.', 'Generate an image of a minimal logo for a coffee brand'],
+            ['/post', 'Write a post', 'Drafts a post for LinkedIn, X or another platform, tailored to that platform’s style.', 'Write a LinkedIn post about shipping our first release'],
+            ['/summarize', 'Summarise', 'Condenses a page, file or block of text down to what matters.', 'Summarise this: <paste text, or attach a file>'],
+            ['/automate', 'Build automation', 'Describe a repeating job in words and it builds the automation for you.', 'Build an automation that emails me a summary of my inbox every morning'],
           ]} />
 
           <H3>Research and agents</H3>
           <CmdTable rows={[
-            ['/research', 'Deep research', 'Opens the Research workspace: plans searches, reads your competitors’ websites and writes a full competitive report.'],
-            ['/agents', 'Browse agents', 'Shows every specialist agent so you can switch to one or add another.'],
+            ['/research', 'Deep research', 'Opens the Research workspace: plans searches, reads your competitors’ websites and writes a full competitive report with tables.', 'Research my competitors — I run a local-first AI desktop app in India'],
+            ['/agents', 'Browse agents', 'Shows every specialist agent so you can switch to one or add another.', '/agents'],
+            ['/skills', 'Learned skills', 'Opens the Brain filtered to what Krew has taught itself — each “Skill” note is a website task it worked out once and can now repeat.', '/skills'],
+            ['/autopilot', 'Toggle Web Autopilot', 'Turns Web Autopilot on or off (the same switch as Settings → Advanced). See the Web Autopilot section below for what it changes.', '/autopilot'],
           ]} />
 
           <H3>Opening a part of the app</H3>
@@ -269,6 +283,36 @@ export default function InfoModule() {
             ['/mcp', 'Connect MCP server', 'Add any MCP server by URL and use its tools inside Krew.'],
             ['/settings', 'Settings', 'App preferences, stored on this device.'],
           ]} />
+
+          <H id="autopilot">Web Autopilot — sites we did not build a button for</H>
+          <P>
+            Krew has purpose-built support for LinkedIn, Gmail, Calendar, Notion and the rest. Web
+            Autopilot covers everything else: turn it on and Krew will work through a site it has no
+            specific integration for — reading the page to work out which fields and buttons matter,
+            filling them in, and attaching a file from your computer if the form needs one.
+          </P>
+          <P>
+            It is <span className="text-nv-text">off by default</span>. Turn it on in{' '}
+            <span className="text-nv-text">Settings → Advanced</span>, or just type <K>/autopilot</K>.
+          </P>
+          <Example title="What it looks like">
+            You say <K>Fill in the supplier registration form on example.com with our company details</K>.
+            Krew opens the page, reads it, fills what it can, and stops at anything it does not know —
+            asking you directly rather than guessing. When you answer, it carries on from where it
+            stopped. Before the form is actually submitted it shows you exactly what will happen and
+            waits for you to approve.
+          </Example>
+          <Note>
+            It never submits, sends, pays or deletes anything on its own — those always stop for your
+            approval, whether the task is new or a skill it has run before. Searching your computer for
+            a file is limited to Desktop, Downloads, Documents and Pictures.
+          </Note>
+          <P>
+            Once you approve a task, Krew writes down how it did it as a{' '}
+            <span className="text-nv-text">Skill</span> note in your Brain — the site, which fields
+            mattered, and what to ask you next time. The next similar request reuses that instead of
+            working the page out again. Type <K>/skills</K> to see what it has learned.
+          </P>
 
           <H id="brain">Brain — shared memory</H>
           <P>
@@ -304,6 +348,18 @@ export default function InfoModule() {
             example an outreach campaign with people still to message. These cards survive closing the
             window, deleting the chat and restarting the app, so there is always a way back to unfinished
             work.
+          </P>
+          <P>
+            Krew adds these itself when a request leaves something genuinely outstanding — one per person
+            still waiting on a reply, say, rather than a single vague reminder. Where a task is about a
+            specific page, <span className="text-nv-text">Continue</span> opens that page directly: reading
+            your LinkedIn messages creates one to-do per pending reply, and each one takes you straight to
+            that person’s chat.
+          </P>
+          <P>
+            Krew may also offer a <span className="text-nv-text">Next up</span> card in the chat after
+            finishing something — one obvious follow-on step you can accept with a click, or ignore
+            entirely and type whatever you actually want instead.
           </P>
 
           <H id="linkedin">Worked example: LinkedIn outreach</H>
@@ -342,6 +398,24 @@ export default function InfoModule() {
             LinkedIn is not automated on purpose. Tools that send messages for you put your account at real
             risk of restriction. adris.tech does everything except the final keystroke.
           </Note>
+          <H3>Step 4 — when they reply</H3>
+          <P>
+            Type <K>/linkedin</K>, or just say what you want in your own words. Krew opens your inbox and
+            reads each conversation <span className="text-nv-text">in full</span> — not just the last
+            message — so it can tell the difference between a thread that still needs something from you
+            and one where everything is already settled. It drafts a reply only where something is
+            genuinely outstanding.
+          </P>
+          <Example title="Replying with your availability">
+            Say <K>Check my LinkedIn messages — I’m free Wednesday after 1:30 PM IST</K>. If someone
+            proposed “Mon–Wed, 10am–2pm EST”, the reply answers those actual times against yours and
+            shows both zones, rather than inventing a slot. Each pending reply also becomes a to-do
+            linked straight to that person’s chat.
+          </Example>
+          <P>
+            When you are happy with a draft, say <K>Send the reply to Kevin</K> and it types that message
+            into their chat box — and stops. You read it and press Send yourself.
+          </P>
           <H3>Doing it again next week — and why nobody is messaged twice</H3>
           <P>
             This is what makes the workflow safe to repeat, and it needs nothing from you: no attaching

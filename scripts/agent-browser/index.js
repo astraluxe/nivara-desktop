@@ -394,6 +394,83 @@ async function hideBanner(page) {
 // Poll for auth-wall exit — waits for URL to change away from login page.
 // Used after authwall is detected so the agent browser can auto-recover after user logs in.
 // maxWait should be ≤ 38000 to stay within Rust's 45-second process timeout.
+// Open the LinkedIn compose box for the profile currently loaded in `page`, and return the
+// REAL editable element (or null). Shared by `message` and `typemsg`.
+//
+// Why this is not just "click the Message button": on the current LinkedIn layout that button is
+// an <a href="/messaging/compose/?profileUrn=…&interop=msgOverlay"> — a genuine navigation link.
+// Clicking it navigates away, so the old code's immediate look for an overlay found nothing on the
+// page it was still holding. Worse, its existence check used a comma-selector that included
+// `.msg-overlay-conversation-bubble` — an ANCESTOR wrapper, not an input — so `.count() > 0` could
+// be true with no compose box anywhere, which is exactly how it reported MESSAGE_BOX_OPENED while
+// the user stared at a plain profile page. Verified live: reading the anchor's href and navigating
+// straight to it yields exactly one visible `.msg-form__contenteditable` every time.
+//
+// Returns { box, why } — box is a Playwright locator for the editable, or null with a reason.
+async function openLinkedInComposeBox(page) {
+  // Only the actual editable counts as "the box" — never a wrapper.
+  var EDITABLE = '.msg-form__contenteditable';
+  var FALLBACK = '[contenteditable="true"][role="textbox"]';
+
+  var visibleBox = async function () {
+    for (var i = 0; i < 2; i++) {
+      var sel = i === 0 ? EDITABLE : FALLBACK;
+      try {
+        var loc = page.locator(sel).first();
+        if (await loc.count() > 0 && await loc.isVisible()) return loc;
+      } catch (_) {}
+    }
+    return null;
+  };
+
+  // Already open (e.g. we're on a messaging page already)?
+  var existing = await visibleBox();
+  if (existing) return { box: existing, why: '' };
+
+  // Preferred path — read the compose link off the profile and go straight there.
+  var href = null;
+  try {
+    href = await page.evaluate(function () {
+      var as = document.querySelectorAll('main a[href*="/messaging/compose"], a[href*="/messaging/compose"]');
+      for (var i = 0; i < as.length; i++) {
+        var t = (as[i].innerText || '').trim();
+        if (!t || /^message$/i.test(t)) return as[i].getAttribute('href');
+      }
+      return as.length ? as[0].getAttribute('href') : null;
+    });
+  } catch (_) {}
+
+  if (href) {
+    var full = href.indexOf('http') === 0 ? href : 'https://www.linkedin.com' + href;
+    try { await page.goto(full, { waitUntil: 'domcontentloaded', timeout: 20000 }); } catch (_) {}
+    try { await page.waitForSelector(EDITABLE, { timeout: 9000 }); } catch (_) {}
+    await new Promise(function (r) { setTimeout(r, 600); });
+    var afterNav = await visibleBox();
+    if (afterNav) return { box: afterNav, why: '' };
+  }
+
+  // Fallback for older/alternate layouts where Message really is a JS button. Must be a TRUSTED
+  // Playwright click — a synthetic el.click() inside evaluate() is ignored by LinkedIn's handler.
+  var clicked = false;
+  try {
+    var loc = page.locator('main a, main button', { hasText: /^Message$/ }).first();
+    await loc.scrollIntoViewIfNeeded({ timeout: 3000 });
+    await loc.click({ timeout: 5000 });
+    clicked = true;
+  } catch (_) {}
+  if (!clicked) { try { await page.getByRole('button', { name: /^Message$/ }).first().click({ timeout: 4000 }); clicked = true; } catch (_) {} }
+  if (clicked) {
+    try { await page.waitForSelector(EDITABLE, { timeout: 8000 }); } catch (_) {}
+    await new Promise(function (r) { setTimeout(r, 800); });
+    var afterClick = await visibleBox();
+    if (afterClick) return { box: afterClick, why: '' };
+  }
+
+  return { box: null, why: href || clicked
+    ? 'The chat box did not open (LinkedIn may still be loading, or messaging is restricted for this person).'
+    : 'No Message button on this profile — you may not be connected to them yet.' };
+}
+
 async function pollForLoginCompletion(page, maxWait) {
   var deadline = Date.now() + maxWait;
   while (Date.now() < deadline) {
@@ -1054,7 +1131,10 @@ async function main() {
         // ambiguous in a 1:1 chat).
         var profileEl = document.querySelector('.msg-thread__link-to-profile, a.msg-thread__link-to-profile');
         var profileUrl = profileEl ? (profileEl.getAttribute('href') || '').split('?')[0] : '';
-        return { messages: out.slice(-8), profileUrl: profileUrl };
+        // Keep a decent run of history, not just the tail: deciding whether a thread still needs a
+        // reply means knowing what was already asked, answered and agreed earlier in it — judging
+        // only by who spoke last produces both false "needs a reply" and missed follow-ups.
+        return { messages: out.slice(-20), profileUrl: profileUrl };
       }, target.name).catch(function () { return { messages: [], profileUrl: '' }; });
 
       results.push({ name: target.name, unread: target.unread, url: convo.profileUrl, messages: convo.messages });
@@ -1236,27 +1316,27 @@ async function main() {
     }
     await showBanner(mPage, 'ADRIS opened this chat for you — paste your message (Ctrl+V) and send.');
     try { await mPage.waitForLoadState('networkidle', { timeout: 4000 }); } catch (_) {}
-    await new Promise(function (r) { setTimeout(r, 1500); });
-    // Use a REAL (trusted) Playwright click — a synthetic el.click() inside evaluate() is UNTRUSTED
-    // and LinkedIn's Message handler ignores it (the profile opened but no chat box popped). Target
-    // the in-<main> "Message" link/button whose text is exactly "Message" (never "Message with
-    // Premium"). Verified live: the compose box opens. Then confirm the box is actually present.
-    var composeSel = '.msg-form__contenteditable, [contenteditable="true"][role="textbox"], .msg-overlay-conversation-bubble';
-    var clicked = false;
-    try {
-      var loc = mPage.locator('main a', { hasText: /^Message$/ }).first();
-      await loc.scrollIntoViewIfNeeded({ timeout: 3000 });
-      await loc.click({ timeout: 5000 });
-      clicked = true;
-    } catch (_) {}
-    if (!clicked) { try { await mPage.getByRole('button', { name: /^Message$/ }).first().click({ timeout: 4000 }); clicked = true; } catch (_) {} }
-    if (!clicked) { try { await mPage.locator('a:has-text("Message"), button:has-text("Message")').first().click({ timeout: 4000 }); clicked = true; } catch (_) {} }
-    await new Promise(function (r) { setTimeout(r, 2500); });
-    var boxOpen = 0;
-    try { boxOpen = await mPage.locator(composeSel).count(); } catch (_) {}
-    if (boxOpen > 0) { try { await mPage.locator(composeSel).first().click({ timeout: 2000 }); } catch (_) {} } // focus so the user can paste
-    writeState({ url: mFinal });
-    process.stdout.write(boxOpen > 0 ? 'MESSAGE_BOX_OPENED' : 'PROFILE_OPENED');
+    await new Promise(function (r) { setTimeout(r, 1200); });
+    var opened = await openLinkedInComposeBox(mPage);
+    if (opened.box) {
+      // The whole point of this command is that the user presses Ctrl+V next — so the caret MUST be
+      // inside the box. A click alone was leaving activeElement on <body> (verified live), which
+      // would have pasted into nothing. Click, then force focus + place the caret as a backstop.
+      try { await opened.box.click({ timeout: 2500 }); } catch (_) {}
+      try {
+        await mPage.evaluate(function () {
+          var el = document.querySelector('.msg-form__contenteditable') || document.querySelector('[contenteditable="true"][role="textbox"]');
+          if (!el) return;
+          el.focus();
+          try {
+            var r = document.createRange(); r.selectNodeContents(el); r.collapse(false);
+            var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+          } catch (_) {}
+        });
+      } catch (_) {}
+    }
+    writeState({ url: mPage.url() });
+    process.stdout.write(opened.box ? 'MESSAGE_BOX_OPENED' : 'PROFILE_OPENED ' + opened.why);
     return;
   }
 
@@ -1285,30 +1365,13 @@ async function main() {
     }
     await showBanner(tPage, 'ADRIS drafted a reply here — review it, then press Enter/Send yourself.');
     try { await tPage.waitForLoadState('networkidle', { timeout: 4000 }); } catch (_) {}
-    await new Promise(function (r) { setTimeout(r, 1500); });
-    // IMPORTANT: try the actual editable input FIRST, on its own — `.msg-overlay-conversation-bubble`
-    // is an ANCESTOR wrapper (it contains the whole thread + the input), not itself editable. A
-    // combined comma-selector's `.first()` resolves in DOM order, so it grabbed the wrapper instead
-    // of the input and typed text landed nowhere (verified live — the "typed" text never appeared
-    // in the box). Only fall back to the generic textbox role if the specific input isn't found.
-    var tClicked = false;
-    try {
-      var tLoc = tPage.locator('main a', { hasText: /^Message$/ }).first();
-      await tLoc.scrollIntoViewIfNeeded({ timeout: 3000 });
-      await tLoc.click({ timeout: 5000 });
-      tClicked = true;
-    } catch (_) {}
-    if (!tClicked) { try { await tPage.getByRole('button', { name: /^Message$/ }).first().click({ timeout: 4000 }); tClicked = true; } catch (_) {} }
-    if (!tClicked) { try { await tPage.locator('a:has-text("Message"), button:has-text("Message")').first().click({ timeout: 4000 }); tClicked = true; } catch (_) {} }
-    await new Promise(function (r) { setTimeout(r, 2500); });
-    var tInputBox = tPage.locator('.msg-form__contenteditable').first();
-    var tBoxOpen = await tInputBox.count().catch(function () { return 0; });
-    if (tBoxOpen === 0) {
-      tInputBox = tPage.locator('[contenteditable="true"][role="textbox"]').first();
-      tBoxOpen = await tInputBox.count().catch(function () { return 0; });
-    }
-    writeState({ url: tFinal });
-    if (tBoxOpen === 0) { process.stdout.write('PROFILE_OPENED_NO_BOX Opened the profile but could not find the message compose box (may not be a 1st-degree connection yet). The draft was NOT typed anywhere — nothing was sent.'); return; }
+    await new Promise(function (r) { setTimeout(r, 1200); });
+    // Shared with `message` — see openLinkedInComposeBox for why clicking the Message button alone
+    // is not enough on the current LinkedIn layout, and why the box must be the real editable.
+    var tOpened = await openLinkedInComposeBox(tPage);
+    var tInputBox = tOpened.box;
+    writeState({ url: tPage.url() });
+    if (!tInputBox) { process.stdout.write('PROFILE_OPENED_NO_BOX ' + tOpened.why + ' The draft was NOT typed anywhere — nothing was sent.'); return; }
     var tTyped = false;
     try {
       await tInputBox.click({ timeout: 3000 });

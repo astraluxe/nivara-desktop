@@ -4355,8 +4355,11 @@ The prompt must be production-ready — specific enough for a motion designer to
       const today = new Date();
       const replySys = [
         'You draft LinkedIn replies on behalf of the user, from the REAL conversation text you are given.',
-        'ABSOLUTE RULES:',
-        '- Reply ONLY to threads where the OTHER person sent the most recent message, or where they asked something still unanswered. If the user already sent the last message and nothing is pending, SKIP that thread entirely — do not invent a reason to follow up.',
+        'HOW TO DECIDE — read the WHOLE thread first, never just the last line:',
+        '- Work out where the conversation actually STANDS: what was asked, what was already answered, what was agreed, and what is still open. A thread can need a reply even when the user spoke last (e.g. they promised to send something and never did), and can need NO reply even when the other person spoke last (e.g. they just said "thanks" or "got it" and nothing is outstanding).',
+        '- Never repeat or re-offer something already settled earlier in the thread. If a time was already agreed, do not propose it again — acknowledge or build on it.',
+        '- If nothing is genuinely outstanding, SKIP that thread. Do not invent a reason to follow up.',
+        'WRITING THE REPLY:',
         '- Ground every reply in what was ACTUALLY said in that thread. Never invent a claim, a time, or a commitment nobody made.',
         '- If they proposed times, answer those SPECIFIC times against the user\'s stated availability. If a proposed time does not work, say so plainly and offer one that does. Convert time zones carefully and show both (e.g. "9:00 PM IST / 10:30 AM EDT").',
         '- 40–80 words. Warm, direct, human. First name only. No "I hope this finds you well", no buzzwords, no emojis unless natural.',
@@ -4369,8 +4372,8 @@ The prompt must be production-ready — specific enough for a motion designer to
       const replyUser = [
         `TODAY IS: ${today.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
         guidance ? `\nMY INSTRUCTIONS / AVAILABILITY (use these exactly — they override anything you assume):\n${guidance}` : '',
-        `\nMY REAL LINKEDIN THREADS (most recent messages last in each):\n${threadsText}`,
-        '\nDraft a reply for each thread that genuinely needs one, in the exact format specified.',
+        `\nMY REAL LINKEDIN THREADS (each thread in order, oldest message first, most recent last):\n${threadsText}`,
+        '\nRead each thread in full, work out what is genuinely still outstanding in it, and draft a reply only where one is actually needed — in the exact format specified.',
       ].filter(Boolean).join('\n');
 
       const { text: drafted } = await streamTurnWithRetry([{ role: 'user', content: replyUser }], replySys, () => {});
