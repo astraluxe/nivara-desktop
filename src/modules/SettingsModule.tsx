@@ -44,8 +44,13 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.13',
+  version: '1.6.14',
   items: [
+    'Fixed: using a local model no longer shows “internet disconnected, reconnecting”. A local model runs on your own machine and sends nothing online — that message came from mistaking “the local engine isn’t running” for a dropped connection, and it then retried ten times. It now tells you plainly to check the Models tab.',
+    'When you are partway through your monthly allowance and the task in front of you is writing, rewriting, summarising or sorting, Krew now suggests a local model sized to your actual machine — checking your memory and free disk first, so it never recommends something that will not fit. It stays quiet for anything needing the web, Maps or several steps in a row, because those genuinely need adris.tech and a local model would give you a worse answer.',
+    'Your plan now refreshes the moment you return to the window after paying, and the upgrade screen checks with the server first — so nobody who has already paid is asked to pay again.',
+    'The corner badge can be dragged anywhere and stays where you put it. If a screen it was on is unplugged it returns to a visible position instead of vanishing.',
+    'Importing your own model file is now a paid feature; downloading the built-in models stays free for everyone.',
     'Fixed: outreach no longer rewrites messages that already exist. People who were drafted in an earlier run keep their message and no longer use up the batch, so each run goes to the people who still have none — which is why newly scanned contacts kept waiting.',
     'Outreach messages are signed with your real name instead of “Best, [Your Name]”.',
     'Upgrading opens the checkout in your browser from a clear button, and the plan applies as soon as payment clears.',

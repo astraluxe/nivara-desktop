@@ -1218,6 +1218,7 @@ struct SystemInfo {
     available_ram_gb: f32,
     cpu_count:        usize,
     os_name:          String,
+    free_disk_gb:     f32,
 }
 
 #[tauri::command]
@@ -1231,7 +1232,28 @@ fn get_system_info() -> SystemInfo {
         available_ram_gb: sys.available_memory() as f32 / 1_073_741_824.0,
         cpu_count:        sys.cpus().len(),
         os_name:          System::name().unwrap_or_else(|| "Unknown".to_string()),
+        free_disk_gb:     free_disk_gb(),
     }
+}
+
+/// Free space on the disk holding the user's home directory (where downloaded models land).
+/// Recommending a model without this is how you tell someone with 3 GB free to fetch 9 GB.
+fn free_disk_gb() -> f32 {
+    use sysinfo::Disks;
+    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
+    let disks = Disks::new_with_refreshed_list();
+    let mut best: Option<(usize, u64)> = None;   // (mount-point length, available bytes)
+    for d in disks.list() {
+        let mp = d.mount_point().to_string_lossy().to_string();
+        // The LONGEST mount point that prefixes home is the disk home actually sits on.
+        if !home.is_empty() && home.starts_with(&mp) && best.map_or(true, |(len, _)| mp.len() > len) {
+            best = Some((mp.len(), d.available_space()));
+        }
+    }
+    let bytes = best.map(|(_, b)| b)
+        .or_else(|| disks.list().first().map(|d| d.available_space()))
+        .unwrap_or(0);
+    bytes as f32 / 1_073_741_824.0
 }
 
 // ─── GPU Detection ───────────────────────────────────────────────────────────

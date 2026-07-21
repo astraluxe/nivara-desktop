@@ -32,6 +32,7 @@ import TodoPanel from './TodoPanel';
 import Icon, { type IconName } from '../Icon';
 import { loadSettings } from '../../modules/SettingsModule';
 import { todos, TODO_EVENT, type TodoItem } from '../../lib/todoStore';
+import { classifyTask, recommendLocalModel, shouldSuggestLocal, markLocalAdviceShown } from '../../lib/localModelAdvice';
 
 // Get the freshest Supabase access token right before a model call. A long browser/tool pass can
 // run for minutes and outlive the token captured at render — reusing that stale token 401'd the
@@ -3495,6 +3496,18 @@ const [studioExtracting, setStudioExtracting] = useState(false);
           try { await supabase.auth.refreshSession(); } catch { /* fall through to throw if this fails too */ }
           continue; // retry the same turn with a fresh token (doesn't consume a network-retry attempt)
         }
+        // On LOCAL nothing goes over the internet — the request is to localhost. A failure there
+        // means the engine isn't running or no model is loaded, but the message ("error sending
+        // request for url (http://localhost:…)") matched the network-drop pattern below, so the
+        // app showed "internet disconnected, reconnecting" and retried ten times against a machine
+        // that was never offline. Say what's actually wrong instead.
+        if (mode === 'local') {
+          setReconnecting(null);
+          const engineDown = /sending request|ECONNREFUSED|connection refused|not running|failed to fetch|ENOTFOUND|localhost|127\.0\.0\.1/i.test(msg);
+          throw engineDown
+            ? new Error("Your local model isn't responding. Open the Models tab and check a model is downloaded and loaded. This isn't an internet problem — in Local mode nothing is sent online.")
+            : e;
+        }
         const isTransient = /sending request|connect(ion)?|network|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|failed to fetch|stream interrupted|response stopped/i.test(msg);
         if (!isTransient || stopRef.current || attempt >= MAX_ATTEMPTS) { setReconnecting(null); throw e; }
         // Show the "reconnecting" banner and wait for the connection to return before retrying.
@@ -5240,6 +5253,26 @@ The prompt must be production-ready — specific enough for a motion designer to
     if (mode === 'nivara' && tokenCap !== null && monthlyUsed >= tokenCap) {
       setShowQuotaUpgrade(true);
       return;
+    }
+    // Once someone is a fair way through their allowance, point out when the task in front of them
+    // is one their own machine could do for free. ONLY for tasks local models genuinely handle
+    // well — steering someone onto local for web/Maps/multi-step work would hand them a worse
+    // answer and that would be our fault, not theirs. At most once every few days; never blocks.
+    if (mode === 'nivara' && tokenCap !== null && monthlyUsed >= tokenCap * 0.25 && shouldSuggestLocal()) {
+      const verdict = classifyTask(text);
+      if (verdict.local) {
+        markLocalAdviceShown();
+        (async () => {
+          try {
+            const hw = await invoke<{ total_ram_gb: number; free_disk_gb: number }>('get_system_info');
+            const { pick, reason } = recommendLocalModel(hw);
+            const pct = Math.round((monthlyUsed / tokenCap) * 100);
+            addMsg({ role: 'assistant', content: pick
+              ? `_You've used about ${pct}% of this month's allowance — and this kind of task doesn't need to spend it._\n\n${verdict.why}\n\n**Suggested: ${pick.label}** · ${pick.sizeGb} GB download\n${pick.blurb}\n_${reason}_\n\nOpen **Models** to download it, then choose **Local** next to the message box. Anything that needs the web, Maps, or several steps in a row will still use adris.tech — that genuinely can't run offline.`
+              : `_You've used about ${pct}% of this month's allowance._ ${reason}` });
+          } catch { /* no hardware info — skip the suggestion rather than guess */ }
+        })();
+      }
     }
     // Gate ADVANCED search (browser verify/enrich) by plan. Free/low tiers get a monthly quota so
     // they can't run unlimited browser verification — which is the expensive, abusable part

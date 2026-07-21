@@ -1318,8 +1318,13 @@ export default function ModelsModule() {
               <button onClick={() => setTab('hub')} className="text-[11px] px-4 py-2 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-fast">
                 Browse Model Hub →
               </button>
-              <button onClick={() => setShowImport(true)} className="text-[10px] text-nv-faint hover:text-nv-text transition-fast">
-                or import an existing .gguf file
+              {/* Same paid gate as the other import entry — leaving this one open would make the
+                  restriction meaningless. */}
+              <button
+                onClick={() => (isFreePlan ? setShowUpgrade(true) : setShowImport(true))}
+                className="text-[10px] text-nv-faint hover:text-nv-text transition-fast"
+              >
+                {isFreePlan ? 'or import your own .gguf file (paid plans)' : 'or import an existing .gguf file'}
               </button>
             </div>
           ) : (
@@ -1332,14 +1337,24 @@ export default function ModelsModule() {
                     : ' · Local AI offline — restart the app to try again'
                   }
                 </p>
-                {!showImport && (
+                {/* Bringing in your OWN model file is a paid feature. Downloading the curated
+                    models stays open to everyone — this gates only the outside-file path. */}
+                {!showImport && (isFreePlan ? (
+                  <button
+                    onClick={() => setShowUpgrade(true)}
+                    title="Importing your own model file is available on paid plans"
+                    className="text-[10px] px-2.5 py-1 rounded-lg border border-nv-border text-nv-faint/70 hover:border-accent/40 hover:text-accent transition-fast font-mono"
+                  >
+                    + Import model · Paid
+                  </button>
+                ) : (
                   <button
                     onClick={() => setShowImport(true)}
                     className="text-[10px] px-2.5 py-1 rounded-lg border border-nv-border text-nv-faint hover:border-nv-faint hover:text-nv-text transition-fast font-mono"
                   >
                     + Import model
                   </button>
-                )}
+                ))}
               </div>
               {installed.map(m => {
                 const reg = registry.find(r => r.id === m.id);
