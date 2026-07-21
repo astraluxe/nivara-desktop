@@ -4795,7 +4795,13 @@ The prompt must be production-ready — specific enough for a motion designer to
       // THAT campaign (same Brain note + resume slot) instead of spawning a fresh dated one.
       const attachedTitle = attachedConn.map((f) => f.name).find((n) => /outreach/i.test(n));
       const campaign: OutreachCampaign = {
-        title: attachedTitle || (carryOver && prior ? prior.title : `LinkedIn outreach — ${new Date().toLocaleDateString()}`),
+        // Only inherit the previous campaign's name if that campaign was a REAL multi-person one.
+        // A single-person side errand (replying to one contact, scheduling a call) also saves a
+        // campaign, and its LLM-chosen title — e.g. "Scheduling - Magaranthakannan K" — was then
+        // inherited by the next full run, so a 52-person list ended up filed under one person's
+        // name. A 1-contact prior is never a campaign name worth keeping.
+        title: attachedTitle
+          || (carryOver && prior && prior.contacts.length > 1 ? prior.title : `LinkedIn outreach — ${new Date().toLocaleDateString()}`),
         channel: 'linkedin',
         contacts: [...carriedPrior, ...built],
       };
@@ -6297,11 +6303,23 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
           // "stopped before I had something to show you" when the table is right there.
           const producedLeadTable = after.some((m) => m.role === 'tool_result' && m.content.includes('|') && /\bname\b|\blinkedin\b|\bcompany\b/i.test(m.content));
           if (lastUserIdx >= 0 && !hasOutput) {
+            // These messages used to be written as if EVERY task were a lead-list task ("saved to
+            // your Tech lead list", "where the list stands"), so a calendar or inbox request that
+            // ended without output got answered with something about leads that was simply untrue.
+            // Only mention a table when one was actually produced.
             const fallback = producedLeadTable
-              ? 'Done — the updated list is in the table above and saved to your Tech lead list. Tell me if any rows still need filling and I\'ll take another pass.'
-              : "I couldn't finish that pass just now — nothing was lost. Try again and I'll continue from where the list stands.";
+              ? "Done — the table above has the result. Tell me if anything still needs filling in and I'll take another pass."
+              : "I stopped before I had anything to show you — nothing was saved or sent. Use Continue below to pick this up again.";
             copy.push({ role: 'assistant', content: fallback, streaming: false });
             if (sid) krewDb.saveMessage(sid, 'assistant', fallback).catch(() => {});
+            // Offer a one-click Continue rather than making the user retype the request. Reuses the
+            // next-task card, so it fills the input for review instead of silently re-running —
+            // important when the reason it stopped might repeat.
+            if (!producedLeadTable) {
+              const retry = (copy[lastUserIdx]?.content || '')
+                .split('\n').filter((l) => !/^(\[\[(file|image|ref)\]\]|📎|🖼|🔗)\s/.test(l.trim())).join('\n').trim();
+              if (retry) copy.push({ role: 'next_task', content: '', nextTask: { suggestion: 'Continue where it stopped', prompt: retry } });
+            }
           }
           return copy;
         });

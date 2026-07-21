@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import Icon from '../Icon';
-import { todos, isOverdue, isDueToday, isSameDay, TODO_EVENT, type TodoItem, type TodoPriority } from '../../lib/todoStore';
+import { todos, isOverdue, isDueToday, isSameDay, parseTodoShorthand as parseShorthand, TODO_EVENT, type TodoItem, type TodoPriority } from '../../lib/todoStore';
 
 type Filter = 'all' | 'today' | 'overdue' | 'done';
 type Sort = 'due' | 'priority' | 'created';
@@ -23,30 +23,6 @@ function dueLabel(ms: number): string {
   if (isSameDay(ms, now + 86400000)) return 'tomorrow';
   if (isSameDay(ms, now - 86400000)) return 'yesterday';
   return new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
-}
-
-/**
- * Parse inline shorthand out of the typed text so the common case needs no extra clicks:
- *   "Reply to Sonali !high today"  ->  text "Reply to Sonali", priority high, due today
- * Anything unrecognised is left in the text untouched.
- */
-function parseShorthand(raw: string): { text: string; priority?: TodoPriority; dueAt?: number } {
-  let text = raw;
-  let priority: TodoPriority | undefined;
-  let dueAt: number | undefined;
-
-  const p = text.match(/(?:^|\s)!(high|med|low)\b/i);
-  if (p) { priority = p[1].toLowerCase() as TodoPriority; text = text.replace(p[0], ' '); }
-
-  const startOfDay = (d: Date) => { d.setHours(9, 0, 0, 0); return d.getTime(); };
-  const d = text.match(/(?:^|\s)(today|tomorrow|tmrw)\b/i);
-  if (d) {
-    const when = new Date();
-    if (/tom|tmrw/i.test(d[1])) when.setDate(when.getDate() + 1);
-    dueAt = startOfDay(when);
-    text = text.replace(d[0], ' ');
-  }
-  return { text: text.replace(/\s+/g, ' ').trim(), priority, dueAt };
 }
 
 export default function TodoPanel({ onResume }: { onResume: (item: TodoItem) => void }) {
@@ -229,10 +205,15 @@ export default function TodoPanel({ onResume }: { onResume: (item: TodoItem) => 
                   Continue
                 </button>
               )}
+              {/* Ticking something off never deletes it — it moves to Done and stays there until
+                  the user removes it. So on a done row the ✕ is always visible (it's the only way
+                  to clear that one item); on an open row it stays hover-only to keep things quiet. */}
               <button
                 onClick={() => { todos.remove(t.id); setItems(todos.all()); }}
-                title="Delete"
-                className="text-[11px] text-nv-faint hover:text-red-400 opacity-0 group-hover:opacity-100 transition-fast shrink-0 px-0.5"
+                title={t.done ? 'Remove from Done' : 'Delete'}
+                className={`text-[11px] text-nv-faint hover:text-red-400 transition-fast shrink-0 px-0.5 ${
+                  t.done ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-100'
+                }`}
               >
                 ✕
               </button>

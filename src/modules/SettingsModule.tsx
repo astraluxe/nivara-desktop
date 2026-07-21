@@ -46,6 +46,14 @@ function saveSettings(s: NvSettings) {
 const WHATS_NEW: { version: string; items: string[] } = {
   version: '1.6.10',
   items: [
+    'Fixed: "block Tuesday" and similar now go through the calendar tool, which shows you the event and waits for your approval. Krew was instead driving the Google Calendar website by hand, which left a half-filled form it could never safely save — so nothing was created and you were never asked.',
+    'When a task stops before producing anything, there is now a Continue button — no need to retype the request. The message it leaves also no longer talks about lead lists when the task had nothing to do with leads.',
+    'Fixed: to-dos created by Krew no longer show a literal "!high" in the task name.',
+    'Ticking a to-do off keeps it in Done rather than removing it, and each completed item now has a visible ✕ so you decide when it goes.',
+    'Asking Krew to update your to-do no longer tells you to connect Google Calendar — the to-do list needs no connected account.',
+    'Fixed: text typed into "Your reference note" in the Brain is no longer lost when you close the panel with Escape or the ✕ — it used to save only when you clicked out of the box first.',
+    'Renaming a Brain note now renames any to-do that pointed at it, so the two can\'t drift apart.',
+    'Fixed: replying to one person no longer renames your whole outreach campaign after them. A one-person side errand saves a campaign too, and the next full run was inheriting its name — which is how a 52-person list ended up filed under a single contact.',
     'New: /repair-table. If a saved table ever collapses into one long row, pick the note and this rebuilds it — every row back on its own line, with a count of how many it recovered. Only line breaks are rebuilt; no cell text is changed, and it is safe to run on a note that is already fine.',
     'The Info page now has a "What\'s new" section explaining each recent feature with examples, and every slash command lists a real example of how to use it.',
     'Fixed: the browser no longer closes itself while you are working through outreach. Opening someone\'s chat now holds the window open until you close it — there is a "Close browser" button in the copilot — so a background task finishing can never yank the chat away before you have pasted and sent.',

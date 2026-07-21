@@ -1386,7 +1386,13 @@ This is DIFFERENT from cold outreach above — here the user already has a conve
 - Whenever you propose or confirm a meeting time with someone over LinkedIn, ALSO call save_to_brain with title "Meeting: <their name>" and the person, proposed/confirmed time, and status (proposed / confirmed / needs their reply) in the body. This is what lets you answer "what's still pending with X" correctly in a later session instead of re-reading every thread or re-asking the user — check recall_from_brain for an existing "Meeting: <name>" note before proposing a NEW time so you don't contradict what was already offered.
 ${autopilotSection}
 
+## Changing the user's calendar — use the tool, never the browser
+If gcal_create_event is in your tool list, their Google Calendar is connected and you MUST use it for anything that creates or blocks time — "block Tuesday", "put that meeting in", "hold 2-4pm Friday". Do NOT open calendar.google.com in the browser and fill the form by hand. Driving the web UI means the event is only really created if you also click Save, which is exactly the kind of irreversible click that must never happen without approval — so those runs end with a half-filled form the user never agreed to and nothing actually saved. gcal_create_event shows them the full details and waits for a real approval click, which is both safer AND the only path that reliably works.
+- Blocking a whole day = one all-day-length event (e.g. 09:00–18:00 local, or the span they name). Give it a clear title like "Busy — not available" unless they named one.
+- If Google Calendar is NOT connected, say so in one line and offer to add it to their To-do instead. Do not silently try the browser as a workaround.
+
 ## Keeping the user's To-do panel useful
+create_todo needs NO connected service — it writes to a local panel. Never answer a "add this to my to-do / update my to-do" request by telling the user to connect Google Calendar or anything else; just call create_todo. If they asked you to add meetings you can already see (from a calendar you read, or from what is written in this conversation), you have everything you need — put them in. Only mention connecting something if they explicitly asked you to change their real calendar and gcal_create_event is absent from your tools.
 create_todo is available in every conversation, not just Web Autopilot ones. Use it whenever a request leaves something outstanding in the real world — not for every little step, only things the user actually needs to come back to: a meeting proposed but not yet confirmed, someone waiting on a reply, a task blocked on information only they have, a draft/form sitting somewhere waiting for their review. Create several in one call if several things are pending (e.g. one per person you're mid-conversation with) rather than a single vague item. Set url whenever the to-do is about a specific page so their "Continue" button jumps straight there.
 
 ## Thinking one step ahead
@@ -1763,14 +1769,20 @@ async function executeToolCore(
       else if (parsed && typeof parsed === 'object') items = [parsed];
     } catch { return 'items must be a JSON array, e.g. [{"text":"..."}]. Try again with valid JSON.'; }
     if (!items.length) return 'No to-do items given.';
-    const { todos } = await import('./todoStore');
+    const { todos, parseTodoShorthand } = await import('./todoStore');
     const created: string[] = [];
     for (const raw of items) {
-      const text = String(raw?.text || '').trim();
-      if (!text) continue;
-      const priority = ['high', 'med', 'low'].includes(String(raw?.priority)) ? (String(raw.priority) as 'high' | 'med' | 'low') : undefined;
+      const rawText = String(raw?.text || '').trim();
+      if (!rawText) continue;
+      // Strip "!high"/"today" out of the text — models write the shorthand into the title as well
+      // as passing the argument, and the literal marker was ending up in the task name on screen.
+      const sh = parseTodoShorthand(rawText);
+      const text = sh.text || rawText;
+      const priority = ['high', 'med', 'low'].includes(String(raw?.priority))
+        ? (String(raw.priority) as 'high' | 'med' | 'low')
+        : sh.priority;
       const dueStr = String(raw?.due || '').trim();
-      const dueAt = dueStr && !Number.isNaN(Date.parse(dueStr)) ? Date.parse(dueStr) : undefined;
+      const dueAt = dueStr && !Number.isNaN(Date.parse(dueStr)) ? Date.parse(dueStr) : sh.dueAt;
       const url = String(raw?.url || '').trim() || undefined;
       const item = todos.add(text, { priority, dueAt, url });
       if (item) created.push(text);

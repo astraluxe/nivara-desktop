@@ -65,6 +65,32 @@ export function isDueToday(t: TodoItem, now = Date.now()): boolean {
   return !t.done && t.dueAt !== undefined && isSameDay(t.dueAt, now);
 }
 
+/**
+ * Pull "!high" / "today" shorthand out of a task's text.
+ *
+ * Shared so the AGENT path gets it too, not just the typed one: create_todo receives priority as
+ * its own argument, but a model naturally writes "Meeting with Kevin !high" into the text as well,
+ * and that literal "!high" was being stored and shown as part of the task name.
+ */
+export function parseTodoShorthand(raw: string): { text: string; priority?: TodoPriority; dueAt?: number } {
+  let text = raw;
+  let priority: TodoPriority | undefined;
+  let dueAt: number | undefined;
+
+  const p = text.match(/(?:^|\s)!(high|med|low)\b/i);
+  if (p) { priority = p[1].toLowerCase() as TodoPriority; text = text.replace(p[0], ' '); }
+
+  const startOfDay = (d: Date) => { d.setHours(9, 0, 0, 0); return d.getTime(); };
+  const d = text.match(/(?:^|\s)(today|tomorrow|tmrw)\b/i);
+  if (d) {
+    const when = new Date();
+    if (/tom|tmrw/i.test(d[1])) when.setDate(when.getDate() + 1);
+    dueAt = startOfDay(when);
+    text = text.replace(d[0], ' ');
+  }
+  return { text: text.replace(/\s+/g, ' ').trim(), priority, dueAt };
+}
+
 export const todos = {
   all(): TodoItem[] { return read(); },
 

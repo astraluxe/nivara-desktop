@@ -365,7 +365,14 @@ export default function InfoModule() {
             still waiting on a reply, say, rather than a single vague reminder. Where a task is about a
             specific page, <span className="text-nv-text">Continue</span> opens that page directly: reading
             your LinkedIn messages creates one to-do per pending reply, and each one takes you straight to
-            that person’s chat.
+            that person’s chat. Asking Krew to add something to your to-do never requires connecting any
+            account — the list lives on this computer.
+          </P>
+          <P>
+            Ticking something off <span className="text-nv-text">never deletes it</span>. It moves to the
+            Done tab and stays there, so you keep a record of what you got through. Remove an item for
+            good with the <span className="text-nv-text">✕</span> beside it — always visible on a
+            completed task — or clear the whole Done list at once from the button at the bottom.
           </P>
           <P>
             Krew may also offer a <span className="text-nv-text">Next up</span> card in the chat after
@@ -623,6 +630,18 @@ export default function InfoModule() {
             pasting a message. Work down the list at your own pace and mark each person Sent as you go;
             that is what stops them being drafted again next time.
           </P>
+
+          <H3>Renaming a note keeps its to-do in step</H3>
+          <P>
+            Rename a note in the Brain and anything in your To-do list that pointed at it by name is
+            renamed with it, so you never end up with a to-do referring to a note that no longer
+            exists under that name.
+          </P>
+          <Note>
+            Your reference note is also saved when you close the panel with Escape, the ✕ or by
+            clicking away — not only when you click out of the box first. Text typed there is no
+            longer lost if you close the panel straight after typing.
+          </Note>
 
           <H3>Repairing a broken table</H3>
           <P>

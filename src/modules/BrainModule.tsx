@@ -1,6 +1,7 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { brain, BRAIN_EVENT, nodeToMarkdown, type BrainNode, type BrainNodeKind, type BrainData } from '../lib/knowledgeStore';
+import { todos, type TodoItem } from '../lib/todoStore';
 
 // ─── Kind metadata ────────────────────────────────────────────────────────────
 const KIND_COLOR: Record<BrainNodeKind, string> = {
@@ -892,7 +893,40 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
   // sort/blur was itself a freeze).
   const readOnlyFile = isPdf || isDeck || isImage;
   const skipBodyWrite = readOnlyFile || largeBody;
-  const save = () => brain.updateNode(node.id, { title: title.trim() || 'Untitled', ...(skipBodyWrite ? {} : { body: readBody() }), ref, kind });
+  const save = () => {
+    const newTitle = title.trim() || 'Untitled';
+    brain.updateNode(node.id, { title: newTitle, ...(skipBodyWrite ? {} : { body: readBody() }), ref, kind });
+    // Renaming a note should carry through to anything pointing AT it by name — otherwise the
+    // To-do panel keeps showing (and resuming) the old title, which then looks like a second,
+    // phantom piece of work.
+    if (newTitle !== node.title) {
+      try {
+        for (const t of todos.all()) {
+          const patch: Partial<TodoItem> = {};
+          if (t.resume?.label === node.title) patch.resume = { ...t.resume, label: newTitle };
+          if (t.text.includes(node.title)) patch.text = t.text.split(node.title).join(newTitle);
+          if (Object.keys(patch).length) todos.update(t.id, patch);
+        }
+      } catch { /* to-do sync is best-effort — never block the rename itself */ }
+    }
+  };
+  // Flush on unmount. `ref`/title/kind only saved on blur, so closing the panel with Escape, the ✕,
+  // or a backdrop click could unmount before blur ever fired — losing whatever had just been typed
+  // into "Your reference note". A ref holds the latest values so this cleanup (which runs once,
+  // with the mount-time closure) still writes what is actually on screen.
+  const latest = useRef({ title, ref, kind });
+  latest.current = { title, ref, kind };
+  useEffect(() => () => {
+    const l = latest.current;
+    const newTitle = l.title.trim() || 'Untitled';
+    // Only write when something actually changed — otherwise merely opening and closing a note to
+    // read it would bump its updatedAt and reshuffle every "recently used" list in the app.
+    if (newTitle === node.title && l.ref === (node.ref ?? '') && l.kind === node.kind) return;
+    try {
+      brain.updateNode(node.id, { title: newTitle, ref: l.ref, kind: l.kind });
+    } catch { /* closing anyway */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const afterEdit = () => { enhanceTables(); save(); };
   // Formatting buttons — the user clicks these instead of typing markdown symbols.
   const exec = (cmd: string, val?: string) => { document.execCommand(cmd, false, val); editorRef.current?.focus(); save(); };
