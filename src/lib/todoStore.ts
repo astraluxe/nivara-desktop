@@ -24,7 +24,10 @@ export interface TodoItem {
   remindAt?: number;
   remindedAt?: number;
   /** Set on app-generated resume cards; clicking one runs this action. */
-  resume?: { kind: 'outreach' | 'coder' | 'module'; label: string; target?: string };
+  /** `prompt` carries the exact instruction to hand back to Arjun — used for the real-world debt
+   *  behind a message (the deck that was promised, the doc still owed) so Continue picks the work
+   *  straight back up instead of only navigating somewhere. */
+  resume?: { kind: 'outreach' | 'coder' | 'module' | 'prompt'; label: string; target?: string; prompt?: string };
   /** Stable key so a resume card updates in place instead of piling up duplicates. */
   sourceKey?: string;
   /** External link this to-do is about (e.g. the LinkedIn chat for a confirmed meeting). If set,

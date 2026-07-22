@@ -7,7 +7,7 @@ import type { Node, Edge } from '@xyflow/react';
 import { krewDb, credentialStore, krewMemoryDb, type KrewMemory } from '../../lib/krewDb';
 import { listMcpServers, mcpToolDefs } from '../../lib/krewMcp';
 import { brain as brainStore, nodeToMarkdown } from '../../lib/knowledgeStore';
-import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, LEAD_TOOLS, getAutopilotTools, buildKrewSystemPrompt, executeTool, needsCompression, resetBrowserRunState, closeAgentBrowserIfActive, markBrowserPrewarmed, requestLeadStop, resetLeadStop, isLeadStopRequested, KREW_PROFILE_KEY, type ToolDef } from '../../lib/krewTools';
+import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, LEAD_TOOLS, getAutopilotTools, buildKrewSystemPrompt, executeTool, needsCompression, resetBrowserRunState, closeAgentBrowserIfActive, setAgentBrowserHold, markBrowserPrewarmed, requestLeadStop, resetLeadStop, isLeadStopRequested, KREW_PROFILE_KEY, type ToolDef } from '../../lib/krewTools';
 import { TaskProgress, type TaskPhase } from './TaskProgress';
 import { runParallelResearch } from '../../lib/researchSources';
 import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, type KrewAgent } from '../../lib/krewAgents';
@@ -1012,6 +1012,12 @@ function EmailCard({ content, recipient }: { content: string; recipient?: string
   const subject = subIdx >= 0 ? lines[subIdx].replace(/^Subject:\s*/, '') : '';
   const body    = lines.filter((_, i) => i !== subIdx).join('\n').replace(/^\n+/, '');
 
+  // A draft containing a fill-in-the-blank marker is NOT sendable. The model is told not to write
+  // these, but it sometimes does anyway ("...source that data through [source]"), and the reply
+  // button is one click from putting that in front of a real prospect. Detect it and refuse.
+  // {name}-style merge fields are excluded: bulk outreach fills those in deliberately.
+  const placeholder = body.match(/\[[^\]\n]{1,40}\]|<[a-z][^>\n]{0,40}>|_{3,}/i)?.[0] ?? '';
+
   return (
     <div className="my-2 rounded-xl border border-nv-border overflow-hidden">
       <div className="flex items-center justify-between px-3 py-2 bg-nv-surface border-b border-nv-border">
@@ -1029,7 +1035,12 @@ function EmailCard({ content, recipient }: { content: string; recipient?: string
           >{copied ? '✓' : 'Copy'}</button>
           {/* One click instead of typing "send the reply to <name>" — opens their LinkedIn chat and
               types this draft into the box. It still never sends; the user presses Enter. */}
-          {recipient && (
+          {recipient && (placeholder ? (
+            <span
+              title={`This draft still contains ${placeholder} — fill that in before sending.`}
+              className="text-[10px] font-mono px-2 py-0.5 rounded border border-nv-bad/40 text-nv-bad bg-nv-bad/10 cursor-help"
+            >Fill in {placeholder} first</span>
+          ) : (
             <button
               onClick={() => {
                 setSending(true);
@@ -1039,7 +1050,7 @@ function EmailCard({ content, recipient }: { content: string; recipient?: string
               title={`Open ${recipient}'s LinkedIn chat with this reply typed in — you still press send`}
               className="text-[10px] font-mono px-2 py-0.5 rounded border border-accent/40 text-accent bg-accent/10 hover:bg-accent/20 transition-fast"
             >{sending ? 'Opening…' : 'Reply on LinkedIn'}</button>
-          )}
+          ))}
         </div>
       </div>
       <div className="px-3 py-3 bg-nv-bg">
@@ -4281,6 +4292,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     addMsg({ role: 'user', content: shown + (linkTo && userText ? `\n[[file]] ${linkTo}` : '') });
     if (sid) krewDb.saveMessage(sid, 'user', shown).catch(() => {});
     addMsg({ role: 'assistant', content: 'Opening your LinkedIn connections and reading the list…', streaming: true });
+    setAgentBrowserHold(false);   // a previous reply may still be holding the window open
     setBusy(true); setBrowserActive(true);
     const unlisten = await listen('agent-progress', (e) => {
       const t = (e.payload as { text?: string } | undefined)?.text;
@@ -4374,6 +4386,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     addMsg({ role: 'user', content: userText || 'Check my LinkedIn messages and draft replies' });
     if (sid) krewDb.saveMessage(sid, 'user', userText || 'Check my LinkedIn messages and draft replies').catch(() => {});
     addMsg({ role: 'assistant', content: 'Opening LinkedIn and reading your messages…', streaming: true });
+    setAgentBrowserHold(false);   // a previous reply may still be holding the window open
     setBusy(true); setBrowserActive(true);
     const unlisten = await listen('agent-progress', (e) => {
       const t = (e.payload as { text?: string } | undefined)?.text;
@@ -4475,6 +4488,7 @@ The prompt must be production-ready — specific enough for a motion designer to
         'NEVER INVENT FACTS ABOUT THE USER\'S BUSINESS — this is the most important rule:',
         '- You may state a fact about the user\'s product, pricing, data sources, customers or roadmap ONLY if it appears in WHAT I KNOW ABOUT MY BUSINESS below (their Krew profile and their own Brain notes), or was said in that thread. Those notes are the user\'s own documentation — use them freely and specifically; that is what they are there for.',
         '- If a good reply needs a fact you do not have, DO NOT guess it and do not write a confident-sounding sentence around it. Write the reply so it stays honest without that fact, and record what you need on the NEEDS line so the user can fill it in before sending.',
+        '- NEVER write a fill-in-the-blank placeholder such as [source], [X], <your answer here> or "___". The user reads these drafts quickly and one click sends them; a bracket left in the text goes out to a real prospect. If you cannot state the thing, RESTRUCTURE the sentence so it is not needed — ask them a question back, or say you will follow up with specifics — and put the missing fact on the NEEDS line instead.',
         '- Inventing a plausible-sounding answer is the worst possible outcome: the user sends it to a real prospect as though it were true.',
         'WRITING THE REPLY:',
         '- Ground every reply in what was ACTUALLY said in that thread. Never invent a claim, a time, or a commitment nobody made.',
@@ -4530,13 +4544,16 @@ The prompt must be production-ready — specific enough for a motion designer to
       /** Turn the model's ACTION line into the ONE thing to do next, naming the one command that
        *  does it. Deliberately a suggestion, not an auto-run: firing the deck builder off the back
        *  of every inbox scan is exactly the scattergun behaviour that makes Krew feel random. */
-      const actionHint = (a: string, who: string): { label: string; todo: string } | null => {
+      const actionHint = (a: string, who: string): { label: string; todo: string; prompt?: string } | null => {
         const m = a.match(/^(deck|doc|schedule|answer)\s*:\s*(.+)$/i);
         if (!m) return null;
         const kind = m[1].toLowerCase();
         const what = m[2].trim().replace(/\.$/, '');
-        if (kind === 'deck')     return { label: `**You owe ${who} a deck** — ${what}. Say **"make a deck on ${what}"** and Slade builds it.`, todo: `Send ${who} a deck: ${what}` };
-        if (kind === 'doc')      return { label: `**You owe ${who} a document** — ${what}. Say **"draft ${what} for ${who}"**.`, todo: `Send ${who}: ${what}` };
+        // `prompt` is what Continue hands back to Arjun, so the promised work is actually resumable
+        // rather than just described. Only for things Krew can genuinely do on its own — a fact
+        // only the user knows is deliberately left without one.
+        if (kind === 'deck')     return { label: `**You owe ${who} a deck** — ${what}. Say **"make a deck on ${what}"** and Slade builds it.`, todo: `Send ${who} a deck: ${what}`, prompt: `Make a deck on ${what} — it's for ${who}, who I'm talking to on LinkedIn.` };
+        if (kind === 'doc')      return { label: `**You owe ${who} a document** — ${what}. Say **"draft ${what} for ${who}"**.`, todo: `Send ${who}: ${what}`, prompt: `Draft ${what} for ${who}, who I'm talking to on LinkedIn.` };
         if (kind === 'schedule') return { label: `**Needs a time** — ${what}. Reply with a slot, then say **"add it to my calendar"**.`, todo: `Confirm a time with ${who}: ${what}` };
         return { label: `**Only you can answer this** — ${what}.`, todo: `Answer ${who}: ${what}` };
       };
@@ -4587,7 +4604,14 @@ The prompt must be production-ready — specific enough for a motion designer to
           // gets forgotten once the chat is closed.
           const hint = actionHint(p.action, p.name);
           if (hint) {
-            todos.upsertResume(`li-action:${p.name.toLowerCase()}`, hint.todo, undefined, { priority: 'high', url });
+            todos.upsertResume(
+              `li-action:${p.name.toLowerCase()}`,
+              hint.todo,
+              hint.prompt ? { kind: 'prompt', label: 'Build it', prompt: hint.prompt } : undefined,
+              // Only carry the LinkedIn url when there is no work to resume — otherwise Continue
+              // opens their profile instead of doing the thing that was promised.
+              hint.prompt ? { priority: 'high' } : { priority: 'high', url },
+            );
           }
         }
       } catch { /* to-dos optional */ }
@@ -4706,11 +4730,17 @@ The prompt must be production-ready — specific enough for a motion designer to
     }
     addMsg({ role: 'user', content: `Send the reply to ${name}` });
     addMsg({ role: 'assistant', content: `Opening ${name}'s chat and typing the reply…`, streaming: true });
+    setAgentBrowserHold(false);   // a previous reply may still be holding the window open
     setBusy(true); setBrowserActive(true);
     try {
       const res = await executeTool('draft_linkedin_reply', { profile_url: url, message: reply }, creds, requestTerminalApproval, agent.key, user?.id ?? '', `${sidRef.current ?? 'main'}-lisend`);
+      // HOLD the window open. The finally below closes the agent browser, which meant we typed the
+      // reply, told the user to go and press Enter, and then shut the window in their face before
+      // they could. The outreach copilot already claims this hold for the same reason; this path
+      // simply never did. Released again the next time a flow needs the browser.
+      if (res.includes('Drafted the reply')) setAgentBrowserHold(true);
       const done = res.includes('Drafted the reply')
-        ? `Typed the reply into ${name}'s LinkedIn chat — **it is not sent**. Review it in the browser window and press Enter (or click Send) yourself.`
+        ? `Typed the reply into ${name}'s LinkedIn chat — **it is not sent**. Review it in the browser window and press Enter (or click Send) yourself. I'll leave that window open — close it when you're done.`
         : res;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: done, streaming: false }; return c; });
       if (sidRef.current) krewDb.saveMessage(sidRef.current, 'assistant', done).catch(() => {});
@@ -5095,6 +5125,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     }
 
     addMsg({ role: 'assistant', content: `Checking ${contacts.length} saved link${contacts.length === 1 ? '' : 's'} — ${todo.length} need a correct profile URL. Finding each on LinkedIn (opening the ADRIS browser)…`, streaming: true });
+    setAgentBrowserHold(false);   // a previous reply may still be holding the window open
     setBusy(true); setBrowserActive(true);
     const nameNorm = (s: string) => (s || '').toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
     let fixed = 0; const failed: string[] = []; let signInHit = false;
@@ -5181,9 +5212,24 @@ The prompt must be production-ready — specific enough for a motion designer to
    * Click "Continue" on a To-do resume card. Outreach reopens the saved copilot exactly where it
    * was left (the campaign carries per-contact status); anything else navigates to its module.
    */
+  /** Instruction staged by a "Continue" on a to-do, fired once the input box actually holds it. */
+  const pendingSendRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (pendingSendRef.current === null) return;
+    if (input !== pendingSendRef.current || busy) return;
+    pendingSendRef.current = null;
+    void send();
+  }, [input, busy]);
+
   function resumeTodo(item: TodoItem) {
     const r = item.resume;
     if (!r) return;
+    // Hand the outstanding job straight back to Arjun, who routes it to the one agent that does it
+    // (a deck goes to Slade). This is what makes "you owe Deep a breakdown" something the boss can
+    // actually pick up later, rather than a note the user has to re-explain from scratch.
+    // send() reads the input box rather than taking an argument, and setInput is async, so the
+    // instruction is staged and fired by the effect below once React has applied it.
+    if (r.kind === 'prompt' && r.prompt) { pendingSendRef.current = r.prompt; setInput(r.prompt); return; }
     if (r.kind === 'outreach') {
       const saved = loadResumableCampaign() || loadSavedCampaign();
       if (saved) { setOutreachCampaign(saved); return; }
