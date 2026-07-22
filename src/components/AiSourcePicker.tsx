@@ -78,6 +78,30 @@ export default function AiSourcePicker({ compact = false }: { compact?: boolean 
 
       <p className="text-[11px] text-nv-muted leading-relaxed mt-2">{active.blurb}</p>
 
+      {/* "Your own key" is the cheapest option for most people, but only if they have a key — and
+          the usual reaction is that getting one means a paid account. NVIDIA hand out free API
+          credits, so point straight at it rather than leaving the option greyed out with nothing
+          to do about it. */}
+      {pref.mode === 'own_key' && (avail?.byokProviders.length ?? 0) === 0 && (
+        <div className="mt-2 rounded-lg border border-accent/30 bg-accent/5 px-2.5 py-2">
+          <p className="text-[10.5px] text-nv-text font-medium">No key connected yet — get one free</p>
+          <ol className="text-[10px] text-nv-muted leading-relaxed mt-1 ml-3.5 list-decimal space-y-0.5">
+            <li>Open build.nvidia.com and sign in (free account).</li>
+            <li>Pick any model, then press <span className="text-nv-text">Get API Key</span>.</li>
+            <li>Copy the key and paste it into Connect Apps → NVIDIA.</li>
+          </ol>
+          <button
+            onClick={() => {
+              // Same pattern used elsewhere: system browser, with a web fallback.
+              import('@tauri-apps/plugin-shell')
+                .then(({ open }) => open('https://build.nvidia.com/'))
+                .catch(() => window.open('https://build.nvidia.com/', '_blank'));
+            }}
+            className="mt-1.5 text-[10px] px-2 py-0.5 rounded-md border border-accent/50 text-accent hover:bg-accent/10 transition-fast"
+          >Open build.nvidia.com</button>
+        </div>
+      )}
+
       {/* Which key / which model — only when that mode is selected and there is a real choice. */}
       {pref.mode === 'own_key' && (avail?.byokProviders.length ?? 0) > 1 && (
         <div className="flex items-center gap-1.5 mt-2">
