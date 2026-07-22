@@ -4504,7 +4504,8 @@ The prompt must be production-ready — specific enough for a motion designer to
         '- Ground every reply in what was ACTUALLY said in that thread. Never invent a claim, a time, or a commitment nobody made.',
         '- If they proposed times, answer those SPECIFIC times against the user\'s stated availability. If a proposed time does not work, say so plainly and offer one that does. Convert time zones carefully and show both (e.g. "9:00 PM IST / 10:30 AM EDT").',
         '- 40–80 words. Warm, direct, human. First name only. No "I hope this finds you well", no buzzwords, no emojis unless natural.',
-        '- NEVER PROMISE SOMETHING THE REPLY ITSELF DOES NOT DELIVER. Do not write "I\'ll send a calendar invite", "with a meeting link included", "I\'ll attach the deck", "I\'ll share the doc" as if it were already happening — nothing is sent automatically, and a promise made here that nobody keeps costs the user the meeting. Either state the plain fact ("Tuesday 2pm IST works — I\'ll get the invite over to you") AND record it on the ACTION line so it actually gets done, or do not mention it at all. Never say a link is attached; you cannot attach anything.',
+        '- NEVER CLAIM A LINK, FILE OR ATTACHMENT. You cannot create a video-call link and cannot attach anything, so the words "with the meeting link included", "link attached", "I\'ve attached", "please find enclosed" are always false. Banned outright — writing them sends the other person looking for something that does not exist.',
+        '- A promise is only allowed if the ACTION line makes it happen. You may write "I\'ll get the invite across to you" ONLY when you also put `invite: <day, time, timezone>` on the ACTION line — that is what actually creates the event. Same for a deck or a document: promise it only with the matching ACTION line. If you are not recording the action, do not mention the thing at all. An unrecorded promise is one nobody keeps, and it costs the user the meeting.',
         'THE ACTION LINE — what the user must actually DO, beyond sending words. Exactly ONE per thread, the single most important one:',
         '- deck: <topic> — they promised or now owe a deck/breakdown/overview/presentation. Use this when the reply says something will be sent.',
         '- doc: <what> — a written document, proposal or pricing sheet is owed.',
@@ -4614,7 +4615,7 @@ The prompt must be production-ready — specific enough for a motion designer to
           todos.upsertResume(
             `li-reply:${p.name.toLowerCase()}`,
             `Reply to ${p.name} on LinkedIn${p.why ? ` — ${p.why}` : ''}`,
-            { kind: 'prompt', label: 'Open chat & type it', prompt: `Send the reply to ${p.name} on LinkedIn — open their chat and type this message in for me to review and send:\n\n${p.reply}` },
+            { kind: 'li-reply', label: 'Open chat & type it', target: p.name },
             { priority: 'high', url },
           );
           // The real-world debt behind the reply — the deck that was promised, the time still to be
@@ -4716,7 +4717,11 @@ The prompt must be production-ready — specific enough for a motion designer to
     return () => window.removeEventListener(LI_REPLY_EVENT, onReply);
   });
 
-  async function runSendLinkedInReply(who: string) {
+  /** `knownUrl` is the profile URL read straight off the thread when the reply was drafted. Without
+   *  it this fell back to the scanned-connections list only, so pressing Continue on a reply to a
+   *  person the user had never run /scan over said "run /scan once" — even though the thread it was
+   *  drafted from had handed us their exact profile link. */
+  async function runSendLinkedInReply(who: string, knownUrl = '') {
     if (busy) return;
     const target = who.trim().toLowerCase();
     // Find the most recent drafted reply for this person in the visible conversation.
@@ -4735,13 +4740,16 @@ The prompt must be production-ready — specific enough for a motion designer to
       addMsg({ role: 'assistant', content: `I don't have a drafted reply for "${who}" in this chat yet. Ask me to check your LinkedIn messages first, then I'll draft one.` });
       return;
     }
-    // The profile URL comes from the saved connections list — never a guessed slug.
-    let url = '';
-    try {
-      const conns: { name?: string; url?: string }[] = JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
-      url = conns.find((c) => (c.name || '').toLowerCase() === name.toLowerCase())?.url
-        || conns.find((c) => (c.name || '').toLowerCase().includes(target))?.url || '';
-    } catch { /* ignore */ }
+    // The profile URL: the one captured from the thread wins, else the saved connections list —
+    // never a guessed slug.
+    let url = /linkedin\.com\/in\//i.test(knownUrl) ? knownUrl : '';
+    if (!url) {
+      try {
+        const conns: { name?: string; url?: string }[] = JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
+        url = conns.find((c) => (c.name || '').toLowerCase() === name.toLowerCase())?.url
+          || conns.find((c) => (c.name || '').toLowerCase().includes(target))?.url || '';
+      } catch { /* connections list optional */ }
+    }
     if (!url) {
       addMsg({ role: 'assistant', content: `I have the draft for ${name}, but not their profile link — run **/scan** once so I know their LinkedIn URL, then ask again. Here's the draft to paste manually:\n\n\`\`\`email ${name}\n${reply}\n\`\`\`` });
       return;
@@ -5248,6 +5256,8 @@ The prompt must be production-ready — specific enough for a motion designer to
     // send() reads the input box rather than taking an argument, and setInput is async, so the
     // instruction is staged and fired by the effect below once React has applied it.
     if (r.kind === 'prompt' && r.prompt) { pendingSendRef.current = r.prompt; setInput(r.prompt); return; }
+    // Direct action — no round-trip through the chat router. See the note on TodoItem.resume.
+    if (r.kind === 'li-reply' && r.target) { void runSendLinkedInReply(r.target, item.url ?? ''); return; }
     if (r.kind === 'outreach') {
       const saved = loadResumableCampaign() || loadSavedCampaign();
       if (saved) { setOutreachCampaign(saved); return; }
@@ -5428,17 +5438,32 @@ The prompt must be production-ready — specific enough for a motion designer to
     // "Send/type the reply to <name>" — types a reply already drafted in this chat into that
     // person's LinkedIn chat box (never sends). Kept ABOVE the inbox-read route so asking to send
     // a reply doesn't re-read the whole inbox instead.
-    const sendReplyMatch = text.match(/^\s*(?:send|type|paste|put)\s+(?:the\s+|that\s+|my\s+)?(?:reply|message|draft|response)\s+(?:to|for)\s+(.+?)\s*$/i);
+    // Matched against the FIRST LINE only. The old pattern anchored on `$` with no `m` flag, so a
+    // multi-line instruction ("send the reply to X — here is the message:\n\n<text>") could not
+    // match at all, fell through, and was picked up by the inbox route below — which re-read the
+    // entire inbox and re-drafted every thread instead of sending the one reply.
+    const firstLine = text.split('\n')[0].trim();
+    const sendReplyMatch = firstLine.match(/^\s*(?:send|type|paste|put)\s+(?:the\s+|that\s+|my\s+)?(?:reply|message|draft|response)\s+(?:to|for)\s+(.+?)\s*$/i);
     if (sendReplyMatch) {
       setInput('');
-      runSendLinkedInReply(sendReplyMatch[1].replace(/\bon linkedin\b|['"]/gi, '').trim());
+      // Trim anything after the name: "Keshav Sharma on LinkedIn — open their chat and…" is the
+      // person plus instructions, and only the person is the lookup key.
+      const who = sendReplyMatch[1]
+        .split(/\s+[—–-]\s+|\s*[:,]\s*/)[0]
+        .replace(/\bon linkedin\b|['"]/gi, '')
+        .trim();
+      runSendLinkedInReply(who);
       return;
     }
     // Deterministic LinkedIn INBOX read + reply drafting. Requires an explicit LinkedIn mention AND
     // a message/inbox word, so it can never swallow a connections scan or an outreach draft.
     // This exists because routing it through the boss produced a lead-list answer to an inbox
     // question — see runLinkedInMessages for the full reasoning.
+    // Belt-and-braces after the send-reply route above: anything that OPENS by telling us to send
+    // or type a specific reply is never a request to re-read the inbox, however many inbox words
+    // it happens to contain further down.
     if (isDirectCommand
+        && !/^\s*(?:send|type|paste|put)\b/i.test(text)
         && /\blinked\s?in\b/i.test(text)
         && /\b(messages?|inbox|dms?|replies|reply|responded|replied)\b/i.test(text)
         && /\b(check|read|see|look|any|go to|open|reply|replies|respond|answer|draft|new)\b/i.test(text)

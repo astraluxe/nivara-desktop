@@ -27,7 +27,12 @@ export interface TodoItem {
   /** `prompt` carries the exact instruction to hand back to Arjun — used for the real-world debt
    *  behind a message (the deck that was promised, the doc still owed) so Continue picks the work
    *  straight back up instead of only navigating somewhere. */
-  resume?: { kind: 'outreach' | 'coder' | 'module' | 'prompt'; label: string; target?: string; prompt?: string };
+  /** `li-reply` types an already-drafted LinkedIn reply into that person's chat (target = their
+   *  name). It is a DIRECT action rather than a `prompt`, because handing "send the reply to X"
+   *  back through the chat router meant it had to be re-recognised as English — and a multi-line
+   *  instruction failed that match and was swallowed by the inbox-scan route instead, re-reading
+   *  the whole inbox rather than sending the one reply. A known action should never be re-parsed. */
+  resume?: { kind: 'outreach' | 'coder' | 'module' | 'prompt' | 'li-reply'; label: string; target?: string; prompt?: string };
   /** Stable key so a resume card updates in place instead of piling up duplicates. */
   sourceKey?: string;
   /** External link this to-do is about (e.g. the LinkedIn chat for a confirmed meeting). If set,
