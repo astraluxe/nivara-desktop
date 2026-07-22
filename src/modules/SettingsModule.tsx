@@ -44,8 +44,12 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.19',
+  version: '1.6.20',
   items: [
+    'Fixed: "Check for updates" said to check your connection when the connection was fine — and an update was in fact waiting. The updater failing on its own is not proof the network is down, so it now falls back to reading the release directly before blaming anything.',
+    'What’s new is no longer a wall of text in Settings. You get a one-line summary and a "Read the details" button that opens the full list on its own screen.',
+    'Chats can be renamed — double-click a chat in the sidebar, or use the pencil — and pinned to the top with the small square, so the ones that matter stay findable.',
+    'The local-model suggestion now appears the first time it is relevant instead of waiting until you had spent a quarter of your monthly allowance — on Solo that meant a million tokens, so almost nobody ever saw it.',
     'Fixed: a long request that merely MENTIONED LinkedIn was treated as a command to go and read your LinkedIn. Asking for a slide deck whose slides happened to mention LinkedIn and "stages a reply" opened a browser instead of writing the deck. Shortcuts like this now only fire on short, direct instructions — anything that looks like a brief or a document goes to Arjun, who reads the whole thing first. Requests to write a deck, blog, article or report are never mistaken for inbox commands.',
     'The suggestion to download a local model no longer appears in the middle of your chat. It shows as a dismissible notification at the top of the window with an "Open Models" button, so it cannot bury the answer you were reading.',
     'Arjun now works out what a LinkedIn conversation actually requires, not just what to say back. When someone accepts something you offered — a “sure” after you promised a breakdown — he treats delivering that as the real outstanding task, names the one thing to do next, and puts it on your To-do list alongside the reply.',
@@ -132,6 +136,7 @@ export default function SettingsModule() {
   const [settings, setSettings] = useState<NvSettings>(loadSettings);
   const [appVersion, setAppVersion]   = useState<string>('');
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('idle');
+  const [showWhatsNew, setShowWhatsNew] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<{ version?: string; body?: string; current?: string; propagating?: boolean }>({});
   const [updateErr, setUpdateErr] = useState('');
   const [updatePct, setUpdatePct] = useState(0);
@@ -180,8 +185,38 @@ export default function SettingsModule() {
         setUpdateStatus('latest');
       }
     } catch (e) {
-      console.error('check_for_update failed:', e);
-      setUpdateStatus('error');
+      // The Tauri updater failing is NOT proof the network is down — it fails on its own for
+      // signature/endpoint reasons too, and telling someone to check a working connection is both
+      // wrong and unfixable from their side. The startup check already falls back to reading
+      // latest.json straight from the GitHub release; do the same here before blaming the network.
+      console.error('check_for_update failed, trying latest.json:', e);
+      try {
+        const [json, current] = await Promise.all([
+          fetch('https://github.com/astraluxe/nivara-desktop/releases/latest/download/latest.json')
+            .then((r) => r.json()) as Promise<{ version?: string; notes?: string }>,
+          getVersion(),
+        ]);
+        const remote = json.version ?? '';
+        const newer = (() => {
+          const r = remote.split('.').map(Number), l = current.split('.').map(Number);
+          for (let i = 0; i < Math.max(r.length, l.length); i++) {
+            if ((r[i] ?? 0) > (l[i] ?? 0)) return true;
+            if ((r[i] ?? 0) < (l[i] ?? 0)) return false;
+          }
+          return false;
+        })();
+        if (remote && newer) {
+          setUpdateInfo({ version: remote, body: json.notes, current });
+          setUpdateStatus('available');
+        } else if (remote) {
+          setUpdateInfo({ current });
+          setUpdateStatus('latest');
+        } else {
+          setUpdateStatus('error');
+        }
+      } catch {
+        setUpdateStatus('error');
+      }
     }
   }
 
@@ -228,6 +263,34 @@ export default function SettingsModule() {
       const { enable, disable } = await import('@tauri-apps/plugin-autostart');
       if (v) await enable(); else await disable();
     } catch { /* autostart unavailable — bar still toggles for this session */ }
+  }
+
+  // Full changelog on its own screen, reached from the About panel's "Read the details" button.
+  if (showWhatsNew) {
+    return (
+      <div className="h-full overflow-y-auto bg-nv-bg">
+        <div className="px-6 py-4 border-b border-nv-border flex items-center gap-3 sticky top-0 bg-nv-bg z-10">
+          <button
+            onClick={() => setShowWhatsNew(false)}
+            className="text-[11px] text-nv-faint hover:text-nv-text transition-fast shrink-0"
+          >&larr; Back</button>
+          <div className="min-w-0">
+            <h1 className="text-[16px] font-semibold text-nv-text tracking-tight">What's new in v{WHATS_NEW.version}</h1>
+            <p className="text-[11px] text-nv-muted mt-0.5">{WHATS_NEW.items.length} changes in this release.</p>
+          </div>
+        </div>
+        <div className="px-6 py-5 max-w-3xl">
+          <ul className="space-y-3">
+            {WHATS_NEW.items.map((it, i) => (
+              <li key={i} className="flex gap-2.5">
+                <span className="text-accent shrink-0 text-[11px] leading-relaxed">&bull;</span>
+                <span className="text-[12px] text-nv-muted leading-relaxed">{it}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -440,17 +503,22 @@ export default function SettingsModule() {
             </div>
           </div>
 
-          {/* What's new */}
+          {/* What's new — a summary line and a button. The full list runs to twenty-odd detailed
+              entries, and dumping all of it inline turned the About panel into a wall of text
+              nobody reads. The detail lives on its own screen. */}
           <div className="pt-3 border-t border-nv-border/60 mb-1">
-            <p className="text-[12px] text-nv-text font-medium mb-2">What's new in v{WHATS_NEW.version}</p>
-            <ul className="space-y-1.5">
-              {WHATS_NEW.items.map((it, i) => (
-                <li key={i} className="text-[10.5px] text-nv-muted leading-relaxed flex gap-1.5">
-                  <span className="text-accent shrink-0">•</span>
-                  <span>{it}</span>
-                </li>
-              ))}
-            </ul>
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[12px] text-nv-text font-medium">What's new in v{WHATS_NEW.version}</p>
+                <p className="text-[10.5px] text-nv-muted mt-0.5">
+                  {WHATS_NEW.items.length} changes in this release.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowWhatsNew(true)}
+                className="text-[11px] px-2.5 py-1 rounded-lg border border-accent/50 text-accent hover:bg-accent/10 transition-fast shrink-0"
+              >Read the details</button>
+            </div>
           </div>
 
           {/* Update checker */}

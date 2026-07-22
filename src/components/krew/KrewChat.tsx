@@ -32,7 +32,7 @@ import TodoPanel from './TodoPanel';
 import Icon, { type IconName } from '../Icon';
 import { loadSettings } from '../../modules/SettingsModule';
 import { todos, TODO_EVENT, type TodoItem } from '../../lib/todoStore';
-import { classifyTask, recommendLocalModel, shouldSuggestLocal, markLocalAdviceShown } from '../../lib/localModelAdvice';
+import { classifyTask, recommendLocalModel, shouldSuggestLocal, markLocalAdviceShown, neverSuggestedLocal } from '../../lib/localModelAdvice';
 
 // Get the freshest Supabase access token right before a model call. A long browser/tool pass can
 // run for minutes and outlive the token captured at render — reusing that stale token 401'd the
@@ -5478,22 +5478,27 @@ The prompt must be production-ready — specific enough for a motion designer to
     // is one their own machine could do for free. ONLY for tasks local models genuinely handle
     // well — steering someone onto local for web/Maps/multi-step work would hand them a worse
     // answer and that would be our fault, not theirs. At most once every few days; never blocks.
-    if (mode === 'nivara' && tokenCap !== null && monthlyUsed >= tokenCap * 0.25 && shouldSuggestLocal()) {
+    // Fires on heavy usage OR the first time round, whichever comes first. Usage alone meant a
+    // Solo user needed a million tokens before ever being told local models exist.
+    const usageDriven = tokenCap !== null && monthlyUsed >= tokenCap * 0.25;
+    if (mode === 'nivara' && (usageDriven || neverSuggestedLocal()) && shouldSuggestLocal()) {
       const verdict = classifyTask(text);
       markLocalAdviceShown();
       (async () => {
         try {
           const hw = await invoke<{ total_ram_gb: number; free_disk_gb: number }>('get_system_info');
           const { pick, reason } = recommendLocalModel(hw, verdict.demand);
-          const pct = Math.round((monthlyUsed / tokenCap) * 100);
+          const pct = tokenCap ? Math.round((monthlyUsed / tokenCap) * 100) : 0;
           // Deliberately NOT a chat message. The transcript is the user's work, and dropping an
           // unrelated sales-ish suggestion into the middle of it buries the thing they actually
           // asked for. It goes to the app-level notification strip instead, where it can be read
           // or dismissed without touching the conversation.
           emit('nv-local-model-suggestion', {
             title: pick
-              ? `${pick.label} would handle this on your own machine`
-              : `You've used about ${pct}% of this month's allowance`,
+              ? `${pick.label} would handle this on your own machine — free`
+              : usageDriven
+                ? `You've used about ${pct}% of this month's allowance`
+                : 'Running a model on this machine is not practical yet',
             body: pick
               ? `${verdict.why} ${reason}${verdict.usesTools ? ' It uses the same browser, search and Maps tools — nothing is lost by running it yourself.' : ''}`
               : `${verdict.why} ${reason}`,

@@ -165,3 +165,10 @@ export function shouldSuggestLocal(): boolean {
 export function markLocalAdviceShown(): void {
   try { localStorage.setItem(SEEN_KEY, String(Date.now())); } catch { /* ignore */ }
 }
+
+/** True until the suggestion has been shown even once. The usage-based trigger alone meant a Solo
+ *  user had to spend a MILLION tokens (25% of 4M) before hearing that local models exist at all —
+ *  so in practice almost nobody ever saw it. */
+export function neverSuggestedLocal(): boolean {
+  try { return localStorage.getItem(SEEN_KEY) === null; } catch { return false; }
+}
