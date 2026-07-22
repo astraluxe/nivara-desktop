@@ -164,6 +164,16 @@ function AppShell() {
   const [canvasFlow, setCanvasFlow] = useState<{ nodes: Node[]; edges: Edge[] } | null>(null);
   const [missedRuns, setMissedRuns] = useState<MissedRun[]>([]);
   const [guardAlert, setGuardAlert] = useState<GuardAlert | null>(null);
+  const [localSuggestion, setLocalSuggestion] = useState<
+    { title: string; body: string; modelId: string; sizeGb: number } | null
+  >(null);
+  useEffect(() => {
+    const un = listen<{ title: string; body: string; modelId: string; sizeGb: number }>(
+      'nv-local-model-suggestion',
+      (e) => setLocalSuggestion(e.payload),
+    );
+    return () => { un.then((f) => f()).catch(() => {}); };
+  }, []);
   const [meshActive, setMeshActive] = useState(false);
   const [announcement, setAnnouncement] = useState<Announcement | null>(null);
   const [showFirstRun, setShowFirstRun] = useState(false);
@@ -509,6 +519,28 @@ function AppShell() {
           onDismiss={() => setMissedRuns([])}
           onView={() => { setActiveModule("automation"); setMissedRuns([]); }}
         />
+      )}
+      {/* Local-model suggestion. Lives here rather than in the chat transcript: Krew's chat is
+          already dense, and a suggestion pushed between the user's question and its answer reads
+          as noise and buries the actual result. */}
+      {localSuggestion && (
+        <div className="flex items-start gap-3 px-4 py-2.5 border-b border-accent/40 bg-accent/10 shrink-0">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9"
+            strokeLinecap="round" strokeLinejoin="round" className="text-accent shrink-0 mt-0.5">
+            <rect x="3" y="3" width="18" height="18" rx="2" /><path d="M9 9h6v6H9z" />
+          </svg>
+          <div className="flex-1 min-w-0">
+            <p className="text-[12px] font-semibold text-nv-text">{localSuggestion.title}</p>
+            <p className="text-[11px] text-nv-muted mt-0.5 leading-relaxed">{localSuggestion.body}</p>
+          </div>
+          {localSuggestion.modelId && (
+            <button
+              onClick={() => { setActiveModule('models'); setLocalSuggestion(null); }}
+              className="text-[11px] px-2.5 py-1 rounded-lg border border-accent/50 text-accent hover:bg-accent/15 transition-fast shrink-0"
+            >Open Models</button>
+          )}
+          <button onClick={() => setLocalSuggestion(null)} className="text-nv-faint hover:text-nv-text shrink-0 text-[13px] leading-none mt-1">✕</button>
+        </div>
       )}
       {guardAlert && (
         <div className="flex items-start gap-3 px-4 py-2.5 border-b shrink-0 border-red-500/40 bg-red-500/10">

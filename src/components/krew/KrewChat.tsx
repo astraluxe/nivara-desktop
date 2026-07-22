@@ -5469,12 +5469,20 @@ The prompt must be production-ready — specific enough for a motion designer to
           const hw = await invoke<{ total_ram_gb: number; free_disk_gb: number }>('get_system_info');
           const { pick, reason } = recommendLocalModel(hw, verdict.demand);
           const pct = Math.round((monthlyUsed / tokenCap) * 100);
-          const toolNote = verdict.usesTools
-            ? ' Your local model uses the same browser, search and Maps tools this app already has — nothing is taken away by running it yourself.'
-            : '';
-          addMsg({ role: 'assistant', content: pick
-            ? `_You've used about ${pct}% of this month's allowance — and this task doesn't have to spend it._\n\n${verdict.why}\n\n**Suggested: ${pick.label}** · ${pick.sizeGb} GB download\n${pick.blurb}\n_${reason}_\n\nOpen **Models** to download it, then choose **Local** next to the message box.${toolNote}`
-            : `_You've used about ${pct}% of this month's allowance._\n\n${verdict.why}\n\n${reason}` });
+          // Deliberately NOT a chat message. The transcript is the user's work, and dropping an
+          // unrelated sales-ish suggestion into the middle of it buries the thing they actually
+          // asked for. It goes to the app-level notification strip instead, where it can be read
+          // or dismissed without touching the conversation.
+          emit('nv-local-model-suggestion', {
+            title: pick
+              ? `${pick.label} would handle this on your own machine`
+              : `You've used about ${pct}% of this month's allowance`,
+            body: pick
+              ? `${verdict.why} ${reason}${verdict.usesTools ? ' It uses the same browser, search and Maps tools — nothing is lost by running it yourself.' : ''}`
+              : `${verdict.why} ${reason}`,
+            modelId: pick?.id ?? '',
+            sizeGb: pick?.sizeGb ?? 0,
+          }).catch(() => {});
         } catch { /* no hardware info — skip rather than guess */ }
       })();
     }
