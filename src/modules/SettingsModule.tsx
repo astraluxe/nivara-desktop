@@ -47,7 +47,7 @@ const WHATS_NEW: { version: string; items: string[] } = {
   version: '1.6.17',
   items: [
     'Arjun now works out what a LinkedIn conversation actually requires, not just what to say back. When someone accepts something you offered — a “sure” after you promised a breakdown — he treats delivering that as the real outstanding task, names the one thing to do next, and puts it on your To-do list alongside the reply.',
-    'Replies no longer invent facts about your business. Asked how adris.tech sources its data, Arjun previously made up a confident answer you could have sent to a prospect. He now only states things recorded in your Krew profile or said in the thread; anything else is flagged “check before sending” with exactly what needs confirming.',
+    'Replies are now written from your own product notes in the Brain. Arjun pulls the notes that relate to what the person actually asked — plus your product and pricing notes — and answers from those. Asked how adris.tech sources its data, he previously made up a confident answer you could have sent to a prospect; he now uses what you have written, and anything he genuinely does not know is flagged “check before sending” with exactly what needs confirming rather than being guessed.',
     'Each conversation gets ONE recommended next step and one agent to do it — a deck goes to Slade, a time goes to your calendar — instead of several agents being pulled in for a single message.',
     'Every drafted message now has a “Reply on LinkedIn” button that opens that person’s chat with the reply already typed in — you just press send. No need to type “send the reply to …” any more.',
     'Fixed: replies longer than one paragraph were cut short in the draft.',

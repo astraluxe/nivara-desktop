@@ -4426,8 +4426,44 @@ The prompt must be production-ready — specific enough for a motion designer to
       try {
         const mem = await krewMemoryDb.getAll(KREW_PROFILE_KEY).catch(() => []);
         const lines = (mem || []).map((m) => `- ${m.key}: ${m.value}`).slice(0, 25);
-        if (lines.length) facts = lines.join('\n');
+        if (lines.length) facts = `FROM YOUR KREW PROFILE:\n${lines.join('\n')}`;
       } catch { /* profile optional */ }
+
+      // The profile only holds short remembered facts. The real product detail — what it does, how
+      // it works, pricing — is written up in the Brain, so that is where an answer to "how do you
+      // source your data?" has to come from. Pull the notes that actually relate to these threads
+      // (what the other person asked) plus the standing product notes, so replies are grounded in
+      // the user's own documentation instead of being invented.
+      try {
+        const { brain } = await import('../../lib/knowledgeStore');
+        const stripHtml = (b: string) => b
+          .replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|tr|h\d|li)>/gi, '\n')
+          .replace(/<[^>]+>/g, '').replace(/\n{3,}/g, '\n\n').trim();
+        // Words the OTHER person used are the best clue to which notes matter here.
+        const asked = threadsText
+          .split('\n')
+          .filter((l) => /^\s{2,}\S/.test(l) && !/^\s*(Profile|###)/.test(l))
+          .join(' ');
+        const picked = new Map<string, { title: string; kind: string; body: string }>();
+        const queries = [asked, 'product', 'pricing', 'how it works', 'features', 'about the business'];
+        for (const q of queries) {
+          if (picked.size >= 8) break;
+          for (const n of brain.search(q).slice(0, 4)) {
+            if (picked.size >= 8) break;
+            if (!picked.has(n.id) && n.body?.trim()) picked.set(n.id, { title: n.title, kind: n.kind, body: stripHtml(n.body) });
+          }
+        }
+        // Hard cap: this is prepended to every draft, so it must not swamp the thread text itself.
+        let used = 0;
+        const notes: string[] = [];
+        for (const n of picked.values()) {
+          const slice = n.body.slice(0, 1200);
+          if (used + slice.length > 6000) break;
+          used += slice.length;
+          notes.push(`### ${n.title} (${n.kind})\n${slice}`);
+        }
+        if (notes.length) facts += `${facts ? '\n\n' : ''}FROM YOUR BRAIN (your own saved notes):\n${notes.join('\n\n')}`;
+      } catch { /* Brain optional */ }
 
       const replySys = [
         'You are the user\'s chief of staff reading their LinkedIn inbox. You do TWO things per thread: work out what the situation actually requires, then draft the reply. Think about the conversation the way a competent human would — what did this person actually ask for, and what does the user now owe them?',
@@ -4437,7 +4473,7 @@ The prompt must be production-ready — specific enough for a motion designer to
         '- Never repeat or re-offer something already settled earlier in the thread. If a time was already agreed, do not propose it again — acknowledge or build on it.',
         '- If nothing is genuinely outstanding, SKIP that thread. Do not invent a reason to follow up.',
         'NEVER INVENT FACTS ABOUT THE USER\'S BUSINESS — this is the most important rule:',
-        '- You may state a fact about the user\'s product, pricing, data sources, customers or roadmap ONLY if it appears in WHAT I KNOW ABOUT MY BUSINESS below, or was said in that thread. ',
+        '- You may state a fact about the user\'s product, pricing, data sources, customers or roadmap ONLY if it appears in WHAT I KNOW ABOUT MY BUSINESS below (their Krew profile and their own Brain notes), or was said in that thread. Those notes are the user\'s own documentation — use them freely and specifically; that is what they are there for.',
         '- If a good reply needs a fact you do not have, DO NOT guess it and do not write a confident-sounding sentence around it. Write the reply so it stays honest without that fact, and record what you need on the NEEDS line so the user can fill it in before sending.',
         '- Inventing a plausible-sounding answer is the worst possible outcome: the user sends it to a real prospect as though it were true.',
         'WRITING THE REPLY:',
