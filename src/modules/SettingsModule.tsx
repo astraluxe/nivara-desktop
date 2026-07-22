@@ -44,7 +44,7 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.17',
+  version: '1.6.18',
   items: [
     'Arjun now works out what a LinkedIn conversation actually requires, not just what to say back. When someone accepts something you offered — a “sure” after you promised a breakdown — he treats delivering that as the real outstanding task, names the one thing to do next, and puts it on your To-do list alongside the reply.',
     'Replies are now written from your own product notes in the Brain. Arjun pulls the notes that relate to what the person actually asked — plus your product and pricing notes — and answers from those. Asked how adris.tech sources its data, he previously made up a confident answer you could have sent to a prospect; he now uses what you have written, and anything he genuinely does not know is flagged “check before sending” with exactly what needs confirming rather than being guessed.',
