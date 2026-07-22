@@ -1375,42 +1375,110 @@ async fn models_download(
         cancels.0.lock().map(|s| s.contains(id)).unwrap_or(false)
     };
 
-    let client = reqwest::Client::new();
-    let resp = client.get(&url)
-        .header("User-Agent", "NivaraDesktop/1.0")
-        .send().await.map_err(|e| e.to_string())?;
+    // Models are multi-gigabyte, so one dropped connection used to destroy the whole download and
+    // surface as a bare "error decoding response body" -- reqwest's wording for the body stream
+    // dying mid-transfer. Three things fix that: write to a .part file so a half-download can never
+    // be mistaken for a finished model, resume with a Range request instead of starting over, and
+    // retry a broken stream rather than giving up. No overall request timeout is set -- that would
+    // cap how long a legitimately long download may take. Only connect time is bounded.
+    let part = dir.join(format!("{}.part", filename));
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
 
-    if !resp.status().is_success() {
-        return Err(format!("Download failed: HTTP {}", resp.status()));
+    let mut downloaded: u64 = tokio::fs::metadata(&part).await.map(|m| m.len()).unwrap_or(0);
+    let mut total: u64 = 0;
+    let mut last_err = String::new();
+    let mut finished = false;
+    const MAX_ATTEMPTS: u32 = 5;
+
+    for attempt in 0..MAX_ATTEMPTS {
+        if cancelled(&model_id) { break; }
+
+        let mut req = client.get(&url).header("User-Agent", "NivaraDesktop/1.0");
+        if downloaded > 0 { req = req.header("Range", format!("bytes={}-", downloaded)); }
+
+        let resp = match req.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = e.to_string();
+                tokio::time::sleep(std::time::Duration::from_secs(2 + attempt as u64 * 2)).await;
+                continue;
+            }
+        };
+        if !resp.status().is_success() {
+            return Err(format!("Download failed: HTTP {}", resp.status()));
+        }
+
+        // A server that ignores Range replies 200 with the WHOLE file. Appending that to what we
+        // already hold would silently corrupt the model, so start the file again instead.
+        let resuming = resp.status().as_u16() == 206;
+        if downloaded > 0 && !resuming { downloaded = 0; }
+        total = resp.content_length().unwrap_or(0) + if resuming { downloaded } else { 0 };
+
+        let mut file = if downloaded > 0 {
+            tokio::fs::OpenOptions::new().append(true).open(&part).await
+        } else {
+            tokio::fs::File::create(&part).await
+        }.map_err(|e| e.to_string())?;
+
+        let mut stream = resp.bytes_stream();
+        let mut broke = false;
+        while let Some(chunk) = stream.next().await {
+            let chunk = match chunk {
+                Ok(c) => c,
+                Err(e) => { last_err = e.to_string(); broke = true; break; }
+            };
+            file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+            downloaded += chunk.len() as u64;
+            if cancelled(&model_id) {
+                drop(file);
+                let _ = tokio::fs::remove_file(&part).await;
+                cancels.0.lock().map_err(|e| e.to_string())?.remove(&model_id);
+                let _ = app.emit("model_download_cancelled", serde_json::json!({ "model_id": model_id }));
+                return Ok(());
+            }
+            if total > 0 {
+                let pct = (downloaded as f64 / total as f64 * 100.0) as u32;
+                let _ = app.emit("model_download_progress", serde_json::json!({
+                    "model_id":      model_id,
+                    "pct":           pct.min(100),
+                    "downloaded_gb": downloaded as f64 / 1_073_741_824.0,
+                    "total_gb":      total as f64 / 1_073_741_824.0,
+                }));
+            }
+        }
+        file.flush().await.map_err(|e| e.to_string())?;
+        if !broke { finished = true; break; }
+
+        // Say it is retrying instead of leaving the bar frozen on a dead connection.
+        let _ = app.emit("model_download_progress", serde_json::json!({
+            "model_id":      model_id,
+            "pct":           if total > 0 { (downloaded as f64 / total as f64 * 100.0) as u32 } else { 0 },
+            "downloaded_gb": downloaded as f64 / 1_073_741_824.0,
+            "total_gb":      total as f64 / 1_073_741_824.0,
+            "retrying":      true,
+        }));
+        tokio::time::sleep(std::time::Duration::from_secs(2 + attempt as u64 * 2)).await;
     }
 
-    let total = resp.content_length().unwrap_or(0);
-    let mut downloaded: u64 = 0;
-    let mut file = tokio::fs::File::create(&dest).await.map_err(|e| e.to_string())?;
-    let mut stream = resp.bytes_stream();
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| e.to_string())?;
-        file.write_all(&chunk).await.map_err(|e| e.to_string())?;
-        downloaded += chunk.len() as u64;
-        if cancelled(&model_id) {
-            drop(file);
-            let _ = tokio::fs::remove_file(&dest).await;
-            cancels.0.lock().map_err(|e| e.to_string())?.remove(&model_id);
-            let _ = app.emit("model_download_cancelled", serde_json::json!({ "model_id": model_id }));
-            return Ok(());
-        }
-        if total > 0 {
-            let pct = (downloaded as f64 / total as f64 * 100.0) as u32;
-            let _ = app.emit("model_download_progress", serde_json::json!({
-                "model_id":     model_id,
-                "pct":          pct,
-                "downloaded_gb": downloaded as f64 / 1_073_741_824.0,
-                "total_gb":     total as f64 / 1_073_741_824.0,
-            }));
-        }
+    if cancelled(&model_id) {
+        let _ = tokio::fs::remove_file(&part).await;
+        cancels.0.lock().map_err(|e| e.to_string())?.remove(&model_id);
+        let _ = app.emit("model_download_cancelled", serde_json::json!({ "model_id": model_id }));
+        return Ok(());
     }
-    file.flush().await.map_err(|e| e.to_string())?;
+    if !finished {
+        // The .part file is deliberately KEPT so pressing Download again resumes from it.
+        return Err(format!(
+            "The connection kept dropping ({}). Your progress is saved - press Download again and it carries on from where it stopped.",
+            if last_err.is_empty() { "network error".to_string() } else { last_err }
+        ));
+    }
+
+    // Only now is this a complete model, so give it its real name.
+    tokio::fs::rename(&part, &dest).await.map_err(|e| e.to_string())?;
 
     // Register in local registry
     let mut list = load_installed_models(&dir);

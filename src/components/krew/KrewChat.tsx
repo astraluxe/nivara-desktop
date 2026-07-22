@@ -4272,10 +4272,12 @@ The prompt must be production-ready — specific enough for a motion designer to
         }
         if (stopRef.current) {
           setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: 'Stopped — run /scan again once you\'re signed in to LinkedIn.', streaming: false }; return c; });
+          if (sid) krewDb.saveMessage(sid, 'assistant', 'Stopped — run /scan again once you\'re signed in to LinkedIn.').catch(() => {});
           return;
         }
         if (!loggedIn) {
           setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: "I didn't detect a LinkedIn login in the ADRIS browser. Sign in there, then run /scan again.", streaming: false }; return c; });
+          if (sid) krewDb.saveMessage(sid, 'assistant', "I didn't detect a LinkedIn login in the ADRIS browser. Sign in there, then run /scan again.").catch(() => {});
           return;
         }
         updateLastMsg('Signed in ✓ — reading your connections now…');
@@ -4308,6 +4310,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     } catch (e) {
       const msg = `Couldn't scan your connections: ${e instanceof Error ? e.message : String(e)}. Make sure you're signed in to LinkedIn in the ADRIS browser, then try again.`;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: msg, streaming: false }; return c; });
+      if (sid) krewDb.saveMessage(sid, 'assistant', msg).catch(() => {});
     } finally {
       // agentStep is set by the global 'agent-progress' listener; if we don't clear it here the
       // status bar keeps counting "Opening your LinkedIn connections… — taking longer than usual"
@@ -4361,10 +4364,12 @@ The prompt must be production-ready — specific enough for a motion designer to
         }
         if (stopRef.current) {
           setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: 'Stopped — ask me again once you\'re signed in to LinkedIn.', streaming: false }; return c; });
+          if (sid) krewDb.saveMessage(sid, 'assistant', 'Stopped — ask me again once you\'re signed in to LinkedIn.').catch(() => {});
           return;
         }
         if (!loggedIn) {
           setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: "I didn't detect a LinkedIn login in the ADRIS browser. Sign in there, then ask me again.", streaming: false }; return c; });
+          if (sid) krewDb.saveMessage(sid, 'assistant', "I didn't detect a LinkedIn login in the ADRIS browser. Sign in there, then ask me again.").catch(() => {});
           return;
         }
         updateLastMsg('Signed in ✓ — reading your messages now…');
@@ -4466,6 +4471,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     } catch (e) {
       const msg = `Couldn't read your LinkedIn messages: ${e instanceof Error ? e.message : String(e)}. Make sure you're signed in to LinkedIn in the ADRIS browser, then try again.`;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: msg, streaming: false }; return c; });
+      if (sid) krewDb.saveMessage(sid, 'assistant', msg).catch(() => {});
     } finally {
       unlisten(); setBusy(false); setAgentStep(null); setAgentTool(null);
       setBrowserActive(false); await closeAgentBrowserIfActive();
@@ -4570,6 +4576,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     } catch (e) {
       const msg = `Couldn't open that chat: ${e instanceof Error ? e.message : String(e)}`;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: msg, streaming: false }; return c; });
+      if (sidRef.current) krewDb.saveMessage(sidRef.current, 'assistant', msg).catch(() => {});
     } finally {
       setBusy(false); setAgentStep(null); setAgentTool(null);
       setBrowserActive(false); await closeAgentBrowserIfActive();
@@ -4893,6 +4900,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       } else {
         const msg = `Couldn't draft the outreach: ${raw}.`;
         setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: msg, streaming: false }; return c; });
+        if (sid) krewDb.saveMessage(sid, 'assistant', msg).catch(() => {});
       }
     } finally {
       setBusy(false); setAgentStep(null); setAgentTool(null);
@@ -6645,7 +6653,9 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
           <button
             onClick={(e) => { e.stopPropagation(); setShowTodos((v) => !v); }}
             title="To-do — your tasks, and anything you left unfinished"
-            className={`flex items-center gap-1 h-5 px-1.5 rounded transition-fast shrink-0 text-[9px] font-mono border ${showTodos ? 'text-accent bg-accent/10 border-accent/30' : 'text-nv-faint border-nv-border hover:text-nv-muted hover:bg-nv-surface'}`}
+            /* Purple in BOTH states — this is where unfinished work is waiting, so it should read
+               as a live thing at a glance rather than greying out whenever the panel is closed. */
+            className={`flex items-center gap-1 h-5 px-1.5 rounded transition-fast shrink-0 text-[9px] font-mono border text-accent ${showTodos ? 'bg-accent/15 border-accent/50' : 'bg-accent/5 border-accent/30 hover:bg-accent/10 hover:border-accent/50'}`}
           >
             <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
               <path d="M2 4.5l1.5 1.5L6 3.5M2 11.5L3.5 13 6 10.5M8.5 4.5H14M8.5 11.5H14" />

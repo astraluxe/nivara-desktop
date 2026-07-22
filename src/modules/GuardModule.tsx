@@ -1,4 +1,6 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
+import { resolveAiSource, AI_SOURCE_EVENT } from '../lib/aiSource';
+import AiSourcePicker from '../components/AiSourcePicker';
 import ThreatDashboard  from '../components/guard/ThreatDashboard';
 import ContractScanner  from '../components/guard/ContractScanner';
 import VulnBriefing     from '../components/guard/VulnBriefing';
@@ -104,16 +106,32 @@ export default function GuardModule() {
   const planCfg = getPlanConfig(profile?.plan ?? 'free');
   const limit = planCfg.guardChecks;
 
+  // Guard already routes every scan through callAutomationAI -> resolveAiSource, so it has always
+  // been ABLE to run on a local model. What it did anyway was charge that scan to the monthly pool
+  // and then stop working once the pool ran dry — even though a local model runs on the user's own
+  // hardware and an own-key run bills the user's own API key. Neither costs us anything, so neither
+  // may be metered. Same rule the chat already follows.
+  const [aiMode, setAiMode] = useState<'nivara' | 'own_key' | 'local' | null>(null);
+  useEffect(() => {
+    let alive = true;
+    resolveAiSource().then((s) => { if (alive) setAiMode(s.mode); }).catch(() => {});
+    // Re-read when the user switches source in the picker, so the counter stops immediately.
+    const onChange = () => { resolveAiSource().then((s) => { if (alive) setAiMode(s.mode); }).catch(() => {}); };
+    window.addEventListener(AI_SOURCE_EVENT, onChange);
+    return () => { alive = false; window.removeEventListener(AI_SOURCE_EVENT, onChange); };
+  }, []);
+  const runsFree = aiMode === 'local' || aiMode === 'own_key';
+
   // Opening Guard deliberately costs NOTHING. It used to consume one of the monthly scans just for
   // looking at the screen, so a Solo user could exhaust all ten without ever scanning anything.
   // Only a real scan counts — see onScanRun.
 
   // Every Guard action reports through here — contract scan, phishing scan, compliance run.
   const onScanRun = useCallback(() => {
-    if (limit === null) return;
+    if (limit === null || runsFree) return;
     incrementGuardUse();
     setUsed(getGuardUses());
-  }, [limit]);
+  }, [limit, runsFree]);
 
   if (!planCfg.guardAccess) {
     return (
@@ -133,11 +151,15 @@ export default function GuardModule() {
   const left = limit === null ? null : Math.max(0, limit - used);
 
   // Pool spent -> Guard stops entirely and says so. Nothing half-works.
-  if (left !== null && left <= 0) {
+  if (left !== null && left <= 0 && !runsFree) {
     return (
       <UpgradeWall
         title="You've used this month's Guard checks"
         body={`Your plan includes ${limit} Guard checks a month — contract scans, phishing checks, compliance runs and vulnerability briefings all draw from the same pool, and it's now empty. It resets at the start of next month, or Builder and above give you unlimited checks.`}
+        points={[
+          'Or switch Guard to a local model: it runs on your own machine, so those scans are unlimited and do not touch this pool. Settings → where AI runs, or the picker on the Threat Monitor tab.',
+          'Using your own API key works the same way — billed to your key, never counted here.',
+        ]}
       />
     );
   }
@@ -155,7 +177,17 @@ export default function GuardModule() {
               money or trust — and explains each finding in plain language.
             </p>
           </div>
-          {left !== null && (
+          {/* Running on the user's own hardware or their own API key costs us nothing, so the
+              counter would be misleading — say it is free instead of counting down. */}
+          {runsFree && (
+            <span
+              title="Guard is running on your own machine (or your own API key), so these scans don't come out of your monthly pool."
+              className="text-[10px] font-mono px-2 py-1 rounded-lg border shrink-0 text-accent border-accent/40 bg-accent/10"
+            >
+              {aiMode === 'local' ? 'local · unlimited' : 'own key · unlimited'}
+            </span>
+          )}
+          {left !== null && !runsFree && (
             <span
               title="Every Guard action — contract scans, phishing checks, compliance runs, vulnerability briefings — draws from this one monthly pool."
               className={`text-[10px] font-mono px-2 py-1 rounded-lg border shrink-0 cursor-help ${
@@ -165,6 +197,11 @@ export default function GuardModule() {
               {left} of {limit} Guard checks left
             </span>
           )}
+        </div>
+        {/* The source picker used to live only on the Threat Monitor tab, so anyone scanning a
+            contract had no way to see — let alone change — where Guard's AI was running. */}
+        <div className="mt-2.5">
+          <AiSourcePicker compact />
         </div>
       </div>
 

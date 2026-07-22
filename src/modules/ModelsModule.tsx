@@ -1201,6 +1201,7 @@ export default function ModelsModule() {
               const inRegistry = registry.find((m) => m.id === target.id);
               const already = installed.some((i) => i.id === target.id);
               const locked = isFreePlan && target.paid;
+              const dl = downloading[target.id];
               return (
                 <div className="mb-4 max-w-3xl rounded-lg border border-accent/40 bg-accent/5 px-4 py-3">
                   <div className="flex items-start justify-between gap-4">
@@ -1217,7 +1218,28 @@ export default function ModelsModule() {
                         {rec.pick ? '' : ' — the strongest size this machine runs comfortably'}
                       </p>
                     </div>
-                    {already ? (
+                    {/* The card had a Download button but rendered no progress, so clicking it
+                        looked like nothing happened — the only progress row was further down the
+                        grid, often scrolled out of view. */}
+                    {dl ? (
+                      <div className="shrink-0 w-40 mt-1">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[10px] text-accent font-mono">
+                            {dl.pct > 0 ? `${dl.pct}%` : 'Starting…'}
+                          </span>
+                          <button
+                            onClick={() => handleCancel(target.id)}
+                            className="text-[10px] text-nv-faint hover:text-nv-text transition-fast"
+                          >Cancel</button>
+                        </div>
+                        <div className="h-1 w-full rounded-full bg-nv-border overflow-hidden">
+                          <div className="h-full bg-accent rounded-full transition-all duration-300" style={{ width: `${dl.pct}%` }} />
+                        </div>
+                        <p className="text-[9px] text-nv-faint font-mono mt-1">
+                          {dl.downloaded_gb.toFixed(1)} / {(dl.total_gb || target.sizeGb).toFixed(1)} GB
+                        </p>
+                      </div>
+                    ) : already ? (
                       <span className="text-[10px] text-nv-faint font-mono shrink-0 mt-1">Installed ✓</span>
                     ) : locked ? (
                       <button

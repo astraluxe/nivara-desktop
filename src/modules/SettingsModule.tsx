@@ -44,8 +44,13 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.15',
+  version: '1.6.16',
   items: [
+    'Fixed: model downloads that failed partway with “error decoding response body”. A model is several gigabytes, and a single dropped connection threw the whole download away. Downloads now resume from where they stopped instead of starting over, retry a broken connection by themselves, and only claim a model is installed once the file is genuinely complete.',
+    'The recommended model now shows its own progress bar and a Cancel button while downloading. Pressing Download used to look like it had done nothing, because the only progress was further down the page.',
+    'Fixed: messages disappeared from a chat when you reopened it. Anything that ended in an error — including outreach that stopped because no local model was downloaded — was only ever drawn on screen and never saved, so the conversation came back with a gap in it. Nothing is dropped from a chat now.',
+    'Guard runs on a local model or your own API key without using up your monthly Guard checks, and keeps working after the pool is empty — it runs on your hardware, so there is nothing to meter. You can now also see and change where Guard’s AI runs from any of its tabs, not just Threat Monitor.',
+    'The To-do button is purple whether the panel is open or closed, so unfinished work is easier to spot.',
     'Fixed: local models could not start at all. A file the AI engine needs (mtmd.dll) was missing from the app, so Windows stopped it before it began — the “code execution cannot proceed” box. The engine is now complete and has been tested end to end: it loads a model and replies. Engine files are also refreshed automatically by future updates, which previously never happened, so a broken engine could not repair itself.',
     'The recommended local model is now shown permanently at the top of the Models tab, based on your machine’s actual memory and free disk. It used to appear only as an occasional chat message after you had used a quarter of your monthly allowance, so most people never saw it at all.',
     '“Show me around” now explains how the app works instead of pointing at the sidebar and the theme toggle. It walks the real sequence — how Krew works, how to use slash commands, and the /scan → /verify → /enrich → /outreach order for lead generation — and opens the full written guide in Info.',
