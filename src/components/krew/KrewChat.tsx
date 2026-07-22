@@ -999,8 +999,14 @@ function ProposalCard({ proposal, agentName, userId, onAccept, onDecline, onView
 
 // ─── Email card ───────────────────────────────────────────────────────────────
 
-function EmailCard({ content }: { content: string }) {
+/** Fires the "open this person's LinkedIn chat and type the reply in" flow. A window event rather
+ *  than a prop because this card is rendered deep inside the markdown renderer, several layers
+ *  below the chat component that owns the action. */
+export const LI_REPLY_EVENT = 'nv-linkedin-reply';
+
+function EmailCard({ content, recipient }: { content: string; recipient?: string }) {
   const [copied, setCopied] = useState(false);
+  const [sending, setSending] = useState(false);
   const lines   = content.split('\n');
   const subIdx  = lines.findIndex((l) => /^Subject:\s/.test(l));
   const subject = subIdx >= 0 ? lines[subIdx].replace(/^Subject:\s*/, '') : '';
@@ -1014,12 +1020,27 @@ function EmailCard({ content }: { content: string }) {
             <rect x="1" y="3" width="14" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.4"/>
             <path d="M1 6l7 4.5L15 6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
           </svg>
-          <span className="text-[11px] font-semibold text-nv-text truncate">{subject || 'Draft message'}</span>
+          <span className="text-[11px] font-semibold text-nv-text truncate">{subject || recipient || 'Draft message'}</span>
         </div>
-        <button
-          onClick={() => { copyToClipboard(content); setCopied(true); setTimeout(() => setCopied(false), 1800); }}
-          className="text-[10px] text-nv-faint hover:text-nv-text font-mono transition-fast shrink-0 ml-2"
-        >{copied ? '✓' : 'Copy'}</button>
+        <div className="flex items-center gap-2 shrink-0 ml-2">
+          <button
+            onClick={() => { copyToClipboard(content); setCopied(true); setTimeout(() => setCopied(false), 1800); }}
+            className="text-[10px] text-nv-faint hover:text-nv-text font-mono transition-fast"
+          >{copied ? '✓' : 'Copy'}</button>
+          {/* One click instead of typing "send the reply to <name>" — opens their LinkedIn chat and
+              types this draft into the box. It still never sends; the user presses Enter. */}
+          {recipient && (
+            <button
+              onClick={() => {
+                setSending(true);
+                setTimeout(() => setSending(false), 4000);
+                window.dispatchEvent(new CustomEvent(LI_REPLY_EVENT, { detail: { name: recipient } }));
+              }}
+              title={`Open ${recipient}'s LinkedIn chat with this reply typed in — you still press send`}
+              className="text-[10px] font-mono px-2 py-0.5 rounded border border-accent/40 text-accent bg-accent/10 hover:bg-accent/20 transition-fast"
+            >{sending ? 'Opening…' : 'Reply on LinkedIn'}</button>
+          )}
+        </div>
       </div>
       <div className="px-3 py-3 bg-nv-bg">
         <pre className="text-[11px] text-nv-muted leading-relaxed whitespace-pre-wrap font-sans">{body}</pre>
@@ -2504,7 +2525,16 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
           // Outreach drafts the agent fenced as ```email / ```draft / ```message render as a
           // proper email card (Subject header + copy), not a raw monospace code box.
           if (['email', 'draft', 'message', 'outreach'].includes(lang.toLowerCase())) {
-            return <EmailCard key={i} content={code.replace(/\n+$/, '')} />;
+            // The fence is ```email <Person name> — that label is the recipient. `lang` only
+            // captures the word "email", so without pulling the label out separately the person's
+            // name ended up as the first line of the message body.
+            const label = (part.match(/^```\w*[ \t]+([^\n]+)/)?.[1] ?? '').trim();
+            // The outer fence regex only consumes the language word, so when a label is present it
+            // lands at the start of `code` — drop that first line or the recipient's name shows up
+            // as the opening line of the message itself.
+            const text = (label ? code.replace(/^[^\n]*\n?/, '') : code.replace(/^[ \t]*\n/, ''))
+              .replace(/\n+$/, '');
+            return <EmailCard key={i} content={text} recipient={label} />;
           }
           // Social posts fenced as ```post <Platform> render as per-platform cards
           // (brand chip + live character count against that platform's limit).
@@ -4387,42 +4417,93 @@ The prompt must be production-ready — specific enough for a motion designer to
       updateLastMsg('Read your messages ✓ — drafting replies…');
 
       const today = new Date();
+
+      // What the agents actually KNOW about the user's business. Without this the drafter has no
+      // product facts at all, so when someone asks a direct question ("how do you source your
+      // data?") it fills the gap by inventing an answer — which the user then sends as if it were
+      // true. Grounding it here is what makes "say only what you can back up" enforceable.
+      let facts = '';
+      try {
+        const mem = await krewMemoryDb.getAll(KREW_PROFILE_KEY).catch(() => []);
+        const lines = (mem || []).map((m) => `- ${m.key}: ${m.value}`).slice(0, 25);
+        if (lines.length) facts = lines.join('\n');
+      } catch { /* profile optional */ }
+
       const replySys = [
-        'You draft LinkedIn replies on behalf of the user, from the REAL conversation text you are given.',
+        'You are the user\'s chief of staff reading their LinkedIn inbox. You do TWO things per thread: work out what the situation actually requires, then draft the reply. Think about the conversation the way a competent human would — what did this person actually ask for, and what does the user now owe them?',
         'HOW TO DECIDE — read the WHOLE thread first, never just the last line:',
         '- Work out where the conversation actually STANDS: what was asked, what was already answered, what was agreed, and what is still open. A thread can need a reply even when the user spoke last (e.g. they promised to send something and never did), and can need NO reply even when the other person spoke last (e.g. they just said "thanks" or "got it" and nothing is outstanding).',
+        '- A bare agreement ("sure", "sounds good", "yes please") is NOT the end of the conversation — it ACCEPTS whatever was last offered. Look back at what the user offered and treat delivering that as the real outstanding task.',
         '- Never repeat or re-offer something already settled earlier in the thread. If a time was already agreed, do not propose it again — acknowledge or build on it.',
         '- If nothing is genuinely outstanding, SKIP that thread. Do not invent a reason to follow up.',
+        'NEVER INVENT FACTS ABOUT THE USER\'S BUSINESS — this is the most important rule:',
+        '- You may state a fact about the user\'s product, pricing, data sources, customers or roadmap ONLY if it appears in WHAT I KNOW ABOUT MY BUSINESS below, or was said in that thread. ',
+        '- If a good reply needs a fact you do not have, DO NOT guess it and do not write a confident-sounding sentence around it. Write the reply so it stays honest without that fact, and record what you need on the NEEDS line so the user can fill it in before sending.',
+        '- Inventing a plausible-sounding answer is the worst possible outcome: the user sends it to a real prospect as though it were true.',
         'WRITING THE REPLY:',
         '- Ground every reply in what was ACTUALLY said in that thread. Never invent a claim, a time, or a commitment nobody made.',
         '- If they proposed times, answer those SPECIFIC times against the user\'s stated availability. If a proposed time does not work, say so plainly and offer one that does. Convert time zones carefully and show both (e.g. "9:00 PM IST / 10:30 AM EDT").',
         '- 40–80 words. Warm, direct, human. First name only. No "I hope this finds you well", no buzzwords, no emojis unless natural.',
+        'THE ACTION LINE — what the user must actually DO, beyond sending words. Exactly ONE per thread, the single most important one:',
+        '- deck: <topic> — they promised or now owe a deck/breakdown/overview/presentation. Use this when the reply says something will be sent.',
+        '- doc: <what> — a written document, proposal or pricing sheet is owed.',
+        '- schedule: <what> — a call was agreed but has no confirmed time yet.',
+        '- answer: <question> — they asked something factual that the user must answer themselves.',
+        '- none — sending the reply is the whole job.',
+        'Pick ONE. Do not stack several actions onto one thread.',
         'OUTPUT FORMAT — for each thread that needs a reply, output exactly:',
         '### <Person name>',
-        'WHY: <one short line — what they asked / why this needs a reply>',
+        'WHY: <one short line — where the conversation stands and why this needs a reply>',
         'REPLY: <the full reply text, one paragraph>',
+        'ACTION: <one of the forms above>',
+        'NEEDS: <anything you had to leave vague because you do not know it — or the word none>',
         'Nothing else. No preamble, no summary, no closing remarks. If NO thread needs a reply, output exactly: NONE',
       ].join('\n');
       const replyUser = [
         `TODAY IS: ${today.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
+        facts ? `\nWHAT I KNOW ABOUT MY BUSINESS (the ONLY business facts you may state as true):\n${facts}` : '\nI have NOT given you any verified facts about my business. Therefore you may not state ANY specific claim about how my product works, where its data comes from, what it costs, or who uses it. Keep replies to what was said in the thread and put what you would have needed on the NEEDS line.',
         guidance ? `\nMY INSTRUCTIONS / AVAILABILITY (use these exactly — they override anything you assume):\n${guidance}` : '',
         `\nMY REAL LINKEDIN THREADS (each thread in order, oldest message first, most recent last):\n${threadsText}`,
-        '\nRead each thread in full, work out what is genuinely still outstanding in it, and draft a reply only where one is actually needed — in the exact format specified.',
+        '\nRead each thread in full, work out what is genuinely still outstanding, and draft a reply only where one is actually needed — in the exact format specified.',
       ].filter(Boolean).join('\n');
 
       const { text: drafted } = await streamTurnWithRetry([{ role: 'user', content: replyUser }], replySys, () => {});
       const clean = (drafted || '').replace(/<tool_call>[\s\S]*/g, '').trim();
 
-      // Parse "### Name / WHY: / REPLY:" blocks so each reply becomes its own actionable card.
-      const parsed: { name: string; why: string; reply: string }[] = [];
+      // Parse "### Name / WHY: / REPLY: / ACTION: / NEEDS:" blocks so each reply becomes its own
+      // actionable card. REPLY must stop at the next labelled line, otherwise ACTION/NEEDS would be
+      // swallowed into the message body and sent to the prospect.
+      const parsed: { name: string; why: string; reply: string; action: string; needs: string }[] = [];
       for (const blk of clean.split(/^###\s+/m).slice(1)) {
         const nl = blk.indexOf('\n');
         const name = (nl >= 0 ? blk.slice(0, nl) : blk).trim();
         const rest = nl >= 0 ? blk.slice(nl + 1) : '';
         const why = (rest.match(/^WHY:\s*(.+)$/mi)?.[1] ?? '').trim();
-        const reply = (rest.match(/^REPLY:\s*([\s\S]+)$/mi)?.[1] ?? '').split(/\n(?=###\s)/)[0].trim();
-        if (name && reply) parsed.push({ name, why, reply });
+        // Take everything after REPLY:, then cut at the next labelled line. A lazy match with `$`
+        // in the lookahead cannot be used here: with the `m` flag `$` matches at EVERY line end, so
+        // it would silently truncate any reply longer than one paragraph.
+        const reply = ((rest.match(/^REPLY:\s*([\s\S]+)$/mi)?.[1] ?? '')
+          .split(/^\s*(?:ACTION|NEEDS):/mi)[0]
+          .split(/\n(?=###\s)/)[0]).trim();
+        const action = (rest.match(/^ACTION:\s*(.+)$/mi)?.[1] ?? '').trim();
+        const needsRaw = (rest.match(/^NEEDS:\s*(.+)$/mi)?.[1] ?? '').trim();
+        const needs = /^none\.?$/i.test(needsRaw) ? '' : needsRaw;
+        if (name && reply) parsed.push({ name, why, reply, action, needs });
       }
+
+      /** Turn the model's ACTION line into the ONE thing to do next, naming the one command that
+       *  does it. Deliberately a suggestion, not an auto-run: firing the deck builder off the back
+       *  of every inbox scan is exactly the scattergun behaviour that makes Krew feel random. */
+      const actionHint = (a: string, who: string): { label: string; todo: string } | null => {
+        const m = a.match(/^(deck|doc|schedule|answer)\s*:\s*(.+)$/i);
+        if (!m) return null;
+        const kind = m[1].toLowerCase();
+        const what = m[2].trim().replace(/\.$/, '');
+        if (kind === 'deck')     return { label: `**You owe ${who} a deck** — ${what}. Say **"make a deck on ${what}"** and Slade builds it.`, todo: `Send ${who} a deck: ${what}` };
+        if (kind === 'doc')      return { label: `**You owe ${who} a document** — ${what}. Say **"draft ${what} for ${who}"**.`, todo: `Send ${who}: ${what}` };
+        if (kind === 'schedule') return { label: `**Needs a time** — ${what}. Reply with a slot, then say **"add it to my calendar"**.`, todo: `Confirm a time with ${who}: ${what}` };
+        return { label: `**Only you can answer this** — ${what}.`, todo: `Answer ${who}: ${what}` };
+      };
 
       // Map each drafted reply back to the profile URL read from that thread, so "open the chat"
       // targets the right person instead of guessing a slug.
@@ -4440,7 +4521,14 @@ The prompt must be production-ready — specific enough for a motion designer to
         return;
       }
 
-      const body = parsed.map((p) => `### ${p.name}\n${p.why ? `_${p.why}_\n\n` : ''}\`\`\`email ${p.name}\n${p.reply}\n\`\`\``).join('\n\n');
+      const body = parsed.map((p) => {
+        const hint = actionHint(p.action, p.name);
+        // A reply that had to leave something vague must say so ABOVE the draft — the user is one
+        // click from sending it, and an unflagged guess is the thing we most need to avoid.
+        const warn = p.needs ? `\n\n> ⚠️ **Check before sending** — ${p.needs}` : '';
+        const next = hint ? `\n\n↳ ${hint.label}` : '';
+        return `### ${p.name}\n${p.why ? `_${p.why}_\n\n` : ''}\`\`\`email ${p.name}\n${p.reply}\n\`\`\`${warn}${next}`;
+      }).join('\n\n');
       const head = `I read your LinkedIn inbox and drafted ${parsed.length} repl${parsed.length === 1 ? 'y' : 'ies'} from what was actually said in each thread:`;
       const tail = '\n\n_Say **"send the reply to <name>"** and I\'ll type it into their chat box for you to review and send — I never send anything myself._';
       const finalMsg = `${head}\n\n${body}${tail}`;
@@ -4458,6 +4546,13 @@ The prompt must be production-ready — specific enough for a motion designer to
             undefined,
             { priority: 'high', url },
           );
+          // The real-world debt behind the reply — the deck that was promised, the time still to be
+          // agreed — is a separate task from sending the message, and it is the one that actually
+          // gets forgotten once the chat is closed.
+          const hint = actionHint(p.action, p.name);
+          if (hint) {
+            todos.upsertResume(`li-action:${p.name.toLowerCase()}`, hint.todo, undefined, { priority: 'high', url });
+          }
         }
       } catch { /* to-dos optional */ }
       try {
@@ -4532,6 +4627,17 @@ The prompt must be production-ready — specific enough for a motion designer to
    * person's LinkedIn chat box (never sends it). Reads the drafts from this chat's own history so
    * the user can just say the name instead of re-pasting the message.
    */
+  // The "Reply on LinkedIn" button on each drafted card. Declared as a ref-free effect right next
+  // to the handler it calls so the two can't drift apart.
+  useEffect(() => {
+    const onReply = (e: Event) => {
+      const who = (e as CustomEvent<{ name?: string }>).detail?.name;
+      if (who) void runSendLinkedInReply(who);
+    };
+    window.addEventListener(LI_REPLY_EVENT, onReply);
+    return () => window.removeEventListener(LI_REPLY_EVENT, onReply);
+  });
+
   async function runSendLinkedInReply(who: string) {
     if (busy) return;
     const target = who.trim().toLowerCase();

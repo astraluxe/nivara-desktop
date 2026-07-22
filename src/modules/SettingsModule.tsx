@@ -44,8 +44,14 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.16',
+  version: '1.6.17',
   items: [
+    'Arjun now works out what a LinkedIn conversation actually requires, not just what to say back. When someone accepts something you offered — a “sure” after you promised a breakdown — he treats delivering that as the real outstanding task, names the one thing to do next, and puts it on your To-do list alongside the reply.',
+    'Replies no longer invent facts about your business. Asked how adris.tech sources its data, Arjun previously made up a confident answer you could have sent to a prospect. He now only states things recorded in your Krew profile or said in the thread; anything else is flagged “check before sending” with exactly what needs confirming.',
+    'Each conversation gets ONE recommended next step and one agent to do it — a deck goes to Slade, a time goes to your calendar — instead of several agents being pulled in for a single message.',
+    'Every drafted message now has a “Reply on LinkedIn” button that opens that person’s chat with the reply already typed in — you just press send. No need to type “send the reply to …” any more.',
+    'Fixed: replies longer than one paragraph were cut short in the draft.',
+    'Fixed: the recipient’s name appeared as the first line inside the drafted message itself.',
     'Fixed: model downloads that failed partway with “error decoding response body”. A model is several gigabytes, and a single dropped connection threw the whole download away. Downloads now resume from where they stopped instead of starting over, retry a broken connection by themselves, and only claim a model is installed once the file is genuinely complete.',
     'The recommended model now shows its own progress bar and a Cancel button while downloading. Pressing Download used to look like it had done nothing, because the only progress was further down the page.',
     'Fixed: messages disappeared from a chat when you reopened it. Anything that ended in an error — including outreach that stopped because no local model was downloaded — was only ever drawn on screen and never saved, so the conversation came back with a gap in it. Nothing is dropped from a chat now.',
