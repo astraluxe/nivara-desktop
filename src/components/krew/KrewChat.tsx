@@ -3363,7 +3363,10 @@ const [studioExtracting, setStudioExtracting] = useState(false);
         // subject matter: they're about what the user should do next after any turn. Boss is the
         // agent the user actually talks to, so leaving these off its list meant they could never
         // fire in normal use — which is exactly why no next-step card or to-do ever appeared.
-        ...SYSTEM_TOOLS.filter(t => ['save_memory', 'recall_memory', 'forget_memory', 'recall_from_brain', 'create_todo', 'suggest_next_task'].includes(t.name)),
+        // create_calendar_event is on boss for the same reason as research_person: boss handles
+        // "put that in my calendar" itself rather than delegating, and without the tool it would
+        // simply SAY it had done so.
+        ...SYSTEM_TOOLS.filter(t => ['save_memory', 'recall_memory', 'forget_memory', 'recall_from_brain', 'create_todo', 'suggest_next_task', 'create_calendar_event', 'set_user_location'].includes(t.name)),
         ...BOSS_TOOLS,
         ...BROWSER_TOOLS,
         // research_person is the one LEAD_TOOL boss keeps. Boss answers plenty of turns itself
@@ -4501,10 +4504,12 @@ The prompt must be production-ready — specific enough for a motion designer to
         '- Ground every reply in what was ACTUALLY said in that thread. Never invent a claim, a time, or a commitment nobody made.',
         '- If they proposed times, answer those SPECIFIC times against the user\'s stated availability. If a proposed time does not work, say so plainly and offer one that does. Convert time zones carefully and show both (e.g. "9:00 PM IST / 10:30 AM EDT").',
         '- 40–80 words. Warm, direct, human. First name only. No "I hope this finds you well", no buzzwords, no emojis unless natural.',
+        '- NEVER PROMISE SOMETHING THE REPLY ITSELF DOES NOT DELIVER. Do not write "I\'ll send a calendar invite", "with a meeting link included", "I\'ll attach the deck", "I\'ll share the doc" as if it were already happening — nothing is sent automatically, and a promise made here that nobody keeps costs the user the meeting. Either state the plain fact ("Tuesday 2pm IST works — I\'ll get the invite over to you") AND record it on the ACTION line so it actually gets done, or do not mention it at all. Never say a link is attached; you cannot attach anything.',
         'THE ACTION LINE — what the user must actually DO, beyond sending words. Exactly ONE per thread, the single most important one:',
         '- deck: <topic> — they promised or now owe a deck/breakdown/overview/presentation. Use this when the reply says something will be sent.',
         '- doc: <what> — a written document, proposal or pricing sheet is owed.',
-        '- schedule: <what> — a call was agreed but has no confirmed time yet.',
+        '- schedule: <what> — a call was agreed but has NO confirmed time yet.',
+        '- invite: <day + time + timezone> — a specific time HAS been agreed and the calendar event still has to be created. Use this whenever the reply names a time (e.g. "invite: Tuesday 2:00 PM IST, 30 min intro call"). This is the one that used to get lost.',
         '- answer: <question> — they asked something factual that the user must answer themselves.',
         '- none — sending the reply is the whole job.',
         'Pick ONE. Do not stack several actions onto one thread.',
@@ -4552,17 +4557,20 @@ The prompt must be production-ready — specific enough for a motion designer to
        *  does it. Deliberately a suggestion, not an auto-run: firing the deck builder off the back
        *  of every inbox scan is exactly the scattergun behaviour that makes Krew feel random. */
       const actionHint = (a: string, who: string): { label: string; todo: string; prompt?: string } | null => {
-        const m = a.match(/^(deck|doc|schedule|answer)\s*:\s*(.+)$/i);
+        const m = a.match(/^(deck|doc|schedule|invite|answer)\s*:\s*(.+)$/i);
         if (!m) return null;
         const kind = m[1].toLowerCase();
         const what = m[2].trim().replace(/\.$/, '');
         // `prompt` is what Continue hands back to Arjun, so the promised work is actually resumable
-        // rather than just described. Only for things Krew can genuinely do on its own — a fact
-        // only the user knows is deliberately left without one.
+        // rather than just described. EVERY kind now carries one: previously schedule/answer had
+        // none, and the code below then fell back to attaching the LinkedIn url — so pressing
+        // Continue on those to-dos just reopened the person's profile and did nothing about the
+        // thing that was actually owed, which is the whole point of the to-do.
         if (kind === 'deck')     return { label: `**You owe ${who} a deck** — ${what}. Say **"make a deck on ${what}"** and Slade builds it.`, todo: `Send ${who} a deck: ${what}`, prompt: `Make a deck on ${what} — it's for ${who}, who I'm talking to on LinkedIn.` };
         if (kind === 'doc')      return { label: `**You owe ${who} a document** — ${what}. Say **"draft ${what} for ${who}"**.`, todo: `Send ${who}: ${what}`, prompt: `Draft ${what} for ${who}, who I'm talking to on LinkedIn.` };
-        if (kind === 'schedule') return { label: `**Needs a time** — ${what}. Reply with a slot, then say **"add it to my calendar"**.`, todo: `Confirm a time with ${who}: ${what}` };
-        return { label: `**Only you can answer this** — ${what}.`, todo: `Answer ${who}: ${what}` };
+        if (kind === 'invite')   return { label: `**Put it in the calendar** — ${what}. Press Continue and I'll open the event ready to save.`, todo: `Calendar invite for ${who}: ${what}`, prompt: `Create the calendar event for my meeting with ${who}: ${what}. Use create_calendar_event so it opens prefilled for me to save, then tell me what still needs doing (sending them the invite).` };
+        if (kind === 'schedule') return { label: `**Needs a time** — ${what}. Press Continue and I'll draft a message proposing slots.`, todo: `Agree a time with ${who}: ${what}`, prompt: `Draft a short LinkedIn message to ${who} proposing two or three specific times for ${what}. Ask me for my availability first if you do not already have it, then once a time is agreed create the calendar event.` };
+        return { label: `**Only you can answer this** — ${what}. Press Continue and I'll draft it from your notes.`, todo: `Answer ${who}: ${what}`, prompt: `Help me answer ${who}'s question on LinkedIn: ${what}. Use what is in my Brain about my product and flag anything you cannot back up rather than guessing.` };
       };
 
       // Map each drafted reply back to the profile URL read from that thread, so "open the chat"
@@ -4600,10 +4608,13 @@ The prompt must be production-ready — specific enough for a motion designer to
       try {
         for (const p of parsed) {
           const url = urlByName.get(p.name.toLowerCase());
+          // Continue on a reply to-do types the drafted reply into that person's chat box, ready to
+          // send. It used to carry only the profile url, so Continue dumped the user on the
+          // person's profile page with the draft nowhere in sight and nothing done.
           todos.upsertResume(
             `li-reply:${p.name.toLowerCase()}`,
             `Reply to ${p.name} on LinkedIn${p.why ? ` — ${p.why}` : ''}`,
-            undefined,
+            { kind: 'prompt', label: 'Open chat & type it', prompt: `Send the reply to ${p.name} on LinkedIn — open their chat and type this message in for me to review and send:\n\n${p.reply}` },
             { priority: 'high', url },
           );
           // The real-world debt behind the reply — the deck that was promised, the time still to be

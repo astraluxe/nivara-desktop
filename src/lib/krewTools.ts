@@ -444,6 +444,19 @@ export const SYSTEM_TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'create_calendar_event',
+    description: 'PUT A MEETING IN THE USER\'S CALENDAR. Opens Google Calendar in the browser with the event already filled in — title, date, time, timezone, guests and notes — so the user just presses Save. Needs NO connected account and no setup. CALL THIS whenever a specific time has been agreed or the user says to put something in the calendar. CRITICAL: if you tell someone a meeting is being scheduled, you MUST actually call this — saying "I\'ll send a calendar invite" without calling it means nothing happens at all and the meeting is silently lost. Be honest in what you write to the other person: this prepares the event for the user to save, it does not send an invitation by itself, and it cannot create a video link (the user adds Google Meet with one click on the same screen). Never claim a link has been attached.',
+    parameters: {
+      title:      { type: 'string', description: 'Event title, e.g. "Amogh × Keshav — adris.tech intro call".', required: true },
+      date:       { type: 'string', description: 'Date as YYYY-MM-DD. Work it out from the real date given to you — never guess a year.', required: true },
+      start_time: { type: 'string', description: 'Start time in 24-hour HH:MM, e.g. "14:00".', required: true },
+      timezone:   { type: 'string', description: 'IANA timezone the time is expressed in, e.g. "Asia/Kolkata" for IST, "America/New_York" for ET. Default Asia/Kolkata.', required: false },
+      duration_minutes: { type: 'number', description: 'Length in minutes. Default 30.', required: false },
+      details:    { type: 'string', description: 'Notes/agenda for the event body — e.g. what was agreed in the thread.', required: false },
+      guests:     { type: 'string', description: 'Comma-separated guest email addresses, if you genuinely have them. Leave empty otherwise — never invent one.', required: false },
+    },
+  },
+  {
     name: 'save_to_brain',
     description: 'Save important data to the shared BRAIN — a persistent, visual knowledge store the user can see and every agent can recall. Use it to keep a company/lead list, an outreach draft, research findings, a contact and their outreach progress, or any result worth reusing — so it is NEVER re-fetched (this saves the user tokens). Optionally connect it to a related Brain item.',
     parameters: {
@@ -1410,6 +1423,7 @@ Wait for the tool result before continuing. After receiving a result, if there a
 - NEVER invent a person's name, a LinkedIn URL/slug, an email, or any contact detail. Only write a LinkedIn URL or email that a tool ACTUALLY returned. A made-up /in/<slug> (e.g. tacking on random letters) routinely points to the WRONG real person — that is a serious failure.
 - Do NOT claim you "verified", "confirmed", or "checked" something unless you actually opened it with a tool and read the result. If you did not verify, say what is confirmed vs a labelled guess.
 - If you couldn't find a real value, write "—" (or a clearly-labelled "guess: … — verify") rather than a confident fake. Fewer rows that are real beats a full table that is fabricated.
+- **Never promise an action you are not about to perform.** Saying "I'll send over a calendar invite", "I'll add that to your calendar", "I'll share the doc" does NOT make any of it happen — nothing runs on your behalf after you stop writing. If you say a meeting is being scheduled, call **create_calendar_event** in the same turn so the event really is created; if you say something will be sent, either produce it now or call create_todo so it is on the user's list. And never describe a thing as attached, sent, or booked when it is not: a calendar event is only booked once the user presses Save, and you cannot attach files or generate meeting links. A commitment made in the user's name that nobody keeps costs them the meeting.
 - **A REAL, NAMED PERSON — call research_person first, every time.** If the user names someone and wants to know who they are, their role, their employer, their career, their expertise or what they have been posting — including any meeting/call prep or "briefing" — you MUST call research_person before writing a word about them. Do NOT write a bio, job title, company, career history or "recent activity" for a named human from what you recall or what sounds plausible: a briefing that reads perfectly and is invented sends the user into a real meeting with false facts about a real person, and they will only discover it in the room. If research_person finds nothing, tell the user you could not find them and ask for a LinkedIn URL or their company — that answer is genuinely more useful than a confident fake, and it is the required one.
 
 ## Final answer
@@ -1772,6 +1786,50 @@ async function executeToolCore(
     return `Saved the user's location: ${label}. Every agent will now search this market by default, and it is visible in Settings → Location where the user can change it. Continue the task using ${label} — do not ask again.`;
   }
 
+  // ── Put a meeting in the calendar ─────────────────────────────────────────
+  // Uses Google Calendar's own prefilled-event URL, so this works with no connected account and no
+  // OAuth. It exists because the app had NO calendar capability whatsoever, and the agent had been
+  // telling people "I'll send over a calendar invite with a meeting link" — a promise nothing in
+  // the system could keep, so the meeting simply never got booked.
+  if (toolName === 'create_calendar_event') {
+    const title = str(args.title).trim();
+    const date = str(args.date).trim();
+    const startTime = str(args.start_time ?? args.start).trim();
+    if (!title) return '[create_calendar_event needs "title".]';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return `[create_calendar_event needs "date" as YYYY-MM-DD (got "${date}"). Work the real date out from today's date — do not guess.]`;
+    if (!/^\d{1,2}:\d{2}$/.test(startTime)) return `[create_calendar_event needs "start_time" as 24-hour HH:MM (got "${startTime}").]`;
+    const tz = str(args.timezone).trim() || 'Asia/Kolkata';
+    const mins = Math.max(5, Math.min(600, num(args.duration_minutes, 30)));
+    const [hh, mm] = startTime.split(':').map((n) => parseInt(n, 10));
+    if (!Number.isFinite(hh) || !Number.isFinite(mm) || hh > 23 || mm > 59) return `[create_calendar_event: "${startTime}" is not a valid 24-hour time.]`;
+    // Google accepts LOCAL wall-clock times paired with ctz=<IANA zone>, which sidesteps doing
+    // timezone arithmetic ourselves — the single easiest way to book a meeting an hour off.
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const endTotal = hh * 60 + mm + mins;
+    const stamp = (dayOffset: number, h: number, m: number) => {
+      const d = new Date(`${date}T00:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + dayOffset);
+      return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(h)}${pad(m)}00`;
+    };
+    const dates = `${stamp(0, hh, mm)}/${stamp(Math.floor(endTotal / 1440), Math.floor(endTotal / 60) % 24, endTotal % 60)}`;
+    const params = new URLSearchParams({ action: 'TEMPLATE', text: title, dates, ctz: tz });
+    const details = str(args.details).trim();
+    if (details) params.set('details', details);
+    const guests = str(args.guests).trim();
+    if (guests) params.set('add', guests);
+    const url = `https://calendar.google.com/calendar/render?${params.toString()}`;
+    emit('agent-browser-active', {}).catch(() => {});
+    _browserActiveThisRun = true;
+    setAgentBrowserHold(true);   // the user has to press Save — do NOT close the window under them
+    const raw = await withBrowserLock(() => invoke<string>('run_browser_persistent', { args: `open "${url}"` }).catch((e) => String(e)));
+    emit('agent-browser-idle', {}).catch(() => {});
+    if (/\[agent-browser not installed|\[browser-crash|\[custom-browser-unavailable/i.test(raw)) {
+      return `Couldn't open the browser to create the event. The user can create it themselves with this link:\n${url}`;
+    }
+    const when = `${date} at ${startTime} (${tz}), ${mins} min`;
+    return `Google Calendar is now open with this event filled in: "${title}" — ${when}${guests ? `, guests: ${guests}` : ''}. TELL THE USER, in plain words, that the event is prefilled and waiting for them to press **Save** (and that they can add a Google Meet link on that same screen with one click). Do NOT tell them or anyone else that an invite has been SENT or that a meeting link is attached — neither is true until they save it.`;
+  }
+
   // ── Brain (shared knowledge graph) ────────────────────────────────────────
   if (toolName === 'save_to_brain') {
     const { brain } = await import('./knowledgeStore');
@@ -2091,18 +2149,25 @@ async function executeToolCore(
     }
     const jsonIdx = raw.indexOf('MSGS_JSON:');
     if (jsonIdx < 0) return raw || "Couldn't read your LinkedIn messages just now — try again.";
-    let threads: { name: string; unread: boolean; url: string; messages: { from: string; text: string }[] }[] = [];
+    let threads: { name: string; unread: boolean; url: string; messages: { from: string; isYou?: boolean; text: string }[] }[] = [];
     try {
       const arr = JSON.parse(raw.slice(jsonIdx + 'MSGS_JSON:'.length).trim());
       if (Array.isArray(arr)) threads = arr;
     } catch { return "Read your LinkedIn messages but couldn't parse the result — try again."; }
     if (threads.length === 0) return "You have no LinkedIn conversations to read right now.";
+    // Speaker labels are explicit and uniform: "YOU >" for the account owner, "THEM (<name>) >" for
+    // the other person. The old format printed a bare name per line and left the model to work out
+    // which of the two was the user — so it regularly read the user's own message as the prospect's
+    // and drafted a reply to something the user had said themselves. `isYou` comes from LinkedIn's
+    // own per-message DOM marker, so these labels are ground truth, not inference.
     const lines = threads.map((t) => {
       const tag = t.unread ? ' [UNREAD]' : '';
-      const convo = (t.messages || []).map((m) => `  ${m.from}: ${m.text}`).join('\n');
+      const convo = (t.messages || []).map((m) => (
+        m.isYou ? `  YOU > ${m.text}` : `  THEM (${m.from || t.name}) > ${m.text}`
+      )).join('\n');
       return `### ${t.name}${tag}\nProfile: ${t.url || '(not found — ask the user or use linkedin_scan_connections)'}\n${convo}`;
     }).join('\n\n');
-    return `Read ${threads.length} REAL LinkedIn conversation${threads.length === 1 ? '' : 's'} straight from the page (unread first). Use the exact text below — do NOT invent or paraphrase what anyone said when quoting it back:\n\n${lines}\n\nWhen drafting a reply, call draft_linkedin_reply with the matching \`url\` from above — it opens their chat and types the reply for the user to review and send themselves. If a reply proposes a meeting time, ground it in what was ACTUALLY said here plus the user's stated availability — never call open_service_setup/open_connect_apps for a LinkedIn scheduling reply.`;
+    return `Read ${threads.length} REAL LinkedIn conversation${threads.length === 1 ? '' : 's'} straight from the page (unread first). Use the exact text below — do NOT invent or paraphrase what anyone said when quoting it back.\n\nWHO IS WHO — read this before drafting anything. Every line is labelled from LinkedIn's own page markup:\n- \`YOU >\` is a message THE USER (the account owner) already sent. Never reply to one of these, never treat it as a question put to the user, and never thank someone for something the user themselves said.\n- \`THEM (<name>) >\` is the other person. Only these can be waiting on a reply.\nIf the last line of a thread is \`YOU >\`, the user has already responded and the ball is in the other person's court — that thread usually needs NO reply.\n\n${lines}\n\nWhen drafting a reply, call draft_linkedin_reply with the matching \`url\` from above — it opens their chat and types the reply for the user to review and send themselves. If a reply proposes a meeting time, ground it in what was ACTUALLY said here plus the user's stated availability — never call open_service_setup/open_connect_apps for a LinkedIn scheduling reply.`;
   }
 
   if (toolName === 'draft_linkedin_reply') {

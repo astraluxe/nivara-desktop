@@ -1258,7 +1258,16 @@ async function main() {
           for (var j = 0; j < bodyEls.length; j++) {
             var text = clean(bodyEls[j].innerText);
             if (!text) continue;
-            out.push({ from: lastSender || 'Unknown', text: text });
+            // WHO SAID THIS — decided from the DOM, not from the name text. LinkedIn puts
+            // `msg-s-event-listitem--other` on the OTHER person's messages; its absence means the
+            // account owner sent it. Names alone were never enough: LinkedIn prints a sender name
+            // only on the FIRST message of a consecutive run, so `lastSender` carried the wrong
+            // name whenever a run began before the visible window — and the reader then read the
+            // owner's own words as the other person's, and drafted a reply to the user's own
+            // message. This class is on every message, so it cannot drift.
+            var item = bodyEls[j].closest('.msg-s-event-listitem');
+            var isOther = !!(item && item.classList.contains('msg-s-event-listitem--other'));
+            out.push({ from: lastSender || (isOther ? participant : 'You'), isYou: !isOther, text: text });
           }
         }
         // The other participant's profile link — reliably scoped to the thread header, unlike the
