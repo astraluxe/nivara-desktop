@@ -45,7 +45,7 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.21',
+  version: '1.6.22',
   items: [
     'Fixed: pressing Continue on a drafted LinkedIn reply re-read your whole inbox and re-drafted every thread, instead of sending that one reply. The Continue instruction spanned two lines, the rule that recognises “send the reply to …” only ever matched single-line text, so it fell through to the inbox scan. A to-do now performs its action directly rather than being re-read as English — and it uses the profile link captured from the thread, so it works even for someone you have never scanned.',
     'Replies can no longer tell someone a meeting link is included. There is no way for adris to create a video link or attach a file, so that phrasing was always false and sent people looking for something that did not exist. A reply may only promise the invite when it also records the calendar action that actually creates it.',
