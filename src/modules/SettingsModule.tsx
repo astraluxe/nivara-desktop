@@ -44,8 +44,10 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.18',
+  version: '1.6.19',
   items: [
+    'Fixed: a long request that merely MENTIONED LinkedIn was treated as a command to go and read your LinkedIn. Asking for a slide deck whose slides happened to mention LinkedIn and "stages a reply" opened a browser instead of writing the deck. Shortcuts like this now only fire on short, direct instructions — anything that looks like a brief or a document goes to Arjun, who reads the whole thing first. Requests to write a deck, blog, article or report are never mistaken for inbox commands.',
+    'The suggestion to download a local model no longer appears in the middle of your chat. It shows as a dismissible notification at the top of the window with an "Open Models" button, so it cannot bury the answer you were reading.',
     'Arjun now works out what a LinkedIn conversation actually requires, not just what to say back. When someone accepts something you offered — a “sure” after you promised a breakdown — he treats delivering that as the real outstanding task, names the one thing to do next, and puts it on your To-do list alongside the reply.',
     'Replies are now written from your own product notes in the Brain. Arjun pulls the notes that relate to what the person actually asked — plus your product and pricing notes — and answers from those. Asked how adris.tech sources its data, he previously made up a confident answer you could have sent to a prospect; he now uses what you have written, and anything he genuinely does not know is flagged “check before sending” with exactly what needs confirming rather than being guessed.',
     'Each conversation gets ONE recommended next step and one agent to do it — a deck goes to Slade, a time goes to your calendar — instead of several agents being pulled in for a single message.',

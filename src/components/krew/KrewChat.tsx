@@ -5375,6 +5375,21 @@ The prompt must be production-ready — specific enough for a motion designer to
   async function send() {
     const text = input.trim();
     if ((!text && attachedFiles.length === 0) || busy) return;
+
+    // Is this an INSTRUCTION, or a document that happens to contain instruction-shaped words?
+    //
+    // The deterministic routes below match on keywords anywhere in the message. That is fine for
+    // "check my LinkedIn messages", and badly wrong for a long brief: a request for a 9-slide deck
+    // that mentioned LinkedIn once (as a feature being described) and "stages a reply" once was
+    // routed to the LinkedIn inbox and opened a browser. Real commands are short and few-lined;
+    // specs, briefs and pasted documents are neither. Anything long falls through to the boss,
+    // which reads the whole thing and works out what is actually being asked.
+    const lineCount = text.split('\n').filter((l) => l.trim()).length;
+    // A request to PRODUCE something is never a request to go and read an inbox, however many
+    // matching words it contains ("write a post about how to reply to LinkedIn DMs"). Length alone
+    // cannot separate these, because a short brief is still a brief.
+    const wantsArtifact = /\b(blog|article|essay|deck|presentation|slide|slides|ppt|powerpoint|outline|script|report|newsletter|whitepaper|case study|caption|agenda)\b/i.test(text);
+    const isDirectCommand = text.length <= 600 && lineCount <= 8 && !wantsArtifact;
     // Deterministic LinkedIn-connections scan: "scan my linkedin connections" (from /scan or typed).
     // Runs directly (never via the boss). Any attached file / extra words become the focus so the
     // saved list is filtered/flagged to what the user's after. The user pressed Enter here, so they
@@ -5405,7 +5420,8 @@ The prompt must be production-ready — specific enough for a motion designer to
     // a message/inbox word, so it can never swallow a connections scan or an outreach draft.
     // This exists because routing it through the boss produced a lead-list answer to an inbox
     // question — see runLinkedInMessages for the full reasoning.
-    if (/\blinked\s?in\b/i.test(text)
+    if (isDirectCommand
+        && /\blinked\s?in\b/i.test(text)
         && /\b(messages?|inbox|dms?|replies|reply|responded|replied)\b/i.test(text)
         && /\b(check|read|see|look|any|go to|open|reply|replies|respond|answer|draft|new)\b/i.test(text)
         && !/\bconnections\b/i.test(text)) {
@@ -5416,7 +5432,8 @@ The prompt must be production-ready — specific enough for a motion designer to
     // Deterministic link-repair — checks the saved outreach profile links and fixes the wrong/missing
     // ones by searching LinkedIn for the right profile. Kept BEFORE the outreach launcher so
     // "verify/fix the outreach links" never gets swallowed by the "…outreach" draft trigger below.
-    if (/\b(verify|check|fix|repair|correct|validate)\b[^.]*\b(link|links|url|urls|profile|profiles)\b/i.test(text)
+    if (isDirectCommand
+        && /\b(verify|check|fix|repair|correct|validate)\b[^.]*\b(link|links|url|urls|profile|profiles)\b/i.test(text)
         && /\b(outreach|connection|connections|contact|contacts|copilot|saved)\b/i.test(text)) {
       setInput('');
       verifyOutreachLinks();
@@ -5428,12 +5445,12 @@ The prompt must be production-ready — specific enough for a motion designer to
     // the people in <file>"). That IS an outreach run in every respect, but without the literal
     // word "outreach" it fell through to the boss, which handed it to a strategy agent and returned
     // a GTM report — ICP, positioning, 30-day plan — instead of the messages and the copilot.
-    if (/\b(draft|write|make|start|do|continue)\b[^.]*\boutreach\b/i.test(text)
+    if (isDirectCommand && (/\b(draft|write|make|start|do|continue)\b[^.]*\boutreach\b/i.test(text)
         || /\bopen (the )?(outreach )?copilot\b/i.test(text)
         || /\b(message|reach out to|write to|dm)\b[^.]*\b(these|them|my (linkedin )?connections)\b/i.test(text)
         || (/\b(write|draft|make|prepare)\b/i.test(text)
             && /\b(dm|dms|message|messages|cold email|cold emails|email)\b/i.test(text)
-            && /\bfor (the )?(people|everyone|each|those)\b|\bfor my (linkedin )?connections\b|\bfor these\b/i.test(text))) {
+            && /\bfor (the )?(people|everyone|each|those)\b|\bfor my (linkedin )?connections\b|\bfor these\b/i.test(text)))) {
       const focus = text.replace(/\b(draft|write|make|start|do)\b|\boutreach\b|\bfor my (linkedin )?connections\b|\bopen (the )?(outreach )?copilot\b|\band open the copilot\b/gi, '').replace(/^[\s:,-]+|[\s:,-]+$/g, '').trim();
       // How many to draft: honour an explicit count ("top 20", "first 30 people", "all"), else 50.
       const allMatch = /\ball\b|\beveryone\b|\beach\b/i.test(text);
