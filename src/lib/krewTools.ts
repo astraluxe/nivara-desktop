@@ -453,7 +453,8 @@ export const SYSTEM_TOOLS: ToolDef[] = [
       timezone:   { type: 'string', description: 'IANA timezone the time is expressed in, e.g. "Asia/Kolkata" for IST, "America/New_York" for ET. Default Asia/Kolkata.', required: false },
       duration_minutes: { type: 'number', description: 'Length in minutes. Default 30.', required: false },
       details:    { type: 'string', description: 'Notes/agenda for the event body — e.g. what was agreed in the thread.', required: false },
-      guests:     { type: 'string', description: 'Comma-separated guest email addresses, if you genuinely have them. Leave empty otherwise — never invent one.', required: false },
+      guests:     { type: 'string', description: 'Comma-separated guest email addresses, if you genuinely have them. Leave empty otherwise — never invent one. With no guest, saving the event notifies nobody, so share the returned Meet link with them instead.', required: false },
+      add_meet:   { type: 'boolean', description: 'Create a real Google Meet link and put it on the event. Default true — pass false only for something with no video call (a reminder, a personal block).', required: false },
     },
   },
   {
@@ -1812,9 +1813,20 @@ async function executeToolCore(
       return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(h)}${pad(m)}00`;
     };
     const dates = `${stamp(0, hh, mm)}/${stamp(Math.floor(endTotal / 1440), Math.floor(endTotal / 60) % 24, endTotal % 60)}`;
+    // Mint a real Google Meet link and put it ON the event, so the meeting has somewhere to happen
+    // and there is a link to send the other person. Google Calendar's TEMPLATE URL cannot add Meet
+    // by itself, so we create the room first and write it into the event.
+    let meetUrl = '';
+    if (args.add_meet !== false) {
+      const mraw = await withBrowserLock(() => invoke<string>('run_browser_persistent', { args: 'meetlink' }).catch((e) => String(e)));
+      const mi = mraw.indexOf('MEET_URL:');
+      if (mi >= 0) meetUrl = mraw.slice(mi + 'MEET_URL:'.length).trim().split(/\s/)[0];
+    }
     const params = new URLSearchParams({ action: 'TEMPLATE', text: title, dates, ctz: tz });
     const details = str(args.details).trim();
-    if (details) params.set('details', details);
+    const body = [details, meetUrl ? `Video call: ${meetUrl}` : ''].filter(Boolean).join('\n\n');
+    if (body) params.set('details', body);
+    if (meetUrl) params.set('location', meetUrl);
     const guests = str(args.guests).trim();
     if (guests) params.set('add', guests);
     const url = `https://calendar.google.com/calendar/render?${params.toString()}`;
@@ -1827,7 +1839,13 @@ async function executeToolCore(
       return `Couldn't open the browser to create the event. The user can create it themselves with this link:\n${url}`;
     }
     const when = `${date} at ${startTime} (${tz}), ${mins} min`;
-    return `Google Calendar is now open with this event filled in: "${title}" — ${when}${guests ? `, guests: ${guests}` : ''}. TELL THE USER, in plain words, that the event is prefilled and waiting for them to press **Save** (and that they can add a Google Meet link on that same screen with one click). Do NOT tell them or anyone else that an invite has been SENT or that a meeting link is attached — neither is true until they save it.`;
+    const meetLine = meetUrl
+      ? `\nMEET LINK (real, already created — safe to share): ${meetUrl}`
+      : `\nNo Google Meet link could be created (the user may not be signed in to Google in the ADRIS browser). Do NOT invent one or claim a link exists.`;
+    const guestLine = guests
+      ? `\nGuests: ${guests} — they will be emailed the invitation once the user presses Save.`
+      : `\nNO GUEST EMAIL, so saving this notifies NOBODY — it only puts the meeting in the user's own calendar. ${meetUrl ? 'Send the other person the meet link above instead, and tell the user that is what you did.' : 'Tell the user plainly that the other person will not receive anything, and ask for their email if they want one sent.'}`;
+    return `Google Calendar is open with this event filled in: "${title}" — ${when}.${meetLine}${guestLine}\n\nTELL THE USER the event is prefilled and waiting for them to press **Save**. Do NOT say an invitation has been SENT — nothing is sent until they save it${guests ? '' : ', and with no guest on it nothing is sent even then'}.`;
   }
 
   // ── Brain (shared knowledge graph) ────────────────────────────────────────

@@ -4505,12 +4505,12 @@ The prompt must be production-ready — specific enough for a motion designer to
         '- If they proposed times, answer those SPECIFIC times against the user\'s stated availability. If a proposed time does not work, say so plainly and offer one that does. Convert time zones carefully and show both (e.g. "9:00 PM IST / 10:30 AM EDT").',
         '- 40–80 words. Warm, direct, human. First name only. No "I hope this finds you well", no buzzwords, no emojis unless natural.',
         '- NEVER CLAIM A LINK, FILE OR ATTACHMENT. You cannot create a video-call link and cannot attach anything, so the words "with the meeting link included", "link attached", "I\'ve attached", "please find enclosed" are always false. Banned outright — writing them sends the other person looking for something that does not exist.',
-        '- A promise is only allowed if the ACTION line makes it happen. You may write "I\'ll get the invite across to you" ONLY when you also put `invite: <day, time, timezone>` on the ACTION line — that is what actually creates the event. Same for a deck or a document: promise it only with the matching ACTION line. If you are not recording the action, do not mention the thing at all. An unrecorded promise is one nobody keeps, and it costs the user the meeting.',
+        '- A promise is only allowed if the ACTION line makes it happen. When you promise a JOINING LINK, write the exact token {{MEET_LINK}} where the link belongs (e.g. \"Here is the link: {{MEET_LINK}}\") and it is replaced with the real Google Meet URL - never write a made-up meet.google.com address, and never mention a link without that token. You may write "I\'ll get the invite across to you" ONLY when you also put `invite: <day, time, timezone>` on the ACTION line — that is what actually creates the event. Same for a deck or a document: promise it only with the matching ACTION line. If you are not recording the action, do not mention the thing at all. An unrecorded promise is one nobody keeps, and it costs the user the meeting.',
         'THE ACTION LINE — what the user must actually DO, beyond sending words. Exactly ONE per thread, the single most important one:',
         '- deck: <topic> — they promised or now owe a deck/breakdown/overview/presentation. Use this when the reply says something will be sent.',
         '- doc: <what> — a written document, proposal or pricing sheet is owed.',
         '- schedule: <what> — a call was agreed but has NO confirmed time yet.',
-        '- invite: <day + time + timezone> — a specific time HAS been agreed and the calendar event still has to be created. Use this whenever the reply names a time (e.g. "invite: Tuesday 2:00 PM IST, 30 min intro call"). This is the one that used to get lost.',
+        '- invite: <YYYY-MM-DD> <HH:MM 24h> <IANA timezone> | <duration minutes> | <short meeting title> - a specific time HAS been agreed. Example: `invite: 2026-07-28 14:00 Asia/Kolkata | 30 | Amogh x Keshav intro call`. Work the real date out from the TODAY IS date above ("Tuesday" means the NEXT Tuesday); IST is Asia/Kolkata, ET is America/New_York, UK is Europe/London. The meeting AND its video link are created automatically from this line, so an unparseable one means no meeting gets made.',
         '- answer: <question> — they asked something factual that the user must answer themselves.',
         '- none — sending the reply is the whole job.',
         'Pick ONE. Do not stack several actions onto one thread.',
@@ -4536,7 +4536,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       // Parse "### Name / WHY: / REPLY: / ACTION: / NEEDS:" blocks so each reply becomes its own
       // actionable card. REPLY must stop at the next labelled line, otherwise ACTION/NEEDS would be
       // swallowed into the message body and sent to the prospect.
-      const parsed: { name: string; why: string; reply: string; action: string; needs: string }[] = [];
+      const parsed: { name: string; why: string; reply: string; action: string; needs: string; calendar?: { ok: boolean; guests: string; link: string; when: string } }[] = [];
       for (const blk of clean.split(/^###\s+/m).slice(1)) {
         const nl = blk.indexOf('\n');
         const name = (nl >= 0 ? blk.slice(0, nl) : blk).trim();
@@ -4569,10 +4569,81 @@ The prompt must be production-ready — specific enough for a motion designer to
         // thing that was actually owed, which is the whole point of the to-do.
         if (kind === 'deck')     return { label: `**You owe ${who} a deck** — ${what}. Say **"make a deck on ${what}"** and Slade builds it.`, todo: `Send ${who} a deck: ${what}`, prompt: `Make a deck on ${what} — it's for ${who}, who I'm talking to on LinkedIn.` };
         if (kind === 'doc')      return { label: `**You owe ${who} a document** — ${what}. Say **"draft ${what} for ${who}"**.`, todo: `Send ${who}: ${what}`, prompt: `Draft ${what} for ${who}, who I'm talking to on LinkedIn.` };
-        if (kind === 'invite')   return { label: `**Put it in the calendar** — ${what}. Press Continue and I'll open the event ready to save.`, todo: `Calendar invite for ${who}: ${what}`, prompt: `Create the calendar event for my meeting with ${who}: ${what}. Use create_calendar_event so it opens prefilled for me to save, then tell me what still needs doing (sending them the invite).` };
+        // The event is created automatically above, so this to-do is the reminder to press Save —
+        // and Continue re-opens it if the window was closed before that happened.
+        if (kind === 'invite')   return { label: `**Meeting set** — ${what}. Press Continue if you need the calendar tab opened again.`, todo: `Save the calendar event for ${who}: ${what}`, prompt: `Open the calendar event for my meeting with ${who} again: ${what}. Use create_calendar_event.` };
         if (kind === 'schedule') return { label: `**Needs a time** — ${what}. Press Continue and I'll draft a message proposing slots.`, todo: `Agree a time with ${who}: ${what}`, prompt: `Draft a short LinkedIn message to ${who} proposing two or three specific times for ${what}. Ask me for my availability first if you do not already have it, then once a time is agreed create the calendar event.` };
         return { label: `**Only you can answer this** — ${what}. Press Continue and I'll draft it from your notes.`, todo: `Answer ${who}: ${what}`, prompt: `Help me answer ${who}'s question on LinkedIn: ${what}. Use what is in my Brain about my product and flag anything you cannot back up rather than guessing.` };
       };
+
+      /** The person's email, if we genuinely already hold one — outreach campaign contacts first,
+       *  then any Brain list/contact row that names them. Without a guest email, saving a calendar
+       *  event notifies NOBODY, so this is the difference between a meeting that reaches them and
+       *  one that only sits in the user's own calendar. Never guesses an address. */
+      const findEmailFor = async (person: string): Promise<string> => {
+        const EMAIL = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+        const norm = (v: string) => v.toLowerCase().replace(/[^a-z ]/g, ' ').replace(/\s+/g, ' ').trim();
+        const target = norm(person);
+        if (!target) return '';
+        try {
+          const camp = loadResumableCampaign() || loadSavedCampaign();
+          const hit = camp?.contacts?.find((c) => norm(c.name || '') === target);
+          if (hit?.email && EMAIL.test(hit.email)) return hit.email.match(EMAIL)![0];
+        } catch { /* campaign optional */ }
+        try {
+          const { brain } = await import('../../lib/knowledgeStore');
+          for (const n of brain.all().nodes) {
+            if (!['list', 'contact', 'outreach', 'data'].includes(n.kind)) continue;
+            for (const line of (n.body || '').split('\n')) {
+              if (!EMAIL.test(line)) continue;
+              // The row must actually name this person — a stray email on an unrelated row of the
+              // same table must never be attached to them.
+              if (norm(line).includes(target)) return line.match(EMAIL)![0];
+            }
+          }
+        } catch { /* brain optional */ }
+        return '';
+      };
+
+      // A CONFIRMED time becomes a real meeting right here, without waiting for a press: the Meet
+      // room is created, the calendar event is opened prefilled with that link on it, and the link
+      // is substituted into the reply so the other person actually receives it. Anything that fails
+      // degrades to the to-do below rather than breaking the inbox read.
+      const meetLinkByName = new Map<string, string>();
+      for (const p of parsed) {
+        const m = p.action.match(/^invite\s*:\s*(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2})\s+(\S+)\s*(?:\|\s*(\d+)\s*)?(?:\|\s*(.+))?$/i);
+        if (!m) continue;   // unparseable -> leave it as a to-do, never book a guessed time
+        const [, date, time, tz, dur, titleRaw] = m;
+        const guests = await findEmailFor(p.name);
+        updateLastMsg(`Setting up the meeting with **${p.name}** — creating the video link and the calendar event…`);
+        try {
+          const res = await executeTool('create_calendar_event', {
+            title: (titleRaw || `Call with ${p.name}`).trim(),
+            date, start_time: time, timezone: tz,
+            duration_minutes: dur ? parseInt(dur, 10) : 30,
+            details: `Agreed on LinkedIn with ${p.name}.${p.why ? ` ${p.why}` : ''}`,
+            guests,
+          }, creds, requestTerminalApproval, agent.key, user?.id ?? '', `${sidRef.current ?? 'main'}-cal`);
+          const link = res.match(/https:\/\/meet\.google\.com\/[a-z-]+/i)?.[0] ?? '';
+          if (link) meetLinkByName.set(p.name.toLowerCase(), link);
+          p.calendar = { ok: true, guests, link, when: `${date} ${time} ${tz}` };
+        } catch {
+          p.calendar = { ok: false, guests, link: '', when: `${date} ${time} ${tz}` };
+        }
+      }
+      // Put the real link into the reply wherever the drafter promised one. If it promised a link
+      // without the token, append it rather than letting the sentence dangle.
+      for (const p of parsed) {
+        const link = meetLinkByName.get(p.name.toLowerCase()) || '';
+        if (link) {
+          p.reply = p.reply.includes('{{MEET_LINK}}')
+            ? p.reply.replace(/\{\{MEET_LINK\}\}/g, link)
+            : `${p.reply}\n\nHere's the link: ${link}`;
+        } else {
+          // No link was created - strip the placeholder rather than sending the raw token.
+          p.reply = p.reply.replace(/\s*\{\{MEET_LINK\}\}/g, '').trim();
+        }
+      }
 
       // Map each drafted reply back to the profile URL read from that thread, so "open the chat"
       // targets the right person instead of guessing a slug.
@@ -4595,8 +4666,20 @@ The prompt must be production-ready — specific enough for a motion designer to
         // A reply that had to leave something vague must say so ABOVE the draft — the user is one
         // click from sending it, and an unflagged guess is the thing we most need to avoid.
         const warn = p.needs ? `\n\n> ⚠️ **Check before sending** — ${p.needs}` : '';
+        // What actually happened with the meeting, stated plainly. The guest-email case matters:
+        // with no guest on the event, pressing Save notifies nobody, so the link in the reply IS
+        // the invitation and the user needs to know that.
+        const cal = p.calendar?.ok
+          ? `\n\n📅 **Meeting created** — ${p.calendar.when}. Google Calendar is open in the ADRIS browser: **press Save** to keep it.`
+            + (p.calendar.link ? ` Video link \`${p.calendar.link}\` is on the event and included in the reply above.` : ' No video link could be created — sign in to Google in the ADRIS browser if you want one.')
+            + (p.calendar.guests
+              ? ` ${p.name} is invited as **${p.calendar.guests}** and will be emailed once you save.`
+              : ` I have no email address for ${p.name}, so saving invites nobody — sending them the reply above is what gets them the meeting.`)
+          : p.calendar
+            ? `\n\n📅 Couldn't set the meeting up automatically — the to-do below still has it.`
+            : '';
         const next = hint ? `\n\n↳ ${hint.label}` : '';
-        return `### ${p.name}\n${p.why ? `_${p.why}_\n\n` : ''}\`\`\`email ${p.name}\n${p.reply}\n\`\`\`${warn}${next}`;
+        return `### ${p.name}\n${p.why ? `_${p.why}_\n\n` : ''}\`\`\`email ${p.name}\n${p.reply}\n\`\`\`${warn}${cal}${next}`;
       }).join('\n\n');
       const head = `I read your LinkedIn inbox and drafted ${parsed.length} repl${parsed.length === 1 ? 'y' : 'ies'} from what was actually said in each thread:`;
       const tail = '\n\n_Say **"send the reply to <name>"** and I\'ll type it into their chat box for you to review and send — I never send anything myself._';

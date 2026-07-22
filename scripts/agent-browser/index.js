@@ -633,7 +633,7 @@ async function main() {
   // ("couldn't read any names"). This is THE bug behind the whole /scan saga.
   if (cmd !== 'open' && cmd !== 'close'
       && cmd !== 'connections' && cmd !== 'logincheck' && cmd !== 'message' && cmd !== 'printpdf'
-      && cmd !== 'findprofile' && cmd !== 'messages' && cmd !== 'typemsg') {
+      && cmd !== 'findprofile' && cmd !== 'messages' && cmd !== 'typemsg' && cmd !== 'meetlink') {
     var state   = readState();
 
     var conn    = await ensureChrome();
@@ -1288,6 +1288,37 @@ async function main() {
     writeState({ url: mxPage.url() });
     if (!results.length) { process.stdout.write("Opened LinkedIn messaging but couldn't read any conversation content — the page may not have finished loading. Try again in a moment."); return; }
     process.stdout.write('MSGS_JSON:' + JSON.stringify(results));
+    return;
+  }
+
+  // ── meetlink ────────────────────────────────────────────────────────────────
+  // Mint a REAL, shareable Google Meet link. meet.google.com/new creates a room and then redirects
+  // to https://meet.google.com/xxx-xxxx-xxx — that final URL is the link you can send someone.
+  // The redirect is NOT instant (it lands on /new?pli=1 first and swaps a couple of seconds later),
+  // so we poll the URL rather than reading it once; checking immediately returns the pre-redirect
+  // page and looks like a failure. Observed ~3s on a signed-in profile; capped at 20s to stay well
+  // inside the 45s process budget. Requires the user to be signed in to Google in this browser.
+  if (cmd === 'meetlink') {
+    var mlConn = await ensureChrome();
+    var mlCtx  = mlConn.context;
+    if (!mlCtx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
+    var mlPage = mlCtx.pages().at(-1) || await mlCtx.newPage();
+    try { await mlPage.goto('https://meet.google.com/new', { waitUntil: 'domcontentloaded', timeout: 20000 }); } catch (_) {}
+    var CODE = /meet\.google\.com\/([a-z]{3}-[a-z]{4}-[a-z]{3})/i;
+    var mlUrl = '';
+    for (var mi = 0; mi < 13; mi++) {
+      var cur = mlPage.url();
+      if (CODE.test(cur)) { mlUrl = cur.split('?')[0]; break; }
+      if (isAuthWall(cur) || /accounts\.google\.com/i.test(cur)) {
+        writeState({ url: cur });
+        process.stdout.write('[SIGN_IN_REQUIRED] Sign in to Google in the ADRIS browser, then try again.');
+        return;
+      }
+      await new Promise(function (r) { setTimeout(r, 1500); });
+    }
+    writeState({ url: mlPage.url() });
+    if (!mlUrl) { process.stdout.write('[no-meet-link] Google Meet did not hand back a meeting link in time.'); return; }
+    process.stdout.write('MEET_URL:' + mlUrl);
     return;
   }
 

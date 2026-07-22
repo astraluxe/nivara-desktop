@@ -45,8 +45,12 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.22',
+  version: '1.6.23',
   items: [
+    'When someone agrees a time on LinkedIn, the meeting is now MADE for you — no button to press. adris creates a real Google Meet room, opens Google Calendar with the event filled in and that link on it, and drops the link into the reply so the other person actually gets it. All you do is press Save on the calendar tab.',
+    'It looks up their email first — from your outreach campaign or any lead list in your Brain — and adds them as a guest when it finds one, so saving genuinely sends them an invitation. When there is no email it says so plainly rather than letting you believe an invite went out: the link in the reply is what reaches them.',
+    'Video links are real or absent, never invented. A drafted reply cannot mention a meeting link unless one was actually created.',
+
     'Fixed: pressing Continue on a drafted LinkedIn reply re-read your whole inbox and re-drafted every thread, instead of sending that one reply. The Continue instruction spanned two lines, the rule that recognises “send the reply to …” only ever matched single-line text, so it fell through to the inbox scan. A to-do now performs its action directly rather than being re-read as English — and it uses the profile link captured from the thread, so it works even for someone you have never scanned.',
     'Replies can no longer tell someone a meeting link is included. There is no way for adris to create a video link or attach a file, so that phrasing was always false and sent people looking for something that did not exist. A reply may only promise the invite when it also records the calendar action that actually creates it.',
     'Fixed: reading your LinkedIn inbox could mix up who said what. LinkedIn only prints a sender name on the first message of a run, so a reply you had already sent could be read as the other person’s — and Arjun would draft an answer to your own words. Every message is now tagged from LinkedIn’s own page markup as either yours or theirs, and a thread where you spoke last is recognised as waiting on them, not on you.',
