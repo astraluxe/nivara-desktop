@@ -27,12 +27,13 @@ import { getMonthlyUsage } from '../../lib/tokenTracker';
 import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining } from '../../lib/tokenTier';
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
 import SkillsPanel from './SkillsPanel';
+import { loadUserLocation, locationLabel } from '../../lib/userLocation';
 import OutreachCopilot, { type OutreachCampaign, type OutreachContact, loadSavedCampaign, loadResumableCampaign, loadCampaignByTitle, saveCampaign, bestProfileUrl } from './OutreachCopilot';
 import TodoPanel from './TodoPanel';
 import Icon, { type IconName } from '../Icon';
 import { loadSettings } from '../../modules/SettingsModule';
 import { todos, TODO_EVENT, type TodoItem } from '../../lib/todoStore';
-import { classifyTask, recommendLocalModel, shouldSuggestLocal, markLocalAdviceShown, neverSuggestedLocal } from '../../lib/localModelAdvice';
+import { classifyTask, recommendLocalModel, shouldSuggestLocal, markLocalAdviceShown } from '../../lib/localModelAdvice';
 
 // Get the freshest Supabase access token right before a model call. A long browser/tool pass can
 // run for minutes and outlive the token captured at render — reusing that stale token 401'd the
@@ -2806,6 +2807,7 @@ function browserActionLabel(tool: string, args: Record<string, unknown>): string
   switch (tool) {
     case 'verify_lead_list': return 'Opening each LinkedIn in the browser to verify it (slower on purpose)';
     case 'enrich_lead_list': return 'Searching Google Maps & company sites in the browser for phone/email (slower on purpose)';
+    case 'research_person':  return 'Finding their real LinkedIn profile & reading it, then searching the web (slower on purpose)';
     case 'browser_open':
     case 'browser_navigate': return host ? `Opening & reading ${host} (controlling the browser window)` : 'Reading the page in the browser window';
     case 'browser_search':   return `Searching the web in the browser window`;
@@ -3364,6 +3366,11 @@ const [studioExtracting, setStudioExtracting] = useState(false);
         ...SYSTEM_TOOLS.filter(t => ['save_memory', 'recall_memory', 'forget_memory', 'recall_from_brain', 'create_todo', 'suggest_next_task'].includes(t.name)),
         ...BOSS_TOOLS,
         ...BROWSER_TOOLS,
+        // research_person is the one LEAD_TOOL boss keeps. Boss answers plenty of turns itself
+        // instead of delegating, and "who is <name>" / "brief me before this meeting" is exactly
+        // the shape it answers directly — with a career history it invented, because it had
+        // nothing to look the person up with. Delegating it away is fine; making it up is not.
+        ...LEAD_TOOLS.filter(t => t.name === 'research_person'),
       ];
     }
     const tools: ToolDef[] = [...SYSTEM_TOOLS];
@@ -5481,30 +5488,46 @@ The prompt must be production-ready — specific enough for a motion designer to
     // Fires on heavy usage OR the first time round, whichever comes first. Usage alone meant a
     // Solo user needed a million tokens before ever being told local models exist.
     const usageDriven = tokenCap !== null && monthlyUsed >= tokenCap * 0.25;
-    if (mode === 'nivara' && (usageDriven || neverSuggestedLocal()) && shouldSuggestLocal()) {
-      const verdict = classifyTask(text);
-      markLocalAdviceShown();
+    // WHEN it fires. Previously this was `usageDriven || neverSuggestedLocal()`, and
+    // neverSuggestedLocal() is true only until the banner has been shown a single time — so after
+    // that one moment the suggestion could not appear again until a quarter of the monthly
+    // allowance was gone. On any install where the flag was already set (every existing user) it
+    // simply never appeared at all, which is exactly what was reported. The trigger is now the
+    // thing it should always have been: is the task IN FRONT OF THEM one their own machine would
+    // do well? That recurs naturally, and the 3-day cooldown in shouldSuggestLocal keeps it from
+    // nagging.
+    const verdict = classifyTask(text);
+    // Only tasks local models genuinely handle well. Steering someone onto local for a Maps
+    // lookup or a verify-chain hands them a worse answer, so those never nudge — no matter how
+    // much allowance is gone. The length floor keeps "hi" from triggering it.
+    const goodLocalFit = !verdict.usesTools && verdict.demand !== 'heavy' && text.trim().length >= 25;
+    if (mode === 'nivara' && (usageDriven || goodLocalFit) && shouldSuggestLocal()) {
       (async () => {
         try {
           const hw = await invoke<{ total_ram_gb: number; free_disk_gb: number }>('get_system_info');
           const { pick, reason } = recommendLocalModel(hw, verdict.demand);
+          // No model this machine can actually run: stay quiet unless they're deep into the
+          // allowance and the information is genuinely useful. A "not practical yet" banner on an
+          // ordinary turn is pure noise, and it used to burn the one-and-only nudge.
+          if (!pick && !usageDriven) return;
           const pct = tokenCap ? Math.round((monthlyUsed / tokenCap) * 100) : 0;
           // Deliberately NOT a chat message. The transcript is the user's work, and dropping an
           // unrelated sales-ish suggestion into the middle of it buries the thing they actually
           // asked for. It goes to the app-level notification strip instead, where it can be read
           // or dismissed without touching the conversation.
-          emit('nv-local-model-suggestion', {
+          await emit('nv-local-model-suggestion', {
             title: pick
               ? `${pick.label} would handle this on your own machine — free`
-              : usageDriven
-                ? `You've used about ${pct}% of this month's allowance`
-                : 'Running a model on this machine is not practical yet',
+              : `You've used about ${pct}% of this month's allowance`,
             body: pick
               ? `${verdict.why} ${reason}${verdict.usesTools ? ' It uses the same browser, search and Maps tools — nothing is lost by running it yourself.' : ''}`
               : `${verdict.why} ${reason}`,
             modelId: pick?.id ?? '',
             sizeGb: pick?.sizeGb ?? 0,
-          }).catch(() => {});
+          });
+          // Mark it seen ONLY once it is really on screen. Marking up front meant a failed
+          // hardware call or a skipped nudge silently spent the user's one chance to ever see it.
+          markLocalAdviceShown();
         } catch { /* no hardware info — skip rather than guess */ }
       })();
     }
@@ -5777,6 +5800,19 @@ The prompt must be production-ready — specific enough for a motion designer to
         profileMemories.map((m) => `- ${m.key}: ${m.value.slice(0, 400)}`).join('\n') +
         '\nUse this to stay consistent and avoid re-asking. If you learn a lasting new fact about the user or their business, call remember_about_user to add it.'
       : '';
+    // Where the user is — read fresh each turn, so a location saved mid-conversation takes effect
+    // on the very next message instead of after a reload.
+    const savedLoc = loadUserLocation();
+    const locationBlock = savedLoc
+      ? `\n\n## The user's market — WHERE TO SEARCH\nThe user is in **${locationLabel(savedLoc)}**.\nUnless they name a different place for a specific task, this is the market: search here, list companies and people HERE, and use this country's sites, directories and conventions (currency, phone format, job titles). Start with their own city and widen to the surrounding region or country only if they ask or the task clearly needs it. Do NOT return companies or people from another country and present them as local, and do NOT assume any particular country's market by default — it is the one named above and nothing else. If the user names a different city/country for a task, use theirs for that task; if they say they have MOVED or changed market, call set_user_location to update it.`
+      : `\n\n## The user's market — NOT KNOWN YET, ASK BEFORE SEARCHING\nWe do NOT know where this user is, and you must not guess. The moment a task depends on location — finding leads, customers, prospects, companies, local businesses, events, jobs, salaries, suppliers, anything "near me" or in "my city" — STOP and ask them, in plain words, which city and country to target. Do not pick a default country, do not assume the biggest market, and do not quietly run the search anyway with somewhere plausible filled in.\nASK FOR THE COUNTRY TOO, and be precise about it: a city on its own is genuinely ambiguous — London UK vs London Ontario, Birmingham UK vs Birmingham Alabama, Cambridge UK vs Cambridge Massachusetts, Perth Australia vs Perth Scotland. If they give a city that could be more than one place, ask which country before you search.\nAs soon as they answer, call **set_user_location** with the city and country so it is saved to Settings and no agent has to ask again — then carry straight on with the task in that market, in the same turn. Never ask twice for something already saved.`;
+    // Delegates and workflow steps run with NO user to answer questions, so "stop and ask" is not
+    // available to them. They must surface the gap instead of inventing a market — a step that
+    // reports "I need the location" is recoverable; a table of companies from the wrong country
+    // looks finished and is not.
+    const locationBlockAuto = savedLoc
+      ? locationBlock
+      : `\n\n## The user's market — NOT KNOWN, AND YOU CANNOT ASK\nWe do not know which city/country this user is in, and there is no user to ask in this automated step. If the task you were given does NOT name a place, do NOT pick one — do not default to any country, however likely it seems. **This is the one explicit exception to "make reasonable assumptions" above: a country is never a reasonable assumption.** Return a short result that says the location is needed, plus what you WOULD do once you have it. Returning that is success; returning companies or people from a guessed country is a failure that reaches the user looking like real research. If the task DOES name a city/country, use exactly that one.`;
     // Inject user identity so agents sign content with the real user's name
     const userName   = (user?.user_metadata?.full_name as string | undefined)
                     || (user?.user_metadata?.name as string | undefined)
@@ -5807,7 +5843,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       `\nMCP RECOMMENDATION RULE: When a task needs a service that is NOT connected AND the task specifically requires API access (sending messages, posting content, reading private data via API), proactively tell the user: "To do this, connect [service] in the Connect Apps tab (Krew → top-right). Higgsfield AI (https://mcp.higgsfield.ai/mcp) is the best single MCP for video generation with 30+ models." Be specific.\n`
       : '';
     const skillsBlock = getActiveSkillsContext(agent.key);
-    const systemPrt  = agent.systemPrompt + memBlock + profileBlock + (agent.key === 'boss' ? '' : userBlock) + connectedAppsBlock + mcpSummary + skillsBlock + tierDirective + dateBlock + searchModeDirective + draftFormatDirective + verifyDirective + tableSkillDirective + '\n\n' + buildKrewSystemPrompt(tools) + bossPostfix;
+    const systemPrt  = agent.systemPrompt + memBlock + profileBlock + locationBlock + (agent.key === 'boss' ? '' : userBlock) + connectedAppsBlock + mcpSummary + skillsBlock + tierDirective + dateBlock + searchModeDirective + draftFormatDirective + verifyDirective + tableSkillDirective + '\n\n' + buildKrewSystemPrompt(tools) + bossPostfix;
 
     // Build history from display messages (user + assistant only, not tool calls/results)
     let history: { role: string; content: string }[] = messages
@@ -6034,7 +6070,7 @@ The prompt must be production-ready — specific enough for a motion designer to
               const pipelineRule = '\n\nCRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.'
                 + '\n\nDELIVERABLE RULE (MANDATORY): If the task asks you to write, draft, create, or prepare something (emails, messages, outreach, posts, copy, code, a document), your reply MUST contain the COMPLETE finished content itself. NEVER say you "drafted", "prepared", or "put together" something without including the full text right there. If a tool such as web_search fails, returns nothing, or hits a technical snag, do NOT stop, apologise, or describe what you would have done — produce the full deliverable from the context already provided, briefly note any assumption in one line, and output the entire content. A reply that only claims work was done, without the actual content, is a failed task.'
                 + '\n\nBE RESOURCEFUL — DECIDE HOW TO FIND THE ANSWER: you have real tools (web_search, scrape_structured, a live browser you can open in front of the user, Google Maps, LinkedIn, plus any connected apps). Pick the right one for what is being asked, and if the first source comes up short, CHAIN to another and EXPAND the approach instead of guessing or giving a thin answer: e.g. web_search → if weak, open the browser and read the page → if a person/contact is missing, try LinkedIn people-search or the company\'s Team/Contact page → if a phone/address is missing, try Google Maps. VERIFY facts you can verify (open the page and read it) rather than inventing them. Only fall back to a clearly-labelled best guess after you have genuinely tried to find the real thing. Use 2–3 sources when one is not enough — that is what makes the answer actually useful.';
-              const delegateSystem = targetAgent.systemPrompt + delegateMemBlock + profileBlock + pipelineRule + userBlock + connectedAppsBlock + mcpSummary + tierDirective + dateBlock + searchModeDirective + draftFormatDirective + verifyDirective + tableSkillDirective + '\n\n' + buildKrewSystemPrompt(delegateTools);
+              const delegateSystem = targetAgent.systemPrompt + delegateMemBlock + profileBlock + locationBlockAuto + pipelineRule + userBlock + connectedAppsBlock + mcpSummary + tierDirective + dateBlock + searchModeDirective + draftFormatDirective + verifyDirective + tableSkillDirective + '\n\n' + buildKrewSystemPrompt(delegateTools);
               // FORWARD THE FILE the user is working with. The delegate has its OWN history
               // and only gets `task` — so the focused Brain file / attached files (which live
               // in the Boss's message, not here) must be passed in, or the delegate sees the
@@ -6385,7 +6421,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                 wfTools.push(...BROWSER_TOOLS); // every agent can open the browser
                 if (wfKey === 'research_agent' || wfAgent.category === 'Sales' || wfAgent.category === 'Content') wfTools.push(...RESEARCH_TOOLS);
                 wfTools.push(...mcpTools); // user-connected MCP servers
-                const wfSys = wfAgent.systemPrompt + wfMemBlock + '\n\nCRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.' + profileBlock + userBlock + connectedAppsBlock + mcpSummary + tierDirective + dateBlock + searchModeDirective + draftFormatDirective + verifyDirective + tableSkillDirective + '\n\n' + buildKrewSystemPrompt(wfTools);
+                const wfSys = wfAgent.systemPrompt + wfMemBlock + '\n\nCRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.' + profileBlock + locationBlockAuto + userBlock + connectedAppsBlock + mcpSummary + tierDirective + dateBlock + searchModeDirective + draftFormatDirective + verifyDirective + tableSkillDirective + '\n\n' + buildKrewSystemPrompt(wfTools);
                 const wfHist = [{ role: 'user', content: wfTask }];
                 let wfAccum = ''; let wfFinal = '';
                 // Same "ran out of steps while still working" signal as the single-delegate loop —

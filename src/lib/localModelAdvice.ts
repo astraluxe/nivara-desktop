@@ -166,9 +166,7 @@ export function markLocalAdviceShown(): void {
   try { localStorage.setItem(SEEN_KEY, String(Date.now())); } catch { /* ignore */ }
 }
 
-/** True until the suggestion has been shown even once. The usage-based trigger alone meant a Solo
- *  user had to spend a MILLION tokens (25% of 4M) before hearing that local models exist at all —
- *  so in practice almost nobody ever saw it. */
-export function neverSuggestedLocal(): boolean {
-  try { return localStorage.getItem(SEEN_KEY) === null; } catch { return false; }
-}
+// (Removed: neverSuggestedLocal. It gated the nudge on "has this NEVER been shown", which made the
+//  suggestion a once-in-a-lifetime event — and on any install where the flag was already set, it
+//  never appeared again. The trigger now depends on whether the current task suits a local model,
+//  so it recurs naturally, with the cooldown above keeping it polite.)

@@ -4,6 +4,7 @@ import { listen, emit } from '@tauri-apps/api/event';
 import { getVersion } from '@tauri-apps/api/app';
 import { useAuth } from '../contexts/AuthContext';
 import AiSourcePicker from '../components/AiSourcePicker';
+import { loadUserLocation, saveUserLocation, clearUserLocation, locationLabel, type UserLocation } from '../lib/userLocation';
 
 interface NvSettings {
   automationAutoRun: boolean;
@@ -44,8 +45,14 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.20',
+  version: '1.6.21',
   items: [
+    'adris.tech is no longer built around one country. Leads, customers, local businesses and events now come from YOUR market: set your city and country in Settings → Location, and every agent searches there. Before this, the research agent was under a standing order that every result must be an Indian company, blank city cells silently became "Bangalore", and the company databases queried India by construction — so someone in Chicago asking for Chicago leads got Indian companies, and it looked like a normal answer rather than an error.',
+    'If Krew does not know where you are, it now ASKS instead of guessing — and asks properly: it wants the country as well as the city, because London UK and London Ontario are different markets, as are Birmingham UK and Alabama, or Cambridge UK and Massachusetts. Answer once and it is saved to Settings, so no agent asks again. You can see and change it there at any time.',
+    'A background step that cannot ask you — one stage of a multi-agent job — will report that it needs your location rather than quietly picking a country and handing back a finished-looking list from the wrong place.',
+    'Fixed: the suggestion to run a model on your own machine never appeared. It was set to show only if it had literally never been shown before, so on any existing install it could not appear again until a quarter of the monthly allowance was gone. It now appears when the task in front of you is genuinely one your own machine would handle well — writing, rewriting, summarising, sorting — and stays quiet for web lookups and multi-step jobs, where a local model would give you a worse answer. It is also no longer marked "seen" unless it actually reached the screen.',
+    'Ask about a real person — "brief me before my meeting with <name>", "who is <name>" — and adris now goes and looks them up: it finds their actual LinkedIn profile, reads their headline, About, experience and recent posts, and searches the web for news about them, then writes the briefing from what it read. Before this it had no way to look anyone up, so it wrote the career history, the current job and the "recent posts" from imagination — fluent, confident, and made up. If it genuinely cannot find someone now, it says so and asks for their LinkedIn or company instead of inventing a person.',
+    'Picking the right profile is deliberately strict: searching for "Kevin Christophe" will not settle for one of the five different people called "Kevin Christopher". If no profile is confidently that person, nothing from LinkedIn is used at all.',
     'Fixed: "Check for updates" said to check your connection when the connection was fine — and an update was in fact waiting. The updater failing on its own is not proof the network is down, so it now falls back to reading the release directly before blaming anything.',
     'What’s new is no longer a wall of text in Settings. You get a one-line summary and a "Read the details" button that opens the full list on its own screen.',
     'Chats can be renamed — double-click a chat in the sidebar, or use the pencil — and pinned to the top with the small square, so the ones that matter stay findable.',
@@ -143,6 +150,28 @@ export default function SettingsModule() {
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>('checking');
   const [voicePct, setVoicePct]       = useState(0);
   const [voiceStep, setVoiceStep]     = useState('');
+
+  // Where the user is. Agents read this for every location-dependent task; an agent that had to
+  // ask writes it here too, so it is asked once and then visible/editable in one place.
+  const [loc, setLoc]                 = useState<UserLocation | null>(loadUserLocation);
+  const [locCity, setLocCity]         = useState(() => loadUserLocation()?.city ?? '');
+  const [locRegion, setLocRegion]     = useState(() => loadUserLocation()?.region ?? '');
+  const [locCountry, setLocCountry]   = useState(() => loadUserLocation()?.country ?? '');
+  const [locErr, setLocErr]           = useState('');
+  const [locSaved, setLocSaved]       = useState(false);
+  const inputStyle = { background: 'var(--nv-bg)', border: '1px solid var(--nv-border)', color: 'var(--nv-text)' };
+
+  // An agent can save the location mid-conversation (set_user_location). Reflect that here without
+  // a reload, so Settings never shows a stale "not set" next to a location Krew is already using.
+  useEffect(() => {
+    const onLoc = () => {
+      const l = loadUserLocation();
+      setLoc(l);
+      setLocCity(l?.city ?? ''); setLocRegion(l?.region ?? ''); setLocCountry(l?.country ?? '');
+    };
+    window.addEventListener('nv-location-changed', onLoc);
+    return () => window.removeEventListener('nv-location-changed', onLoc);
+  }, []);
 
   useEffect(() => { getVersion().then(setAppVersion).catch(() => {}); }, []);
 
@@ -375,6 +404,82 @@ export default function SettingsModule() {
             <p className="text-[10px] text-nv-faint mt-2 leading-relaxed">
               Whatever you pick here, saying <span className="text-nv-muted">“continue the existing list”</span> in chat always wins for that request.
             </p>
+          </div>
+        </Section>
+
+        {/* Where the user is — drives every location-dependent search */}
+        <Section title="Location">
+          <p className="text-[11px] text-nv-muted leading-relaxed mb-3">
+            Where you are, and the market Krew searches. Leads, customers, local businesses and
+            events all come from here. If it isn&rsquo;t set, Krew asks you the first time a task
+            needs it and saves your answer here.
+          </p>
+          {loc && (
+            <p className="text-[11px] mb-3">
+              <span className="text-nv-faint">Currently searching: </span>
+              <span className="text-accent font-medium">{locationLabel(loc)}</span>
+            </p>
+          )}
+          <div className="flex flex-col gap-2">
+            <div className="flex gap-2">
+              <input
+                value={locCity}
+                onChange={(e) => { setLocCity(e.target.value); setLocErr(''); setLocSaved(false); }}
+                placeholder="City — e.g. Chicago"
+                className="flex-1 rounded-lg px-3 py-2 text-[11px] outline-none"
+                style={inputStyle}
+              />
+              <input
+                value={locRegion}
+                onChange={(e) => { setLocRegion(e.target.value); setLocSaved(false); }}
+                placeholder="State / region (optional)"
+                className="flex-1 rounded-lg px-3 py-2 text-[11px] outline-none"
+                style={inputStyle}
+              />
+            </div>
+            <input
+              value={locCountry}
+              onChange={(e) => { setLocCountry(e.target.value); setLocErr(''); setLocSaved(false); }}
+              placeholder="Country — e.g. United States"
+              className="w-full rounded-lg px-3 py-2 text-[11px] outline-none"
+              style={inputStyle}
+            />
+            {/* Country is required on purpose: a city alone is ambiguous, and guessing it wrong
+                sends every future search to the wrong continent without anyone noticing. */}
+            <p className="text-[10px] text-nv-faint leading-relaxed">
+              Country is required — a city on its own is ambiguous (London UK vs London Ontario,
+              Cambridge UK vs Massachusetts), and getting it wrong quietly sends every search to
+              the wrong place.
+            </p>
+            {locErr && <p className="text-[10px] text-red-400">{locErr}</p>}
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                onClick={() => {
+                  const city = locCity.trim(); const country = locCountry.trim();
+                  if (!city)    { setLocErr('Enter a city.'); return; }
+                  if (!country) { setLocErr('Enter a country too — a city on its own is ambiguous.'); return; }
+                  saveUserLocation({ city, country, region: locRegion.trim() || undefined });
+                  setLoc(loadUserLocation()); setLocErr(''); setLocSaved(true);
+                }}
+                className="px-3 py-2 rounded-lg text-[11px] text-white font-medium transition-fast hover:opacity-90"
+                style={{ background: '#7C5CFF' }}
+              >
+                Save location
+              </button>
+              {loc && (
+                <button
+                  onClick={() => {
+                    clearUserLocation();
+                    setLoc(null); setLocCity(''); setLocRegion(''); setLocCountry('');
+                    setLocErr(''); setLocSaved(false);
+                  }}
+                  className="px-3 py-2 rounded-lg text-[11px] font-medium border border-nv-border text-nv-muted transition-fast hover:border-nv-border/80"
+                >
+                  Clear
+                </button>
+              )}
+              {locSaved && <span className="text-[10px] text-accent">Saved — Krew will search here from now on.</span>}
+            </div>
           </div>
         </Section>
 

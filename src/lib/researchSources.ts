@@ -1,4 +1,6 @@
-﻿// ─── Types ────────────────────────────────────────────────────────────────────
+﻿import { loadUserLocation, countryQid, countryCompanyCategories, githubLocation } from './userLocation';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface CompanyRecord {
   name: string;
@@ -12,11 +14,16 @@ export interface CompanyRecord {
 
 // ─── Wikidata SPARQL ──────────────────────────────────────────────────────────
 
-export async function wikidataIndianCompanies(limit = 100): Promise<CompanyRecord[]> {
+/** Companies registered in ONE country, by Wikidata entity id (P17 = country).
+ *  Was hardwired to Q668 (India) — the caller now passes the user's own country, and skips this
+ *  source entirely when we don't know where they are, rather than returning Indian companies to
+ *  someone in Ohio. */
+export async function wikidataCompaniesInCountry(countryQid: string, countryName: string, limit = 100): Promise<CompanyRecord[]> {
+  if (!/^Q\d+$/.test(countryQid)) return [];
   const sparql = `
     SELECT DISTINCT ?company ?companyLabel ?industryLabel ?sitelink WHERE {
       ?company wdt:P31 wd:Q783794.
-      ?company wdt:P17 wd:Q668.
+      ?company wdt:P17 wd:${countryQid}.
       OPTIONAL { ?company wdt:P452 ?industry. }
       OPTIONAL { ?sitelink schema:about ?company; schema:isPartOf <https://en.wikipedia.org/>. }
       SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
@@ -37,7 +44,7 @@ export async function wikidataIndianCompanies(limit = 100): Promise<CompanyRecor
       sector:  b.industryLabel?.value,
       url:     b.sitelink?.value,
       source:  'Wikidata',
-      country: 'India',
+      country: countryName,
     }))
     .filter((r) => r.name && !r.name.startsWith('Q'));
 }
@@ -137,24 +144,24 @@ export async function runParallelResearch(
   // Build a set of fetch tasks, each individually time-boxed
   const tasks: Promise<CompanyRecord[]>[] = [];
 
-  // Always run Wikidata once
-  tasks.push(withTimeout(wikidataIndianCompanies(Math.min(planLimit, 100)), SRC_TIMEOUT, []));
+  // Country-scoped sources use the USER'S country, not a hardcoded one. When we don't know where
+  // they are, these sit out entirely and only the global sources run — an honest smaller result
+  // beats a confident list from the wrong continent.
+  const loc = loadUserLocation();
+  const qid = loc ? countryQid(loc.country) : '';
+  if (qid) tasks.push(withTimeout(wikidataCompaniesInCountry(qid, loc!.country, Math.min(planLimit, 100)), SRC_TIMEOUT, []));
 
-  // Wikipedia categories for common Indian company categories
-  const wikiCategories = [
-    'Indian_software_companies',
-    'Companies_listed_on_the_National_Stock_Exchange_of_India',
-    'Indian_technology_companies',
-  ];
-  for (const cat of wikiCategories.slice(0, Math.ceil(planLimit / 30))) {
+  const wikiCategories = loc ? countryCompanyCategories(loc.country) : [];
+  for (const cat of wikiCategories.slice(0, Math.max(1, Math.ceil(planLimit / 30)))) {
     tasks.push(withTimeout(wikipediaCategoryCompanies(cat), SRC_TIMEOUT, []));
   }
 
-  // Yahoo Finance + GitHub per query
+  // Yahoo Finance is global. GitHub is filtered by the user's own country when known.
+  const ghLoc = githubLocation(loc);
   for (const q of cappedQueries) {
     tasks.push(withTimeout(yahooFinanceSearch(q), SRC_TIMEOUT, []));
-    if (planLimit >= 40) {
-      tasks.push(withTimeout(githubTechCompanies('India', q), SRC_TIMEOUT, []));
+    if (planLimit >= 40 && ghLoc) {
+      tasks.push(withTimeout(githubTechCompanies(ghLoc, q), SRC_TIMEOUT, []));
     }
   }
 

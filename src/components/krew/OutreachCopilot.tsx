@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { brain } from '../../lib/knowledgeStore';
 import { todos } from '../../lib/todoStore';
-import { setAgentBrowserHold } from '../../lib/krewTools';
+import { setAgentBrowserHold, bestProfileMatch } from '../../lib/krewTools';
 
 // ─── Human-in-the-loop LinkedIn / email outreach ─────────────────────────────
 // Why this exists instead of full automation:
@@ -94,34 +94,12 @@ function profileUrl(c: OutreachContact): string {
   return `https://www.linkedin.com/search/results/people/?keywords=${q}`;
 }
 
-/** Pick the best LinkedIn profile from findprofile results for a given contact name: the first name
- *  OR surname must match and at least half the name tokens must overlap; a 1st-degree connection
- *  wins ties. Returns the clean /in/ URL, or '' if nothing matches confidently (so we never point a
- *  button at a stranger who merely shares a surname). Shared by the copilot's self-heal and
- *  /verifylinks so both behave identically. */
-const NAME_HONORIFICS = new Set(['dr', 'mr', 'mrs', 'ms', 'miss', 'mx', 'prof', 'professor', 'sri', 'shri', 'smt', 'er', 'ca', 'adv', 'advocate', 'capt', 'col', 'gen', 'rev', 'sir', 'hon']);
+/** Pick the best LinkedIn profile URL from findprofile results for a given contact name, or ''
+ *  when nothing matches confidently (so we never point a button at a stranger who merely shares a
+ *  surname). The matching rule itself lives in krewTools as bestProfileMatch — the copilot's
+ *  self-heal, /verifylinks and research_person all go through that one rule. */
 export function bestProfileUrl(results: Array<{ name?: string; url?: string; degree?: string }>, contactName: string): string {
-  const toks = (s: string) => (s || '').toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim().split(' ').filter((t) => t && !NAME_HONORIFICS.has(t));
-  const cTokens = toks(contactName);
-  if (!cTokens.length) return '';
-  const cSet = new Set(cTokens);
-  let best = '';
-  let bestScore = -1;
-  for (const r of results) {
-    if (!r?.url || !/linkedin\.com\/in\//i.test(r.url)) continue;
-    const rTokens = toks(r.name || '');
-    if (!rTokens.length) continue;
-    const rSet = new Set(rTokens);
-    // Require one name to be a token-subset of the other — so "Syed Zubair" matches "Syed Zubair
-    // Ahmed" but NEVER "Rahul Kumar" for a "Nirmesh Kumar" (a shared surname alone isn't enough).
-    const cInR = cTokens.every((t) => rSet.has(t));
-    const rInC = rTokens.every((t) => cSet.has(t));
-    if (!cInR && !rInC) continue;
-    const overlap = cTokens.filter((t) => rSet.has(t)).length;
-    const score = overlap + (r.degree === '1st' ? 0.5 : 0); // prefer a 1st-degree connection on ties
-    if (score > bestScore) { bestScore = score; best = r.url.split('?')[0]; }
-  }
-  return best;
+  return bestProfileMatch(results, contactName)?.url || '';
 }
 function gmailComposeUrl(c: OutreachContact): string {
   const su = encodeURIComponent(fillTokens(c.email_subject || '', c));
