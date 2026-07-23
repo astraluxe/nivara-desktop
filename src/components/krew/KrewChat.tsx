@@ -3297,7 +3297,9 @@ const [studioExtracting, setStudioExtracting] = useState(false);
   useEffect(() => {
     const reload = () => { reloadCreds(); };
     window.addEventListener('nv-mcp-changed', reload);
-    return () => window.removeEventListener('nv-mcp-changed', reload);
+    // A BYOK key was added/removed or the active one toggled — reload so the agents use it now.
+    window.addEventListener('nv-creds-changed', reload);
+    return () => { window.removeEventListener('nv-mcp-changed', reload); window.removeEventListener('nv-creds-changed', reload); };
   }, [reloadCreds]);
 
   // Show a persistent "Krew is using the browser" banner the moment the agent

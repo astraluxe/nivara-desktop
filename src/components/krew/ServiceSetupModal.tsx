@@ -26,20 +26,25 @@ const KEY_PATTERNS: Record<string, RegExp> = {
 };
 /** Pull the real API key out of whatever the user pasted — a bare key, a `Bearer <key>`, or a full
  *  code snippet. Falls back to the trimmed input if nothing matches (so an odd key still saves). */
+// Reject obvious placeholders — a pasted snippet often has `$NVIDIA_API_KEY`, `YOUR_API_KEY`,
+// `<your-key>` etc. where the real key goes. We must NOT save those as if they were a key.
+function isPlaceholderKey(s: string): boolean {
+  return /^\$|^</.test(s) || /your[_-]?(api|key|token)|api[_-]?key(_here)?$|placeholder|example|xxxx+|env[_-]/i.test(s);
+}
 export function extractApiKey(raw: string, service: string): string {
   const text = (raw || '').trim();
   if (!text) return '';
   const known = KEY_PATTERNS[service];
-  if (known) { const m = text.match(known); if (m) return m[0]; }
+  if (known) { const m = text.match(known); if (m) return m[0]; }   // a real nvapi-/gsk_/… always wins
   // Any provider: an Authorization: Bearer <token> line.
   const bearer = text.match(/Bearer\s+([A-Za-z0-9_\-.]{16,})/i);
-  if (bearer) return bearer[1];
+  if (bearer && !isPlaceholderKey(bearer[1])) return bearer[1];
   // A `"...key...": "<token>"` assignment.
   const kv = text.match(/(?:api[_-]?key|token|secret)["'\s:=]+["']?([A-Za-z0-9_\-.]{16,})/i);
-  if (kv) return kv[1];
-  // Already a bare key (single token, no spaces) → use as-is.
-  if (!/\s/.test(text)) return text;
-  return text; // last resort — save what they gave; the provider will reject a truly wrong value
+  if (kv && !isPlaceholderKey(kv[1])) return kv[1];
+  // Already a bare key (single token, no spaces) and not a placeholder → use as-is.
+  if (!/\s/.test(text) && !isPlaceholderKey(text)) return text;
+  return '';  // couldn't find a REAL key — the UI tells them to paste their actual key
 }
 /** Pull a `"model": "org/name"` out of a pasted snippet, so we use the model they were looking at. */
 export function extractModel(raw: string): string {
@@ -81,8 +86,8 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
     icon: '◆',
     steps: [
       { title: 'Open build.nvidia.com and sign in', body: 'NVIDIA give away free API credits — no paid account or card needed. Sign in (or make a free account), then pick ANY model from the catalogue.', link: 'https://build.nvidia.com/models' },
-      { title: 'Get your API key', body: 'On any model page, press "Generate API Key" (or "Get API Key"). NVIDIA shows a code snippet with your key inside it. This one key works for EVERY model on NVIDIA — you don\'t need to pick one.' },
-      { title: 'Paste it here', body: 'Easiest way: copy the WHOLE code block NVIDIA showed you and paste it below — we\'ll find the key inside it automatically (you don\'t need to hunt for it). Pasting just the "nvapi-…" key works too. Free, fast, and costs no adris.tech tokens.', field: 'api_key', fieldLabel: 'NVIDIA key (or the whole code block)', fieldPlaceholder: 'nvapi-...', secret: false },
+      { title: 'Press "Generate API Key" FIRST', body: 'On any model page there\'s a code box. Click "Generate API Key" (or "Get API Key") BEFORE copying — until you do, the code shows a placeholder like "$NVIDIA_API_KEY" instead of a real key. After you click Generate, the code updates to show your real key, which starts with "nvapi-". This one key works for EVERY model on NVIDIA.' },
+      { title: 'Paste it here', body: 'Copy the WHOLE code block (now that it shows your real nvapi-… key) and paste it below — we find the key inside it automatically. Pasting just the "nvapi-…" key works too. If it says it can\'t find a key, you likely copied before pressing Generate — go back and click Generate first. Free, fast, and costs no adris.tech tokens.', field: 'api_key', fieldLabel: 'NVIDIA key (or the whole code block)', fieldPlaceholder: 'nvapi-...', secret: false },
     ],
   },
   groq: {
@@ -644,7 +649,14 @@ export default function ServiceSetupModal({ service, onDone, onClose }: Props) {
             } catch { /* fall back to the provider default in aiSource */ }
           }
         }
-        await credentialStore.save(service, out);
+        // NVIDIA/Groq keep a LIST of keys (add, don't overwrite) so the user can toggle between
+        // several. Everything else is a single credential as before.
+        if ((service === 'nvidia' || service === 'groq') && out.api_key) {
+          const { addByokKey } = await import('../../lib/byokKeys');
+          await addByokKey(service, { api_key: out.api_key, model: out.model });
+        } else {
+          await credentialStore.save(service, out);
+        }
         onDone();
       }
     } catch (e) {

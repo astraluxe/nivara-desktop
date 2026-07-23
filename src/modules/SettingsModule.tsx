@@ -45,8 +45,13 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.33',
+  version: '1.6.34',
   items: [
+    'Fixed: the “Test” button in Connect Apps said “Unknown service” for NVIDIA and Groq. It now actually checks your key with a tiny request and tells you plainly whether it works.',
+    'You can connect SEVERAL NVIDIA (or Groq) keys and switch between them — useful if one hits its free rate limit. In the chat connection bar under “Own Key” you now see your connected keys, which one is active (✓ Using your own key), and can toggle, add another, or remove one.',
+    'Clicking NVIDIA/Groq no longer flings you out to the website straight away — it opens the short setup guide, and you open the site from there when you’re ready.',
+    'Clearer key steps: NVIDIA only shows your real key AFTER you press “Generate API Key”, so the guide now says to click that first. If you copy the code too early it contains a placeholder (like $NVIDIA_API_KEY) — adris now spots that and tells you to generate the key first instead of saving the placeholder.',
+
     'You no longer have to know which NVIDIA/Groq model to pick. When you connect, adris reads the models your key can actually use, picks a capable one automatically, and the model chooser groups them into ★ Recommended (best for research, lead-finding, LinkedIn and the other multi-step commands) and Fast (quick replies & writing) — no cryptic names or “B” numbers to decode. Leave the Recommended one and it behaves closest to adris.tech’s own AI.',
     'The Info page now explains, in plain words, which kinds of models handle the complex commands well and why context size matters — so if you ever do choose by hand, you know what to look for.',
 

@@ -51,6 +51,19 @@ export default function ConnectionBar(props: Props) {
   const [engineStatus, setEngineStatus] = useState<'idle' | 'starting' | 'running' | 'error'>('idle');
   const [rankedModels, setRankedModels] = useState<RankedModel[] | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
+  const [byokList, setByokList] = useState<{ api_key: string; model?: string }[]>([]);
+  const [byokActive, setByokActive] = useState('');
+
+  // Load the saved keys for the selected provider (NVIDIA/Groq can have several to toggle between).
+  async function refreshByokKeys(prov: Provider) {
+    if (prov !== 'nvidia' && prov !== 'groq') { setByokList([]); setByokActive(''); return; }
+    try {
+      const { getByokKeys } = await import('../../lib/byokKeys');
+      const { keys, activeKey } = await getByokKeys(prov);
+      setByokList(keys); setByokActive(activeKey);
+    } catch { setByokList([]); setByokActive(''); }
+  }
+  useEffect(() => { if (popup === 'own_key') void refreshByokKeys(provider); }, [popup, provider]);
 
   // When the own-key popup is open for NVIDIA/Groq, fetch the models THIS key can actually call and
   // rank them into plain tiers. Uses the popup's key field, else the key saved in Connect Apps.
@@ -68,9 +81,9 @@ export default function ConnectionBar(props: Props) {
     return () => { cancelled = true; };
   }, [popup, provider, apiKey]);
 
-  // Open the guided setup for a free provider AND its key page in the browser, and preselect it as
-  // the own-key provider so the pasted key is used straight away. Reuses the same open-Connect-Apps
-  // path the agent's open_service_setup tool uses.
+  // Open the guided setup for a free provider and preselect it as the own-key provider. Does NOT
+  // fling the user out to the website — the wizard has a link they click when THEY are ready
+  // (jumping straight to the browser on click was jarring). Reuses the open-Connect-Apps path.
   async function openFreeKeySetup(id: 'nvidia' | 'groq') {
     onProviderChange(id as Provider);
     try {
@@ -78,9 +91,7 @@ export default function ConnectionBar(props: Props) {
       requestServiceSetup(id);
       const { emit } = await import('@tauri-apps/api/event');
       await emit('nv-open-connect-apps', {});
-    } catch { /* fall back to just opening the key page */ }
-    const url = id === 'nvidia' ? 'https://build.nvidia.com/models' : 'https://console.groq.com/keys';
-    import('@tauri-apps/plugin-shell').then(({ open }) => open(url)).catch(() => window.open(url, '_blank'));
+    } catch { /* the wizard couldn't be opened — nothing else to do */ }
   }
   const [engineError, setEngineError] = useState('');
 
@@ -201,6 +212,39 @@ export default function ConnectionBar(props: Props) {
                     <option key={p} value={p}>{PROVIDERS[p].label}</option>
                   ))}
                 </select>
+
+                {/* Your connected keys (NVIDIA/Groq) — shows you ARE on your own key, and lets you
+                    toggle between several or add another. */}
+                {(provider === 'nvidia' || provider === 'groq') && byokList.length > 0 && (
+                  <div className="mb-3 rounded-lg border border-nv-green/30 bg-nv-green/5 px-2.5 py-2">
+                    <p className="text-[10.5px] text-nv-green font-medium mb-1.5">✓ Using your own {provider === 'nvidia' ? 'NVIDIA' : 'Groq'} key{byokList.length > 1 ? ` — ${byokList.length} connected` : ''}</p>
+                    <div className="flex flex-col gap-1">
+                      {byokList.map((k) => {
+                        const active = k.api_key === byokActive;
+                        const mask = k.api_key.length > 12 ? `${k.api_key.slice(0, 7)}…${k.api_key.slice(-4)}` : k.api_key;
+                        return (
+                          <div key={k.api_key} className={`flex items-center gap-2 px-2 py-1 rounded-md border ${active ? 'border-accent/50 bg-accent/10' : 'border-nv-border'}`}>
+                            <button
+                              onClick={async () => { const { setActiveByokKey } = await import('../../lib/byokKeys'); await setActiveByokKey(provider, k.api_key); setByokActive(k.api_key); }}
+                              className="flex items-center gap-1.5 flex-1 min-w-0 text-left">
+                              <span className={`w-2.5 h-2.5 rounded-full border ${active ? 'border-accent bg-accent' : 'border-nv-faint'}`} />
+                              <span className={`text-[10px] font-mono truncate ${active ? 'text-accent' : 'text-nv-muted'}`}>{mask}</span>
+                              {k.model && <span className="text-[9px] text-nv-faint truncate">· {k.model.split('/').pop()}</span>}
+                            </button>
+                            {byokList.length > 1 && (
+                              <button
+                                onClick={async () => { const { removeByokKey } = await import('../../lib/byokKeys'); await removeByokKey(provider, k.api_key); await refreshByokKeys(provider); }}
+                                title="Remove this key" className="text-nv-faint hover:text-nv-red text-[12px] leading-none shrink-0">×</button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <button
+                      onClick={() => openFreeKeySetup(provider as 'nvidia' | 'groq')}
+                      className="mt-1.5 text-[10px] text-accent hover:underline">+ Add another {provider === 'nvidia' ? 'NVIDIA' : 'Groq'} key</button>
+                  </div>
+                )}
 
                 {/* Custom base URL (only for custom provider) */}
                 {provider === 'custom' && (

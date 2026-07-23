@@ -2585,6 +2585,30 @@ async fn ping_service(service_id: String, creds_json: String) -> Result<String, 
             if r.status().is_success() { Ok("Connected".into()) }
             else { Err(format!("API key rejected ({})", r.status())) }
         }
+        // NVIDIA NIM + Groq — OpenAI-compatible. NVIDIA's /models is public (a key-less GET returns
+        // 200), so a real key check must be a tiny completion; the same call validates Groq too.
+        "nvidia" | "groq" => {
+            let key = creds["api_key"].as_str().unwrap_or("");
+            if key.is_empty() { return Err("No API key saved.".into()); }
+            let (url, default_model) = if service_id == "nvidia" {
+                ("https://integrate.api.nvidia.com/v1/chat/completions", "meta/llama-3.1-8b-instruct")
+            } else {
+                ("https://api.groq.com/openai/v1/chat/completions", "llama-3.1-8b-instant")
+            };
+            let model = creds["model"].as_str().filter(|m| !m.is_empty()).unwrap_or(default_model);
+            let body = serde_json::json!({ "model": model, "messages": [{"role":"user","content":"hi"}], "max_tokens": 1 });
+            let r = client.post(url)
+                .header("Authorization", format!("Bearer {key}"))
+                .header("Content-Type", "application/json")
+                .json(&body).send().await.map_err(|e| e.to_string())?;
+            let st = r.status();
+            if st.is_success() { Ok("Connected — your key works ✓".into()) }
+            else if st.as_u16() == 401 || st.as_u16() == 403 { Err("API key rejected — check you copied the whole key.".into()) }
+            else {
+                let t = r.text().await.unwrap_or_default();
+                Err(format!("Provider returned {} — {}", st, t.chars().take(140).collect::<String>()))
+            }
+        }
         "claude" => {
             let key = creds["api_key"].as_str().unwrap_or("");
             let r = client.get("https://api.anthropic.com/v1/models")
