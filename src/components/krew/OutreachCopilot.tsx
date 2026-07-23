@@ -248,6 +248,7 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
   const [idx, setIdx] = useState(() => firstUndoneIdx(campaign.contacts));
   const [copied, setCopied] = useState<'msg' | 'email' | null>(null);
   const [whyOpen, setWhyOpen] = useState(false);
+  const [search, setSearch] = useState('');   // jump-to-a-contact by name, instead of Prev/Next spam
   const [opening, setOpening] = useState(false);
   const [openNote, setOpenNote] = useState('');
   // True once we've opened a chat for this session — the browser window is now the user's
@@ -293,6 +294,19 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
     return { sent: by('sent'), accepted: by('accepted'), replied: by('replied'), connect: by('connect'), skip: by('skip') };
   }, [contacts]);
 
+  // Search results: contacts whose name (or company) contains the query — carrying their real index
+  // so a click jumps straight there. Capped so a big list stays a short, clickable menu.
+  const matches = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return [];
+    return contacts
+      .map((c, i) => ({ c, i }))
+      .filter(({ c }) => (c.name || '').toLowerCase().includes(q) || (c.company || '').toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [search, contacts]);
+
+  function jumpTo(i: number) { setIdx(i); setSearch(''); }
+
   function setStatus(s: OutreachStatus) {
     setContacts((prev) => prev.map((c, i) => (i === idx ? { ...c, status: s } : c)));
   }
@@ -309,9 +323,11 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
   const msg = fillTokens(cur.linkedin_message || '', cur);
   const hasProfile = !!(cur.linkedin_url && /linkedin\.com\/in\//i.test(cur.linkedin_url));
 
-  // One click: copy the message AND drive the ADRIS browser to open this person's chat box
-  // (opens their profile + clicks "Message"). The user just pastes (Ctrl+V) + sends — nothing is
-  // auto-typed or auto-sent, so the account stays safe. Falls back to opening the profile.
+  // One click: open this person's LinkedIn chat box AND type the drafted message straight into it
+  // (via `typemsg` — the same trusted per-character typing the inbox "Reply on LinkedIn" button
+  // uses). The user reviews the pre-filled box and presses Send — nothing is auto-SENT, so the
+  // account stays safe. The message is also copied first as a backstop: if typing fails on an odd
+  // layout, Ctrl+V still works. Falls back to opening the profile.
   async function copyAndOpenChat() {
     setOpenNote('');
     // Claim the window BEFORE it opens: the user is about to paste and send in it, and any Krew
@@ -352,10 +368,14 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
           return;
         }
       }
-      const res = await invoke<string>('run_browser_persistent', { args: `message "${targetUrl}"` });
+      // typemsg opens the chat box AND types the message in (url unquoted + " ::: " + text — the
+      // exact format the reply auto-type uses; the url has no spaces so needs no quotes, and quoting
+      // it would break the command's ' ::: ' split).
+      const res = await invoke<string>('run_browser_persistent', { args: `typemsg ${targetUrl} ::: ${msg}` });
       const savedNote = !hasProfile ? ' (Saved their profile link for next time.)' : '';
       if (typeof res === 'string' && res.includes('SIGN_IN_REQUIRED')) setOpenNote('Sign in to LinkedIn in the ADRIS browser window, then click again.');
-      else if (typeof res === 'string' && res.includes('MESSAGE_BOX_OPENED')) setOpenNote(`Chat box is open and focused in the ADRIS browser — paste (Ctrl+V) and send, then mark them Sent below.${savedNote}`);
+      else if (typeof res === 'string' && res.includes('MESSAGE_DRAFTED')) setOpenNote(`Typed into their chat box in the ADRIS browser — review it and press Enter/Send, then mark them Sent below.${savedNote}`);
+      else if (typeof res === 'string' && res.includes('NO_BOX')) setOpenNote(`Opened their profile but couldn't type into the box — it's copied, so click Message and paste (Ctrl+V).${savedNote}`);
       else setOpenNote(`Opened their profile in the ADRIS browser — click Message, then paste & send.${savedNote} (If you\'re not connected yet, send a connection request first.)`);
     } catch {
       openLink(profileUrl(cur));
@@ -376,7 +396,7 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
           <svg viewBox="0 0 24 24" className="w-4 h-4 text-accent shrink-0" fill="currentColor"><path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.14 1.45-2.14 2.94v5.67H9.34V9h3.42v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28zM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13zM7.12 20.45H3.56V9h3.56v11.45z"/></svg>
           <div className="min-w-0 flex-1">
             <div className="text-xs font-semibold truncate">Outreach copilot</div>
-            <div className="text-[10px] text-nv-faint truncate">{contacts.length} contacts · you paste &amp; send</div>
+            <div className="text-[10px] text-nv-faint truncate">{contacts.length} contacts · auto-typed, you review &amp; send</div>
           </div>
           <button onClick={onClose} className="text-nv-faint hover:text-nv-text p-1 rounded" title="Close">
             <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
@@ -410,6 +430,44 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
           <span className="text-violet-600 font-semibold">{progress.replied} replied</span>
         </div>
 
+        {/* Search — jump to a contact by name instead of clicking Prev/Next through the whole list */}
+        <div className="px-4 py-2 border-b border-nv-border shrink-0 relative">
+          <div className="flex items-center gap-2 bg-nv-bg border border-nv-border rounded-lg px-2.5 py-1.5">
+            <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 text-nv-faint shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && matches.length) jumpTo(matches[0].i); if (e.key === 'Escape') setSearch(''); }}
+              placeholder="Search a name to jump to them…"
+              className="flex-1 bg-transparent text-xs outline-none placeholder:text-nv-faint"
+            />
+            {search && (
+              <button onClick={() => setSearch('')} className="text-nv-faint hover:text-nv-text shrink-0" title="Clear">
+                <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+              </button>
+            )}
+          </div>
+          {search.trim() && (
+            <div className="absolute left-4 right-4 top-full mt-1 z-10 bg-nv-surface border border-nv-border rounded-lg shadow-xl overflow-hidden max-h-64 overflow-y-auto">
+              {matches.length === 0
+                ? <div className="px-3 py-2 text-[11px] text-nv-faint">No contact matches “{search.trim()}”.</div>
+                : matches.map(({ c, i }) => (
+                  <button
+                    key={i}
+                    onClick={() => jumpTo(i)}
+                    className={`w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-nv-surface2 transition-fast ${i === idx ? 'bg-accent/5' : ''}`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-medium truncate">{c.name || 'Unknown'}</div>
+                      {c.company && <div className="text-[10px] text-nv-faint truncate">{c.company}</div>}
+                    </div>
+                    <span className={`shrink-0 text-[9px] px-1.5 py-0.5 rounded border ${STATUS_META[c.status || 'todo'].cls}`}>{STATUS_META[c.status || 'todo'].label}</span>
+                  </button>
+                ))}
+            </div>
+          )}
+        </div>
+
         {/* Current contact */}
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
           <div className="flex items-baseline justify-between">
@@ -432,8 +490,8 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
                 className="w-full flex items-center justify-center gap-2 text-xs px-3 py-2 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast disabled:opacity-60"
               >
                 {opening
-                  ? <><span className="w-3 h-3 rounded-full border border-white/40 border-t-white animate-spin" /> Opening chat…</>
-                  : <><svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg> Copy message &amp; open chat</>}
+                  ? <><span className="w-3 h-3 rounded-full border border-white/40 border-t-white animate-spin" /> Opening &amp; typing…</>
+                  : <><svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg> Open chat &amp; type message</>}
               </button>
               <button
                 onClick={() => { openLink(profileUrl(cur)); setOpenNote('Opened their profile — use this to connect first if you\'re not connected yet.'); }}

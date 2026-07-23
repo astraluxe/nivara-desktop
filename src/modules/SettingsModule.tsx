@@ -47,6 +47,8 @@ function saveSettings(s: NvSettings) {
 const WHATS_NEW: { version: string; items: string[] } = {
   version: '1.6.28',
   items: [
+    'The outreach copilot now has a search box — type a name to jump straight to that person instead of clicking Prev/Next through the whole list, so updating someone’s status is quick.',
+    'Opening a contact’s chat from the copilot now types the message into the LinkedIn box for you — just like the inbox reply button — so you only review it and press Send. (It still never sends by itself, and the message is copied as a backup in case typing doesn’t catch.)',
     'Fixed the real reason so many outreach messages came out identical (“great to be connected, your work caught my eye”). That is the fallback the app uses when the model’s reply can’t be read — and asking a model to write all fifty messages in one go made it run out of room and get cut off, so only the first few were kept and everyone else got the fallback. Messages are now written in small batches that come back complete, so real, personalised messages reach far more people. /refine works the same way, and could no longer come back empty.',
 
     'Fixed: Local mode failing with “Engine started but is not responding” right after choosing a local model. A large model (a 14B is ~8.5 GB) takes 30–60 seconds to load into memory the first time, and the app was giving up after 30. It now waits properly for the model to finish loading, shows a “loading the model” note while it does, and only the FIRST message after launch waits — the rest are instant.',
