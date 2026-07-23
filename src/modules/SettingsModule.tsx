@@ -45,8 +45,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.25',
+  version: '1.6.26',
   items: [
+    'New: /refine. After the copilot has drafted your outreach, /refine rewrites the messages to be genuinely personal to each person — from their profile and what you’re selling — instead of the generic “great to be connected, your work caught my eye” fallback. Add a note on how you want them (“warmer”, “lead with the time we save them”) and it follows it. It only rewrites people you haven’t messaged yet, and never sends anything.',
+    'Fixed: “Local AI engine not found” even with a model downloaded. The engine binary is only extracted when you press Run in the Models tab — using Local mode from chat skipped that. Now the engine is set up automatically the first time Local mode needs it, so a downloaded model just works.',
+
     'Fixed: a location you set in Settings could vanish after an update. It was only kept in the browser layer’s storage, which an update can reset. It is now also saved to the app’s durable store and restored automatically on launch, so it survives updates and reinstalls.',
     'Google Maps searches for local leads now insist on a confirmed city — your saved location or one you name in the request. If it isn’t sure where you mean, it asks first instead of running a Maps search on a guessed area and quietly returning businesses from the wrong place.',
 

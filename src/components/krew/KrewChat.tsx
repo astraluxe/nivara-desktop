@@ -60,7 +60,7 @@ async function freshSessionToken(fallback: string | null): Promise<string | null
 //  • 'prompt' → drops a ready phrasing into the input (the user reviews and sends; it routes
 //    through the normal Krew flow / deterministic short-circuits).
 //  • 'nav'    → opens another module of the exe (via the global nv-navigate event App listens to).
-type SlashCmd = { cmd: string; label: string; desc: string; run: 'prompt' | 'nav' | 'research' | 'agents' | 'outreach' | 'continue' | 'scan' | 'verifylinks' | 'toggleSetting'; value: string };
+type SlashCmd = { cmd: string; label: string; desc: string; run: 'prompt' | 'nav' | 'research' | 'agents' | 'outreach' | 'continue' | 'scan' | 'verifylinks' | 'refine' | 'toggleSetting'; value: string };
 const SLASH_COMMANDS: SlashCmd[] = [
   // ── Actions that run in the chat ─────────────────────────────────────────
   { cmd: 'verify',   label: 'Verify LinkedIn',   desc: 'Open & check every LinkedIn in your lead list',   run: 'prompt', value: 'Go to <file name> and verify each and every LinkedIn — open and check each one, and fill it in properly if it exists.' },
@@ -71,6 +71,7 @@ const SLASH_COMMANDS: SlashCmd[] = [
   { cmd: 'draft',    label: 'Draft outreach',    desc: 'Write DMs / emails for your list',                run: 'prompt', value: 'Write a LinkedIn DM and a short cold email for the people in <file name>, tailored by sector.' },
   { cmd: 'outreach', label: 'Send outreach (copilot)', desc: 'Draft LinkedIn messages & walk through sending them', run: 'outreach', value: '' },
   { cmd: 'continue', label: 'Continue outreach', desc: 'Reopen the outreach copilot where you left off',   run: 'continue', value: '' },
+  { cmd: 'refine',   label: 'Refine outreach messages', desc: 'Re-write the copilot\'s messages to be more personal — add a note on how you want them', run: 'refine', value: '' },
   { cmd: 'verifylinks', label: 'Fix outreach links', desc: 'Check every saved profile link & repair the wrong ones', run: 'verifylinks', value: '' },
   { cmd: 'deck',     label: 'Make a presentation', desc: 'Build a slide deck / PPT you can edit & export', run: 'prompt', value: 'Make a presentation about ' },
   { cmd: 'email',    label: 'Email a list',      desc: 'Send a personalised email to everyone on a list', run: 'prompt', value: 'Email everyone in <file name> a personalised message — one separate email each — and tell me exactly who it went to.' },
@@ -5302,6 +5303,107 @@ The prompt must be production-ready — specific enough for a motion designer to
   }
 
   /**
+   * Re-write the messages already in the outreach copilot to be MORE personal — the /refine command.
+   * The originals are often the generic fallback ("great to be connected! …caught my eye…"), which
+   * fires whenever the first draft pass didn't cover someone; those read as templated. This re-drafts
+   * each not-yet-sent person's message from their headline + the user's product/goal, honouring a
+   * free-text note on HOW the user wants them ("warmer", "lead with our local-first angle"). It only
+   * touches people who haven't been sent/replied yet, keeps everything else, saves back to the same
+   * campaign, and reopens the copilot — so nothing about the roster or progress is lost.
+   */
+  async function refineOutreachMessages(guidance: string, userText = '') {
+    if (busy) return;
+    const sid = await ensureSession('Refine outreach');
+    addMsg({ role: 'user', content: userText || 'Refine the outreach messages — make them more personal.' });
+    if (sid) krewDb.saveMessage(sid, 'user', userText || 'Refine the outreach messages').catch(() => {});
+
+    const campaign = loadResumableCampaign() || loadSavedCampaign();
+    if (!campaign || !campaign.contacts.length) {
+      const none = 'There are no outreach messages to refine yet. Run **/outreach** to draft some and open the copilot, then use **/refine**.';
+      addMsg({ role: 'assistant', content: none });
+      if (sid) krewDb.saveMessage(sid, 'assistant', none).catch(() => {});
+      return;
+    }
+    // Only rework people still in play — never rewrite something already sent or replied to.
+    const isDone = (s?: OutreachContact['status']) => s === 'sent' || s === 'accepted' || s === 'replied' || s === 'skip';
+    const targets = campaign.contacts.filter((c) => !isDone(c.status));
+    if (!targets.length) {
+      const done = 'Every message in this campaign has already been sent or handled — nothing left to refine. Run **/scan** then **/outreach** for your next batch.';
+      addMsg({ role: 'assistant', content: done });
+      if (sid) krewDb.saveMessage(sid, 'assistant', done).catch(() => {});
+      return;
+    }
+
+    // What the user does + their goal — the same grounding the first draft used, so refined
+    // messages stay truthful about the product instead of inventing a pitch. Pull PRODUCT.md / the
+    // Brain product note; the user said they're SELLING a service, so lean value-forward but human.
+    let productCtx = '';
+    try {
+      const attached = attachedFiles.find((f) => f.content && /\.(md|markdown|txt|pdf|docx?)$/i.test(f.name) && !looksLikeConnectionsFile(f));
+      if (attached?.content) productCtx = attached.content.slice(0, 6000).trim();
+      if (!productCtx) { const p = brainStore.findByTitle('PRODUCT') || brainStore.search('product').find((n) => /product/i.test(n.title)); if (p?.body) productCtx = nodeToMarkdown(p.body).slice(0, 4000).trim(); }
+    } catch { /* optional */ }
+
+    const senderName = [profile?.first_name, profile?.last_name].filter(Boolean).join(' ').trim()
+      || (user?.email ? user.email.split('@')[0].replace(/[._-]+/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase()) : '');
+
+    addMsg({ role: 'assistant', content: `Refining ${targets.length} message${targets.length === 1 ? '' : 's'} to be more personal${guidance ? ` — ${guidance}` : ''}…`, streaming: true });
+    setBusy(true);
+
+    const sys = [
+      'You REWRITE existing first-touch LinkedIn messages to the user\'s 1st-degree connections so each one is genuinely PERSONAL to that person — not a template with the name swapped in.',
+      'The current drafts are weak because they are generic ("great to be connected, your work caught my eye, open to a quick chat?"). Make each one specific and human.',
+      'Rules for every rewrite:',
+      '- 30–55 words. Plain, warm, specific. It must read as if the user personally wrote it after looking at that person\'s profile.',
+      '- Greet by FIRST NAME ONLY (no Dr/Prof/Mr).',
+      '- Open on ONE concrete, specific thing from THAT person\'s role/company/headline — not a vague "your work caught my eye". Never paste their whole headline back.',
+      '- The user is offering a service, so make the value clear in ONE natural line — what\'s in it for THEM — without a hard pitch, no feature dump, no "hop on a call to explore synergies".',
+      '- End with ONE low-pressure, specific ask.',
+      '- No "I hope this finds you well", no buzzwords, no hashtags, no emojis unless truly natural.',
+      senderName ? `- Sign off with the sender's REAL name: ${senderName}. Never a placeholder like "[Your Name]".`
+                 : '- End with the message itself — never a bracketed placeholder signature.',
+      guidance ? `HOW THE USER WANTS THEM (follow this above all): ${guidance}` : '',
+      'Return ONLY a JSON array: [{"name":"<exact name as given>","message":"<the rewritten message>"}] — one per person, exact names, nothing else.',
+    ].filter(Boolean).join('\n');
+    const usr = `WHAT I DO / WHAT I'M SELLING:\n${productCtx || '(not specified — keep it about them and a warm, low-pressure reconnect, and do not invent specifics about my product)'}\n\nRewrite a message for each of these connections. Their CURRENT draft is shown so you can see what to improve — make each far more personal to them:\n${targets.map((c) => `- ${c.name} — ${c.company || '(no headline)'}\n    current: ${c.linkedin_message ? c.linkedin_message.replace(/\n+/g, ' ').trim() : '(none)'}`).join('\n')}`;
+
+    try {
+      const { text } = await streamTurnWithRetry([{ role: 'user', content: usr }], sys, () => {});
+      let drafted: { name?: string; message?: string }[] = [];
+      const jm = text.match(/\[[\s\S]*\]/);
+      if (jm) { try { drafted = JSON.parse(jm[0]); } catch { /* ignore */ } }
+      const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+      const byName: Record<string, string> = {};
+      for (const d of drafted) if (d?.name && d?.message) { byName[norm(String(d.name))] = String(d.message).trim(); byName[norm(firstNameOf(String(d.name)))] ??= String(d.message).trim(); }
+      let refined = 0;
+      const contacts = campaign.contacts.map((c) => {
+        if (isDone(c.status)) return c;
+        const m = byName[norm(c.name)] || byName[norm(firstNameOf(c.name))];
+        if (m && m !== c.linkedin_message) { refined++; return { ...c, linkedin_message: m }; }
+        return c;
+      });
+      if (!refined) {
+        const nores = 'I couldn\'t improve those just now — the rewrite came back empty. Your existing messages are unchanged. Try **/refine** again, or add a note on how you want them (e.g. "warmer, lead with the time we save them").';
+        setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: nores, streaming: false }; return c; });
+        if (sid) krewDb.saveMessage(sid, 'assistant', nores).catch(() => {});
+        return;
+      }
+      const updated = { ...campaign, contacts };
+      saveCampaign(updated);
+      const summary = `Refined **${refined}** message${refined === 1 ? '' : 's'} to be more personal${guidance ? ` (${guidance})` : ''} — reopening the copilot so you can review each and send. Nothing was sent, and anyone already contacted was left untouched.`;
+      setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: summary, streaming: false }; return c; });
+      if (sid) krewDb.saveMessage(sid, 'assistant', summary).catch(() => {});
+      setOutreachCampaign(updated);
+    } catch (e) {
+      const msg = `Couldn't refine the messages: ${e instanceof Error ? e.message : String(e)}. Your existing messages are unchanged — try again.`;
+      setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: msg, streaming: false }; return c; });
+      if (sid) krewDb.saveMessage(sid, 'assistant', msg).catch(() => {});
+    } finally {
+      setBusy(false); setAgentStep(null); setAgentTool(null);
+    }
+  }
+
+  /**
    * Selecting several Brain files for one request is the user saying "these belong together".
    * Reflect that in the graph so the connection survives the chat: every pair of attached Brain
    * files gets linked. Only touches nodes that already exist — never creates new ones.
@@ -5432,6 +5534,13 @@ The prompt must be production-ready — specific enough for a motion designer to
     }
     if (c.run === 'continue') { setInput(''); const saved = loadResumableCampaign() || loadSavedCampaign(); if (saved) { setOutreachCampaign(saved); } else addMsg({ role: 'assistant', content: 'No outreach in progress yet — use **/outreach** to draft messages and open the copilot.' }); return; }
     if (c.run === 'verifylinks') { setInput(''); verifyOutreachLinks(); return; }
+    if (c.run === 'refine') {
+      // Drop the phrasing in (don't run yet) so the user can add HOW they want the messages —
+      // "warmer", "lead with our local-first angle", "shorter" — then press Enter. send() catches it.
+      setInput('Refine the outreach messages — make them more personal. ');
+      setTimeout(() => { const el = inputRef.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0);
+      return;
+    }
     if (c.run === 'toggleSetting') {
       setInput('');
       try {
@@ -5553,6 +5662,29 @@ The prompt must be production-ready — specific enough for a motion designer to
         && !/\bconnections\b/i.test(text)) {
       setInput('');
       runLinkedInMessages(text);
+      return;
+    }
+    // Deterministic outreach REFINE — re-writes the messages already in the copilot to be more
+    // personal, using the user's own note on how they want them. Kept BEFORE link-repair and the
+    // outreach launcher so "refine/improve/rewrite the outreach messages" reworks what exists
+    // instead of repairing links or drafting a whole new batch.
+    if (isDirectCommand
+        && /\b(refine|improve|rewrite|re-?write|redo|polish|personali[sz]e|make .* (better|personal|warmer))\b/i.test(text)
+        && /\b(outreach|message|messages|dm|dms|drafts?|copilot)\b/i.test(text)
+        && !/\blink|url|profile\b/i.test(text)) {
+      // Everything after the refine verb is HOW they want them ("warmer", "lead with X"). Strip the
+      // command words AND the default "make them more personal" filler so the bare /refine phrasing
+      // leaves empty guidance (not a noisy "— personal.") while a real note the user typed survives.
+      let guidance = text
+        .replace(/\b(refine|improve|rewrite|re-?write|redo|polish|personali[sz]e)\b/gi, ' ')
+        .replace(/\b(the\s+)?(outreach|copilot)\b|\bmessages?\b|\bdrafts?\b|\bdms?\b|\bmake them\b|\bto be\b|\bmore\b|\bpersonal\b|\bplease\b/gi, ' ')
+        .replace(/[—–-]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .replace(/^[\s.,:;]+|[\s.,:;]+$/g, '')
+        .trim();
+      if (guidance.length < 3) guidance = '';   // leftover fragments aren't real instructions
+      setInput('');
+      refineOutreachMessages(guidance, text);
       return;
     }
     // Deterministic link-repair — checks the saved outreach profile links and fixes the wrong/missing

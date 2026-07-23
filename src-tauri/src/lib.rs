@@ -1577,8 +1577,17 @@ async fn start_local_engine(
         .ok_or_else(|| format!("Model '{}' not found", model_filename))?;
     let model_path = model.path.clone();
 
-    let engine = llama_engine_path(app)
-        .ok_or("Local AI engine not found. Open Settings → Setup to download it.")?;
+    // Provision the engine binary if it isn't on disk yet. The user may have downloaded a model but
+    // never pressed "Run" in the Models tab (the only place that used to extract the engine), so
+    // resolve → if missing, extract the bundled zip → resolve again, before giving up.
+    let engine = match llama_engine_path(app) {
+        Some(p) => p,
+        None => {
+            ensure_engine_extracted(app).await?;
+            llama_engine_path(app)
+                .ok_or("Local AI engine could not be set up. Reinstall the app, or open the Models tab and download it.")?
+        }
+    };
 
     // Stop any currently running server — take child OUT of mutex before awaiting
     let old_child = { let mut g = state.0.lock().unwrap(); g.take() };
@@ -1625,6 +1634,14 @@ async fn models_run(
 
 #[tauri::command]
 async fn models_download_engine(app: tauri::AppHandle) -> Result<(), String> {
+    ensure_engine_extracted(&app).await
+}
+
+/// Extract the bundled llama.cpp engine (adris-engine.zip → app-data/adris-ai/) if it isn't already
+/// present and current. Shared by the Models-tab "Run" button and the chat's auto-start, so a user
+/// who downloaded a MODEL but never pressed Run in the Models tab no longer hits "Local AI engine
+/// not found" — the engine is provisioned on demand the first time Local mode is used.
+async fn ensure_engine_extracted(app: &tauri::AppHandle) -> Result<(), String> {
     use std::io::Read as _;
 
     let dest_dir = app.path().app_data_dir()
