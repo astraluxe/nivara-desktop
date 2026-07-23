@@ -4422,6 +4422,10 @@ The prompt must be production-ready — specific enough for a motion designer to
       .replace(/\bmy\b|\bthe\b|\bfor\b|\bwhich\b|\bi have got\b|\bi got\b/gi, ' ')
       .replace(/\blinked\s?in\b|\bmessages?\b|\breply\b|\breplies\b|\brespond\b/gi, ' ')
       .replace(/\s+/g, ' ').trim();
+    // Did the user actually tell us their availability? Only then may a meeting be auto-created for
+    // a proposed time — otherwise we must CONFIRM with them first (they may not be free). This is the
+    // deterministic backstop so the agent can never book a time it fabricated the user was free for.
+    const userGaveAvailability = /\b(free|available|busy|after|before|between|from|till|until|any\s?time|anytime|works?\s+for\s+me|\d{1,2}\s*(?:am|pm)|\d{1,2}:\d{2}|morning|afternoon|evening|tonight|tomorrow|today|mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend|next week)\b/i.test(guidance);
     addMsg({ role: 'user', content: userText || 'Check my LinkedIn messages and draft replies' });
     if (sid) krewDb.saveMessage(sid, 'user', userText || 'Check my LinkedIn messages and draft replies').catch(() => {});
     addMsg({ role: 'assistant', content: 'Opening LinkedIn and reading your messages…', streaming: true });
@@ -4531,15 +4535,19 @@ The prompt must be production-ready — specific enough for a motion designer to
         '- Inventing a plausible-sounding answer is the worst possible outcome: the user sends it to a real prospect as though it were true.',
         'WRITING THE REPLY:',
         '- Ground every reply in what was ACTUALLY said in that thread. Never invent a claim, a time, or a commitment nobody made.',
-        '- If they proposed times, answer those SPECIFIC times against the user\'s stated availability. If a proposed time does not work, say so plainly and offer one that does. Convert time zones carefully and show both (e.g. "9:00 PM IST / 10:30 AM EDT").',
+        '- YOUR CALENDAR IS UNKNOWN TO YOU. The ONLY thing that tells you when the user is free is their own words in MY INSTRUCTIONS / AVAILABILITY above. NEVER say a specific time "works", "works perfectly", "is fine", or otherwise accept/confirm a time on the user\'s behalf unless that time falls inside the availability they gave you. Making up availability is as bad as making up a fact — it commits the user to a meeting they may not be able to attend, and they only find out when it clashes.',
+        '- If the other person proposed or agreed a specific time and you do NOT have the user\'s availability covering it: do NOT accept it, and do NOT emit an `invite:` action. Instead write a warm reply that keeps it open WITHOUT committing — e.g. "Let me confirm my availability and come right back to you on that" or ask what window suits them — and put `confirm-avail: <the proposed time>` on the ACTION line so the app checks with the user before anything is scheduled.',
+        '- If they proposed times AND the user\'s availability covers one, confirm THAT one. If a proposed time is outside the user\'s availability, say so plainly and offer a time that IS inside it. Convert time zones carefully and show both (e.g. "9:00 PM IST / 10:30 AM EDT").',
         '- 40–80 words. Warm, direct, human. First name only. No "I hope this finds you well", no buzzwords, no emojis unless natural.',
+        '- POLISH: read it back before finishing — would a busy founder actually type this to a peer? Trim anything stiff or salesy, keep it easy and genuine, one clear point per message. A reply that sounds like a real person beats a "professional" one.',
         '- NEVER CLAIM A LINK, FILE OR ATTACHMENT. You cannot create a video-call link and cannot attach anything, so the words "with the meeting link included", "link attached", "I\'ve attached", "please find enclosed" are always false. Banned outright — writing them sends the other person looking for something that does not exist.',
         '- A promise is only allowed if the ACTION line makes it happen. When you promise a JOINING LINK, write the exact token {{MEET_LINK}} where the link belongs (e.g. \"Here is the link: {{MEET_LINK}}\") and it is replaced with the real Google Meet URL - never write a made-up meet.google.com address, and never mention a link without that token. You may write "I\'ll get the invite across to you" ONLY when you also put `invite: <day, time, timezone>` on the ACTION line — that is what actually creates the event. Same for a deck or a document: promise it only with the matching ACTION line. If you are not recording the action, do not mention the thing at all. An unrecorded promise is one nobody keeps, and it costs the user the meeting.',
         'THE ACTION LINE — what the user must actually DO, beyond sending words. Exactly ONE per thread, the single most important one:',
         '- deck: <topic> — they promised or now owe a deck/breakdown/overview/presentation. Use this when the reply says something will be sent.',
         '- doc: <what> — a written document, proposal or pricing sheet is owed.',
-        '- schedule: <what> — a call was agreed but has NO confirmed time yet.',
-        '- invite: <YYYY-MM-DD> <HH:MM 24h> <IANA timezone> | <duration minutes> | <short meeting title> - a specific time HAS been agreed. Example: `invite: 2026-07-28 14:00 Asia/Kolkata | 30 | Amogh x Keshav intro call`. Work the real date out from the TODAY IS date above ("Tuesday" means the NEXT Tuesday); IST is Asia/Kolkata, ET is America/New_York, UK is Europe/London. The meeting AND its video link are created automatically from this line, so an unparseable one means no meeting gets made.',
+        '- schedule: <what> — a call was agreed in principle but has NO specific time yet.',
+        '- confirm-avail: <the time the other person proposed, e.g. "1:00 PM IST tomorrow"> — a specific time was proposed/agreed by THEM but you do NOT have the user\'s availability for it. Use this INSTEAD of invite whenever you are not certain from the user\'s own words that they are free then. The app asks the user to confirm before any meeting is made. This is the safe default for scheduling.',
+        '- invite: <YYYY-MM-DD> <HH:MM 24h> <IANA timezone> | <duration minutes> | <short meeting title> - use ONLY when the agreed time falls inside the availability the USER themselves gave you in MY INSTRUCTIONS / AVAILABILITY above. Example: `invite: 2026-07-28 14:00 Asia/Kolkata | 30 | Amogh x Keshav intro call`. Work the real date out from the TODAY IS date above ("Tuesday" means the NEXT Tuesday); IST is Asia/Kolkata, ET is America/New_York, UK is Europe/London. The meeting AND its video link are created automatically from this line. If you are not certain the user is free then, use confirm-avail instead — never invite.',
         '- answer: <question> — they asked something factual that the user must answer themselves.',
         '- none — sending the reply is the whole job.',
         'Pick ONE. Do not stack several actions onto one thread.',
@@ -4565,7 +4573,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       // Parse "### Name / WHY: / REPLY: / ACTION: / NEEDS:" blocks so each reply becomes its own
       // actionable card. REPLY must stop at the next labelled line, otherwise ACTION/NEEDS would be
       // swallowed into the message body and sent to the prospect.
-      const parsed: { name: string; why: string; reply: string; action: string; needs: string; calendar?: { ok: boolean; guests: string; link: string; when: string } }[] = [];
+      const parsed: { name: string; why: string; reply: string; action: string; needs: string; calendar?: { ok: boolean; guests: string; link: string; when: string; needsConfirm?: boolean } }[] = [];
       for (const blk of clean.split(/^###\s+/m).slice(1)) {
         const nl = blk.indexOf('\n');
         const name = (nl >= 0 ? blk.slice(0, nl) : blk).trim();
@@ -4587,10 +4595,17 @@ The prompt must be production-ready — specific enough for a motion designer to
        *  does it. Deliberately a suggestion, not an auto-run: firing the deck builder off the back
        *  of every inbox scan is exactly the scattergun behaviour that makes Krew feel random. */
       const actionHint = (a: string, who: string): { label: string; todo: string; prompt?: string } | null => {
-        const m = a.match(/^(deck|doc|schedule|invite|answer)\s*:\s*(.+)$/i);
+        const m = a.match(/^(deck|doc|schedule|invite|confirm-avail|answer)\s*:\s*(.+)$/i);
         if (!m) return null;
         const kind = m[1].toLowerCase();
         const what = m[2].trim().replace(/\.$/, '');
+        // The other person proposed a time but we don't know if the user is free — confirm FIRST,
+        // then create the meeting. Continue asks the user their availability and finalises.
+        if (kind === 'confirm-avail') return {
+          label: `**Are you free ${what}?** ${who} proposed this — I have NOT booked anything. Press Continue to confirm your availability and I'll finalise the reply + create the meeting.`,
+          todo: `Confirm you're free for ${who}: ${what}`,
+          prompt: `${who} proposed meeting at ${what} on LinkedIn. First ask me if I'm free then (and for how long). If I confirm, create the calendar event + Meet link with create_calendar_event and draft the confirming reply for ${who}. If I'm not free, draft a reply offering the times I give you instead. Do NOT book anything until I've said I'm free.`,
+        };
         // `prompt` is what Continue hands back to Arjun, so the promised work is actually resumable
         // rather than just described. EVERY kind now carries one: previously schedule/answer had
         // none, and the code below then fell back to attaching the LinkedIn url — so pressing
@@ -4642,6 +4657,15 @@ The prompt must be production-ready — specific enough for a motion designer to
       for (const p of parsed) {
         const m = p.action.match(/^invite\s*:\s*(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2})\s+(\S+)\s*(?:\|\s*(\d+)\s*)?(?:\|\s*(.+))?$/i);
         if (!m) continue;   // unparseable -> leave it as a to-do, never book a guessed time
+        // BACKSTOP: never auto-book a time unless the USER told us they're free. If they didn't give
+        // availability, we treat even an `invite:` as "confirm first" — turn it into a confirm-avail
+        // so the meeting isn't created behind their back (the reported bug: it booked 1 PM and made a
+        // Meet link without ever asking the user if 1 PM suited them).
+        if (!userGaveAvailability) {
+          p.action = `confirm-avail: ${m[2]} on ${m[1]} (${m[3]})`;
+          p.calendar = { ok: false, guests: '', link: '', when: `${m[1]} ${m[2]} ${m[3]}`, needsConfirm: true };
+          continue;
+        }
         const [, date, time, tz, dur, titleRaw] = m;
         const guests = await findEmailFor(p.name);
         updateLastMsg(`Setting up the meeting with **${p.name}** — creating the video link and the calendar event…`);
@@ -4698,7 +4722,9 @@ The prompt must be production-ready — specific enough for a motion designer to
         // What actually happened with the meeting, stated plainly. The guest-email case matters:
         // with no guest on the event, pressing Save notifies nobody, so the link in the reply IS
         // the invitation and the user needs to know that.
-        const cal = p.calendar?.ok
+        const cal = p.calendar?.needsConfirm
+          ? `\n\n📅 **Not booked yet — are you free?** ${p.name} proposed **${p.calendar.when}**. I have NOT created a meeting or a link, because you haven't told me you're free then. Tell me your availability (e.g. "I'm free after 7pm") and I'll finalise the reply and set it up.`
+          : p.calendar?.ok
           ? `\n\n📅 **Meeting created** — ${p.calendar.when}. Google Calendar is open in the ADRIS browser: **press Save** to keep it.`
             + (p.calendar.link ? ` Video link \`${p.calendar.link}\` is on the event and included in the reply above.` : ' No video link could be created — sign in to Google in the ADRIS browser if you want one.')
             + (p.calendar.guests

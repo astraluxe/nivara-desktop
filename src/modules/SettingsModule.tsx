@@ -45,8 +45,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.35',
+  version: '1.6.36',
   items: [
+    'Big fix for LinkedIn scheduling: adris will no longer accept a meeting time or create a calendar invite + video link on your behalf unless YOU have said you’re free then. When someone proposes a time and you haven’t given your availability, the reply stays non-committal and you get a clear “Are you free? — I haven’t booked anything” note. Tell it your availability (“I’m free after 7pm”) and it finalises the reply and sets up the meeting. It can no longer say “1 PM works perfectly” for a time it never checked with you.',
+    'Inbox replies read a touch warmer and more human — less stiff, more like something you’d actually type.',
+
     'Fixed a bad error: with an NVIDIA key connected, a task could fail with “401 — Incorrect API key … platform.openai.com” because the NVIDIA key was being sent to OpenAI. Keys are now routed by their own type — an nvapi-/gsk_/sk-ant-/AIza key always goes to the right provider (NVIDIA/Groq/Claude/Gemini), no matter which one is selected — so that mix-up can’t happen.',
     'Connected more than one AI key (say Gemini AND NVIDIA)? The chat connection bar’s “Own Key” panel now shows your connected keys as a clear choice — tap the one you want the agents to run on. Pick NVIDIA and the recommended-model chooser appears right there.',
 
