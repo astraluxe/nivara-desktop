@@ -45,8 +45,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.24',
+  version: '1.6.25',
   items: [
+    'Fixed: a location you set in Settings could vanish after an update. It was only kept in the browser layer’s storage, which an update can reset. It is now also saved to the app’s durable store and restored automatically on launch, so it survives updates and reinstalls.',
+    'Google Maps searches for local leads now insist on a confirmed city — your saved location or one you name in the request. If it isn’t sure where you mean, it asks first instead of running a Maps search on a guessed area and quietly returning businesses from the wrong place.',
+
     'Fixed: Local mode said “Your local model isn’t responding” even with a model downloaded. The engine was only ever started if you visited the Models tab and loaded it by hand — sending a message never started it. Now picking Local and sending a message starts the engine automatically with the model you chose, waits for it to be ready, and answers. Verified end to end against a downloaded 14B model.',
     'The in-app guide (Info → Slash commands) now says which commands open a browser and what they open — Google Maps for finding local businesses and their phone/email, LinkedIn for connections and messages — and reminds you to set Settings → Location so “near me” works.',
 

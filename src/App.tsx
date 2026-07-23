@@ -197,6 +197,13 @@ function AppShell() {
     invoke('setup_agent_browser').catch(() => {});
   }, []);
 
+  // Restore the user's saved location from the durable store if the webview's localStorage was
+  // reset by an update/reinstall — otherwise a location the user set would silently "vanish" and
+  // every local-lead search would start asking for it again.
+  useEffect(() => {
+    import('./lib/userLocation').then(({ hydrateUserLocation }) => hydrateUserLocation()).catch(() => {});
+  }, []);
+
   // SECOND, INDEPENDENT driver for the corner badge's visibility. The badge window is
   // supposed to show itself, but if anything in its own boot fails (monitor detection,
   // a script error, timing at cold start) the failure is INVISIBLE — the user just

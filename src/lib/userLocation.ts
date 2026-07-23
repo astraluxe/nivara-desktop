@@ -13,6 +13,8 @@
 // Perth Australia/Scotland. So a city on its own is never enough — country is required, and the
 // agent is told to ask which one rather than pick the famous one.
 
+import { krewMemoryDb } from './krewDb';
+
 export interface UserLocation {
   city: string;        // "London", "Chicago", "Bengaluru"
   region?: string;     // state / province / county — "Illinois", "Ontario", "Karnataka"
@@ -21,6 +23,13 @@ export interface UserLocation {
 }
 
 const LS_KEY = 'nv-user-location';
+// Durable mirror. localStorage is the fast SYNCHRONOUS source every caller reads, but it lives in
+// the webview's own storage, which does NOT reliably survive a reinstall or update — that is why a
+// location the user had set "vanished". The Krew profile is SQLite in the app-data dir and DOES
+// survive, so we write there too and rehydrate localStorage from it at startup. The value also
+// shows up in "What Krew knows about you", which reinforces it for the agents.
+const PROFILE_SCOPE = '__krew_profile__';   // === KREW_PROFILE_KEY (kept literal to avoid a cycle)
+const PROFILE_KEY   = 'location';
 
 /** The saved location, or null when the user has never told us. Null means ASK — never assume. */
 export function loadUserLocation(): UserLocation | null {
@@ -51,13 +60,40 @@ export function saveUserLocation(loc: UserLocation): void {
     countryCode: (loc.countryCode || '').trim().toUpperCase() || countryCodeFor(loc.country || ''),
   };
   try { localStorage.setItem(LS_KEY, JSON.stringify(clean)); } catch { /* quota — non-fatal */ }
+  // Durable copy so it survives an update/reinstall (fire-and-forget; localStorage is the source
+  // callers read, this is just the backup that repopulates it).
+  if (clean.city && clean.country) {
+    krewMemoryDb.save(PROFILE_SCOPE, PROFILE_KEY, JSON.stringify(clean)).catch(() => { /* offline/db — the localStorage copy still works */ });
+  }
   // Let any open view (Settings, a running chat) pick the change up without a reload.
   try { window.dispatchEvent(new CustomEvent('nv-location-changed', { detail: clean })); } catch { /* no window */ }
 }
 
 export function clearUserLocation(): void {
   try { localStorage.removeItem(LS_KEY); } catch { /* ignore */ }
+  krewMemoryDb.delete(PROFILE_SCOPE, PROFILE_KEY).catch(() => { /* ignore */ });
   try { window.dispatchEvent(new CustomEvent('nv-location-changed', { detail: null })); } catch { /* ignore */ }
+}
+
+/** Rehydrate localStorage from the durable copy if it went missing (webview storage reset on an
+ *  update/reinstall). Call once at startup BEFORE anything reads the location. Returns the location
+ *  now in effect, or null. Never overwrites a location the user already has in localStorage. */
+export async function hydrateUserLocation(): Promise<UserLocation | null> {
+  const current = loadUserLocation();
+  if (current) return current;   // localStorage already has it — nothing to restore
+  try {
+    const rows = await krewMemoryDb.getAll(PROFILE_SCOPE);
+    const row = (rows || []).find((r) => r.key === PROFILE_KEY);
+    if (!row?.value) return null;
+    const saved = JSON.parse(row.value) as UserLocation;
+    if (saved?.city && saved?.country) {
+      // Restore into localStorage WITHOUT re-writing the durable copy (avoid a needless round-trip).
+      try { localStorage.setItem(LS_KEY, JSON.stringify(saved)); } catch { /* quota */ }
+      try { window.dispatchEvent(new CustomEvent('nv-location-changed', { detail: saved })); } catch { /* no window */ }
+      return loadUserLocation();
+    }
+  } catch { /* db unavailable — nothing to restore */ }
+  return null;
 }
 
 /** "Chicago, Illinois, United States" — what we show the user and put in the prompt. */
