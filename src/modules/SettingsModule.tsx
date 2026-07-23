@@ -45,8 +45,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.23',
+  version: '1.6.24',
   items: [
+    'Fixed: Local mode said “Your local model isn’t responding” even with a model downloaded. The engine was only ever started if you visited the Models tab and loaded it by hand — sending a message never started it. Now picking Local and sending a message starts the engine automatically with the model you chose, waits for it to be ready, and answers. Verified end to end against a downloaded 14B model.',
+    'The in-app guide (Info → Slash commands) now says which commands open a browser and what they open — Google Maps for finding local businesses and their phone/email, LinkedIn for connections and messages — and reminds you to set Settings → Location so “near me” works.',
+
     'When someone agrees a time on LinkedIn, the meeting is now MADE for you — no button to press. adris creates a real Google Meet room, opens Google Calendar with the event filled in and that link on it, and drops the link into the reply so the other person actually gets it. All you do is press Save on the calendar tab.',
     'It looks up their email first — from your outreach campaign or any lead list in your Brain — and adds them as a guest when it finds one, so saving genuinely sends them an invitation. When there is no email it says so plainly rather than letting you believe an invite went out: the link in the reply is what reaches them.',
     'Video links are real or absent, never invented. A drafted reply cannot mention a meeting link unless one was actually created.',

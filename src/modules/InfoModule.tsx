@@ -232,17 +232,25 @@ export default function InfoModule() {
           </P>
 
           <H3>Finding and preparing leads</H3>
+          <p className="text-[12px] text-nv-muted leading-relaxed mb-3">
+            Some of these open a real browser window you can watch. <K>/findleads</K> and <K>/enrich</K> use
+            <strong> Google Maps</strong> to find local businesses and read their phone and email;
+            <K>/scan</K>, <K>/verify</K> and the outreach commands open <strong>LinkedIn</strong>. Finding
+            local prospects needs to know where you are — set your city and country once in
+            <strong> Settings → Location</strong> and “near me” / “in my city” then work everywhere. If it
+            isn’t set, adris asks before searching rather than guessing the wrong country.
+          </p>
           <CmdTable rows={[
-            ['/findleads', 'Find prospects', 'Researches brand-new leads that fit what you sell — real companies from open sources, not invented names.', 'Find new prospects for my product and add them to Tech leads.md'],
+            ['/findleads', 'Find prospects', 'Researches brand-new leads that fit what you sell — real companies from open sources and Google Maps, in your own city and country (from Settings → Location), never invented names.', 'Find 10 companies near me I can sell to — use PRODUCT.md for what I sell'],
             ['/scan', 'Scan LinkedIn connections', 'Opens LinkedIn and reads your existing connections, saving names, headlines and profile links to the Brain note “LinkedIn connections”. About fifty per run; later runs skip anyone already saved.', 'Scan my LinkedIn connections — then “scan the next 50” for more'],
             ['/expand', 'Add more leads', 'Grows a list you already have with additional people of the same type, instead of starting a new list.', 'Add more prospects to Tech leads.md — new people only'],
-            ['/enrich', 'Fill contacts', 'Goes through a list and fills in the gaps — missing LinkedIn URLs, phone numbers and email addresses — in a single pass.', 'Fill in the missing phone and email for the people in Tech leads.md'],
+            ['/enrich', 'Fill contacts', 'Goes through a list and fills in the gaps — missing LinkedIn URLs, phone numbers and email addresses — in a single pass, opening Google Maps and each company’s site to read real contact details.', 'Fill in the missing phone and email for the people in Tech leads.md'],
             ['/verify', 'Verify LinkedIn', 'Opens every LinkedIn link in a lead list and checks it really belongs to that person. Leaves a field blank rather than guessing.', 'Go to Tech leads.md and verify each and every LinkedIn'],
           ]} />
 
           <H3>LinkedIn messages and outreach</H3>
           <CmdTable rows={[
-            ['/linkedin', 'Check LinkedIn messages', 'Opens your LinkedIn inbox, reads each conversation in full, and drafts a reply only where something is genuinely still outstanding. Add your availability in the same sentence and it will answer proposed times against it. Nothing is ever sent for you.', 'Check my LinkedIn messages — I’m free Wednesday after 1:30 PM IST'],
+            ['/linkedin', 'Check LinkedIn messages', 'Opens your LinkedIn inbox, reads each conversation in full (knowing which messages are yours and which are theirs), and drafts a reply only where something is genuinely still outstanding. Add your availability in the same sentence and it answers proposed times against it. When a time gets agreed it creates a real Google Meet link and opens Google Calendar with the event filled in for you to save. Nothing is ever sent for you.', 'Check my LinkedIn messages — I’m free Wednesday after 1:30 PM IST'],
             ['—', 'Send a drafted reply', 'After it drafts replies, say this to have it type that reply into the person’s LinkedIn chat box. It stops there — you read it and press Send yourself.', 'Send the reply to Kevin'],
             ['/outreach', 'Send outreach (copilot)', 'Asks two things first — which list of people to message, then which campaign note to save into (or a new one you name) — then writes a personal message for each person and opens the copilot that walks you through sending them one by one. Skips anyone you have already messaged, and remembers the note you last saved to.', 'Type /outreach, pick “LinkedIn connections”, then pick or name the campaign'],
             ['/continue', 'Continue outreach', 'Reopens the outreach copilot exactly where you left off, with everyone’s status intact.', '/continue'],

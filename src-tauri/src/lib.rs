@@ -766,10 +766,11 @@ async fn ai_stream(
     messages: Vec<AiMessage>,
     api_key: Option<String>,
     provider: Option<String>,
-    _local_model: Option<String>,
+    local_model: Option<String>,
     model_name: Option<String>,
     base_url: Option<String>,
     session_token: Option<String>,
+    engine_state: tauri::State<'_, LlamaEngineProcess>,
 ) -> Result<(), String> {
     use futures_util::StreamExt;
 
@@ -795,11 +796,17 @@ async fn ai_stream(
             let msgs: Vec<serde_json::Value> = messages.iter()
                 .map(|m| serde_json::json!({"role": m.role, "content": m.content}))
                 .collect();
+            if !local_engine_healthy().await {
+                let want = local_model.clone().unwrap_or_default();
+                if let Err(e) = start_local_engine(&app, &want, &engine_state).await {
+                    emit_error(e.clone()); return Err(e);
+                }
+            }
             let body = serde_json::json!({ "model": "local", "messages": msgs, "stream": true });
             let resp = reqwest::Client::new()
                 .post("http://127.0.0.1:8080/v1/chat/completions")
                 .json(&body).send().await
-                .map_err(|e| { let s = format!("Local AI engine not running. Load a model first in the Models tab. ({})", e); emit_error(s.clone()); s })?;
+                .map_err(|e| { let s = format!("Local AI engine not responding. Open the Models tab and check a model is downloaded. ({})", e); emit_error(s.clone()); s })?;
             let mut sse_buf: Vec<u8> = Vec::new();
             let mut stream = resp.bytes_stream();
             while let Some(chunk) = stream.next().await {
@@ -1548,20 +1555,29 @@ async fn models_stop_engine(state: tauri::State<'_, LlamaEngineProcess>) -> Resu
     Ok(())
 }
 
-#[tauri::command]
-async fn models_run(
-    app:            tauri::AppHandle,
-    model_filename: String,
-    state:          tauri::State<'_, LlamaEngineProcess>,
+/// Start the llama.cpp engine with a specific model and wait until it answers on /health.
+/// Shared by the Models-tab "load" button (models_run) and the chat's auto-start path, so a user
+/// who picks Local mode and just sends a message no longer has to visit the Models tab first — the
+/// engine comes up on demand with the model they selected (or the first installed one).
+async fn start_local_engine(
+    app:            &tauri::AppHandle,
+    model_filename: &str,
+    state:          &tauri::State<'_, LlamaEngineProcess>,
 ) -> Result<(), String> {
-    let dir    = models_dir(&app)?;
+    let dir    = models_dir(app)?;
     let models = load_installed_models(&dir);
-    let model  = models.iter()
+    if models.is_empty() {
+        return Err("No local model is downloaded yet. Open the Models tab and download one first.".into());
+    }
+    // Prefer the requested model; fall back to the first installed one so an empty/stale selection
+    // still starts SOMETHING rather than failing.
+    let model = models.iter()
         .find(|m| m.filename == model_filename || m.id == model_filename)
+        .or_else(|| models.first())
         .ok_or_else(|| format!("Model '{}' not found", model_filename))?;
     let model_path = model.path.clone();
 
-    let engine = llama_engine_path(&app)
+    let engine = llama_engine_path(app)
         .ok_or("Local AI engine not found. Open Settings → Setup to download it.")?;
 
     // Stop any currently running server — take child OUT of mutex before awaiting
@@ -1586,6 +1602,25 @@ async fn models_run(
         { return Ok(()); }
     }
     Err("Engine started but is not responding. Try again or restart the app.".into())
+}
+
+/// True if the engine is already serving on 8080 — so we don't restart it (and reload the model,
+/// several seconds) on every message.
+async fn local_engine_healthy() -> bool {
+    reqwest::Client::new()
+        .get("http://127.0.0.1:8080/health")
+        .timeout(std::time::Duration::from_secs(2))
+        .send().await
+        .map(|r| r.status().is_success()).unwrap_or(false)
+}
+
+#[tauri::command]
+async fn models_run(
+    app:            tauri::AppHandle,
+    model_filename: String,
+    state:          tauri::State<'_, LlamaEngineProcess>,
+) -> Result<(), String> {
+    start_local_engine(&app, &model_filename, &state).await
 }
 
 #[tauri::command]
@@ -4089,10 +4124,11 @@ async fn krew_ai_stream(
     messages: Vec<AiMessage>,
     api_key: Option<String>,
     provider: Option<String>,
-    _local_model: Option<String>,
+    local_model: Option<String>,
     model_name: Option<String>,
     base_url: Option<String>,
     session_token: Option<String>,
+    engine_state: tauri::State<'_, LlamaEngineProcess>,
 ) -> Result<(), String> {
     use futures_util::StreamExt;
 
@@ -4111,11 +4147,20 @@ async fn krew_ai_stream(
             let mut all_msgs = Vec::new();
             if !sys.is_empty() { all_msgs.push(serde_json::json!({"role":"system","content":sys})); }
             for m in &messages { all_msgs.push(serde_json::json!({"role":m.role,"content":m.content})); }
+            // Auto-start the engine if it isn't already serving, so picking Local mode and sending
+            // a message "just works" without a manual load in the Models tab (the missing step that
+            // produced "Your local model isn't responding"). Reuses the exact model the user chose.
+            if !local_engine_healthy().await {
+                let want = local_model.clone().unwrap_or_default();
+                if let Err(e) = start_local_engine(&app, &want, &engine_state).await {
+                    emit_error(e.clone()); return Err(e);
+                }
+            }
             let body = serde_json::json!({ "model": "local", "messages": all_msgs, "stream": true });
             let resp = reqwest::Client::new()
                 .post("http://127.0.0.1:8080/v1/chat/completions")
                 .json(&body).send().await
-                .map_err(|e| { let s = format!("Local AI engine not running. Load a model first in the Models tab. ({})", e); emit_error(s.clone()); s })?;
+                .map_err(|e| { let s = format!("Local AI engine not responding. Open the Models tab and check a model is downloaded. ({})", e); emit_error(s.clone()); s })?;
             let mut sse_buf: Vec<u8> = Vec::new();
             let mut stream = resp.bytes_stream();
             while let Some(chunk) = stream.next().await {
