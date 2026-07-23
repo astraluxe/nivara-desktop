@@ -53,6 +53,22 @@ export default function ConnectionBar(props: Props) {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [byokList, setByokList] = useState<{ api_key: string; model?: string }[]>([]);
   const [byokActive, setByokActive] = useState('');
+  const [connectedAi, setConnectedAi] = useState<Provider[]>([]);
+
+  // Which AI providers the user has actually connected — so the own-key popup can offer a clear
+  // "use this one" choice (e.g. Gemini vs NVIDIA) instead of leaving them guessing.
+  useEffect(() => {
+    if (popup !== 'own_key') return;
+    let cancelled = false;
+    (async () => {
+      const found: Provider[] = [];
+      for (const p of ['gemini', 'openai', 'claude', 'nvidia', 'groq'] as Provider[]) {
+        try { const c = await credentialStore.get(p); if (c?.api_key) found.push(p); } catch { /* none */ }
+      }
+      if (!cancelled) setConnectedAi(found);
+    })();
+    return () => { cancelled = true; };
+  }, [popup, byokList]);
 
   // Load the saved keys for the selected provider (NVIDIA/Groq can have several to toggle between).
   async function refreshByokKeys(prov: Provider) {
@@ -199,7 +215,24 @@ export default function ConnectionBar(props: Props) {
 
             {popup === 'own_key' && (
               <>
-                {/* Provider dropdown */}
+                {/* Your connected providers — the clear "which one do I use?" choice when more than
+                    one key is connected (e.g. Gemini AND NVIDIA). Tapping one selects it. */}
+                {connectedAi.length > 0 && (
+                  <div className="mb-3">
+                    <label className="text-nv-faint text-[11px] block mb-1.5">Use your connected key</label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {connectedAi.map((p) => (
+                        <button key={p} onClick={() => handleProviderChange(p)}
+                          className={`text-[11px] px-2.5 py-1 rounded-lg border transition-fast ${provider === p ? 'border-accent bg-accent/10 text-accent font-medium' : 'border-nv-border text-nv-muted hover:text-nv-text'}`}>
+                          {PROVIDERS[p].label}{provider === p ? ' ✓' : ''}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-[9.5px] text-nv-faint mt-1">This is what the agents run on. The list below is only if you want a provider you haven’t connected yet.</p>
+                  </div>
+                )}
+
+                {/* Provider dropdown (all providers — for connecting a new one) */}
                 <label className="text-nv-faint text-[11px] block mb-1.5">Provider</label>
                 <select
                   value={provider}

@@ -3434,23 +3434,38 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     let   truncated = false;
     const done = { cleanup: () => {} };
 
-    // Auto-detect API key + provider from ConnectApps when own_key and no manual key set
+    // Resolve the API key + provider for own_key mode.
     let effectiveKey       = apiKey;
     let effectiveProvider  = provider;
     let effectiveModelName = modelName;
-    if (mode === 'own_key' && !effectiveKey) {
-      // Order = preference when several keys are connected. NVIDIA and Groq (free, fast, OpenAI-
-      // compatible) come before the paid options so a user who connected one gets it automatically.
-      for (const [svc, p] of [['nvidia', 'nvidia'], ['groq', 'groq'], ['gemini', 'gemini'], ['openai', 'openai'], ['claude', 'claude']] as [string, Provider][]) {
-        if (creds[svc]?.api_key) {
-          effectiveKey      = creds[svc].api_key;
-          effectiveProvider = p as Provider;
-          // Use the model captured from the pasted snippet (the one they were looking at) if there
-          // is one; else clear it so Rust uses the provider's default. Their key works for all models.
-          if (creds[svc].model) effectiveModelName = creds[svc].model;
-          else if (p !== provider) effectiveModelName = '';
-          break;
+    let effectiveBaseUrl   = baseUrl;
+    if (mode === 'own_key') {
+      // No one-off key typed → use a CONNECTED provider. Prefer the one the user SELECTED in the
+      // dropdown (so with several keys they can choose), else the first connected (free NVIDIA/Groq
+      // first). This is what lets a user with both Gemini and NVIDIA pick which one to run on.
+      if (!effectiveKey) {
+        for (const svc of [provider, 'nvidia', 'groq', 'gemini', 'openai', 'claude']) {
+          if (creds[svc]?.api_key) {
+            effectiveKey       = creds[svc].api_key;
+            effectiveProvider  = svc as Provider;
+            effectiveModelName = creds[svc].model || (svc !== provider ? '' : modelName);
+            effectiveBaseUrl   = '';
+            break;
+          }
         }
+      }
+      // SAFETY NET — route by the KEY's OWN prefix. An nvapi-/gsk_/sk-ant-/AIza key is unambiguous,
+      // so it can NEVER be sent to the wrong endpoint because a dropdown was left on another provider
+      // (the "nvapi key at platform.openai.com → 401" bug). The key format wins over the dropdown.
+      const byPrefix =
+        /^nvapi-/i.test(effectiveKey)  ? 'nvidia' :
+        /^gsk_/i.test(effectiveKey)    ? 'groq'   :
+        /^sk-ant-/i.test(effectiveKey) ? 'claude' :
+        /^AIza/.test(effectiveKey)     ? 'gemini' : null;
+      if (byPrefix && byPrefix !== effectiveProvider) {
+        effectiveProvider  = byPrefix as Provider;
+        effectiveBaseUrl   = '';                              // drop any base url meant for the wrong provider
+        effectiveModelName = creds[byPrefix]?.model || '';    // and a matching model, not the wrong one (e.g. gpt-4o → NVIDIA)
       }
     }
 
@@ -3523,7 +3538,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
         provider:     effectiveProvider  || null,
         localModel:   localModel         || null,
         modelName:    effectiveModelName || null,
-        baseUrl:      baseUrl            || null,
+        baseUrl:      effectiveBaseUrl   || null,
         sessionToken: freshToken,
       }).catch((e) => { done.cleanup(); reject(e); });
     });

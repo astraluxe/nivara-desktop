@@ -45,8 +45,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.34',
+  version: '1.6.35',
   items: [
+    'Fixed a bad error: with an NVIDIA key connected, a task could fail with “401 — Incorrect API key … platform.openai.com” because the NVIDIA key was being sent to OpenAI. Keys are now routed by their own type — an nvapi-/gsk_/sk-ant-/AIza key always goes to the right provider (NVIDIA/Groq/Claude/Gemini), no matter which one is selected — so that mix-up can’t happen.',
+    'Connected more than one AI key (say Gemini AND NVIDIA)? The chat connection bar’s “Own Key” panel now shows your connected keys as a clear choice — tap the one you want the agents to run on. Pick NVIDIA and the recommended-model chooser appears right there.',
+
     'Fixed: the “Test” button in Connect Apps said “Unknown service” for NVIDIA and Groq. It now actually checks your key with a tiny request and tells you plainly whether it works.',
     'You can connect SEVERAL NVIDIA (or Groq) keys and switch between them — useful if one hits its free rate limit. In the chat connection bar under “Own Key” you now see your connected keys, which one is active (✓ Using your own key), and can toggle, add another, or remove one.',
     'Clicking NVIDIA/Groq no longer flings you out to the website straight away — it opens the short setup guide, and you open the site from there when you’re ready.',
