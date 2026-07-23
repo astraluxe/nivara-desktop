@@ -211,7 +211,15 @@ export default function ConnectionBar(props: Props) {
                 <label className="text-nv-faint text-[11px] block mb-1.5">API Key</label>
                 <input
                   value={apiKey}
-                  onChange={(e) => onApiKeyChange(e.target.value)}
+                  onChange={async (e) => {
+                    const v = e.target.value;
+                    // Tolerate a pasted code block / "Bearer …" here too — pull out the key. A
+                    // normal typed key has no spaces and passes straight through.
+                    if (/\s|bearer|api[_-]?key/i.test(v)) {
+                      try { const { extractApiKey } = await import('../krew/ServiceSetupModal'); onApiKeyChange(extractApiKey(v, provider)); return; } catch { /* fall through */ }
+                    }
+                    onApiKeyChange(v);
+                  }}
                   type="password"
                   placeholder={meta.keyPlaceholder}
                   className="w-full bg-nv-bg border border-nv-border rounded-lg px-3 py-2

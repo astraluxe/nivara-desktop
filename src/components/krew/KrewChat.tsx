@@ -3443,8 +3443,10 @@ const [studioExtracting, setStudioExtracting] = useState(false);
         if (creds[svc]?.api_key) {
           effectiveKey      = creds[svc].api_key;
           effectiveProvider = p as Provider;
-          // Clear model name so Rust uses the correct default for the detected provider
-          if (p !== provider) effectiveModelName = '';
+          // Use the model captured from the pasted snippet (the one they were looking at) if there
+          // is one; else clear it so Rust uses the provider's default. Their key works for all models.
+          if (creds[svc].model) effectiveModelName = creds[svc].model;
+          else if (p !== provider) effectiveModelName = '';
           break;
         }
       }

@@ -45,8 +45,10 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.31',
+  version: '1.6.32',
   items: [
+    'Connecting a free NVIDIA or Groq key is now foolproof. Their website hands you a whole block of code with the key buried inside — so instead of making you hunt for it, just paste the ENTIRE thing and adris finds the key for you (it even picks up the model you were looking at). It shows “✓ Found your key” so you know it worked. Pasting only the key still works too.',
+
     'Brain now connects related files for you. New files auto-link as they arrive, and a “Connect files” button links anything related that was left unjoined — a list to the product doc it came from, files from the same folder, notes that reference each other. Instant and free (no AI tokens).',
     'Brain can import from GitHub: paste a public repo URL (or one folder, …/tree/main/src) and it pulls up to 40 text files in, saved and linked under a repo hub — no clone, no token, no cost. Good for handing the agents a codebase or docs to read.',
     'Getting a free, fast AI key is now one click: in the chat connection bar press “Own Key” → “Get NVIDIA key” or “Get Groq key”, and it opens the sign-up and the guided setup. You can also ask Krew to “connect NVIDIA”. These free cloud models answer in seconds and use none of your adris.tech allowance — the fix when a local model is slow.',

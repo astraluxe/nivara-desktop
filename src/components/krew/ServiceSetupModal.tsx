@@ -13,6 +13,40 @@ interface Props {
 interface CopyItem { label: string; text: string }
 interface Step { title: string; body: string; link?: string; copyText?: string; copyItems?: CopyItem[]; field?: string; fieldLabel?: string; fieldPlaceholder?: string; secret?: boolean }
 
+// ─── Paste-the-whole-thing key extraction ────────────────────────────────────
+// NVIDIA (and most providers) hand a non-technical user a full CODE SNIPPET with the key buried in
+// an `Authorization: Bearer nvapi-…` line — they won't know to pull out just the key. So the field
+// accepts the ENTIRE pasted block (Python/Node/shell/curl, or the bare key) and we find the key.
+const KEY_PATTERNS: Record<string, RegExp> = {
+  nvidia: /nvapi-[A-Za-z0-9_\-]{10,}/,
+  groq:   /gsk_[A-Za-z0-9]{20,}/,
+  openai: /sk-(?!ant-)[A-Za-z0-9_\-]{20,}/,
+  claude: /sk-ant-[A-Za-z0-9_\-]{20,}/,
+  gemini: /AIza[A-Za-z0-9_\-]{20,}/,
+};
+/** Pull the real API key out of whatever the user pasted — a bare key, a `Bearer <key>`, or a full
+ *  code snippet. Falls back to the trimmed input if nothing matches (so an odd key still saves). */
+export function extractApiKey(raw: string, service: string): string {
+  const text = (raw || '').trim();
+  if (!text) return '';
+  const known = KEY_PATTERNS[service];
+  if (known) { const m = text.match(known); if (m) return m[0]; }
+  // Any provider: an Authorization: Bearer <token> line.
+  const bearer = text.match(/Bearer\s+([A-Za-z0-9_\-.]{16,})/i);
+  if (bearer) return bearer[1];
+  // A `"...key...": "<token>"` assignment.
+  const kv = text.match(/(?:api[_-]?key|token|secret)["'\s:=]+["']?([A-Za-z0-9_\-.]{16,})/i);
+  if (kv) return kv[1];
+  // Already a bare key (single token, no spaces) → use as-is.
+  if (!/\s/.test(text)) return text;
+  return text; // last resort — save what they gave; the provider will reject a truly wrong value
+}
+/** Pull a `"model": "org/name"` out of a pasted snippet, so we use the model they were looking at. */
+export function extractModel(raw: string): string {
+  const m = (raw || '').match(/["']model["']\s*:\s*["']([^"']+)["']/);
+  return m ? m[1].trim() : '';
+}
+
 const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
   // ── AI Providers ─────────────────────────────────────────────────────────
   gemini: {
@@ -47,8 +81,8 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
     icon: '◆',
     steps: [
       { title: 'Open build.nvidia.com and sign in', body: 'NVIDIA give away free API credits — no paid account or card needed. Sign in (or make a free account), then pick ANY model from the catalogue.', link: 'https://build.nvidia.com/models' },
-      { title: 'Get your API key', body: 'On any model page, click "Get API Key" (or "Build with this NIM") → Generate Key. Copy it — it starts with "nvapi-". This one key works for every model on NVIDIA.' },
-      { title: 'Paste your API key', body: 'This becomes a fast, free alternative to a slow local model — and it costs you no adris.tech tokens.', field: 'api_key', fieldLabel: 'NVIDIA API Key', fieldPlaceholder: 'nvapi-...', secret: true },
+      { title: 'Get your API key', body: 'On any model page, press "Generate API Key" (or "Get API Key"). NVIDIA shows a code snippet with your key inside it. This one key works for EVERY model on NVIDIA — you don\'t need to pick one.' },
+      { title: 'Paste it here', body: 'Easiest way: copy the WHOLE code block NVIDIA showed you and paste it below — we\'ll find the key inside it automatically (you don\'t need to hunt for it). Pasting just the "nvapi-…" key works too. Free, fast, and costs no adris.tech tokens.', field: 'api_key', fieldLabel: 'NVIDIA key (or the whole code block)', fieldPlaceholder: 'nvapi-...', secret: false },
     ],
   },
   groq: {
@@ -56,8 +90,8 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
     icon: '⚡',
     steps: [
       { title: 'Open console.groq.com and sign in', body: 'Groq runs open models on custom hardware — it is the fastest free option, often answering in a second or two. A free account is all you need.', link: 'https://console.groq.com/keys' },
-      { title: 'Create an API key', body: 'Click "Create API Key", name it "adris", and copy the key — it starts with "gsk_". It is shown once.', copyItems: [{ label: 'Key name', text: 'adris' }] },
-      { title: 'Paste your API key', body: 'This is a fast, free alternative to a slow local model, at no adris.tech token cost.', field: 'api_key', fieldLabel: 'Groq API Key', fieldPlaceholder: 'gsk_...', secret: true },
+      { title: 'Create an API key', body: 'Click "Create API Key", name it "adris", and copy the key — it starts with "gsk_". It is shown once, so copy it now.', copyItems: [{ label: 'Key name', text: 'adris' }] },
+      { title: 'Paste it here', body: 'Paste the key (or a whole code snippet if Groq gave you one — we\'ll find the key inside it). Fast, free, and costs no adris.tech tokens.', field: 'api_key', fieldLabel: 'Groq key (or the whole code block)', fieldPlaceholder: 'gsk_...', secret: false },
     ],
   },
   gmail: {
@@ -589,7 +623,17 @@ export default function ServiceSetupModal({ service, onDone, onClose }: Props) {
       } else if (service === 'linkedin') {
         await startLinkedInOAuth();
       } else {
-        await credentialStore.save(service, fields);
+        // For AI providers, the user may have pasted a whole code snippet — normalise it to just
+        // the key, and capture the model they were looking at (their key works for every model).
+        const out = { ...fields };
+        if (out.api_key) {
+          const key = extractApiKey(out.api_key, service);
+          if (!key) { setError('Could not find an API key in that. Paste the key (or the whole code block NVIDIA gave you).'); setLoading(false); return; }
+          out.api_key = key;
+          const model = extractModel(fields.api_key);
+          if (model) out.model = model;
+        }
+        await credentialStore.save(service, out);
         onDone();
       }
     } catch (e) {
@@ -780,20 +824,46 @@ export default function ServiceSetupModal({ service, onDone, onClose }: Props) {
             </div>
           ))}
 
-          {currentStep.field && (
-            <div className="mt-2">
-              <label className="block text-[11px] text-nv-faint mb-1">{currentStep.fieldLabel}</label>
-              <input
-                type={currentStep.secret ? 'password' : 'text'}
-                value={fields[currentStep.field] ?? ''}
-                onChange={(e) => setFields((f) => ({ ...f, [currentStep.field!]: e.target.value }))}
-                placeholder={currentStep.fieldPlaceholder}
-                autoFocus
-                className="w-full bg-nv-bg border border-nv-border rounded-lg px-3 py-2 text-[12px]
-                  text-nv-text outline-none focus:border-accent transition-fast font-mono"
-              />
-            </div>
-          )}
+          {currentStep.field && (() => {
+            const isKeyField = currentStep.field === 'api_key';
+            const raw = fields[currentStep.field!] ?? '';
+            // Live extraction preview so a non-technical user KNOWS the paste worked — they can drop
+            // the whole NVIDIA/Groq code block in and see "✓ Found your key" instead of guessing.
+            const found = isKeyField && raw.trim() ? extractApiKey(raw, service) : '';
+            const foundModel = isKeyField && raw.trim() ? extractModel(raw) : '';
+            const masked = found ? found.slice(0, 8) + '…' + found.slice(-4) : '';
+            return (
+              <div className="mt-2">
+                <label className="block text-[11px] text-nv-faint mb-1">{currentStep.fieldLabel}</label>
+                {isKeyField ? (
+                  <textarea
+                    value={raw}
+                    onChange={(e) => setFields((f) => ({ ...f, [currentStep.field!]: e.target.value }))}
+                    placeholder={`Paste the whole thing here — the key, or the entire code block from the website. We'll find the key.\n\ne.g. ${currentStep.fieldPlaceholder}`}
+                    autoFocus
+                    rows={4}
+                    className="w-full bg-nv-bg border border-nv-border rounded-lg px-3 py-2 text-[12px]
+                      text-nv-text outline-none focus:border-accent transition-fast font-mono resize-y"
+                  />
+                ) : (
+                  <input
+                    type={currentStep.secret ? 'password' : 'text'}
+                    value={raw}
+                    onChange={(e) => setFields((f) => ({ ...f, [currentStep.field!]: e.target.value }))}
+                    placeholder={currentStep.fieldPlaceholder}
+                    autoFocus
+                    className="w-full bg-nv-bg border border-nv-border rounded-lg px-3 py-2 text-[12px]
+                      text-nv-text outline-none focus:border-accent transition-fast font-mono"
+                  />
+                )}
+                {isKeyField && raw.trim() && (
+                  found
+                    ? <p className="mt-1 text-[10.5px] text-emerald-400">✓ Found your key <span className="font-mono text-nv-faint">{masked}</span>{foundModel ? ` · model: ${foundModel}` : ''} — press {isLast ? 'Connect' : 'Next'}.</p>
+                    : <p className="mt-1 text-[10.5px] text-amber-400">Couldn't spot a key in that yet — make sure you copied the whole block (or just the key).</p>
+                )}
+              </div>
+            );
+          })()}
 
           {error && (
             <p className="mt-3 text-[11px] text-nv-red bg-nv-red/10 border border-nv-red/30 rounded-lg px-3 py-2">
