@@ -76,6 +76,7 @@ function AnnouncementModal({ ann, onClose }: { ann: Announcement; onClose: () =>
   // button runs the same Tauri updater Settings uses, with a visible progress bar.
   const [updState, setUpdState] = useState<'idle' | 'installing' | 'error'>('idle');
   const [pct, setPct] = useState<number | null>(null);
+  const [updErr, setUpdErr] = useState('');
 
   // Bare window.open() is a DEAD call inside a Tauri webview (nothing opens, no error) —
   // that was the original "clicked Download 3 times, popup just stays there" bug. External
@@ -97,7 +98,10 @@ function AnnouncementModal({ ann, onClose }: { ann: Announcement; onClose: () =>
     });
     try {
       await invoke('install_update'); // on success the installer takes over and the app restarts
-    } catch {
+    } catch (e) {
+      // Surface the REAL reason (signature mismatch, download error, propagation delay…) instead of
+      // a blank "it failed" — otherwise the failure is undiagnosable.
+      setUpdErr(String((e as { message?: string })?.message ?? e ?? '').slice(0, 300));
       setUpdState('error');
     } finally {
       un();
@@ -114,7 +118,7 @@ function AnnouncementModal({ ann, onClose }: { ann: Announcement; onClose: () =>
         </div>
         <p className="text-sm text-nv-faint leading-relaxed mb-5">
           {updState === 'error'
-            ? 'The in-app update failed — you can download the installer directly from adris.tech/download instead.'
+            ? <>The in-app update failed — download it directly from <span className="text-accent">adris.tech/download</span> instead.{updErr && <><br /><span className="text-[11px] font-mono text-nv-faint break-words">Reason: {updErr}</span></>}</>
             : installing
             ? 'Downloading the update — the app will close and update itself automatically when it finishes. Don’t close it manually.'
             : ann.body}

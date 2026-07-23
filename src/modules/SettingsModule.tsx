@@ -45,8 +45,10 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.39',
+  version: '1.6.40',
   items: [
+    'When an in-app update fails, it now shows the actual reason instead of a blank “update failed”, so it can be diagnosed and fixed.',
+
     'When it books a meeting, it now also hands you a ready-to-send message with the real Meet link in a copyable box — no more “[Name]” placeholders, and the copy box is back. Asking to “lock the time and give me a message to send” now completes both halves.',
     'Any message meant for you to SEND (a WhatsApp text, a confirmation, a note) now always comes in a copyable box, never plain text, and never with a bracket placeholder that could go out by mistake.',
     'New: WhatsApp. Ask adris to WhatsApp someone (with their number, country code included) and it opens WhatsApp Web with the message typed in for you to review and press send — exactly like the LinkedIn reply flow. If you’re not logged in, the window stays open with the QR code; scan it once with your phone and it continues automatically. It never sends on its own.',
