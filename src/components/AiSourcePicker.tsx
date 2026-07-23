@@ -86,19 +86,29 @@ export default function AiSourcePicker({ compact = false }: { compact?: boolean 
         <div className="mt-2 rounded-lg border border-accent/30 bg-accent/5 px-2.5 py-2">
           <p className="text-[10.5px] text-nv-text font-medium">No key connected yet — get one free</p>
           <ol className="text-[10px] text-nv-muted leading-relaxed mt-1 ml-3.5 list-decimal space-y-0.5">
-            <li>Open build.nvidia.com and sign in (free account).</li>
+            <li>Open build.nvidia.com/models and sign in (free account).</li>
             <li>Pick any model, then press <span className="text-nv-text">Get API Key</span>.</li>
             <li>Copy the key and paste it into Connect Apps → NVIDIA.</li>
           </ol>
-          <button
-            onClick={() => {
-              // Same pattern used elsewhere: system browser, with a web fallback.
-              import('@tauri-apps/plugin-shell')
-                .then(({ open }) => open('https://build.nvidia.com/'))
-                .catch(() => window.open('https://build.nvidia.com/', '_blank'));
-            }}
-            className="mt-1.5 text-[10px] px-2 py-0.5 rounded-md border border-accent/50 text-accent hover:bg-accent/10 transition-fast"
-          >Open build.nvidia.com</button>
+          <p className="text-[9.5px] text-nv-faint mt-1">Both are free and OpenAI-fast — Groq (console.groq.com) is the quickest. Neither uses adris.tech tokens.</p>
+          <div className="flex gap-1.5 mt-1.5">
+            <button
+              onClick={() => {
+                import('@tauri-apps/plugin-shell')
+                  .then(({ open }) => open('https://build.nvidia.com/models'))
+                  .catch(() => window.open('https://build.nvidia.com/models', '_blank'));
+              }}
+              className="text-[10px] px-2 py-0.5 rounded-md border border-accent/50 text-accent hover:bg-accent/10 transition-fast"
+            >Get NVIDIA key</button>
+            <button
+              onClick={() => {
+                import('@tauri-apps/plugin-shell')
+                  .then(({ open }) => open('https://console.groq.com/keys'))
+                  .catch(() => window.open('https://console.groq.com/keys', '_blank'));
+              }}
+              className="text-[10px] px-2 py-0.5 rounded-md border border-nv-border text-nv-muted hover:text-nv-text transition-fast"
+            >Get Groq key</button>
+          </div>
         </div>
       )}
 

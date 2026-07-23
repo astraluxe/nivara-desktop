@@ -42,6 +42,24 @@ const GUIDES: Record<string, { title: string; icon: string; steps: Step[] }> = {
       { title: 'Paste your API key', body: '', field: 'api_key', fieldLabel: 'Anthropic API Key', fieldPlaceholder: 'sk-ant-...', secret: true },
     ],
   },
+  nvidia: {
+    title: 'Connect NVIDIA (free API)',
+    icon: '◆',
+    steps: [
+      { title: 'Open build.nvidia.com and sign in', body: 'NVIDIA give away free API credits — no paid account or card needed. Sign in (or make a free account), then pick ANY model from the catalogue.', link: 'https://build.nvidia.com/models' },
+      { title: 'Get your API key', body: 'On any model page, click "Get API Key" (or "Build with this NIM") → Generate Key. Copy it — it starts with "nvapi-". This one key works for every model on NVIDIA.' },
+      { title: 'Paste your API key', body: 'This becomes a fast, free alternative to a slow local model — and it costs you no adris.tech tokens.', field: 'api_key', fieldLabel: 'NVIDIA API Key', fieldPlaceholder: 'nvapi-...', secret: true },
+    ],
+  },
+  groq: {
+    title: 'Connect Groq (free · very fast)',
+    icon: '⚡',
+    steps: [
+      { title: 'Open console.groq.com and sign in', body: 'Groq runs open models on custom hardware — it is the fastest free option, often answering in a second or two. A free account is all you need.', link: 'https://console.groq.com/keys' },
+      { title: 'Create an API key', body: 'Click "Create API Key", name it "adris", and copy the key — it starts with "gsk_". It is shown once.', copyItems: [{ label: 'Key name', text: 'adris' }] },
+      { title: 'Paste your API key', body: 'This is a fast, free alternative to a slow local model, at no adris.tech token cost.', field: 'api_key', fieldLabel: 'Groq API Key', fieldPlaceholder: 'gsk_...', secret: true },
+    ],
+  },
   gmail: {
     title: 'Connect Gmail',
     icon:  '✉',

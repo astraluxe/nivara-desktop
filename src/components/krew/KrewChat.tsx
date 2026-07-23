@@ -3437,7 +3437,9 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     let effectiveProvider  = provider;
     let effectiveModelName = modelName;
     if (mode === 'own_key' && !effectiveKey) {
-      for (const [svc, p] of [['gemini', 'gemini'], ['openai', 'openai'], ['claude', 'claude']] as [string, Provider][]) {
+      // Order = preference when several keys are connected. NVIDIA and Groq (free, fast, OpenAI-
+      // compatible) come before the paid options so a user who connected one gets it automatically.
+      for (const [svc, p] of [['nvidia', 'nvidia'], ['groq', 'groq'], ['gemini', 'gemini'], ['openai', 'openai'], ['claude', 'claude']] as [string, Provider][]) {
         if (creds[svc]?.api_key) {
           effectiveKey      = creds[svc].api_key;
           effectiveProvider = p as Provider;
@@ -5151,7 +5153,9 @@ The prompt must be production-ready — specific enough for a motion designer to
       const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
       const byName: Record<string, string> = {};
       const draftStart = Date.now();
-      const B = mode === 'local' ? 3 : 6;   // local models are slow — smaller batches feed back sooner
+      // Hosted models draft the whole batch in one fast call; only a slow local model needs to be
+      // fed 3 at a time so each finishes quickly and can't truncate a big array.
+      const B = mode === 'local' ? 3 : 30;
       for (let i = 0; i < pick.length; i += B) {
         if (stopRef.current) break;
         const batch = pick.slice(i, i + B);
@@ -5413,9 +5417,12 @@ The prompt must be production-ready — specific enough for a motion designer to
     // smaller batches so each one finishes quickly, feedback lands often, and the whole thing
     // completes in a couple of minutes rather than ten — then say "run /refine again" for the rest.
     // A hosted model is fast, so it does more at once.
+    // A hosted model (adris.tech / your own cloud key) is fast and has a big output window, so it
+    // does all 30 in ONE call. Only a LOCAL model needs small batches — it's slow and truncates a
+    // big array — so it does 3 at a time, 10 per run.
     const local = mode === 'local';
     const MAX = local ? 10 : 30;
-    const BATCH = local ? 3 : 6;
+    const BATCH = local ? 3 : MAX;
     const slice = targets.slice(0, MAX);
 
     const sysBase = [
@@ -5501,7 +5508,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     if (!refined) {
       const nores = stopped
         ? `Stopped before anything was refined — your messages are unchanged. ${local ? 'A local model is slow at this; a hosted model (or a smaller local one) would be much quicker.' : 'Try **/refine** again.'}`
-        : `I couldn't improve those just now — the model didn't return usable rewrites in ${elapsed()}s. Your existing messages are unchanged. Try **/refine** again${local ? ', or switch to a hosted or smaller model — a 14B on CPU is slow and can garble the JSON' : ''}.`;
+        : `I couldn't improve those just now — the model didn't return usable rewrites in ${elapsed()}s. Your existing messages are unchanged. Try **/refine** again${local ? ', or connect a FREE fast cloud key — **Connect Apps → NVIDIA or Groq** (no adris.tech tokens used) — since a 14B on CPU is slow and can garble the JSON' : ''}.`;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: nores, streaming: false }; return c; });
       if (sid) krewDb.saveMessage(sid, 'assistant', nores).catch(() => {});
       setBusy(false); setAgentStep(null); setAgentTool(null);
@@ -5510,7 +5517,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     const updated = { ...campaign, contacts };
     saveCampaign(updated);
     const remaining = targets.length - (stopped ? refined : slice.length);
-    const summary = `Refined **${refined}** message${refined === 1 ? '' : 's'} to be more personal${guidance ? ` (${guidance})` : ''} in ${elapsed()}s${stopped ? ' (stopped early — kept what was done)' : ''} — reopening the copilot so you can review each and send. Nothing was sent, and only untouched contacts were changed.${remaining > 0 ? ` ${remaining} still to do — run **/refine** again for the next batch.` : ''}${local && !stopped ? ' _Tip: a hosted or smaller model refines much faster._' : ''}`;
+    const summary = `Refined **${refined}** message${refined === 1 ? '' : 's'} to be more personal${guidance ? ` (${guidance})` : ''} in ${elapsed()}s${stopped ? ' (stopped early — kept what was done)' : ''} — reopening the copilot so you can review each and send. Nothing was sent, and only untouched contacts were changed.${remaining > 0 ? ` ${remaining} still to do — run **/refine** again for the next batch.` : ''}${local && !stopped ? ' _Tip: a free NVIDIA or Groq key (Connect Apps) refines this in seconds instead of minutes, at no token cost._' : ''}`;
     setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: summary, streaming: false }; return c; });
     if (sid) krewDb.saveMessage(sid, 'assistant', summary).catch(() => {});
     setOutreachCampaign(updated);

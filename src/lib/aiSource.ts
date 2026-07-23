@@ -9,7 +9,9 @@ import { supabase } from './supabase';
 // across the app and across restarts.
 
 export type AiSourceMode = 'auto' | 'nivara' | 'own_key' | 'local';
-export type ByokProvider = 'gemini' | 'openai' | 'claude';
+// nvidia + groq are free, OpenAI-compatible cloud providers — the fast alternative to a slow local
+// model, at no adris.tech token cost. The Rust own_key path routes them by name to their endpoints.
+export type ByokProvider = 'gemini' | 'openai' | 'claude' | 'nvidia' | 'groq';
 
 export interface AiSourcePref {
   mode: AiSourceMode;
@@ -25,6 +27,8 @@ const BYOK_MODEL: Record<ByokProvider, string> = {
   gemini: 'gemini-2.5-flash-lite',
   openai: 'gpt-4o-mini',
   claude: 'claude-3-5-haiku-20241022',
+  nvidia: 'meta/llama-3.1-8b-instruct',   // free on build.nvidia.com; fast, capable
+  groq:   'llama-3.3-70b-versatile',      // free on console.groq.com; extremely fast
 };
 
 export function getAiSource(): AiSourcePref {
@@ -50,7 +54,7 @@ export async function getAiAvailability(): Promise<AiAvailability> {
   const byokProviders: ByokProvider[] = [];
   try {
     const services = await credentialStore.list();
-    for (const p of ['gemini', 'openai', 'claude'] as ByokProvider[]) {
+    for (const p of ['gemini', 'openai', 'claude', 'nvidia', 'groq'] as ByokProvider[]) {
       if (!services.includes(p)) continue;
       const d = await credentialStore.get(p).catch(() => null) as { api_key?: string; access_token?: string } | null;
       if (d?.api_key || d?.access_token) byokProviders.push(p);

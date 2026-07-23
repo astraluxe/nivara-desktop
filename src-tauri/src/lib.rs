@@ -908,6 +908,9 @@ async fn ai_stream(
                 let endpoint = base_url.unwrap_or_else(|| match prov.as_str() {
                     "openai"     => "https://api.openai.com/v1/chat/completions",
                     "groq"       => "https://api.groq.com/openai/v1/chat/completions",
+                    // NVIDIA NIM — OpenAI-compatible, free tier (build.nvidia.com). Fast GPU-hosted
+                    // inference, so it's the go-to when a local model is too slow.
+                    "nvidia"     => "https://integrate.api.nvidia.com/v1/chat/completions",
                     "mistral"    => "https://api.mistral.ai/v1/chat/completions",
                     "perplexity" => "https://api.perplexity.ai/chat/completions",
                     "together"   => "https://api.together.xyz/v1/chat/completions",
@@ -915,7 +918,11 @@ async fn ai_stream(
                     _            => "https://api.openai.com/v1/chat/completions",
                 }.to_string());
 
-                let model = model_name.unwrap_or_else(|| "gpt-4o".to_string());
+                let model = model_name.unwrap_or_else(|| match prov.as_str() {
+                    "nvidia" => "meta/llama-3.1-8b-instruct".to_string(),
+                    "groq"   => "llama-3.3-70b-versatile".to_string(),
+                    _        => "gpt-4o".to_string(),
+                });
                 let body = serde_json::json!({
                     "model": model, "messages": messages, "stream": true,
                 });

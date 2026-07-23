@@ -84,6 +84,8 @@ const BRAND_COLOR: Record<string, string> = {
   gemini:   'text-blue-400',
   openai:   'text-emerald-400',
   claude:   'text-orange-400',
+  nvidia:   'text-green-500',
+  groq:     'text-orange-300',
   brave:    'text-orange-500',
   gmail:    'text-red-400',
   google:   'text-blue-400',
@@ -121,6 +123,8 @@ const SERVICES: ServiceDef[] = [
   { id: 'gemini',   name: 'Gemini (Google AI)',  desc: 'Powers Krew, Guard and Automation. Free tier — generous Flash model allowance.',       tags: ['ai','llm','google'],                     usedBy: ['Krew','Automation','Guard'] },
   { id: 'openai',   name: 'OpenAI (GPT-4o)',     desc: 'Powers Krew and Automation with GPT-4o mini. Pay-per-use, very affordable.',            tags: ['ai','llm'],                              usedBy: ['Krew','Automation','Guard'] },
   { id: 'claude',   name: 'Claude (Anthropic)',  desc: 'Powers Krew and Automation with Claude Haiku. Pay-per-use.',                            tags: ['ai','llm'],                              usedBy: ['Krew','Automation','Guard'] },
+  { id: 'nvidia',   name: 'NVIDIA (free API)',   desc: 'Free API key from build.nvidia.com — fast, GPU-hosted open models. A quick, free alternative to a slow local model, at no adris.tech token cost.', tags: ['ai','llm','free','nvidia'],       usedBy: ['Krew','Automation','Guard'] },
+  { id: 'groq',     name: 'Groq (free · fastest)', desc: 'Free API key from console.groq.com — the fastest free option, usually answering in a second or two. No adris.tech tokens used.', tags: ['ai','llm','free','fast'],           usedBy: ['Krew','Automation','Guard'] },
   // Tools
   { id: 'brave',    name: 'Web Search',          desc: 'Brave Search API (paid) — more reliable web & lead lookups than the built-in keyless search.', tags: ['search'],                                usedBy: ['Krew'] },
   { id: 'gmail',    name: 'Gmail',               desc: 'Read and search inbox via IMAP. Used by Automation email triggers and Guard.',           note: 'Read-only. Connect Google Suite below to send emails.',           tags: ['email','google'],                        usedBy: ['Krew','Automation','Guard'] },

@@ -45,8 +45,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.29',
+  version: '1.6.30',
   items: [
+    'New free, fast AI: connect an NVIDIA or Groq key in Connect Apps and adris runs on their cloud — fast answers, no adris.tech tokens used, no card needed. Both are the quick fix when a local model is too slow: NVIDIA (build.nvidia.com/models) hands out free API credits, and Groq (console.groq.com) is the fastest of all, usually answering in a second or two. You can also just ask Krew to “connect NVIDIA” and it opens the setup for you.',
+    'Refining outreach on adris.tech (or your own cloud key) now does all 30 in one fast pass — only a local model splits into small batches, because it is slow and would otherwise get cut off.',
+
     '/refine now shows it’s actually working: a live counter ticks the seconds and the words written as the model writes — so a slow local model no longer looks frozen on “Refining 1–6”. Press Stop any time and whatever was refined is kept.',
     '/refine only rewrites contacts you HAVEN’T acted on yet. Anyone already sent, connected, replied or skipped is left exactly as they are — refining a message you already sent made no sense.',
     '/refine is much faster on a local model: it trims the background product text it re-reads each time, keeps messages shorter, works in smaller batches, and does ten per run (run it again for the next ten) so it finishes in a couple of minutes instead of ten. Each message is written on its own so people’s details don’t bleed together. If it’s still slow, it now tells you a hosted or smaller model would be quicker.',
