@@ -1603,14 +1603,22 @@ async fn start_local_engine(
 
     { let mut g = state.0.lock().unwrap(); *g = Some(child); }
 
-    // Wait for the server to become ready (up to 30 s)
-    for _ in 0..60 {
+    // Wait for the server to become ready. A big model is SLOW to cold-load: a 14B Q4 (~8.5 GB)
+    // was measured at 27–43 s on this hardware, and a cold disk cache or a bigger model is slower
+    // still. The old 30 s cap expired mid-load and reported "not responding" for an engine that was
+    // seconds from ready — the "Engine started but is not responding" the user hit on /refine. Wait
+    // up to 4 minutes, and emit progress so the load doesn't look like a hang.
+    for i in 0..480 {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         if reqwest::get("http://127.0.0.1:8080/health").await
             .map(|r| r.status().is_success()).unwrap_or(false)
         { return Ok(()); }
+        if i == 20 || i % 40 == 0 {
+            let _ = app.emit("engine_download_progress",
+                serde_json::json!({ "step": "Loading the local model into memory… (large models take up to a minute)", "pct": 100 }));
+        }
     }
-    Err("Engine started but is not responding. Try again or restart the app.".into())
+    Err("The local model is taking unusually long to load. It may be very large for this machine's memory, or the engine files may be incomplete — try a smaller model, or reinstall the engine from the Models tab.".into())
 }
 
 /// True if the engine is already serving on 8080 — so we don't restart it (and reload the model,

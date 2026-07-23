@@ -3455,12 +3455,19 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     return new Promise<{ text: string; truncated: boolean }>(async (resolve, reject) => {
       let stallTimer: ReturnType<typeof setTimeout> | null = null;
       let earlyStopped = false;
+      // Local mode's FIRST chunk can't arrive until the engine has cold-loaded the model into
+      // memory — measured at 27–43 s for a 14B here, more for a bigger model or a cold disk. A 90 s
+      // stall cap (fine for a cloud call) would abort with "Response stopped" before the model even
+      // finished loading, so give local mode a much longer leash. Cloud calls keep the tight 90 s.
+      const stallMs = mode === 'local' ? 300_000 : 90_000;
       const resetStall = () => {
         if (stallTimer) clearTimeout(stallTimer);
         stallTimer = setTimeout(() => {
           done.cleanup();
-          reject(new Error('Response stopped. Please check your connection and try again.'));
-        }, 90_000);
+          reject(new Error(mode === 'local'
+            ? 'The local model is taking too long to respond. It may be very large for this machine — try a smaller model in the Models tab.'
+            : 'Response stopped. Please check your connection and try again.'));
+        }, stallMs);
       };
 
       const u1 = await listen<{ id: string; text: string }>('krew-chunk', (e) => {
