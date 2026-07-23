@@ -4967,6 +4967,29 @@ The prompt must be production-ready — specific enough for a motion designer to
     return h.split(/[•|·,•‣●\-–—]/)[0].trim();
   }
 
+  // Tolerant [{name, message}] extractor — shared by the outreach drafter AND /refine. A local
+  // model asked for one big JSON array truncates it mid-way (so the plain JSON.parse got NOTHING and
+  // everyone fell through to the generic fallback / "came back empty"). This recovers objects even
+  // when the array is wrapped in prose or ```json fences, or was cut off before its closing bracket:
+  // it parses the whole array if it can, else pulls each complete {…"message":…} object on its own.
+  function parseNameMessagePairs(raw: string): { name: string; message: string }[] {
+    const out: { name: string; message: string }[] = [];
+    const push = (o: unknown) => {
+      if (o && typeof o === 'object') {
+        const name = String((o as Record<string, unknown>).name ?? '').trim();
+        const message = String((o as Record<string, unknown>).message ?? '').trim();
+        if (message) out.push({ name, message });
+      }
+    };
+    const cleaned = (raw || '').replace(/```(?:json)?/gi, '').trim();
+    const arr = cleaned.match(/\[[\s\S]*\]/);
+    if (arr) { try { const a = JSON.parse(arr[0]); if (Array.isArray(a)) { a.forEach(push); if (out.length) return out; } } catch { /* fall through */ } }
+    for (const m of cleaned.matchAll(/\{[^{}]*"message"\s*:\s*"(?:[^"\\]|\\.)*"[^{}]*\}/g)) {
+      try { push(JSON.parse(m[0])); } catch { /* skip malformed */ }
+    }
+    return out;
+  }
+
   async function launchOutreachFromConnections(max = 50, focus = '', userText = '', destTitle = '') {
     if (busy) return;
     const sid = await ensureSession('LinkedIn outreach');
@@ -5116,15 +5139,31 @@ The prompt must be production-ready — specific enough for a motion designer to
         : '- Do NOT invent or placeholder a signature. End with the message itself — never "Best, [Your Name]" or any bracketed placeholder.',
       'Return ONLY a valid JSON array: [{"name":"<exact name as given>","message":"<the message>"}] — one object per person, using the EXACT names given, nothing else.',
     ].join('\n');
-    const usr = `MY GOAL FOR THIS OUTREACH:\n${goal || 'Reconnect and open a genuine conversation about a possible fit — no hard pitch.'}\n\nWHAT I DO / WHAT I\'M BUILDING:\n${productCtx || '(not specified — keep it about them and a friendly reconnect)'}\n\nWrite one message for each of these connections (use their exact name; personalise from their headline):\n${pick.map((c) => `- ${c.name} — ${c.headline || '(no headline)'}`).join('\n')}`;
     try {
-      const { text } = await streamTurnWithRetry([{ role: 'user', content: usr }], sys, () => {});
-      let drafted: { name?: string; message?: string }[] = [];
-      const jm = text.match(/\[[\s\S]*\]/);
-      if (jm) { try { drafted = JSON.parse(jm[0]); } catch { /* ignore */ } }
-      const byName: Record<string, string> = {};
+      // Draft in SMALL BATCHES, not one giant request. Asking a model — a local one especially —
+      // for a 50-object JSON array makes it truncate mid-array, so only the first few parsed and
+      // everyone else silently got the generic fallback ("great to be connected… caught my eye").
+      // Six at a time each produce a short array that parses in full, so real personalised messages
+      // reach far more people. A failed batch is skipped (those people fall back), never fatal.
       const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
-      for (const d of drafted) if (d?.name && d?.message) { byName[norm(String(d.name))] = String(d.message).trim(); byName[norm(firstNameOf(String(d.name)))] ??= String(d.message).trim(); }
+      const byName: Record<string, string> = {};
+      const B = 6;
+      for (let i = 0; i < pick.length; i += B) {
+        if (stopRef.current) break;
+        const batch = pick.slice(i, i + B);
+        if (pick.length > B) updateLastMsg(`Writing messages ${i + 1}–${Math.min(i + batch.length, pick.length)} of ${pick.length}…`);
+        const usr = `MY GOAL FOR THIS OUTREACH:\n${goal || 'Reconnect and open a genuine conversation about a possible fit — no hard pitch.'}\n\nWHAT I DO / WHAT I\'M BUILDING:\n${productCtx || '(not specified — keep it about them and a friendly reconnect)'}\n\nWrite one message for EACH of these ${batch.length} connections (use their exact name; personalise from their headline). Return the JSON array of exactly ${batch.length} objects:\n${batch.map((c) => `- ${c.name} — ${c.headline || '(no headline)'}`).join('\n')}`;
+        let text = '';
+        try { ({ text } = await streamTurnWithRetry([{ role: 'user', content: usr }], sys, () => {})); }
+        catch { continue; }
+        const pairs = parseNameMessagePairs(text);
+        batch.forEach((c, j) => {
+          let msg = pairs.find((p) => norm(p.name) === norm(c.name) || norm(p.name) === norm(firstNameOf(c.name)))?.message;
+          if (!msg && pairs[j] && norm(pairs[j].name) === '') msg = pairs[j].message;   // unnamed → by position
+          if (!msg && pairs.length === batch.length) msg = pairs[j]?.message;            // count matches → trust order
+          if (msg) { byName[norm(c.name)] = msg; byName[norm(firstNameOf(c.name))] ??= msg; }
+        });
+      }
       const fallbackMsg = (c: { name: string; headline: string }) => {
         const first = firstNameOf(c.name);
         const hook = headlineHook(c.headline);
@@ -5354,10 +5393,15 @@ The prompt must be production-ready — specific enough for a motion designer to
     const senderName = [profile?.first_name, profile?.last_name].filter(Boolean).join(' ').trim()
       || (user?.email ? user.email.split('@')[0].replace(/[._-]+/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase()) : '');
 
-    addMsg({ role: 'assistant', content: `Refining ${targets.length} message${targets.length === 1 ? '' : 's'} to be more personal${guidance ? ` — ${guidance}` : ''}…`, streaming: true });
-    setBusy(true);
+    // Refine at most this many per run (biggest lists → run /refine again for the rest), in SMALL
+    // batches. One giant "rewrite all 50" request makes the model emit a huge JSON array that a
+    // local model truncates mid-way — which parses to nothing and returned "came back empty" twice.
+    // Small batches each produce a short, complete array that parses reliably.
+    const MAX = 30;
+    const BATCH = 6;
+    const slice = targets.slice(0, MAX);
 
-    const sys = [
+    const sysBase = [
       'You REWRITE existing first-touch LinkedIn messages to the user\'s 1st-degree connections so each one is genuinely PERSONAL to that person — not a template with the name swapped in.',
       'The current drafts are weak because they are generic ("great to be connected, your work caught my eye, open to a quick chat?"). Make each one specific and human.',
       'Rules for every rewrite:',
@@ -5370,44 +5414,73 @@ The prompt must be production-ready — specific enough for a motion designer to
       senderName ? `- Sign off with the sender's REAL name: ${senderName}. Never a placeholder like "[Your Name]".`
                  : '- End with the message itself — never a bracketed placeholder signature.',
       guidance ? `HOW THE USER WANTS THEM (follow this above all): ${guidance}` : '',
-      'Return ONLY a JSON array: [{"name":"<exact name as given>","message":"<the rewritten message>"}] — one per person, exact names, nothing else.',
+      'Return ONLY a JSON array, nothing before or after it: [{"name":"<exact name>","message":"<rewritten message>"}] — one object per person, exact names.',
     ].filter(Boolean).join('\n');
-    const usr = `WHAT I DO / WHAT I'M SELLING:\n${productCtx || '(not specified — keep it about them and a warm, low-pressure reconnect, and do not invent specifics about my product)'}\n\nRewrite a message for each of these connections. Their CURRENT draft is shown so you can see what to improve — make each far more personal to them:\n${targets.map((c) => `- ${c.name} — ${c.company || '(no headline)'}\n    current: ${c.linkedin_message ? c.linkedin_message.replace(/\n+/g, ' ').trim() : '(none)'}`).join('\n')}`;
 
+    const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+
+    addMsg({ role: 'assistant', content: `Refining ${slice.length} message${slice.length === 1 ? '' : 's'} to be more personal${guidance ? ` — ${guidance}` : ''}…`, streaming: true });
+    setBusy(true);
+
+    // Apply refinements onto a working copy of the campaign, saving after each batch so partial
+    // progress survives a stop or an error.
+    const byName: Record<string, string> = {};
+    let refined = 0;
     try {
-      const { text } = await streamTurnWithRetry([{ role: 'user', content: usr }], sys, () => {});
-      let drafted: { name?: string; message?: string }[] = [];
-      const jm = text.match(/\[[\s\S]*\]/);
-      if (jm) { try { drafted = JSON.parse(jm[0]); } catch { /* ignore */ } }
-      const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
-      const byName: Record<string, string> = {};
-      for (const d of drafted) if (d?.name && d?.message) { byName[norm(String(d.name))] = String(d.message).trim(); byName[norm(firstNameOf(String(d.name)))] ??= String(d.message).trim(); }
-      let refined = 0;
-      const contacts = campaign.contacts.map((c) => {
-        if (isDone(c.status)) return c;
-        const m = byName[norm(c.name)] || byName[norm(firstNameOf(c.name))];
-        if (m && m !== c.linkedin_message) { refined++; return { ...c, linkedin_message: m }; }
-        return c;
-      });
-      if (!refined) {
-        const nores = 'I couldn\'t improve those just now — the rewrite came back empty. Your existing messages are unchanged. Try **/refine** again, or add a note on how you want them (e.g. "warmer, lead with the time we save them").';
-        setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: nores, streaming: false }; return c; });
-        if (sid) krewDb.saveMessage(sid, 'assistant', nores).catch(() => {});
-        return;
+      for (let b = 0; b < slice.length; b += BATCH) {
+        if (stopRef.current) break;
+        const batch = slice.slice(b, b + BATCH);
+        updateLastMsg(`Refining messages ${b + 1}–${Math.min(b + batch.length, slice.length)} of ${slice.length}${guidance ? ` — ${guidance}` : ''}…`);
+        const usr = `WHAT I DO / WHAT I'M SELLING:\n${productCtx || '(not specified — keep it about them and a warm, low-pressure reconnect, and do not invent specifics about my product)'}\n\nRewrite a message for EACH of these ${batch.length} connections. Their CURRENT draft is shown so you can see what to improve — make each far more personal to them. Return the JSON array of exactly ${batch.length} objects:\n${batch.map((c) => `- ${c.name} — ${c.company || '(no headline)'}\n    current: ${c.linkedin_message ? c.linkedin_message.replace(/\n+/g, ' ').trim() : '(none)'}`).join('\n')}`;
+        let text = '';
+        try { ({ text } = await streamTurnWithRetry([{ role: 'user', content: usr }], sysBase, () => {})); }
+        catch { continue; }   // a failed batch shouldn't sink the rest — move on, keep what we have
+        const pairs = parseNameMessagePairs(text);
+        // Name match first; then POSITIONAL fallback within the batch — the model returns messages in
+        // the order asked, so an entry with a mismatched/blank name still lands on the right person.
+        batch.forEach((c, i) => {
+          let msg = pairs.find((p) => norm(p.name) === norm(c.name) || norm(p.name) === norm(firstNameOf(c.name)))?.message;
+          if (!msg && pairs[i] && norm(pairs[i].name) === '') msg = pairs[i].message;   // unnamed → by position
+          if (!msg && pairs.length === batch.length) msg = pairs[i]?.message;            // count matches → trust order
+          if (msg) byName[norm(c.name)] = msg;
+        });
+        // Save incrementally so a mid-run stop keeps what's done.
+        const partial = campaign.contacts.map((c) => {
+          if (isDone(c.status)) return c;
+          const m = byName[norm(c.name)];
+          return m && m !== c.linkedin_message ? { ...c, linkedin_message: m } : c;
+        });
+        refined = partial.filter((c, i) => c.linkedin_message !== campaign.contacts[i].linkedin_message).length;
+        saveCampaign({ ...campaign, contacts: partial });
       }
-      const updated = { ...campaign, contacts };
-      saveCampaign(updated);
-      const summary = `Refined **${refined}** message${refined === 1 ? '' : 's'} to be more personal${guidance ? ` (${guidance})` : ''} — reopening the copilot so you can review each and send. Nothing was sent, and anyone already contacted was left untouched.`;
-      setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: summary, streaming: false }; return c; });
-      if (sid) krewDb.saveMessage(sid, 'assistant', summary).catch(() => {});
-      setOutreachCampaign(updated);
     } catch (e) {
-      const msg = `Couldn't refine the messages: ${e instanceof Error ? e.message : String(e)}. Your existing messages are unchanged — try again.`;
+      const msg = `Couldn't refine the messages: ${e instanceof Error ? e.message : String(e)}. Anything refined before the error was kept.`;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: msg, streaming: false }; return c; });
       if (sid) krewDb.saveMessage(sid, 'assistant', msg).catch(() => {});
-    } finally {
       setBusy(false); setAgentStep(null); setAgentTool(null);
+      return;
     }
+
+    const contacts = campaign.contacts.map((c) => {
+      if (isDone(c.status)) return c;
+      const m = byName[norm(c.name)];
+      return m && m !== c.linkedin_message ? { ...c, linkedin_message: m } : c;
+    });
+    if (!refined) {
+      const nores = 'I couldn\'t improve those just now — the model didn\'t return usable rewrites. Your existing messages are unchanged. Try **/refine** again, or add a note on how you want them (e.g. "warmer, lead with the time we save them"). If you\'re on a local model, a bigger one writes cleaner messages.';
+      setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: nores, streaming: false }; return c; });
+      if (sid) krewDb.saveMessage(sid, 'assistant', nores).catch(() => {});
+      setBusy(false); setAgentStep(null); setAgentTool(null);
+      return;
+    }
+    const updated = { ...campaign, contacts };
+    saveCampaign(updated);
+    const remaining = targets.length - slice.length;
+    const summary = `Refined **${refined}** message${refined === 1 ? '' : 's'} to be more personal${guidance ? ` (${guidance})` : ''} — reopening the copilot so you can review each and send. Nothing was sent, and anyone already contacted was left untouched.${remaining > 0 ? ` ${remaining} more to go — run **/refine** again for the next batch.` : ''}`;
+    setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: summary, streaming: false }; return c; });
+    if (sid) krewDb.saveMessage(sid, 'assistant', summary).catch(() => {});
+    setOutreachCampaign(updated);
+    setBusy(false); setAgentStep(null); setAgentTool(null);
   }
 
   /**
