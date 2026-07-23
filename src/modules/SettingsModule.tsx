@@ -45,8 +45,10 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.37',
+  version: '1.6.38',
   items: [
+    'ROOT-CAUSE FIX for the “Incorrect API key … platform.openai.com” (401) error when using an NVIDIA key: the engine that runs the chat was missing NVIDIA in its list of endpoints, so it sent your nvapi- key to OpenAI. NVIDIA is now wired in, and as a permanent safeguard every key is routed by its own type at the engine level — an nvapi-/gsk_/sk-ant- key can never be sent to the wrong provider again, from any part of the app.',
+
     'The “Own Key” panel in the chat connection bar no longer runs off the bottom of the screen. It now fits any window: a fixed title and Done button, with the middle scrolling if there’s a lot (connected keys, model chooser, etc.), plus a close × in the corner.',
 
     'Big fix for LinkedIn scheduling: adris will no longer accept a meeting time or create a calendar invite + video link on your behalf unless YOU have said you’re free then. When someone proposes a time and you haven’t given your availability, the reply stays non-committal and you get a clear “Are you free? — I haven’t booked anything” note. Tell it your availability (“I’m free after 7pm”) and it finalises the reply and sets up the meeting. It can no longer say “1 PM works perfectly” for a time it never checked with you.',

@@ -758,6 +758,23 @@ use reqwest::header;
 #[derive(Serialize, Deserialize, Clone)]
 struct AiMessage { role: String, content: String }
 
+/// The provider a key belongs to, from its unmistakable prefix. An nvapi-/gsk_/sk-ant- key must go
+/// to NVIDIA/Groq/Claude no matter what `provider` the caller passed — the LAST line of defence
+/// against the "nvapi key sent to api.openai.com → 401" mix-up, covering every path into the stream.
+/// Returns (provider, corrected) where corrected=true means the passed provider was overridden (so
+/// the caller's model_name should be ignored in favour of the corrected provider's default).
+fn provider_from_key(key: &str, passed: &str) -> (String, bool) {
+    let by_prefix =
+        if key.starts_with("nvapi-")  { Some("nvidia") }
+        else if key.starts_with("gsk_")    { Some("groq") }
+        else if key.starts_with("sk-ant-") { Some("claude") }
+        else { None };
+    match by_prefix {
+        Some(p) if p != passed => (p.to_string(), true),
+        _ => (passed.to_string(), false),
+    }
+}
+
 #[tauri::command]
 async fn ai_stream(
     app: tauri::AppHandle,
@@ -828,11 +845,12 @@ async fn ai_stream(
 
         "own_key" => {
             let key  = api_key.unwrap_or_default();
-            let prov = provider.unwrap_or_else(|| "openai".to_string());
+            // Route by the key's own prefix — same safety net as krew_ai_stream.
+            let (prov, key_corrected) = provider_from_key(&key, &provider.unwrap_or_else(|| "openai".to_string()));
 
             if prov == "claude" {
                 // ── Anthropic Claude ────────────────────────────────────────
-                let model = model_name.unwrap_or_else(|| "claude-3-5-haiku-20241022".to_string());
+                let model = model_name.filter(|_| !key_corrected).unwrap_or_else(|| "claude-3-5-haiku-20241022".to_string());
                 let client = reqwest::Client::new();
                 let body = serde_json::json!({
                     "model": model, "max_tokens": 4096, "stream": true, "messages": messages,
@@ -918,8 +936,8 @@ async fn ai_stream(
                     _            => "https://api.openai.com/v1/chat/completions",
                 }.to_string());
 
-                let model = model_name.unwrap_or_else(|| match prov.as_str() {
-                    "nvidia" => "meta/llama-3.1-8b-instruct".to_string(),
+                let model = model_name.filter(|_| !key_corrected).unwrap_or_else(|| match prov.as_str() {
+                    "nvidia" => "meta/llama-3.3-70b-instruct".to_string(),
                     "groq"   => "llama-3.3-70b-versatile".to_string(),
                     _        => "gpt-4o".to_string(),
                 });
@@ -4237,9 +4255,11 @@ async fn krew_ai_stream(
         }
         "own_key" => {
             let key  = api_key.unwrap_or_default();
-            let prov = provider.unwrap_or_else(|| "openai".to_string());
+            // Route by the KEY's own prefix, overriding a mismatched dropdown — so nvapi-/gsk_/sk-ant-
+            // keys can never hit the wrong endpoint no matter which frontend path called this.
+            let (prov, key_corrected) = provider_from_key(&key, &provider.unwrap_or_else(|| "openai".to_string()));
             if prov == "claude" {
-                let model = model_name.unwrap_or_else(|| "claude-3-5-haiku-20241022".to_string());
+                let model = model_name.filter(|_| !key_corrected).unwrap_or_else(|| "claude-3-5-haiku-20241022".to_string());
                 let clean_msgs: Vec<serde_json::Value> = messages.iter().map(|m| serde_json::json!({
                     "role": m.role, "content": strip_image_markers(&m.content)
                 })).collect();
@@ -4309,13 +4329,23 @@ async fn krew_ai_stream(
                 let endpoint = base_url.unwrap_or_else(|| match prov.as_str() {
                     "openai"     => "https://api.openai.com/v1/chat/completions",
                     "groq"       => "https://api.groq.com/openai/v1/chat/completions",
+                    // NVIDIA NIM — was MISSING here (only ai_stream had it), so provider=nvidia fell
+                    // to the OpenAI default and the nvapi key hit api.openai.com → 401. This is the
+                    // fix for that exact error.
+                    "nvidia"     => "https://integrate.api.nvidia.com/v1/chat/completions",
                     "mistral"    => "https://api.mistral.ai/v1/chat/completions",
                     "perplexity" => "https://api.perplexity.ai/chat/completions",
                     "together"   => "https://api.together.xyz/v1/chat/completions",
                     "deepseek"   => "https://api.deepseek.com/v1/chat/completions",
                     _            => "https://api.openai.com/v1/chat/completions",
                 }.to_string());
-                let model = model_name.unwrap_or_else(|| "gpt-4o".to_string());
+                // If the key's prefix forced a provider correction, the caller's model_name is for
+                // the WRONG provider (e.g. gpt-4o) — ignore it and use the corrected provider's default.
+                let model = model_name.filter(|_| !key_corrected).unwrap_or_else(|| match prov.as_str() {
+                    "nvidia" => "meta/llama-3.3-70b-instruct".to_string(),
+                    "groq"   => "llama-3.3-70b-versatile".to_string(),
+                    _        => "gpt-4o".to_string(),
+                });
                 let mut all_msgs: Vec<serde_json::Value> = Vec::new();
                 if !sys.is_empty() { all_msgs.push(serde_json::json!({"role":"system","content":sys})); }
                 for m in &messages { all_msgs.push(serde_json::json!({"role":m.role,"content":strip_image_markers(&m.content)})); }
