@@ -453,6 +453,11 @@ export default function BrainModule() {
   const [data, setData] = useState<BrainData>(() => brain.all());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [ghOpen, setGhOpen] = useState(false);
+  const [ghUrl, setGhUrl]   = useState('');
+  const [ghBusy, setGhBusy] = useState(false);
+  const [ghNote, setGhNote] = useState('');
+  const [connectNote, setConnectNote] = useState('');
 
   // Reload from storage on change, but COALESCE bursts: a batch of updates (e.g. saving a big
   // file, or an agent writing several nodes) used to fire brain.all() — which re-parses the whole
@@ -488,6 +493,58 @@ export default function BrainModule() {
   // Total text stored in the Brain (localStorage bodies) — a rough at-a-glance storage figure.
   // Per-file on-disk sizes are shown in each item's panel.
   const totalTextBytes = useMemo(() => data.nodes.reduce((s, n) => s + (n.body ? n.body.length : 0), 0), [data.nodes]);
+
+  // ── GitHub import ──────────────────────────────────────────────────────────
+  // Pull a public repo (or a subfolder) straight into the Brain as linked file nodes — no token,
+  // no clone, no cost. Uses the public GitHub API to list the tree and raw.githubusercontent for
+  // each file's text. Everything lands under a repo hub node and auto-connects (same folder /
+  // shared references), so an imported codebase shows up already wired together.
+  const importGitHub = useCallback(async (rawUrl: string) => {
+    const UA = { 'User-Agent': 'adris.tech-Brain', 'Accept': 'application/vnd.github+json' };
+    const httpGet = (url: string, headers: Record<string, string>) =>
+      invoke<string>('krew_http_call', { method: 'GET', url, headers, body: null });
+    // Parse owner/repo (+ optional /tree/<branch>/<subpath>) out of a github.com URL.
+    const m = rawUrl.trim().replace(/\.git$/, '').match(/github\.com\/([^/]+)\/([^/]+)(?:\/tree\/([^/]+)(?:\/(.*))?)?/i);
+    if (!m) { setGhNote('That doesn\'t look like a github.com repo URL.'); return; }
+    const [, owner, repo, urlBranch, subpath = ''] = m;
+    const TEXT = /\.(md|mdx|txt|ts|tsx|js|jsx|py|rs|go|java|json|ya?ml|toml|css|scss|html?|sql|sh|rb|php|c|cpp|h|hpp|cs|kt|swift|vue|svelte|ini|cfg|env|gradle|dockerfile|makefile)$/i;
+    setGhBusy(true);
+    setGhNote('Reading the repository…');
+    try {
+      let branch = urlBranch || '';
+      if (!branch) {
+        const meta = JSON.parse(await httpGet(`https://api.github.com/repos/${owner}/${repo}`, UA));
+        branch = meta.default_branch || 'main';
+      }
+      const tree = JSON.parse(await httpGet(`https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`, UA));
+      if (!Array.isArray(tree.tree)) { setGhNote('Couldn\'t read the repo tree — is it public?'); setGhBusy(false); return; }
+      const pref = subpath ? subpath.replace(/\/+$/, '') + '/' : '';
+      const files = tree.tree
+        .filter((n: { type: string; path: string; size?: number }) => n.type === 'blob' && n.path.startsWith(pref) && TEXT.test(n.path) && (n.size ?? 0) < 200_000)
+        .slice(0, 40) as { path: string }[];
+      if (!files.length) { setGhNote('No readable text files found there (or over the 40-file limit).'); setGhBusy(false); return; }
+      // Hub node for the repo/folder — everything links to it.
+      const hubTitle = `GitHub: ${owner}/${repo}${subpath ? '/' + subpath : ''}`;
+      const hub = brain.addNode({ title: hubTitle, kind: 'source', body: `Imported from https://github.com/${owner}/${repo}${subpath ? ' (/' + subpath + ')' : ''} · branch ${branch} · ${files.length} files.` });
+      let done = 0;
+      for (const f of files) {
+        setGhNote(`Importing ${++done}/${files.length}: ${f.path}`);
+        let content = '';
+        try { content = await httpGet(`https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${f.path}`, { 'User-Agent': 'adris.tech-Brain' }); }
+        catch { continue; }
+        // filePath carries the repo-relative path so autoConnect's same-folder linking works.
+        const node = brain.addNode({ title: f.path.split('/').pop() || f.path, kind: 'file', body: content.slice(0, 500_000), filePath: f.path });
+        brain.link(hub.id, node.id, 'file');
+      }
+      setGhNote(`Imported ${files.length} files from ${owner}/${repo} — connected in the graph.`);
+      setSelectedId(hub.id);
+      setTimeout(() => { setGhOpen(false); setGhNote(''); setGhUrl(''); }, 1400);
+    } catch (e) {
+      setGhNote(`Import failed: ${e instanceof Error ? e.message : String(e)}. Public repos only; GitHub limits ~60 requests/hour without a token.`);
+    } finally {
+      setGhBusy(false);
+    }
+  }, []);
 
   // "+ File" — try the native picker (gives the real path) and create the node from
   // it; if the picker isn't available, just create an empty file node and let the
@@ -540,12 +597,51 @@ export default function BrainModule() {
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search the Brain…"
             className="w-56 rounded-lg px-3 py-1.5 text-[11px] outline-none"
             style={{ background: 'var(--nv-surface)', border: '1px solid var(--nv-border)', color: 'var(--nv-text)' }} />
+          <button
+            onClick={() => {
+              const n = brain.autoConnect();
+              setConnectNote(n > 0 ? `Connected ${n} new link${n === 1 ? '' : 's'} between related files.` : 'Everything related is already connected.');
+              setTimeout(() => setConnectNote(''), 2600);
+            }}
+            title="Find and link related files that aren't connected yet — free, runs instantly"
+            className="text-[11px] px-3 py-1.5 rounded-lg font-medium transition-fast"
+            style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-muted)', background: 'var(--nv-surface)' }}>Connect files</button>
+          <button onClick={() => { setGhOpen((v) => !v); setGhNote(''); }}
+            title="Import a public GitHub repo or folder into the Brain, connected"
+            className="text-[11px] px-3 py-1.5 rounded-lg font-medium transition-fast"
+            style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-muted)', background: 'var(--nv-surface)' }}>GitHub</button>
           <button onClick={addFile}
             className="text-[11px] px-3 py-1.5 rounded-lg font-medium transition-fast"
             style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-muted)', background: 'var(--nv-surface)' }}>+ File</button>
           <button onClick={() => setSelectedId(brain.addNode({ title: 'New note', body: '', kind: 'note' }).id)}
             className="text-[11px] px-3 py-1.5 rounded-lg text-white font-medium transition-fast hover:opacity-90" style={{ background: '#7C5CFF' }}>+ Note</button>
         </div>
+
+        {connectNote && (
+          <div className="px-4 py-1.5 text-[11px]" style={{ color: 'var(--nv-accent, #7C5CFF)' }}>{connectNote}</div>
+        )}
+        {ghOpen && (
+          <div className="px-4 py-2.5 flex flex-col gap-1.5" style={{ borderBottom: '1px solid var(--nv-border)', background: 'var(--nv-surface)' }}>
+            <div className="flex items-center gap-2">
+              <input
+                value={ghUrl}
+                onChange={(e) => setGhUrl(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && ghUrl.trim() && !ghBusy) importGitHub(ghUrl); }}
+                placeholder="https://github.com/owner/repo  (or …/tree/main/src for one folder)"
+                className="flex-1 rounded-lg px-3 py-1.5 text-[11px] outline-none font-mono"
+                style={{ background: 'var(--nv-bg)', border: '1px solid var(--nv-border)', color: 'var(--nv-text)' }}
+              />
+              <button
+                onClick={() => ghUrl.trim() && !ghBusy && importGitHub(ghUrl)}
+                disabled={ghBusy || !ghUrl.trim()}
+                className="text-[11px] px-3 py-1.5 rounded-lg text-white font-medium transition-fast disabled:opacity-50"
+                style={{ background: '#7C5CFF' }}>{ghBusy ? 'Importing…' : 'Import'}</button>
+            </div>
+            <p className="text-[10px]" style={{ color: ghNote.startsWith('Import failed') || ghNote.includes('Couldn') || ghNote.includes('doesn') ? '#f87171' : 'var(--nv-muted)' }}>
+              {ghNote || 'Public repos only — no token needed. Reads up to 40 text files and links them in the graph.'}
+            </p>
+          </div>
+        )}
 
         {data.nodes.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center text-center px-8">

@@ -45,8 +45,12 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.30',
+  version: '1.6.31',
   items: [
+    'Brain now connects related files for you. New files auto-link as they arrive, and a “Connect files” button links anything related that was left unjoined — a list to the product doc it came from, files from the same folder, notes that reference each other. Instant and free (no AI tokens).',
+    'Brain can import from GitHub: paste a public repo URL (or one folder, …/tree/main/src) and it pulls up to 40 text files in, saved and linked under a repo hub — no clone, no token, no cost. Good for handing the agents a codebase or docs to read.',
+    'Getting a free, fast AI key is now one click: in the chat connection bar press “Own Key” → “Get NVIDIA key” or “Get Groq key”, and it opens the sign-up and the guided setup. You can also ask Krew to “connect NVIDIA”. These free cloud models answer in seconds and use none of your adris.tech allowance — the fix when a local model is slow.',
+
     'New free, fast AI: connect an NVIDIA or Groq key in Connect Apps and adris runs on their cloud — fast answers, no adris.tech tokens used, no card needed. Both are the quick fix when a local model is too slow: NVIDIA (build.nvidia.com/models) hands out free API credits, and Groq (console.groq.com) is the fastest of all, usually answering in a second or two. You can also just ask Krew to “connect NVIDIA” and it opens the setup for you.',
     'Refining outreach on adris.tech (or your own cloud key) now does all 30 in one fast pass — only a local model splits into small batches, because it is slow and would otherwise get cut off.',
 

@@ -48,6 +48,21 @@ export default function ConnectionBar(props: Props) {
   const [popup, setPopup] = useState<ConnectionMode | null>(null);
   const [installedModels, setInstalledModels] = useState<InstalledModel[] | null>(null);
   const [engineStatus, setEngineStatus] = useState<'idle' | 'starting' | 'running' | 'error'>('idle');
+
+  // Open the guided setup for a free provider AND its key page in the browser, and preselect it as
+  // the own-key provider so the pasted key is used straight away. Reuses the same open-Connect-Apps
+  // path the agent's open_service_setup tool uses.
+  async function openFreeKeySetup(id: 'nvidia' | 'groq') {
+    onProviderChange(id as Provider);
+    try {
+      const { requestServiceSetup } = await import('../../lib/connectAppsRequest');
+      requestServiceSetup(id);
+      const { emit } = await import('@tauri-apps/api/event');
+      await emit('nv-open-connect-apps', {});
+    } catch { /* fall back to just opening the key page */ }
+    const url = id === 'nvidia' ? 'https://build.nvidia.com/models' : 'https://console.groq.com/keys';
+    import('@tauri-apps/plugin-shell').then(({ open }) => open(url)).catch(() => window.open(url, '_blank'));
+  }
   const [engineError, setEngineError] = useState('');
 
   useEffect(() => {
@@ -203,9 +218,26 @@ export default function ConnectionBar(props: Props) {
                     text-[12px] text-nv-text outline-none focus:border-accent transition-fast"
                 />
                 <p className="text-nv-faint text-[10px] mt-2">
-                  <span className="text-nv-muted font-semibold">Tip:</span> Leave blank — if you've connected Gemini (or OpenAI / Claude) in ConnectApps, it's auto-used here. This field is only for a one-off key override.
+                  <span className="text-nv-muted font-semibold">Tip:</span> Leave blank — if you've connected a provider in ConnectApps, it's auto-used here. This field is only for a one-off key override.
                   Keys never leave your device.
                 </p>
+
+                {/* Free-key shortcut — the fast, free answer when a local model is too slow. NVIDIA
+                    and Groq both give free API keys and cost no adris.tech tokens. */}
+                <div className="mt-3 rounded-lg border border-accent/30 bg-accent/5 px-2.5 py-2">
+                  <p className="text-[10.5px] text-nv-text font-medium">No key? Get one free — fast cloud, no adris.tech tokens</p>
+                  <p className="text-[10px] text-nv-faint leading-relaxed mt-0.5">
+                    Pick <span className="text-nv-text">NVIDIA (free)</span> or <span className="text-nv-text">Groq</span> in Provider above, grab a free key, and paste it — or open the guided setup:
+                  </p>
+                  <div className="flex gap-1.5 mt-1.5">
+                    <button
+                      onClick={() => openFreeKeySetup('nvidia')}
+                      className="text-[10px] px-2 py-0.5 rounded-md border border-accent/50 text-accent hover:bg-accent/10 transition-fast">Get NVIDIA key</button>
+                    <button
+                      onClick={() => openFreeKeySetup('groq')}
+                      className="text-[10px] px-2 py-0.5 rounded-md border border-nv-border text-nv-muted hover:text-nv-text transition-fast">Get Groq key</button>
+                  </div>
+                </div>
               </>
             )}
 

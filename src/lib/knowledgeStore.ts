@@ -216,6 +216,9 @@ export const brain = {
     };
     d.nodes.push(node);
     write(d);
+    // Auto-link the new node to anything it clearly relates to, so the graph stays connected as it
+    // grows instead of accumulating orphans. Cheap (token-free) and scoped to just this node.
+    try { this.autoConnect(node.id); } catch { /* linking is best-effort, never block the add */ }
     return node;
   },
 
@@ -260,6 +263,52 @@ export const brain = {
     const d = read();
     d.edges = d.edges.filter((e) => e.id !== edgeId);
     write(d);
+  },
+
+  /**
+   * Auto-connect related nodes — token-free (no LLM), so it costs nothing and runs instantly.
+   * The Brain kept filling with files that were clearly related but sat unlinked because nothing
+   * ever drew the edge. This finds those relationships from the content itself:
+   *   1. TITLE MENTION (strong): one node's title appears verbatim in another's body/title. If your
+   *      "Tech leads" list is built from "PRODUCT.md", the list's body mentions the product — link.
+   *   2. SAME FOLDER (strong): two file nodes imported from the same folder path.
+   *   3. SHARED KEYWORDS (softer): they share ≥2 distinctive words (≥5 chars) in their titles.
+   * Deliberately conservative — a wrong edge is worse than a missing one, so generic/stopword-only
+   * overlaps are ignored and a mention only counts for a title of real length. Returns edges added.
+   * Pass `onlyNodeId` to connect just one (new) node to the rest; omit for a full sweep.
+   */
+  autoConnect(onlyNodeId?: string): number {
+    const d = read();
+    const STOP = new Set(['note','file','data','list','the','and','for','with','from','your','about','into','notes','draft','list','files','folder','pictures','source','contact','outreach','profile','company','companies']);
+    const norm = (s: string) => (s || '').toLowerCase().replace(/\.(md|txt|json|csv|markdown|pdf|docx?)$/i, '').trim();
+    const keyWords = (s: string) => Array.from(new Set(norm(s).split(/[^a-z0-9]+/).filter((w) => w.length >= 5 && !STOP.has(w))));
+    const folderOf = (p?: string) => { if (!p) return ''; const m = p.replace(/\\/g, '/').match(/^(.*)\//); return m ? m[1].toLowerCase() : ''; };
+    const has = (a: string, b: string) => d.edges.some((e) => (e.source === a && e.target === b) || (e.source === b && e.target === a));
+
+    const nodes = d.nodes;
+    const pool = onlyNodeId ? nodes.filter((n) => n.id === onlyNodeId) : nodes;
+    let added = 0;
+    for (const a of pool) {
+      const aTitle = norm(a.title);
+      const aBody = (a.body || '').toLowerCase();
+      const aKeys = keyWords(a.title);
+      const aFolder = folderOf(a.filePath);
+      for (const b of nodes) {
+        if (a.id === b.id || has(a.id, b.id)) continue;
+        const bTitle = norm(b.title);
+        let label = '';
+        // 1. Title mention (either direction). Require length ≥5 so short generic titles don't match.
+        if (bTitle.length >= 5 && (aBody.includes(bTitle) || aTitle.includes(bTitle))) label = 'mentions';
+        else if (aTitle.length >= 5 && (b.body || '').toLowerCase().includes(aTitle)) label = 'mentions';
+        // 2. Same import folder.
+        else if (aFolder && aFolder === folderOf(b.filePath)) label = 'same folder';
+        // 3. ≥2 shared distinctive title words.
+        else { const shared = aKeys.filter((w) => keyWords(b.title).includes(w)); if (shared.length >= 2) label = 'related'; }
+        if (label) { d.edges.push({ id: uid(), source: a.id, target: b.id, label }); added++; }
+      }
+    }
+    if (added) write(d);
+    return added;
   },
 
   findByTitle(q: string): BrainNode | undefined {

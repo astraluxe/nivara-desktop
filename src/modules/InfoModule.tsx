@@ -372,6 +372,19 @@ export default function InfoModule() {
             each time, so your lists do not fragment. You can change this in Settings, and you can
             override it for a single request by saying “continue the existing list”.
           </Note>
+          <P>
+            <span className="text-nv-text font-medium">Connect files</span> — the toolbar button links files
+            that clearly belong together but aren’t joined yet: a list to the product doc it was built from,
+            files from the same folder, notes that reference each other. It runs instantly and costs nothing
+            (no AI tokens). New items also auto-connect as they arrive, so the graph stays wired as it grows.
+          </P>
+          <P>
+            <span className="text-nv-text font-medium">GitHub</span> — import a public repository, or one
+            folder of it, straight into the Brain. Paste a <K>github.com/owner/repo</K> URL (or
+            <K>…/tree/main/src</K> for a single folder); it pulls up to 40 text files, saves each as a node,
+            and links them under a repo hub — no clone, no token, no cost. Handy for giving the agents a
+            codebase or a set of docs to read.
+          </P>
 
           <H id="todo">To-do</H>
           <P>The <span className="text-nv-text">To-do</span> tab next to Skill lib holds two kinds of item.</P>
@@ -511,6 +524,18 @@ export default function InfoModule() {
             memory, and 27B wants 24&nbsp;GB or more. One that fits your machine feels fast; one that does not
             will crawl.
           </Note>
+          <P>
+            <span className="text-nv-text font-medium">Local feeling slow? Use a free cloud key.</span> A big
+            local model can take a while to load and answer. NVIDIA (<K>build.nvidia.com/models</K>) and Groq
+            (<K>console.groq.com</K>) both hand out <span className="text-nv-text">free</span> API keys — no
+            card, no paid account — and run on their own fast hardware, so answers come back in seconds and use
+            <span className="text-nv-text"> none of your adris.tech allowance</span>. Connect one in
+            <span className="text-nv-text"> Connect Apps → NVIDIA / Groq</span>, or press
+            <span className="text-nv-text"> Own Key</span> in the chat connection bar and hit “Get NVIDIA/Groq
+            key” — it opens the sign-up and the setup guide. You can also just ask Krew to “connect NVIDIA” and
+            it opens the wizard for you. Once connected, pick <span className="text-nv-text">Own Key</span> as
+            where AI runs and it uses that free cloud model.
+          </P>
 
           <H id="coder">Coder</H>
           <P>
