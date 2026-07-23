@@ -633,7 +633,7 @@ async function main() {
   // ("couldn't read any names"). This is THE bug behind the whole /scan saga.
   if (cmd !== 'open' && cmd !== 'close'
       && cmd !== 'connections' && cmd !== 'logincheck' && cmd !== 'message' && cmd !== 'printpdf'
-      && cmd !== 'findprofile' && cmd !== 'messages' && cmd !== 'typemsg' && cmd !== 'meetlink') {
+      && cmd !== 'findprofile' && cmd !== 'messages' && cmd !== 'typemsg' && cmd !== 'meetlink' && cmd !== 'whatsapp') {
     var state   = readState();
 
     var conn    = await ensureChrome();
@@ -1397,6 +1397,68 @@ async function main() {
     await hideBanner(fPage);
     writeState({ url: fFinal });
     process.stdout.write('PROFILE_JSON:' + JSON.stringify(results || []));
+    return;
+  }
+
+  // ── whatsapp <phone> ::: <text> ─────────────────────────────────────────────
+  // Open WhatsApp Web's chat for a phone number with the message PRE-FILLED (WhatsApp's own
+  // send?phone=&text= URL does the typing), so the user just reviews and presses send. Never
+  // auto-sends. If the user isn't logged in, we show the QR page, keep the window open, WAIT for
+  // them to scan it with their phone, then continue automatically. Phone must be full international
+  // digits (e.g. 919876543210) — WhatsApp needs the country code, no + or spaces.
+  if (cmd === 'whatsapp') {
+    var wRaw = argv.slice(1).join(' ').replace(/^"|"$/g, '').trim();
+    var wSplit = wRaw.indexOf(' ::: ');
+    var wPhone = (wSplit >= 0 ? wRaw.slice(0, wSplit) : wRaw).replace(/[^\d]/g, '');
+    var wText  = wSplit >= 0 ? wRaw.slice(wSplit + 5).trim() : '';
+    if (!wPhone) { process.stdout.write('[whatsapp-error] No phone number given. Use the full number with country code, digits only (e.g. 919876543210).'); return; }
+    var wConn = await ensureChrome();
+    var wCtx  = wConn.context;
+    if (!wCtx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
+    var wPage = wCtx.pages().at(-1) || await wCtx.newPage();
+    try { await wPage.bringToFront(); } catch (_) {}
+    var wUrl = 'https://web.whatsapp.com/send?phone=' + encodeURIComponent(wPhone) + (wText ? '&text=' + encodeURIComponent(wText) : '');
+    try { await wPage.goto(wUrl, { waitUntil: 'domcontentloaded', timeout: 25000 }); } catch (_) {}
+
+    // Compose box = logged in + chat open. QR canvas = needs login. Poll for whichever appears.
+    var composeSel = 'div[contenteditable="true"][data-tab="10"], footer div[contenteditable="true"], [data-testid="conversation-compose-box-input"]';
+    var qrSel = 'canvas[aria-label*="Scan" i], [data-testid="qrcode"], div[data-ref]';
+    async function wComposeReady() { try { return await wPage.$(composeSel); } catch (_) { return null; } }
+    async function wQrShown() { try { return await wPage.$(qrSel); } catch (_) { return null; } }
+
+    // First quick check (already logged in?)
+    try { await wPage.waitForSelector(composeSel, { timeout: 9000 }); } catch (_) {}
+    if (!(await wComposeReady())) {
+      // Not in a chat yet — either QR login is needed, or the number is invalid.
+      if (await wQrShown()) {
+        await showBanner(wPage, 'Scan this QR with WhatsApp on your phone (Settings → Linked devices). I\'ll send the message in once you\'re logged in — don\'t close this window.');
+        try { await wPage.bringToFront(); } catch (_) {}
+        // Wait up to 2.5 min for login, then re-open the send URL so the chat + text load.
+        var wDeadline = Date.now() + 150000;
+        var wLoggedIn = false;
+        while (Date.now() < wDeadline) {
+          await new Promise(function (r) { setTimeout(r, 2500); });
+          if (!(await wQrShown())) { wLoggedIn = true; break; }
+        }
+        if (!wLoggedIn) { writeState({ url: wPage.url() }); process.stdout.write('[SIGN_IN_REQUIRED] Scan the WhatsApp QR in the ADRIS browser to log in, then try again.'); return; }
+        await hideBanner(wPage);
+        try { await wPage.goto(wUrl, { waitUntil: 'domcontentloaded', timeout: 25000 }); } catch (_) {}
+        try { await wPage.waitForSelector(composeSel, { timeout: 15000 }); } catch (_) {}
+      }
+    }
+    // Invalid-number dialog?
+    try {
+      var badNum = await wPage.evaluate(function () { return /phone number.*(shared|invalid)|invalid.*phone|isn.?t on whatsapp/i.test(document.body.innerText || ''); }).catch(function () { return false; });
+      if (badNum && !(await wComposeReady())) { writeState({ url: wPage.url() }); process.stdout.write('[whatsapp-badnumber] WhatsApp says that number isn\'t on WhatsApp (or the format is wrong). Use the full country code, digits only.'); return; }
+    } catch (_) {}
+
+    var wBox = await wComposeReady();
+    writeState({ url: wPage.url() });
+    if (!wBox) { process.stdout.write('PROFILE_OPENED_NO_BOX WhatsApp opened but the chat box didn\'t load. Nothing was sent.'); return; }
+    // The URL pre-fills the text; make sure the caret is in the box so the user can just press Enter.
+    try { await wBox.click({ timeout: 3000 }); } catch (_) {}
+    await showBanner(wPage, 'Your message is typed into WhatsApp — review it and press Enter/Send yourself. ADRIS never sends for you.');
+    process.stdout.write('MESSAGE_DRAFTED — the message is in the WhatsApp chat box, unsent. Tell the user to review it and press Enter/Send.');
     return;
   }
 

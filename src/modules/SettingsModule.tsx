@@ -45,8 +45,12 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.38',
+  version: '1.6.39',
   items: [
+    'When it books a meeting, it now also hands you a ready-to-send message with the real Meet link in a copyable box — no more “[Name]” placeholders, and the copy box is back. Asking to “lock the time and give me a message to send” now completes both halves.',
+    'Any message meant for you to SEND (a WhatsApp text, a confirmation, a note) now always comes in a copyable box, never plain text, and never with a bracket placeholder that could go out by mistake.',
+    'New: WhatsApp. Ask adris to WhatsApp someone (with their number, country code included) and it opens WhatsApp Web with the message typed in for you to review and press send — exactly like the LinkedIn reply flow. If you’re not logged in, the window stays open with the QR code; scan it once with your phone and it continues automatically. It never sends on its own.',
+
     'ROOT-CAUSE FIX for the “Incorrect API key … platform.openai.com” (401) error when using an NVIDIA key: the engine that runs the chat was missing NVIDIA in its list of endpoints, so it sent your nvapi- key to OpenAI. NVIDIA is now wired in, and as a permanent safeguard every key is routed by its own type at the engine level — an nvapi-/gsk_/sk-ant- key can never be sent to the wrong provider again, from any part of the app.',
 
     'The “Own Key” panel in the chat connection bar no longer runs off the bottom of the screen. It now fits any window: a fixed title and Done button, with the middle scrolling if there’s a lot (connected keys, model chooser, etc.), plus a close × in the corner.',

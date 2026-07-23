@@ -662,6 +662,14 @@ export const RESEARCH_TOOLS: ToolDef[] = [
       message:     { type: 'string', description: 'The full reply text to type into the compose box.', required: true },
     },
   },
+  {
+    name: 'whatsapp_message',
+    description: "Open WhatsApp Web for a phone number with a message TYPED IN, ready for the user to review and press send — it does NOT send by itself (just like the LinkedIn reply). Use this when the user asks to WhatsApp / message someone on WhatsApp and gives a phone number. If the user isn't signed in to WhatsApp Web yet, the ADRIS browser stays open showing the QR code — tell them to scan it with their phone (WhatsApp → Settings → Linked devices); the message is filled in automatically once they're logged in. The phone number must include the country code, digits only (e.g. 919876543210 for India).",
+    parameters: {
+      phone:   { type: 'string', description: 'Full phone number with country code, digits only — no +, spaces or dashes. e.g. "919876543210".', required: true },
+      message: { type: 'string', description: 'The full message text to type into the WhatsApp chat.', required: true },
+    },
+  },
 ];
 
 // ─── Browser tools (via agent-browser CLI — opens visible Chrome window) ─────
@@ -1846,7 +1854,10 @@ async function executeToolCore(
     const guestLine = guests
       ? `\nGuests: ${guests} — they will be emailed the invitation once the user presses Save.`
       : `\nNO GUEST EMAIL, so saving this notifies NOBODY — it only puts the meeting in the user's own calendar. ${meetUrl ? 'Send the other person the meet link above instead, and tell the user that is what you did.' : 'Tell the user plainly that the other person will not receive anything, and ask for their email if they want one sent.'}`;
-    return `Google Calendar is open with this event filled in: "${title}" — ${when}.${meetLine}${guestLine}\n\nTELL THE USER the event is prefilled and waiting for them to press **Save**. Do NOT say an invitation has been SENT — nothing is sent until they save it${guests ? '' : ', and with no guest on it nothing is sent even then'}.`;
+    const shareBlock = meetUrl
+      ? `\n\nTHEN GIVE THE USER A READY-TO-SEND MESSAGE. They will paste it to the other person, so it must be complete and warm. Put it in a fenced \`\`\`message block (it renders as a copyable box) and include the real Meet link and the time. Do NOT use a "[Name]" or any bracketed placeholder — if you don't know the recipient's name, open warmly without one (e.g. "Hi! Looking forward to our chat…"). Example:\n\`\`\`message\nHi! Looking forward to our meeting on ${when.split(',')[0]}. Here's the Google Meet link so we can hop on: ${meetUrl}\nSee you then!\n\`\`\``
+      : '';
+    return `Google Calendar is open with this event filled in: "${title}" — ${when}.${meetLine}${guestLine}\n\nTELL THE USER the event is prefilled and waiting for them to press **Save**. Do NOT say an invitation has been SENT — nothing is sent until they save it${guests ? '' : ', and with no guest on it nothing is sent even then'}.${shareBlock}`;
   }
 
   // ── Brain (shared knowledge graph) ────────────────────────────────────────
@@ -2187,6 +2198,29 @@ async function executeToolCore(
       return `### ${t.name}${tag}\nProfile: ${t.url || '(not found — ask the user or use linkedin_scan_connections)'}\n${convo}`;
     }).join('\n\n');
     return `Read ${threads.length} REAL LinkedIn conversation${threads.length === 1 ? '' : 's'} straight from the page (unread first). Use the exact text below — do NOT invent or paraphrase what anyone said when quoting it back.\n\nWHO IS WHO — read this before drafting anything. Every line is labelled from LinkedIn's own page markup:\n- \`YOU >\` is a message THE USER (the account owner) already sent. Never reply to one of these, never treat it as a question put to the user, and never thank someone for something the user themselves said.\n- \`THEM (<name>) >\` is the other person. Only these can be waiting on a reply.\nIf the last line of a thread is \`YOU >\`, the user has already responded and the ball is in the other person's court — that thread usually needs NO reply.\n\n${lines}\n\nWhen drafting a reply, call draft_linkedin_reply with the matching \`url\` from above — it opens their chat and types the reply for the user to review and send themselves. If a reply proposes a meeting time, ground it in what was ACTUALLY said here plus the user's stated availability — never call open_service_setup/open_connect_apps for a LinkedIn scheduling reply.`;
+  }
+
+  if (toolName === 'whatsapp_message') {
+    const phone = str(args.phone).replace(/[^\d]/g, '');
+    const message = str(args.message).trim();
+    if (!phone) return 'No phone number — WhatsApp needs the full number with country code, digits only (e.g. 919876543210).';
+    if (!message) return 'No message text to send.';
+    emit('agent-browser-active', {}).catch(() => {});
+    emit('agent-progress', { text: 'Opening WhatsApp and typing the message…' }).catch(() => {});
+    _browserActiveThisRun = true;
+    setAgentBrowserHold(true);   // the user must press Send — keep the window open under them
+    const raw = await invoke<string>('run_browser_persistent', { args: `whatsapp ${phone} ::: ${message}` }).catch((e) => String(e));
+    emit('agent-browser-idle', {}).catch(() => {});
+    _browserLoginPending = raw.includes('[SIGN_IN_REQUIRED]');
+    if (raw.includes('[SIGN_IN_REQUIRED]')) return "[NEEDS_LOGIN] I opened WhatsApp Web in the ADRIS browser — please scan the QR code with WhatsApp on your phone (Settings → Linked devices). It's saved after this. Then ask me again and I'll type the message in.";
+    if (raw.startsWith('[browser-') || raw.includes('[agent-browser not installed') || raw.includes('[custom-browser-unavailable')) {
+      return "The ADRIS browser engine didn't respond just now. Make sure Google Chrome is installed and try again.";
+    }
+    if (raw.startsWith('[whatsapp-error]')) return raw.replace('[whatsapp-error]', '').trim();
+    if (raw.startsWith('[whatsapp-badnumber]')) return `That number isn't on WhatsApp, or the format is off. Use the full country code with digits only (e.g. 919876543210). Here's the message so you can send it manually:\n\n${message}`;
+    if (raw.startsWith('PROFILE_OPENED_NO_BOX')) return `Opened WhatsApp but the chat box didn't load — nothing was typed or sent. Here's the message to paste manually:\n\n${message}`;
+    if (raw.startsWith('MESSAGE_DRAFTED')) return `WhatsApp is open with the message typed into the chat for **${phone}** — the user reviews it and presses **Enter/Send** themselves (I never send). If they're not logged in, they scan the QR once and it's remembered.`;
+    return raw || 'Opened WhatsApp — check the ADRIS browser window.';
   }
 
   if (toolName === 'draft_linkedin_reply') {
