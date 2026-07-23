@@ -45,8 +45,10 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.36',
+  version: '1.6.37',
   items: [
+    'The “Own Key” panel in the chat connection bar no longer runs off the bottom of the screen. It now fits any window: a fixed title and Done button, with the middle scrolling if there’s a lot (connected keys, model chooser, etc.), plus a close × in the corner.',
+
     'Big fix for LinkedIn scheduling: adris will no longer accept a meeting time or create a calendar invite + video link on your behalf unless YOU have said you’re free then. When someone proposes a time and you haven’t given your availability, the reply stays non-committal and you get a clear “Are you free? — I haven’t booked anything” note. Tell it your availability (“I’m free after 7pm”) and it finalises the reply and sets up the meeting. It can no longer say “1 PM works perfectly” for a time it never checked with you.',
     'Inbox replies read a touch warmer and more human — less stiff, more like something you’d actually type.',
 

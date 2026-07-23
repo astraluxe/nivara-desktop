@@ -165,18 +165,25 @@ export default function ConnectionBar(props: Props) {
 
       {popup && (
         <div
-          className="fixed inset-0 z-50 flex items-start justify-center pt-16"
+          className="fixed inset-0 z-50 flex items-start justify-center pt-14 px-3 pb-4"
           onClick={() => setPopup(null)}
         >
           <div
-            className="bg-nv-surface border border-nv-border rounded-xl p-5 w-80 shadow-2xl"
+            className="bg-nv-surface border border-nv-border rounded-xl w-[min(92vw,22rem)] max-h-[calc(100dvh-5rem)] shadow-2xl flex flex-col overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
-            <p className="text-[11px] font-semibold text-nv-text uppercase tracking-wider mb-4">
-              {popup === 'local'   && 'Local Model'}
-              {popup === 'own_key' && 'Own API Key'}
-              {popup === 'nivara'  && 'adris.tech Plan'}
-            </p>
+            {/* Sticky header so the title stays put while the (sometimes tall) body scrolls. */}
+            <div className="flex items-center justify-between px-5 pt-4 pb-2.5 border-b border-nv-border shrink-0 bg-nv-surface">
+              <p className="text-[11px] font-semibold text-nv-text uppercase tracking-wider">
+                {popup === 'local'   && 'Local Model'}
+                {popup === 'own_key' && 'Own API Key'}
+                {popup === 'nivara'  && 'adris.tech Plan'}
+              </p>
+              <button onClick={() => setPopup(null)} className="text-nv-faint hover:text-nv-text -mr-1 p-1" aria-label="Close">
+                <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+              </button>
+            </div>
+            <div className="px-5 py-4 overflow-y-auto">
 
             {popup === 'local' && (
               <>
@@ -406,13 +413,16 @@ export default function ConnectionBar(props: Props) {
               </div>
             )}
 
-            <button
-              onClick={() => setPopup(null)}
-              className="mt-4 w-full text-[12px] py-2 rounded-lg bg-accent text-white
-                hover:bg-accent-dim transition-fast"
-            >
-              Done
-            </button>
+            </div>
+            {/* Sticky footer so Done is always reachable no matter how tall the body scrolls. */}
+            <div className="px-5 py-3 border-t border-nv-border shrink-0 bg-nv-surface">
+              <button
+                onClick={() => setPopup(null)}
+                className="w-full text-[12px] py-2 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast"
+              >
+                Done
+              </button>
+            </div>
           </div>
         </div>
       )}
