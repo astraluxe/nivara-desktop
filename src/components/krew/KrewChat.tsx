@@ -5068,8 +5068,11 @@ The prompt must be production-ready — specific enough for a motion designer to
     // filler to 50 people (which reads as spam and burns the connections).
     const goal = focus.trim();
     let productCtx = '';
-    if (refFile?.content) productCtx = refFile.content.slice(0, 6000).trim();
-    if (!productCtx) { try { const p = brainStore.findByTitle('PRODUCT') || brainStore.search('product').find((n) => /product/i.test(n.title)); if (p?.body) productCtx = nodeToMarkdown(p.body).slice(0, 4000).trim(); } catch { /* ignore */ } }
+    if (refFile?.content) productCtx = refFile.content.trim();
+    if (!productCtx) { try { const p = brainStore.findByTitle('PRODUCT') || brainStore.search('product').find((n) => /product/i.test(n.title)); if (p?.body) productCtx = nodeToMarkdown(p.body).trim(); } catch { /* ignore */ } }
+    // Keep the product context tight: it's re-processed on every batch, and a huge doc is a big part
+    // of what makes a local model crawl. A short summary is plenty to personalise from.
+    productCtx = productCtx.replace(/\s+/g, ' ').slice(0, 1500).trim();
     if (!goal && !productCtx) {
       const ask = `Before I draft ${contacts.length} messages, two quick things so they land instead of reading like spam:\n\n1. **What are you reaching out for?** (e.g. get feedback on what you're building, find your first users/customers, hiring, a partnership, or just reconnecting)\n2. **What do you do / what are you building?** — a line is enough, or attach your **PRODUCT.md**.\n\nReply with those (or just tell me the goal) and I'll write one personalised message per connection and open the copilot.`;
       addMsg({ role: 'assistant', content: ask });
@@ -5147,15 +5150,23 @@ The prompt must be production-ready — specific enough for a motion designer to
       // reach far more people. A failed batch is skipped (those people fall back), never fatal.
       const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
       const byName: Record<string, string> = {};
-      const B = 6;
+      const draftStart = Date.now();
+      const B = mode === 'local' ? 3 : 6;   // local models are slow — smaller batches feed back sooner
       for (let i = 0; i < pick.length; i += B) {
         if (stopRef.current) break;
         const batch = pick.slice(i, i + B);
-        if (pick.length > B) updateLastMsg(`Writing messages ${i + 1}–${Math.min(i + batch.length, pick.length)} of ${pick.length}…`);
+        const range = `${i + 1}–${Math.min(i + batch.length, pick.length)} of ${pick.length}`;
+        // Once-a-second heartbeat + live word count, so a slow local model (incl. the ~40s cold-load
+        // with no tokens) visibly proves it's working instead of sitting on a frozen "Writing 1–6".
+        let chars = 0;
+        const tick = () => { if (pick.length > 1) updateLastMsg(`Writing messages ${range}…\n\n_Working… ${Math.round((Date.now() - draftStart) / 1000)}s${chars ? `, ~${Math.round(chars / 5)} words written` : (mode === 'local' ? ' — loading the model on first use can take up to a minute' : '')}._`); };
+        tick();
+        const hb = setInterval(tick, 1000);
         const usr = `MY GOAL FOR THIS OUTREACH:\n${goal || 'Reconnect and open a genuine conversation about a possible fit — no hard pitch.'}\n\nWHAT I DO / WHAT I\'M BUILDING:\n${productCtx || '(not specified — keep it about them and a friendly reconnect)'}\n\nWrite one message for EACH of these ${batch.length} connections (use their exact name; personalise from their headline). Return the JSON array of exactly ${batch.length} objects:\n${batch.map((c) => `- ${c.name} — ${c.headline || '(no headline)'}`).join('\n')}`;
         let text = '';
-        try { ({ text } = await streamTurnWithRetry([{ role: 'user', content: usr }], sys, () => {})); }
-        catch { continue; }
+        try { ({ text } = await streamTurnWithRetry([{ role: 'user', content: usr }], sys, (t) => { chars += t.length; })); }
+        catch { clearInterval(hb); continue; }
+        finally { clearInterval(hb); }
         const pairs = parseNameMessagePairs(text);
         batch.forEach((c, j) => {
           let msg = pairs.find((p) => norm(p.name) === norm(c.name) || norm(p.name) === norm(firstNameOf(c.name)))?.message;
@@ -5370,44 +5381,51 @@ The prompt must be production-ready — specific enough for a motion designer to
       if (sid) krewDb.saveMessage(sid, 'assistant', none).catch(() => {});
       return;
     }
-    // Only rework people still in play — never rewrite something already sent or replied to.
+    // ONLY rework people with NO status yet — untouched 'todo' contacts. Once you've sent, connected,
+    // heard back or skipped someone, re-writing their message is pointless (and for a sent message,
+    // wrong — you'd change what you already said). This is what the user asked: refine the ones you
+    // haven't acted on, leave the rest exactly as they are.
     const isDone = (s?: OutreachContact['status']) => s === 'sent' || s === 'accepted' || s === 'replied' || s === 'skip';
-    const targets = campaign.contacts.filter((c) => !isDone(c.status));
+    const isUntouched = (s?: OutreachContact['status']) => !s || s === 'todo';
+    const targets = campaign.contacts.filter((c) => isUntouched(c.status));
     if (!targets.length) {
-      const done = 'Every message in this campaign has already been sent or handled — nothing left to refine. Run **/scan** then **/outreach** for your next batch.';
+      const done = 'Every contact here already has a status (sent, connect requested, replied…), so there\'s nothing untouched to refine — refining a message you\'ve already sent would just change what you said. Run **/scan** then **/outreach** for a fresh batch.';
       addMsg({ role: 'assistant', content: done });
       if (sid) krewDb.saveMessage(sid, 'assistant', done).catch(() => {});
       return;
     }
 
-    // What the user does + their goal — the same grounding the first draft used, so refined
-    // messages stay truthful about the product instead of inventing a pitch. Pull PRODUCT.md / the
-    // Brain product note; the user said they're SELLING a service, so lean value-forward but human.
+    // What the user sells — grounding so refined messages stay truthful instead of inventing a pitch.
+    // Kept SHORT on purpose: a local model re-processes this prompt on every batch, and a 6000-char
+    // product doc was a big part of why each batch crawled. A tight summary is plenty to personalise.
     let productCtx = '';
     try {
       const attached = attachedFiles.find((f) => f.content && /\.(md|markdown|txt|pdf|docx?)$/i.test(f.name) && !looksLikeConnectionsFile(f));
-      if (attached?.content) productCtx = attached.content.slice(0, 6000).trim();
-      if (!productCtx) { const p = brainStore.findByTitle('PRODUCT') || brainStore.search('product').find((n) => /product/i.test(n.title)); if (p?.body) productCtx = nodeToMarkdown(p.body).slice(0, 4000).trim(); }
+      if (attached?.content) productCtx = attached.content.trim();
+      if (!productCtx) { const p = brainStore.findByTitle('PRODUCT') || brainStore.search('product').find((n) => /product/i.test(n.title)); if (p?.body) productCtx = nodeToMarkdown(p.body).trim(); }
     } catch { /* optional */ }
+    productCtx = productCtx.replace(/\s+/g, ' ').slice(0, 1200).trim();
 
     const senderName = [profile?.first_name, profile?.last_name].filter(Boolean).join(' ').trim()
       || (user?.email ? user.email.split('@')[0].replace(/[._-]+/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase()) : '');
 
-    // Refine at most this many per run (biggest lists → run /refine again for the rest), in SMALL
-    // batches. One giant "rewrite all 50" request makes the model emit a huge JSON array that a
-    // local model truncates mid-way — which parses to nothing and returned "came back empty" twice.
-    // Small batches each produce a short, complete array that parses reliably.
-    const MAX = 30;
-    const BATCH = 6;
+    // Local models are SLOW (a 14B on CPU writes a few words a second). Do LESS per run and in
+    // smaller batches so each one finishes quickly, feedback lands often, and the whole thing
+    // completes in a couple of minutes rather than ten — then say "run /refine again" for the rest.
+    // A hosted model is fast, so it does more at once.
+    const local = mode === 'local';
+    const MAX = local ? 10 : 30;
+    const BATCH = local ? 3 : 6;
     const slice = targets.slice(0, MAX);
 
     const sysBase = [
       'You REWRITE existing first-touch LinkedIn messages to the user\'s 1st-degree connections so each one is genuinely PERSONAL to that person — not a template with the name swapped in.',
       'The current drafts are weak because they are generic ("great to be connected, your work caught my eye, open to a quick chat?"). Make each one specific and human.',
       'Rules for every rewrite:',
-      '- 30–55 words. Plain, warm, specific. It must read as if the user personally wrote it after looking at that person\'s profile.',
+      '- 30–45 words, no more. Plain, warm, specific. It must read as if the user personally wrote it after looking at that person\'s profile.',
       '- Greet by FIRST NAME ONLY (no Dr/Prof/Mr).',
       '- Open on ONE concrete, specific thing from THAT person\'s role/company/headline — not a vague "your work caught my eye". Never paste their whole headline back.',
+      '- Each message stands ALONE — do not carry a detail from one person into another\'s message.',
       '- The user is offering a service, so make the value clear in ONE natural line — what\'s in it for THEM — without a hard pitch, no feature dump, no "hop on a call to explore synergies".',
       '- End with ONE low-pressure, specific ask.',
       '- No "I hope this finds you well", no buzzwords, no hashtags, no emojis unless truly natural.',
@@ -5418,8 +5436,11 @@ The prompt must be production-ready — specific enough for a motion designer to
     ].filter(Boolean).join('\n');
 
     const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+    const usr = (batch: OutreachContact[]) => `WHAT I DO / WHAT I'M SELLING:\n${productCtx || '(not specified — keep it about them and a warm, low-pressure reconnect, and do not invent specifics about my product)'}\n\nRewrite a message for EACH of these ${batch.length} connections. Their CURRENT draft is shown so you can see what to improve — make each far more personal to them. Return the JSON array of exactly ${batch.length} objects:\n${batch.map((c) => `- ${c.name} — ${c.company || '(no headline)'}\n    current: ${c.linkedin_message ? c.linkedin_message.replace(/\n+/g, ' ').trim() : '(none)'}`).join('\n')}`;
 
-    addMsg({ role: 'assistant', content: `Refining ${slice.length} message${slice.length === 1 ? '' : 's'} to be more personal${guidance ? ` — ${guidance}` : ''}…`, streaming: true });
+    const startedAt = Date.now();
+    const elapsed = () => Math.round((Date.now() - startedAt) / 1000);
+    addMsg({ role: 'assistant', content: `Refining ${slice.length} untouched message${slice.length === 1 ? '' : 's'} to be more personal${guidance ? ` — ${guidance}` : ''}…${local ? '\n\n_On a local model this runs at your machine\'s pace — you\'ll see it writing live below._' : ''}`, streaming: true });
     setBusy(true);
 
     // Apply refinements onto a working copy of the campaign, saving after each batch so partial
@@ -5430,11 +5451,21 @@ The prompt must be production-ready — specific enough for a motion designer to
       for (let b = 0; b < slice.length; b += BATCH) {
         if (stopRef.current) break;
         const batch = slice.slice(b, b + BATCH);
-        updateLastMsg(`Refining messages ${b + 1}–${Math.min(b + batch.length, slice.length)} of ${slice.length}${guidance ? ` — ${guidance}` : ''}…`);
-        const usr = `WHAT I DO / WHAT I'M SELLING:\n${productCtx || '(not specified — keep it about them and a warm, low-pressure reconnect, and do not invent specifics about my product)'}\n\nRewrite a message for EACH of these ${batch.length} connections. Their CURRENT draft is shown so you can see what to improve — make each far more personal to them. Return the JSON array of exactly ${batch.length} objects:\n${batch.map((c) => `- ${c.name} — ${c.company || '(no headline)'}\n    current: ${c.linkedin_message ? c.linkedin_message.replace(/\n+/g, ' ').trim() : '(none)'}`).join('\n')}`;
+        const range = `${b + 1}–${Math.min(b + batch.length, slice.length)} of ${slice.length}`;
+        // LIVE feedback via a once-a-second HEARTBEAT (not just on tokens): a local model spends the
+        // first ~40s cold-loading the weights, emitting NO tokens, so a token-only counter would sit
+        // frozen and look hung. The heartbeat ticks the elapsed time regardless, and the word count
+        // climbs once generation starts — so it's always visibly alive.
+        let chars = 0;
+        const tick = () => updateLastMsg(
+          `Refining ${range}${guidance ? ` — ${guidance}` : ''}\n\n_Working… ${elapsed()}s${chars ? `, ~${Math.round(chars / 5)} words written` : (local ? ' — loading the model on first use can take up to a minute' : '')}. Press Stop to keep what's done._`,
+        );
+        tick();
+        const hb = setInterval(tick, 1000);
         let text = '';
-        try { ({ text } = await streamTurnWithRetry([{ role: 'user', content: usr }], sysBase, () => {})); }
-        catch { continue; }   // a failed batch shouldn't sink the rest — move on, keep what we have
+        try { ({ text } = await streamTurnWithRetry([{ role: 'user', content: usr(batch) }], sysBase, (t) => { chars += t.length; })); }
+        catch { clearInterval(hb); continue; }   // a failed batch shouldn't sink the rest
+        finally { clearInterval(hb); }
         const pairs = parseNameMessagePairs(text);
         // Name match first; then POSITIONAL fallback within the batch — the model returns messages in
         // the order asked, so an entry with a mismatched/blank name still lands on the right person.
@@ -5466,8 +5497,11 @@ The prompt must be production-ready — specific enough for a motion designer to
       const m = byName[norm(c.name)];
       return m && m !== c.linkedin_message ? { ...c, linkedin_message: m } : c;
     });
+    const stopped = stopRef.current;
     if (!refined) {
-      const nores = 'I couldn\'t improve those just now — the model didn\'t return usable rewrites. Your existing messages are unchanged. Try **/refine** again, or add a note on how you want them (e.g. "warmer, lead with the time we save them"). If you\'re on a local model, a bigger one writes cleaner messages.';
+      const nores = stopped
+        ? `Stopped before anything was refined — your messages are unchanged. ${local ? 'A local model is slow at this; a hosted model (or a smaller local one) would be much quicker.' : 'Try **/refine** again.'}`
+        : `I couldn't improve those just now — the model didn't return usable rewrites in ${elapsed()}s. Your existing messages are unchanged. Try **/refine** again${local ? ', or switch to a hosted or smaller model — a 14B on CPU is slow and can garble the JSON' : ''}.`;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: nores, streaming: false }; return c; });
       if (sid) krewDb.saveMessage(sid, 'assistant', nores).catch(() => {});
       setBusy(false); setAgentStep(null); setAgentTool(null);
@@ -5475,8 +5509,8 @@ The prompt must be production-ready — specific enough for a motion designer to
     }
     const updated = { ...campaign, contacts };
     saveCampaign(updated);
-    const remaining = targets.length - slice.length;
-    const summary = `Refined **${refined}** message${refined === 1 ? '' : 's'} to be more personal${guidance ? ` (${guidance})` : ''} — reopening the copilot so you can review each and send. Nothing was sent, and anyone already contacted was left untouched.${remaining > 0 ? ` ${remaining} more to go — run **/refine** again for the next batch.` : ''}`;
+    const remaining = targets.length - (stopped ? refined : slice.length);
+    const summary = `Refined **${refined}** message${refined === 1 ? '' : 's'} to be more personal${guidance ? ` (${guidance})` : ''} in ${elapsed()}s${stopped ? ' (stopped early — kept what was done)' : ''} — reopening the copilot so you can review each and send. Nothing was sent, and only untouched contacts were changed.${remaining > 0 ? ` ${remaining} still to do — run **/refine** again for the next batch.` : ''}${local && !stopped ? ' _Tip: a hosted or smaller model refines much faster._' : ''}`;
     setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: summary, streaming: false }; return c; });
     if (sid) krewDb.saveMessage(sid, 'assistant', summary).catch(() => {});
     setOutreachCampaign(updated);

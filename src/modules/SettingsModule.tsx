@@ -45,8 +45,13 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.28',
+  version: '1.6.29',
   items: [
+    '/refine now shows it’s actually working: a live counter ticks the seconds and the words written as the model writes — so a slow local model no longer looks frozen on “Refining 1–6”. Press Stop any time and whatever was refined is kept.',
+    '/refine only rewrites contacts you HAVEN’T acted on yet. Anyone already sent, connected, replied or skipped is left exactly as they are — refining a message you already sent made no sense.',
+    '/refine is much faster on a local model: it trims the background product text it re-reads each time, keeps messages shorter, works in smaller batches, and does ten per run (run it again for the next ten) so it finishes in a couple of minutes instead of ten. Each message is written on its own so people’s details don’t bleed together. If it’s still slow, it now tells you a hosted or smaller model would be quicker.',
+    'Drafting outreach shows the same live progress, and also writes in smaller batches on a local model.',
+
     'The outreach copilot now has a search box — type a name to jump straight to that person instead of clicking Prev/Next through the whole list, so updating someone’s status is quick.',
     'Opening a contact’s chat from the copilot now types the message into the LinkedIn box for you — just like the inbox reply button — so you only review it and press Send. (It still never sends by itself, and the message is copied as a backup in case typing doesn’t catch.)',
     'Fixed the real reason so many outreach messages came out identical (“great to be connected, your work caught my eye”). That is the fallback the app uses when the model’s reply can’t be read — and asking a model to write all fifty messages in one go made it run out of room and get cut off, so only the first few were kept and everyone else got the fallback. Messages are now written in small batches that come back complete, so real, personalised messages reach far more people. /refine works the same way, and could no longer come back empty.',
