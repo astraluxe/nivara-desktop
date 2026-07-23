@@ -536,6 +536,24 @@ export default function InfoModule() {
             it opens the wizard for you. Once connected, pick <span className="text-nv-text">Own Key</span> as
             where AI runs and it uses that free cloud model.
           </P>
+          <P>
+            <span className="text-nv-text font-medium">Which model should you pick?</span> You don’t have to
+            know. When you connect, adris reads the models your key can actually use and picks a capable one for
+            you, and the model chooser groups them into <span className="text-nv-text">★ Recommended</span> (best
+            for the heavier things — research, lead-finding, LinkedIn, multi-step agent tasks and the slash
+            commands) and <span className="text-nv-text">Fast</span> (quick replies and writing). Leave the
+            Recommended one and it behaves closest to adris.tech’s own AI.
+          </P>
+          <Note>
+            A rule of thumb if you ever choose by hand: bigger “instruct”/“reasoning”/“agentic” models — anything
+            around <span className="text-nv-text">70B or larger</span>, or names like Llama&nbsp;3.3&nbsp;70B,
+            Qwen&nbsp;2.5&nbsp;72B, Kimi&nbsp;K2, DeepSeek&nbsp;V-series, Nemotron&nbsp;Ultra, GLM&nbsp;4/5,
+            Mistral&nbsp;Medium/Large — handle the complex slash commands well. The small “mini / nano / 8B”
+            models are great for writing and summarising but wobble on long multi-step tasks. Also mind the
+            model’s <span className="text-nv-text">context window</span> (how much it can read at once): a big
+            attached file or a long chat needs a model with a large context — most of the Recommended ones above
+            carry 128K or more, which is plenty.
+          </Note>
 
           <H id="coder">Coder</H>
           <P>

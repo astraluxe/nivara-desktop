@@ -27,8 +27,8 @@ const BYOK_MODEL: Record<ByokProvider, string> = {
   gemini: 'gemini-2.5-flash-lite',
   openai: 'gpt-4o-mini',
   claude: 'claude-3-5-haiku-20241022',
-  nvidia: 'meta/llama-3.1-8b-instruct',   // free on build.nvidia.com; fast, capable
-  groq:   'llama-3.3-70b-versatile',      // free on console.groq.com; extremely fast
+  nvidia: 'meta/llama-3.3-70b-instruct',  // free on build.nvidia.com; 70B — strong at agent tools, closest to the hosted default
+  groq:   'llama-3.3-70b-versatile',      // free on console.groq.com; 70B, and Groq runs it extremely fast
 };
 
 export function getAiSource(): AiSourcePref {

@@ -625,13 +625,24 @@ export default function ServiceSetupModal({ service, onDone, onClose }: Props) {
       } else {
         // For AI providers, the user may have pasted a whole code snippet — normalise it to just
         // the key, and capture the model they were looking at (their key works for every model).
-        const out = { ...fields };
+        const out: Record<string, string> = { ...fields };
         if (out.api_key) {
           const key = extractApiKey(out.api_key, service);
           if (!key) { setError('Could not find an API key in that. Paste the key (or the whole code block NVIDIA gave you).'); setLoading(false); return; }
           out.api_key = key;
-          const model = extractModel(fields.api_key);
-          if (model) out.model = model;
+          // Which model to use: the one they were looking at (if the pasted snippet named one),
+          // else auto-pick the best CAPABLE model their key can actually call — so a non-tech user
+          // never has to choose, and we never store a model id that isn't in the live catalogue.
+          const pasted = extractModel(fields.api_key);
+          if (pasted) out.model = pasted;
+          else if (service === 'nvidia' || service === 'groq') {
+            try {
+              const { fetchRankedModels } = await import('../../lib/ai');
+              const ranked = await fetchRankedModels(service as import('../../lib/ai').Provider, key);
+              const best = ranked.find((m) => m.tier === 'smart') || ranked[0];
+              if (best) out.model = best.id;
+            } catch { /* fall back to the provider default in aiSource */ }
+          }
         }
         await credentialStore.save(service, out);
         onDone();

@@ -45,8 +45,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.32',
+  version: '1.6.33',
   items: [
+    'You no longer have to know which NVIDIA/Groq model to pick. When you connect, adris reads the models your key can actually use, picks a capable one automatically, and the model chooser groups them into ★ Recommended (best for research, lead-finding, LinkedIn and the other multi-step commands) and Fast (quick replies & writing) — no cryptic names or “B” numbers to decode. Leave the Recommended one and it behaves closest to adris.tech’s own AI.',
+    'The Info page now explains, in plain words, which kinds of models handle the complex commands well and why context size matters — so if you ever do choose by hand, you know what to look for.',
+
     'Connecting a free NVIDIA or Groq key is now foolproof. Their website hands you a whole block of code with the key buried inside — so instead of making you hunt for it, just paste the ENTIRE thing and adris finds the key for you (it even picks up the model you were looking at). It shows “✓ Found your key” so you know it worked. Pasting only the key still works too.',
 
     'Brain now connects related files for you. New files auto-link as they arrive, and a “Connect files” button links anything related that was left unjoined — a list to the product doc it came from, files from the same folder, notes that reference each other. Instant and free (no AI tokens).',

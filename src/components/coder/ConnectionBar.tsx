@@ -1,6 +1,7 @@
 ﻿import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { ConnectionMode, Provider, PROVIDERS } from '../../lib/ai';
+import { ConnectionMode, Provider, PROVIDERS, fetchRankedModels, type RankedModel } from '../../lib/ai';
+import { credentialStore } from '../../lib/krewDb';
 import { PLAN_CONFIG, Plan } from '../../lib/planConfig';
 
 interface Props {
@@ -48,6 +49,24 @@ export default function ConnectionBar(props: Props) {
   const [popup, setPopup] = useState<ConnectionMode | null>(null);
   const [installedModels, setInstalledModels] = useState<InstalledModel[] | null>(null);
   const [engineStatus, setEngineStatus] = useState<'idle' | 'starting' | 'running' | 'error'>('idle');
+  const [rankedModels, setRankedModels] = useState<RankedModel[] | null>(null);
+  const [modelsLoading, setModelsLoading] = useState(false);
+
+  // When the own-key popup is open for NVIDIA/Groq, fetch the models THIS key can actually call and
+  // rank them into plain tiers. Uses the popup's key field, else the key saved in Connect Apps.
+  useEffect(() => {
+    let cancelled = false;
+    if (popup !== 'own_key' || (provider !== 'nvidia' && provider !== 'groq')) { setRankedModels(null); return; }
+    (async () => {
+      setModelsLoading(true);
+      let key = apiKey;
+      if (!key) { try { const c = await credentialStore.get(provider); key = (c?.api_key as string) || ''; } catch { /* none */ } }
+      if (!key) { if (!cancelled) { setRankedModels(null); setModelsLoading(false); } return; }
+      const list = await fetchRankedModels(provider, key);
+      if (!cancelled) { setRankedModels(list); setModelsLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [popup, provider, apiKey]);
 
   // Open the guided setup for a free provider AND its key page in the browser, and preselect it as
   // the own-key provider so the pasted key is used straight away. Reuses the same open-Connect-Apps
@@ -197,8 +216,47 @@ export default function ConnectionBar(props: Props) {
                   </>
                 )}
 
-                {/* Model name */}
-                <label className="text-nv-faint text-[11px] block mb-1.5">Model</label>
+                {/* Plain-language model picker — for NVIDIA/Groq we fetch the models THIS key can
+                    actually call and group them, so a non-tech user picks "Recommended" vs "Fast"
+                    instead of reading 130 cryptic ids. */}
+                {(provider === 'nvidia' || provider === 'groq') && (
+                  <div className="mb-3">
+                    <label className="text-nv-faint text-[11px] block mb-1.5">Model</label>
+                    {rankedModels === null
+                      ? <p className="text-[10.5px] text-nv-faint">{modelsLoading ? 'Finding the models your key can use…' : 'Connect the key first (Connect Apps → ' + (provider === 'nvidia' ? 'NVIDIA' : 'Groq') + '), then reopen this to choose a model.'}</p>
+                      : rankedModels.length === 0
+                        ? <p className="text-[10.5px] text-amber-400">Couldn’t list models for this key — it may be new. The default works; you can type a model id below.</p>
+                        : (
+                          <>
+                            {(['smart', 'fast'] as const).map((tier) => {
+                              const list = rankedModels.filter((m) => m.tier === tier);
+                              if (!list.length) return null;
+                              return (
+                                <div key={tier} className="mb-1.5">
+                                  <p className="text-[9.5px] text-nv-faint mb-1">{tier === 'smart' ? '★ Recommended — handles agents, tools, research (closest to the default)' : 'Fast — quick replies & writing'}</p>
+                                  <div className="flex flex-wrap gap-1">
+                                    {list.slice(0, tier === 'smart' ? 6 : 4).map((m) => {
+                                      const short = m.id.split('/').pop() || m.id;
+                                      const on = modelName === m.id;
+                                      return (
+                                        <button key={m.id} onClick={() => onModelNameChange(m.id)} title={m.id}
+                                          className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${on ? 'border-accent bg-accent/10 text-accent font-medium' : 'border-nv-border text-nv-muted hover:text-nv-text'}`}>
+                                          {short}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            <p className="text-[9.5px] text-nv-faint mt-1">Not sure? Leave the ★ Recommended one — it behaves closest to adris.tech’s own AI.</p>
+                          </>
+                        )}
+                  </div>
+                )}
+
+                {/* Model name — free-text (advanced / custom providers) */}
+                <label className="text-nv-faint text-[11px] block mb-1.5">{(provider === 'nvidia' || provider === 'groq') ? 'Or type a model id' : 'Model'}</label>
                 <input
                   value={modelName}
                   onChange={(e) => onModelNameChange(e.target.value)}
