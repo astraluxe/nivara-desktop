@@ -288,6 +288,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   const [attachDoc, setAttachDoc] = useState<GeneratedDoc | null>(null);
   const [refineInput, setRefineInput] = useState('');
   const [refining, setRefining] = useState(false);
+  const [refineNote, setRefineNote] = useState('');       // feedback when a refine fails / returns nothing
   const [statusFilter, setStatusFilter] = useState<OutreachStatus | null>(null);  // filter list by status
   const [lastThread, setLastThread] = useState('');       // remembered so refine/re-verify have context
   const [lastOwnerCtx, setLastOwnerCtx] = useState('');
@@ -570,7 +571,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   async function refineDraft() {
     const instruction = refineInput.trim();
     if (!instruction || !draftReply.trim()) return;
-    setRefining(true);
+    setRefining(true); setRefineNote('');
     try {
       const next = await refineMessage({
         current: draftReply,
@@ -585,8 +586,13 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
         setRefineInput('');
         setVerify(null);
         runVerify(next.trim(), cur, lastThread || (plan?.read ?? ''), lastOwnerCtx);
+      } else {
+        // Don't fail silently — that was the "I clicked Redo and nothing happened" bug.
+        setRefineNote('The AI returned an empty result. Try rephrasing your instruction, or check your key.');
       }
-    } catch { /* leave the draft as-is if the tweak fails */ } finally { setRefining(false); }
+    } catch (e) {
+      setRefineNote(`Couldn't refine: ${(e instanceof Error ? e.message : String(e)).slice(0, 160)}`);
+    } finally { setRefining(false); }
   }
 
   // Attach an EXISTING file from the user's computer (they may already have the deck/PDF), instead of
@@ -1061,6 +1067,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                         {refining ? '…' : 'Redo'}
                       </button>
                     </div>
+                    {refineNote && <p className="text-[10px] text-amber-600 font-medium mt-1 leading-snug">{refineNote}</p>}
 
                     {/* Free-time suggestions from your calendar — tap one to put it in the reply. */}
                     {plan.suggestedSlots && plan.suggestedSlots.length > 0 && (
@@ -1071,7 +1078,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                             <button
                               key={i}
                               disabled={refining}
-                              onClick={() => { setRefineInput(''); setRefining(true); refineMessage({ current: draftReply, instruction: `Propose ${slot} for the call as the concrete time, warmly and clearly.`, person: cur?.name, thread: lastThread, ownerContext: lastOwnerCtx, aiCall }).then((next) => { if (next?.trim()) { setDraftReply(next.trim()); setVerify(null); runVerify(next.trim(), cur, lastThread || (plan?.read ?? ''), lastOwnerCtx); } }).catch(() => {}).finally(() => setRefining(false)); }}
+                              onClick={() => { setRefineInput(''); setRefineNote(''); setRefining(true); refineMessage({ current: draftReply, instruction: `Propose ${slot} for the call as the concrete time, warmly and clearly.`, person: cur?.name, thread: lastThread, ownerContext: lastOwnerCtx, aiCall }).then((next) => { if (next?.trim()) { setDraftReply(next.trim()); setVerify(null); runVerify(next.trim(), cur, lastThread || (plan?.read ?? ''), lastOwnerCtx); } else { setRefineNote('The AI returned nothing for that time — try the Redo box instead.'); } }).catch((e) => setRefineNote(`Couldn't apply that time: ${(e instanceof Error ? e.message : String(e)).slice(0, 140)}`)).finally(() => setRefining(false)); }}
                               className="text-[10.5px] font-semibold px-2.5 py-1 rounded-full bg-emerald-600 text-white hover:bg-emerald-500 transition-fast disabled:opacity-50 shadow-sm"
                             >
                               🕑 {slot}

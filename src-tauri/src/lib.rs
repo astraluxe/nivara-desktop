@@ -6596,35 +6596,8 @@ pub fn run() {
             app.manage(SessionKeyState::new());
             setup_tray(app)?;
 
-            // Corner badge — authoritative Rust-side driver. The two JS paths (the
-            // badge's own script and the main window's driveBadge) have proven fragile
-            // on real machines; Rust positions and shows the window directly with no
-            // webview timing or capability/ACL dependencies. The badge's own script
-            // stays the owner of the off/snooze state (localStorage) and hides the
-            // window right back within seconds if the user disabled it.
-            let badge_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                for delay in [2u64, 8, 20] {
-                    tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
-                    if let Some(badge) = badge_handle.get_webview_window("quickbadge") {
-                        // Place the badge on the FIRST pass only. Its own script restores whatever
-                        // position the user dragged it to, and re-imposing the default corner on
-                        // every pass would yank it back out from under them seconds later.
-                        if delay == 2 {
-                        if let Ok(Some(mon)) = badge.primary_monitor() {
-                            let sf = mon.scale_factor();
-                            let pos = mon.position();
-                            let size = mon.size();
-                            let x = pos.x + size.width as i32 - (56.0 * sf) as i32 - (10.0 * sf) as i32;
-                            let y = pos.y + (size.height as f64 * 0.32) as i32;
-                            let _ = badge.set_position(tauri::PhysicalPosition::new(x, y));
-                        }
-                        }
-                        let _ = badge.show();
-                        let _ = badge.set_always_on_top(true);
-                    }
-                }
-            });
+            // Corner badge (the Grammarly-style float-over-apps logo) is removed for now — the Quick
+            // Bar (the desktop search bar) is kept and shows itself on boot independently of the badge.
 
             // Start background triggers for all currently-enabled automations
             let app_handle = app.handle().clone();

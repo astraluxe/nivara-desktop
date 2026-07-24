@@ -416,8 +416,12 @@ export async function refineMessage(opts: {
   let out = String(raw || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/```[a-z]*\n?|```/gi, '').trim();
   const m = out.match(/"draftReply"\s*:\s*"((?:[^"\\]|\\.)*)"/);
   if (m) { try { out = JSON.parse(`"${m[1]}"`); } catch { out = m[1]; } }
+  // Drop a leading "Sure! Here's the message:" / "Here is the rewritten reply:" preamble some models
+  // add despite being told not to — keep only the actual message that follows it.
+  out = out.replace(/^\s*(sure|okay|ok|certainly|absolutely|got it)[!,.]?\s*(here('?s| is)[^:\n]*:)?\s*\n+/i, '');
+  out = out.replace(/^\s*here('?s| is)[^:\n]*:\s*\n+/i, '');
   if ((out.startsWith('"') && out.endsWith('"')) || (out.startsWith('“') && out.endsWith('”'))) out = out.slice(1, -1).trim();
-  return out.slice(0, 2000);
+  return out.trim().slice(0, 2000);
 }
 
 /**

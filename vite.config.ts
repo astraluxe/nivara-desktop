@@ -33,7 +33,7 @@ export default defineConfig(async () => ({
       input: {
         main: "index.html",
         quickbar: "quickbar.html",
-        quickbadge: "quickbadge.html",
+        // quickbadge (the float-over-apps corner badge) is removed for now — quickbar stays.
       },
     },
   },

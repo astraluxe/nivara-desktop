@@ -208,38 +208,8 @@ function AppShell() {
     import('./lib/userLocation').then(({ hydrateUserLocation }) => hydrateUserLocation()).catch(() => {});
   }, []);
 
-  // SECOND, INDEPENDENT driver for the corner badge's visibility. The badge window is
-  // supposed to show itself, but if anything in its own boot fails (monitor detection,
-  // a script error, timing at cold start) the failure is INVISIBLE — the user just
-  // "never sees the badge" (exactly the .74/.75 report). The main app now also
-  // positions + shows + re-tops it, so one dead path can't hide the feature.
-  useEffect(() => {
-    async function driveBadge() {
-      try {
-        if (localStorage.getItem('nv-quickbar') === 'off') return;
-        const snooze = parseInt(localStorage.getItem('nv-quickbadge-snooze-until') || '0', 10);
-        if (snooze > Date.now()) return;
-        const [{ WebviewWindow }, { primaryMonitor, PhysicalPosition }] = await Promise.all([
-          import('@tauri-apps/api/webviewWindow'),
-          import('@tauri-apps/api/window'),
-        ]);
-        const badge = await WebviewWindow.getByLabel('quickbadge');
-        if (!badge) return;
-        const mon = await primaryMonitor().catch(() => null);
-        if (mon) {
-          const sf = mon.scaleFactor || 1;
-          const x = Math.round(mon.position.x + mon.size.width - 56 * sf - 10 * sf);
-          const y = Math.round(mon.position.y + mon.size.height * 0.32);
-          await badge.setPosition(new PhysicalPosition(x, y));
-        }
-        await badge.show();
-        await badge.setAlwaysOnTop(true);
-      } catch { /* best effort — the badge's own script is the primary path */ }
-    }
-    const t1 = setTimeout(driveBadge, 1500);
-    const t2 = setTimeout(driveBadge, 6000);
-    return () => { clearTimeout(t1); clearTimeout(t2); };
-  }, []);
+  // (The corner badge — the float-over-apps logo — is removed for now. The Quick Bar below is
+  // kept; it shows itself on boot, so no badge driver is needed here.)
 
   // Register the Quick Bar's autostart ONCE (launches at login with --quickbar, main
   // window hidden — the bar is there without "opening the exe"). The Settings toggle
