@@ -14,6 +14,12 @@
 
 import { callAutomationAI } from './automationRunner';
 
+// The AI caller both functions use. Defaults to callAutomationAI (global AI source), but callers can
+// inject their own — the outreach copilot passes the Krew chat's caller so it honours the user's
+// BYOK / local / adris.tech choice made right there in the chat, instead of a separate global setting
+// (which was silently spending adris.tech tokens and hitting the monthly limit).
+export type AiCall = (userMessage: string, systemPrompt: string) => Promise<string>;
+
 // ─── Verification result model ───────────────────────────────────────────────
 
 export type Verdict = 'pass' | 'warn' | 'fail';
@@ -74,7 +80,9 @@ export async function verifyWork(opts: {
   artifact: string;
   context?: string;
   checklist?: string[];
+  aiCall?: AiCall;
 }): Promise<VerifyResult> {
+  const ai = opts.aiCall || callAutomationAI;
   const { kind, task, artifact } = opts;
   const context = (opts.context || '').slice(0, 6000);
   const checklist = (opts.checklist || []).filter(Boolean);
@@ -135,7 +143,7 @@ export async function verifyWork(opts: {
 
   let raw = '';
   try {
-    raw = await callAutomationAI(user, system);
+    raw = await ai(user, system);
   } catch (e) {
     // Model unreachable → do NOT block the human. Return a permissive, clearly-degraded result so
     // the flow still works offline; the human is still the real gate.
@@ -221,7 +229,9 @@ export async function planReply(opts: {
   thread: string;
   ownerContext?: string;
   availableDocs?: Array<{ title: string; kind: string; summary?: string }>;
+  aiCall?: AiCall;
 }): Promise<ReplyPlan> {
+  const ai = opts.aiCall || callAutomationAI;
   const docs = (opts.availableDocs || []).slice(0, 12);
   const system = [
     'You are the sales/outreach strategist in an AI work office. A prospect has REPLIED to the',
@@ -267,7 +277,7 @@ export async function planReply(opts: {
 
   let raw = '';
   try {
-    raw = await callAutomationAI(user, system);
+    raw = await ai(user, system);
   } catch (e) {
     const why = e instanceof Error ? e.message : String(e);
     return {

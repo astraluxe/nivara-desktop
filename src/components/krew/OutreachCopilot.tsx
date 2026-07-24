@@ -261,7 +261,7 @@ function firstUndoneIdx(arr: OutreachContact[]): number {
   return i >= 0 ? i : 0;
 }
 
-export default function OutreachCopilot({ campaign, onClose, googleToken = '' }: { campaign: OutreachCampaign; onClose: () => void; googleToken?: string }) {
+export default function OutreachCopilot({ campaign, onClose, googleToken = '', aiCall }: { campaign: OutreachCampaign; onClose: () => void; googleToken?: string; aiCall?: (user: string, system: string) => Promise<string> }) {
   const [contacts, setContacts] = useState<OutreachContact[]>(
     campaign.contacts.map((c) => ({ ...c, status: c.status || 'todo' })));
   const [idx, setIdx] = useState(() => firstUndoneIdx(campaign.contacts));
@@ -469,6 +469,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '' }:
         thread,
         ownerContext,
         availableDocs: docs.map((d) => ({ title: d.title, kind: d.kind, summary: d.summary })),
+        aiCall,
       });
       setPlan(p);
       setDraftReply(p.draftReply || '');
@@ -512,6 +513,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '' }:
           'Any proposed or confirmed meeting time does NOT clash with the owner\'s real calendar above, including a nearby event that could run over into it — flag it to confirm if unsure.',
           'The message contains no placeholders like [Time], [Product Name], or [Company] — every detail is concrete.',
         ],
+        aiCall,   // use the Krew chat's AI source (BYOK/local/adris) — never a separate global one
       });
       // Guard: never offer a "revised" version that swapped a real detail for a placeholder — that
       // is the exact regression the user hit ("[Time]", "[Tech/Product Name]"). Drop it if so.
@@ -854,7 +856,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '' }:
                       const t = e.target.value.trim(); if (!t) return;
                       setPlanning(true); setPlanNote('Planning from what you pasted…');
                       try {
-                        const p = await planReply({ person: cur.name || 'them', company: cur.company, thread: `YOU: ${cur.linkedin_message || ''}\n${cur.name || 'THEM'}: ${t}`, ownerContext: buildOwnerContext(), availableDocs: docs.map((d) => ({ title: d.title, kind: d.kind, summary: d.summary })) });
+                        const p = await planReply({ person: cur.name || 'them', company: cur.company, thread: `YOU: ${cur.linkedin_message || ''}\n${cur.name || 'THEM'}: ${t}`, ownerContext: buildOwnerContext(), availableDocs: docs.map((d) => ({ title: d.title, kind: d.kind, summary: d.summary })), aiCall });
                         setPlan(p); setDraftReply(p.draftReply || ''); setPlanNote('');
                         if (p.draftReply && !p.degraded) runVerify(p.draftReply, cur, t);
                       } catch { setPlanNote('Could not plan the reply.'); } finally { setPlanning(false); }

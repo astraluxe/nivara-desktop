@@ -8219,7 +8219,18 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
         />
       )}
       {outreachCampaign && (
-        <OutreachCopilot campaign={outreachCampaign} onClose={() => setOutreachCampaign(null)} googleToken={creds.google?.access_token ?? ''} />
+        <OutreachCopilot
+          campaign={outreachCampaign}
+          onClose={() => setOutreachCampaign(null)}
+          googleToken={creds.google?.access_token ?? ''}
+          /* Give the copilot the SAME AI path this chat uses, so reply planning/verification run on
+             the user's chosen source (BYOK / local / adris.tech) — not a separate global setting that
+             was quietly spending adris.tech tokens and hitting the monthly limit. */
+          aiCall={async (userMsg: string, systemPrompt: string) => {
+            const { text } = await streamTurnWithRetry([{ role: 'user', content: userMsg }], systemPrompt, () => {});
+            return text;
+          }}
+        />
       )}
     </>
   );
