@@ -190,7 +190,7 @@ interface DisplayMsg {
   choices?:  ChoiceSet;
   deckSpec?: DeckSpec;
   deckHtml?: string;
-  nextTask?: { suggestion: string; prompt: string };
+  nextTask?: { suggestion: string; prompt: string; useNivara?: boolean };
 }
 
 // Detect "schedule / publish these posts" so we can offer the schedule + connect card.
@@ -3166,7 +3166,9 @@ const [studioExtracting, setStudioExtracting] = useState(false);
   const deckTextRef        = useRef<string>('');   // the user's raw request text (for slide/pic references)
   const deckImagesRef      = useRef<DeckImage[]>([]); // pictures the user attached with the deck request
   const lastDeckSpecRef    = useRef<DeckSpec | null>(null); // the deck currently in the thread, for in-chat edits
+  const messagesRef        = useRef<DisplayMsg[]>([]); // live mirror of `messages` for async post-turn checks
   sidRef.current           = sessionId;
+  messagesRef.current      = messages;   // keep in sync each render for async post-turn checks
 
   const [showScrollBtn, setShowScrollBtn] = useState(false);
 
@@ -6245,7 +6247,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     // bossPostfix comes AFTER buildKrewSystemPrompt so it is the absolute last instruction Gemini reads —
     // it overrides the "respond normally in clear markdown" final-answer rule that would otherwise let the boss answer directly.
     const bossPostfix = agent.key === 'boss'
-      ? '\n\n## BOSS OVERRIDE — HIGHEST PRIORITY — THIS OVERRIDES EVERYTHING ABOVE\nYou have tools: delegate_to_agent, plan_workflow, browser_open, AND browser_navigate. For CLEAR tasks: output a <tool_call> immediately. For VAGUE engineering/creative tasks: ask 2-3 focused questions first, then delegate.\n\nWHEN TO USE EACH:\n- Single agent needed → delegate_to_agent\n- Task needs 2-4 specialists → plan_workflow (list ALL agents at once — faster, no back-and-forth)\n- Do NOT call researcher unless the task genuinely requires current facts/research\n\nPLAN FIRST FOR COMPOUND TASKS (CRITICAL): If the request has MORE THAN ONE distinct deliverable — e.g. "add companies to the list AND draft messages", "find leads AND write emails", "research X AND build Y", "make a site AND launch it" — do NOT try to do it in one delegation (that is what goes empty or garbles). ALWAYS use plan_workflow with an ORDERED pipeline, one agent per step, and pass each step\'s output to the next with {{prev}}. Example for "add 15 tech companies to the list and draft outreach": plan_workflow([{agent_key:"research_agent", task:"Find 15 NEW Bangalore tech companies that need adris.tech (dedupe against the attached list), verify them, return the table"}, {agent_key:"cold_outreach", task:"Using this list {{prev}}, write a LinkedIn DM and an email per sector as ```email fences"}]). Each step is small and reliable; the pipeline is the workflow you plan first.\n\nBROWSER RULE — CRITICAL:\n• To SHOW a website to the user (they want to see/visit it) → call browser_open directly with the URL. The user is logged in to all their accounts in Chrome.\n• To READ content from a website (notifications, feed, articles, inbox, etc.) → call browser_navigate directly with the URL. It returns the page text. First use of private sites (LinkedIn, Gmail) may need a one-time login in the browser window that opens.\n• NEVER delegate browser tasks. NEVER suggest "connect in Connect Apps" for browsing. Example: "check my LinkedIn notifications" → browser_navigate("https://www.linkedin.com/notifications/").\n• PROFILE URL RULE: When user says "my LinkedIn / my Twitter / my GitHub" — NEVER search Google to find them. Many people share the same name. Always check memories first for a saved URL (keys: linkedin_url, founder_profile, twitter_url, etc.). If not in memory, ask the user for their exact URL, then navigate to it and save it to memory.\n\nGREETING EXCEPTION: If the user\'s entire message is ONLY a greeting (hi / hello / hey) with no task, respond with ONE friendly sentence — no tool_call.\n\nCLARIFICATION EXCEPTION: For vague engineering/coding/creative tasks missing key details (e.g. "build me a website", "write some code", "create a banner"), ask 2-3 focused questions as plain text. Delegate ONLY after the user provides the details.'
+      ? '\n\n## BOSS OVERRIDE — HIGHEST PRIORITY — THIS OVERRIDES EVERYTHING ABOVE\nYou have tools: delegate_to_agent, plan_workflow, browser_open, AND browser_navigate. For CLEAR tasks: output a <tool_call> immediately. For VAGUE engineering/creative tasks: ask 2-3 focused questions first, then delegate.\n\nWHEN TO USE EACH:\n- Single agent needed → delegate_to_agent\n- Task needs 2-4 specialists → plan_workflow (list ALL agents at once — faster, no back-and-forth)\n- Do NOT call researcher unless the task genuinely requires current facts/research\n\nPLAN FIRST FOR COMPOUND TASKS (CRITICAL): If the request has MORE THAN ONE distinct deliverable — e.g. "add companies to the list AND draft messages", "find leads AND write emails", "research X AND build Y", "make a site AND launch it" — do NOT try to do it in one delegation (that is what goes empty or garbles). ALWAYS use plan_workflow with an ORDERED pipeline, one agent per step, and pass each step\'s output to the next with {{prev}}. Example for "add 15 tech companies to the list and draft outreach": plan_workflow([{agent_key:"research_agent", task:"Find 15 NEW Bangalore tech companies that need adris.tech (dedupe against the attached list), verify them, return the table"}, {agent_key:"cold_outreach", task:"Using this list {{prev}}, write a LinkedIn DM and an email per sector as ```email fences"}]). Each step is small and reliable; the pipeline is the workflow you plan first.\n\nBROWSER RULE — CRITICAL:\n• To SHOW a website to the user (they want to see/visit it) → call browser_open directly with the URL. The user is logged in to all their accounts in Chrome.\n• To READ content from a website (notifications, feed, articles, inbox, etc.) → call browser_navigate directly with the URL. It returns the page text. First use of private sites (LinkedIn, Gmail) may need a one-time login in the browser window that opens.\n• NEVER delegate browser tasks. NEVER suggest "connect in Connect Apps" for browsing. Example: "check my LinkedIn notifications" → browser_navigate("https://www.linkedin.com/notifications/").\n• PROFILE URL RULE: When user says "my LinkedIn / my Twitter / my GitHub" — NEVER search Google to find them. Many people share the same name. Always check memories first for a saved URL (keys: linkedin_url, founder_profile, twitter_url, etc.). If not in memory, ask the user for their exact URL, then navigate to it and save it to memory.\n\nWRITE-IT-YOURSELF EXCEPTION (IMPORTANT): If the task is to WRITE, EXPLAIN, ADVISE, ANALYSE, DRAFT, SUMMARISE, or STRATEGISE using knowledge you already have — a strategy, a guide, a plan, an essay, a proposal, an analysis, talking points, an outline — then just WRITE the full answer yourself as plain text. Do NOT delegate and do NOT plan_workflow for these, EVEN when the request has several sections/areas (e.g. "cover these 4 areas", "give me options A/B/C"). Multiple sections in a writing task is NOT a "compound task" — it is one write-up. Only delegate/plan when the task genuinely needs real TOOLS: live research/browsing, lead-gen, code execution, sending/posting, file/document generation. When in doubt on a pure knowledge/writing request, answer it directly and completely.\n\nGREETING EXCEPTION: If the user\'s entire message is ONLY a greeting (hi / hello / hey) with no task, respond with ONE friendly sentence — no tool_call.\n\nCLARIFICATION EXCEPTION: For vague engineering/coding/creative tasks missing key details (e.g. "build me a website", "write some code", "create a banner"), ask 2-3 focused questions as plain text. Delegate ONLY after the user provides the details.'
       : '';
     // Inject connected services so every agent knows what's available and can recommend missing ones
     const connectedList = Object.keys(creds);
@@ -7082,7 +7084,12 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
 
     } catch (e: unknown) {
       const raw = e instanceof Error ? e.message : String(e);
-      if (/monthly.*token|reached.*monthly|token.*limit|upgrade.*plan|adris\.tech\/pricing/i.test(raw)) {
+      // The adris.tech upgrade modal is ONLY for adris.tech (managed) quota — never for a user's own
+      // key. Groq/NVIDIA rate-limit errors say things like "tokens per minute (TPM): Limit …", which
+      // used to match this quota regex and wrongly popped an "upgrade your plan" window at BYOK users.
+      // Gate on nivara mode AND require the message to actually be the adris.tech quota text.
+      const isAdrisQuota = mode === 'nivara' && /reached.*monthly|monthly.*(ai|token)|upgrade.*plan|adris\.tech\/pricing/i.test(raw);
+      if (isAdrisQuota) {
         // Server-side quota exceeded — remove streaming bubble and show upgrade modal
         setMessages(prev => {
           const copy = [...prev];
@@ -7094,50 +7101,18 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
         finaliseLastMsg(sanitiseError(e));
       }
     } finally {
-      // NEVER end blank and never hang on "thinking…". Drop empty streaming bubbles,
-      // then — if this turn produced NO visible output at all (e.g. a heavy verify pass
-      // ran out of steps) — leave a clear, saved message instead of a blank screen.
+      // NEVER end blank and never hang on "thinking…". Drop empty streaming bubbles, then — if this
+      // turn produced NO visible output — try a clean DIRECT answer on the same model before giving
+      // up (the agent framing, not the model, is usually why a free model went silent). See
+      // recoverEmptyTurn(). Awaited so the recovery finishes before the run is torn down below.
       if (!stopRef.current) {
         setMessages((prev) => {
           const copy = [...prev];
-          // Remove trailing empty streaming assistant placeholders; finalise any other.
           while (copy.length && copy[copy.length - 1].streaming && !copy[copy.length - 1].content.trim() && copy[copy.length - 1].role === 'assistant') copy.pop();
           if (copy.length && copy[copy.length - 1].streaming) copy[copy.length - 1] = { ...copy[copy.length - 1], streaming: false };
-          // Is there real output after the user's last message?
-          const lastUserIdx = copy.map((m) => m.role).lastIndexOf('user');
-          const after = lastUserIdx >= 0 ? copy.slice(lastUserIdx + 1) : [];
-          const hasOutput = after.some((m) => (m.role === 'assistant' || m.role === 'delegation') && m.content.trim());
-          // A lead tool's finished table shows as a tool_result bubble — that IS real, completed
-          // output even if the boss added no sentence. Detect it so we NEVER falsely claim we
-          // "stopped before I had something to show you" when the table is right there.
-          const producedLeadTable = after.some((m) => m.role === 'tool_result' && m.content.includes('|') && /\bname\b|\blinkedin\b|\bcompany\b/i.test(m.content));
-          if (lastUserIdx >= 0 && !hasOutput) {
-            // These messages used to be written as if EVERY task were a lead-list task ("saved to
-            // your Tech lead list", "where the list stands"), so a calendar or inbox request that
-            // ended without output got answered with something about leads that was simply untrue.
-            // Only mention a table when one was actually produced.
-            // On a free/own-key model (Groq/NVIDIA/local) a long, tool-heavy prompt can make the model
-            // loop on tools instead of answering, or hit its context/rate limit — and finish with no
-            // text. Say so honestly and point to the fix, instead of a bare "I stopped".
-            const weakSource = mode === 'own_key' || mode === 'local';
-            const fallback = producedLeadTable
-              ? "Done — the table above has the result. Tell me if anything still needs filling in and I'll take another pass."
-              : weakSource
-                ? "I didn't get a complete answer back that time — a long prompt (especially with an attached file) can be too much for a free/own-key model, which sometimes stops without replying. Nothing was saved or sent. Try again with Continue below, shorten the request, or switch to adris.tech AI for this heavier one."
-                : "I stopped before I had anything to show you — nothing was saved or sent. Use Continue below to pick this up again.";
-            copy.push({ role: 'assistant', content: fallback, streaming: false });
-            if (sid) krewDb.saveMessage(sid, 'assistant', fallback).catch(() => {});
-            // Offer a one-click Continue rather than making the user retype the request. Reuses the
-            // next-task card, so it fills the input for review instead of silently re-running —
-            // important when the reason it stopped might repeat.
-            if (!producedLeadTable) {
-              const retry = (copy[lastUserIdx]?.content || '')
-                .split('\n').filter((l) => !/^(\[\[(file|image|ref)\]\]|📎|🖼|🔗)\s/.test(l.trim())).join('\n').trim();
-              if (retry) copy.push({ role: 'next_task', content: '', nextTask: { suggestion: 'Continue where it stopped', prompt: retry } });
-            }
-          }
           return copy;
         });
+        await recoverEmptyTurn(sid);
       }
       // Focus mode: connect everything saved THIS run to the file the user is working on,
       // so a saved lead list / outreach note shows as linked to it in the Brain graph.
@@ -7197,6 +7172,69 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
       if (copy.length) copy[copy.length - 1] = { ...copy[copy.length - 1], content, streaming: true };
       return copy;
     });
+  }
+
+  // Post-turn safety net. If the agent loop produced NO visible answer (the classic "free model
+  // spun on tools and went silent" case), retry ONCE with a clean, tool-free prompt on the SAME
+  // model — the model can almost always write the answer when it isn't drowning in 40+ tools. Only
+  // if that ALSO comes back empty do we surface a message + a one-click "Switch to adris.tech AI"
+  // option, so the user's own (free) key is tried first and adris.tech tokens are spent only as a
+  // last resort.
+  async function recoverEmptyTurn(sid: string | null) {
+    const msgs = messagesRef.current;
+    const lastUserIdx = msgs.map((m) => m.role).lastIndexOf('user');
+    if (lastUserIdx < 0) return;
+    const after = msgs.slice(lastUserIdx + 1);
+    // Real text answer already there → nothing to recover.
+    if (after.some((m) => (m.role === 'assistant' || m.role === 'delegation') && m.content.trim())) return;
+    // The turn DID do something visible (ran a tool, opened the browser, produced a table/deck/cards)
+    // but just didn't add a closing sentence. Do NOT re-answer that with a tool-free completion — it
+    // would wrongly reply as if nothing happened (e.g. "I can't open browsers"). Leave it be.
+    if (after.some((m) => m.role === 'tool_result' || m.role === 'proposal' || m.role === 'choices' || m.role === 'deck_result' || m.role === 'deck_setup' || m.role === 'social_schedule')) return;
+    // From here: a genuinely EMPTY turn — the model produced no text and ran nothing. This is the
+    // "free model got lost in the tools and went silent" case a plain retry fixes.
+    const userReq = (msgs[lastUserIdx]?.content || '')
+      .split('\n').filter((l) => !/^(\[\[(file|image|ref)\]\]|📎|🖼|🔗)\s/.test(l.trim())).join('\n').trim();
+    if (!userReq) return;
+
+    // ── Retry once, tool-free, on the SAME model ──
+    try {
+      setAgentStep('Writing the answer…');
+      addMsg({ role: 'assistant', content: '', streaming: true });
+      const directSys = "You are a knowledgeable expert assistant. Write a complete, well-structured answer to the user's request below, following any format they asked for. Answer directly — do NOT use any tools, do NOT delegate, do NOT output tool calls, JSON, or <tool_call> tags. Just write the full answer as text.";
+      const { text } = await streamTurnWithRetry(
+        [{ role: 'user', content: userReq }],
+        directSys,
+        (chunk) => setMessages((prev) => {
+          const c = [...prev];
+          if (c.length && c[c.length - 1].streaming) c[c.length - 1] = { ...c[c.length - 1], content: c[c.length - 1].content + chunk };
+          return c;
+        }),
+      );
+      const clean = (text || '').replace(/<tool_call>[\s\S]*/g, '').replace(/<tool_code>[\s\S]*/g, '').trim();
+      if (clean) {
+        finaliseLastMsg(clean);
+        if (sid) krewDb.saveMessage(sid, 'assistant', clean).catch(() => {});
+        return;
+      }
+      // Empty again — drop the placeholder bubble.
+      setMessages((prev) => { const c = [...prev]; if (c.length && c[c.length - 1].streaming && !c[c.length - 1].content.trim()) c.pop(); return c; });
+    } catch {
+      setMessages((prev) => { const c = [...prev]; if (c.length && c[c.length - 1].streaming) c.pop(); return c; });
+    } finally {
+      setAgentStep(null);
+    }
+
+    // ── Still nothing → honest message + Continue (same model) and, on a free/own key or local,
+    //    a one-click Switch-to-adris.tech retry. ──
+    const weak = mode === 'own_key' || mode === 'local';
+    const stopped = weak
+      ? "That one didn't come back complete on your current model, even after a direct retry — nothing was saved or sent. Try Continue to run it again on your key, or use “Switch to adris.tech AI” below for this heavier one."
+      : "I stopped before I had anything to show you — nothing was saved or sent. Use Continue below to pick this up again.";
+    addMsg({ role: 'assistant', content: stopped, streaming: false });
+    if (sid) krewDb.saveMessage(sid, 'assistant', stopped).catch(() => {});
+    addMsg({ role: 'next_task', content: '', nextTask: { suggestion: 'Continue where it stopped', prompt: userReq } });
+    if (weak) addMsg({ role: 'next_task', content: '', nextTask: { suggestion: 'Switch to adris.tech AI & retry', prompt: userReq, useNivara: true } });
   }
 
   function finaliseLastMsg(rawContent: string) {
@@ -7562,6 +7600,9 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                   key={i}
                   suggestion={msg.nextTask.suggestion}
                   onAccept={() => {
+                    // "Switch to adris.tech AI & retry" cards flip the source to adris.tech first, so
+                    // the re-run uses managed AI. Everything else just pre-fills for review.
+                    if (msg.nextTask!.useNivara) setMode('nivara');
                     setInput(msg.nextTask!.prompt);
                     setMessages((prev) => prev.filter((m) => m !== msg));
                     setTimeout(() => { const el = inputRef.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0);
