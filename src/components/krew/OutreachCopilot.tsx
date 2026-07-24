@@ -288,6 +288,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   const [attachDoc, setAttachDoc] = useState<GeneratedDoc | null>(null);
   const [refineInput, setRefineInput] = useState('');
   const [refining, setRefining] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<OutreachStatus | null>(null);  // filter list by status
   const [lastThread, setLastThread] = useState('');       // remembered so refine/re-verify have context
   const [lastOwnerCtx, setLastOwnerCtx] = useState('');
   const planRef = useRef<HTMLDivElement | null>(null);
@@ -735,7 +736,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
 
         {/* Why-not-automated banner */}
         <div className="px-4 py-2 bg-amber-400/5 border-b border-amber-400/15 shrink-0">
-          <button onClick={() => setWhyOpen((v) => !v)} className="flex items-center gap-1.5 text-[10.5px] text-amber-300/90 w-full text-left">
+          <button onClick={() => setWhyOpen((v) => !v)} className="flex items-center gap-1.5 text-[10.5px] text-amber-600 w-full text-left">
             <svg viewBox="0 0 24 24" className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 9v4M12 17h.01M10.3 3.9l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3l-8-14a2 2 0 0 0-3.4 0z"/></svg>
             Why doesn't adris just send these itself?
             <svg viewBox="0 0 24 24" className={`w-3 h-3 ml-auto transition-transform ${whyOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
@@ -758,6 +759,45 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
           <span className="text-emerald-600 font-semibold">{progress.accepted} accepted</span>
           <span className="text-nv-faint">·</span>
           <span className="text-violet-600 font-semibold">{progress.replied} replied</span>
+        </div>
+
+        {/* Filter — see everyone at a given stage (who replied, who's been messaged) and jump back to
+            any of them to continue. Tapping a chip lists those contacts; tapping a name jumps there. */}
+        <div className="px-4 py-2 border-b border-nv-border shrink-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[10px] text-nv-faint">Filter:</span>
+            {(['replied', 'sent', 'accepted', 'connect', 'todo', 'skip'] as OutreachStatus[]).map((s) => {
+              const n = contacts.filter((c) => (c.status || 'todo') === s).length;
+              return (
+                <button
+                  key={s}
+                  onClick={() => setStatusFilter(statusFilter === s ? null : s)}
+                  className={`text-[10px] font-medium px-2 py-0.5 rounded-full border transition-fast ${statusFilter === s ? 'border-accent bg-accent text-white' : 'border-nv-border text-nv-faint hover:bg-nv-surface2'}`}
+                >
+                  {STATUS_META[s].label} {n}
+                </button>
+              );
+            })}
+          </div>
+          {statusFilter && (
+            <div className="mt-1.5 max-h-40 overflow-y-auto rounded-lg border border-nv-border bg-nv-bg">
+              {contacts.map((c, i) => ({ c, i })).filter(({ c }) => (c.status || 'todo') === statusFilter).length === 0
+                ? <div className="px-3 py-2 text-[10.5px] text-nv-faint">No one at “{STATUS_META[statusFilter].label}” yet.</div>
+                : contacts.map((c, i) => ({ c, i })).filter(({ c }) => (c.status || 'todo') === statusFilter).map(({ c, i }) => (
+                  <button
+                    key={i}
+                    onClick={() => { jumpTo(i); setStatusFilter(null); }}
+                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-nv-surface2 transition-fast ${i === idx ? 'bg-accent/10' : ''}`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[11.5px] font-medium truncate">{c.name || 'Unknown'}</div>
+                      {c.company && <div className="text-[9.5px] text-nv-faint truncate">{c.company}</div>}
+                    </div>
+                    <span className="shrink-0 text-[9px] text-accent">Open →</span>
+                  </button>
+                ))}
+            </div>
+          )}
         </div>
 
         {/* Search — jump to a contact by name instead of clicking Prev/Next through the whole list */}
@@ -829,7 +869,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
               >
                 {hasProfile ? 'Just open their profile' : 'Find them on LinkedIn'}
               </button>
-              {openNote && <p className="text-[10px] text-emerald-300/90 leading-relaxed">{openNote}</p>}
+              {openNote && <p className="text-[10px] text-emerald-600 leading-relaxed">{openNote}</p>}
               {browserOpen && (
                 <div className="flex items-center gap-2 pt-0.5">
                   <span className="flex-1 text-[10px] text-nv-faint leading-relaxed">
@@ -853,7 +893,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                 <div className="text-[10px] text-nv-faint uppercase tracking-wide">LinkedIn message</div>
                 <button
                   onClick={() => doCopy('msg')}
-                  className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${copied === 'msg' ? 'border-emerald-400/50 text-emerald-300 bg-emerald-400/10' : 'border-accent/40 text-accent hover:bg-accent/10'}`}
+                  className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${copied === 'msg' ? 'border-emerald-400/50 text-emerald-600 bg-emerald-400/10' : 'border-accent/40 text-accent hover:bg-accent/10'}`}
                 >
                   {copied === 'msg' ? '✓ Copied — paste it' : 'Copy message'}
                 </button>
@@ -877,7 +917,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
             <div className="pt-1 border-t border-nv-border">
               <div className="flex items-center justify-between mb-1">
                 <div className="text-[10px] text-nv-faint uppercase tracking-wide">Email · {cur.email}</div>
-                <button onClick={() => doCopy('email')} className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${copied === 'email' ? 'border-emerald-400/50 text-emerald-300 bg-emerald-400/10' : 'border-nv-border text-nv-faint hover:bg-nv-surface2'}`}>
+                <button onClick={() => doCopy('email')} className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${copied === 'email' ? 'border-emerald-400/50 text-emerald-600 bg-emerald-400/10' : 'border-nv-border text-nv-faint hover:bg-nv-surface2'}`}>
                   {copied === 'email' ? '✓ Copied' : 'Copy email'}
                 </button>
               </div>
@@ -921,18 +961,18 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
             <button
               onClick={() => scanReplyAndPlan('followup')}
               disabled={planning}
-              className="mt-1.5 w-full flex items-center justify-center gap-2 text-xs font-semibold px-3 py-2 rounded-lg border-2 border-violet-500 text-violet-200 bg-violet-500/15 hover:bg-violet-500/25 transition-fast disabled:opacity-60"
+              className="mt-1.5 w-full flex items-center justify-center gap-2 text-xs font-bold px-3 py-2 rounded-lg border-2 border-accent text-accent bg-accent/10 hover:bg-accent/20 transition-fast disabled:opacity-60"
             >
-              <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+              <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
               No reply yet? Draft a follow-up
             </button>
-            {planNote && !planning && <p className="text-[10px] text-amber-300/90 mt-1.5 leading-relaxed">{planNote}</p>}
+            {planNote && !planning && <p className="text-[10px] text-amber-600 mt-1.5 leading-relaxed">{planNote}</p>}
 
             {plan && (
               <div className="mt-2 space-y-2 rounded-lg border border-violet-500/25 bg-violet-500/[0.06] p-2.5">
                 {/* What they want */}
                 <div className="flex items-start gap-1.5">
-                  <span className="shrink-0 mt-[1px] text-[9px] px-1.5 py-0.5 rounded border border-violet-500/40 text-violet-300 uppercase tracking-wide">{plan.intent.replace(/_/g, ' ')}</span>
+                  <span className="shrink-0 mt-[1px] text-[9px] px-1.5 py-0.5 rounded border border-accent/50 text-accent font-semibold uppercase tracking-wide">{plan.intent.replace(/_/g, ' ')}</span>
                   <p className="text-[11px] text-nv-text leading-snug">{plan.read}</p>
                 </div>
 
@@ -962,7 +1002,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                       {verifying
                         ? <span className="text-[9px] text-nv-faint flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full border border-nv-faint/40 border-t-nv-faint animate-spin" /> Checking…</span>
                         : verify && (
-                          <span className={`text-[9px] px-1.5 py-0.5 rounded border ${verify.verdict === 'pass' ? 'border-emerald-500/50 text-emerald-400 bg-emerald-500/10' : verify.verdict === 'fail' ? 'border-red-500/50 text-red-400 bg-red-500/10' : 'border-amber-500/50 text-amber-400 bg-amber-500/10'}`}>
+                          <span className={`text-[9.5px] font-bold px-1.5 py-0.5 rounded border ${verify.verdict === 'pass' ? 'border-emerald-600/60 text-emerald-600 bg-emerald-600/10' : verify.verdict === 'fail' ? 'border-red-600/60 text-red-600 bg-red-600/10' : 'border-amber-600/60 text-amber-600 bg-amber-600/10'}`}>
                             {verify.verdict === 'pass' ? '✓ Verified' : verify.verdict === 'fail' ? '⚠ Needs a fix' : '⚠ Review'}
                           </span>
                         )}
@@ -977,19 +1017,19 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                     {/* Verifier's notes — readable, not a faint whisper. High-severity items in a
                         clear red, the rest in amber, each on its own line. */}
                     {verify && verify.issues.length > 0 && (
-                      <div className="mt-1.5 rounded-md border border-amber-500/30 bg-amber-500/[0.07] px-2.5 py-2">
-                        <div className="text-[10px] font-semibold text-amber-400 uppercase tracking-wide mb-1">What to check before sending</div>
+                      <div className="mt-1.5 rounded-md border border-amber-500/40 bg-nv-surface2 px-2.5 py-2">
+                        <div className="text-[10px] font-bold text-amber-600 uppercase tracking-wide mb-1">What to check before sending</div>
                         <ul className="space-y-1">
                           {verify.issues.slice(0, 4).map((it, i) => (
-                            <li key={i} className={`text-[11.5px] leading-snug font-medium ${it.severity === 'high' ? 'text-red-400' : 'text-amber-300'}`}>
-                              • {it.issue}{it.fix ? <span className="text-nv-faint font-normal"> — {it.fix}</span> : ''}
+                            <li key={i} className={`text-[11.5px] leading-snug font-semibold ${it.severity === 'high' ? 'text-red-600' : 'text-amber-600'}`}>
+                              • {it.issue}{it.fix ? <span className="text-nv-text font-normal"> — {it.fix}</span> : ''}
                             </li>
                           ))}
                         </ul>
                       </div>
                     )}
                     {verify?.revised && verify.revised !== draftReply.trim() && (
-                      <button onClick={() => { setDraftReply(verify.revised!); setVerify({ ...verify, revised: undefined }); }} className="mt-1.5 text-[11px] font-medium px-2.5 py-1 rounded-md border border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10 transition-fast">
+                      <button onClick={() => { setDraftReply(verify.revised!); setVerify({ ...verify, revised: undefined }); }} className="mt-1.5 text-[11px] font-medium px-2.5 py-1 rounded-md border border-emerald-500/50 text-emerald-600 hover:bg-emerald-500/10 transition-fast">
                         Use the verifier's improved version
                       </button>
                     )}
@@ -1032,7 +1072,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                               key={i}
                               disabled={refining}
                               onClick={() => { setRefineInput(''); setRefining(true); refineMessage({ current: draftReply, instruction: `Propose ${slot} for the call as the concrete time, warmly and clearly.`, person: cur?.name, thread: lastThread, ownerContext: lastOwnerCtx, aiCall }).then((next) => { if (next?.trim()) { setDraftReply(next.trim()); setVerify(null); runVerify(next.trim(), cur, lastThread || (plan?.read ?? ''), lastOwnerCtx); } }).catch(() => {}).finally(() => setRefining(false)); }}
-                              className="text-[10.5px] font-medium px-2.5 py-1 rounded-full border border-emerald-500/50 text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 transition-fast disabled:opacity-50"
+                              className="text-[10.5px] font-semibold px-2.5 py-1 rounded-full bg-emerald-600 text-white hover:bg-emerald-500 transition-fast disabled:opacity-50 shadow-sm"
                             >
                               🕑 {slot}
                             </button>
@@ -1081,7 +1121,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                   <div className="pt-1.5 border-t border-violet-500/15 space-y-1.5">
                     {plan.meeting && (plan.meeting.proposedTime || plan.meeting.note) && (
                       <p className="text-[10px] text-nv-text leading-snug">
-                        <span className="text-violet-300 font-medium">Meeting:</span> {plan.meeting.proposedTime || plan.meeting.note} {plan.meeting.confirmed ? '(confirmed)' : '(proposed — confirm it)'}
+                        <span className="text-accent font-semibold">Meeting:</span> {plan.meeting.proposedTime || plan.meeting.note} {plan.meeting.confirmed ? '(confirmed)' : '(proposed — confirm it)'}
                       </p>
                     )}
                     {plan.nextAction && (
