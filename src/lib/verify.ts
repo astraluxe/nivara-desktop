@@ -118,13 +118,14 @@ export async function verifyWork(opts: {
   let raw = '';
   try {
     raw = await callAutomationAI(user, system);
-  } catch {
+  } catch (e) {
     // Model unreachable → do NOT block the human. Return a permissive, clearly-degraded result so
     // the flow still works offline; the human is still the real gate.
+    const why = e instanceof Error ? e.message : String(e);
     return {
       verdict: 'warn',
       summary: 'Automatic check unavailable — please review this yourself before sending.',
-      issues: [{ severity: 'low', issue: 'The verification agent could not run (offline or no AI configured).' }],
+      issues: [{ severity: 'low', issue: `The verification agent could not run (${why.slice(0, 120)}).` }],
       degraded: true,
     };
   }
@@ -249,10 +250,13 @@ export async function planReply(opts: {
   let raw = '';
   try {
     raw = await callAutomationAI(user, system);
-  } catch {
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
     return {
       intent: 'unclear',
-      read: 'Couldn\'t analyse the reply automatically — read it and respond yourself.',
+      // Surface the real reason so a failure is fixable (e.g. "Session expired", a quota message,
+      // "no AI configured") instead of a dead-end. Works on adris.tech, your own key, or a local model.
+      read: `Couldn't reach the AI to plan this (${why.slice(0, 120)}). Read their reply and respond yourself, or try again.`,
       draftReply: '',
       attachSuggested: false,
       degraded: true,

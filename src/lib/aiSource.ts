@@ -106,8 +106,18 @@ export async function resolveAiSource(): Promise<ResolvedAiSource> {
 
   const nivara = async (): Promise<ResolvedAiSource | null> => {
     try {
-      const token = (await supabase.auth.getSession()).data.session?.access_token;
-      if (!token) return null;
+      const { data } = await supabase.auth.getSession();
+      const s = data.session;
+      if (!s?.access_token) return null;
+      // Refresh a near-expiry JWT before handing it over. Callers like the outreach copilot run a
+      // long browser pass (reading a LinkedIn thread) BEFORE the AI call, which can leave the token
+      // expired by the time it's used → the edge function 401s and the whole call throws ("Couldn't
+      // analyse the reply"). Refreshing here fixes that for every caller of resolveAiSource.
+      let token = s.access_token;
+      const expMs = (s.expires_at ?? 0) * 1000;
+      if (expMs && expMs - Date.now() < 90_000) {
+        try { const { data: r } = await supabase.auth.refreshSession(); token = r.session?.access_token ?? token; } catch { /* keep the existing token */ }
+      }
       return { mode: 'nivara', apiKey: null, provider: null, modelName: null, localModel: null, sessionToken: token };
     } catch { return null; }
   };
