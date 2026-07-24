@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { brain } from '../../lib/knowledgeStore';
 import { todos } from '../../lib/todoStore';
 import { setAgentBrowserHold, bestProfileMatch } from '../../lib/krewTools';
-import { planReply, verifyWork, type ReplyPlan, type VerifyResult } from '../../lib/verify';
+import { planReply, planFollowUp, verifyWork, type ReplyPlan, type VerifyResult } from '../../lib/verify';
 import { listAttachableDocs, type GeneratedDoc } from '../../lib/docgen';
 
 // Assemble what the strategist/verifier needs to know about the USER's side: their pitch and any
@@ -397,11 +397,11 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     if (s === 'replied' && !(plan && planIdx === idx)) { scanReplyAndPlan(); }
   }
 
-  // ── Read this person's real reply thread, plan the next move, and verify the draft ──
-  // Reads the live LinkedIn thread (never a guess), runs the strategist to plan the reply + whether
-  // to attach a file, then runs the independent verifier on the draft. The user reviews everything
-  // and sends it themselves — this only ever prepares, never sends.
-  async function scanReplyAndPlan() {
+  // ── Read this person's real thread and prepare the next message, then verify it ──
+  // mode 'reply' = they replied, plan the response. mode 'followup' = they read it but never replied,
+  // draft a re-engagement nudge. Reads the live LinkedIn thread (never a guess), runs the strategist,
+  // then the independent verifier. The user reviews and sends themselves — this only ever prepares.
+  async function scanReplyAndPlan(mode: 'reply' | 'followup' = 'reply') {
     const contact = contacts[idx];
     if (!contact) return;
     setPlanning(true);
@@ -448,34 +448,30 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     } catch { /* browser optional — fall back to a manual paste */ }
 
     if (!thread.trim()) {
-      // The person wasn't in the recent inbox (they may not have replied yet, or the thread is
-      // older). Say so plainly and let the user paste the reply — the plan panel still appears.
-      setPlanNote(`Couldn't find a recent reply from ${contact.name || 'them'} in your inbox. If they DID reply, paste it below and I'll draft your response; otherwise there's nothing to reply to yet.`);
+      // The person wasn't in the recent inbox (older thread, or they never replied). Say so plainly
+      // and let the user paste the thread — the plan panel still appears.
+      setPlanNote(mode === 'followup'
+        ? `Couldn't read your past thread with ${contact.name || 'them'} automatically. Paste the last message(s) below and I'll draft a follow-up.`
+        : `Couldn't find a recent reply from ${contact.name || 'them'} in your inbox. If they DID reply, paste it below and I'll draft your response; otherwise there's nothing to reply to yet.`);
       setPlanning(false);
-      setPlan({ intent: 'unclear', read: `Paste ${contact.name || 'their'} reply here and I'll plan your response.`, draftReply: '', attachSuggested: false });
+      setPlan({ intent: 'unclear', read: `Paste your thread with ${contact.name || 'them'} here and I'll ${mode === 'followup' ? 'draft a follow-up' : 'plan your response'}.`, draftReply: '', attachSuggested: false });
       await refocusAppToPlan();
       return;
     }
 
-    setPlanNote('Checking your calendar & planning the next move…');
+    setPlanNote(mode === 'followup' ? 'Reading the thread & drafting a follow-up…' : 'Checking your calendar & planning the next move…');
     // Read the real calendar first so the plan and the verifier both know what the owner is actually
     // doing before proposing or confirming any time.
     const calendar = await fetchCalendarContext();
     const ownerContext = [buildOwnerContext(), calendar].filter(Boolean).join('\n\n');
     try {
-      const p = await planReply({
-        person: contact.name || 'them',
-        company: contact.company,
-        thread,
-        ownerContext,
-        availableDocs: docs.map((d) => ({ title: d.title, kind: d.kind, summary: d.summary })),
-        aiCall,
-      });
+      const args = { person: contact.name || 'them', company: contact.company, thread, ownerContext, availableDocs: docs.map((d) => ({ title: d.title, kind: d.kind, summary: d.summary })), aiCall };
+      const p = mode === 'followup' ? await planFollowUp(args) : await planReply(args);
       setPlan(p);
       setDraftReply(p.draftReply || '');
-      // Point the user to where the drafted reply now is, so the flow never dead-ends silently.
-      setPlanNote(p.degraded ? p.read : '✓ Read their reply — your draft is ready below to review & send.');
-      setTimeout(() => setPlanNote((n) => (n.startsWith('✓ Read') ? '' : n)), 4000);
+      // Point the user to where the draft now is, so the flow never dead-ends silently.
+      setPlanNote(p.degraded ? p.read : (mode === 'followup' ? '✓ Follow-up drafted below — review & send.' : '✓ Read their reply — your draft is ready below to review & send.'));
+      setTimeout(() => setPlanNote((n) => (n.startsWith('✓ ') ? '' : n)), 4000);
       // If the plan suggests attaching something, pre-select the best-matching generated doc.
       if (p.attachSuggested && docs.length) {
         const hint = (p.attachHint || '').toLowerCase();
@@ -831,13 +827,22 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
           {/* ── They replied → scan the reply & plan the next move ── */}
           <div className="pt-2 border-t border-nv-border">
             <button
-              onClick={scanReplyAndPlan}
+              onClick={() => scanReplyAndPlan('reply')}
               disabled={planning}
               className="w-full flex items-center justify-center gap-2 text-xs font-semibold px-3 py-2.5 rounded-lg bg-violet-600 text-white shadow-sm hover:bg-violet-500 active:bg-violet-700 transition-fast disabled:opacity-70"
             >
               {planning
                 ? <><span className="w-3.5 h-3.5 rounded-full border-2 border-white/40 border-t-white animate-spin" /> {planNote || 'Working…'}</>
                 : <><svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4"/><circle cx="12" cy="12" r="3"/></svg> {cur.status === 'replied' ? 'Scan their reply & plan next move' : 'They replied? Scan & plan the next move'}</>}
+            </button>
+            {/* No reply yet? Draft a re-engagement follow-up from the past thread. */}
+            <button
+              onClick={() => scanReplyAndPlan('followup')}
+              disabled={planning}
+              className="mt-1.5 w-full flex items-center justify-center gap-2 text-[11px] font-medium px-3 py-2 rounded-lg border border-violet-500/60 text-violet-300 hover:bg-violet-500/10 transition-fast disabled:opacity-60"
+            >
+              <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+              No reply yet? Draft a follow-up
             </button>
             {planNote && !planning && <p className="text-[10px] text-amber-300/90 mt-1.5 leading-relaxed">{planNote}</p>}
 
