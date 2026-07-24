@@ -286,6 +286,17 @@ export default function ConnectionBar(props: Props) {
                   </div>
                 )}
 
+                {/* Positive heads-up for the free fast keys: great for everyday work, but adris.tech AI
+                    pulls ahead on the heavy lifting. Guidance, not a warning. */}
+                {(provider === 'nvidia' || provider === 'groq') && (
+                  <p className="mb-3 text-[10px] text-nv-faint leading-relaxed">
+                    <span className="text-accent font-medium">Good to know:</span> {provider === 'nvidia' ? 'NVIDIA' : 'Groq'} is
+                    free and lightning-fast — ideal for everyday drafting and quick replies. For the heavy lifting
+                    (long outreach, deep research, detailed documents), <b className="text-nv-text">adris.tech AI</b> gives
+                    noticeably sharper results. You can switch anytime — it's one tap away.
+                  </p>
+                )}
+
                 {/* Custom base URL (only for custom provider) */}
                 {provider === 'custom' && (
                   <>

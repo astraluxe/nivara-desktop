@@ -501,6 +501,19 @@ export const SYSTEM_TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'generate_document',
+    description: "Build a REAL, professional file the user can download and send — a laid-out PDF, an Excel spreadsheet (.xlsx), or a Word document (.docx). Use this whenever the user (or a prospect they're talking to) needs an actual document, not chat text: \"make me a one-pager / proposal / brief\", \"put this in a PDF\", \"give me an Excel of these leads\", \"send them a doc\". The file is written to the user's Downloads folder and becomes attachable in the outreach copilot. NEVER hand someone a .md/.txt as a deliverable — generate a pdf/xlsx/docx instead. For a slide deck use the deck maker, not this. Compose the content yourself from what you already know (the product, the lead list, the conversation) — do not ask the user to write it. Keep prose tight and factual; no invented statistics.",
+    parameters: {
+      kind:     { type: 'string', description: 'One of "pdf", "xlsx", or "docx". Use xlsx for tabular data the user might sort/sum (lead lists, budgets, trackers); pdf for a polished one-pager/brief/proposal to send a client; docx when they will edit it further.', required: true },
+      title:    { type: 'string', description: 'Document title, also the filename stem. e.g. "adris.tech — Product Brief for Saina".', required: true },
+      subtitle: { type: 'string', description: 'Optional one-line subtitle under the title (pdf/docx).', required: false },
+      meta:     { type: 'string', description: 'Optional small line under the title, e.g. "Prepared for Saina Babaei · July 2026" (pdf/docx).', required: false },
+      blocks:   { type: 'string', description: 'For pdf/docx: a JSON array of content blocks, rendered in order. Each block is one of: {"type":"heading","text":""}, {"type":"subheading","text":""}, {"type":"para","text":""}, {"type":"bullets","items":[]}, {"type":"numbered","items":[]}, {"type":"table","columns":[],"rows":[[]],"caption":""}, {"type":"kv","pairs":[{"k":"","v":""}]}, {"type":"callout","text":""}, {"type":"pagebreak"}. Write genuinely useful content, not placeholders.', required: false },
+      sheets:   { type: 'string', description: 'For xlsx: a JSON array of sheets: [{"name":"Leads","columns":["Company","City","Email"],"rows":[["A","Pune","a@x.com"]]}]. Numbers stay numeric so Excel can sum them. Provide this OR reuse a lead table you already have.', required: false },
+      summary:  { type: 'string', description: 'One line describing what this document is, so it reads clearly in the attachments list. Optional.', required: false },
+    },
+  },
+  {
     name: 'suggest_next_task',
     description: "Proactively offer ONE obvious next step as a card the user can accept with one click, instead of just stopping after finishing the task they actually asked for. Use this SPARINGLY — only when what you just did clearly implies a next action a reasonable person would want (e.g. you just read LinkedIn messages and drafted a reply for one person, but two others are also waiting; you just confirmed a meeting and their calendar has no reminder set; a list you built has an obvious next step like 'draft outreach for these'). Call it AT MOST ONCE per turn, as your LAST action, after your normal answer — never in place of actually answering what was asked, never for trivial/obvious follow-ups, and never two turns in a row if the user ignored the last suggestion. The user can accept it, or just ignore it and type whatever they actually want next — never assume accepted.",
     parameters: {
@@ -1502,6 +1515,8 @@ If gcal_create_event is in your tool list, their Google Calendar is connected an
 ## Keeping the user's To-do panel useful
 create_todo needs NO connected service — it writes to a local panel. Never answer a "add this to my to-do / update my to-do" request by telling the user to connect Google Calendar or anything else; just call create_todo. If they asked you to add meetings you can already see (from a calendar you read, or from what is written in this conversation), you have everything you need — put them in. Only mention connecting something if they explicitly asked you to change their real calendar and gcal_create_event is absent from your tools.
 create_todo is available in every conversation, not just Web Autopilot ones. Use it whenever a request leaves something outstanding in the real world — not for every little step, only things the user actually needs to come back to: a meeting proposed but not yet confirmed, someone waiting on a reply, a task blocked on information only they have, a draft/form sitting somewhere waiting for their review. Create several in one call if several things are pending (e.g. one per person you're mid-conversation with) rather than a single vague item. Set url whenever the to-do is about a specific page so their "Continue" button jumps straight there.
+- **Only create a to-do when there is genuinely something LEFT for the user to DO.** Never turn a *finding* or a *completed* action into a task. Concretely: if a LinkedIn thread needs no reply (they haven't written back, or the user already replied), do NOT add "no need to reply to X" — that is not a task, it's a non-event, and the user finds these items irritating. If you JUST finished something (sent the PDF they asked for, replied to the message), do NOT then add a to-do to do that same thing — it's done. A to-do is for the FUTURE and OUTSTANDING, never a log of the past.
+- **Do not re-create a to-do that already exists or was already completed.** Before adding, assume the panel may already hold this item from an earlier turn; the app de-duplicates by meaning and will tell you when it skipped one, but you should not be re-proposing the same follow-up every time you check messages. Add it once, when it first becomes outstanding.
 
 ## Thinking one step ahead
 After you finish answering what the user actually asked, briefly consider: is there an obvious next step they'd want, given what you just did? If yes AND it's genuinely non-trivial (not "should I say hi back" obvious), call suggest_next_task as your last action so they see a one-click card for it. If there's no clear next step, or you already offered one in your last couple of turns and they didn't take it, say nothing — do not suggest something every single turn, that gets annoying fast. This is a small proactive nudge, not a replacement for actually answering the request.
@@ -1957,11 +1972,17 @@ async function executeToolCore(
       else if (parsed && typeof parsed === 'object') items = [parsed];
     } catch { return 'items must be a JSON array, e.g. [{"text":"..."}]. Try again with valid JSON.'; }
     if (!items.length) return 'No to-do items given.';
-    const { todos, parseTodoShorthand } = await import('./todoStore');
+    const { todos, parseTodoShorthand, isNoOpTodo } = await import('./todoStore');
+    const beforeIds = new Set(todos.all().map((t) => t.id));
     const created: string[] = [];
+    let skipped = 0;
+    let deduped = 0;
     for (const raw of items) {
       const rawText = String(raw?.text || '').trim();
       if (!rawText) continue;
+      // Drop "nothing to do" items before they reach the panel — a thread that needs no reply is
+      // not a task. (add() also guards this, but reporting it back teaches the model to stop.)
+      if (isNoOpTodo(rawText)) { skipped++; continue; }
       // Strip "!high"/"today" out of the text — models write the shorthand into the title as well
       // as passing the argument, and the literal marker was ending up in the task name on screen.
       const sh = parseTodoShorthand(rawText);
@@ -1973,10 +1994,66 @@ async function executeToolCore(
       const dueAt = dueStr && !Number.isNaN(Date.parse(dueStr)) ? Date.parse(dueStr) : sh.dueAt;
       const url = String(raw?.url || '').trim() || undefined;
       const item = todos.add(text, { priority, dueAt, url });
-      if (item) created.push(text);
+      if (item && !beforeIds.has(item.id)) created.push(text);
+      else if (item) deduped++;   // matched an existing open/just-completed task — not re-added
     }
-    if (!created.length) return 'None of the given items had usable text — nothing was added.';
-    return `Added ${created.length} to-do${created.length === 1 ? '' : 's'}:\n${created.map((t) => `- ${t}`).join('\n')}\n\nVisible in the user's To-do panel now.`;
+    const notes: string[] = [];
+    if (deduped) notes.push(`${deduped} already on the list (not duplicated)`);
+    if (skipped) notes.push(`${skipped} skipped as "nothing to do"`);
+    const noteStr = notes.length ? `\n(${notes.join('; ')}.)` : '';
+    if (!created.length) {
+      return `No new to-dos added.${noteStr || ' None of the items were actionable.'} Don't create to-dos for things that are already done or where there's nothing for the user to do.`;
+    }
+    return `Added ${created.length} to-do${created.length === 1 ? '' : 's'}:\n${created.map((t) => `- ${t}`).join('\n')}${noteStr}\n\nVisible in the user's To-do panel now.`;
+  }
+  if (toolName === 'generate_document') {
+    const kind = str(args.kind).toLowerCase().trim();
+    if (!['pdf', 'xlsx', 'docx'].includes(kind)) {
+      return 'kind must be one of "pdf", "xlsx", or "docx". For a slide deck, use the deck maker instead.';
+    }
+    const title = str(args.title).trim() || 'Document';
+    let blocks: unknown[] = [];
+    let sheets: unknown[] = [];
+    if (args.blocks) {
+      try { const p = JSON.parse(str(args.blocks)); if (Array.isArray(p)) blocks = p; }
+      catch { return 'blocks must be a JSON array of content blocks. See the tool description for the shape.'; }
+    }
+    if (args.sheets) {
+      try { const p = JSON.parse(str(args.sheets)); if (Array.isArray(p)) sheets = p; }
+      catch { return 'sheets must be a JSON array of {name, columns, rows}.'; }
+    }
+    if (kind === 'xlsx' && !sheets.length) return 'An xlsx needs at least one sheet in "sheets" — pass the table you want as {name, columns, rows}.';
+    if (kind !== 'xlsx' && !blocks.length) return 'A pdf/docx needs content in "blocks" — compose the document yourself and pass the blocks array.';
+    try {
+      // Fill the footer brand from the user's business name if we know it, so a client-facing
+      // PDF says their company, not "adris.tech".
+      let brand = '';
+      try {
+        const prof = await krewMemoryDb.getAll(KREW_PROFILE_KEY);
+        const pick = (k: string) => prof.find((m) => m.key === k)?.value?.trim() || '';
+        brand = pick('business_name') || pick('company') || pick('business') || '';
+      } catch { /* optional — footer just falls back to adris.tech */ }
+      const { generateDocument } = await import('./docgen');
+      const doc = await generateDocument({
+        kind: kind as 'pdf' | 'xlsx' | 'docx',
+        title,
+        subtitle: str(args.subtitle) || undefined,
+        meta: str(args.meta) || undefined,
+        brand: brand || undefined,
+        blocks: blocks as never,
+        sheets: sheets as never,
+        summary: str(args.summary) || undefined,
+      });
+      // Mirror into the Brain so the file is recallable and visible, and so the outreach copilot's
+      // attachment picker (which reads the generated-docs index) can offer it.
+      try {
+        const { brain } = await import('./knowledgeStore');
+        brain.addUniqueNode({ title: `Document: ${doc.title}`, kind: 'source', body: `${doc.summary || ''}\nSaved file: ${doc.path}` });
+      } catch { /* brain optional */ }
+      return `Created **${doc.filename}** (${kind.toUpperCase()}) and saved it to the user's Downloads folder:\n${doc.path}\n\nIt's a real, professional file ready to attach or send. It also shows up in the outreach copilot's "Attach a file" list. Tell the user it's downloaded and where it is.`;
+    } catch (e) {
+      return `Couldn't generate the ${kind.toUpperCase()}: ${e instanceof Error ? e.message : String(e)}`;
+    }
   }
   if (toolName === 'suggest_next_task') {
     const suggestion = str(args.suggestion).trim();

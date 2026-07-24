@@ -2,6 +2,25 @@ import { useState, useEffect, useMemo } from 'react';
 import { brain } from '../../lib/knowledgeStore';
 import { todos } from '../../lib/todoStore';
 import { setAgentBrowserHold, bestProfileMatch } from '../../lib/krewTools';
+import { planReply, verifyWork, type ReplyPlan, type VerifyResult } from '../../lib/verify';
+import { listAttachableDocs, type GeneratedDoc } from '../../lib/docgen';
+
+// Assemble what the strategist/verifier needs to know about the USER's side: their pitch and any
+// stated availability, pulled from the Brain (product notes, meeting notes) so the drafted reply is
+// grounded in real facts instead of invented ones. Kept short — this is context, not a dump.
+function buildOwnerContext(): string {
+  try {
+    const nodes = brain.all().nodes;
+    const pick = (re: RegExp, n: number) =>
+      nodes.filter((x) => re.test(x.title) || re.test(x.kind))
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+        .slice(0, n)
+        .map((x) => `${x.title}: ${(x.body || '').slice(0, 500)}`);
+    const product = pick(/product|pitch|about|adris|company|offer/i, 2);
+    const avail = pick(/avail|calendar|meeting|schedule/i, 2);
+    return [...product, ...avail].join('\n').slice(0, 3500);
+  } catch { return ''; }
+}
 
 // ─── Human-in-the-loop LinkedIn / email outreach ─────────────────────────────
 // Why this exists instead of full automation:
@@ -255,9 +274,31 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
   // workspace, so it must not be auto-closed under them by a background run finishing.
   const [browserOpen, setBrowserOpen] = useState(false);
 
+  // ── Reply scanning + agentic verification (per contact, by index) ──
+  // When a contact replies, we read the real thread, plan the next move, and independently verify
+  // the drafted reply — all before the user acts. The user reviews and sends; nothing is automatic.
+  const [plan, setPlan] = useState<ReplyPlan | null>(null);
+  const [planIdx, setPlanIdx] = useState<number>(-1);     // which contact the current plan is for
+  const [planning, setPlanning] = useState(false);
+  const [planNote, setPlanNote] = useState('');
+  const [draftReply, setDraftReply] = useState('');
+  const [verify, setVerify] = useState<VerifyResult | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  const [docs, setDocs] = useState<GeneratedDoc[]>([]);
+  const [attachDoc, setAttachDoc] = useState<GeneratedDoc | null>(null);
+
   // Release the hold if the copilot goes away for any reason (Done, Esc, unmount) — otherwise the
   // browser could never be auto-closed again for the rest of the session.
   useEffect(() => () => { setAgentBrowserHold(false); }, []);
+
+  // Refresh the attachable-docs list whenever the popup opens or a contact changes — a doc the user
+  // just generated ("make a PDF") should appear here without a reload.
+  useEffect(() => { setDocs(listAttachableDocs()); }, [idx, campaign]);
+
+  // Clear any plan/verification when moving to a different contact — a plan belongs to one person.
+  useEffect(() => {
+    if (planIdx !== idx) { setPlan(null); setVerify(null); setPlanNote(''); setDraftReply(''); setAttachDoc(null); }
+  }, [idx]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function closeBrowserNow() {
     setAgentBrowserHold(false);
@@ -309,7 +350,143 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
 
   function setStatus(s: OutreachStatus) {
     setContacts((prev) => prev.map((c, i) => (i === idx ? { ...c, status: s } : c)));
+    // The user asked for this explicitly: the moment someone is marked "Replied", don't just log it
+    // — read what they actually said and plan the next move. Auto-runs the scan (if not already done
+    // for this person) so the flow never dead-ends at "Replied".
+    if (s === 'replied' && !(plan && planIdx === idx)) { scanReplyAndPlan(); }
   }
+
+  // ── Read this person's real reply thread, plan the next move, and verify the draft ──
+  // Reads the live LinkedIn thread (never a guess), runs the strategist to plan the reply + whether
+  // to attach a file, then runs the independent verifier on the draft. The user reviews everything
+  // and sends it themselves — this only ever prepares, never sends.
+  async function scanReplyAndPlan() {
+    const contact = contacts[idx];
+    if (!contact) return;
+    setPlanning(true);
+    setPlan(null); setVerify(null); setPlanNote('Reading their reply…'); setPlanIdx(idx);
+    let thread = '';
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      setAgentBrowserHold(true); setBrowserOpen(true);
+      // Read recent threads and find this person's by name — real text from the page, not memory.
+      const raw = await invoke<string>('run_browser_persistent', { args: 'messages 12' }).catch((e) => String(e));
+      if (raw.includes('SIGN_IN_REQUIRED') || raw.includes('[NEEDS_LOGIN]')) {
+        setPlanNote('Sign in to LinkedIn in the ADRIS browser window, then click "Scan their reply" again.');
+        setPlanning(false); return;
+      }
+      const mj = raw.indexOf('MSGS_JSON:');
+      if (mj >= 0) {
+        try {
+          const arr = JSON.parse(raw.slice(mj + 'MSGS_JSON:'.length).trim()) as Array<{ name?: string; url?: string; messages?: Array<{ from?: string; isYou?: boolean; text?: string }> }>;
+          const want = (contact.name || '').trim().toLowerCase();
+          const match = arr.find((t) => (t.name || '').trim().toLowerCase() === want)
+            || arr.find((t) => (t.name || '').trim().toLowerCase().includes(want.split(' ')[0] || '·'));
+          if (match?.messages?.length) {
+            thread = match.messages.map((m) => `${m.isYou ? 'YOU' : (contact.name || 'THEM')}: ${m.text || ''}`).join('\n');
+            // Persist the profile URL we just learned, so replying opens their chat directly.
+            if (match.url && /linkedin\.com\/in\//i.test(match.url) && !contact.linkedin_url) {
+              setContacts((prev) => prev.map((c, i) => (i === idx ? { ...c, linkedin_url: match.url } : c)));
+            }
+          }
+        } catch { /* fall through to manual */ }
+      }
+    } catch { /* browser optional — fall back to a manual paste */ }
+
+    if (!thread.trim()) {
+      setPlanNote("Couldn't read the thread automatically. Paste their reply below and I'll plan the next move.");
+      setPlanning(false);
+      // Still open an empty plan so the manual-paste box shows.
+      setPlan({ intent: 'unclear', read: 'Paste their reply to plan the next move.', draftReply: '', attachSuggested: false });
+      return;
+    }
+
+    setPlanNote('Planning the next move…');
+    try {
+      const p = await planReply({
+        person: contact.name || 'them',
+        company: contact.company,
+        thread,
+        ownerContext: buildOwnerContext(),
+        availableDocs: docs.map((d) => ({ title: d.title, kind: d.kind, summary: d.summary })),
+      });
+      setPlan(p);
+      setDraftReply(p.draftReply || '');
+      setPlanNote(p.degraded ? p.read : '');
+      // If the plan suggests attaching something, pre-select the best-matching generated doc.
+      if (p.attachSuggested && docs.length) {
+        const hint = (p.attachHint || '').toLowerCase();
+        const best = docs.find((d) => hint && (`${d.title} ${d.summary || ''}`.toLowerCase().includes(hint) || d.kind === hint)) || docs[0];
+        setAttachDoc(best || null);
+      }
+      // Verify the drafted reply straight away, so the user sees a vetted draft rather than raw output.
+      if (p.draftReply && !p.degraded) runVerify(p.draftReply, contact, thread);
+    } catch {
+      setPlanNote('Could not plan the reply. Read the thread and respond yourself.');
+    } finally {
+      setPlanning(false);
+    }
+  }
+
+  // Independent verification pass on a drafted reply — the second agent that checks the first
+  // agent's work before the human commits to it. Never blocks; only informs.
+  async function runVerify(text: string, contact: OutreachContact, thread: string) {
+    if (!text.trim()) return;
+    setVerifying(true); setVerify(null);
+    try {
+      const v = await verifyWork({
+        kind: 'outreach-reply',
+        task: `Reply to ${contact.name || 'a prospect'}${contact.company ? ` at ${contact.company}` : ''} on LinkedIn, moving the conversation forward without over-promising.`,
+        artifact: text,
+        context: `The conversation so far:\n${thread}`,
+        checklist: [
+          'The reply directly addresses what the prospect actually said, not a generic script.',
+          'No invented facts, features, prices, or commitments.',
+          'It does not jump straight to "book a call" if the prospect only asked to know more — it gives substance first.',
+          'Any time or meeting mentioned is consistent with what was actually discussed.',
+        ],
+      });
+      setVerify(v);
+    } catch { /* verification is best-effort */ } finally { setVerifying(false); }
+  }
+
+  // Type the (reviewed) reply into this person's LinkedIn chat for the user to send. Reuses the same
+  // trusted typemsg path as the outreach send — nothing auto-sends.
+  async function sendDraftReply() {
+    const contact = contacts[idx];
+    const text = draftReply.trim();
+    if (!text || !contact) return;
+    setOpenNote(''); setOpening(true);
+    setAgentBrowserHold(true); setBrowserOpen(true);
+    await copyText(text);
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      let targetUrl = contact.linkedin_url && /linkedin\.com\/in\//i.test(contact.linkedin_url) ? contact.linkedin_url : '';
+      if (!targetUrl) {
+        try {
+          const raw = await invoke<string>('run_browser_persistent', { args: `findprofile "${(contact.name || '').replace(/["\n\r]/g, ' ').trim()}"` });
+          const pj = raw.indexOf('PROFILE_JSON:');
+          if (pj >= 0) { const arr = JSON.parse(raw.slice(pj + 'PROFILE_JSON:'.length).trim()); targetUrl = bestProfileUrl(Array.isArray(arr) ? arr : [], contact.name); }
+        } catch { /* fall through */ }
+      }
+      if (!targetUrl) { setOpenNote('Their reply is copied — open their chat and paste it (Ctrl+V).'); setOpening(false); return; }
+      const res = await invoke<string>('run_browser_persistent', { args: `typemsg ${targetUrl} ::: ${text}` });
+      if (typeof res === 'string' && res.includes('MESSAGE_DRAFTED')) setOpenNote('Typed your reply into their chat — review it and press Enter/Send.' + (attachDoc ? ` Attach ${attachDoc.filename} using LinkedIn's paperclip before sending.` : ''));
+      else setOpenNote('Their reply is copied — click Message and paste (Ctrl+V).' + (attachDoc ? ` Attach ${attachDoc.filename} before sending.` : ''));
+    } catch {
+      setOpenNote('Their reply is copied — open their chat and paste it.');
+    } finally { setOpening(false); }
+  }
+
+  // Open the folder holding the file to attach, so the user can drag/attach it into the LinkedIn or
+  // Gmail compose box (neither lets us attach programmatically from here). Opening the parent folder
+  // (not the file) avoids launching the PDF in a viewer when they just want to grab it.
+  async function revealAttachment(d: GeneratedDoc) {
+    const folder = d.path.replace(/[\\/][^\\/]*$/, '') || d.path;
+    try { const { invoke } = await import('@tauri-apps/api/core'); await invoke('open_path', { path: folder }); }
+    catch { try { const { open } = await import('@tauri-apps/plugin-shell'); await open(folder); } catch { /* best effort */ } }
+  }
+
   function go(delta: number) {
     setIdx((i) => Math.max(0, Math.min(contacts.length - 1, i + delta)));
   }
@@ -574,6 +751,148 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* ── They replied → scan the reply & plan the next move ── */}
+          <div className="pt-2 border-t border-nv-border">
+            <button
+              onClick={scanReplyAndPlan}
+              disabled={planning}
+              className="w-full flex items-center justify-center gap-2 text-xs px-3 py-2 rounded-lg border border-violet-500/50 text-violet-300 bg-violet-500/10 hover:bg-violet-500/20 transition-fast disabled:opacity-60"
+            >
+              {planning
+                ? <><span className="w-3 h-3 rounded-full border border-violet-300/40 border-t-violet-300 animate-spin" /> {planNote || 'Working…'}</>
+                : <><svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4"/><circle cx="12" cy="12" r="3"/></svg> {cur.status === 'replied' ? 'Scan their reply & plan next move' : 'They replied? Scan & plan the next move'}</>}
+            </button>
+            {planNote && !planning && <p className="text-[10px] text-amber-300/90 mt-1.5 leading-relaxed">{planNote}</p>}
+
+            {plan && (
+              <div className="mt-2 space-y-2 rounded-lg border border-violet-500/25 bg-violet-500/[0.06] p-2.5">
+                {/* What they want */}
+                <div className="flex items-start gap-1.5">
+                  <span className="shrink-0 mt-[1px] text-[9px] px-1.5 py-0.5 rounded border border-violet-500/40 text-violet-300 uppercase tracking-wide">{plan.intent.replace(/_/g, ' ')}</span>
+                  <p className="text-[11px] text-nv-text leading-snug">{plan.read}</p>
+                </div>
+
+                {/* Manual paste box when the thread couldn't be read automatically */}
+                {plan.read.toLowerCase().includes('paste') && (
+                  <textarea
+                    onBlur={async (e) => {
+                      const t = e.target.value.trim(); if (!t) return;
+                      setPlanning(true); setPlanNote('Planning from what you pasted…');
+                      try {
+                        const p = await planReply({ person: cur.name || 'them', company: cur.company, thread: `YOU: ${cur.linkedin_message || ''}\n${cur.name || 'THEM'}: ${t}`, ownerContext: buildOwnerContext(), availableDocs: docs.map((d) => ({ title: d.title, kind: d.kind, summary: d.summary })) });
+                        setPlan(p); setDraftReply(p.draftReply || ''); setPlanNote('');
+                        if (p.draftReply && !p.degraded) runVerify(p.draftReply, cur, t);
+                      } catch { setPlanNote('Could not plan the reply.'); } finally { setPlanning(false); }
+                    }}
+                    rows={3}
+                    placeholder="Paste what they wrote back…"
+                    className="w-full text-xs bg-nv-bg border border-nv-border rounded-lg p-2 leading-relaxed resize-none focus:outline-none focus:border-accent/40 select-text"
+                  />
+                )}
+
+                {/* The drafted reply — editable, re-verifiable, sendable */}
+                {(draftReply || plan.draftReply) && (
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="text-[10px] text-nv-faint uppercase tracking-wide">Suggested reply — you review &amp; send</div>
+                      {verifying
+                        ? <span className="text-[9px] text-nv-faint flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full border border-nv-faint/40 border-t-nv-faint animate-spin" /> Checking…</span>
+                        : verify && (
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded border ${verify.verdict === 'pass' ? 'border-emerald-500/50 text-emerald-400 bg-emerald-500/10' : verify.verdict === 'fail' ? 'border-red-500/50 text-red-400 bg-red-500/10' : 'border-amber-500/50 text-amber-400 bg-amber-500/10'}`}>
+                            {verify.verdict === 'pass' ? '✓ Verified' : verify.verdict === 'fail' ? '⚠ Needs a fix' : '⚠ Review'}
+                          </span>
+                        )}
+                    </div>
+                    <textarea
+                      value={draftReply}
+                      onChange={(e) => { setDraftReply(e.target.value); setVerify(null); }}
+                      rows={6}
+                      className="w-full text-xs bg-nv-bg border border-nv-border rounded-lg p-2.5 leading-relaxed resize-none focus:outline-none focus:border-accent/40 select-text"
+                    />
+
+                    {/* Verifier's notes + one-tap accept its improved version */}
+                    {verify && verify.issues.length > 0 && (
+                      <ul className="mt-1 space-y-0.5">
+                        {verify.issues.slice(0, 4).map((it, i) => (
+                          <li key={i} className={`text-[9.5px] leading-snug ${it.severity === 'high' ? 'text-red-300/90' : 'text-amber-300/80'}`}>
+                            • {it.issue}{it.fix ? ` — ${it.fix}` : ''}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {verify?.revised && verify.revised !== draftReply.trim() && (
+                      <button onClick={() => { setDraftReply(verify.revised!); setVerify({ ...verify, revised: undefined }); }} className="mt-1 text-[10px] px-2 py-1 rounded-md border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 transition-fast">
+                        Use the verifier's improved version
+                      </button>
+                    )}
+
+                    <div className="flex items-center gap-1.5 mt-1.5">
+                      <button onClick={sendDraftReply} disabled={opening || !draftReply.trim()} className="flex-1 text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast disabled:opacity-60">
+                        {opening ? 'Opening chat…' : 'Type into their chat →'}
+                      </button>
+                      <button onClick={() => runVerify(draftReply, cur, plan.read)} disabled={verifying || !draftReply.trim()} className="shrink-0 text-[10px] px-2 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast" title="Re-check the edited draft">
+                        Re-verify
+                      </button>
+                    </div>
+                    <p className="text-[9px] text-nv-faint mt-1">A human always sends. Nothing goes out on its own.</p>
+                  </div>
+                )}
+
+                {/* Attach a professional file if the reply calls for one */}
+                {(plan.attachSuggested || attachDoc) && (
+                  <div className="pt-1.5 border-t border-violet-500/15">
+                    <div className="text-[10px] text-nv-faint uppercase tracking-wide mb-1">
+                      {plan.attachSuggested ? 'They want something to look at — attach a file' : 'Attach a file'}
+                    </div>
+                    {docs.length === 0 ? (
+                      <p className="text-[10px] text-nv-faint leading-relaxed">No professional files ready yet. Ask Krew to "make a PDF/one-pager about adris for them" — it'll appear here to attach. (Working notes like .md are never offered.)</p>
+                    ) : (
+                      <>
+                        <div className="flex flex-wrap gap-1.5">
+                          {docs.slice(0, 6).map((d) => (
+                            <button key={d.id} onClick={() => setAttachDoc(attachDoc?.id === d.id ? null : d)}
+                              className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${attachDoc?.id === d.id ? 'border-accent/60 text-accent bg-accent/10' : 'border-nv-border text-nv-faint hover:bg-nv-surface2'}`}
+                              title={d.summary || d.filename}>
+                              {attachDoc?.id === d.id ? '✓ ' : ''}{d.filename}
+                            </button>
+                          ))}
+                        </div>
+                        {attachDoc && (
+                          <button onClick={() => revealAttachment(attachDoc)} className="mt-1.5 w-full text-[10px] px-2 py-1 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast">
+                            Open its folder to drag it into the chat →
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {/* Next real-world step → one tap onto the To-do panel */}
+                {(plan.nextAction || plan.meeting) && (
+                  <div className="pt-1.5 border-t border-violet-500/15 space-y-1.5">
+                    {plan.meeting && (plan.meeting.proposedTime || plan.meeting.note) && (
+                      <p className="text-[10px] text-nv-text leading-snug">
+                        <span className="text-violet-300 font-medium">Meeting:</span> {plan.meeting.proposedTime || plan.meeting.note} {plan.meeting.confirmed ? '(confirmed)' : '(proposed — confirm it)'}
+                      </p>
+                    )}
+                    {plan.nextAction && (
+                      <button
+                        onClick={() => {
+                          todos.add(plan.nextAction!, { url: cur.linkedin_url, priority: 'med' });
+                          setPlanNote('Added to your To-do panel.');
+                          setTimeout(() => setPlanNote(''), 1800);
+                        }}
+                        className="w-full text-[10.5px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast text-left"
+                      >
+                        + Add to To-do: {plan.nextAction}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
 

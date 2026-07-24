@@ -61,6 +61,32 @@ function write(items: TodoItem[]): void {
   try { window.dispatchEvent(new CustomEvent(TODO_EVENT)); } catch { /* SSR-safe */ }
 }
 
+/** Normalise a to-do's text for duplicate detection: lowercase, strip punctuation and filler
+ *  words, collapse whitespace. "Reply to Kevin once he confirms." and "reply to kevin once he
+ *  confirms" become the same key, so the model re-proposing the same follow-up every turn does not
+ *  stack a new row each time. */
+export function normalizeTodoText(s: string): string {
+  return (s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\b(the|a|an|to|for|with|on|about|please|kindly|and|of|from|your|my)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Items that mean "there is nothing to do" should never become a task. The model sometimes turns
+ *  a *finding* ("no reply came, so no need to message them") into a to-do — which is noise. This
+ *  catches the common phrasings so add()/create_todo can drop them. */
+export function isNoOpTodo(s: string): boolean {
+  const t = (s || '').toLowerCase();
+  if (t.replace(/[^a-z0-9]/g, '').length < 4) return true;
+  return /\bno (need|reply|response|action|follow[- ]?up)\b/.test(t)
+    || /\bnothing (to do|needed|required|pending)\b/.test(t)
+    || /\b(no|not) (necessary|required|needed)\b/.test(t)
+    || /\balready (done|sent|replied|handled|completed)\b/.test(t)
+    || /\b(don'?t|doesn'?t|no) need to (reply|respond|message|contact|follow)/.test(t);
+}
+
 /** Midnight-to-midnight comparison — "due today" must not depend on the time of day. */
 export function isSameDay(a: number, b: number): boolean {
   const x = new Date(a), y = new Date(b);
@@ -108,8 +134,30 @@ export const todos = {
   add(text: string, extra: Partial<TodoItem> = {}): TodoItem | null {
     const clean = text.trim();
     if (!clean) return null;
+    // Never create a task that means "nothing to do" — that noise is exactly what the user asked
+    // us to stop generating. (Skipped for resume/app cards, which always carry a sourceKey.)
+    if (!extra.sourceKey && isNoOpTodo(clean)) return null;
+
+    const items = read();
+    const norm = normalizeTodoText(clean);
+    if (norm) {
+      // De-dupe against what's already there. An OPEN task with the same meaning → don't add a
+      // second copy (the model re-proposing the same follow-up every turn). A task the user already
+      // COMPLETED → don't resurrect it as fresh work (the "I already sent the PDF, why is it back"
+      // bug). Only a completion older than a day is allowed to recur, for genuinely repeating chores.
+      const dupe = items.find((t) => normalizeTodoText(t.text) === norm
+        && (!t.done || (t.completedAt ?? 0) > Date.now() - 24 * 60 * 60 * 1000));
+      if (dupe) {
+        // Refresh the existing open card's metadata (due date, url, priority) rather than duplicating.
+        if (!dupe.done) {
+          write(items.map((t) => (t.id === dupe.id ? { ...t, ...extra, text: t.text } : t)));
+        }
+        return dupe;
+      }
+    }
+
     const item: TodoItem = { id: uid(), text: clean.slice(0, 300), done: false, createdAt: Date.now(), ...extra };
-    write([item, ...read()]);
+    write([item, ...items]);
     return item;
   },
 

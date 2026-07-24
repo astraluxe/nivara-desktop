@@ -146,6 +146,17 @@ export default function AiSourcePicker({ compact = false }: { compact?: boolean 
       {pref.mode !== 'nivara' && pref.mode !== 'auto' && (
         <p className="text-[10.5px] text-nv-faint mt-2">This choice uses none of your monthly allowance.</p>
       )}
+
+      {/* Gentle, positive heads-up: the free NVIDIA/Groq keys are great for everyday speed, but the
+          hosted adris.tech AI is tuned for the heavy lifting. Framed as guidance, not a warning. */}
+      {pref.mode === 'own_key' && (pref.provider === 'nvidia' || pref.provider === 'groq') && (
+        <p className="text-[10.5px] text-nv-faint mt-2 leading-relaxed">
+          <span className="text-accent">Tip:</span> {pref.provider === 'nvidia' ? 'NVIDIA' : 'Groq'} is free and
+          fast — perfect for everyday drafting and quick tasks. For heavier work (long outreach, research,
+          detailed documents), switching to <b className="text-nv-text">adris.tech AI</b> gives noticeably
+          stronger results. Both stay one click away.
+        </p>
+      )}
     </div>
   );
 }
