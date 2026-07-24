@@ -288,30 +288,50 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   const [attachDoc, setAttachDoc] = useState<GeneratedDoc | null>(null);
   const planRef = useRef<HTMLDivElement | null>(null);
 
-  // Pull the user's REAL upcoming calendar (next 3 days) so a proposed meeting time is checked
-  // against what they're actually doing — the gap the user hit: a reply offered "tomorrow 10:30"
-  // while they had a 9am that could run over. Only runs if Google is connected; silent otherwise.
-  async function fetchCalendarContext(): Promise<string> {
-    if (!googleToken) return '';
+  // Pull the user's REAL upcoming calendar so a proposed meeting time is checked against what they're
+  // actually doing — the gap the user hit: a reply offered "tomorrow 10:30" while they had a 9am that
+  // could run over. Prefers the Google API when connected; otherwise reads the calendar straight from
+  // the logged-in agent browser, so this works even without connecting Google via ConnectApps.
+  async function fetchCalendarContext(schedulingLikely: boolean): Promise<string> {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const preface = "The owner's REAL calendar (do NOT propose or confirm a time that clashes with these; if a slot is close to or right after one of these, flag it to confirm — a meeting before it could run over):";
+
+    // 1) Fast, structured path — Google connected via OAuth.
+    if (googleToken) {
+      try {
+        const now = new Date().toISOString();
+        const end = new Date(Date.now() + 3 * 86_400_000).toISOString();
+        const raw = await invoke<string>('krew_http_call', {
+          method: 'GET',
+          url: `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${now}&timeMax=${end}&maxResults=20&orderBy=startTime&singleEvents=true`,
+          headers: { Authorization: `Bearer ${googleToken}` },
+          body: null,
+        });
+        const data = JSON.parse(raw) as { items?: Array<{ summary?: string; start?: { dateTime?: string; date?: string }; end?: { dateTime?: string; date?: string } }> };
+        const items = (data.items || []).slice(0, 15).map((e) => {
+          const s = e.start?.dateTime || e.start?.date || '';
+          const en = e.end?.dateTime || e.end?.date || '';
+          return `- ${e.summary || '(busy)'}: ${s}${en ? ` → ${en}` : ''}`;
+        });
+        if (items.length) return `${preface}\n${items.join('\n')}`;
+        // Fall through to the browser read if the API returned nothing (wrong calendar / scope).
+      } catch { /* fall through to the browser read */ }
+    }
+
+    // 2) Browser path — no connection needed. Only bother opening Calendar in the browser when the
+    // conversation is actually about timing, so a normal reply doesn't flash the browser open.
+    if (!schedulingLikely) return '';
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const now = new Date().toISOString();
-      const end = new Date(Date.now() + 3 * 86_400_000).toISOString();
-      const raw = await invoke<string>('krew_http_call', {
-        method: 'GET',
-        url: `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${now}&timeMax=${end}&maxResults=20&orderBy=startTime&singleEvents=true`,
-        headers: { Authorization: `Bearer ${googleToken}` },
-        body: null,
-      });
-      const data = JSON.parse(raw) as { items?: Array<{ summary?: string; start?: { dateTime?: string; date?: string }; end?: { dateTime?: string; date?: string } }> };
-      const items = (data.items || []).slice(0, 15).map((e) => {
-        const s = e.start?.dateTime || e.start?.date || '';
-        const en = e.end?.dateTime || e.end?.date || '';
-        return `- ${e.summary || '(busy)'}: ${s}${en ? ` → ${en}` : ''}`;
-      });
-      if (!items.length) return 'Their calendar for the next 3 days is clear.';
-      return `The owner's REAL calendar for the next 3 days (do not propose or confirm a time that clashes with these; if a slot is close to one of these, flag it to check):\n${items.join('\n')}`;
-    } catch { return ''; }
+      setAgentBrowserHold(true); setBrowserOpen(true);
+      const raw = await invoke<string>('run_browser_persistent', { args: 'gcalcheck' }).catch((e) => String(e));
+      if (raw.includes('SIGN_IN_REQUIRED')) return "(Couldn't check the calendar — the owner isn't signed in to Google in the ADRIS browser. Treat their availability as unknown: do not invent a specific time, ask the prospect what suits them.)";
+      const ct = raw.indexOf('CALENDAR_TEXT:');
+      if (ct >= 0) {
+        const text = raw.slice(ct + 'CALENDAR_TEXT:'.length).trim();
+        if (text) return `${preface}\n${text}`;
+      }
+    } catch { /* no calendar available */ }
+    return '';
   }
 
   // Reading the inbox brings the Chrome window to the front, which hides this copilot — where the
@@ -459,10 +479,13 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       return;
     }
 
-    setPlanNote(mode === 'followup' ? 'Reading the thread & drafting a follow-up…' : 'Checking your calendar & planning the next move…');
-    // Read the real calendar first so the plan and the verifier both know what the owner is actually
-    // doing before proposing or confirming any time.
-    const calendar = await fetchCalendarContext();
+    // Only involve the calendar when the thread is actually about timing (a call, a meeting, "when
+    // are you free", a day/time) — so an ordinary reply doesn't open Calendar in the browser.
+    const schedulingLikely = /\b(call|meet(ing)?|schedule|available|availability|free|calendar|catch up|hop on|zoom|google meet|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d\s?(am|pm)|\d{1,2}[:.]\d{2})\b/i.test(thread);
+    setPlanNote(mode === 'followup' ? 'Reading the thread & drafting a follow-up…' : (schedulingLikely ? 'Checking your calendar & planning the next move…' : 'Planning the next move…'));
+    // Read the real calendar first (when timing is in play) so the plan and the verifier both know
+    // what the owner is actually doing before proposing or confirming any time.
+    const calendar = await fetchCalendarContext(schedulingLikely);
     const ownerContext = [buildOwnerContext(), calendar].filter(Boolean).join('\n\n');
     try {
       const args = { person: contact.name || 'them', company: contact.company, thread, ownerContext, availableDocs: docs.map((d) => ({ title: d.title, kind: d.kind, summary: d.summary })), aiCall };

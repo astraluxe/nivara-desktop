@@ -634,7 +634,7 @@ async function main() {
   if (cmd !== 'open' && cmd !== 'close'
       && cmd !== 'connections' && cmd !== 'logincheck' && cmd !== 'message' && cmd !== 'printpdf'
       && cmd !== 'findprofile' && cmd !== 'messages' && cmd !== 'typemsg' && cmd !== 'meetlink' && cmd !== 'whatsapp'
-      && cmd !== 'readthread') {
+      && cmd !== 'readthread' && cmd !== 'gcalcheck') {
     var state   = readState();
 
     var conn    = await ensureChrome();
@@ -1289,6 +1289,42 @@ async function main() {
     writeState({ url: mxPage.url() });
     if (!results.length) { process.stdout.write("Opened LinkedIn messaging but couldn't read any conversation content — the page may not have finished loading. Try again in a moment."); return; }
     process.stdout.write('MSGS_JSON:' + JSON.stringify(results));
+    return;
+  }
+
+  // ── gcalcheck ────────────────────────────────────────────────────────────────
+  // Read the user's upcoming calendar STRAIGHT FROM THE BROWSER (their logged-in Google), so the
+  // outreach copilot can check availability without them connecting Google via OAuth. Opens the
+  // Schedule/agenda view and returns its visible text — the model reads "you have X at 9am" from it,
+  // which is far more robust than scraping Calendar's shifting DOM into structured fields.
+  if (cmd === 'gcalcheck') {
+    var gcConn = await ensureChrome();
+    var gcCtx  = gcConn.context;
+    if (!gcCtx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
+    var gcPage = gcCtx.pages().at(-1) || await gcCtx.newPage();
+    try { await gcPage.bringToFront(); } catch (_) {}
+    // Schedule view lists upcoming events as plain rows (date · time · title) — ideal to read as text.
+    try { await gcPage.goto('https://calendar.google.com/calendar/u/0/r/agenda', { waitUntil: 'domcontentloaded', timeout: 20000 }); } catch (_) {}
+    var gcFinal = gcPage.url();
+    if (isAuthWall(gcFinal) || /accounts\.google\.com/.test(gcFinal)) {
+      await showBanner(gcPage, 'Sign in to Google in THIS window to let ADRIS check your calendar, then try again.');
+      writeState({ url: gcFinal });
+      process.stdout.write('[SIGN_IN_REQUIRED] Opened Google Calendar in the ADRIS browser — please sign in there, then try again.');
+      return;
+    }
+    await showBanner(gcPage, 'ADRIS is checking your calendar for conflicts — please don’t close this window.');
+    try { await gcPage.waitForLoadState('networkidle', { timeout: 3000 }); } catch (_) {}
+    try { await gcPage.waitForSelector('[role="main"], [role="grid"], .GVQtR', { timeout: 6000 }); } catch (_) {}
+    await new Promise(function (r) { setTimeout(r, 900); });
+    var gcText = await gcPage.evaluate(function() {
+      var main = document.querySelector('[role="main"]') || document.body;
+      var t = (main && main.innerText ? main.innerText : '').replace(/\n{2,}/g, '\n').replace(/[ \t]{2,}/g, ' ').trim();
+      return t.slice(0, 2500);
+    }).catch(function () { return ''; });
+    await hideBanner(gcPage);
+    writeState({ url: gcPage.url() });
+    if (!gcText) { process.stdout.write('CALENDAR_EMPTY Opened your calendar but could not read it — it may still be loading.'); return; }
+    process.stdout.write('CALENDAR_TEXT:' + gcText);
     return;
   }
 
