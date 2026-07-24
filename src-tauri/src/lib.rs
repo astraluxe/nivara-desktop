@@ -1795,6 +1795,22 @@ async fn studio_save_file(
     }
 }
 
+// Native "open file" picker for attaching an EXISTING file from the user's computer to an outreach
+// message (the copilot then reveals it so they can drag it into LinkedIn/Gmail). Filtered to the
+// professional document types we allow as attachments — never a working .md/.txt. Returns the chosen
+// path, or "" if the user cancelled.
+#[tauri::command]
+async fn pick_attachment(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri_plugin_dialog::DialogExt;
+    use tokio::sync::oneshot;
+    let (tx, rx) = oneshot::channel::<Option<tauri_plugin_dialog::FilePath>>();
+    app.dialog()
+        .file()
+        .add_filter("Documents", &["pdf", "docx", "doc", "xlsx", "xls", "csv", "pptx", "ppt"])
+        .pick_file(move |path| { let _ = tx.send(path); });
+    Ok(rx.await.ok().flatten().map(|p| p.to_string()).unwrap_or_default())
+}
+
 #[tauri::command]
 async fn models_import(
     app:            tauri::AppHandle,
@@ -6827,6 +6843,7 @@ pub fn run() {
             file_size,
             models_import,
             studio_save_file,
+            pick_attachment,
             // Vault
             vault_enable,
             vault_disable,

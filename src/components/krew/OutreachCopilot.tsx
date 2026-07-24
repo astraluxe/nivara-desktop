@@ -2,8 +2,8 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { brain } from '../../lib/knowledgeStore';
 import { todos } from '../../lib/todoStore';
 import { setAgentBrowserHold, bestProfileMatch } from '../../lib/krewTools';
-import { planReply, planFollowUp, verifyWork, type ReplyPlan, type VerifyResult } from '../../lib/verify';
-import { listAttachableDocs, type GeneratedDoc } from '../../lib/docgen';
+import { planReply, planFollowUp, verifyWork, refineMessage, type ReplyPlan, type VerifyResult } from '../../lib/verify';
+import { listAttachableDocs, isAttachableFile, type GeneratedDoc } from '../../lib/docgen';
 
 // Assemble what the strategist/verifier needs to know about the USER's side: their pitch and any
 // stated availability, pulled from the Brain (product notes, meeting notes) so the drafted reply is
@@ -286,6 +286,10 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   const [verifying, setVerifying] = useState(false);
   const [docs, setDocs] = useState<GeneratedDoc[]>([]);
   const [attachDoc, setAttachDoc] = useState<GeneratedDoc | null>(null);
+  const [refineInput, setRefineInput] = useState('');
+  const [refining, setRefining] = useState(false);
+  const [lastThread, setLastThread] = useState('');       // remembered so refine/re-verify have context
+  const [lastOwnerCtx, setLastOwnerCtx] = useState('');
   const planRef = useRef<HTMLDivElement | null>(null);
 
   // Pull the user's REAL upcoming calendar so a proposed meeting time is checked against what they're
@@ -353,8 +357,23 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   useEffect(() => () => { setAgentBrowserHold(false); }, []);
 
   // Refresh the attachable-docs list whenever the popup opens or a contact changes — a doc the user
-  // just generated ("make a PDF") should appear here without a reload.
-  useEffect(() => { setDocs(listAttachableDocs()); }, [idx, campaign]);
+  // just generated ("make a PDF") should appear here without a reload. Includes BOTH Krew-generated
+  // docs AND any professional file saved in the Brain (so a PDF the user dropped into the Brain is
+  // ready to attach too), de-duplicated by path.
+  useEffect(() => {
+    const gen = listAttachableDocs();
+    const seen = new Set(gen.map((d) => d.path.toLowerCase()));
+    const fromBrain: GeneratedDoc[] = [];
+    try {
+      for (const n of brain.all().nodes) {
+        const fp = (n.filePath || '').trim();
+        if (!fp || !isAttachableFile(fp) || seen.has(fp.toLowerCase())) continue;
+        seen.add(fp.toLowerCase());
+        fromBrain.push({ id: `brain-${n.id}`, title: n.title || (fp.split(/[\\/]/).pop() || 'file'), filename: fp.split(/[\\/]/).pop() || 'file', path: fp, kind: (fp.split('.').pop() || '').toLowerCase(), summary: 'From your Brain', createdAt: n.updatedAt || Date.now() });
+      }
+    } catch { /* brain optional */ }
+    setDocs([...gen, ...fromBrain]);
+  }, [idx, campaign]);
 
   // Clear any plan/verification when moving to a different contact — a plan belongs to one person.
   useEffect(() => {
@@ -487,6 +506,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     // what the owner is actually doing before proposing or confirming any time.
     const calendar = await fetchCalendarContext(schedulingLikely);
     const ownerContext = [buildOwnerContext(), calendar].filter(Boolean).join('\n\n');
+    setLastThread(thread); setLastOwnerCtx(ownerContext);   // remember for refine / re-verify
     try {
       const args = { person: contact.name || 'them', company: contact.company, thread, ownerContext, availableDocs: docs.map((d) => ({ title: d.title, kind: d.kind, summary: d.summary })), aiCall };
       const p = mode === 'followup' ? await planFollowUp(args) : await planReply(args);
@@ -542,6 +562,45 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       }
       setVerify(v);
     } catch { /* verification is best-effort */ } finally { setVerifying(false); }
+  }
+
+  // Reshape the current draft from a plain-English instruction the user types ("say yes to the call
+  // and suggest tomorrow", "make it shorter", "sound less salesy"), then re-verify the new draft.
+  async function refineDraft() {
+    const instruction = refineInput.trim();
+    if (!instruction || !draftReply.trim()) return;
+    setRefining(true);
+    try {
+      const next = await refineMessage({
+        current: draftReply,
+        instruction,
+        person: cur?.name,
+        thread: lastThread,
+        ownerContext: lastOwnerCtx,
+        aiCall,
+      });
+      if (next && next.trim()) {
+        setDraftReply(next.trim());
+        setRefineInput('');
+        setVerify(null);
+        runVerify(next.trim(), cur, lastThread || (plan?.read ?? ''), lastOwnerCtx);
+      }
+    } catch { /* leave the draft as-is if the tweak fails */ } finally { setRefining(false); }
+  }
+
+  // Attach an EXISTING file from the user's computer (they may already have the deck/PDF), instead of
+  // making Krew generate one. Opens a native picker filtered to professional docs, then selects it.
+  async function pickFromComputer() {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const path = await invoke<string>('pick_attachment');
+      if (path && isAttachableFile(path)) {
+        const name = path.split(/[\\/]/).pop() || 'file';
+        const doc: GeneratedDoc = { id: `local-${Date.now()}`, title: name, filename: name, path, kind: (name.split('.').pop() || '').toLowerCase(), summary: 'From your computer', createdAt: Date.now() };
+        setDocs((prev) => [doc, ...prev.filter((d) => d.path.toLowerCase() !== path.toLowerCase())]);
+        setAttachDoc(doc);
+      }
+    } catch { /* picker cancelled or unavailable */ }
   }
 
   // Type the (reviewed) reply into this person's LinkedIn chat for the user to send. Reuses the same
@@ -862,9 +921,9 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
             <button
               onClick={() => scanReplyAndPlan('followup')}
               disabled={planning}
-              className="mt-1.5 w-full flex items-center justify-center gap-2 text-[11px] font-medium px-3 py-2 rounded-lg border border-violet-500/60 text-violet-300 hover:bg-violet-500/10 transition-fast disabled:opacity-60"
+              className="mt-1.5 w-full flex items-center justify-center gap-2 text-xs font-semibold px-3 py-2 rounded-lg border-2 border-violet-500 text-violet-200 bg-violet-500/15 hover:bg-violet-500/25 transition-fast disabled:opacity-60"
             >
-              <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+              <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
               No reply yet? Draft a follow-up
             </button>
             {planNote && !planning && <p className="text-[10px] text-amber-300/90 mt-1.5 leading-relaxed">{planNote}</p>}
@@ -939,39 +998,80 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                       <button onClick={sendDraftReply} disabled={opening || !draftReply.trim()} className="flex-1 text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast disabled:opacity-60">
                         {opening ? 'Opening chat…' : 'Type into their chat →'}
                       </button>
-                      <button onClick={() => runVerify(draftReply, cur, plan.read)} disabled={verifying || !draftReply.trim()} className="shrink-0 text-[10px] px-2 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast" title="Re-check the edited draft">
+                      <button onClick={() => runVerify(draftReply, cur, lastThread || plan.read, lastOwnerCtx)} disabled={verifying || !draftReply.trim()} className="shrink-0 text-[10px] px-2 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast" title="Re-check the edited draft">
                         Re-verify
                       </button>
                     </div>
                     <p className="text-[9px] text-nv-faint mt-1">A human always sends. Nothing goes out on its own.</p>
-                  </div>
-                )}
 
-                {/* Attach a professional file if the reply calls for one */}
-                {(plan.attachSuggested || attachDoc) && (
-                  <div className="pt-1.5 border-t border-violet-500/15">
-                    <div className="text-[10px] text-nv-faint uppercase tracking-wide mb-1">
-                      {plan.attachSuggested ? 'They want something to look at — attach a file' : 'Attach a file'}
+                    {/* Tell it how to reshape the message, in plain English. */}
+                    <div className="mt-2 flex items-center gap-1.5">
+                      <input
+                        value={refineInput}
+                        onChange={(e) => setRefineInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter' && refineInput.trim() && !refining) refineDraft(); }}
+                        placeholder='Tell it how to change this — e.g. "say yes and suggest tomorrow 3pm"'
+                        className="flex-1 text-[11px] bg-nv-bg border border-nv-border rounded-lg px-2.5 py-1.5 outline-none focus:border-accent/50 placeholder:text-nv-faint"
+                      />
+                      <button
+                        onClick={refineDraft}
+                        disabled={refining || !refineInput.trim() || !draftReply.trim()}
+                        className="shrink-0 text-[11px] font-medium px-2.5 py-1.5 rounded-lg bg-violet-600 text-white hover:bg-violet-500 transition-fast disabled:opacity-50"
+                      >
+                        {refining ? '…' : 'Redo'}
+                      </button>
                     </div>
-                    {docs.length === 0 ? (
-                      <p className="text-[10px] text-nv-faint leading-relaxed">No professional files ready yet. Ask Krew to "make a PDF/one-pager about adris for them" — it'll appear here to attach. (Working notes like .md are never offered.)</p>
-                    ) : (
-                      <>
+
+                    {/* Free-time suggestions from your calendar — tap one to put it in the reply. */}
+                    {plan.suggestedSlots && plan.suggestedSlots.length > 0 && (
+                      <div className="mt-2">
+                        <div className="text-[10px] text-nv-faint mb-1">Free slots from your calendar — tap to propose one:</div>
                         <div className="flex flex-wrap gap-1.5">
-                          {docs.slice(0, 6).map((d) => (
-                            <button key={d.id} onClick={() => setAttachDoc(attachDoc?.id === d.id ? null : d)}
-                              className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${attachDoc?.id === d.id ? 'border-accent/60 text-accent bg-accent/10' : 'border-nv-border text-nv-faint hover:bg-nv-surface2'}`}
-                              title={d.summary || d.filename}>
-                              {attachDoc?.id === d.id ? '✓ ' : ''}{d.filename}
+                          {plan.suggestedSlots.map((slot, i) => (
+                            <button
+                              key={i}
+                              disabled={refining}
+                              onClick={() => { setRefineInput(''); setRefining(true); refineMessage({ current: draftReply, instruction: `Propose ${slot} for the call as the concrete time, warmly and clearly.`, person: cur?.name, thread: lastThread, ownerContext: lastOwnerCtx, aiCall }).then((next) => { if (next?.trim()) { setDraftReply(next.trim()); setVerify(null); runVerify(next.trim(), cur, lastThread || (plan?.read ?? ''), lastOwnerCtx); } }).catch(() => {}).finally(() => setRefining(false)); }}
+                              className="text-[10.5px] font-medium px-2.5 py-1 rounded-full border border-emerald-500/50 text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 transition-fast disabled:opacity-50"
+                            >
+                              🕑 {slot}
                             </button>
                           ))}
                         </div>
-                        {attachDoc && (
-                          <button onClick={() => revealAttachment(attachDoc)} className="mt-1.5 w-full text-[10px] px-2 py-1 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast">
-                            Open its folder to drag it into the chat →
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Attach a file — a Krew-made doc, one from your Brain, or one already on your computer */}
+                {(plan.attachSuggested || attachDoc || (draftReply && plan.intent !== 'not_interested')) && (
+                  <div className="pt-1.5 border-t border-violet-500/15">
+                    <div className="text-[10px] text-nv-faint uppercase tracking-wide mb-1">
+                      {plan.attachSuggested ? 'They want something to look at — attach a file' : 'Attach a file (optional)'}
+                    </div>
+                    {docs.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {docs.slice(0, 8).map((d) => (
+                          <button key={d.id} onClick={() => setAttachDoc(attachDoc?.id === d.id ? null : d)}
+                            className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${attachDoc?.id === d.id ? 'border-accent/60 text-accent bg-accent/10' : 'border-nv-border text-nv-faint hover:bg-nv-surface2'}`}
+                            title={`${d.summary || ''} · ${d.filename}`}>
+                            {attachDoc?.id === d.id ? '✓ ' : ''}{d.filename}
                           </button>
-                        )}
-                      </>
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex items-center gap-1.5 mt-1.5">
+                      <button onClick={pickFromComputer} className="flex-1 text-[10px] px-2 py-1 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast">
+                        + Choose a file from your computer
+                      </button>
+                      {attachDoc && (
+                        <button onClick={() => revealAttachment(attachDoc)} className="shrink-0 text-[10px] px-2 py-1 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-fast">
+                          Reveal to drag in →
+                        </button>
+                      )}
+                    </div>
+                    {docs.length === 0 && !attachDoc && (
+                      <p className="text-[9.5px] text-nv-faint leading-relaxed mt-1">Pick a file above, or ask Krew to "make a one-pager PDF about adris for them". A PDF you save in the Brain shows up here too. (Working notes like .md are never offered.)</p>
                     )}
                   </div>
                 )}
