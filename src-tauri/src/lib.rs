@@ -2081,6 +2081,50 @@ async fn krew_generate_image(
             }
         }
     };
+    // ── NVIDIA image models (FLUX / SDXL) — FREE on the user's own NVIDIA key ──────────────────
+    // Detected by an nvapi- key or an NVIDIA image-model id. NVIDIA's genai endpoint + response
+    // (artifacts[].base64) differ from Gemini's, so it has its own path. On ANY failure it returns
+    // Err, and the deck loop falls back to Gemini / stock — so this can never break existing decks.
+    // No managed-key billing here: it runs on the user's key, so it costs adris.tech nothing.
+    let is_nvidia = key.starts_with("nvapi-")
+        || model.contains("flux") || model.contains("black-forest")
+        || model.contains("sdxl") || model.contains("stable-diffusion") || model.contains("stabilityai");
+    if is_nvidia {
+        let nv_model = if model.contains('/') { model.clone() } else { "black-forest-labs/flux.1-dev".to_string() };
+        let nv_url = format!("https://ai.api.nvidia.com/v1/genai/{}", nv_model);
+        // FLUX.1 [schnell] is a few-step model; everything else uses the standard step count.
+        let steps = if nv_model.contains("schnell") { 4 } else { 40 };
+        let nv_body = serde_json::json!({
+            "prompt": prompt, "mode": "base", "cfg_scale": 3.5,
+            "width": 1024, "height": 1024, "seed": 0, "steps": steps
+        });
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(90))
+            .build().unwrap_or_else(|_| reqwest::Client::new());
+        let resp = client.post(&nv_url)
+            .header("Authorization", format!("Bearer {}", key))
+            .header("Accept", "application/json")
+            .json(&nv_body).send().await
+            .map_err(|e| format!("NVIDIA image request failed: {}", e))?;
+        if !resp.status().is_success() {
+            let st = resp.status(); let eb = resp.text().await.unwrap_or_default();
+            return Err(format!("NVIDIA image {} — {}", st, eb.chars().take(200).collect::<String>()));
+        }
+        let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        // FLUX/SDXL: { "artifacts": [ { "base64": "..." } ] }; some variants: { "image" } / { "images":[..] }.
+        let b64 = v["artifacts"][0]["base64"].as_str()
+            .or_else(|| v["image"].as_str())
+            .or_else(|| v["images"][0].as_str())
+            .or_else(|| v["data"][0]["b64_json"].as_str());
+        if let Some(data) = b64 {
+            let data = data
+                .trim_start_matches("data:image/png;base64,")
+                .trim_start_matches("data:image/jpeg;base64,");
+            return Ok(format!("data:image/png;base64,{}", data));
+        }
+        return Err("NVIDIA returned no image.".to_string());
+    }
+
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
         model, key

@@ -3167,6 +3167,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
   const [taskPhases,    setTaskPhases]    = useState<TaskPhase[]>([]);
   const [connectRec,    setConnectRec]    = useState<string[]>([]);
   const [braveNudge, setBraveNudge] = useState(false);
+  const [nvidiaNudge, setNvidiaNudge] = useState(false);
   const [browserNudge, setBrowserNudge] = useState(false);
   const [browserRetrying, setBrowserRetrying] = useState(false);
   const [browserActive, setBrowserActive] = useState(false);
@@ -4063,27 +4064,34 @@ The prompt must be production-ready — specific enough for a motion designer to
             await invoke('fetch_session_key', { sessionToken: tok });
           } catch { /* if this fails too, the loop below reports it clearly */ }
         }
-        // Try known image-model ids in order until one works on this key, then reuse it.
-        // Verified live against the Gemini API: these ids return images; the "-preview" 2.5
-        // id is a 404. Pro tries the GA id first, then falls back to the standard model.
-        const candidates: string[] = /pro/.test(cfg.imageModel)
-          ? ['gemini-3-pro-image', 'gemini-3-pro-image-preview', 'gemini-2.5-flash-image']
-          : ['gemini-2.5-flash-image'];
-        let working: string | null = null;
+        // Try image models in order until one works, then reuse it. Each candidate carries its OWN
+        // key. FREE FIRST: if the user has an NVIDIA key connected, generate on NVIDIA's FLUX (free
+        // on their key — zero adris.tech tokens), then fall back to Gemini. Gemini ids verified live;
+        // the "-preview" 2.5 id is a 404, and Pro tries the GA id first then the standard model.
+        const nvidiaImgKey = (creds.nvidia?.api_key || '').trim();
+        type ImgCand = { model: string; key: string | null };
+        const candidates: ImgCand[] = [];
+        if (nvidiaImgKey) candidates.push({ model: 'black-forest-labs/flux.1-dev', key: nvidiaImgKey });
+        if (/pro/.test(cfg.imageModel)) {
+          candidates.push({ model: 'gemini-3-pro-image', key: imgKey }, { model: 'gemini-3-pro-image-preview', key: imgKey }, { model: 'gemini-2.5-flash-image', key: imgKey });
+        } else {
+          candidates.push({ model: 'gemini-2.5-flash-image', key: imgKey });
+        }
+        let working: ImgCand | null = null;
         let fails = 0;
         for (let k = 0; k < need.length; k++) {
           if (stopRef.current) break;
-          setStatus(`Adding image ${k + 1} of ${need.length}…`);
+          setStatus(`Adding image ${k + 1} of ${need.length}${nvidiaImgKey ? ' (free on NVIDIA)' : ''}…`);
           const idx = need[k];
           const slide = spec.slides[idx];
-          const tryList: string[] = working ? [working] : candidates;
+          const tryList: ImgCand[] = working ? [working] : candidates;
           let got = '';
-          // 1) AI generation — try Pro, fall down to the lower model automatically. Only accept
-          // a VALID image (a broken/garbage return is what rendered as a black box).
-          for (const model of tryList) {
+          // 1) AI generation — NVIDIA (free) then Gemini, each on its own key. Only accept a VALID
+          // image (a broken/garbage return is what rendered as a black box).
+          for (const cand of tryList) {
             try {
-              const data = await invoke<string>('krew_generate_image', { prompt: slide.imagePrompt, model, apiKey: imgKey });
-              if (validImageData(data)) { got = data; working = model; break; }
+              const data = await invoke<string>('krew_generate_image', { prompt: slide.imagePrompt, model: cand.model, apiKey: cand.key });
+              if (validImageData(data)) { got = data; working = cand; break; }
             } catch { /* try the next model, then the stock fallback */ }
           }
           // 2) FALLBACK — if AI generation gave nothing (no key / no access / rate limit),
@@ -6045,6 +6053,15 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
         && /verif|linkedin|lead list|find (me )?(more )?(people|compan|contact|leads|decision)|decision maker|prospect|email.*(compan|people)/i.test(text)) {
       setBraveNudge(true);
     }
+    // Suggest connecting a FREE NVIDIA key when the user is on adris.tech AI (managed key) — running
+    // on their own free NVIDIA key costs them zero adris.tech tokens, keeping that allowance for the
+    // heavy stuff (decks/images). Shown occasionally on adris.tech turns, never once dismissed.
+    if (mode === 'nivara' && !creds.nvidia?.api_key && localStorage.getItem('nv-nvidia-nudge-off') !== '1') {
+      const n = (parseInt(localStorage.getItem('nv-nvidia-nudge-count') || '0', 10) || 0) + 1;
+      try { localStorage.setItem('nv-nvidia-nudge-count', String(n)); } catch { /* ignore */ }
+      // Nudge on the 2nd adris.tech message, then every 6th, so it's noticeable but not naggy.
+      if (n === 2 || n % 6 === 0) setNvidiaNudge(true);
+    }
     // Pre-warm Chrome in Advanced mode so the FIRST browser open isn't a ~10s cold start — BUT
     // only when the task actually looks like it will browse. A pure content/drafting task (write
     // messages, draft an email, compose a post) in Advanced mode never needs the browser, so
@@ -7609,6 +7626,27 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
             <button
               title="Don't show this again"
               onClick={() => { try { localStorage.setItem('nv-brave-nudge-off', '1'); } catch { /* ignore */ } setBraveNudge(false); }}
+              className="shrink-0 text-[13px] leading-none px-1.5 text-nv-faint hover:text-nv-text transition-fast"
+            >×</button>
+          </div>
+        )}
+
+        {nvidiaNudge && (
+          <div className="mx-3 mb-1 flex items-start gap-2.5 px-3 py-2.5 rounded-xl border border-emerald-500/30 bg-emerald-500/[0.08]">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" className="text-emerald-500 shrink-0 mt-0.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M13 2 3 14h7l-1 8 10-12h-7z"/>
+            </svg>
+            <div className="flex-1 min-w-0">
+              <p className="text-[11px] font-bold text-emerald-500 leading-tight">Connect a free NVIDIA key — stop spending your adris.tech tokens on chat</p>
+              <p className="text-[10px] text-nv-faint mt-0.5 leading-relaxed">You're chatting on your adris.tech allowance. Add a <b className="text-nv-text">free</b> NVIDIA API key (build.nvidia.com — no card) and Krew runs your chats on it at <b className="text-nv-text">zero cost</b>, saving your adris.tech tokens for the heavy lifting — decks, images and big tasks. Takes ~2 minutes.</p>
+            </div>
+            <button
+              onClick={() => { setNvidiaNudge(false); onOpenConnectApps?.(); }}
+              className="shrink-0 text-[10px] font-semibold px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-500 hover:bg-emerald-500/30 border border-emerald-500/30 transition-fast whitespace-nowrap"
+            >Connect NVIDIA →</button>
+            <button
+              title="Don't show this again"
+              onClick={() => { try { localStorage.setItem('nv-nvidia-nudge-off', '1'); } catch { /* ignore */ } setNvidiaNudge(false); }}
               className="shrink-0 text-[13px] leading-none px-1.5 text-nv-faint hover:text-nv-text transition-fast"
             >×</button>
           </div>
