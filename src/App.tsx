@@ -160,6 +160,8 @@ function AnnouncementModal({ ann, onClose }: { ann: Announcement; onClose: () =>
 }
 
 const DISMISSED_KEY = 'nv-dismissed-announcements';
+const UPDATE_SNOOZE_KEY = 'nv-update-snooze-until';
+const UPDATE_SNOOZE_MS = 24 * 60 * 60_000;   // one "Later" quiets update popups for 24h
 
 function AppShell() {
   const { session, loading, profile, refreshSession } = useAuth();
@@ -378,6 +380,11 @@ function AppShell() {
     function showUpdateBanner(version: string) {
       const dismissed = JSON.parse(localStorage.getItem(DISMISSED_KEY) ?? '[]') as string[];
       if (dismissed.includes(`update-${version}`)) return;
+      // Respect a snooze — once the user clicks "Later", don't pop the update window again for a
+      // while, even when a newer version ships. This is what stops it nagging "again and again"
+      // (each new version used to be a brand-new prompt), and it never interrupts work mid-flow.
+      const snoozeUntil = parseInt(localStorage.getItem(UPDATE_SNOOZE_KEY) || '0', 10);
+      if (snoozeUntil > Date.now()) return;
       setAnnouncement({
         id: `update-${version}`,
         title: `Update available — v${version}`,
@@ -611,6 +618,11 @@ function AppShell() {
             const dismissed = JSON.parse(localStorage.getItem(DISMISSED_KEY) ?? '[]') as string[];
             if (!dismissed.includes(announcement.id)) {
               localStorage.setItem(DISMISSED_KEY, JSON.stringify([...dismissed, announcement.id]));
+            }
+            // "Later" on an update = quiet all update popups for 24h, so it stops re-appearing every
+            // launch/focus and never interrupts work again in that window.
+            if (announcement.type === 'update') {
+              localStorage.setItem(UPDATE_SNOOZE_KEY, String(Date.now() + UPDATE_SNOOZE_MS));
             }
             setAnnouncement(null);
           }}

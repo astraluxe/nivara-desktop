@@ -7116,9 +7116,15 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
             // your Tech lead list", "where the list stands"), so a calendar or inbox request that
             // ended without output got answered with something about leads that was simply untrue.
             // Only mention a table when one was actually produced.
+            // On a free/own-key model (Groq/NVIDIA/local) a long, tool-heavy prompt can make the model
+            // loop on tools instead of answering, or hit its context/rate limit — and finish with no
+            // text. Say so honestly and point to the fix, instead of a bare "I stopped".
+            const weakSource = mode === 'own_key' || mode === 'local';
             const fallback = producedLeadTable
               ? "Done — the table above has the result. Tell me if anything still needs filling in and I'll take another pass."
-              : "I stopped before I had anything to show you — nothing was saved or sent. Use Continue below to pick this up again.";
+              : weakSource
+                ? "I didn't get a complete answer back that time — a long prompt (especially with an attached file) can be too much for a free/own-key model, which sometimes stops without replying. Nothing was saved or sent. Try again with Continue below, shorten the request, or switch to adris.tech AI for this heavier one."
+                : "I stopped before I had anything to show you — nothing was saved or sent. Use Continue below to pick this up again.";
             copy.push({ role: 'assistant', content: fallback, streaming: false });
             if (sid) krewDb.saveMessage(sid, 'assistant', fallback).catch(() => {});
             // Offer a one-click Continue rather than making the user retype the request. Reuses the
