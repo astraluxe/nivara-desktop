@@ -633,7 +633,8 @@ async function main() {
   // ("couldn't read any names"). This is THE bug behind the whole /scan saga.
   if (cmd !== 'open' && cmd !== 'close'
       && cmd !== 'connections' && cmd !== 'logincheck' && cmd !== 'message' && cmd !== 'printpdf'
-      && cmd !== 'findprofile' && cmd !== 'messages' && cmd !== 'typemsg' && cmd !== 'meetlink' && cmd !== 'whatsapp') {
+      && cmd !== 'findprofile' && cmd !== 'messages' && cmd !== 'typemsg' && cmd !== 'meetlink' && cmd !== 'whatsapp'
+      && cmd !== 'readthread') {
     var state   = readState();
 
     var conn    = await ensureChrome();
@@ -1618,6 +1619,65 @@ async function main() {
     } catch (_) {}
     if (!tTyped) { process.stdout.write('PROFILE_OPENED_NO_BOX The compose box opened but typing into it failed. The draft was NOT sent — tell the user to paste it manually.'); return; }
     process.stdout.write('MESSAGE_DRAFTED — the reply is now sitting in the open chat box, unsent. Tell the user to review it and press Enter (or click Send) themselves.');
+    return;
+  }
+
+  // ── readthread <profileUrl> ──────────────────────────────────────────────────
+  // Read ONE person's conversation, by opening their chat directly from their profile — instead of
+  // scanning the whole inbox. This is what the outreach copilot uses to "scan a reply": it targets
+  // exactly the person the user is on, so it's faster and never reads unrelated threads.
+  if (cmd === 'readthread') {
+    var rtUrlRaw = argv.slice(1).join(' ').replace(/^"|"$/g, '').trim();
+    if (!rtUrlRaw) { process.stdout.write('[readthread-error] No profile URL given.'); return; }
+    var rtUrl = rtUrlRaw.startsWith('http') ? rtUrlRaw : 'https://' + rtUrlRaw;
+    var rtConn = await ensureChrome();
+    var rtCtx  = rtConn.context;
+    if (!rtCtx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
+    var rtPage = rtCtx.pages().at(-1) || await rtCtx.newPage();
+    try { await rtPage.goto(rtUrl, { waitUntil: 'domcontentloaded', timeout: 25000 }); } catch (_) {}
+    var rtFinal = rtPage.url();
+    if (isAuthWall(rtFinal)) {
+      var rtTok = await pollForLoginCompletion(rtPage, 30000);
+      if (!rtTok) { writeState({ url: rtFinal }); process.stdout.write('[SIGN_IN_REQUIRED] Please sign in to LinkedIn in the ADRIS browser window that just opened, then try again.'); return; }
+    }
+    await showBanner(rtPage, 'ADRIS is reading this conversation to plan your reply — please don’t close this window.');
+    try { await rtPage.waitForLoadState('networkidle', { timeout: 4000 }); } catch (_) {}
+    await new Promise(function (r) { setTimeout(r, 1000); });
+    // Open the chat overlay (same helper typemsg uses) — this loads the message history for THIS
+    // person into the DOM without touching the rest of the inbox.
+    var rtOpened = await openLinkedInComposeBox(rtPage);
+    writeState({ url: rtPage.url() });
+    if (!rtOpened.box) { await hideBanner(rtPage); process.stdout.write('READTHREAD_NO_BOX ' + (rtOpened.why || '') + ' Could not open their chat to read it.'); return; }
+    try { await rtPage.waitForSelector('.msg-s-message-list-container, .msg-s-message-list__event', { timeout: 6000 }); } catch (_) {}
+    await new Promise(function (r) { setTimeout(r, 500); });
+    // Same who-said-what extraction as the inbox reader: LinkedIn marks the OTHER person's messages
+    // with `msg-s-event-listitem--other`; its absence means the account owner sent it. This is on
+    // every message so the sender never drifts.
+    var rtConvo = await rtPage.evaluate(function() {
+      function clean(s) { return (s || '').replace(/[ \t]+/g, ' ').trim(); }
+      var groups = document.querySelectorAll('li.msg-s-message-list__event, .msg-s-message-list__event');
+      var out = []; var lastSender = '';
+      for (var i = 0; i < groups.length; i++) {
+        var g = groups[i];
+        var nameEl = g.querySelector('.msg-s-message-group__name, .msg-s-message-group__profile-link');
+        var name = nameEl ? clean(nameEl.innerText) : '';
+        if (name) lastSender = name;
+        var bodyEls = g.querySelectorAll('.msg-s-event-listitem__body');
+        for (var j = 0; j < bodyEls.length; j++) {
+          var text = clean(bodyEls[j].innerText);
+          if (!text) continue;
+          var item = bodyEls[j].closest('.msg-s-event-listitem');
+          var isOther = !!(item && item.classList.contains('msg-s-event-listitem--other'));
+          out.push({ from: lastSender || (isOther ? 'them' : 'You'), isYou: !isOther, text: text });
+        }
+      }
+      var hdr = document.querySelector('.msg-overlay-bubble-header__title, .msg-thread__link-to-profile');
+      var who = hdr ? clean(hdr.innerText) : '';
+      return { who: who, messages: out.slice(-20) };
+    }).catch(function () { return { who: '', messages: [] }; });
+    await hideBanner(rtPage);
+    if (!rtConvo.messages || !rtConvo.messages.length) { process.stdout.write('READTHREAD_EMPTY Opened their chat but could not read any messages yet — it may still be loading.'); return; }
+    process.stdout.write('THREAD_JSON:' + JSON.stringify(rtConvo));
     return;
   }
 

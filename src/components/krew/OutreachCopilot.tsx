@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { brain } from '../../lib/knowledgeStore';
 import { todos } from '../../lib/todoStore';
 import { setAgentBrowserHold, bestProfileMatch } from '../../lib/krewTools';
@@ -286,6 +286,21 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
   const [verifying, setVerifying] = useState(false);
   const [docs, setDocs] = useState<GeneratedDoc[]>([]);
   const [attachDoc, setAttachDoc] = useState<GeneratedDoc | null>(null);
+  const planRef = useRef<HTMLDivElement | null>(null);
+
+  // Reading the inbox brings the Chrome window to the front, which hides this copilot — where the
+  // drafted reply actually appears. So after a scan we pull the adris window back in front and
+  // scroll the plan into view, otherwise the user is left staring at Chrome asking "where's my reply?".
+  async function refocusAppToPlan() {
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      const w = getCurrentWindow();
+      await w.show().catch(() => {});
+      await w.setFocus().catch(() => {});
+    } catch { /* not in Tauri — no-op */ }
+    // Let the panel render, then scroll it into view inside the copilot.
+    setTimeout(() => { try { planRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch { /* ignore */ } }, 120);
+  }
 
   // Release the hold if the copilot goes away for any reason (Done, Esc, unmount) — otherwise the
   // browser could never be auto-closed again for the rest of the session.
@@ -369,35 +384,50 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       setAgentBrowserHold(true); setBrowserOpen(true);
-      // Read recent threads and find this person's by name — real text from the page, not memory.
-      const raw = await invoke<string>('run_browser_persistent', { args: 'messages 12' }).catch((e) => String(e));
-      if (raw.includes('SIGN_IN_REQUIRED') || raw.includes('[NEEDS_LOGIN]')) {
-        setPlanNote('Sign in to LinkedIn in the ADRIS browser window, then click "Scan their reply" again.');
-        setPlanning(false); return;
-      }
-      const mj = raw.indexOf('MSGS_JSON:');
-      if (mj >= 0) {
+
+      // Open ONLY this person's chat and read it — no whole-inbox scan. We need their profile URL;
+      // if we don't have it yet, find it once by name and save it for next time.
+      let targetUrl = contact.linkedin_url && /linkedin\.com\/in\//i.test(contact.linkedin_url) ? contact.linkedin_url : '';
+      if (!targetUrl) {
+        setPlanNote('Finding their profile…');
         try {
-          const arr = JSON.parse(raw.slice(mj + 'MSGS_JSON:'.length).trim()) as Array<{ name?: string; url?: string; messages?: Array<{ from?: string; isYou?: boolean; text?: string }> }>;
-          const want = (contact.name || '').trim().toLowerCase();
-          const match = arr.find((t) => (t.name || '').trim().toLowerCase() === want)
-            || arr.find((t) => (t.name || '').trim().toLowerCase().includes(want.split(' ')[0] || '·'));
-          if (match?.messages?.length) {
-            thread = match.messages.map((m) => `${m.isYou ? 'YOU' : (contact.name || 'THEM')}: ${m.text || ''}`).join('\n');
-            // Persist the profile URL we just learned, so replying opens their chat directly.
-            if (match.url && /linkedin\.com\/in\//i.test(match.url) && !contact.linkedin_url) {
-              setContacts((prev) => prev.map((c, i) => (i === idx ? { ...c, linkedin_url: match.url } : c)));
-            }
+          const fp = await invoke<string>('run_browser_persistent', { args: `findprofile "${(contact.name || '').replace(/["\n\r]/g, ' ').trim()}"` });
+          if (fp.includes('SIGN_IN_REQUIRED') || fp.includes('[NEEDS_LOGIN]')) {
+            setPlanNote('Sign in to LinkedIn in the ADRIS browser window, then click "Scan their reply" again.');
+            setPlanning(false); await refocusAppToPlan(); return;
           }
-        } catch { /* fall through to manual */ }
+          const pj = fp.indexOf('PROFILE_JSON:');
+          if (pj >= 0) { const arr = JSON.parse(fp.slice(pj + 'PROFILE_JSON:'.length).trim()); targetUrl = bestProfileUrl(Array.isArray(arr) ? arr : [], contact.name); }
+        } catch { /* fall through to the paste box */ }
+        if (targetUrl) setContacts((prev) => prev.map((c, i) => (i === idx ? { ...c, linkedin_url: targetUrl } : c)));
+      }
+
+      if (targetUrl) {
+        setPlanNote('Reading their reply…');
+        const raw = await invoke<string>('run_browser_persistent', { args: `readthread ${targetUrl}` }).catch((e) => String(e));
+        if (raw.includes('SIGN_IN_REQUIRED') || raw.includes('[NEEDS_LOGIN]')) {
+          setPlanNote('Sign in to LinkedIn in the ADRIS browser window, then click "Scan their reply" again.');
+          setPlanning(false); await refocusAppToPlan(); return;
+        }
+        const tj = raw.indexOf('THREAD_JSON:');
+        if (tj >= 0) {
+          try {
+            const obj = JSON.parse(raw.slice(tj + 'THREAD_JSON:'.length).trim()) as { messages?: Array<{ isYou?: boolean; text?: string }> };
+            if (obj.messages?.length) {
+              thread = obj.messages.map((m) => `${m.isYou ? 'YOU' : (contact.name || 'THEM')}: ${m.text || ''}`).join('\n');
+            }
+          } catch { /* fall through to manual paste */ }
+        }
       }
     } catch { /* browser optional — fall back to a manual paste */ }
 
     if (!thread.trim()) {
-      setPlanNote("Couldn't read the thread automatically. Paste their reply below and I'll plan the next move.");
+      // The person wasn't in the recent inbox (they may not have replied yet, or the thread is
+      // older). Say so plainly and let the user paste the reply — the plan panel still appears.
+      setPlanNote(`Couldn't find a recent reply from ${contact.name || 'them'} in your inbox. If they DID reply, paste it below and I'll draft your response; otherwise there's nothing to reply to yet.`);
       setPlanning(false);
-      // Still open an empty plan so the manual-paste box shows.
-      setPlan({ intent: 'unclear', read: 'Paste their reply to plan the next move.', draftReply: '', attachSuggested: false });
+      setPlan({ intent: 'unclear', read: `Paste ${contact.name || 'their'} reply here and I'll plan your response.`, draftReply: '', attachSuggested: false });
+      await refocusAppToPlan();
       return;
     }
 
@@ -412,7 +442,9 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
       });
       setPlan(p);
       setDraftReply(p.draftReply || '');
-      setPlanNote(p.degraded ? p.read : '');
+      // Point the user to where the drafted reply now is, so the flow never dead-ends silently.
+      setPlanNote(p.degraded ? p.read : '✓ Read their reply — your draft is ready below to review & send.');
+      setTimeout(() => setPlanNote((n) => (n.startsWith('✓ Read') ? '' : n)), 4000);
       // If the plan suggests attaching something, pre-select the best-matching generated doc.
       if (p.attachSuggested && docs.length) {
         const hint = (p.attachHint || '').toLowerCase();
@@ -421,8 +453,10 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
       }
       // Verify the drafted reply straight away, so the user sees a vetted draft rather than raw output.
       if (p.draftReply && !p.degraded) runVerify(p.draftReply, contact, thread);
+      await refocusAppToPlan();
     } catch {
       setPlanNote('Could not plan the reply. Read the thread and respond yourself.');
+      await refocusAppToPlan();
     } finally {
       setPlanning(false);
     }
