@@ -664,6 +664,37 @@ export default function InfoModule() {
             the notes for the exact version you are running.
           </P>
 
+          <H3>Real documents — PDF, Excel, Word</H3>
+          <P>
+            Ask Krew to <K>make a PDF one-pager about us for this client</K> or <K>give me an Excel of
+            these leads</K> and it produces an actual, laid-out file in your Downloads — a polished PDF, a
+            real spreadsheet with sortable columns, or a Word document — ready to attach and send. It’s a
+            proper deliverable, not chat text; working notes like <span className="text-nv-text">.md</span> are
+            never handed over as one. These files also show up in the outreach copilot’s “attach a file” list.
+          </P>
+
+          <H3>Handling replies end to end (outreach copilot)</H3>
+          <P>
+            When a prospect replies, mark them <span className="text-nv-text">Replied</span> and the copilot
+            reads the real conversation, works out what they want, and drafts your next message — which a
+            second “checker” agent verifies before you ever see it, flagging anything off (a clashing meeting
+            time, a wrong date, an invented claim). You review and press send; it never sends on its own. It
+            also drafts warm <span className="text-nv-text">follow-ups</span> for people who read but didn’t
+            reply, suggests free times from your calendar as one-tap chips, and lets you reshape a draft in
+            plain words (“say yes and propose tomorrow 3pm”).
+          </P>
+
+          <H3>Free keys now finish the big jobs — and make free images</H3>
+          <P>
+            A long, multi-section request (a strategy or guide with several “Area/Part” sections) on a free
+            key like Groq or NVIDIA is now written <span className="text-nv-text">section by section</span>,
+            so it never gets cut off by the model’s per-minute limit — no dropped words or half-answers. And
+            deck pictures can generate on your <span className="text-nv-text">free NVIDIA key</span> (FLUX)
+            instead of a paid image model, so making decks can cost you nothing — with an automatic fallback
+            so a deck always gets its visuals. Connecting a free NVIDIA key keeps your adris.tech allowance
+            for the heavy lifting.
+          </P>
+
           <H3>Reading and replying to LinkedIn messages</H3>
           <P>
             Krew can open your LinkedIn inbox and read your conversations properly — the real text, from

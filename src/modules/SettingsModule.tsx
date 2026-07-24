@@ -45,8 +45,20 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.40',
+  version: '1.6.56',
   items: [
+    'Cheaper images: deck pictures can now be generated on your FREE NVIDIA key (FLUX) instead of a paid image model — zero cost for anyone who connects NVIDIA, and if it ever can’t, it automatically falls back so your deck still gets visuals. A green card in chat offers to connect a free NVIDIA key so your chats stop spending your adris.tech allowance and it’s saved for the heavy stuff (decks and images).',
+    'Free models now finish the big jobs. A long, multi-section request (a strategy, a guide, several “Area/Part” sections) on a free key (Groq/NVIDIA) is written section-by-section so it never gets cut off by the model’s per-minute limit — no more dropped words or half-answers. If a model ever goes quiet, it retries cleanly on its own, and only offers a one-tap “switch to adris.tech AI” if it still can’t.',
+    'New: real documents. Ask Krew to “make a PDF / one-pager / Excel of these” and you get an actual laid-out PDF, Excel spreadsheet or Word file in your Downloads — ready to attach and send, not chat text. Working notes (.md) are never handed over as a deliverable.',
+    'The outreach copilot now handles a reply end to end. Mark someone Replied and it reads the real conversation, plans your next move, and drafts a response that a second “checker” agent verifies before you see it (flagging anything off — wrong dates, a clashing meeting time, invented facts). You review and press send; it never sends on its own. It also drafts warm follow-ups for people who read but didn’t reply, and suggests free times from your calendar as one-tap chips.',
+    'Tell it how to change a draft in plain words (“say yes and suggest tomorrow 3pm”, “make it shorter”), jump straight back to any contact by status (replied / sent / …), and attach a file from your computer OR your Brain — not just Krew-made ones.',
+    'Availability is now checked from your logged-in Google Calendar in the browser — no need to connect Google — so a proposed meeting time avoids clashes with what you’re actually doing.',
+    'Whatever AI you pick in the chat (your own key, a local model, or adris.tech) is now used everywhere — the outreach copilot, reply planning and verification all run on it. On your own key, that’s zero adris.tech tokens.',
+    'Fixed a billing bug: adris.tech AI could say “you’ve reached your monthly limit” while you still had most of your allowance left. Usage is now counted over your real billing period, not a fixed calendar month.',
+    'The update window no longer nags. Pressing “Later” quiets it for a day — even when new versions ship in between — so it never interrupts your work again in that window.',
+    'The To-do panel stopped filling with noise: no more “no reply needed” non-tasks, no duplicates of the same follow-up, and a task you’ve already finished won’t pop back up as if it were new.',
+    'The floating corner badge is removed for now; the Quick Bar (the desktop search bar) stays exactly as it was.',
+
     'When an in-app update fails, it now shows the actual reason instead of a blank “update failed”, so it can be diagnosed and fixed.',
 
     'When it books a meeting, it now also hands you a ready-to-send message with the real Meet link in a copyable box — no more “[Name]” placeholders, and the copy box is back. Asking to “lock the time and give me a message to send” now completes both halves.',
