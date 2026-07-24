@@ -6341,6 +6341,25 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     }
 
     try {
+      // ── Proactive chunking for BYOK/local, pure multi-section WRITING tasks ──
+      // A free model asked to write a big multi-section answer in one shot gets throttled mid-stream
+      // (dropped words like "assess the and suitability") or stalls a delegate. When it's a clearly
+      // structured writing task (2+ "Area/Part/Section/Option N:" headings) and NOT a tool task, write
+      // it section-by-section instead — clean output, no throttling, no needless delegation. adris.tech
+      // (nivara) handles long outputs fine, so it's skipped there.
+      if ((mode === 'own_key' || mode === 'local') && agent.key === 'boss') {
+        const uReq = lastUserRequest();
+        const looksToolTask = /\b(find|generate|create|build|make|scan|scrape|send|email|post|publish|tweet|draft outreach|open|browse|navigate|enrich|verify)\b[\s\S]{0,40}\b(leads?|companies|company|deck|ppt|presentation|slides?|website|app|image|images|photo|video|email|emails|message|messages|browser|linkedin|gmail|calendar|automation)\b/i;
+        if (detectWritingSections(uReq).sections.length >= 2 && !looksToolTask.test(uReq)) {
+          // Ground each section in any attached text file (e.g. the meeting briefing) so the answer
+          // uses the real specifics, not generic advice.
+          const refFile = attachedFiles.find((f) => f.content && !f.isImage && /\.(md|markdown|txt|pdf|docx?)$/i.test(f.name)) || attachedFiles.find((f) => f.content && !f.isImage);
+          // Drop the empty placeholder so the chunker's own bubble is the only one.
+          setMessages((prev) => { const c = [...prev]; if (c.length && c[c.length - 1].streaming && !c[c.length - 1].content.trim()) c.pop(); return c; });
+          await chunkedWritingAnswer(uReq, sid, refFile?.content || '');
+          return; // the try's finally still runs all the normal cleanup
+        }
+      }
       while (steps < MAX_STEPS && !stopRef.current) {
         steps++;
         setAgentStep(`Thinking… ${Math.round((steps / MAX_STEPS) * 100)}%`);
@@ -7239,9 +7258,10 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
   // free/own-key model with a tight tokens-per-minute limit (e.g. Groq 12k TPM) never has to send or
   // receive one oversized request. Each part is written on its own, then stitched into one complete,
   // clean answer. Returns true if it handled the request. BYOK/local only — adris.tech has no such cap.
-  async function chunkedWritingAnswer(userReq: string, sid: string | null): Promise<boolean> {
+  async function chunkedWritingAnswer(userReq: string, sid: string | null, refContext = ''): Promise<boolean> {
     const { preamble, sections } = detectWritingSections(userReq);
     if (sections.length < 2) return false;
+    const ref = refContext.trim().slice(0, 4000);   // attached file / briefing to ground each section
 
     setAgentStep('Writing it in parts…');
     addMsg({ role: 'assistant', content: '', streaming: true });
@@ -7258,8 +7278,8 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
       setAgentStep(`Writing part ${i + 1} of ${sections.length}…`);
       body += (i ? '\n\n' : '') + sec.title + '\n';
       render();
-      const sys = "You are an expert consultant writing ONE section of a larger document for the user. Write ONLY the section named below, in full and in depth, following the user's overall format exactly (if they said no markdown, use plain lines and hyphenated lists — no #, *, or backticks). Do NOT write the other sections, do NOT repeat the section heading, no preamble, no sign-off — just the section's content.";
-      const usr = `OVERALL REQUEST (context only — do NOT answer all of it, only the one section):\n${preamble}\n\nWRITE THIS SECTION IN FULL:\n${sec.title}\n${sec.body}`.slice(0, 6000);
+      const sys = "You are an expert consultant writing ONE section of a larger document for the user. Write ONLY the section named below, in full and in depth, grounded in the specifics of any reference material provided, following the user's overall format exactly (if they said no markdown, use plain lines and hyphenated lists — no #, *, or backticks). Do NOT write the other sections, do NOT repeat the section heading, no preamble, no sign-off — just the section's content.";
+      const usr = `OVERALL REQUEST (context only — do NOT answer all of it, only the one section):\n${preamble}${ref ? `\n\nREFERENCE MATERIAL (use these specifics — names, facts, numbers — to make the section concrete):\n${ref}` : ''}\n\nWRITE THIS SECTION IN FULL:\n${sec.title}\n${sec.body}`.slice(0, 8000);
       try {
         const { text } = await streamTurnWithRetry(
           [{ role: 'user', content: usr }], sys,
