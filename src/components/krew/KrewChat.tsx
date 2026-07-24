@@ -8219,7 +8219,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
         />
       )}
       {outreachCampaign && (
-        <OutreachCopilot campaign={outreachCampaign} onClose={() => setOutreachCampaign(null)} />
+        <OutreachCopilot campaign={outreachCampaign} onClose={() => setOutreachCampaign(null)} googleToken={creds.google?.access_token ?? ''} />
       )}
     </>
   );

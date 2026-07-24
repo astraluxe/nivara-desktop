@@ -261,7 +261,7 @@ function firstUndoneIdx(arr: OutreachContact[]): number {
   return i >= 0 ? i : 0;
 }
 
-export default function OutreachCopilot({ campaign, onClose }: { campaign: OutreachCampaign; onClose: () => void }) {
+export default function OutreachCopilot({ campaign, onClose, googleToken = '' }: { campaign: OutreachCampaign; onClose: () => void; googleToken?: string }) {
   const [contacts, setContacts] = useState<OutreachContact[]>(
     campaign.contacts.map((c) => ({ ...c, status: c.status || 'todo' })));
   const [idx, setIdx] = useState(() => firstUndoneIdx(campaign.contacts));
@@ -287,6 +287,32 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
   const [docs, setDocs] = useState<GeneratedDoc[]>([]);
   const [attachDoc, setAttachDoc] = useState<GeneratedDoc | null>(null);
   const planRef = useRef<HTMLDivElement | null>(null);
+
+  // Pull the user's REAL upcoming calendar (next 3 days) so a proposed meeting time is checked
+  // against what they're actually doing — the gap the user hit: a reply offered "tomorrow 10:30"
+  // while they had a 9am that could run over. Only runs if Google is connected; silent otherwise.
+  async function fetchCalendarContext(): Promise<string> {
+    if (!googleToken) return '';
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const now = new Date().toISOString();
+      const end = new Date(Date.now() + 3 * 86_400_000).toISOString();
+      const raw = await invoke<string>('krew_http_call', {
+        method: 'GET',
+        url: `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${now}&timeMax=${end}&maxResults=20&orderBy=startTime&singleEvents=true`,
+        headers: { Authorization: `Bearer ${googleToken}` },
+        body: null,
+      });
+      const data = JSON.parse(raw) as { items?: Array<{ summary?: string; start?: { dateTime?: string; date?: string }; end?: { dateTime?: string; date?: string } }> };
+      const items = (data.items || []).slice(0, 15).map((e) => {
+        const s = e.start?.dateTime || e.start?.date || '';
+        const en = e.end?.dateTime || e.end?.date || '';
+        return `- ${e.summary || '(busy)'}: ${s}${en ? ` → ${en}` : ''}`;
+      });
+      if (!items.length) return 'Their calendar for the next 3 days is clear.';
+      return `The owner's REAL calendar for the next 3 days (do not propose or confirm a time that clashes with these; if a slot is close to one of these, flag it to check):\n${items.join('\n')}`;
+    } catch { return ''; }
+  }
 
   // Reading the inbox brings the Chrome window to the front, which hides this copilot — where the
   // drafted reply actually appears. So after a scan we pull the adris window back in front and
@@ -431,13 +457,17 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
       return;
     }
 
-    setPlanNote('Planning the next move…');
+    setPlanNote('Checking your calendar & planning the next move…');
+    // Read the real calendar first so the plan and the verifier both know what the owner is actually
+    // doing before proposing or confirming any time.
+    const calendar = await fetchCalendarContext();
+    const ownerContext = [buildOwnerContext(), calendar].filter(Boolean).join('\n\n');
     try {
       const p = await planReply({
         person: contact.name || 'them',
         company: contact.company,
         thread,
-        ownerContext: buildOwnerContext(),
+        ownerContext,
         availableDocs: docs.map((d) => ({ title: d.title, kind: d.kind, summary: d.summary })),
       });
       setPlan(p);
@@ -452,7 +482,8 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
         setAttachDoc(best || null);
       }
       // Verify the drafted reply straight away, so the user sees a vetted draft rather than raw output.
-      if (p.draftReply && !p.degraded) runVerify(p.draftReply, contact, thread);
+      // Pass the same calendar context so the verifier can catch a clashing meeting time.
+      if (p.draftReply && !p.degraded) runVerify(p.draftReply, contact, thread, ownerContext);
       await refocusAppToPlan();
     } catch {
       setPlanNote('Could not plan the reply. Read the thread and respond yourself.');
@@ -463,8 +494,9 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
   }
 
   // Independent verification pass on a drafted reply — the second agent that checks the first
-  // agent's work before the human commits to it. Never blocks; only informs.
-  async function runVerify(text: string, contact: OutreachContact, thread: string) {
+  // agent's work before the human commits to it. Never blocks; only informs. `ownerCtx` carries the
+  // owner's real calendar/availability so the verifier can catch a clashing meeting time.
+  async function runVerify(text: string, contact: OutreachContact, thread: string, ownerCtx = '') {
     if (!text.trim()) return;
     setVerifying(true); setVerify(null);
     try {
@@ -472,14 +504,21 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
         kind: 'outreach-reply',
         task: `Reply to ${contact.name || 'a prospect'}${contact.company ? ` at ${contact.company}` : ''} on LinkedIn, moving the conversation forward without over-promising.`,
         artifact: text,
-        context: `The conversation so far:\n${thread}`,
+        context: `The conversation so far:\n${thread}${ownerCtx ? `\n\nOWNER'S REAL AVAILABILITY / CALENDAR:\n${ownerCtx}` : ''}`,
         checklist: [
           'The reply directly addresses what the prospect actually said, not a generic script.',
           'No invented facts, features, prices, or commitments.',
           'It does not jump straight to "book a call" if the prospect only asked to know more — it gives substance first.',
-          'Any time or meeting mentioned is consistent with what was actually discussed.',
+          'Any proposed or confirmed meeting time does NOT clash with the owner\'s real calendar above, including a nearby event that could run over into it — flag it to confirm if unsure.',
+          'The message contains no placeholders like [Time], [Product Name], or [Company] — every detail is concrete.',
         ],
       });
+      // Guard: never offer a "revised" version that swapped a real detail for a placeholder — that
+      // is the exact regression the user hit ("[Time]", "[Tech/Product Name]"). Drop it if so.
+      if (v.revised && /\[[^\]]{2,40}\]|<[^>]{2,40}>|\bXYZ\b/i.test(v.revised)) {
+        v.revised = undefined;
+        v.issues = [{ severity: 'medium', issue: 'A rewrite was discarded because it introduced placeholders. Edit the draft yourself where needed.' }, ...v.issues];
+      }
       setVerify(v);
     } catch { /* verification is best-effort */ } finally { setVerifying(false); }
   }
@@ -792,11 +831,11 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
             <button
               onClick={scanReplyAndPlan}
               disabled={planning}
-              className="w-full flex items-center justify-center gap-2 text-xs px-3 py-2 rounded-lg border border-violet-500/50 text-violet-300 bg-violet-500/10 hover:bg-violet-500/20 transition-fast disabled:opacity-60"
+              className="w-full flex items-center justify-center gap-2 text-xs font-semibold px-3 py-2.5 rounded-lg bg-violet-600 text-white shadow-sm hover:bg-violet-500 active:bg-violet-700 transition-fast disabled:opacity-70"
             >
               {planning
-                ? <><span className="w-3 h-3 rounded-full border border-violet-300/40 border-t-violet-300 animate-spin" /> {planNote || 'Working…'}</>
-                : <><svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4"/><circle cx="12" cy="12" r="3"/></svg> {cur.status === 'replied' ? 'Scan their reply & plan next move' : 'They replied? Scan & plan the next move'}</>}
+                ? <><span className="w-3.5 h-3.5 rounded-full border-2 border-white/40 border-t-white animate-spin" /> {planNote || 'Working…'}</>
+                : <><svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4"/><circle cx="12" cy="12" r="3"/></svg> {cur.status === 'replied' ? 'Scan their reply & plan next move' : 'They replied? Scan & plan the next move'}</>}
             </button>
             {planNote && !planning && <p className="text-[10px] text-amber-300/90 mt-1.5 leading-relaxed">{planNote}</p>}
 
@@ -846,18 +885,22 @@ export default function OutreachCopilot({ campaign, onClose }: { campaign: Outre
                       className="w-full text-xs bg-nv-bg border border-nv-border rounded-lg p-2.5 leading-relaxed resize-none focus:outline-none focus:border-accent/40 select-text"
                     />
 
-                    {/* Verifier's notes + one-tap accept its improved version */}
+                    {/* Verifier's notes — readable, not a faint whisper. High-severity items in a
+                        clear red, the rest in amber, each on its own line. */}
                     {verify && verify.issues.length > 0 && (
-                      <ul className="mt-1 space-y-0.5">
-                        {verify.issues.slice(0, 4).map((it, i) => (
-                          <li key={i} className={`text-[9.5px] leading-snug ${it.severity === 'high' ? 'text-red-300/90' : 'text-amber-300/80'}`}>
-                            • {it.issue}{it.fix ? ` — ${it.fix}` : ''}
-                          </li>
-                        ))}
-                      </ul>
+                      <div className="mt-1.5 rounded-md border border-amber-500/30 bg-amber-500/[0.07] px-2.5 py-2">
+                        <div className="text-[10px] font-semibold text-amber-400 uppercase tracking-wide mb-1">What to check before sending</div>
+                        <ul className="space-y-1">
+                          {verify.issues.slice(0, 4).map((it, i) => (
+                            <li key={i} className={`text-[11.5px] leading-snug font-medium ${it.severity === 'high' ? 'text-red-400' : 'text-amber-300'}`}>
+                              • {it.issue}{it.fix ? <span className="text-nv-faint font-normal"> — {it.fix}</span> : ''}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
                     )}
                     {verify?.revised && verify.revised !== draftReply.trim() && (
-                      <button onClick={() => { setDraftReply(verify.revised!); setVerify({ ...verify, revised: undefined }); }} className="mt-1 text-[10px] px-2 py-1 rounded-md border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 transition-fast">
+                      <button onClick={() => { setDraftReply(verify.revised!); setVerify({ ...verify, revised: undefined }); }} className="mt-1.5 text-[11px] font-medium px-2.5 py-1 rounded-md border border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10 transition-fast">
                         Use the verifier's improved version
                       </button>
                     )}
