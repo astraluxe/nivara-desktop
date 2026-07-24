@@ -193,6 +193,49 @@ interface DisplayMsg {
   nextTask?: { suggestion: string; prompt: string; useNivara?: boolean };
 }
 
+// Split a long multi-section WRITING request into its parts, so a free/own-key model (with a tight
+// tokens-per-minute limit, e.g. Groq's 12k TPM) can generate each part in its own small request and
+// we stitch them into one complete answer — instead of one giant request that 413s or gets throttled
+// mid-stream. Returns the shared preamble (Role/Context/Task/Goal/Format) plus each section's title
+// and body. Only meaningful when it finds 2+ sections.
+export function detectWritingSections(text: string): { preamble: string; sections: { title: string; body: string }[] } {
+  const lines = (text || '').split('\n');
+  // A section heading: "Area 1:", "Part 2 -", "Section III.", "Step 4)", "Option A:", "Phase 1:".
+  const headingRe = /^\s*(Area|Part|Section|Step|Phase|Option|Chapter|Module)\s+([A-Za-z0-9]{1,4})\s*[:.)\-–]/i;
+  const sections: { title: string; body: string[] }[] = [];
+  const preamble: string[] = [];
+  let cur: { title: string; body: string[] } | null = null;
+  for (const ln of lines) {
+    if (headingRe.test(ln)) {
+      if (cur) sections.push(cur);
+      cur = { title: ln.trim(), body: [] };
+    } else if (cur) {
+      cur.body.push(ln);
+    } else {
+      preamble.push(ln);
+    }
+  }
+  if (cur) sections.push(cur);
+  // Trailing global instructions (Goal/Format/Output/Deliverable/Tone/Constraints) usually sit AFTER
+  // the last section but apply to ALL of them — move them into the shared preamble so every part is
+  // written in the requested format, not just the last one.
+  const metaRe = /^\s*(Goal|Format|Output|Deliverable|Deliverables|Notes?|Constraints?|Tone|Style|Requirements?)\s*:/i;
+  if (sections.length) {
+    const last = sections[sections.length - 1];
+    const bodyLines = last.body;
+    const cut = bodyLines.findIndex((l) => metaRe.test(l));
+    if (cut >= 0) {
+      const meta = bodyLines.slice(cut).join('\n').trim();
+      last.body = bodyLines.slice(0, cut);
+      if (meta) preamble.push('', meta);
+    }
+  }
+  return {
+    preamble: preamble.join('\n').trim(),
+    sections: sections.map((s) => ({ title: s.title, body: s.body.join('\n').trim() })),
+  };
+}
+
 // Detect "schedule / publish these posts" so we can offer the schedule + connect card.
 function looksLikeScheduleIntent(text: string): boolean {
   const t = text.toLowerCase();
@@ -7089,6 +7132,12 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
       // used to match this quota regex and wrongly popped an "upgrade your plan" window at BYOK users.
       // Gate on nivara mode AND require the message to actually be the adris.tech quota text.
       const isAdrisQuota = mode === 'nivara' && /reached.*monthly|monthly.*(ai|token)|upgrade.*plan|adris\.tech\/pricing/i.test(raw);
+      // A free/own-key provider rejecting an oversized request (Groq's 413 "Request too large … tokens
+      // per minute (TPM): Limit 12000") — too big for the per-minute budget. Drop the failed bubble and
+      // rebuild the answer in PARTS, each small enough to fit. Only for a multi-section writing task on
+      // BYOK/local; otherwise falls through to the normal recovery net.
+      const isTooLarge = (mode === 'own_key' || mode === 'local')
+        && /\b413\b|too large|payload too large|request too large|context length|maximum context|tokens per minute|\bTPM\b|rate.?limit/i.test(raw);
       if (isAdrisQuota) {
         // Server-side quota exceeded — remove streaming bubble and show upgrade modal
         setMessages(prev => {
@@ -7097,6 +7146,9 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
           return copy;
         });
         setShowQuotaUpgrade(true);
+      } else if (isTooLarge && detectWritingSections(lastUserRequest()).sections.length >= 2) {
+        setMessages(prev => { const copy = [...prev]; if (copy[copy.length - 1]?.streaming) copy.pop(); return copy; });
+        await chunkedWritingAnswer(lastUserRequest(), sid).catch(() => {});
       } else {
         finaliseLastMsg(sanitiseError(e));
       }
@@ -7174,6 +7226,62 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
     });
   }
 
+  // The cleaned last user request (attachment markers stripped) — shared by the recovery + chunking.
+  function lastUserRequest(): string {
+    const msgs = messagesRef.current;
+    const i = msgs.map((m) => m.role).lastIndexOf('user');
+    if (i < 0) return '';
+    return (msgs[i]?.content || '').split('\n')
+      .filter((l) => !/^(\[\[(file|image|ref)\]\]|📎|🖼|🔗)\s/.test(l.trim())).join('\n').trim();
+  }
+
+  // Generate a long multi-section WRITING answer in PARTS, one small request per section, so a
+  // free/own-key model with a tight tokens-per-minute limit (e.g. Groq 12k TPM) never has to send or
+  // receive one oversized request. Each part is written on its own, then stitched into one complete,
+  // clean answer. Returns true if it handled the request. BYOK/local only — adris.tech has no such cap.
+  async function chunkedWritingAnswer(userReq: string, sid: string | null): Promise<boolean> {
+    const { preamble, sections } = detectWritingSections(userReq);
+    if (sections.length < 2) return false;
+
+    setAgentStep('Writing it in parts…');
+    addMsg({ role: 'assistant', content: '', streaming: true });
+    const intro = `Writing this in ${sections.length} parts to stay within your model's per-minute limit — one section at a time, then combined.\n\n`;
+    let body = '';
+    const render = () => setMessages((prev) => {
+      const c = [...prev];
+      if (c.length && c[c.length - 1].streaming) c[c.length - 1] = { ...c[c.length - 1], content: intro + body };
+      return c;
+    });
+    let anyOk = false;
+    for (let i = 0; i < sections.length; i++) {
+      const sec = sections[i];
+      setAgentStep(`Writing part ${i + 1} of ${sections.length}…`);
+      body += (i ? '\n\n' : '') + sec.title + '\n';
+      render();
+      const sys = "You are an expert consultant writing ONE section of a larger document for the user. Write ONLY the section named below, in full and in depth, following the user's overall format exactly (if they said no markdown, use plain lines and hyphenated lists — no #, *, or backticks). Do NOT write the other sections, do NOT repeat the section heading, no preamble, no sign-off — just the section's content.";
+      const usr = `OVERALL REQUEST (context only — do NOT answer all of it, only the one section):\n${preamble}\n\nWRITE THIS SECTION IN FULL:\n${sec.title}\n${sec.body}`.slice(0, 6000);
+      try {
+        const { text } = await streamTurnWithRetry(
+          [{ role: 'user', content: usr }], sys,
+          (chunk) => { body += chunk; render(); },
+        );
+        const clean = (text || '').replace(/<tool_call>[\s\S]*/g, '').replace(/<tool_code>[\s\S]*/g, '').trim();
+        if (clean) anyOk = true;
+        // The streamed chunks already landed in `body`; nothing more to append here.
+      } catch {
+        body += '\n(This part didn\'t come back — try Continue to regenerate it.)\n';
+        render();
+      }
+      // Brief pause between parts so the rolling per-minute token budget has room to recover.
+      if (i < sections.length - 1) await new Promise((r) => setTimeout(r, 1500));
+    }
+    setAgentStep(null);
+    const finalText = body.trim();
+    finaliseLastMsg(finalText);
+    if (sid && finalText) krewDb.saveMessage(sid, 'assistant', finalText).catch(() => {});
+    return anyOk;
+  }
+
   // Post-turn safety net. If the agent loop produced NO visible answer (the classic "free model
   // spun on tools and went silent" case), retry ONCE with a clean, tool-free prompt on the SAME
   // model — the model can almost always write the answer when it isn't drowning in 40+ tools. Only
@@ -7197,7 +7305,13 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
       .split('\n').filter((l) => !/^(\[\[(file|image|ref)\]\]|📎|🖼|🔗)\s/.test(l.trim())).join('\n').trim();
     if (!userReq) return;
 
-    // ── Retry once, tool-free, on the SAME model ──
+    // ── If it's a big multi-section writing task on a free/own key, generate it in PARTS so the
+    //    per-minute limit is never exceeded (the real fix for Groq's 12k TPM 413s). ──
+    if ((mode === 'own_key' || mode === 'local') && detectWritingSections(userReq).sections.length >= 2) {
+      if (await chunkedWritingAnswer(userReq, sid)) return;
+    }
+
+    // ── Otherwise, retry once tool-free on the SAME model ──
     try {
       setAgentStep('Writing the answer…');
       addMsg({ role: 'assistant', content: '', streaming: true });
