@@ -44,10 +44,14 @@ export interface VerifyResult {
 }
 
 function firstJson<T>(text: string): T | null {
-  // Models wrap JSON in prose or ```json fences despite instructions. Pull the first balanced
-  // object out rather than trusting the whole string to parse.
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fenced ? fenced[1] : text;
+  // Models wrap JSON in prose or ```json fences despite instructions, and reasoning models emit a
+  // <think>…</think> preamble first. Strip those, then pull the first balanced object out rather
+  // than trusting the whole string to parse.
+  let src = String(text || '');
+  src = src.replace(/<think>[\s\S]*?<\/think>/gi, '');   // reasoning-model scratchpad
+  src = src.replace(/<\/?[a-z_]+>/gi, (m) => (/^<\/?(think|reasoning|analysis)>$/i.test(m) ? '' : m));
+  const fenced = src.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced ? fenced[1] : src;
   const start = candidate.indexOf('{');
   if (start < 0) return null;
   let depth = 0, inStr = false, esc = false;
@@ -58,10 +62,34 @@ function firstJson<T>(text: string): T | null {
     if (ch === '"') inStr = !inStr;
     else if (!inStr) {
       if (ch === '{') depth++;
-      else if (ch === '}') { depth--; if (depth === 0) { try { return JSON.parse(candidate.slice(start, i + 1)) as T; } catch { return null; } } }
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          const slice = candidate.slice(start, i + 1);
+          try { return JSON.parse(slice) as T; }
+          catch {
+            // Tolerate trailing commas and stray control chars — the usual free-model JSON slips.
+            try { return JSON.parse(slice.replace(/,\s*([}\]])/g, '$1').replace(/[\x00-\x1F]/g, ' ')) as T; }
+            catch { return null; }
+          }
+        }
+      }
     }
   }
   return null;
+}
+
+/** Last-ditch salvage: pull a usable message out of a non-JSON model reply so the user still gets a
+ *  draft to review instead of a dead "couldn't parse" end. Grabs a "draftReply" value if it's there
+ *  but the whole object failed, else returns the cleaned prose (minus any reasoning/fences). */
+function salvageDraft(text: string): string {
+  let s = String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  const m = s.match(/"draftReply"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  if (m) { try { return JSON.parse(`"${m[1]}"`); } catch { return m[1]; } }
+  s = s.replace(/```[a-z]*\n?|```/gi, '').trim();
+  // If it still looks like a JSON blob we couldn't parse, don't hand the braces to the user.
+  if (/^\s*\{[\s\S]*\}\s*$/.test(s)) return '';
+  return s.slice(0, 1200);
 }
 
 /**
@@ -243,6 +271,12 @@ export async function planReply(opts: {
     'attachSuggested true and name the kind of file in attachHint. If a meeting is being proposed or',
     'agreed, extract the time into meeting and, in the draft, confirm or counter it against the',
     "owner's stated availability — never invent a time that contradicts it.",
+    '- SCHEDULING WITHOUT KNOWN AVAILABILITY: if the context does NOT tell you when the owner is free,',
+    '  DO NOT fabricate specific days or time windows (no made-up "Thursday", no invented "10am-4pm").',
+    "  Instead ask the prospect what suits them, or offer to work around their time — e.g. \"what time",
+    '  works best for you?" or "happy to call whenever suits you — morning or afternoon?". Only state a',
+    '  concrete slot when the availability context (calendar) actually supports it, or when the prospect',
+    '  already named one you are confirming.',
     '',
     'HOW TO WRITE THE REPLY — this is where most drafts go wrong:',
     '- ENGAGE with what they actually said. If they answered a question or raised a nuance ("we support',
@@ -293,10 +327,15 @@ export async function planReply(opts: {
 
   const p = firstJson<Partial<ReplyPlan> & { attachSuggested?: unknown }>(raw);
   if (!p) {
+    // The model (often a free BYOK one) didn't return clean JSON. Rather than dead-ending, salvage a
+    // usable draft from whatever it wrote so the user still gets something to review and edit.
+    const salvaged = salvageDraft(raw);
     return {
       intent: 'unclear',
-      read: 'Couldn\'t parse the reply analysis — read the thread and respond yourself.',
-      draftReply: '',
+      read: salvaged
+        ? 'Drafted a reply, though the AI didn\'t format it cleanly — read it carefully before sending.'
+        : 'Couldn\'t get a clean draft from the AI — read the thread and respond yourself, or try again.',
+      draftReply: salvaged,
       attachSuggested: false,
       degraded: true,
     };
@@ -381,7 +420,14 @@ export async function planFollowUp(opts: {
     return { intent: 'unclear', read: `Couldn't reach the AI to draft a follow-up (${why.slice(0, 120)}). Write one yourself, or try again.`, draftReply: '', attachSuggested: false, degraded: true };
   }
   const p = firstJson<Partial<ReplyPlan> & { attachSuggested?: unknown }>(raw);
-  if (!p) return { intent: 'unclear', read: "Couldn't parse the follow-up — write one yourself.", draftReply: '', attachSuggested: false, degraded: true };
+  if (!p) {
+    const salvaged = salvageDraft(raw);
+    return {
+      intent: 'unclear',
+      read: salvaged ? 'Drafted a follow-up, though the AI didn\'t format it cleanly — read it before sending.' : "Couldn't get a clean follow-up from the AI — write one yourself, or try again.",
+      draftReply: salvaged, attachSuggested: false, degraded: true,
+    };
+  }
 
   const intents: ReplyIntent[] = ['interested', 'wants_info', 'wants_meeting', 'objection', 'not_interested', 'question', 'unclear'];
   return {
