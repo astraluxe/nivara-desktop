@@ -588,6 +588,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
             + '30–50 words, warm and specific, referencing what they do. Thank them briefly for connecting, then ONE '
             + 'low-pressure, specific opener. No pitch, no buzzwords, no placeholders.',
           ownerContext,
+          aiCall,   // the Krew chat's AI source (BYOK/local/adris) — never a separate global one
         });
         const msg = (text || '').trim();
         if (msg) setContacts((prev) => prev.map((x, j) => (j === i && !x.linkedin_message?.trim() ? { ...x, linkedin_message: msg } : x)));
