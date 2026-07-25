@@ -24,6 +24,59 @@ function buildOwnerContext(): string {
   } catch { return ''; }
 }
 
+// ─── Choosing which file to attach ───────────────────────────────────────────
+// The old rule was `docs.find(title contains the whole hint) || docs[0]`. The first half almost
+// never matched (the hint is a phrase like "a one-pager about the product", which is not a
+// substring of any filename), so in practice it fell through to docs[0] — whatever happened to be
+// most recent. That is how a spreadsheet of the user's own leads came within one click of being
+// sent TO one of those leads.
+//
+// So: score on token overlap, never fall back to "the first one", and refuse outright to attach
+// anything that looks like internal working material.
+
+/** Files that must never be offered to a prospect no matter how well they score. A lead list is
+ *  the user's own pipeline — sending it out leaks every other prospect's details. */
+function isInternalDoc(d: GeneratedDoc): boolean {
+  const hay = `${d.title} ${d.filename} ${d.summary || ''}`.toLowerCase();
+  return /\b(lead|leads|prospect|prospects|contact list|outreach|campaign|pipeline|scan|connections|export|raw|internal|draft notes)\b/.test(hay)
+    // Spreadsheets are working files by nature; one is only ever sendable if it is explicitly
+    // named as something for the recipient (a pricing sheet, a quote, an invoice).
+    || (['xlsx', 'xls', 'csv'].includes(d.kind) && !/\b(pricing|price|quote|invoice|proposal|estimate)\b/.test(hay));
+}
+
+const DOC_STOPWORDS = new Set(['the', 'a', 'an', 'and', 'or', 'of', 'for', 'to', 'with', 'about', 'that', 'this', 'our', 'your', 'their', 'it', 'is', 'are', 'be', 'on', 'in', 'as', 'file', 'document', 'doc', 'something', 'more', 'info', 'information', 'send', 'share', 'attach', 'attachment']);
+const docTokens = (s: string): string[] =>
+  (s || '').toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 2 && !DOC_STOPWORDS.has(t));
+
+/**
+ * Pick the generated file that genuinely matches what the plan asked for — or nothing at all.
+ * `hint` is the strategist's attachHint; `context` is the thread + person, so a doc that talks
+ * about the prospect's own field wins over one that doesn't. Returns null when nothing clears the
+ * bar, because attaching the wrong file is worse than attaching none: the user has to notice and
+ * undo it, and if they don't, the prospect receives something irrelevant or private.
+ */
+function pickAttachment(docs: GeneratedDoc[], hint: string, context: string): GeneratedDoc | null {
+  const sendable = docs.filter((d) => !isInternalDoc(d));
+  if (!sendable.length) return null;
+  const hintToks = docTokens(hint);
+  const ctxToks = new Set(docTokens(context).slice(0, 400));
+  let best: GeneratedDoc | null = null;
+  let bestScore = 0;
+  for (const d of sendable) {
+    const hay = `${d.title} ${d.filename} ${d.summary || ''}`.toLowerCase();
+    const hayToks = new Set(docTokens(hay));
+    // The hint is what the plan actually asked for, so it carries the most weight.
+    let score = hintToks.reduce((n, t) => n + (hayToks.has(t) ? 3 : 0), 0);
+    // An exact kind request ("pdf", "deck") is a strong signal on its own.
+    if (hint && (d.kind === hint.toLowerCase().trim() || hay.includes(hint.toLowerCase().trim()))) score += 4;
+    // Weak tie-break: words the conversation itself is about.
+    for (const t of hayToks) if (ctxToks.has(t)) score += 1;
+    if (score > bestScore) { bestScore = score; best = d; }
+  }
+  // Below this, the "match" is one incidental shared word — which is not a reason to attach a file.
+  return bestScore >= 3 ? best : null;
+}
+
 // ─── Human-in-the-loop LinkedIn / email outreach ─────────────────────────────
 // Why this exists instead of full automation:
 // LinkedIn's User Agreement forbids automated messaging/connecting, and their
@@ -629,19 +682,34 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
 
       if (targetUrl) {
         setPlanNote('Reading their reply…');
-        const raw = await invoke<string>('run_browser_persistent', { args: `readthread ${targetUrl}` }).catch((e) => String(e));
-        if (raw.includes('SIGN_IN_REQUIRED') || raw.includes('[NEEDS_LOGIN]')) {
-          setPlanNote('Sign in to LinkedIn in the ADRIS browser window, then click "Scan their reply" again.');
-          setPlanning(false); await refocusAppToPlan(); return;
-        }
-        const tj = raw.indexOf('THREAD_JSON:');
-        if (tj >= 0) {
-          try {
-            const obj = JSON.parse(raw.slice(tj + 'THREAD_JSON:'.length).trim()) as { messages?: Array<{ isYou?: boolean; text?: string }> };
-            if (obj.messages?.length) {
-              thread = obj.messages.map((m) => `${m.isYou ? 'YOU' : (contact.name || 'THEM')}: ${m.text || ''}`).join('\n');
-            }
-          } catch { /* fall through to manual paste */ }
+        // RETRY ONCE. The chat overlay is loaded asynchronously by LinkedIn, and on a cold window
+        // it sometimes has no message nodes yet when we look — the reader then returns
+        // READTHREAD_EMPTY and the user was sent to the "paste it yourself" box for a thread that
+        // was sitting right there. Clicking the button again always worked, which is the whole
+        // proof that a second attempt is all it needs. So do that second attempt here instead of
+        // making the user discover it.
+        for (let attempt = 0; attempt < 2 && !thread.trim(); attempt++) {
+          if (attempt) {
+            setPlanNote('Their chat was still loading — reading it again…');
+            await new Promise((r) => setTimeout(r, 1500));
+          }
+          const raw = await invoke<string>('run_browser_persistent', { args: `readthread ${targetUrl}` }).catch((e) => String(e));
+          if (raw.includes('SIGN_IN_REQUIRED') || raw.includes('[NEEDS_LOGIN]')) {
+            setPlanNote('Sign in to LinkedIn in the ADRIS browser window, then click "Scan their reply" again.');
+            setPlanning(false); await refocusAppToPlan(); return;
+          }
+          const tj = raw.indexOf('THREAD_JSON:');
+          if (tj >= 0) {
+            try {
+              const obj = JSON.parse(raw.slice(tj + 'THREAD_JSON:'.length).trim()) as { messages?: Array<{ isYou?: boolean; text?: string }> };
+              if (obj.messages?.length) {
+                thread = obj.messages.map((m) => `${m.isYou ? 'YOU' : (contact.name || 'THEM')}: ${m.text || ''}`).join('\n');
+              }
+            } catch { /* fall through to another attempt, then the manual paste */ }
+          }
+          // Anything other than "opened it but saw no messages yet" is not worth a second go —
+          // a missing chat box or a hard error will fail the same way twice.
+          if (!thread.trim() && !/READTHREAD_EMPTY/.test(raw)) break;
         }
       }
     } catch { /* browser optional — fall back to a manual paste */ }
@@ -675,11 +743,11 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       // Point the user to where the draft now is, so the flow never dead-ends silently.
       setPlanNote(p.degraded ? p.read : (mode === 'followup' ? '✓ Follow-up drafted below — review & send.' : '✓ Read their reply — your draft is ready below to review & send.'));
       setTimeout(() => setPlanNote((n) => (n.startsWith('✓ ') ? '' : n)), 4000);
-      // If the plan suggests attaching something, pre-select the best-matching generated doc.
+      // If the plan suggests attaching something, pre-select the best-matching generated doc —
+      // or none, when nothing on file actually matches. See pickAttachment: silently attaching
+      // "the most recent file" is how an internal spreadsheet ends up pointed at a prospect.
       if (p.attachSuggested && docs.length) {
-        const hint = (p.attachHint || '').toLowerCase();
-        const best = docs.find((d) => hint && (`${d.title} ${d.summary || ''}`.toLowerCase().includes(hint) || d.kind === hint)) || docs[0];
-        setAttachDoc(best || null);
+        setAttachDoc(pickAttachment(docs, p.attachHint || '', `${contact.name || ''} ${contact.company || ''}\n${thread}`));
       }
       // Verify the drafted reply straight away, so the user sees a vetted draft rather than raw output.
       // Pass the same calendar context so the verifier can catch a clashing meeting time.
@@ -706,7 +774,10 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
         artifact: text,
         context: `The conversation so far:\n${thread}${ownerCtx ? `\n\nOWNER'S REAL AVAILABILITY / CALENDAR:\n${ownerCtx}` : ''}`,
         checklist: [
+          'If the prospect asked a direct question, the reply ANSWERS it concretely in the first two sentences. A promise to explain, an offer of a call/document, or a counter-question instead of an answer is a FAIL.',
+          'Every concrete example or benefit named in the reply fits THIS prospect\'s actual line of work. An example from an unrelated industry is a FAIL.',
           'The reply directly addresses what the prospect actually said, not a generic script.',
+          'If the prospect already replied, the message does not treat them as if they ignored it ("just following up on my previous message").',
           'No invented facts, features, prices, or commitments.',
           'It does not jump straight to "book a call" if the prospect only asked to know more — it gives substance first.',
           'Any proposed or confirmed meeting time does NOT clash with the owner\'s real calendar above, including a nearby event that could run over into it — flag it to confirm if unsure.',

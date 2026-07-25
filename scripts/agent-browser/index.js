@@ -1840,8 +1840,22 @@ async function main() {
     var rtOpened = await openLinkedInComposeBox(rtPage);
     writeState({ url: rtPage.url() });
     if (!rtOpened.box) { await hideBanner(rtPage); process.stdout.write('READTHREAD_NO_BOX ' + (rtOpened.why || '') + ' Could not open their chat to read it.'); return; }
-    try { await rtPage.waitForSelector('.msg-s-message-list-container, .msg-s-message-list__event', { timeout: 6000 }); } catch (_) {}
-    await new Promise(function (r) { setTimeout(r, 500); });
+    // Wait for message BODIES, not just the list container. The container renders first and empty,
+    // so a 6s wait on it plus a flat 500ms was regularly satisfied before a single message existed —
+    // the read then came back empty on a thread that was really there, and the user was told to
+    // paste it in by hand. Poll for actual message text instead, and give it room on a cold window.
+    try { await rtPage.waitForSelector('.msg-s-event-listitem__body', { timeout: 12000 }); } catch (_) {}
+    // Let the history settle: LinkedIn backfills older messages after the first paint, so reading
+    // the instant the first node appears can catch only the newest one.
+    var rtSeen = -1;
+    for (var rtW = 0; rtW < 8; rtW++) {
+      var rtNow = await rtPage.evaluate(function () {
+        return document.querySelectorAll('.msg-s-event-listitem__body').length;
+      }).catch(function () { return 0; });
+      if (rtNow > 0 && rtNow === rtSeen) break;   // stable for one round → done growing
+      rtSeen = rtNow;
+      await new Promise(function (r) { setTimeout(r, 400); });
+    }
     // Same who-said-what extraction as the inbox reader: LinkedIn marks the OTHER person's messages
     // with `msg-s-event-listitem--other`; its absence means the account owner sent it. This is on
     // every message so the sender never drifts.
