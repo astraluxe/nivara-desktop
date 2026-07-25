@@ -39,7 +39,7 @@ export const KREW_PROFILE_KEY = '__krew_profile__';
 // block page for real search results.
 function looksBlockedPage(t: string): boolean {
   const s = t.toLowerCase().slice(0, 600);
-  return /unusual traffic|verify you.?re a human|are you a human|i.?m not a robot|captcha|blocked|access denied|request could not be processed|automated (queries|requests)/.test(s);
+  return /unusual traffic|verify[^.\n]{0,24}human|are you a human|i.?m not a robot|captcha|blocked|access denied|request could not be processed|automated (queries|requests)/.test(s);
 }
 
 function cleanBrowserText(text: string): string {
@@ -2410,12 +2410,35 @@ async function executeToolCore(
       }
     } catch { /* fall through */ }
 
-    // 4) Everything failed (including a CAPTCHA/block page) — tell the model PLAINLY that
+    // 4) Blocked by a "confirm you're human" check — ASK THE USER instead of giving up.
+    //
+    // The check exists to confirm a person is present, and a person IS present: they are sitting
+    // in front of the app waiting for this task. So the page is put in the visible window with a
+    // banner, they tick the box, and the search carries on by itself. Nothing here tries to get
+    // around the check — it just stops the task dying at a step the user could have cleared in two
+    // seconds, and saves them starting the whole run again.
+    //
+    // Two windows of ~40s rather than one long call, because a single browser command that runs
+    // too long gets abandoned by the bridge underneath it.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await invoke<string>('run_agent_browser_session', { sessionId, args: `humancheck "${ddgUrl}"` });
+        if (res.includes('HUMANCHECK:CLEARED')) {
+          const text = cleanBrowserText(res.slice(res.indexOf('HUMANCHECK:CLEARED') + 'HUMANCHECK:CLEARED'.length));
+          if (text && text.length > 80 && !looksBlockedPage(text)) {
+            return fenceUntrusted('web search results', text.length > 5000 ? text.slice(0, 5000) + '\n…[truncated]' : text);
+          }
+        }
+        if (!res.includes('HUMANCHECK:PENDING')) break;   // crashed or not installed — stop asking
+      } catch { break; }
+    }
+
+    // 5) Still blocked (or the user didn't complete it) — tell the model PLAINLY that
     // search is blocked right now, rather than staying silent about it (silence is what let
     // a model quietly substitute unrelated recalled context for a real answer before). Point
     // it at browser_navigate directly to the specific site it needs, which does not go
     // through DuckDuckGo at all.
-    return `[web_search is BLOCKED right now (the search engine returned a "verify you're human" / anti-bot page, not real results) for "${query}". Do NOT use anything from that blocked page as if it were real data, and do NOT substitute unrelated information you recall from memory or Brain to fill the gap — that is fabrication. Instead: browser_navigate DIRECTLY to the specific site you actually need (e.g. the company's own website), or tell the user plainly that search is temporarily blocked and ask if they want you to try again shortly.]`;
+    return `[web_search is BLOCKED right now for "${query}" — the search engine showed a "verify you're human" page and it was not completed (the user was shown it in the browser window and may not have been at their desk). Do NOT use anything from that blocked page as if it were real data, and do NOT substitute unrelated information you recall from memory or Brain to fill the gap — that is fabrication. Instead: browser_navigate DIRECTLY to the specific site you actually need (e.g. the company's own website), or tell the user plainly that search is temporarily blocked and ask if they want you to try again shortly.]`;
   }
 
   // ── Company research (open data sources) — REAL company names, never invent ──

@@ -634,7 +634,7 @@ async function main() {
   if (cmd !== 'open' && cmd !== 'close'
       && cmd !== 'connections' && cmd !== 'logincheck' && cmd !== 'message' && cmd !== 'printpdf'
       && cmd !== 'findprofile' && cmd !== 'messages' && cmd !== 'typemsg' && cmd !== 'meetlink' && cmd !== 'whatsapp'
-      && cmd !== 'readthread' && cmd !== 'gcalcheck' && cmd !== 'sentinvites') {
+      && cmd !== 'readthread' && cmd !== 'gcalcheck' && cmd !== 'sentinvites' && cmd !== 'humancheck') {
     var state   = readState();
 
     var conn    = await ensureChrome();
@@ -1434,6 +1434,50 @@ async function main() {
     await hideBanner(fPage);
     writeState({ url: fFinal });
     process.stdout.write('PROFILE_JSON:' + JSON.stringify(results || []));
+    return;
+  }
+
+  // ── humancheck <url> ────────────────────────────────────────────────────────
+  // A search engine has shown a "confirm you're human" page. Rather than dead-ending the task,
+  // put that page in front of the USER in the visible window, let THEM complete it, and carry on
+  // the moment it clears.
+  //
+  // This deliberately does not try to get around the check — it does the opposite. The check
+  // exists to confirm a human is present, so it asks the human who is already sitting there. All
+  // this command adds is noticing when the page clears so the work resumes by itself instead of
+  // failing and making the user start again.
+  //
+  // Capped well under the caller's per-command budget; the caller re-runs it if the user needs
+  // longer, which keeps a single call from ever hanging the browser bridge.
+  if (cmd === 'humancheck') {
+    var hcUrl = argv.slice(1).join(' ').replace(/^"|"$/g, '').trim();
+    if (!hcUrl) { process.stdout.write('HUMANCHECK:NO_URL'); return; }
+    var hcConn = await ensureChrome();
+    var hcCtx = hcConn.context;
+    if (!hcCtx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
+    var hcPage = hcCtx.pages().at(-1) || await hcCtx.newPage();
+    try { await hcPage.bringToFront(); } catch (_) {}
+    try { await hcPage.goto(hcUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }); } catch (_) {}
+    await showBanner(hcPage, 'The search engine wants to confirm you are human — please complete the check in this window. ADRIS continues on its own the moment it clears.');
+
+    var blockedRe = /unusual traffic|verify[^.\n]{0,24}human|are you a human|i.?m not a robot|captcha|access denied|automated (queries|requests)|request could not be processed/i;
+    var hcStart = Date.now(), hcText = '', hcCleared = false;
+    while (Date.now() - hcStart < 38000) {
+      await new Promise(function (r) { setTimeout(r, 1500); });
+      try {
+        hcText = await hcPage.evaluate(function () { return (document.body && document.body.innerText) || ''; });
+      } catch (_) { continue; }
+      // Cleared = the challenge wording is gone AND there is real content to read.
+      if (hcText && hcText.length > 200 && !blockedRe.test(hcText)) { hcCleared = true; break; }
+    }
+    await hideBanner(hcPage);
+    writeState({ url: hcPage.url() });
+    if (hcCleared) {
+      process.stdout.write('HUMANCHECK:CLEARED\n' + hcText.slice(0, 6000));
+    } else {
+      // Still waiting — the caller decides whether to give the user another window of time.
+      process.stdout.write('HUMANCHECK:PENDING');
+    }
     return;
   }
 
