@@ -45,8 +45,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.65',
+  version: '1.6.66',
   items: [
+    'Stop actually stops a lead search now, and so does leaving the chat. Previously it kept running, opened the browser for work you had cancelled, and dropped its result card into whichever chat you had moved to. A run is now tied to the chat that started it and unwinds at the next step.',
+    'Free keys that hit their per-minute limit no longer end the search empty-handed. Groq and NVIDIA cap requests per minute; that was being treated as a failed batch and skipped, so a perfectly working model could produce "no usable rows". It now waits out the limit and carries on where it left off, telling you what it is waiting for.',
+
     'You can now see what a lead search actually found. The result card has a Preview that lists every lead it saved, with clickable links — instead of asking you to trust "25 leads ready" and only being able to check them by sending them to outreach, which is the one step you cannot undo.',
     'Fixed: "Open in Brain" on that card did nothing at all. It was sending a message nothing was listening for.',
     'The result card can be dismissed with an x. The list stays saved in your Brain either way.',

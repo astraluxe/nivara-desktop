@@ -5300,8 +5300,25 @@ The prompt must be production-ready — specific enough for a motion designer to
     if (busy) return;
     const sid = await ensureSession('Lead list');
     setBusy(true);
+    resetLeadStop();          // clear any Stop left over from a previous run
     const t0 = Date.now();
     const secs = () => Math.round((Date.now() - t0) / 1000);
+
+    // ─── Bind this run to the chat it started in, and make Stop real ────────────────────────────
+    // Two faults, same root cause: the run wrote to whatever conversation happened to be open, so
+    // switching chats mid-run dropped its progress and its result card into an unrelated chat; and
+    // Stop only mattered inside the batching loop, so pressing it (or deleting the chat) left the
+    // run grinding on, opening the browser for a task nobody wanted any more.
+    //
+    // mine() is the single gate: every UI write and every step boundary goes through it. If the
+    // user has moved on, or asked to stop, the run stops touching the screen and unwinds.
+    const runSid = sid;
+    const mine = () => !stopRef.current && !isLeadStopRequested() && (!runSid || sidRef.current === runSid);
+    const say  = (text: string) => { if (mine()) say(text); };
+    const post = (m: Parameters<typeof addMsg>[0]) => { if (mine()) addMsg(m); };
+    // Thrown to unwind out of the middle of the pipeline; caught below and reported quietly.
+    const ABORT = 'nv-lead-abort';
+    const checkpoint = () => { if (!mine()) throw new Error(ABORT); };
     const sizeLabel = cfg.sizes.length && cfg.sizes.length < 5 ? cfg.sizes.join(', ') + ' employees' : 'any size';
     const senLabel = cfg.seniority.includes('any') || !cfg.seniority.length
       ? 'anyone' : cfg.seniority.join(' / ');
@@ -5320,8 +5337,8 @@ The prompt must be production-ready — specific enough for a motion designer to
       }
     }
 
-    addMsg({ role: 'user', content: `Find ${cfg.count} leads — ${cfg.what}${cfg.city ? ` in ${cfg.city}` : ''} (${sizeLabel}, ${senLabel})` });
-    addMsg({ role: 'assistant', content: `Finding ${cfg.count} leads…`, streaming: true });
+    post({ role: 'user', content: `Find ${cfg.count} leads — ${cfg.what}${cfg.city ? ` in ${cfg.city}` : ''} (${sizeLabel}, ${senLabel})` });
+    post({ role: 'assistant', content: `Finding ${cfg.count} leads…`, streaming: true });
 
     try {
       // 1) Ask for the candidates. Kept to ONE table and no prose so a local model has the least
@@ -5364,6 +5381,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       // stops a fruitless run is the two-empty-rounds rule below, not this number.
       const maxRounds = Math.min(20, Math.ceil(cfg.count / batchSize) + 4);
       let emptyRounds = 0;
+      let rateWaits = 0;   // how many per-minute limit waits we've absorbed
 
       for (let round = 0; round < maxRounds && collected.size < cfg.count; round++) {
         if (stopRef.current) break;
@@ -5371,14 +5389,35 @@ The prompt must be production-ready — specific enough for a motion designer to
         const already = collected.size
           ? `\nALREADY FOUND — never repeat these: ${[...collected.values()].map((r) => (r.split('|')[1] || '').trim()).filter(Boolean).join(', ')}`
           : '';
-        updateLastMsg(`Finding leads — ${collected.size} of ${cfg.count} so far…\n\n_Searching… ${secs()}s_`);
+        say(`Finding leads — ${collected.size} of ${cfg.count} so far…\n\n_Searching… ${secs()}s_`);
         let text = '';
         try {
           ({ text } = await streamTurnWithRetry(
             [{ role: 'user', content: `${filters}\nHOW MANY: exactly ${want} rows${already}\n\nReturn the table now.` }],
             sys, () => {},
           ));
-        } catch { continue; }   // one bad batch must never sink the whole run
+        } catch (e) {
+          // A RATE LIMIT is not a failed batch — it is "ask me again shortly".
+          //
+          // Groq's and NVIDIA's free tiers cap requests/tokens per minute, and 429 is not in the
+          // transient-retry set, so the call threw, this loop skipped the batch, and after two
+          // barren rounds the run ended with "your model didn't return any usable rows" — when the
+          // model was fine and simply throttled. Wait out the window and retry the SAME batch
+          // without spending a round on it.
+          const msg = e instanceof Error ? e.message : String(e);
+          if (/429|rate.?limit|too many requests|quota/i.test(msg) && rateWaits < 4 && mine()) {
+            rateWaits++;
+            for (let w = 20; w > 0 && mine(); w--) {
+              say(`Finding leads — ${collected.size} of ${cfg.count} so far…
+
+_Your key hit its per-minute limit. Waiting ${w}s and carrying on — nothing is lost._`);
+              await new Promise((r) => setTimeout(r, 1000));
+            }
+            round--;          // this attempt didn't count
+            continue;
+          }
+          continue;           // any other single bad batch must never sink the whole run
+        }
         const before = collected.size;
         for (const row of harvestLeadRows(text)) {
           const first = (row.split('|')[1] || '').trim();
@@ -5398,10 +5437,11 @@ The prompt must be production-ready — specific enough for a motion designer to
         const none = (mode === 'own_key' || mode === 'local')
           ? 'Your model didn\'t return any usable rows for that. Try a smaller number, or switch to adris.tech AI just for this one — nothing was saved.'
           : 'I couldn\'t put a list together for that. Try widening it — fewer filters, or a bigger city.';
-        setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: none, streaming: false }; return c; });
+        if (mine()) setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: none, streaming: false }; return c; });
         setBusy(false); return;
       }
 
+      checkpoint();
       // 2) Drop anything that isn't a person before spending browser time on it. A company row
       //    can't be connected with, so enriching one is wasted work.
       {
@@ -5436,7 +5476,7 @@ The prompt must be production-ready — specific enough for a motion designer to
           // had no way to tell whether it had registered. Say so plainly, and pass the request
           // down to the tool so it really does halt between sub-batches.
           if (stopRef.current && !askedStop) { askedStop = true; requestLeadStop(); }
-          updateLastMsg(askedStop
+          say(askedStop
             ? `${label}${last ? ` — ${last}` : ''}\n\n_Stopping — finishing the batch already in flight, then halting. (${secs()}s)_`
             : `${label}${last ? ` — ${last}` : ''}\n\n_${detail} · ${secs()}s elapsed — press Stop to halt after the current batch._`);
         };
@@ -5459,6 +5499,7 @@ The prompt must be production-ready — specific enough for a motion designer to
         finally { clearInterval(hb); un(); }
       };
 
+      checkpoint();
       if (cfg.mustHaveLinkedIn || cfg.mustHaveContact || cfg.useMaps) {
         // Hold the browser open for the run, but leave the "in use" banner off until the tool
         // reports work that actually involves it (see the listener above).
@@ -5471,7 +5512,7 @@ The prompt must be production-ready — specific enough for a motion designer to
         // "Enriching 1-3 of 40" for 90s with no window in sight. This warms it at the point a
         // browser is genuinely about to be used, so there is no surprise window on tasks that
         // never browse, and no silent stall on tasks that do.
-        updateLastMsg(`Checking ${Math.max(0, extractTableRows(md).length - 2)} leads
+        say(`Checking ${Math.max(0, extractTableRows(md).length - 2)} leads
 
 _Starting the browser…_`);
         try { await invoke('run_browser_persistent', { args: 'open "about:blank"' }); }
@@ -5498,6 +5539,7 @@ _Starting the browser…_`);
       setAgentBrowserHold(false); setBrowserActive(false);
       closeAgentBrowserIfActive().catch(() => {});
 
+      checkpoint();
       // 5) Enforce the "only keep leads that have…" boxes. Asking for them and then handing back
       //    rows without them is the thing that made the old lists feel unreliable.
       const { rows: finalRows } = parseLeadRows(md, 0);
@@ -5525,7 +5567,7 @@ _Starting the browser…_`);
       }
       if (!finalKept.length) {
         const none = `I found ${finalRows.length} rows but none of them were usable people — they were companies or unusable entries. Try a different wording, or a wider city.`;
-        setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: none, streaming: false }; return c; });
+        if (mine()) setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: none, streaming: false }; return c; });
         setBusy(false); return;
       }
       const kept2 = finalKept;
@@ -5547,8 +5589,14 @@ _None of them had everything you ticked (most are missing a LinkedIn URL), so I'
           : '');
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: summary, streaming: false }; return c; });
       if (sid) krewDb.saveMessage(sid, 'assistant', summary).catch(() => {});
-      addMsg({ role: 'lead_result', content: title, leadCount: kept2.length, leadTable: finalMd });
+      post({ role: 'lead_result', content: title, leadCount: kept2.length, leadTable: finalMd });
     } catch (e) {
+      if (String(e).includes(ABORT)) {
+        // Stopped, or the user moved to another chat. Say so in the chat it belongs to, and
+        // leave everything else alone.
+        say('Lead search stopped. Nothing was saved.');
+        return;
+      }
       const err = `Couldn't finish the lead search: ${sanitiseError(e)}`;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: err, streaming: false }; return c; });
     } finally {
