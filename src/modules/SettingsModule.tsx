@@ -45,8 +45,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.62',
+  version: '1.6.63',
   items: [
+    'Lead searches start the browser up front instead of stalling. Removing the old surprise window in 1.6.62 also removed the only thing that started the browser, so checking leads sat for minutes with nothing visible before it finally got going. It now starts the browser at the point it is actually needed — no window on tasks that never browse, no long silent wait on tasks that do.',
+    'Stop now tells you it worked. Pressing Stop during a lead check could not interrupt the batch already running, so the timer kept counting and it looked ignored. It now says it is stopping and halts after the batch in flight.',
+
     'Your AI choice is remembered. If you were on your own key (or a local model), the app stays there when you reopen it instead of silently moving you back onto your adris.tech allowance and spending tokens you had chosen not to spend.',
     'Lead searches now show live progress. The status used to freeze on "…8s" while the work carried on for minutes, which looked exactly like the app had hung. It now ticks and shows which batch it is on, and you can Stop after the current batch.',
     'The browser no longer opens a blank window on its own. It used to pre-open one whenever a message contained a word like "find" or "check", which looked like the app doing something behind your back. The first browser open is now slightly slower and nothing appears unasked.',

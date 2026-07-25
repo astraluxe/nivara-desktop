@@ -5392,9 +5392,17 @@ The prompt must be production-ready — specific enough for a motion designer to
         detail: string,
       ): Promise<string | null> => {
         let last = '';
-        const paint = () => updateLastMsg(
-          `${label}${last ? ` — ${last}` : ''}\n\n_${detail} · ${secs()}s elapsed — press Stop to halt after the current batch._`,
-        );
+        let askedStop = false;
+        const paint = () => {
+          // Pressing Stop during a tool call looked like nothing happened: the call cannot be
+          // interrupted mid-flight, so the timer kept ticking with the same message and the user
+          // had no way to tell whether it had registered. Say so plainly, and pass the request
+          // down to the tool so it really does halt between sub-batches.
+          if (stopRef.current && !askedStop) { askedStop = true; requestLeadStop(); }
+          updateLastMsg(askedStop
+            ? `${label}${last ? ` — ${last}` : ''}\n\n_Stopping — finishing the batch already in flight, then halting. (${secs()}s)_`
+            : `${label}${last ? ` — ${last}` : ''}\n\n_${detail} · ${secs()}s elapsed — press Stop to halt after the current batch._`);
+        };
         paint();
         const hb = setInterval(paint, 1000);
         const un = await listen('agent-progress', (e) => {
@@ -5418,6 +5426,19 @@ The prompt must be production-ready — specific enough for a motion designer to
         // Hold the browser open for the run, but leave the "in use" banner off until the tool
         // reports work that actually involves it (see the listener above).
         setAgentBrowserHold(true);
+        // START CHROME FIRST, and wait for it.
+        //
+        // Removing the keyword-triggered pre-warm fixed the window-appearing-unasked complaint but
+        // took away the only thing that ever launched Chrome with its debugging port. Enrichment
+        // then spent ~30s per sub-batch failing to connect to a browser that was never running —
+        // "Enriching 1-3 of 40" for 90s with no window in sight. This warms it at the point a
+        // browser is genuinely about to be used, so there is no surprise window on tasks that
+        // never browse, and no silent stall on tasks that do.
+        updateLastMsg(`Checking ${Math.max(0, extractTableRows(md).length - 2)} leads
+
+_Starting the browser…_`);
+        try { await invoke('run_browser_persistent', { args: 'open "about:blank"' }); }
+        catch { /* enrichment still has its HTTP-only path; it is just slower */ }
         const out = await runToolWithHeartbeat(
           'enrich_lead_list', { list: md, forceConfirm: cfg.verify },
           `Checking ${Math.max(0, extractTableRows(md).length - 2)} leads`,
@@ -5450,13 +5471,28 @@ The prompt must be production-ready — specific enough for a motion designer to
         if (cfg.mustHaveContact && !(r.cells['phone'] || r.cells['email'])) return false;
         return true;
       });
-      const dropped = finalRows.length - kept.length;
+      let dropped = finalRows.length - kept.length;
+      // Never throw away a whole run.
+      //
+      // Filtering to zero and saving nothing means minutes of browser work vanish and the user is
+      // told to change a setting and start again. If NOBODY passed, keep the real people we found
+      // and say plainly what is missing — an incomplete lead the user can finish by hand is worth
+      // far more than an empty result. The filters still do their job whenever anyone passes.
+      let relaxed = false;
+      let finalKept = kept;
       if (!kept.length) {
-        const none = `I found ${finalRows.length} candidates but none met your "must have" filters. Untick one of them and I'll keep the near-misses too.`;
+        finalKept = finalRows.filter((r) => looksLikePersonLead(r.cells['name'] || '', r.cells['company'] || '')
+          && !existingNames.has((r.cells['name'] || '').toLowerCase().replace(/[^a-z0-9]/g, '')));
+        relaxed = finalKept.length > 0;
+        dropped = finalRows.length - finalKept.length;
+      }
+      if (!finalKept.length) {
+        const none = `I found ${finalRows.length} rows but none of them were usable people — they were companies or unusable entries. Try a different wording, or a wider city.`;
         setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: none, streaming: false }; return c; });
         setBusy(false); return;
       }
-      const finalMd = rowsToMarkdown(kept);
+      const kept2 = finalKept;
+      const finalMd = rowsToMarkdown(kept2);
 
       // 6) Save to Brain, then offer the one-click hand-off. Appending merges cell-by-cell into the
       //    node the user picked, so nothing already there is overwritten or lost.
@@ -5465,11 +5501,16 @@ The prompt must be production-ready — specific enough for a motion designer to
       } else {
         await autoSaveLeadTableToBrain(finalMd, [], title, cfg.what);
       }
-      const summary = `${existingNode ? 'Added' : 'Saved'} **${kept.length}** verified lead${kept.length === 1 ? '' : 's'} ${existingNode ? 'to' : 'to'} **${title}**`
-        + `${dropped > 0 ? ` — ${dropped} didn't meet your filters and were left out` : ''}.`;
+      const summary = `${existingNode ? 'Added' : 'Saved'} **${kept2.length}** lead${kept2.length === 1 ? '' : 's'} to **${title}**`
+        + `${dropped > 0 ? ` — ${dropped} left out` : ''}.`
+        + (relaxed
+          ? `
+
+_None of them had everything you ticked (most are missing a LinkedIn URL), so I've saved them rather than lose the run. Run **/verifylinks** on that list to fill the profiles in._`
+          : '');
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: summary, streaming: false }; return c; });
       if (sid) krewDb.saveMessage(sid, 'assistant', summary).catch(() => {});
-      addMsg({ role: 'lead_result', content: title, leadCount: kept.length, leadTable: finalMd });
+      addMsg({ role: 'lead_result', content: title, leadCount: kept2.length, leadTable: finalMd });
     } catch (e) {
       const err = `Couldn't finish the lead search: ${sanitiseError(e)}`;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: err, streaming: false }; return c; });
