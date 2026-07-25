@@ -5347,7 +5347,13 @@ The prompt must be production-ready — specific enough for a motion designer to
         'You build B2B lead lists. Return ONLY a markdown table — no preamble, no notes, no commentary.',
         'Columns EXACTLY: | Name | Company/Role | Sector | City | Website | LinkedIn |',
         'Rules:',
-        '- Name = a REAL individual person. Never a company name in the Name column.',
+        '- Name = a REAL, NAMED INDIVIDUAL. Never a company, firm, agency or brand in the Name column.',
+        '- The point is to reach a PERSON. A company page cannot be sent a connection request or a',
+        '  message, so a row naming a company is useless and will be discarded.',
+        '- If you know the COMPANY but not the person, use the company to identify the individual:',
+        '  name its founder, CEO, or the specific decision-maker for this purpose — then put THAT',
+        '  person in the Name column and the company in Company/Role. Never fall back to the company.',
+        '- If you genuinely cannot name a real person at a company, LEAVE THAT COMPANY OUT entirely.',
         '- Company/Role must contain their actual job title (e.g. "Zenwork / CEO", "COO at Acme").',
         '- Only people who plausibly match EVERY filter given below. Fewer correct rows beat more wrong ones.',
         '- Never invent a LinkedIn URL, a phone number or an email. Put — when you do not know.',
@@ -5588,7 +5594,7 @@ _Starting the browser…_`);
         await autoSaveLeadTableToBrain(finalMd, [], title, cfg.what);
       }
       const summary = `${existingNode ? 'Added' : 'Saved'} **${kept2.length}** lead${kept2.length === 1 ? '' : 's'} to **${title}**`
-        + `${dropped > 0 ? ` — ${dropped} left out` : ''}.`
+        + `${dropped > 0 ? ` — ${dropped} left out (companies rather than people, duplicates, or missing what you asked for)` : ''}.`
         + (relaxed
           ? `
 

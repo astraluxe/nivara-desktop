@@ -286,6 +286,28 @@ export default function ConnectionBar(props: Props) {
                   </div>
                 )}
 
+                {/* Groq's free tier caps tokens-per-minute at 12,000. That is fine for chat and
+                    drafting, and genuinely too small for the batch jobs — a lead search sends the
+                    brief plus a growing exclusion list on every batch and eventually gets a hard
+                    "413 Payload Too Large", and the per-minute waits stretch a 25-lead run into
+                    tens of minutes. NVIDIA's free tier is far more generous, so it is named as the
+                    fix rather than leaving the user to discover this mid-run. */}
+                {provider === 'groq' && (
+                  <div className="mb-3 px-2.5 py-2 rounded-lg border border-red-500/40 bg-red-500/10">
+                    <p className="text-[10px] text-red-500 leading-relaxed">
+                      <b>Heads-up — Groq's free limit is 12,000 tokens per minute.</b>
+                      <span className="text-nv-text"> That's plenty for chat, but tight for the big
+                      jobs: <b>finding leads</b>, <b>verifying LinkedIn profiles</b>, <b>filling in contacts</b>,
+                      <b> bulk outreach drafting</b> and <b>deep research</b>. Expect long pauses while it waits
+                      out the limit, and some batches may fail outright.</span>
+                    </p>
+                    <p className="text-[10px] text-nv-text mt-1 leading-relaxed">
+                      For those, use a free <b>NVIDIA</b> key instead — same zero cost, far higher limits, and it
+                      finishes these tasks much faster.
+                    </p>
+                  </div>
+                )}
+
                 {/* Positive heads-up for the free fast keys: great for everyday work, but adris.tech AI
                     pulls ahead on the heavy lifting. Guidance, not a warning. */}
                 {(provider === 'nvidia' || provider === 'groq') && (

@@ -47,6 +47,8 @@ function saveSettings(s: NvSettings) {
 const WHATS_NEW: { version: string; items: string[] } = {
   version: '1.6.69',
   items: [
+    'Groq now carries a clear warning. Its free limit is 12,000 tokens a minute — fine for chat, too tight for finding leads, verifying profiles, filling contacts, bulk outreach and deep research. The connection panel now says so in plain terms and points you at a free NVIDIA key, which has far higher limits and finishes those jobs much faster.',
+    'Lead searches look for PEOPLE, not companies. A company page cannot be sent a connection request, so those rows were being found and then thrown away. It is now told to use the company to identify the actual decision-maker — the founder, CEO or the right person for your purpose — and to leave a company out entirely rather than list it as a lead. When rows are left out, it now tells you why.',
     'Lead searches are roughly twice as fast. Filling in contacts already opens and confirms each profile, but the card was also running a second, separate verification pass over the same people — so every one of 25 leads went through the browser twice. That second pass is now off unless you are not filling in contacts at all.',
     'Fixed "413 Payload Too Large" on free Groq keys. The list of already-found names was added to every request and grew until it exceeded the per-minute token limit, ending the search. Only the most recent names are sent now; duplicates are still removed properly in code.',
 
