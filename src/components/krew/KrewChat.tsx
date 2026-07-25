@@ -8425,6 +8425,39 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                       Krew writes a connection note for each one, then tracks who accepts.
                     </div>
                   </div>
+                  {/* Preview what was actually found, before committing to anything with it.
+                      Being handed "25 verified leads ready" with no way to look at them means
+                      trusting a black box — and the only way to check was to send them to
+                      outreach, which is the one irreversible thing on this card. */}
+                  {msg.leadTable && (
+                    <details className="px-3.5 pb-2">
+                      <summary className="text-[10.5px] text-accent cursor-pointer select-none hover:underline">
+                        Preview the {msg.leadCount} lead{msg.leadCount === 1 ? '' : 's'}
+                      </summary>
+                      <div className="mt-1.5 max-h-52 overflow-auto rounded-lg border border-nv-border bg-nv-bg">
+                        <table className="w-full text-[10px] border-collapse">
+                          <tbody>
+                            {msg.leadTable.split('\n').filter((l) => l.trim().startsWith('|') && !/^\|?[\s:|-]+\|?$/.test(l.trim()))
+                              .slice(0, 60)
+                              .map((line, ri) => {
+                                const cells = line.split('|').map((c) => c.trim()).filter((_, ci, a) => ci > 0 && ci < a.length - 1);
+                                return (
+                                  <tr key={ri} className={ri === 0 ? 'bg-nv-surface2 font-semibold' : 'border-t border-nv-border'}>
+                                    {cells.map((c, ci) => (
+                                      <td key={ci} className="px-1.5 py-1 align-top text-nv-muted max-w-[150px] truncate" title={c}>
+                                        {/https?:\/\//.test(c)
+                                          ? <a href={c} onClick={(ev) => { ev.preventDefault(); openLink(c); }} className="text-accent hover:underline">link</a>
+                                          : c}
+                                      </td>
+                                    ))}
+                                  </tr>
+                                );
+                              })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </details>
+                  )}
                   <div className="px-3.5 pb-3 flex flex-wrap gap-1.5">
                     <button
                       disabled={busy}
@@ -8441,9 +8474,17 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                       className="text-[11px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
                     >Find more like these</button>
                     <button
-                      onClick={() => window.dispatchEvent(new CustomEvent('nv-navigate', { detail: 'brain' }))}
+                      // App.tsx listens for a TAURI event carrying { module }, not a DOM
+                      // CustomEvent — so the old dispatch here went nowhere and the button
+                      // silently did nothing.
+                      onClick={() => { import('@tauri-apps/api/event').then(({ emit }) => emit('nv-navigate', { module: 'brain' })).catch(() => {}); }}
                       className="text-[11px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
                     >Open in Brain</button>
+                    <button
+                      title="Dismiss this card — the list stays saved in your Brain"
+                      onClick={() => setMessages((prev) => prev.filter((m) => m !== msg))}
+                      className="ml-auto text-[13px] leading-none px-1.5 text-nv-faint hover:text-nv-text transition-fast"
+                    >×</button>
                   </div>
                 </div>
               ) : msg.role === 'deck_setup' ? (

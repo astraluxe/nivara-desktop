@@ -45,8 +45,12 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.64',
+  version: '1.6.65',
   items: [
+    'You can now see what a lead search actually found. The result card has a Preview that lists every lead it saved, with clickable links — instead of asking you to trust "25 leads ready" and only being able to check them by sending them to outreach, which is the one step you cannot undo.',
+    'Fixed: "Open in Brain" on that card did nothing at all. It was sending a message nothing was listening for.',
+    'The result card can be dismissed with an x. The list stays saved in your Brain either way.',
+
     'Free keys (Groq, NVIDIA) now work for lead searches. The results were being thrown away unless the model returned flawless markdown — so a free model that wrapped its table in code fences, left off the outer pipes, or answered with a numbered list produced nothing at all after minutes of work. All of those are now read correctly.',
 
     'Lead searches start the browser up front instead of stalling. Removing the old surprise window in 1.6.62 also removed the only thing that started the browser, so checking leads sat for minutes with nothing visible before it finally got going. It now starts the browser at the point it is actually needed — no window on tasks that never browse, no long silent wait on tasks that do.',
