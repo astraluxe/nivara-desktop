@@ -2156,11 +2156,27 @@ async fn krew_generate_image(
                 .or_else(|| inline["mime_type"].as_str())
                 .unwrap_or("image/png");
             // Bill the managed key and report it through the SAME meter as text
-            // (nivara-tokens → token_usage). Nano Banana ≈ 1290 tok/image; Pro costs more.
+            // (nivara-tokens → token_usage).
+            //
+            // The old figures (1290 / 3000) were Google's OUTPUT-TOKEN COUNTS, which is the wrong
+            // unit for a money meter: image tokens are billed at $30–120 per 1M against ~$0.44 per
+            // 1M for the flash text tokens this meter is denominated in. One Nano Banana image
+            // costs about as much as 78,000 metered tokens, and a Pro image about 268,000 — so a
+            // Solo user could burn ~$120 of Google spend inside a ₹1,499 allowance and the meter
+            // would barely move.
+            //
+            // These charges are deliberately BELOW true cost (12k / 42k) so images stay usable;
+            // what actually bounds the spend is PlanConfig.imageUnits, enforced before the call.
+            // `units` is what the quota counts, and must stay in step with planConfig.ts
+            // (TOKENS_PER_IMAGE_UNIT = 12_000, IMAGE_UNITS_PRO = 3.5).
             if let Some(sk) = &managed_sk {
-                let cost: i64 = if model.contains("pro") { 3000 } else { 1290 };
+                let cost: i64 = if model.contains("pro") { 42_000 } else { 12_000 };
                 sk.remaining.fetch_sub(cost, std::sync::atomic::Ordering::Relaxed);
-                let _ = app.emit("nivara-tokens", serde_json::json!({ "tokens": cost }));
+                // `kind` lets the app file this under its own module so image use can be counted
+                // separately from chat. Text emits carry no `kind`, so nothing else changes.
+                let _ = app.emit("nivara-tokens", serde_json::json!({
+                    "tokens": cost, "kind": "image", "model": model,
+                }));
             }
             return Ok(format!("data:{};base64,{}", mime, data));
         }

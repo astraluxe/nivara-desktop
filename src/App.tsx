@@ -270,13 +270,16 @@ function AppShell() {
     if (!session) return;
     const supabaseUrl  = import.meta.env.VITE_SUPABASE_URL as string;
     const supabaseAnon = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
-    const unlisten = listen<{ tokens: number }>('nivara-tokens', (e) => {
+    const unlisten = listen<{ tokens: number; kind?: string }>('nivara-tokens', (e) => {
       invoke('track_token_usage', {
         supabaseUrl,
         supabaseAnonKey: supabaseAnon,
         sessionToken: session.access_token,
         userId: session.user.id,
-        module: 'krew_direct',
+        // Image spend is filed under its own module so the per-plan image cap can be counted from
+        // the server rather than from localStorage (which a reinstall would wipe). Everything else
+        // keeps the module it always had.
+        module: e.payload.kind === 'image' ? 'krew_image' : 'krew_direct',
         tokensUsed: e.payload.tokens,
       }).catch(() => {});
     });

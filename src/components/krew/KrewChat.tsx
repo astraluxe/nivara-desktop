@@ -24,6 +24,7 @@ import AgentStatus from './AgentStatus';
 import { type ConnectionMode, type Provider } from '../../lib/ai';
 import ConnectionBar from '../coder/ConnectionBar';
 import { getMonthlyUsage } from '../../lib/tokenTracker';
+import { getImageBudget, unitsForModel } from '../../lib/imageQuota';
 import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining } from '../../lib/tokenTier';
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
 import SkillsPanel from './SkillsPanel';
@@ -3168,6 +3169,9 @@ const [studioExtracting, setStudioExtracting] = useState(false);
   const [connectRec,    setConnectRec]    = useState<string[]>([]);
   const [braveNudge, setBraveNudge] = useState(false);
   const [nvidiaNudge, setNvidiaNudge] = useState(false);
+  // Raised mid-generation when the plan's AI image budget is short or spent, so the free-key
+  // alternative is offered while the user can still act on it.
+  const [imageNudge, setImageNudge] = useState<{ left: number; wanted: number; blocked: boolean } | null>(null);
   const [browserNudge, setBrowserNudge] = useState(false);
   const [browserRetrying, setBrowserRetrying] = useState(false);
   const [browserActive, setBrowserActive] = useState(false);
@@ -4077,6 +4081,29 @@ The prompt must be production-ready — specific enough for a motion designer to
         } else {
           candidates.push({ model: 'gemini-2.5-flash-image', key: imgKey });
         }
+        // ── Image budget ────────────────────────────────────────────────────────────────────
+        // Images on OUR key are by far the most expensive thing this product does — one image costs
+        // roughly what 78,000 metered text tokens cost — so they are capped per plan on top of the
+        // token meter. Images on the user's OWN key (NVIDIA FLUX, their own Gemini key) cost us
+        // nothing, so they are never counted and never blocked.
+        //
+        // A managed-key candidate is one with `key === null` (krew_generate_image then falls back to
+        // the session key). That is the only thing the cap applies to — which matters because NVIDIA
+        // is tried FIRST and, if it fails, the loop silently falls back to our key.
+        const mayUseOurKey = !imgKey;   // no personal Gemini key => our managed key is in the list
+        const budget = mayUseOurKey ? await getImageBudget(profile?.plan ?? 'free') : null;
+        const unitCost = unitsForModel(cfg.imageModel);
+        let unitsSpent = 0;
+        let budgetHit = false;
+        const affordableUnits = () => budget?.remaining == null ? Infinity : budget.remaining - unitsSpent;
+        // Tell the user BEFORE the wait starts, not in the wrap-up — a free NVIDIA key only helps
+        // if they hear about it while they can still act on it.
+        if (budget && budget.remaining !== null && !nvidiaImgKey && budget.remaining < need.length * unitCost) {
+          setImageNudge({
+            left: Math.floor(budget.remaining / unitCost), wanted: need.length,
+            blocked: budget.exhausted,
+          });
+        }
         let working: ImgCand | null = null;
         let fails = 0;
         for (let k = 0; k < need.length; k++) {
@@ -4084,14 +4111,34 @@ The prompt must be production-ready — specific enough for a motion designer to
           setStatus(`Adding image ${k + 1} of ${need.length}${nvidiaImgKey ? ' (free on NVIDIA)' : ''}…`);
           const idx = need[k];
           const slide = spec.slides[idx];
-          const tryList: ImgCand[] = working ? [working] : candidates;
+          let tryList: ImgCand[] = working ? [working] : candidates;
+          // Once the plan's image budget is spent, drop the managed-key candidates only. A free
+          // NVIDIA/own key keeps working, and the stock-photo fallback below still gives every
+          // remaining slide a real visual — the deck is never left half-illustrated.
+          if (affordableUnits() < unitCost) {
+            const withoutOurs = tryList.filter((c) => c.key !== null);
+            if (withoutOurs.length !== tryList.length) {
+              tryList = withoutOurs;
+              working = working && working.key !== null ? working : null;
+              if (!budgetHit) {
+                budgetHit = true;
+                setImageNudge({ left: 0, wanted: need.length - k, blocked: true });
+                imgNote = imgNote || `\n\n_This period's AI image allowance is used up, so the remaining slides use free stock photos. Connect a free NVIDIA key in Connect Apps and every deck image is generated at no cost, with no cap._`;
+              }
+            }
+          }
           let got = '';
           // 1) AI generation — NVIDIA (free) then Gemini, each on its own key. Only accept a VALID
           // image (a broken/garbage return is what rendered as a black box).
           for (const cand of tryList) {
             try {
               const data = await invoke<string>('krew_generate_image', { prompt: slide.imagePrompt, model: cand.model, apiKey: cand.key });
-              if (validImageData(data)) { got = data; working = cand; break; }
+              if (validImageData(data)) {
+                got = data; working = cand;
+                // Charge only what actually ran on OUR key, and only when it produced an image.
+                if (cand.key === null) unitsSpent += unitCost;
+                break;
+              }
             } catch { /* try the next model, then the stock fallback */ }
           }
           // 2) FALLBACK — if AI generation gave nothing (no key / no access / rate limit),
@@ -7647,6 +7694,38 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
             <button
               title="Don't show this again"
               onClick={() => { try { localStorage.setItem('nv-nvidia-nudge-off', '1'); } catch { /* ignore */ } setNvidiaNudge(false); }}
+              className="shrink-0 text-[13px] leading-none px-1.5 text-nv-faint hover:text-nv-text transition-fast"
+            >×</button>
+          </div>
+        )}
+
+        {/* Image-budget nudge. Deliberately raised WHILE the deck is being built rather than in
+            the wrap-up: a free NVIDIA key makes images cost nothing, and that only helps the user
+            if they hear about it before they've spent the allowance. */}
+        {imageNudge && (
+          <div className="mx-3 mb-1 flex items-start gap-2.5 px-3 py-2.5 rounded-xl border border-emerald-500/30 bg-emerald-500/[0.08]">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" className="text-emerald-500 shrink-0 mt-0.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2.5"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/>
+            </svg>
+            <div className="flex-1 min-w-0">
+              <p className="text-[11px] font-bold text-emerald-500 leading-tight">
+                {imageNudge.blocked
+                  ? 'AI image allowance used up — the rest of this deck uses free stock photos'
+                  : `Only ${imageNudge.left} AI image${imageNudge.left === 1 ? '' : 's'} left this period (this deck wants ${imageNudge.wanted})`}
+              </p>
+              <p className="text-[10px] text-nv-faint mt-0.5 leading-relaxed">
+                Images are by far the most expensive thing on your allowance. Add a <b className="text-nv-text">free</b> NVIDIA
+                API key (build.nvidia.com — no card) and Krew generates every deck image on it
+                at <b className="text-nv-text">zero cost</b>, with no cap. Takes ~2 minutes, and it applies to the next deck straight away.
+              </p>
+            </div>
+            <button
+              onClick={() => { setImageNudge(null); onOpenConnectApps?.(); }}
+              className="shrink-0 text-[10px] font-semibold px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-500 hover:bg-emerald-500/30 border border-emerald-500/30 transition-fast whitespace-nowrap"
+            >Connect NVIDIA →</button>
+            <button
+              title="Dismiss"
+              onClick={() => setImageNudge(null)}
               className="shrink-0 text-[13px] leading-none px-1.5 text-nv-faint hover:text-nv-text transition-fast"
             >×</button>
           </div>

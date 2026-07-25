@@ -101,6 +101,39 @@ export default function UpgradeModal({ onClose, currentPlan, highlightPlan, reas
   const alreadyPaid = !!serverPlan && !['free', 'explore', ''].includes(serverPlan);
   const staleView = alreadyPaid && ['free', 'explore'].includes(currentPlan);
 
+  // ── Watch for the upgrade landing, without the user having to press anything ────────────
+  //
+  // The webhook grants the plan seconds after the card is charged, but the app only found out
+  // when the realtime channel happened to be alive, or when the window regained focus (a 20s
+  // debounce), or when the user pressed "Check". So someone could be sitting in front of a paid
+  // account still being told to upgrade — which is exactly the moment people panic and pay twice.
+  //
+  // Once we've handed off to the site, poll every 3s for 5 minutes. It only runs while this modal
+  // is open and the user is mid-payment, so it costs nothing the rest of the time (this app's
+  // Supabase disk-IO budget has been hurt by a background interval before).
+  useEffect(() => {
+    if (!sentToSite || !session?.user || done) return;
+    let stop = false;
+    const started = Date.now();
+    const tick = async () => {
+      if (stop || Date.now() - started > 5 * 60_000) return;
+      try {
+        const { data } = await supabase.from('users').select('plan').eq('id', session.user.id).single();
+        const p = String(data?.plan ?? '');
+        if (p && !['free', 'explore'].includes(p)) {
+          stop = true;
+          await refreshSession();          // push it into the rest of the app immediately
+          setDone(true);
+          setTimeout(onClose, 1800);
+          return;
+        }
+      } catch { /* offline blip — keep waiting */ }
+      if (!stop) timer = setTimeout(tick, 3000);
+    };
+    let timer = setTimeout(tick, 3000);
+    return () => { stop = true; clearTimeout(timer); };
+  }, [sentToSite, session?.user?.id, done]);
+
 
   // Payment happens on the WEBSITE, never inside this app — deliberately.
   //
