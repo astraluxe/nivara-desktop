@@ -4132,14 +4132,34 @@ The prompt must be production-ready — specific enough for a motion designer to
           // image (a broken/garbage return is what rendered as a black box).
           for (const cand of tryList) {
             try {
-              const data = await invoke<string>('krew_generate_image', { prompt: slide.imagePrompt, model: cand.model, apiKey: cand.key });
+              const data = await invoke<string>('krew_generate_image', {
+                prompt: slide.imagePrompt, model: cand.model, apiKey: cand.key,
+                // Managed-key images are generated and metered server-side, which needs the
+                // session. Own-key images ignore it and stay entirely local.
+                sessionToken: cand.key === null ? (session?.access_token ?? '') : null,
+              });
               if (validImageData(data)) {
                 got = data; working = cand;
                 // Charge only what actually ran on OUR key, and only when it produced an image.
                 if (cand.key === null) unitsSpent += unitCost;
                 break;
               }
-            } catch { /* try the next model, then the stock fallback */ }
+            } catch (e) {
+              // The server is the authority on the image budget — the local count above is only a
+              // prediction, so honour a server refusal even if we thought there was room (a second
+              // device, or a stale count). Stop asking, and let stock photos finish the deck.
+              if (String(e).includes('IMAGE_QUOTA_EXHAUSTED')) {
+                unitsSpent = Number.POSITIVE_INFINITY;
+                if (!budgetHit) {
+                  budgetHit = true;
+                  setImageNudge({ left: 0, wanted: need.length - k, blocked: true });
+                  imgNote = imgNote || `\n\n_This period's AI image allowance is used up, so the remaining slides use free stock photos. Connect a free NVIDIA key in Connect Apps and every deck image is generated at no cost, with no cap._`;
+                }
+                working = working && working.key !== null ? working : null;
+                break;
+              }
+              /* otherwise try the next model, then the stock fallback */
+            }
           }
           // 2) FALLBACK — if AI generation gave nothing (no key / no access / rate limit),
           // fetch a real, license-free photo relevant to the slide so it STILL gets a visual.

@@ -2052,6 +2052,10 @@ async fn fetch_session_key(
 // "Nano Banana Pro" = gemini-3-pro-image-preview). Uses the caller's own Gemini key when
 // `api_key` is provided (BYO — their cost); otherwise the managed adris.tech session key.
 // Returns a data: URI. Used by the Advanced deck maker to put real images on slides.
+/// Marker the frontend matches on to tell "you're out of image allowance" apart from a real
+/// failure — the first is a nudge, the second is an error.
+pub const IMAGE_QUOTA_MARKER: &str = "IMAGE_QUOTA_EXHAUSTED";
+
 #[tauri::command]
 async fn krew_generate_image(
     app: tauri::AppHandle,
@@ -2059,28 +2063,66 @@ async fn krew_generate_image(
     prompt: String,
     model: Option<String>,
     api_key: Option<String>,
+    session_token: Option<String>,
 ) -> Result<String, String> {
     let model = model.unwrap_or_else(|| "gemini-2.5-flash-image".to_string());
-    // Resolve key: explicit BYO key wins; else the managed session key.
-    let (key, managed_sk) = match api_key.filter(|k| !k.trim().is_empty()) {
-        Some(k) => (k, None),
-        None => {
-            let sk = {
-                let g = state.0.lock().unwrap();
-                g.as_ref().and_then(|a| {
-                    let now_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
-                    if a.expires_at > now_ms && a.remaining.load(std::sync::atomic::Ordering::Relaxed) > 0 {
-                        Some(a.clone())
-                    } else { None }
-                })
-            };
-            match sk {
-                Some(a) => (a.key.get(), Some(a)),
-                None => return Err("No image key available — sign in to adris.tech or add your own Gemini key.".to_string()),
-            }
+    let byo = api_key.filter(|k| !k.trim().is_empty());
+
+    // ── Images on OUR key go through the server ────────────────────────────────────────────────
+    //
+    // The app holds the real Gemini key for 24h, so a per-plan cap enforced here could simply be
+    // patched out — and images are the one thing expensive enough for that to matter (one image
+    // costs what ~78,000 metered text tokens cost). The `generate-image` Edge Function holds the
+    // key, checks the plan's remaining image budget against the database, and writes the usage row
+    // itself, so none of it can be skipped.
+    //
+    // The user's OWN keys (NVIDIA FLUX, their own Gemini key) never come here: they cost us
+    // nothing, stay direct, and so stay as fast as they were.
+    if byo.is_none() {
+        let token = session_token.unwrap_or_default();
+        if token.trim().is_empty() {
+            return Err("Sign in to adris.tech to generate images, or add your own image key.".to_string());
         }
-    };
+        let url = "https://xkkqcqsacgdrfwbwdqsp.supabase.co/functions/v1/generate-image";
+        let client = reqwest::Client::builder()
+            .http1_only()
+            .timeout(std::time::Duration::from_secs(120))
+            .build().unwrap_or_else(|_| reqwest::Client::new());
+        let resp = client.post(url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({ "prompt": prompt, "model": model }))
+            .send().await
+            .map_err(|e| format!("Image request failed: {}", e))?;
+        let status = resp.status();
+        let body: serde_json::Value = resp.json().await
+            .map_err(|e| format!("Image response unreadable: {}", e))?;
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            // Out of allowance, not broken. The deck loop turns this into the free-key nudge and
+            // falls back to stock photography rather than failing the deck.
+            let msg = body["message"].as_str().unwrap_or("Image allowance used up.");
+            return Err(format!("{}: {}", IMAGE_QUOTA_MARKER, msg));
+        }
+        if !status.is_success() {
+            let msg = body["error"].as_str().unwrap_or("Image generation failed.");
+            return Err(msg.to_string());
+        }
+        let data = body["image"].as_str()
+            .ok_or_else(|| "No image returned.".to_string())?;
+        // The server already recorded the spend; this only keeps the in-app meter live so the
+        // usage bar moves while the deck is being built.
+        let charged = (body["units"].as_f64().unwrap_or(1.0) * 12_000.0) as i64;
+        if let Some(sk) = state.0.lock().unwrap().as_ref() {
+            sk.remaining.fetch_sub(charged, std::sync::atomic::Ordering::Relaxed);
+        }
+        let _ = app.emit("nivara-tokens", serde_json::json!({
+            "tokens": charged, "kind": "image", "counted": true,
+        }));
+        return Ok(data.to_string());
+    }
+
+    // From here down: the user's OWN key only.
+    let key = byo.unwrap();
     // ── NVIDIA image models (FLUX / SDXL) — FREE on the user's own NVIDIA key ──────────────────
     // Detected by an nvapi- key or an NVIDIA image-model id. NVIDIA's genai endpoint + response
     // (artifacts[].base64) differ from Gemini's, so it has its own path. On ANY failure it returns
@@ -2155,29 +2197,9 @@ async fn krew_generate_image(
             let mime = inline["mimeType"].as_str()
                 .or_else(|| inline["mime_type"].as_str())
                 .unwrap_or("image/png");
-            // Bill the managed key and report it through the SAME meter as text
-            // (nivara-tokens → token_usage).
-            //
-            // The old figures (1290 / 3000) were Google's OUTPUT-TOKEN COUNTS, which is the wrong
-            // unit for a money meter: image tokens are billed at $30–120 per 1M against ~$0.44 per
-            // 1M for the flash text tokens this meter is denominated in. One Nano Banana image
-            // costs about as much as 78,000 metered tokens, and a Pro image about 268,000 — so a
-            // Solo user could burn ~$120 of Google spend inside a ₹1,499 allowance and the meter
-            // would barely move.
-            //
-            // These charges are deliberately BELOW true cost (12k / 42k) so images stay usable;
-            // what actually bounds the spend is PlanConfig.imageUnits, enforced before the call.
-            // `units` is what the quota counts, and must stay in step with planConfig.ts
-            // (TOKENS_PER_IMAGE_UNIT = 12_000, IMAGE_UNITS_PRO = 3.5).
-            if let Some(sk) = &managed_sk {
-                let cost: i64 = if model.contains("pro") { 42_000 } else { 12_000 };
-                sk.remaining.fetch_sub(cost, std::sync::atomic::Ordering::Relaxed);
-                // `kind` lets the app file this under its own module so image use can be counted
-                // separately from chat. Text emits carry no `kind`, so nothing else changes.
-                let _ = app.emit("nivara-tokens", serde_json::json!({
-                    "tokens": cost, "kind": "image", "model": model,
-                }));
-            }
+            // Nothing to bill: this path only runs on the user's OWN Gemini key, which is charged
+            // to their Google account, not ours. Managed-key images are metered server-side by the
+            // generate-image Edge Function above.
             return Ok(format!("data:{};base64,{}", mime, data));
         }
     }

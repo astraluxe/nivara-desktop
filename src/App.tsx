@@ -270,7 +270,11 @@ function AppShell() {
     if (!session) return;
     const supabaseUrl  = import.meta.env.VITE_SUPABASE_URL as string;
     const supabaseAnon = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
-    const unlisten = listen<{ tokens: number; kind?: string }>('nivara-tokens', (e) => {
+    const unlisten = listen<{ tokens: number; kind?: string; counted?: boolean }>('nivara-tokens', (e) => {
+      // `counted` means the server already wrote the usage row (managed-key images go through the
+      // generate-image function, which meters them itself). Writing it again here would bill the
+      // same image twice. The event is still emitted so the live usage bar moves during the deck.
+      if (e.payload.counted) return;
       invoke('track_token_usage', {
         supabaseUrl,
         supabaseAnonKey: supabaseAnon,
