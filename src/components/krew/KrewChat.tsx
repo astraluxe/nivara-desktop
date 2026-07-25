@@ -5314,7 +5314,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     // user has moved on, or asked to stop, the run stops touching the screen and unwinds.
     const runSid = sid;
     const mine = () => !stopRef.current && !isLeadStopRequested() && (!runSid || sidRef.current === runSid);
-    const say  = (text: string) => { if (mine()) say(text); };
+    const say  = (text: string) => { if (mine()) updateLastMsg(text); };
     const post = (m: Parameters<typeof addMsg>[0]) => { if (mine()) addMsg(m); };
     // Thrown to unwind out of the middle of the pipeline; caught below and reported quietly.
     const ABORT = 'nv-lead-abort';
