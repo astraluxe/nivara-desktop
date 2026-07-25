@@ -45,8 +45,13 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.70',
+  version: '1.6.71',
   items: [
+    'Lead searches now look people up on Google, in the browser window, the way you would yourself. The search engines being used behind the scenes had stopped working entirely — DuckDuckGo loads as a blank page, and Bing and Google both return nothing usable without a real browser. So the step that was supposed to find each person\'s profile could not succeed no matter what, which is why so many links were missing, wrong, or pointed at a company page. Google in the real window finds the right profile first time.',
+    'A lead now gets a PERSON\'s profile or an empty cell — never a company page. A company page cannot be sent a connection request, so it was never a usable answer, and it was frequently winning over the actual decision-maker you asked for.',
+    'The job title is no longer pasted into the search. Searching for "BakeMyTrip / Co-Founder & CEO" asked the engine to match the title as well as the company, which turns a good search into no results. It now searches the person\'s full name and their company.',
+    'The progress panel tells you the truth about each stage. Finding leads is your AI naming people it knows of — not a web search — and it now says so, which also explains why some names need checking. The checking stage says when it is opening the browser, instead of still claiming no browser was needed while a window was plainly open.',
+
     'Lead searches are dramatically faster. Finding each person\'s LinkedIn was searching up to eleven places one after another, for one person at a time — which is why "Checking 23 leads" could sit for seven minutes looking like it had frozen. It now stops at the first search that finds them, and when it has to look further it looks everywhere at once, several people at a time. The links it finds are chosen exactly as carefully as before.',
     'Progress is now shown properly, and the clock actually moves. The old timer was written into the message once and then sat frozen at the same number for minutes while the work carried on — impossible to tell apart from a crash. Progress now has its own panel that keeps counting on its own, says which stage it is on, and tells you plainly when a stage does not need the browser at all.',
     'The browser notice is no longer a yellow warning strip. It was the colour of something going wrong, for several minutes of perfectly normal work. It is now a quiet line, and it only appears once the browser is genuinely in use — not during the searching stage, which never opens a window.',

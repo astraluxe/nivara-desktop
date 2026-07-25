@@ -5479,9 +5479,13 @@ The prompt must be production-ready — specific enough for a motion designer to
         const already = recentNames.length
           ? `\nALREADY FOUND — never repeat these: ${recentNames.join(', ')}`
           : '';
+        // Be accurate about what this step IS. It is the model naming people it knows of that fit
+        // the brief — there is no web search here at all, and saying there was set the wrong
+        // expectation about why nothing is visible and why some names turn out not to exist.
+        // Their real profiles are found (and wrong ones dropped) in the checking step that follows.
         say(statusBlock(t0,
           `Finding leads — ${collected.size} of ${cfg.count} so far`,
-          'Searching for people who match your brief. This part is a web search — no browser window opens for it.'));
+          'Your AI is naming people who fit your brief. Each one gets looked up and confirmed in the next step.'));
         let text = '';
         try {
           ({ text } = await streamTurnWithRetry(

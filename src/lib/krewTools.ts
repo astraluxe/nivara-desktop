@@ -3298,53 +3298,82 @@ async function executeToolCore(
       return toks.every(t => slug.includes(t));
     };
     const sameUrl2 = (a: string, b: string) => a.replace(/^https?:\/\/(www\.|in\.)?/i, '').replace(/\/+$/, '').toLowerCase() === b.replace(/^https?:\/\/(www\.|in\.)?/i, '').replace(/\/+$/, '').toLowerCase();
+
+    // The Company/Role cell holds BOTH ("BakeMyTrip / Co-Founder & CEO"), and the whole string was
+    // being pasted into the search query — so the engine was asked to find a page matching the job
+    // title as well as the company, which narrows a good search into no results. Keep the company,
+    // drop the role.
+    // Note it cannot just take the part before the separator: the cell comes in BOTH orders
+    // ("BakeMyTrip / Co-Founder & CEO" but also "COO at Acme"), so the company is sometimes first
+    // and sometimes last. Strip the role words from every part and keep the first part that still
+    // has something left — that part is the company whichever side it was written on.
+    const ROLE_RE = /\b(co-?founders?|founders?|ceo|cto|coo|cmo|cfo|cxo|md|managing directors?|directors?|owners?|partners?|presidents?|heads? of[\w\s]*|vp|vice presidents?|chiefs?[\w\s]*|principals?|leads?)\b/gi;
+    const cleanCompany = (raw: string): string => {
+      const parts = (raw || '').split(/\s*[/|·—–,]\s*|\s+\bat\b\s+/i);
+      for (const p of parts) {
+        const stripped = p.replace(ROLE_RE, '').replace(/[&]+/g, ' ').replace(/\s+/g, ' ').trim();
+        if (stripped.length > 1) return stripped;
+      }
+      return (raw || '').trim();
+    };
+
+    /**
+     * Choose the best LinkedIn URL for a PERSON out of everything a search surfaced.
+     *
+     * The old rule took the first URL whose slug matched the name, treating /in/ (a person) and
+     * /company/ (an organisation) as equally good. But the whole point of a lead is a human being
+     * who can be sent a connection request — a company page cannot — and the user's complaint was
+     * exactly this: "it's opening company pages but not the decision maker's page of that company".
+     * A company slug also matches the name test whenever the person's name IS the brand, so the
+     * company page frequently won. Person profiles now strictly outrank company pages.
+     */
+    const pickBestProfile = (urls: string[], name: string): string => {
+      const people = urls.filter(u => /linkedin\.com\/in\//i.test(u));
+      const named = people.find(u => slugMatchesName(u, name));
+      if (named) return named;                       // best: a person whose slug is built from their name
+      if (people.length === 1) return people[0];     // only one human candidate — take it
+      return '';                                     // company pages are never a match for a person
+    };
     // Returns { url, matched } — matched=true only when a REAL search actually surfaced a URL whose
     // slug matches the person's name. matched=false means "top hit, but not name-confirmed" (weak).
-    // SPEED: this used to run STRICTLY SEQUENTIALLY — up to 4 search engines (each with a 400ms
-    // sleep after it) and then 7 company-website paths, one HTTP round-trip after another, for
-    // every person in turn. On a list where nobody has a LinkedIn cell yet (which is exactly what
-    // /leads produces — the model is forbidden from inventing URLs, so every row arrives blank),
-    // that is ~11 serial requests per person and it is what turned a 23-row enrich into a 400s+
-    // "Enriching 1–3 of 23" that looked like a hang.
+    // A person's LinkedIn is what makes a lead usable, so how we look for it decides the whole
+    // run's quality. THE HEADLESS SEARCH ENGINES DO NOT WORK ANY MORE — measured on the user's own
+    // machine, 2026-07-25, for a real query:
     //
-    // The shape now: try the BEST engine alone (it usually hits, so the common case costs one
-    // request), and only if that misses fire everything else CONCURRENTLY. Order is preserved when
-    // collecting results, so the weak "top hit" fallback still picks the same URL it always did.
+    //   html.duckduckgo.com  connection fails outright (and in the BROWSER it loads as about:blank)
+    //   lite.duckduckgo.com  same
+    //   bing.com             HTTP 200, 128 KB, ZERO linkedin.com links in the body
+    //   google.com (plain)   HTTP 200 but a consent/JS wall, ZERO links
+    //   google.com (BROWSER) full results, and the correct profile first time
+    //
+    // So the old list of four engines was eleven round-trips per person that could not, even in
+    // principle, return anything — and every row then fell through to a browser fallback that
+    // searched DuckDuckGo, which renders blank. That is why profiles came back missing, wrong, or
+    // pointing at a company page, and why it was slow while appearing to do nothing.
+    //
+    // What is left here is only what actually works over HTTP: the Brave API (a real API, and only
+    // when the user has a key) and the company's OWN website, which is a plain page fetch rather
+    // than a search engine. Everything else is handled by the batched browser Google search below
+    // — real Chrome, real rendering, results the user can watch happen.
     const findLinkedIn = async (name: string, company: string, website: string): Promise<{ url: string; matched: boolean }> => {
-      const q = `${name} ${company} LinkedIn`;
+      const q = `${name} ${cleanCompany(company)} LinkedIn`;
       const urls: string[] = []; const seen = new Set<string>();
       const get = (u: string, h: Record<string, string>) =>
         invoke<string>('krew_http_call', { method: 'GET', url: u, headers: h, body: null }).catch(() => '');
-      const srcs: Array<{ u: string; h: Record<string, string> }> = [];
-      if (braveKey2) srcs.push({ u: `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(q)}`, h: { Accept: 'application/json', 'X-Subscription-Token': braveKey2 } });
-      srcs.push({ u: `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`, h: { 'User-Agent': ua2 } });
-      srcs.push({ u: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}`, h: { 'User-Agent': ua2 } });
-      srcs.push({ u: `https://www.bing.com/search?q=${encodeURIComponent(q)}`, h: { 'User-Agent': ua2 } });
 
-      // Round 1 — the single best engine on its own. A name-matching slug here ends the hunt.
-      pullAllIn(await get(srcs[0].u, srcs[0].h), urls, seen);
-      {
-        const hit = urls.find(u => slugMatchesName(u, name));
-        if (hit) return { url: hit, matched: true }; // strong: name-matching URL from a real search
-      }
-      if (_leadStopRequested) return urls.length ? { url: urls[0], matched: false } : { url: '', matched: false };
-
-      // Round 2 — the remaining engines AND the company website, all at once. These are independent
-      // reads of different hosts; running them in parallel costs the slowest one, not their sum.
-      // (The old 400ms inter-engine pause existed to be polite to a single engine being hit
-      // repeatedly — here each engine is touched once, so there is nothing to pace.)
-      const rest = srcs.slice(1).map(s => get(s.u, s.h));
-      const sitePaths: string[] = [];
+      const reqs: Array<Promise<string>> = [];
+      if (braveKey2) reqs.push(get(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(q)}`, { Accept: 'application/json', 'X-Subscription-Token': braveKey2 }));
       if (website) {
         // Founders/leaders are usually linked from the site (about/team/leadership).
         const base = (website.startsWith('http') ? website : 'https://' + website).replace(/\/+$/, '');
-        for (const path of ['', '/about', '/team', '/about-us', '/leadership', '/company', '/people']) sitePaths.push(base + path);
+        for (const path of ['', '/about', '/team', '/about-us', '/leadership', '/company', '/people']) {
+          reqs.push(get(base + path, { 'User-Agent': ua2 }));
+        }
       }
-      const siteReqs = sitePaths.map(u => get(u, { 'User-Agent': ua2 }));
-      // Promise.all preserves input order, so candidates accumulate in the same priority order as
-      // the old serial version — engines first, then the website paths.
-      for (const raw of await Promise.all([...rest, ...siteReqs])) pullAllIn(raw, urls, seen);
-      const hit = urls.find(u => slugMatchesName(u, name));
+      if (!reqs.length) return { url: '', matched: false };   // nothing usable over HTTP → browser search
+      // Independent hosts, so these run at once: the cost is the slowest one, not their sum.
+      for (const raw of await Promise.all(reqs)) pullAllIn(raw, urls, seen);
+      const hit = pickBestProfile(urls, name);
       if (hit) return { url: hit, matched: true };
       // No name-matching URL anywhere — return the top raw hit only as a weak/unconfirmed candidate.
       return urls.length ? { url: urls[0], matched: false } : { url: '', matched: false };
@@ -3400,7 +3429,7 @@ async function executeToolCore(
       // visibly happening). Rows run CONCURRENTLY: they hit different queries on the same handful
       // of engines, and the batch is small (3–6), so this is a few parallel requests, not a flood —
       // but it turns "sum of every row" into "the slowest row".
-      emit('agent-progress', { text: `${progressLabel} — searching the web for their LinkedIn (no browser needed yet)` }).catch(() => {});
+      emit('agent-progress', { text: `${progressLabel} — checking the company sites` }).catch(() => {});
       const rds: RD[] = await Promise.all(batchRows.map(async (row): Promise<RD> => {
         let found = { url: '', matched: false };
         if (row.name && row.company) found = await findLinkedIn(row.name, row.company, row.website || '');
@@ -3414,20 +3443,34 @@ async function executeToolCore(
       }));
       if (_leadStopRequested) return rds.map(rd => ({ ...rd.row, linkedin: cleanLI(rd.row.linkedinRaw || ''), phone: rd.phone, email: rd.email }));
 
-      // BROWSER-SEARCH FALLBACK — recover LinkedIns the headless HTTP engines missed (they throttle
-      // after a few rapid requests → later rows came back blank even though the profile EXISTS). The
-      // real logged-in Chrome isn't rate-limited the same way, so open a DuckDuckGo search per
-      // unresolved person IN PARALLEL and pull the profile URL from the result links (openmany now
-      // surfaces linkedin /in/ hrefs from search pages). No paid key needed.
+      // BROWSER GOOGLE SEARCH — the primary way a person's profile is found, not a fallback.
+      //
+      // It searches GOOGLE, in the real logged-in Chrome window, exactly the way a person would.
+      // The previous version searched DuckDuckGo, which renders as a blank page in this browser
+      // (measured — see findLinkedIn above), so this step reliably found nothing and the run kept
+      // whatever unverified guess it already had. Google in the same window returns the correct
+      // profile first time.
+      //
+      // The name is quoted so the engine matches the WHOLE name rather than anyone sharing a first
+      // name, and the role is stripped out of the company (cleanCompany) so the query is about a
+      // person at a company rather than a job title.
       const unresolved = rds.filter(rd => rd.row.name && rd.row.company && !rd.found.url);
       if (unresolved.length) {
-        const sUrls = unresolved.map(rd => `https://html.duckduckgo.com/html/?q=${encodeURIComponent(`${rd.row.name} ${rd.row.company} LinkedIn`)}`);
+        // Say a browser is in use BEFORE opening one. Without this the panel still read "checking
+        // the company sites" while Chrome was plainly up on screen — the previous version of this
+        // said "no browser needed yet" there, which is precisely the kind of mismatch that makes
+        // every other status message look untrustworthy.
+        emit('agent-progress', { text: `${progressLabel} — searching Google for their LinkedIn profile` }).catch(() => {});
+        const sUrls = unresolved.map(rd => `https://www.google.com/search?q=${encodeURIComponent(`"${rd.row.name}" ${cleanCompany(rd.row.company)} LinkedIn`)}`);
         const sTexts = await readPages(sUrls);
         unresolved.forEach((rd, i) => {
           const txt = sTexts.get(sUrls[i]) || '';
           const all = txt.match(/https?:\/\/[a-z]{0,3}\.?linkedin\.com\/(?:in|company)\/[A-Za-z0-9\-_%]+/gi) || [];
           const uniq = Array.from(new Set(all.map(u => u.split(/[?#]/)[0].replace(/\/+$/, ''))));
-          const pick = uniq.find(u => slugMatchesName(u, rd.row.name)) || uniq[0];
+          // A PERSON's page or nothing — a company page is not a lead, it cannot be messaged, and
+          // handing one over is what produced "it's opening company pages but not the decision
+          // maker's page". Blank beats wrong: an empty cell is fixable, a wrong link is not.
+          const pick = pickBestProfile(uniq, rd.row.name);
           if (pick) {
             rd.found = { url: pick, matched: slugMatchesName(pick, rd.row.name) };
             const cands: string[] = [];
