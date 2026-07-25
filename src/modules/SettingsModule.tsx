@@ -45,8 +45,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.68',
+  version: '1.6.69',
   items: [
+    'Lead searches are roughly twice as fast. Filling in contacts already opens and confirms each profile, but the card was also running a second, separate verification pass over the same people — so every one of 25 leads went through the browser twice. That second pass is now off unless you are not filling in contacts at all.',
+    'Fixed "413 Payload Too Large" on free Groq keys. The list of already-found names was added to every request and grew until it exceeded the per-minute token limit, ending the search. Only the most recent names are sent now; duplicates are still removed properly in code.',
+
     'Fixed: every lead search failed instantly with "Maximum call stack size exceeded", on your own key and on adris.tech alike. A status-message helper had been left calling itself.',
 
     'The browser is now started before the first thing that needs it on EVERY feature — scanning connections, filling contacts, verifying links, checking LinkedIn messages and lead searches. Removing the old surprise window had left each of those waiting on a browser that had not been started, which looked like the app hanging.',

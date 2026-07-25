@@ -5386,8 +5386,14 @@ The prompt must be production-ready — specific enough for a motion designer to
       for (let round = 0; round < maxRounds && collected.size < cfg.count; round++) {
         if (stopRef.current) break;
         const want = Math.min(batchSize, cfg.count - collected.size);
-        const already = collected.size
-          ? `\nALREADY FOUND — never repeat these: ${[...collected.values()].map((r) => (r.split('|')[1] || '').trim()).filter(Boolean).join(', ')}`
+        // Keep the request SMALL. Groq's free tier caps tokens-per-minute at 12k, and an
+        // ever-growing "already found" list pushed the prompt past it — "413 Payload Too Large",
+        // which killed the run outright. The last 25 names are plenty to discourage repeats; the
+        // real guarantee is the de-duplication done in code below, not this hint.
+        const recentNames = [...collected.values()]
+          .map((r) => (r.split('|')[1] || '').trim()).filter(Boolean).slice(-25);
+        const already = recentNames.length
+          ? `\nALREADY FOUND — never repeat these: ${recentNames.join(', ')}`
           : '';
         say(`Finding leads — ${collected.size} of ${cfg.count} so far…\n\n_Searching… ${secs()}s_`);
         let text = '';

@@ -57,7 +57,10 @@ export default function LeadSetupCard({ defaultCity, existingLists = [], onGener
   const [mustHaveLinkedIn, setMustLI] = useState(true);
   const [mustHaveContact, setMustContact] = useState(false);
   const [useMaps, setUseMaps] = useState(false);
-  const [verify, setVerify] = useState(true);
+  // Off by default. Filling in contacts ALREADY opens and confirms each profile, so ticking this
+  // as well put every person through a second full browser pass — the single biggest reason a
+  // 25-lead run took 25+ minutes. It only does anything when no contact-filling is requested.
+  const [verify, setVerify] = useState(false);
 
   const toggle = (arr: string[], set: (v: string[]) => void, k: string) =>
     set(arr.includes(k) ? arr.filter((x) => x !== k) : [...arr, k]);
@@ -193,7 +196,7 @@ export default function LeadSetupCard({ defaultCity, existingLists = [], onGener
           ))}
           {[
             { on: useMaps, set: setUseMaps, label: 'Look on Google Maps too', hint: 'best for local businesses — shops, firms, clinics' },
-            { on: verify, set: setVerify, label: 'Verify every profile before saving', hint: 'opens each one and confirms it is really them' },
+            { on: verify, set: setVerify, label: 'Verify profiles separately', hint: 'only needed if you are not filling in contacts above — that already confirms each one' },
           ].map((o) => (
             <button key={o.label} type="button" onClick={() => o.set(!o.on)}
               className="w-full flex items-start gap-2 text-left px-2 py-1.5 rounded-lg hover:bg-nv-surface2 transition-fast">
