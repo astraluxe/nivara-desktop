@@ -3458,12 +3458,23 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     // Network / connectivity errors — hide URL, API key, provider name
     if (/sending request|connect(ion)?|network|timeout|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|failed to fetch/i.test(msg))
       return 'Connection failed. Please check your internet connection and try again.';
+    // WHOSE credential failed depends on where the AI is running. On your own key or a local
+    // model there is no adris.tech session involved at all, so telling someone to sign out and
+    // back in to adris.tech sends them to fix something that was never broken — which is exactly
+    // what happened: a rejected BYOK key reported itself as an expired adris.tech session.
+    const ownCred = mode === 'own_key' || mode === 'local';
     if (/not signed in|session expired|jwt expired|invalid jwt|sign in again/i.test(msg))
-      return 'Session expired — please sign out and sign back in to adris.tech.';
-    if (/401/i.test(msg))
-      return 'Session expired — please sign out and sign back in to adris.tech.';
+      return ownCred
+        ? 'Your API key was rejected. Open Connect Apps and check the key (or add a fresh one).'
+        : 'Session expired — please sign out and sign back in to adris.tech.';
     if (/unauthori[sz]ed|invalid.*key/i.test(msg))
-      return 'Invalid API key. Go to Connect Apps and check your key.';
+      return ownCred
+        ? 'Your API key was rejected. Open Connect Apps and check the key (or add a fresh one).'
+        : 'Invalid API key. Go to Connect Apps and check your key.';
+    if (/\b401\b/.test(msg))
+      return ownCred
+        ? 'Your API key was rejected (401). Open Connect Apps and check the key — it may have expired or hit its limit.'
+        : 'Session expired — please sign out and sign back in to adris.tech.';
     if (/429|rate.?limit|quota/i.test(msg)) {
       // Check if it's our own token-limit message from krew-stream (passes through unmodified)
       if (/monthly.*token|reached.*monthly|upgrade.*plan|adris\.tech\/pricing/i.test(msg)) return msg;
@@ -5272,16 +5283,64 @@ The prompt must be production-ready — specific enough for a motion designer to
         cfg.sector  ? `SECTOR: ${cfg.sector}` : '',
         cfg.sizes.length && cfg.sizes.length < 5 ? `COMPANY SIZE: ${cfg.sizes.join(' or ')} employees` : '',
         !cfg.seniority.includes('any') && cfg.seniority.length ? `SENIORITY: ${senLabel} only — decision-makers` : '',
-        `HOW MANY: exactly ${cfg.count} rows`,
+        existingNames.size
+          ? `ALREADY ON MY LIST — never return any of these again: ${
+              parseLeadRows(existingMd, 0).rows.map((r) => r.cells['name']).filter(Boolean).slice(0, 80).join(', ')}`
+          : '',
       ].filter(Boolean).join('\n');
-      const { text: table } = await streamTurnWithRetry(
-        [{ role: 'user', content: `${filters}\n\nReturn the table now.` }], sys,
-        () => updateLastMsg(`Finding leads…\n\n_Searching… ${secs()}s_`),
-      );
 
-      let md = table.includes('|') ? table.slice(table.indexOf('|')) : '';
-      if (!extractTableRows(md).length) {
-        const none = 'I couldn\'t put a list together for that. Try widening it — fewer filters, or a bigger city.';
+      // Ask in SMALL BATCHES, never one big request.
+      //
+      // "Find 50 leads" as a single call means 50 table rows in one response. A hosted model
+      // manages that; a 70B on a free BYOK endpoint truncates mid-table and the entire run comes
+      // back unusable — which is exactly what happened. Asking for a handful at a time gives every
+      // model a job it can actually finish, a failed batch costs one batch instead of the run, and
+      // partial progress is kept. Each round is told who has been found so it doesn't repeat.
+      const batchSize = mode === 'local' ? 4 : mode === 'own_key' ? 8 : 25;
+      const collected = new Map<string, string>();   // normalised name -> its table row
+      const nameKey = (n: string) => n.toLowerCase().replace(/[^a-z0-9]/g, '');
+      let header = '| Name | Company/Role | Sector | City | Website | LinkedIn |';
+      // Enough rounds to still reach the target when every batch UNDER-delivers (a model asked for
+      // 25 often returns 12), with a hard ceiling so a bad brief can't loop forever. What actually
+      // stops a fruitless run is the two-empty-rounds rule below, not this number.
+      const maxRounds = Math.min(20, Math.ceil(cfg.count / batchSize) + 4);
+      let emptyRounds = 0;
+
+      for (let round = 0; round < maxRounds && collected.size < cfg.count; round++) {
+        if (stopRef.current) break;
+        const want = Math.min(batchSize, cfg.count - collected.size);
+        const already = collected.size
+          ? `\nALREADY FOUND — never repeat these: ${[...collected.values()].map((r) => (r.split('|')[1] || '').trim()).filter(Boolean).join(', ')}`
+          : '';
+        updateLastMsg(`Finding leads — ${collected.size} of ${cfg.count} so far…\n\n_Searching… ${secs()}s_`);
+        let text = '';
+        try {
+          ({ text } = await streamTurnWithRetry(
+            [{ role: 'user', content: `${filters}\nHOW MANY: exactly ${want} rows${already}\n\nReturn the table now.` }],
+            sys, () => {},
+          ));
+        } catch { continue; }   // one bad batch must never sink the whole run
+        const before = collected.size;
+        const slice = text.includes('|') ? text.slice(text.indexOf('|')) : '';
+        for (const row of extractTableRows(slice)) {
+          if (/^\|?[\s:|-]+\|?$/.test(row)) continue;
+          const first = (row.split('|')[1] || '').trim();
+          if (!first) continue;
+          if (/^name$/i.test(first)) { header = row; continue; }   // a repeated header row
+          const k = nameKey(first);
+          if (!k || collected.has(k) || existingNames.has(k)) continue;
+          collected.set(k, row);
+        }
+        // Two rounds that add nobody means the model has run dry on this brief; keep what we have
+        // rather than burning the remaining rounds (and the user's tokens) on nothing.
+        if (collected.size === before) { if (++emptyRounds >= 2) break; } else emptyRounds = 0;
+      }
+
+      let md = [header, '| --- | --- | --- | --- | --- | --- |', ...collected.values()].join('\n');
+      if (!collected.size) {
+        const none = (mode === 'own_key' || mode === 'local')
+          ? 'Your model didn\'t return any usable rows for that. Try a smaller number, or switch to adris.tech AI just for this one — nothing was saved.'
+          : 'I couldn\'t put a list together for that. Try widening it — fewer filters, or a bigger city.';
         setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: none, streaming: false }; return c; });
         setBusy(false); return;
       }
@@ -5352,10 +5411,16 @@ The prompt must be production-ready — specific enough for a motion designer to
       if (sid) krewDb.saveMessage(sid, 'assistant', summary).catch(() => {});
       addMsg({ role: 'lead_result', content: title, leadCount: kept.length, leadTable: finalMd });
     } catch (e) {
-      setAgentBrowserHold(false); setBrowserActive(false);
-      const err = `Couldn't finish the lead search: ${String(e).slice(0, 200)}`;
+      const err = `Couldn't finish the lead search: ${sanitiseError(e)}`;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: err, streaming: false }; return c; });
     } finally {
+      // ALWAYS clear the browser banner here, not on the success path.
+      //
+      // "Krew is using the browser window" stayed up after a run was stopped, and closing Chrome by
+      // hand didn't remove it — because the flag was only cleared where the run finished normally.
+      // A banner that outlives the work it describes makes the app look stuck and makes the user
+      // afraid to touch the browser.
+      setAgentBrowserHold(false); setBrowserActive(false);
       setBusy(false); setAgentStep(null); setAgentTool(null);
     }
   }
@@ -8096,6 +8161,14 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
             <p className="text-[11px] text-nv-yellow leading-tight flex-1">
               <span className="font-semibold">Krew is using the browser window</span> — please don't close it until the task finishes. It closes itself automatically when done.
             </p>
+            {/* An escape hatch. This banner is driven by a flag, and any flow that ends in a way
+                nobody anticipated can leave it set — at which point the app looks permanently busy
+                and the user is afraid to touch their browser. One tap always clears it. */}
+            <button
+              title="Dismiss — I've closed the browser myself"
+              onClick={() => { setBrowserActive(false); setAgentBrowserHold(false); }}
+              className="shrink-0 text-[13px] leading-none px-1.5 text-nv-yellow/70 hover:text-nv-yellow transition-fast"
+            >×</button>
           </div>
         )}
 

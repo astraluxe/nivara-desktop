@@ -45,8 +45,12 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.59',
+  version: '1.6.60',
   items: [
+    'Your own key can now do the big lead searches. “Find 50 leads” used to be one huge request, which a free 70B model cuts off part-way through — so the whole run came back unusable. It is now done a handful at a time, each batch told who has already been found, and partial progress is kept even if a batch fails. Works the same on a local model.',
+    'Fixed a misleading error: when your OWN API key was rejected, the app said “Session expired — sign out and sign back in to adris.tech”, sending you to fix something that was never broken. It now names the right credential — your key, or your adris.tech session — depending on where the AI is actually running.',
+    'Fixed the “Krew is using the browser window” banner staying up after a task was stopped or the browser was closed by hand. It now always clears when the task ends, and there is an × to dismiss it if it ever appears when nothing is running.',
+
     'Update popups no longer hide a new release. Pressing “Later” now quiets only THAT version — the next update announces itself the moment it lands. Previously “Later” went quiet for a full day across every update, so a fix for something badly broken could sit unseen for 24 hours.',
     '/leads can now top up a list you already have. Pick it on the card and it reads that list first, skips everyone already on it, and merges the new people back in — so you never get the same person twice. This replaces /findleads and /expand, which did the same job with no de-duplication guarantee; those phrasings still work if you type them.',
 
