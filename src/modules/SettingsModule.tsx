@@ -45,8 +45,13 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.57',
+  version: '1.6.58',
   items: [
+    'New: /leads — guided lead finding. A card appears in the chat where you pick exactly what you want: company size, city, sector, seniority, how many, and whether every lead must have a real LinkedIn profile or a phone/email. These are applied as filters on the result, not hints in a sentence, so the list comes back matching what you asked for instead of a mix you have to clean up.',
+    'Every lead is checked before it is saved: the LinkedIn profile is opened and confirmed it really is that person, and phone and email are read from Google Maps and the company website. Anything that fails your "must have" boxes is left out rather than handed over half-filled, and you are told how many were dropped.',
+    'When the list is ready, one button sends those leads straight into the outreach copilot — no re-typing a command, no attaching a file, and it takes only that list rather than sweeping in every prospect you have ever researched.',
+    'Company rows are no longer mistaken for people. A lead list can legitimately contain firms and shops, but you cannot send a connection request to a company page — those are now filtered out of outreach automatically, along with stray text that models sometimes write into the Name column.',
+
     'Your lead lists can finally be worked. The people adris researches for you now show up in the outreach copilot next to your existing LinkedIn connections, each tagged so you can see at a glance who came from a lead list and who you already know — with a filter to work either group on its own.',
     'For someone you’re NOT connected to, adris writes a short connection-request note (LinkedIn’s 300-character limit) instead of a message you’d have no way to send — a free account can only message people you’re connected to. Copy the note, open their profile, send the request, and mark it in one tap.',
     'New: “Check pending”. Lost track of who accepted out of thirty requests? One tap checks every pending request at once against LinkedIn’s own sent-invitations list and sorts them out: accepted (the button disappears and you can message them), still waiting (showing how long it’s been), or expired/declined — which go back on your To-do list so they’re not forgotten. It checks everyone in one pass rather than opening each profile, which is both quicker and much safer for your account.',

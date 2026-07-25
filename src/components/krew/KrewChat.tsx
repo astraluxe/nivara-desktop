@@ -28,6 +28,7 @@ import { getImageBudget, unitsForModel } from '../../lib/imageQuota';
 import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining } from '../../lib/tokenTier';
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
 import SkillsPanel from './SkillsPanel';
+import LeadSetupCard, { type LeadConfig } from './LeadSetupCard';
 import { loadUserLocation, locationLabel } from '../../lib/userLocation';
 import OutreachCopilot, { type OutreachCampaign, type OutreachContact, loadSavedCampaign, loadResumableCampaign, loadCampaignByTitle, saveCampaign, bestProfileUrl } from './OutreachCopilot';
 import TodoPanel from './TodoPanel';
@@ -61,12 +62,13 @@ async function freshSessionToken(fallback: string | null): Promise<string | null
 //  • 'prompt' → drops a ready phrasing into the input (the user reviews and sends; it routes
 //    through the normal Krew flow / deterministic short-circuits).
 //  • 'nav'    → opens another module of the exe (via the global nv-navigate event App listens to).
-type SlashCmd = { cmd: string; label: string; desc: string; run: 'prompt' | 'nav' | 'research' | 'agents' | 'outreach' | 'continue' | 'scan' | 'verifylinks' | 'refine' | 'toggleSetting'; value: string };
+type SlashCmd = { cmd: string; label: string; desc: string; run: 'prompt' | 'nav' | 'research' | 'agents' | 'outreach' | 'continue' | 'scan' | 'verifylinks' | 'refine' | 'toggleSetting' | 'leads'; value: string };
 const SLASH_COMMANDS: SlashCmd[] = [
   // ── Actions that run in the chat ─────────────────────────────────────────
   { cmd: 'verify',   label: 'Verify LinkedIn',   desc: 'Open & check every LinkedIn in your lead list',   run: 'prompt', value: 'Go to <file name> and verify each and every LinkedIn — open and check each one, and fill it in properly if it exists.' },
   { cmd: 'enrich',   label: 'Fill contacts',     desc: 'Add missing LinkedIn, phone & email',             run: 'prompt', value: 'Fill in the missing LinkedIn, phone and email for the people already in <file name>.' },
   { cmd: 'findleads',label: 'Find prospects',    desc: 'Research new leads for your product',              run: 'prompt', value: 'Find new prospects for my product and add them to <file name> — do not duplicate anyone already there.' },
+  { cmd: 'leads',    label: 'Find leads (guided)', desc: 'Pick size, city, seniority — get a verified list you can send straight to outreach', run: 'leads', value: '' },
   { cmd: 'scan',     label: 'Scan LinkedIn connections', desc: 'List who you\'re already connected with as warm leads', run: 'scan', value: '' },
   { cmd: 'expand',   label: 'Add more leads',    desc: 'Grow the list with new people',                   run: 'prompt', value: 'Add more prospects to <file name> — new people only, do not repeat anyone already there.' },
   { cmd: 'draft',    label: 'Draft outreach',    desc: 'Write DMs / emails for your list',                run: 'prompt', value: 'Write a LinkedIn DM and a short cold email for the people in <file name>, tailored by sector.' },
@@ -183,7 +185,9 @@ interface ChoiceSet {
 }
 
 interface DisplayMsg {
-  role:      'user' | 'assistant' | 'tool_call' | 'tool_result' | 'delegation' | 'proposal' | 'choices' | 'deck_setup' | 'deck_result' | 'social_schedule' | 'next_task';
+  role:      'user' | 'assistant' | 'tool_call' | 'tool_result' | 'delegation' | 'proposal' | 'choices' | 'deck_setup' | 'deck_result' | 'social_schedule' | 'next_task' | 'lead_setup' | 'lead_result';
+  leadCount?: number;
+  leadTable?: string;
   content:   string;
   toolName?: string;
   streaming?: boolean;
@@ -5168,11 +5172,15 @@ The prompt must be production-ready — specific enough for a motion designer to
   // through connect-request-first rather than straight to a message. Their saved "Connection
   // Status" cell comes with them, which is what makes progress survive re-running /verify or
   // /enrich on the same list (that column is already merge-protected in leadTable.ts).
-  function loadLeadListContacts(): Array<{ name: string; headline: string; url: string; status?: OutreachContact['status']; leadList: string }> {
+  function loadLeadListContacts(onlyTitle = ''): Array<{ name: string; headline: string; url: string; status?: OutreachContact['status']; leadList: string }> {
     const out: Array<{ name: string; headline: string; url: string; status?: OutreachContact['status']; leadList: string }> = [];
     try {
+      const norm = (t: string) => t.trim().toLowerCase();
       const nodes = brainStore.all().nodes.filter((n) => {
         if (n.kind !== 'list') return false;
+        // "Send these to outreach" means THESE — not every lead list ever built. Without this the
+        // button would sweep in months of unrelated prospects alongside the 25 just found.
+        if (onlyTitle && norm(n.title) !== norm(onlyTitle)) return false;
         // "LinkedIn connections" is the /scan note — people already handled by the existing path.
         if (/linkedin connections/i.test(n.title)) return false;
         const body = nodeToMarkdown(n.body || '');
@@ -5207,7 +5215,130 @@ The prompt must be production-ready — specific enough for a motion designer to
     return out;
   }
 
-  async function launchOutreachFromConnections(max = 50, focus = '', userText = '', destTitle = '') {
+  /**
+   * Find leads to an exact spec, verify them, save them, and hand them to outreach.
+   *
+   * The old path was one sentence of prose and hope. These filters are applied as CONSTRAINTS: the
+   * brief states them, and then every row is checked and the ones that don't match are dropped —
+   * because a model asked for "11–50 people" will happily return a 4,000-person company.
+   *
+   * Verification reuses the tools that already exist rather than reinventing them:
+   * enrich_lead_list resolves each LinkedIn and reads Google Maps + the company site for phone and
+   * email; verify_lead_list opens each profile and confirms it. Both are deterministic browser
+   * work, so this behaves identically on adris.tech, a BYOK key, or a local model — only the short
+   * "who fits" step uses the model at all.
+   */
+  async function runLeadGeneration(cfg: LeadConfig) {
+    if (busy) return;
+    const sid = await ensureSession('Lead list');
+    setBusy(true);
+    const t0 = Date.now();
+    const secs = () => Math.round((Date.now() - t0) / 1000);
+    const sizeLabel = cfg.sizes.length && cfg.sizes.length < 5 ? cfg.sizes.join(', ') + ' employees' : 'any size';
+    const senLabel = cfg.seniority.includes('any') || !cfg.seniority.length
+      ? 'anyone' : cfg.seniority.join(' / ');
+    const title = deriveListTitle(`${cfg.sector || cfg.what} ${cfg.city}`.trim());
+
+    addMsg({ role: 'user', content: `Find ${cfg.count} leads — ${cfg.what}${cfg.city ? ` in ${cfg.city}` : ''} (${sizeLabel}, ${senLabel})` });
+    addMsg({ role: 'assistant', content: `Finding ${cfg.count} leads…`, streaming: true });
+
+    try {
+      // 1) Ask for the candidates. Kept to ONE table and no prose so a local model has the least
+      //    possible to get wrong, and so the result parses whatever wrote it.
+      const sys = [
+        'You build B2B lead lists. Return ONLY a markdown table — no preamble, no notes, no commentary.',
+        'Columns EXACTLY: | Name | Company/Role | Sector | City | Website | LinkedIn |',
+        'Rules:',
+        '- Name = a REAL individual person. Never a company name in the Name column.',
+        '- Company/Role must contain their actual job title (e.g. "Zenwork / CEO", "COO at Acme").',
+        '- Only people who plausibly match EVERY filter given below. Fewer correct rows beat more wrong ones.',
+        '- Never invent a LinkedIn URL, a phone number or an email. Put — when you do not know.',
+        '- No duplicates.',
+      ].join('\n');
+      const filters = [
+        `WHO: ${cfg.what}`,
+        cfg.city    ? `CITY: ${cfg.city} (must actually be based there)` : '',
+        cfg.sector  ? `SECTOR: ${cfg.sector}` : '',
+        cfg.sizes.length && cfg.sizes.length < 5 ? `COMPANY SIZE: ${cfg.sizes.join(' or ')} employees` : '',
+        !cfg.seniority.includes('any') && cfg.seniority.length ? `SENIORITY: ${senLabel} only — decision-makers` : '',
+        `HOW MANY: exactly ${cfg.count} rows`,
+      ].filter(Boolean).join('\n');
+      const { text: table } = await streamTurnWithRetry(
+        [{ role: 'user', content: `${filters}\n\nReturn the table now.` }], sys,
+        () => updateLastMsg(`Finding leads…\n\n_Searching… ${secs()}s_`),
+      );
+
+      let md = table.includes('|') ? table.slice(table.indexOf('|')) : '';
+      if (!extractTableRows(md).length) {
+        const none = 'I couldn\'t put a list together for that. Try widening it — fewer filters, or a bigger city.';
+        setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: none, streaming: false }; return c; });
+        setBusy(false); return;
+      }
+
+      // 2) Drop anything that isn't a person before spending browser time on it. A company row
+      //    can't be connected with, so enriching one is wasted work.
+      {
+        const { rows } = parseLeadRows(md, 0);
+        const people = rows.filter((r) => looksLikePersonLead(r.cells['name'] || '', r.cells['company'] || ''));
+        if (people.length) md = rowsToMarkdown(people);
+      }
+
+      // 3) Fill LinkedIn / phone / email. Google Maps is where local businesses actually publish a
+      //    phone, so it is used whenever the user asked for contacts or ticked Maps.
+      if (cfg.mustHaveLinkedIn || cfg.mustHaveContact || cfg.useMaps) {
+        updateLastMsg(`Found ${extractTableRows(md).length - 2} — now checking their details…\n\n_Reading LinkedIn${cfg.useMaps || cfg.mustHaveContact ? ', Google Maps and company sites' : ''}… ${secs()}s_`);
+        setAgentBrowserHold(true); setBrowserActive(true);
+        try {
+          const out = await executeTool('enrich_lead_list', { list: md, forceConfirm: cfg.verify }, creds, requestTerminalApproval, 'research_agent', user?.id ?? '', `${sidRef.current ?? 'main'}-leads`);
+          if (typeof out === 'string' && extractTableRows(out).length > 2) md = out.slice(out.indexOf('|'));
+        } catch { /* keep what we have — an enrich failure must not lose the list */ }
+      }
+
+      // 4) Open each profile and confirm it is really them.
+      if (cfg.verify) {
+        updateLastMsg(`Verifying every profile…\n\n_Opening each one to confirm it's the right person… ${secs()}s_`);
+        try {
+          const out = await executeTool('verify_lead_list', { list: md }, creds, requestTerminalApproval, 'research_agent', user?.id ?? '', `${sidRef.current ?? 'main'}-leads`);
+          if (typeof out === 'string' && extractTableRows(out).length > 2) md = out.slice(out.indexOf('|'));
+        } catch { /* verified-or-not, the list is still useful */ }
+      }
+      setAgentBrowserHold(false); setBrowserActive(false);
+      closeAgentBrowserIfActive().catch(() => {});
+
+      // 5) Enforce the "only keep leads that have…" boxes. Asking for them and then handing back
+      //    rows without them is the thing that made the old lists feel unreliable.
+      const { rows: finalRows } = parseLeadRows(md, 0);
+      const kept = finalRows.filter((r) => {
+        if (!looksLikePersonLead(r.cells['name'] || '', r.cells['company'] || '')) return false;
+        if (cfg.mustHaveLinkedIn && !/linkedin\.com\/in\//i.test(r.cells['linkedin'] || '')) return false;
+        if (cfg.mustHaveContact && !(r.cells['phone'] || r.cells['email'])) return false;
+        return true;
+      });
+      const dropped = finalRows.length - kept.length;
+      if (!kept.length) {
+        const none = `I found ${finalRows.length} candidates but none met your "must have" filters. Untick one of them and I'll keep the near-misses too.`;
+        setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: none, streaming: false }; return c; });
+        setBusy(false); return;
+      }
+      const finalMd = rowsToMarkdown(kept);
+
+      // 6) Save to Brain, then offer the one-click hand-off.
+      await autoSaveLeadTableToBrain(finalMd, [], title, cfg.what);
+      const summary = `Saved **${kept.length}** verified lead${kept.length === 1 ? '' : 's'} to **${title}** in your Brain`
+        + `${dropped > 0 ? ` — ${dropped} didn't meet your filters and were left out` : ''}.`;
+      setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: summary, streaming: false }; return c; });
+      if (sid) krewDb.saveMessage(sid, 'assistant', summary).catch(() => {});
+      addMsg({ role: 'lead_result', content: title, leadCount: kept.length, leadTable: finalMd });
+    } catch (e) {
+      setAgentBrowserHold(false); setBrowserActive(false);
+      const err = `Couldn't finish the lead search: ${String(e).slice(0, 200)}`;
+      setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: err, streaming: false }; return c; });
+    } finally {
+      setBusy(false); setAgentStep(null); setAgentTool(null);
+    }
+  }
+
+  async function launchOutreachFromConnections(max = 50, focus = '', userText = '', destTitle = '', onlyLeadList = '') {
     if (busy) return;
     const sid = await ensureSession('LinkedIn outreach');
     const chips = attachedFiles.map((f) => `[[file]] ${f.name}`).join('\n');
@@ -5300,8 +5431,10 @@ The prompt must be production-ready — specific enough for a motion designer to
         const node = brainStore.all().nodes.find((n) => n.title.trim().toLowerCase() === 'linkedin connections');
         if (node) parseContactRows(nodeToMarkdown(node.body || '')).forEach(add);
       }
-    } else {
+    } else if (!onlyLeadList) {
       // No file attached → use the scan's saved JSON, then the Brain note.
+      // Skipped entirely when the caller named one lead list: "send THESE 25 to outreach" must not
+      // quietly drag in 400 existing connections alongside them.
       try {
         const arr = JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
         if (Array.isArray(arr)) arr.filter((c) => c?.name).forEach((c) => add({ name: String(c.name), headline: String(c.headline || ''), url: String(c.url || ''), source: 'connections' }));
@@ -5315,7 +5448,10 @@ The prompt must be production-ready — specific enough for a motion designer to
     // ── Leads. Added AFTER the connections above so add() has already claimed anyone who is both,
     // and those people keep source:'connections' (no connection request needed). Leads come last in
     // list order too, which keeps the people you can message today at the top of the copilot.
-    const leadsFound = loadLeadListContacts();
+    // When the caller named ONE list (the "Send to outreach" button on a finished lead list),
+    // only that list is pulled in — and connections are skipped entirely, because the user asked
+    // for those leads, not their whole network.
+    const leadsFound = loadLeadListContacts(onlyLeadList);
     leadsFound.forEach((l) => add({ ...l, source: 'leads' }));
     if (!contacts.length) {
       const noConn = 'I don\'t have anyone to reach out to yet. Run **/scan** to pull in your LinkedIn connections, ask me to **build a lead list** for the people you want to reach, or attach a list — then ask me to draft outreach.';
@@ -5997,6 +6133,9 @@ The prompt must be production-ready — specific enough for a motion designer to
     }
     if (c.run === 'continue') { setInput(''); const saved = loadResumableCampaign() || loadSavedCampaign(); if (saved) { setOutreachCampaign(saved); } else addMsg({ role: 'assistant', content: 'No outreach in progress yet — use **/outreach** to draft messages and open the copilot.' }); return; }
     if (c.run === 'verifylinks') { setInput(''); verifyOutreachLinks(); return; }
+    // Opens the setup card instead of running anything — the whole point is to ask BEFORE spending
+    // several minutes of browser time on the wrong kind of lead.
+    if (c.run === 'leads') { setInput(''); addMsg({ role: 'lead_setup', content: '' }); return; }
     if (c.run === 'refine') {
       // Drop the phrasing in (don't run yet) so the user can add HOW they want the messages —
       // "warmer", "lead with our local-first angle", "shorter" — then press Enter. send() catches it.
@@ -7577,7 +7716,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
     // The turn DID do something visible (ran a tool, opened the browser, produced a table/deck/cards)
     // but just didn't add a closing sentence. Do NOT re-answer that with a tool-free completion — it
     // would wrongly reply as if nothing happened (e.g. "I can't open browsers"). Leave it be.
-    if (after.some((m) => m.role === 'tool_result' || m.role === 'proposal' || m.role === 'choices' || m.role === 'deck_result' || m.role === 'deck_setup' || m.role === 'social_schedule')) return;
+    if (after.some((m) => m.role === 'tool_result' || m.role === 'proposal' || m.role === 'choices' || m.role === 'deck_result' || m.role === 'deck_setup' || m.role === 'social_schedule' || m.role === 'lead_setup' || m.role === 'lead_result')) return;
     // From here: a genuinely EMPTY turn — the model produced no text and ran nothing. This is the
     // "free model got lost in the tools and went silent" case a plain retry fixes.
     const userReq = (msgs[lastUserIdx]?.content || '')
@@ -8024,6 +8163,48 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                     if (sidRef.current) krewDb.saveMessage(sidRef.current, 'assistant', content).catch(() => {});
                   }}
                 />
+              ) : msg.role === 'lead_setup' ? (
+                <LeadSetupCard
+                  key={i}
+                  disabled={busy}
+                  defaultCity={loadUserLocation()?.city || ''}
+                  onCancel={() => setMessages((prev) => prev.filter((m) => m !== msg))}
+                  onGenerate={(cfg) => runLeadGeneration(cfg)}
+                />
+              ) : msg.role === 'lead_result' ? (
+                /* The whole point of the guided flow: the list is done, so the next step is one
+                   button rather than remembering which command to type and which file to attach. */
+                <div key={i} className="mx-1 my-1 rounded-xl border border-emerald-500/30 bg-emerald-500/[0.06] overflow-hidden">
+                  <div className="px-3.5 py-2.5">
+                    <div className="text-[12px] font-semibold text-emerald-600">
+                      {msg.leadCount} verified lead{msg.leadCount === 1 ? '' : 's'} ready
+                    </div>
+                    <div className="text-[10.5px] text-nv-faint mt-0.5">
+                      Saved to <b className="text-nv-text">{msg.content}</b> in your Brain. Send them to outreach and
+                      Krew writes a connection note for each one, then tracks who accepts.
+                    </div>
+                  </div>
+                  <div className="px-3.5 pb-3 flex flex-wrap gap-1.5">
+                    <button
+                      disabled={busy}
+                      onClick={() => launchOutreachFromConnections(
+                        Math.max(10, msg.leadCount || 25), '',
+                        `Draft outreach for the ${msg.leadCount} leads in "${msg.content}"`,
+                        '', msg.content,
+                      )}
+                      className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 transition-fast disabled:opacity-60"
+                    >Send to outreach →</button>
+                    <button
+                      disabled={busy}
+                      onClick={() => { setInput(`Add more leads to "${msg.content}" — new people only, do not repeat anyone already there.`); }}
+                      className="text-[11px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
+                    >Find more like these</button>
+                    <button
+                      onClick={() => window.dispatchEvent(new CustomEvent('nv-navigate', { detail: 'brain' }))}
+                      className="text-[11px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
+                    >Open in Brain</button>
+                  </div>
+                </div>
               ) : msg.role === 'deck_setup' ? (
                 <DeckSetupCard
                   key={i}
