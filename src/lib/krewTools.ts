@@ -3413,11 +3413,62 @@ async function executeToolCore(
       return u;
     };
 
+    // ─── Is this company REAL? ──────────────────────────────────────────────────
+    // The model names companies from memory, and some of them do not exist ("BakeMyTrip"). Nothing
+    // used to check, so an invented company survived the whole run and the user got a lead whose
+    // profile 404s. Verification is done from THREE sources — and all three are things the run is
+    // already fetching, so it costs no extra page opens and no extra time:
+    //
+    //   1. the Google search already run to find the person  (does the company appear? does Google
+    //      explicitly say it did not match? is there a linkedin.com/company/ page for it?)
+    //   2. Google Maps, already opened for the phone number  (does a real business come back?)
+    //   3. the company's own website, already fetched         (does it resolve and mention them?)
+    //
+    // Any ONE of those confirms it. Only a company that fails all of them is treated as invented.
+
+    /** Google states outright when a search did not match, in two different shapes — and both were
+     *  captured live from the real pages this runs against:
+     *
+     *    zero results   "Your search - "Mayank Poddar" BakeMyTrip LinkedIn - did not match any
+     *                    documents."                                    (the invented company)
+     *    partial match  "Missing: BakeMyTrip | Show results with: BakeMyTrip"
+     *
+     *  The zero-results page is the trap: it ECHOES THE QUERY BACK, company name and all, so a naive
+     *  "does the company appear in the text" check finds it and concludes the company is real —
+     *  from the very page that just said it does not exist. The echo has to go before looking. */
+    const companyInSearch = (searchText: string, company: string): { present: boolean; missing: boolean } => {
+      const toks = cleanCompany(company).toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length > 3);
+      if (!toks.length || !searchText) return { present: false, missing: false };
+      const low = searchText.toLowerCase();
+      // Zero results — believe it, and do NOT go looking for the name in the echoed query.
+      if (/did not match any documents|no results found for/i.test(low)) return { present: false, missing: true };
+      // Drop the "Missing: X" notices before the presence test, for the same echo reason.
+      const missingNotes = (low.match(/missing:\s*[^\n|]{0,80}/g) || []).join(' ');
+      const missing = toks.some(t => missingNotes.includes(t));
+      const body = low.replace(/missing:\s*[^\n|]{0,80}/g, ' ').replace(/your search[\s\S]{0,200}?documents\./g, ' ');
+      return { present: !missing && toks.some(t => body.includes(t)), missing };
+    };
+
+    /** Did Google Maps actually return a business, or the "can't find" page? */
+    const mapsHasBusiness = (text: string, company: string): boolean => {
+      if (!text || text.length < 80) return false;
+      if (/can.?t find|no results found|did not match any|make sure your search is spelled/i.test(text)) return false;
+      const toks = cleanCompany(company).toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length > 3);
+      const low = text.toLowerCase();
+      return toks.length > 0 && toks.some(t => low.includes(t));
+    };
+
     type Row = Record<string, string>;
     type RD = {
       row: Row; found: { url: string; matched: boolean }; cands: string[];
       linkedin: string; phone: string; email: string;
       maps?: string; site?: string; contact?: string;
+      /** Evidence the employer exists. Any true → real. All false with searchMissing → invented. */
+      compLinkedIn?: string;      // a linkedin.com/company/ page surfaced by the person's own search
+      compInSearch?: boolean;     // the company name appears in the search results
+      compMissing?: boolean;      // Google said outright the term did not match
+      compInMaps?: boolean;       // a real business came back from Google Maps
+      compOnSite?: boolean;       // the company's own website loaded
     };
 
     // Process ONE small sub-batch of rows: discover LinkedIn candidates (HTTP), then Phases A/B/C
@@ -3467,6 +3518,14 @@ async function executeToolCore(
           const txt = sTexts.get(sUrls[i]) || '';
           const all = txt.match(/https?:\/\/[a-z]{0,3}\.?linkedin\.com\/(?:in|company)\/[A-Za-z0-9\-_%]+/gi) || [];
           const uniq = Array.from(new Set(all.map(u => u.split(/[?#]/)[0].replace(/\/+$/, ''))));
+          // The company pages in these results are NOT waste. They are the wrong answer for the
+          // "who do I message" question, but they are the right answer for "does this employer
+          // actually exist" — so keep them as evidence instead of discarding them. Free: this text
+          // was downloaded to find the person.
+          rd.compLinkedIn = uniq.find(u => /linkedin\.com\/company\//i.test(u)) || '';
+          const sig = companyInSearch(txt, rd.row.company);
+          rd.compInSearch = sig.present;
+          rd.compMissing = sig.missing;
           // A PERSON's page or nothing — a company page is not a lead, it cannot be messaged, and
           // handing one over is what produced "it's opening company pages but not the decision
           // maker's page". Blank beats wrong: an empty cell is fixable, a wrong link is not.
@@ -3539,23 +3598,35 @@ async function executeToolCore(
         else rd.linkedin = '';
       }
 
-      // PHASE B — phone via Google Maps + company site, opened in PARALLEL across the sub-batch.
+      // PHASE B — Google Maps + the company site, opened in PARALLEL across the sub-batch. This
+      // pass now does double duty: the phone number it was always after, AND confirmation that the
+      // employer is a real business. Same pages, same time — just reading more of what came back.
       for (const rd of rds) {
         // The row's own city, else the user's saved city — and if we don't know either, search the
         // company name ALONE rather than pinning it to a city on the other side of the world.
         // This used to default to "Bangalore", which quietly sent a Chicago lead list to Google
-        // Maps for Bangalore and matched whatever it found there.
+        // Maps for Bangalore and matched whatever it found there. Search the COMPANY, not the
+        // company-and-job-title, for the same reason the profile search does not.
         const city = rd.row.city || userCity();
-        const mapsQuery = [rd.row.company, city].filter(Boolean).join(' ');
-        if (!rd.phone && (rd.row.company || rd.row.website)) rd.maps = `https://www.google.com/maps/search/${encodeURIComponent(mapsQuery)}`;
+        const mapsQuery = [cleanCompany(rd.row.company), city].filter(Boolean).join(' ');
+        // Open Maps when we still need a phone OR when the company is not yet confirmed to exist.
+        // Nothing else has vouched for it at this point, and Maps is the one source that can.
+        const compUnconfirmed = !rd.compLinkedIn && !rd.compInSearch;
+        if ((!rd.phone || compUnconfirmed) && (rd.row.company || rd.row.website)) rd.maps = `https://www.google.com/maps/search/${encodeURIComponent(mapsQuery)}`;
         if ((!rd.email || !rd.phone) && rd.row.website) rd.site = rd.row.website;
       }
-      if (rds.some(r => r.maps || r.site)) emit('agent-progress', { text: `${progressLabel} — checking phone & email…` }).catch(() => {});
+      if (rds.some(r => r.maps || r.site)) emit('agent-progress', { text: `${progressLabel} — checking the company on Maps, and phone & email…` }).catch(() => {});
       const abTexts = await readPages([...rds.map(r => r.maps || ''), ...rds.map(r => r.site || '')]);
       for (const rd of rds) {
-        if (rd.maps) { const t = abTexts.get(rd.maps) || ''; if (t && !rd.phone) rd.phone = extractPhone(t); }
+        if (rd.maps) {
+          const t = abTexts.get(rd.maps) || '';
+          rd.compInMaps = mapsHasBusiness(t, rd.row.company);
+          if (t && !rd.phone) rd.phone = extractPhone(t);
+        }
         if (rd.site) {
           const t = abTexts.get(rd.site) || '';
+          // A website that actually loads is itself evidence the company is real.
+          if (t && t.length > 200) rd.compOnSite = true;
           if (t) { if (!rd.email) rd.email = extractEmail(t); if (!rd.phone) rd.phone = extractPhone(t); }
         }
       }
@@ -3568,7 +3639,24 @@ async function executeToolCore(
         if (rd.contact) { const t = cTexts.get(rd.contact) || ''; if (t && !rd.email) rd.email = extractEmail(t); }
       }
 
-      return rds.map(rd => ({ ...rd.row, linkedin: rd.linkedin, phone: rd.phone, email: rd.email }));
+      // THE VERDICT ON THE EMPLOYER. Any single source vouching for it is enough — these are
+      // independent checks and each has its own blind spots (a young startup may have no Maps
+      // listing; a consultancy may have no LinkedIn page; a site may be down the day we look).
+      // Only a company that NOTHING can find is treated as invented, and even then it is only
+      // called out — the decision to drop it is made further up, where the user's filters live.
+      return rds.map(rd => {
+        const confirmed = !!(rd.compLinkedIn || rd.compInSearch || rd.compInMaps || rd.compOnSite);
+        // We only get to be sure it is fake if we actually looked. A row we never searched (because
+        // it already had a good LinkedIn cell) has no evidence either way — leave it alone.
+        const looked = rd.compMissing !== undefined || rd.compInMaps !== undefined;
+        return {
+          ...rd.row,
+          linkedin: rd.linkedin,
+          phone: rd.phone,
+          email: rd.email,
+          companyCheck: confirmed ? 'real' : looked ? 'not-found' : 'unchecked',
+        };
+      });
     };
 
     // Loop over the whole list in small sub-batches, pausing between them (lets the search engines
@@ -3596,8 +3684,15 @@ async function executeToolCore(
     const gotLinkedIn = results.filter(r => r.linkedin).length;
     const gotPhone = results.filter(r => r.phone).length;
     const gotEmail = results.filter(r => r.email).length;
+    // Name the ones whose employer nothing could find. This is the honest half of the fix: the
+    // search can catch a company the model invented, but it cannot stop it being invented, so the
+    // user needs telling which rows not to trust rather than being handed them silently.
+    const unfound = results.filter(r => r.companyCheck === 'not-found');
+    const compNote = unfound.length
+      ? `\n\nCOMPANY CHECK — ${unfound.length} of ${results.length} could not be found on LinkedIn, Google Maps, the web, or their own website: ${unfound.map(r => `${r.name} (${r.company})`).slice(0, 12).join('; ')}. Tell the user these companies could not be verified and may not exist, and that the rest were confirmed.`
+      : `\n\nCOMPANY CHECK — every company was confirmed to exist (found on LinkedIn, Google Maps, the web, or its own website).`;
     const more = rows.length > slice.length ? `\n\nNote: ${rows.length - slice.length} more row(s) not done this pass (cap ${MAX}). Call enrich_lead_list again with the rest.` : '';
-    return `COMPLETED LEAD LIST — the app searched for each person's LinkedIn, and searched Google Maps + the company sites in the browser for their phone/email. PRESENT THIS TABLE TO THE USER EXACTLY AS-IS: never invent a link, phone or email — a "—" means none was found.\n\n${table}\n\n${results.length} row(s): ${gotLinkedIn} have a LinkedIn, ${gotPhone} got a phone, ${gotEmail} got an email.${more}`;
+    return `COMPLETED LEAD LIST — the app searched Google in the browser for each person's LinkedIn, confirmed each employer really exists against LinkedIn + Google Maps + the web, and read Google Maps and the company sites for phone/email. PRESENT THIS TABLE TO THE USER EXACTLY AS-IS: never invent a link, phone or email — a "—" means none was found.\n\n${table}\n\n${results.length} row(s): ${gotLinkedIn} have a LinkedIn, ${gotPhone} got a phone, ${gotEmail} got an email.${compNote}${more}`;
   }
 
   if (toolName === 'browser_open') {

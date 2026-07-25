@@ -45,8 +45,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.71',
+  version: '1.6.72',
   items: [
+    'Every company on a lead list is now checked to make sure it actually exists. Your AI names companies from what it knows, and some of them are not real — which is why certain profiles led nowhere. Each employer is now confirmed against four independent sources: its LinkedIn company page, Google Maps, the open web, and its own website. Any one of them vouching for it is enough, so a young startup with no Maps listing is not punished for it, and you are told plainly which companies nothing could find.',
+    'This check costs no extra waiting. It reads the Google results and the Maps page the search was already opening for the person\'s profile and phone number — the same pages, looked at more carefully, rather than a new round of searching.',
+
     'Lead searches now look people up on Google, in the browser window, the way you would yourself. The search engines being used behind the scenes had stopped working entirely — DuckDuckGo loads as a blank page, and Bing and Google both return nothing usable without a real browser. So the step that was supposed to find each person\'s profile could not succeed no matter what, which is why so many links were missing, wrong, or pointed at a company page. Google in the real window finds the right profile first time.',
     'A lead now gets a PERSON\'s profile or an empty cell — never a company page. A company page cannot be sent a connection request, so it was never a usable answer, and it was frequently winning over the actual decision-maker you asked for.',
     'The job title is no longer pasted into the search. Searching for "BakeMyTrip / Co-Founder & CEO" asked the engine to match the title as well as the company, which turns a good search into no results. It now searches the person\'s full name and their company.',
