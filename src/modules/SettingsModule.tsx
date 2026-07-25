@@ -45,8 +45,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.58',
+  version: '1.6.59',
   items: [
+    'Update popups no longer hide a new release. Pressing “Later” now quiets only THAT version — the next update announces itself the moment it lands. Previously “Later” went quiet for a full day across every update, so a fix for something badly broken could sit unseen for 24 hours.',
+    '/leads can now top up a list you already have. Pick it on the card and it reads that list first, skips everyone already on it, and merges the new people back in — so you never get the same person twice. This replaces /findleads and /expand, which did the same job with no de-duplication guarantee; those phrasings still work if you type them.',
+
     'New: /leads — guided lead finding. A card appears in the chat where you pick exactly what you want: company size, city, sector, seniority, how many, and whether every lead must have a real LinkedIn profile or a phone/email. These are applied as filters on the result, not hints in a sentence, so the list comes back matching what you asked for instead of a mix you have to clean up.',
     'Every lead is checked before it is saved: the LinkedIn profile is opened and confirmed it really is that person, and phone and email are read from Google Maps and the company website. Anything that fails your "must have" boxes is left out rather than handed over half-filled, and you are told how many were dropped.',
     'When the list is ready, one button sends those leads straight into the outreach copilot — no re-typing a command, no attaching a file, and it takes only that list rather than sweeping in every prospect you have ever researched.',

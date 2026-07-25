@@ -67,10 +67,8 @@ const SLASH_COMMANDS: SlashCmd[] = [
   // ── Actions that run in the chat ─────────────────────────────────────────
   { cmd: 'verify',   label: 'Verify LinkedIn',   desc: 'Open & check every LinkedIn in your lead list',   run: 'prompt', value: 'Go to <file name> and verify each and every LinkedIn — open and check each one, and fill it in properly if it exists.' },
   { cmd: 'enrich',   label: 'Fill contacts',     desc: 'Add missing LinkedIn, phone & email',             run: 'prompt', value: 'Fill in the missing LinkedIn, phone and email for the people already in <file name>.' },
-  { cmd: 'findleads',label: 'Find prospects',    desc: 'Research new leads for your product',              run: 'prompt', value: 'Find new prospects for my product and add them to <file name> — do not duplicate anyone already there.' },
   { cmd: 'leads',    label: 'Find leads (guided)', desc: 'Pick size, city, seniority — get a verified list you can send straight to outreach', run: 'leads', value: '' },
   { cmd: 'scan',     label: 'Scan LinkedIn connections', desc: 'List who you\'re already connected with as warm leads', run: 'scan', value: '' },
-  { cmd: 'expand',   label: 'Add more leads',    desc: 'Grow the list with new people',                   run: 'prompt', value: 'Add more prospects to <file name> — new people only, do not repeat anyone already there.' },
   { cmd: 'draft',    label: 'Draft outreach',    desc: 'Write DMs / emails for your list',                run: 'prompt', value: 'Write a LinkedIn DM and a short cold email for the people in <file name>, tailored by sector.' },
   { cmd: 'outreach', label: 'Send outreach (copilot)', desc: 'Draft LinkedIn messages & walk through sending them', run: 'outreach', value: '' },
   { cmd: 'continue', label: 'Continue outreach', desc: 'Reopen the outreach copilot where you left off',   run: 'continue', value: '' },
@@ -5237,7 +5235,20 @@ The prompt must be production-ready — specific enough for a motion designer to
     const sizeLabel = cfg.sizes.length && cfg.sizes.length < 5 ? cfg.sizes.join(', ') + ' employees' : 'any size';
     const senLabel = cfg.seniority.includes('any') || !cfg.seniority.length
       ? 'anyone' : cfg.seniority.join(' / ');
-    const title = deriveListTitle(`${cfg.sector || cfg.what} ${cfg.city}`.trim());
+    // Adding to a list keeps that list's name; a new search gets its own so unrelated searches
+    // never collide into one node.
+    const existingNode = cfg.addToList ? brainStore.findByTitle(cfg.addToList) : undefined;
+    const existingMd = existingNode?.body ? nodeToMarkdown(existingNode.body) : '';
+    const title = cfg.addToList || deriveListTitle(`${cfg.sector || cfg.what} ${cfg.city}`.trim());
+    // Everyone already on the list, so the search can be told to skip them AND anything that slips
+    // through can be dropped. Asking a model politely not to repeat itself is not enough.
+    const existingNames = new Set<string>();
+    if (existingMd) {
+      for (const r of parseLeadRows(existingMd, 0).rows) {
+        const n = (r.cells['name'] || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (n) existingNames.add(n);
+      }
+    }
 
     addMsg({ role: 'user', content: `Find ${cfg.count} leads — ${cfg.what}${cfg.city ? ` in ${cfg.city}` : ''} (${sizeLabel}, ${senLabel})` });
     addMsg({ role: 'assistant', content: `Finding ${cfg.count} leads…`, streaming: true });
@@ -5279,7 +5290,12 @@ The prompt must be production-ready — specific enough for a motion designer to
       //    can't be connected with, so enriching one is wasted work.
       {
         const { rows } = parseLeadRows(md, 0);
-        const people = rows.filter((r) => looksLikePersonLead(r.cells['name'] || '', r.cells['company'] || ''));
+        const people = rows.filter((r) => {
+          const nm = r.cells['name'] || '';
+          if (!looksLikePersonLead(nm, r.cells['company'] || '')) return false;
+          // The guarantee, not the request: anyone already on the list never comes back.
+          return !existingNames.has(nm.toLowerCase().replace(/[^a-z0-9]/g, ''));
+        });
         if (people.length) md = rowsToMarkdown(people);
       }
 
@@ -5310,6 +5326,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       const { rows: finalRows } = parseLeadRows(md, 0);
       const kept = finalRows.filter((r) => {
         if (!looksLikePersonLead(r.cells['name'] || '', r.cells['company'] || '')) return false;
+        if (existingNames.has((r.cells['name'] || '').toLowerCase().replace(/[^a-z0-9]/g, ''))) return false;
         if (cfg.mustHaveLinkedIn && !/linkedin\.com\/in\//i.test(r.cells['linkedin'] || '')) return false;
         if (cfg.mustHaveContact && !(r.cells['phone'] || r.cells['email'])) return false;
         return true;
@@ -5322,9 +5339,14 @@ The prompt must be production-ready — specific enough for a motion designer to
       }
       const finalMd = rowsToMarkdown(kept);
 
-      // 6) Save to Brain, then offer the one-click hand-off.
-      await autoSaveLeadTableToBrain(finalMd, [], title, cfg.what);
-      const summary = `Saved **${kept.length}** verified lead${kept.length === 1 ? '' : 's'} to **${title}** in your Brain`
+      // 6) Save to Brain, then offer the one-click hand-off. Appending merges cell-by-cell into the
+      //    node the user picked, so nothing already there is overwritten or lost.
+      if (existingNode) {
+        brainStore.updateNode(existingNode.id, { body: mergeLeadTables(existingMd, finalMd).slice(0, 16000) });
+      } else {
+        await autoSaveLeadTableToBrain(finalMd, [], title, cfg.what);
+      }
+      const summary = `${existingNode ? 'Added' : 'Saved'} **${kept.length}** verified lead${kept.length === 1 ? '' : 's'} ${existingNode ? 'to' : 'to'} **${title}**`
         + `${dropped > 0 ? ` — ${dropped} didn't meet your filters and were left out` : ''}.`;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: summary, streaming: false }; return c; });
       if (sid) krewDb.saveMessage(sid, 'assistant', summary).catch(() => {});
@@ -8168,6 +8190,11 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                   key={i}
                   disabled={busy}
                   defaultCity={loadUserLocation()?.city || ''}
+                  existingLists={brainStore.all().nodes
+                    .filter((n) => n.kind === 'list' && !/linkedin connections/i.test(n.title)
+                      && /\|/.test(nodeToMarkdown(n.body || '')))
+                    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+                    .map((n) => n.title)}
                   onCancel={() => setMessages((prev) => prev.filter((m) => m !== msg))}
                   onGenerate={(cfg) => runLeadGeneration(cfg)}
                 />

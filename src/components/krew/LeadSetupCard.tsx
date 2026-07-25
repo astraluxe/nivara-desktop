@@ -10,6 +10,9 @@ import { useState } from 'react';
 // Same shape as the deck setup card, so the app has one way of asking "what exactly do you want?"
 
 export interface LeadConfig {
+  /** Empty = start a new list. Otherwise the Brain lead list to READ, exclude, and append to —
+   *  this is what /expand and /findleads used to do, folded in so there is one way to find leads. */
+  addToList: string;
   what: string;              // what they do / who to look for, in the user's words
   sizes: string[];           // company-size bands
   seniority: string[];       // decision-maker levels
@@ -36,13 +39,15 @@ const SENIORITY = [
   { key: 'any',     label: 'Anyone' },
 ];
 
-export default function LeadSetupCard({ defaultCity, onGenerate, onCancel, disabled }: {
+export default function LeadSetupCard({ defaultCity, existingLists = [], onGenerate, onCancel, disabled }: {
   defaultCity?: string;
+  existingLists?: string[];
   onGenerate: (cfg: LeadConfig) => void;
   onCancel: () => void;
   disabled?: boolean;
 }) {
   const [done, setDone] = useState(false);
+  const [addToList, setAddToList] = useState('');
   const [what, setWhat] = useState('');
   const [sizes, setSizes] = useState<string[]>(['11-50', '51-200']);
   const [seniority, setSeniority] = useState<string[]>(['founder']);
@@ -81,6 +86,28 @@ export default function LeadSetupCard({ defaultCity, onGenerate, onCancel, disab
       </div>
 
       <div className="p-3.5 space-y-3">
+        {/* Topping up an existing list is the same job with one extra rule — never return anyone
+            already on it. Keeping it here means one command instead of /leads + /findleads +
+            /expand, and the de-duplication is guaranteed rather than asked for politely. */}
+        {existingLists.length > 0 && (
+          <div>
+            <label className="text-[10px] text-nv-faint uppercase tracking-wide">Where do these go?</label>
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              <button type="button" onClick={() => setAddToList('')} className={chip(!addToList)}>Start a new list</button>
+              {existingLists.slice(0, 6).map((t) => (
+                <button key={t} type="button" onClick={() => setAddToList(t)} className={chip(addToList === t)} title={`Add to "${t}" and skip anyone already on it`}>
+                  Add to: {t.length > 22 ? t.slice(0, 21) + '…' : t}
+                </button>
+              ))}
+            </div>
+            {addToList && (
+              <p className="text-[9.5px] text-nv-faint mt-1 leading-relaxed">
+                Reads “{addToList}” first and skips everyone already on it, so you only get new people.
+              </p>
+            )}
+          </div>
+        )}
+
         <div>
           <label className="text-[10px] text-nv-faint uppercase tracking-wide">Who are you looking for?</label>
           <input
@@ -192,7 +219,7 @@ export default function LeadSetupCard({ defaultCity, onGenerate, onCancel, disab
           onClick={() => {
             setDone(true);
             onGenerate({
-              what: what.trim(), sizes, seniority, city: city.trim(), sector: sector.trim(),
+              addToList, what: what.trim(), sizes, seniority, city: city.trim(), sector: sector.trim(),
               count, mustHaveLinkedIn, mustHaveContact, useMaps, verify,
             });
           }}

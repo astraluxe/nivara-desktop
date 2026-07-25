@@ -160,8 +160,25 @@ function AnnouncementModal({ ann, onClose }: { ann: Announcement; onClose: () =>
 }
 
 const DISMISSED_KEY = 'nv-dismissed-announcements';
-const UPDATE_SNOOZE_KEY = 'nv-update-snooze-until';
-const UPDATE_SNOOZE_MS = 24 * 60 * 60_000;   // one "Later" quiets update popups for 24h
+// "Later" quiets the popup for the version it was clicked on — and ONLY that version.
+//
+// This used to be a blanket 24h quiet across every update. That is dangerous in exactly the case
+// that matters most: ship a fix for something badly broken, and anyone who pressed "Later" in the
+// previous 24 hours never sees it. A snooze should mean "not this one, not right now", never
+// "don't tell me about anything for a day".
+const UPDATE_SNOOZE_KEY = 'nv-update-snooze';
+const UPDATE_SNOOZE_MS = 24 * 60 * 60_000;
+
+type UpdateSnooze = { version: string; until: number };
+function readUpdateSnooze(): UpdateSnooze | null {
+  try {
+    const raw = localStorage.getItem(UPDATE_SNOOZE_KEY);
+    if (!raw) return null;
+    const v = JSON.parse(raw);
+    if (v && typeof v.version === 'string' && typeof v.until === 'number') return v as UpdateSnooze;
+  } catch { /* legacy value from the old timestamp-only format — ignore it */ }
+  return null;
+}
 
 function AppShell() {
   const { session, loading, profile, refreshSession } = useAuth();
@@ -387,11 +404,11 @@ function AppShell() {
     function showUpdateBanner(version: string) {
       const dismissed = JSON.parse(localStorage.getItem(DISMISSED_KEY) ?? '[]') as string[];
       if (dismissed.includes(`update-${version}`)) return;
-      // Respect a snooze — once the user clicks "Later", don't pop the update window again for a
-      // while, even when a newer version ships. This is what stops it nagging "again and again"
-      // (each new version used to be a brand-new prompt), and it never interrupts work mid-flow.
-      const snoozeUntil = parseInt(localStorage.getItem(UPDATE_SNOOZE_KEY) || '0', 10);
-      if (snoozeUntil > Date.now()) return;
+      // Respect a snooze only for the SAME version it was clicked on, so pressing "Later" stops it
+      // re-appearing on every launch/focus without ever hiding a newer build. A new version — which
+      // is the one that might be fixing something urgent — always gets through immediately.
+      const snooze = readUpdateSnooze();
+      if (snooze && snooze.version === version && snooze.until > Date.now()) return;
       setAnnouncement({
         id: `update-${version}`,
         title: `Update available — v${version}`,
@@ -626,10 +643,11 @@ function AppShell() {
             if (!dismissed.includes(announcement.id)) {
               localStorage.setItem(DISMISSED_KEY, JSON.stringify([...dismissed, announcement.id]));
             }
-            // "Later" on an update = quiet all update popups for 24h, so it stops re-appearing every
-            // launch/focus and never interrupts work again in that window.
+            // "Later" quiets THIS version for 24h — it stops re-appearing on every launch/focus,
+            // but the next release still announces itself the moment it lands.
             if (announcement.type === 'update') {
-              localStorage.setItem(UPDATE_SNOOZE_KEY, String(Date.now() + UPDATE_SNOOZE_MS));
+              const v = announcement.id.replace(/^update-/, '');
+              localStorage.setItem(UPDATE_SNOOZE_KEY, JSON.stringify({ version: v, until: Date.now() + UPDATE_SNOOZE_MS }));
             }
             setAnnouncement(null);
           }}
