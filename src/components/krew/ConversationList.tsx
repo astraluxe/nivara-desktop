@@ -132,7 +132,15 @@ export default function ConversationList({ activeId, onSelect, onNew, onOpenApps
             >
               <div className="flex-1 min-w-0">
                 <p className={`text-[11px] truncate ${s.id === activeId ? 'text-nv-text' : 'text-nv-muted'}`}>
-                  {pinned.includes(s.id) && <span className="text-accent mr-1">▪</span>}
+                  {/* A pin, drawn as a pin. The square bullet read as a status dot rather than
+                      "this chat is pinned", which is a lot of meaning to hang on a shape nobody
+                      recognises. */}
+                  {pinned.includes(s.id) && (
+                    <svg viewBox="0 0 24 24" width="9" height="9" fill="currentColor"
+                      className="inline-block text-accent mr-1 -mt-px" aria-label="Pinned">
+                      <path d="M14.4 2.6a1 1 0 0 0-1.7.7v5.3L8.5 11a3 3 0 0 0-1.3 2.5v.4a1 1 0 0 0 1 1h3.6v5.3a1 1 0 0 0 2 0v-5.3h3.6a1 1 0 0 0 1-1v-.4A3 3 0 0 0 17 11l-4.2-2.4V3.3a1 1 0 0 0-.3-.7z"/>
+                    </svg>
+                  )}
                   {s.title || 'New Chat'}
                 </p>
                 <div className="flex items-center gap-1.5 mt-0.5">
@@ -153,10 +161,14 @@ export default function ConversationList({ activeId, onSelect, onNew, onOpenApps
                 <button
                   onClick={(e) => togglePin(e, s.id)}
                   title={pinned.includes(s.id) ? 'Unpin' : 'Pin to top'}
-                  className={`text-[10px] transition-fast ${pinned.includes(s.id)
+                  className={`transition-fast leading-none ${pinned.includes(s.id)
                     ? 'text-accent'
                     : 'opacity-0 group-hover:opacity-100 text-nv-faint hover:text-accent'}`}
-                >▪</button>
+                >
+                  <svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" className="block">
+                    <path d="M14.4 2.6a1 1 0 0 0-1.7.7v5.3L8.5 11a3 3 0 0 0-1.3 2.5v.4a1 1 0 0 0 1 1h3.6v5.3a1 1 0 0 0 2 0v-5.3h3.6a1 1 0 0 0 1-1v-.4A3 3 0 0 0 17 11l-4.2-2.4V3.3a1 1 0 0 0-.3-.7z"/>
+                  </svg>
+                </button>
                 <button
                   onClick={(e) => startRename(e, s)}
                   title="Rename (or double-click)"
