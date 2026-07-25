@@ -214,6 +214,31 @@ function ensureBrowserWarm(): Promise<void> {
   return _browserWarmed;
 }
 
+// ─── "Confirm you're human" during a batch job ────────────────────────────────
+// A search engine throwing an anti-bot page used to silently cost a lead: the page was detected as
+// blocked, the row was abandoned, and the run carried on — which is a large part of why a 25-lead
+// search could save only 4. The check exists to confirm a person is present, and one IS present:
+// the user is sitting there watching it work. So the page is put in front of them and the job WAITS
+// for them to clear it, exactly like the sign-in flow already does, then continues with the real
+// results. Nothing is auto-solved.
+//
+// Two ~40s windows: a single browser command that overruns gets abandoned by the bridge beneath it.
+async function clearHumanCheck(url: string): Promise<string> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      emit('agent-progress', { text: 'Waiting for you to confirm you are human in the browser…' }).catch(() => {});
+      const res = await withBrowserLock(() => invoke<string>('run_browser_persistent', { args: `humancheck "${url}"` }).catch(e => String(e)));
+      const i = res.indexOf('HUMANCHECK:CLEARED');
+      if (i >= 0) {
+        const text = cleanBrowserText(res.slice(i + 'HUMANCHECK:CLEARED'.length));
+        if (text && !looksBlockedPage(text)) return text;
+      }
+      if (!res.includes('HUMANCHECK:PENDING')) return '';   // crashed / unsupported — stop asking
+    } catch { return ''; }
+  }
+  return '';
+}
+
 function withBrowserLock<T>(fn: () => Promise<T>): Promise<T> {
   const result = _browserNavChain.then(
     () => ensureBrowserWarm().then(() => fn()),
@@ -2816,7 +2841,14 @@ async function executeToolCore(
           const url = um[1].trim();
           const status: 'ok' | 'login' | 'error' = um[2] === 'ok' ? 'ok' : um[2] === 'login' ? 'login' : 'error';
           const text = block.slice(block.indexOf(um[0]) + um[0].length);
-          out.set(url, { text: cleanBrowserText(text || ''), status });
+          let clean = cleanBrowserText(text || '');
+          // Blocked by a human check? Ask the user to clear it and WAIT, instead of abandoning
+          // this person — a dropped row here is a lead the user never gets.
+          if (clean && looksBlockedPage(clean)) {
+            const unblocked = await clearHumanCheck(url);
+            if (unblocked) clean = unblocked;
+          }
+          out.set(url, { text: clean, status });
         }
         for (const u of chunk) { if (!out.has(u)) out.set(u, { text: '', status: 'error' }); }
         await new Promise((r) => setTimeout(r, 300));
@@ -3198,7 +3230,12 @@ async function executeToolCore(
           if (!um) continue;
           const url = um[1].trim();
           const text = block.slice(block.indexOf(um[0]) + um[0].length);
-          out.set(url, cleanBrowserText(text || ''));
+          let clean = cleanBrowserText(text || '');
+          if (clean && looksBlockedPage(clean)) {
+            const unblocked = await clearHumanCheck(url);
+            if (unblocked) clean = unblocked;
+          }
+          out.set(url, clean);
         }
         // Any URL the response didn't cover → mark empty so callers don't hang waiting on it.
         for (const u of chunk) { if (!out.has(u)) out.set(u, ''); }
