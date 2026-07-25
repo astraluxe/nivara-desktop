@@ -7,7 +7,7 @@ import type { Node, Edge } from '@xyflow/react';
 import { krewDb, credentialStore, krewMemoryDb, type KrewMemory } from '../../lib/krewDb';
 import { listMcpServers, mcpToolDefs } from '../../lib/krewMcp';
 import { brain as brainStore, nodeToMarkdown } from '../../lib/knowledgeStore';
-import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, LEAD_TOOLS, getAutopilotTools, buildKrewSystemPrompt, executeTool, needsCompression, resetBrowserRunState, closeAgentBrowserIfActive, setAgentBrowserHold, markBrowserPrewarmed, requestLeadStop, resetLeadStop, isLeadStopRequested, KREW_PROFILE_KEY, type ToolDef } from '../../lib/krewTools';
+import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, LEAD_TOOLS, getAutopilotTools, buildKrewSystemPrompt, executeTool, needsCompression, resetBrowserRunState, closeAgentBrowserIfActive, setAgentBrowserHold, requestLeadStop, resetLeadStop, isLeadStopRequested, KREW_PROFILE_KEY, type ToolDef } from '../../lib/krewTools';
 import { TaskProgress, type TaskPhase } from './TaskProgress';
 import { runParallelResearch } from '../../lib/researchSources';
 import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, type KrewAgent } from '../../lib/krewAgents';
@@ -3109,12 +3109,32 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
     }
   }
 
-  const [mode,       setMode]       = useState<ConnectionMode>('nivara');
+  // ─── Where the chat runs, remembered across restarts ────────────────────────────────────────
+  // This used to reset to 'nivara' on every launch. Someone deliberately working on their own key
+  // (or a local model) was quietly moved back onto their adris.tech allowance the next time they
+  // opened the app — spending tokens they had chosen not to spend, without being told. The choice
+  // is the user's, so it persists until they change it.
+  const CHAT_CONN_KEY = 'nv-krew-connection';
+  const savedConn = (() => {
+    try {
+      const v = JSON.parse(localStorage.getItem(CHAT_CONN_KEY) || '{}');
+      return (v && typeof v === 'object') ? v as Partial<{ mode: ConnectionMode; provider: Provider; modelName: string; baseUrl: string; localModel: string }> : {};
+    } catch { return {}; }
+  })();
+
+  const [mode,       setMode]       = useState<ConnectionMode>(savedConn.mode ?? 'nivara');
   const [apiKey,     setApiKey]     = useState('');
-  const [provider,   setProvider]   = useState<Provider>('openai');
-  const [modelName,  setModelName]  = useState('gpt-4o');
-  const [baseUrl,    setBaseUrl]    = useState('');
-  const [localModel, setLocalModel] = useState('llama3');
+  const [provider,   setProvider]   = useState<Provider>(savedConn.provider ?? 'openai');
+  const [modelName,  setModelName]  = useState(savedConn.modelName ?? 'gpt-4o');
+  const [baseUrl,    setBaseUrl]    = useState(savedConn.baseUrl ?? '');
+  const [localModel, setLocalModel] = useState(savedConn.localModel ?? 'llama3');
+
+  // The KEY itself is never stored here — it stays in the credential store, so this remembers the
+  // CHOICE only. If the key behind it is gone, the own-key path falls back exactly as it always did.
+  useEffect(() => {
+    try { localStorage.setItem(CHAT_CONN_KEY, JSON.stringify({ mode, provider, modelName, baseUrl, localModel })); }
+    catch { /* quota — the session still works, it just won't be remembered */ }
+  }, [mode, provider, modelName, baseUrl, localModel]);
 
   const [messages,      setMessages]      = useState<DisplayMsg[]>([]);
   const [input,         setInput]         = useState('');
@@ -5360,22 +5380,62 @@ The prompt must be production-ready — specific enough for a motion designer to
 
       // 3) Fill LinkedIn / phone / email. Google Maps is where local businesses actually publish a
       //    phone, so it is used whenever the user asked for contacts or ticked Maps.
-      if (cfg.mustHaveLinkedIn || cfg.mustHaveContact || cfg.useMaps) {
-        updateLastMsg(`Found ${extractTableRows(md).length - 2} — now checking their details…\n\n_Reading LinkedIn${cfg.useMaps || cfg.mustHaveContact ? ', Google Maps and company sites' : ''}… ${secs()}s_`);
-        setAgentBrowserHold(true); setBrowserActive(true);
+      // These two steps take MINUTES on a long list, so they need a live heartbeat. Writing the
+      // status once before the await left "…8s" frozen on screen for the entire run, which is
+      // indistinguishable from the app having hung — the tool was working the whole time.
+      // The tool also emits agent-progress per sub-batch ("Enriching 7–12 of 27"); mirroring that
+      // into the bubble is the difference between "stuck" and "working through your list".
+      const runToolWithHeartbeat = async (
+        tool: 'enrich_lead_list' | 'verify_lead_list',
+        args: Record<string, unknown>,
+        label: string,
+        detail: string,
+      ): Promise<string | null> => {
+        let last = '';
+        const paint = () => updateLastMsg(
+          `${label}${last ? ` — ${last}` : ''}\n\n_${detail} · ${secs()}s elapsed — press Stop to halt after the current batch._`,
+        );
+        paint();
+        const hb = setInterval(paint, 1000);
+        const un = await listen('agent-progress', (e) => {
+          const t = (e.payload as { text?: string } | undefined)?.text;
+          if (!t) return;
+          last = t;
+          // Only claim the browser is in use once it actually is. Enrichment starts with plain
+          // HTTP reads and opens no window at all, so announcing "Krew is using the browser
+          // window" up front described something the user could see wasn't happening — which
+          // makes every other status message look untrustworthy too.
+          if (/open|browser|profile|checking|maps|site/i.test(t)) setBrowserActive(true);
+          paint();
+        });
         try {
-          const out = await executeTool('enrich_lead_list', { list: md, forceConfirm: cfg.verify }, creds, requestTerminalApproval, 'research_agent', user?.id ?? '', `${sidRef.current ?? 'main'}-leads`);
-          if (typeof out === 'string' && extractTableRows(out).length > 2) md = out.slice(out.indexOf('|'));
-        } catch { /* keep what we have — an enrich failure must not lose the list */ }
+          return await executeTool(tool, args, creds, requestTerminalApproval, 'research_agent', user?.id ?? '', `${sidRef.current ?? 'main'}-leads`);
+        } catch { return null; }
+        finally { clearInterval(hb); un(); }
+      };
+
+      if (cfg.mustHaveLinkedIn || cfg.mustHaveContact || cfg.useMaps) {
+        // Hold the browser open for the run, but leave the "in use" banner off until the tool
+        // reports work that actually involves it (see the listener above).
+        setAgentBrowserHold(true);
+        const out = await runToolWithHeartbeat(
+          'enrich_lead_list', { list: md, forceConfirm: cfg.verify },
+          `Checking ${Math.max(0, extractTableRows(md).length - 2)} leads`,
+          `Reading LinkedIn${cfg.useMaps || cfg.mustHaveContact ? ', Google Maps and company sites' : ''}`,
+        );
+        // Keep what we have on failure — an enrich problem must never lose the list.
+        if (out && extractTableRows(out).length > 2) md = out.slice(out.indexOf('|'));
       }
 
       // 4) Open each profile and confirm it is really them.
-      if (cfg.verify) {
-        updateLastMsg(`Verifying every profile…\n\n_Opening each one to confirm it's the right person… ${secs()}s_`);
-        try {
-          const out = await executeTool('verify_lead_list', { list: md }, creds, requestTerminalApproval, 'research_agent', user?.id ?? '', `${sidRef.current ?? 'main'}-leads`);
-          if (typeof out === 'string' && extractTableRows(out).length > 2) md = out.slice(out.indexOf('|'));
-        } catch { /* verified-or-not, the list is still useful */ }
+      if (cfg.verify && !stopRef.current) {
+        setAgentBrowserHold(true);
+        const out = await runToolWithHeartbeat(
+          'verify_lead_list', { list: md },
+          'Verifying profiles',
+          'Opening each one to confirm it is the right person',
+        );
+        if (out && extractTableRows(out).length > 2) md = out.slice(out.indexOf('|'));
       }
       setAgentBrowserHold(false); setBrowserActive(false);
       closeAgentBrowserIfActive().catch(() => {});
@@ -6540,10 +6600,13 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     const browseSignal = /\b(find|search|verify|check|look ?up|research|scrape|browse|visit|open the|go to|lead list|leads|prospects|decision maker|who (is|are|can|do)|contact (details|info)|phone number|email address|google maps|\bmaps\b|profile|careers|current price|pricing of|competitor|website of|list of)\b/i.test(text);
     // A deck/PPT or schedule request never needs the browser — don't pre-warm one just because
     // the text happens to contain a word like "check" (e.g. "check out my platform").
-    if (searchMode === 'advanced' && browseSignal && !looksLikePresentation(text) && !looksLikeScheduleIntent(text)) {
-      markBrowserPrewarmed();
-      invoke('run_browser_persistent', { args: 'open "about:blank"' }).catch(() => {});
-    }
+    //
+    // REMOVED: the pre-warm used to fire here on any browse-ish word (find / check / leads /
+    // profile / maps…), opening an about:blank Chrome window before any tool ran. It saved ~10s on
+    // the first browser open, but a window appearing on its own — with nothing in it, for a task
+    // that might never browse — reads as the app doing something behind the user's back. Reported
+    // twice as "the browser started on its own". A slower first open is the better trade.
+    void browseSignal;
 
     // Capture and clear attached files
     const currentFiles = attachedFiles;

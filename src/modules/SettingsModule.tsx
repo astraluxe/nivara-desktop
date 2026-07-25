@@ -45,8 +45,13 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.61',
+  version: '1.6.62',
   items: [
+    'Your AI choice is remembered. If you were on your own key (or a local model), the app stays there when you reopen it instead of silently moving you back onto your adris.tech allowance and spending tokens you had chosen not to spend.',
+    'Lead searches now show live progress. The status used to freeze on "…8s" while the work carried on for minutes, which looked exactly like the app had hung. It now ticks and shows which batch it is on, and you can Stop after the current batch.',
+    'The browser no longer opens a blank window on its own. It used to pre-open one whenever a message contained a word like "find" or "check", which looked like the app doing something behind your back. The first browser open is now slightly slower and nothing appears unasked.',
+    'The "Krew is using the browser window" note only appears once the browser is genuinely being used, instead of during the part of the work that never opens one.',
+
     'When a search engine asks “are you human?”, adris now shows you that page in the browser window instead of quietly failing. Tick the box and the search — and whatever task it was part of — carries straight on by itself. Previously the job just stopped there and you had to start the whole thing again.',
 
     'Your own key can now do the big lead searches. “Find 50 leads” used to be one huge request, which a free 70B model cuts off part-way through — so the whole run came back unusable. It is now done a handful at a time, each batch told who has already been found, and partial progress is kept even if a batch fails. Works the same on a local model.',
