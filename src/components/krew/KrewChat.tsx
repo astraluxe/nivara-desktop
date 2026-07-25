@@ -1169,6 +1169,63 @@ function PostCard({ content }: { content: string }) {
   );
 }
 
+// ─── Live progress panel ─────────────────────────────────────────────────────
+// The long deterministic runs (finding leads, enriching, verifying) used to report themselves as a
+// line of italic markdown — "_Searching… 30s_". Two things were wrong with that. It looked like an
+// afterthought rather than part of the app, and the number was baked into the text at the moment it
+// was written, so it sat frozen at "30s" for the two minutes the run spent inside a single tool
+// call. A frozen clock is indistinguishable from a hung app, which is exactly how the user read it.
+//
+// So the clock ticks HERE instead. The run writes a ```status fence carrying the timestamp it
+// started at, and this component counts up from that on its own — it keeps moving whether or not
+// the run repaints the bubble, because it no longer depends on the run to do so.
+//
+//   ```status <startedAtMs> <tone>
+//   Headline the user reads first
+//   Optional detail line
+//   ```
+function StatusBlock({ startedAt, headline, detail, tone }: {
+  startedAt: number; headline: string; detail?: string; tone: 'work' | 'halt' | 'wait';
+}) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const secs = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+  const clock = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${String(secs % 60).padStart(2, '0')}s`;
+  // Neutral by default. Colour is reserved for the two states where the user genuinely needs to
+  // look: a stop in progress, and a wait they didn't ask for. 'halt' uses the faintest text colour
+  // rather than nv-muted, which in the light theme is near-black and read as MORE urgent than the
+  // live state — the opposite of what a winding-down run should look like.
+  const dot = tone === 'halt' ? 'bg-nv-faint' : tone === 'wait' ? 'bg-amber-500' : 'bg-accent';
+
+  return (
+    // items-start, not items-center: when the detail line wraps, a centred dot floats between the
+    // two lines instead of marking where the message starts.
+    <div className="my-2 flex items-start gap-3 px-3.5 py-2.5 rounded-xl border border-nv-border bg-nv-surface2/60 font-sans">
+      <span className="relative flex h-2 w-2 shrink-0 mt-[5px]">
+        {tone !== 'halt' && <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${dot} opacity-50`} />}
+        <span className={`relative inline-flex rounded-full h-2 w-2 ${dot}`} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-[12px] font-medium text-nv-text leading-snug truncate">{headline}</p>
+        {detail && <p className="text-[10.5px] text-nv-faint leading-snug mt-0.5">{detail}</p>}
+      </div>
+      {/* Tabular figures so the digits don't jitter the layout as the clock ticks. */}
+      <span className="shrink-0 text-[10px] font-mono text-nv-faint tabular-nums px-1.5 py-0.5 rounded-md bg-nv-bg/70 border border-nv-border/60">
+        {clock}
+      </span>
+    </div>
+  );
+}
+
+/** Build the ```status fence a run writes. `startedAt` is the run's own t0, so the clock is the
+ *  true elapsed time of the whole run rather than of the last repaint. */
+function statusBlock(startedAt: number, headline: string, detail?: string, tone: 'work' | 'halt' | 'wait' = 'work'): string {
+  return ['```status ' + startedAt + ' ' + tone, headline, ...(detail ? [detail] : []), '```'].join('\n');
+}
+
 // Split prose text into email/message blocks and plain prose sections, so any
 // drafted email, outreach message or letter the agent writes renders in a clean
 // boxed card. Detected by a "Subject:" line OR a real salutation ("Hi John,",
@@ -2638,6 +2695,20 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
           // (brand chip + live character count against that platform's limit).
           if (lang.toLowerCase() === 'post') {
             return <PostCard key={i} content={code.replace(/\n+$/, '')} />;
+          }
+          // ```status <startedAtMs> <tone> — the live progress panel for long runs.
+          if (lang.toLowerCase() === 'status') {
+            const label = (part.match(/^```\w*[ \t]+([^\n]+)/)?.[1] ?? '').trim().split(/\s+/);
+            const startedAt = Number(label[0]) || Date.now();
+            const tone = (['work', 'halt', 'wait'].includes(label[1]) ? label[1] : 'work') as 'work' | 'halt' | 'wait';
+            // The fence regex only consumes the language word, so the label line is still the first
+            // line of `code` — drop it before reading the headline (same shape as EmailCard above).
+            const lines = code.replace(/^[^\n]*\n?/, '').replace(/\n+$/, '').split('\n');
+            return (
+              <StatusBlock key={i} startedAt={startedAt} tone={tone}
+                headline={lines[0] || 'Working…'}
+                detail={lines.slice(1).join(' ').trim() || undefined} />
+            );
           }
           return (
             <div key={i} className="my-1.5 rounded-lg overflow-hidden border border-nv-border/60">
@@ -4461,9 +4532,13 @@ The prompt must be production-ready — specific enough for a motion designer to
     setBrowserActive(true);
     // The tool emits agent-progress per sub-batch ("Enriching 7–12 of 27…") — mirror it into the
     // chat bubble so the user sees it working through the list where their eyes actually are.
+    const fillT0 = Date.now();
     const unlisten = await listen('agent-progress', (e) => {
       const t = (e.payload as { text?: string } | undefined)?.text;
-      if (t) updateLastMsg(`Filling your list — ${t}\n\n_Opening and checking each person in the browser… hang tight (press Stop to halt after the current batch)._`);
+      if (!t) return;
+      const [head, ...rest] = t.split(' — ');
+      updateLastMsg(statusBlock(fillT0, head,
+        `${rest.length ? rest.join(' — ') : 'Working through your list'}. Press Stop to halt after the current batch.`));
     });
     try {
       const result = await executeTool('enrich_lead_list', { list: workList, forceConfirm: verifyAll }, creds, requestTerminalApproval, agent.key, user?.id ?? '', `${sidRef.current ?? 'main'}-direct`);
@@ -4527,9 +4602,10 @@ The prompt must be production-ready — specific enough for a motion designer to
     addMsg({ role: 'assistant', content: 'Opening your LinkedIn connections and reading the list…', streaming: true });
     setAgentBrowserHold(false);   // a previous reply may still be holding the window open
     setBusy(true); setBrowserActive(true);
+    const scanT0 = Date.now();
     const unlisten = await listen('agent-progress', (e) => {
       const t = (e.payload as { text?: string } | undefined)?.text;
-      if (t) updateLastMsg(`${t}\n\n_Reading your connections in the browser…_`);
+      if (t) updateLastMsg(statusBlock(scanT0, t, 'Reading your connections in the browser window.'));
     });
     try {
       const scanKey = `${sidRef.current ?? 'main'}-scan`;
@@ -4625,9 +4701,10 @@ The prompt must be production-ready — specific enough for a motion designer to
     addMsg({ role: 'assistant', content: 'Opening LinkedIn and reading your messages…', streaming: true });
     setAgentBrowserHold(false);   // a previous reply may still be holding the window open
     setBusy(true); setBrowserActive(true);
+    const inboxT0 = Date.now();
     const unlisten = await listen('agent-progress', (e) => {
       const t = (e.payload as { text?: string } | undefined)?.text;
-      if (t) updateLastMsg(`${t}\n\n_Reading your inbox in the browser…_`);
+      if (t) updateLastMsg(statusBlock(inboxT0, t, 'Reading your inbox in the browser window.'));
     });
     try {
       const msgKey = `${sidRef.current ?? 'main'}-limsg`;
@@ -5301,8 +5378,9 @@ The prompt must be production-ready — specific enough for a motion designer to
     const sid = await ensureSession('Lead list');
     setBusy(true);
     resetLeadStop();          // clear any Stop left over from a previous run
+    // The run's start time. Progress panels count up from this themselves (see StatusBlock), so
+    // there is no longer a secs() helper baking a frozen number into the message text.
     const t0 = Date.now();
-    const secs = () => Math.round((Date.now() - t0) / 1000);
 
     // ─── Bind this run to the chat it started in, and make Stop real ────────────────────────────
     // Two faults, same root cause: the run wrote to whatever conversation happened to be open, so
@@ -5401,7 +5479,9 @@ The prompt must be production-ready — specific enough for a motion designer to
         const already = recentNames.length
           ? `\nALREADY FOUND — never repeat these: ${recentNames.join(', ')}`
           : '';
-        say(`Finding leads — ${collected.size} of ${cfg.count} so far…\n\n_Searching… ${secs()}s_`);
+        say(statusBlock(t0,
+          `Finding leads — ${collected.size} of ${cfg.count} so far`,
+          'Searching for people who match your brief. This part is a web search — no browser window opens for it.'));
         let text = '';
         try {
           ({ text } = await streamTurnWithRetry(
@@ -5420,9 +5500,9 @@ The prompt must be production-ready — specific enough for a motion designer to
           if (/429|rate.?limit|too many requests|quota/i.test(msg) && rateWaits < 4 && mine()) {
             rateWaits++;
             for (let w = 20; w > 0 && mine(); w--) {
-              say(`Finding leads — ${collected.size} of ${cfg.count} so far…
-
-_Your key hit its per-minute limit. Waiting ${w}s and carrying on — nothing is lost._`);
+              say(statusBlock(t0,
+                `Finding leads — ${collected.size} of ${cfg.count} so far`,
+                `Your key hit its per-minute limit. Carrying on in ${w}s — nothing is lost.`, 'wait'));
               await new Promise((r) => setTimeout(r, 1000));
             }
             round--;          // this attempt didn't count
@@ -5482,15 +5562,29 @@ _Your key hit its per-minute limit. Waiting ${w}s and carrying on — nothing is
       ): Promise<string | null> => {
         let last = '';
         let askedStop = false;
+        let painted = '';
         const paint = () => {
           // Pressing Stop during a tool call looked like nothing happened: the call cannot be
           // interrupted mid-flight, so the timer kept ticking with the same message and the user
           // had no way to tell whether it had registered. Say so plainly, and pass the request
           // down to the tool so it really does halt between sub-batches.
           if (stopRef.current && !askedStop) { askedStop = true; requestLeadStop(); }
-          say(askedStop
-            ? `${label}${last ? ` — ${last}` : ''}\n\n_Stopping — finishing the batch already in flight, then halting. (${secs()}s)_`
-            : `${label}${last ? ` — ${last}` : ''}\n\n_${detail} · ${secs()}s elapsed — press Stop to halt after the current batch._`);
+          // `last` is the tool's own phase text ("Enriching 1–6 of 23 — checking LinkedIn…"). It is
+          // more truthful than the generic `detail`, which describes the whole run and so claims
+          // "Reading LinkedIn" even during the phase that only does a web search. Split it on the
+          // dash so the count stays the headline and the phase becomes the sub-line.
+          const [lHead, ...lRest] = (last || '').split(' — ');
+          const next = askedStop
+            ? statusBlock(t0, `${label} — stopping`, 'Finishing the batch already in flight, then halting.', 'halt')
+            : statusBlock(t0, lHead || label,
+                lRest.length
+                  ? `${lRest.join(' — ')}. Press Stop to halt after the current batch.`
+                  : `${last || detail}. Press Stop to halt after the current batch.`);
+          // The clock ticks inside the panel now, so re-writing an identical message every second
+          // would re-render the whole thread for no visible change. Only paint on real news.
+          if (next === painted) return;
+          painted = next;
+          say(next);
         };
         paint();
         const hb = setInterval(paint, 1000);
@@ -5501,8 +5595,9 @@ _Your key hit its per-minute limit. Waiting ${w}s and carrying on — nothing is
           // Only claim the browser is in use once it actually is. Enrichment starts with plain
           // HTTP reads and opens no window at all, so announcing "Krew is using the browser
           // window" up front described something the user could see wasn't happening — which
-          // makes every other status message look untrustworthy too.
-          if (/open|browser|profile|checking|maps|site/i.test(t)) setBrowserActive(true);
+          // makes every other status message look untrustworthy too. The tool now says outright
+          // when a phase needs no browser; never raise the banner on those.
+          if (!/no browser needed/i.test(t) && /open|browser|profile|checking|maps|site/i.test(t)) setBrowserActive(true);
           paint();
         });
         try {
@@ -5527,9 +5622,7 @@ _Your key hit its per-minute limit. Waiting ${w}s and carrying on — nothing is
         // No explicit warm-up needed any more: withBrowserLock (krewTools) starts Chrome before
         // the first browser command on EVERY path, so /scan, /enrich, /verify and the copilot get
         // the same guarantee rather than only lead runs.
-        say(`Checking ${Math.max(0, extractTableRows(md).length - 2)} leads
-
-_Starting the browser…_`);
+        say(statusBlock(t0, `Checking ${Math.max(0, extractTableRows(md).length - 2)} leads`, 'Getting ready…'));
         const out = await runToolWithHeartbeat(
           'enrich_lead_list', { list: md, forceConfirm: cfg.verify },
           `Checking ${Math.max(0, extractTableRows(md).length - 2)} leads`,
@@ -5607,7 +5700,19 @@ _None of them had everything you ticked (most are missing a LinkedIn URL), so I'
       if (String(e).includes(ABORT)) {
         // Stopped, or the user moved to another chat. Say so in the chat it belongs to, and
         // leave everything else alone.
-        say('Lead search stopped. Nothing was saved.');
+        //
+        // NOT via say(): say() is gated on mine(), which is false precisely BECAUSE we stopped —
+        // so the closing line never landed and the last progress panel stayed on screen as the
+        // final word, with its clock still counting up long after the run was over. Replace the
+        // panel directly, and only when this run still owns the chat it started in.
+        if (!runSid || sidRef.current === runSid) {
+          setMessages((prev) => {
+            const c = [...prev];
+            const stopped = 'Lead search stopped. Nothing was saved.';
+            if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: stopped, streaming: false };
+            return c;
+          });
+        }
         return;
       }
       const err = `Couldn't finish the lead search: ${sanitiseError(e)}`;
@@ -5861,7 +5966,12 @@ _None of them had everything you ticked (most are missing a LinkedIn URL), so I'
         // Once-a-second heartbeat + live word count, so a slow local model (incl. the ~40s cold-load
         // with no tokens) visibly proves it's working instead of sitting on a frozen "Writing 1–6".
         let chars = 0;
-        const tick = () => { if (pickConn.length > 1) updateLastMsg(`Writing messages ${range}…\n\n_Working… ${Math.round((Date.now() - draftStart) / 1000)}s${chars ? `, ~${Math.round(chars / 5)} words written` : (mode === 'local' ? ' — loading the model on first use can take up to a minute' : '')}._`); };
+        const tick = () => {
+          if (pickConn.length <= 1) return;
+          updateLastMsg(statusBlock(draftStart, `Writing messages ${range}`,
+            chars ? `~${Math.round(chars / 5)} words written so far`
+                  : (mode === 'local' ? 'Loading the model — the first use can take up to a minute' : 'Working…')));
+        };
         tick();
         const hb = setInterval(tick, 1000);
         const usr = `MY GOAL FOR THIS OUTREACH:\n${goal || 'Reconnect and open a genuine conversation about a possible fit — no hard pitch.'}\n\nWHAT I DO / WHAT I\'M BUILDING:\n${productCtx || '(not specified — keep it about them and a friendly reconnect)'}\n\nWrite one message for EACH of these ${batch.length} connections (use their exact name; personalise from their headline). Return the JSON array of exactly ${batch.length} objects:\n${batch.map((c) => `- ${c.name} — ${c.headline || '(no headline)'}`).join('\n')}`;
@@ -5901,7 +6011,8 @@ _None of them had everything you ticked (most are missing a LinkedIn URL), so I'
           const batch = pickLeads.slice(i, i + B);
           const range = `${i + 1}–${Math.min(i + batch.length, pickLeads.length)} of ${pickLeads.length}`;
           let chars = 0;
-          const tick = () => updateLastMsg(`Writing connection notes ${range}…\n\n_Working… ${Math.round((Date.now() - draftStart) / 1000)}s${chars ? `, ~${Math.round(chars / 5)} words written` : ''}._`);
+          const tick = () => updateLastMsg(statusBlock(draftStart, `Writing connection notes ${range}`,
+            chars ? `~${Math.round(chars / 5)} words written so far` : 'Working…'));
           tick();
           const hb = setInterval(tick, 1000);
           const usr = `WHY I'M REACHING OUT:\n${goal || 'Start a genuine conversation with people in my space.'}\n\nWHAT I DO / WHAT I'M BUILDING:\n${productCtx || '(not specified — keep the note about them)'}\n\nWrite one connection-request note for EACH of these ${batch.length} people (use their exact name). Return the JSON array of exactly ${batch.length} objects:\n${batch.map((c) => `- ${c.name} — ${c.headline || '(no details)'}`).join('\n')}`;
@@ -6064,11 +6175,13 @@ _None of them had everything you ticked (most are missing a LinkedIn URL), so I'
     setBusy(true); setBrowserActive(true);
     const nameNorm = (s: string) => (s || '').toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
     let fixed = 0; const failed: string[] = []; let signInHit = false;
+    const fixT0 = Date.now();
     try {
       for (let i = 0; i < todo.length; i++) {
         if (stopRef.current) break;
         const c = todo[i];
-        updateLastMsg(`Finding the right LinkedIn profile for **${c.name}** (${i + 1}/${todo.length})… _(opening the ADRIS browser — press Stop to cancel)_`);
+        updateLastMsg(statusBlock(fixT0, `Finding ${c.name}'s LinkedIn profile (${i + 1}/${todo.length})`,
+          'Searching in the ADRIS browser window — press Stop to cancel.'));
         // Search by NAME ONLY — the headline/company field can be a generated fit-description, which
         // is exactly what garbled the old search URL. A 1st-degree connection's name is enough.
         const q = c.name.replace(/["\n\r]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -8354,14 +8467,19 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
           </div>
         )}
 
+        {/* The browser notice used to be a full-width yellow warning panel. Yellow is the colour of
+            "something is wrong", and this is just a fact about what the app is doing — so it read
+            as an alarm going off for several minutes of normal work. It is now a quiet neutral
+            strip in the same visual family as the progress panel, with a small browser glyph
+            instead of a pulsing warning dot. */}
         {browserActive && (
-          <div className="mx-3 mb-1 flex items-center gap-2.5 px-3 py-2 rounded-xl border border-nv-yellow/30 bg-nv-yellow/8">
-            <span className="relative flex h-2.5 w-2.5 shrink-0">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-nv-yellow/60" />
-              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-nv-yellow" />
-            </span>
-            <p className="text-[11px] text-nv-yellow leading-tight flex-1">
-              <span className="font-semibold">Krew is using the browser window</span> — please don't close it until the task finishes. It closes itself automatically when done.
+          <div className="mx-3 mb-1 flex items-center gap-2.5 px-3 py-1.5 rounded-lg border border-nv-border bg-nv-surface2/60">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" className="text-nv-faint shrink-0"
+                 stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="4" width="20" height="16" rx="2" /><path d="M2 9h20M6 6.5h.01M9 6.5h.01" />
+            </svg>
+            <p className="text-[10.5px] text-nv-muted leading-tight flex-1">
+              Using the browser window — leave it open; it closes itself when the task finishes.
             </p>
             {/* An escape hatch. This banner is driven by a flag, and any flow that ends in a way
                 nobody anticipated can leave it set — at which point the app looks permanently busy
@@ -8369,7 +8487,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
             <button
               title="Dismiss — I've closed the browser myself"
               onClick={() => { setBrowserActive(false); setAgentBrowserHold(false); }}
-              className="shrink-0 text-[13px] leading-none px-1.5 text-nv-yellow/70 hover:text-nv-yellow transition-fast"
+              className="shrink-0 text-[13px] leading-none px-1.5 text-nv-faint hover:text-nv-text transition-fast"
             >×</button>
           </div>
         )}

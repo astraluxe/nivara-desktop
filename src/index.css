@@ -2,49 +2,77 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Theme colours ────────────────────────────────
+   Each colour is declared ONCE, as space-separated RGB channels, and the familiar --nv-x hex var
+   is derived from it. The channel form is what Tailwind needs for opacity modifiers to work.
+   Before this, the colours were plain hex, so `bg-nv-surface2/60`, `border-nv-border/60` and the
+   ~130 other opacity-modified uses across the app compiled to NOTHING — Tailwind cannot apply an
+   alpha to a raw var(), and it drops the declaration silently rather than erroring. The result was
+   panels with no background and cards with no border, in a way that never showed up as a build
+   failure. --nv-red was already written this way and worked, which is what confirmed the cause. */
+
 /* ── Ink (dark) theme — default ──────────────────── */
 :root {
-  --nv-bg:       #0a0a0a;
-  --nv-surface:  #141414;
-  --nv-surface2: #1e1e1e;
-  --nv-border:   #2a2a2a;
-  --nv-text:     #f2f2f2;
+  --nv-bg-rgb:       10 10 10;
+  --nv-surface-rgb:  20 20 20;
+  --nv-surface2-rgb: 30 30 30;
+  --nv-border-rgb:   42 42 42;
+  --nv-text-rgb:     242 242 242;
   /* Body copy. Lifted slightly so long passages stay comfortable on the near-black background. */
-  --nv-muted:    #b0b0ba;
+  --nv-muted-rgb:    176 176 186;
   /* Tertiary text. The old #6b6b6b measured 3.7:1 against --nv-bg — below the 4.5:1 needed for
      readable small text — and much of the app uses it for real prose, not just captions, which is
      why most modules looked washed out next to the ones written with --nv-muted. #8b8b95 is
      5.8:1 and still clearly recedes behind --nv-muted. */
-  --nv-faint:    #8b8b95;
+  --nv-faint-rgb:    139 139 149;
+  /* status colors — bright in dark mode */
+  --nv-ok-rgb:       52 211 153;
+  --nv-warn-rgb:     251 191 36;
+  --nv-bad-rgb:      248 113 113;
+  --nv-info-rgb:     96 165 250;
+
   --nv-red:      239 68 68;   /* space-separated for Tailwind opacity */
   --scrollbar:   #333333;
   --scrollbar-h: #555555;
-  /* status colors — bright in dark mode */
-  --nv-ok:       #34d399;
-  --nv-warn:     #fbbf24;
-  --nv-bad:      #f87171;
-  --nv-info:     #60a5fa;
 }
 
 /* ── Paper (light) theme ─────────────────────────── */
 :root.paper {
-  --nv-bg:       #ffffff;
-  --nv-surface:  #f4f4f5;
-  --nv-surface2: #e4e4e7;
-  --nv-border:   #d4d4d8;
-  --nv-text:     #09090b;
-  --nv-muted:    #3f3f46;
+  --nv-bg-rgb:       255 255 255;
+  --nv-surface-rgb:  244 244 245;
+  --nv-surface2-rgb: 228 228 231;
+  --nv-border-rgb:   212 212 216;
+  --nv-text-rgb:     9 9 11;
+  --nv-muted-rgb:    63 63 70;
   /* faint darkened from #a1a1aa → #6b6b74: the old value was ~2.3:1 on white (unreadable);
      this is ~5:1 which passes WCAG AA for secondary/label text on the white desktop background. */
-  --nv-faint:    #6b6b74;
+  --nv-faint-rgb:    107 107 116;
+  /* status — strong contrast on white */
+  --nv-ok-rgb:       22 163 74;
+  --nv-warn-rgb:     202 138 4;
+  --nv-bad-rgb:      220 38 38;
+  --nv-info-rgb:     37 99 235;
+
   --nv-red:      220 38 38;
   --scrollbar:   #d4d4d8;
   --scrollbar-h: #a1a1aa;
-  /* status — strong contrast on white */
-  --nv-ok:       #16a34a;
-  --nv-warn:     #ca8a04;
-  --nv-bad:      #dc2626;
-  --nv-info:     #2563eb;
+}
+
+/* The plain --nv-x vars every hand-written CSS rule and inline style already uses, derived from the
+   channel values above so the two can never drift apart. Declared once, outside the theme blocks:
+   they resolve against whichever --nv-x-rgb is in scope, so switching to .paper updates both. */
+:root, :root.paper {
+  --nv-bg:       rgb(var(--nv-bg-rgb));
+  --nv-surface:  rgb(var(--nv-surface-rgb));
+  --nv-surface2: rgb(var(--nv-surface2-rgb));
+  --nv-border:   rgb(var(--nv-border-rgb));
+  --nv-text:     rgb(var(--nv-text-rgb));
+  --nv-muted:    rgb(var(--nv-muted-rgb));
+  --nv-faint:    rgb(var(--nv-faint-rgb));
+  --nv-ok:       rgb(var(--nv-ok-rgb));
+  --nv-warn:     rgb(var(--nv-warn-rgb));
+  --nv-bad:      rgb(var(--nv-bad-rgb));
+  --nv-info:     rgb(var(--nv-info-rgb));
 }
 
 *, *::before, *::after {
