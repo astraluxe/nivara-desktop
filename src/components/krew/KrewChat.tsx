@@ -2159,6 +2159,45 @@ function deriveGenericTableTitle(requestText: string, content = ''): string {
   return `Comparison — ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
 }
 
+// Pull lead rows out of whatever a model actually returned.
+//
+// Demanding perfect markdown ("| a | b |" with leading pipes) is fine for a hosted model and a
+// good way to get NOTHING from a free 70B one, which variously wraps the table in ``` fences,
+// drops the leading/trailing pipes, or writes "1. Name - Company - Role" instead of a table at
+// all. Returning zero rows after minutes of work is the worst possible outcome, so this accepts
+// all of those shapes and normalises them to one row format.
+function harvestLeadRows(text: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (cells: string[]) => {
+    const c = cells.map((x) => x.replace(/\*\*/g, '').trim());
+    while (c.length < 6) c.push('—');
+    const row = '| ' + c.slice(0, 6).join(' | ') + ' |';
+    const k = row.toLowerCase();
+    if (!seen.has(k)) { seen.add(k); out.push(row); }
+  };
+  for (const raw of String(text || '').split('\n')) {
+    const line = raw.replace(/^\s*```[a-z]*\s*$/i, '').trim();
+    if (!line) continue;
+    if (/^\|?[\s:|-]+\|?$/.test(line) && /-/.test(line)) continue;   // separator row
+    if (line.includes('|')) {
+      const cells = line.split('|').map((x) => x.trim());
+      if (cells[0] === '') cells.shift();
+      if (cells.length && cells[cells.length - 1] === '') cells.pop();
+      if (cells.length >= 2 && cells[0]) push(cells);
+      continue;
+    }
+    // "1. Priya Nair - Zenwork - CEO - Bengaluru" / "Priya Nair — Zenwork / CEO"
+    const stripped = line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '');
+    if (stripped.length < 4 || stripped.length > 160) continue;
+    const parts = stripped.split(/\s+[—–-]{1,2}\s+/).map((x) => x.trim()).filter(Boolean);
+    if (parts.length >= 2 && /[a-z]{2,}/i.test(parts[0]) && parts[0].split(/\s+/).length <= 5) {
+      push([parts[0], parts.slice(1, 3).join(' / '), parts[3] || '—', parts[4] || '—', '—', '—']);
+    }
+  }
+  return out;
+}
+
 function autoSaveLeadTableToBrain(text: string, fileTitles: string[], separateListTitle = '', requestText = ''): Promise<string | undefined> {
   const pipeLines = extractTableRows(text);
   if (pipeLines.length < 4) return Promise.resolve(undefined);
@@ -5341,9 +5380,7 @@ The prompt must be production-ready — specific enough for a motion designer to
           ));
         } catch { continue; }   // one bad batch must never sink the whole run
         const before = collected.size;
-        const slice = text.includes('|') ? text.slice(text.indexOf('|')) : '';
-        for (const row of extractTableRows(slice)) {
-          if (/^\|?[\s:|-]+\|?$/.test(row)) continue;
+        for (const row of harvestLeadRows(text)) {
           const first = (row.split('|')[1] || '').trim();
           if (!first) continue;
           if (/^name$/i.test(first)) { header = row; continue; }   // a repeated header row
