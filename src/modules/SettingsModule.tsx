@@ -45,8 +45,10 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.66',
+  version: '1.6.67',
   items: [
+    'The browser is now started before the first thing that needs it on EVERY feature — scanning connections, filling contacts, verifying links, checking LinkedIn messages and lead searches. Removing the old surprise window had left each of those waiting on a browser that had not been started, which looked like the app hanging.',
+
     'Stop actually stops a lead search now, and so does leaving the chat. Previously it kept running, opened the browser for work you had cancelled, and dropped its result card into whichever chat you had moved to. A run is now tied to the chat that started it and unwinds at the next step.',
     'Free keys that hit their per-minute limit no longer end the search empty-handed. Groq and NVIDIA cap requests per minute; that was being treated as a failed batch and skipped, so a perfectly working model could produce "no usable rows". It now waits out the limit and carries on where it left off, telling you what it is waiting for.',
 

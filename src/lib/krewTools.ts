@@ -193,8 +193,32 @@ export function parseLinkedInConnections(text: string): { name: string; headline
 // that all call launchPersistentContext simultaneously, opening 3 windows.
 // All browser_navigate calls queue up and execute one at a time.
 let _browserNavChain: Promise<unknown> = Promise.resolve();
+// Chrome has to be RUNNING before the first real browser command, or that command spends its whole
+// timeout failing to connect to something that was never started.
+//
+// This used to happen by accident: an Advanced-mode pre-warm opened an about:blank window on any
+// browse-ish word in the message. That was removed because a window appearing unasked looked like
+// the app acting on its own — and removing it took the cold-start with it, so lead enrichment sat
+// for ~200s before Chrome finally came up. Warming here instead means EVERY browser path (/scan,
+// /enrich, /verify, /linkedin, the outreach copilot, lead runs) gets a started browser, and only
+// when a browser is genuinely about to be used. Once per app run; failures are ignored because the
+// command that follows will report the real problem.
+let _browserWarmed: Promise<void> | null = null;
+export function resetBrowserWarm(): void { _browserWarmed = null; }
+function ensureBrowserWarm(): Promise<void> {
+  if (!_browserWarmed) {
+    _browserWarmed = invoke('run_browser_persistent', { args: 'open "about:blank"' })
+      .then(() => {})
+      .catch(() => { _browserWarmed = null; });   // let a later call try again
+  }
+  return _browserWarmed;
+}
+
 function withBrowserLock<T>(fn: () => Promise<T>): Promise<T> {
-  const result = _browserNavChain.then(() => fn(), () => fn());
+  const result = _browserNavChain.then(
+    () => ensureBrowserWarm().then(() => fn()),
+    () => ensureBrowserWarm().then(() => fn()),
+  );
   _browserNavChain = result.then(() => {}, () => {});
   return result;
 }

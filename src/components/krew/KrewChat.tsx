@@ -5512,11 +5512,12 @@ _Your key hit its per-minute limit. Waiting ${w}s and carrying on — nothing is
         // "Enriching 1-3 of 40" for 90s with no window in sight. This warms it at the point a
         // browser is genuinely about to be used, so there is no surprise window on tasks that
         // never browse, and no silent stall on tasks that do.
+        // No explicit warm-up needed any more: withBrowserLock (krewTools) starts Chrome before
+        // the first browser command on EVERY path, so /scan, /enrich, /verify and the copilot get
+        // the same guarantee rather than only lead runs.
         say(`Checking ${Math.max(0, extractTableRows(md).length - 2)} leads
 
 _Starting the browser…_`);
-        try { await invoke('run_browser_persistent', { args: 'open "about:blank"' }); }
-        catch { /* enrichment still has its HTTP-only path; it is just slower */ }
         const out = await runToolWithHeartbeat(
           'enrich_lead_list', { list: md, forceConfirm: cfg.verify },
           `Checking ${Math.max(0, extractTableRows(md).length - 2)} leads`,
