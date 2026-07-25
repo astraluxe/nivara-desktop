@@ -12,7 +12,7 @@ import { TaskProgress, type TaskPhase } from './TaskProgress';
 import { runParallelResearch } from '../../lib/researchSources';
 import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, type KrewAgent } from '../../lib/krewAgents';
 import { useAuth } from '../../contexts/AuthContext';
-import { extractTableRows, mergeLeadTables, parseLeadRows, rowsToMarkdown, leadConnStatusToOutreach } from '../../lib/leadTable';
+import { extractTableRows, mergeLeadTables, parseLeadRows, rowsToMarkdown, leadConnStatusToOutreach, looksLikePersonLead } from '../../lib/leadTable';
 import { supabase } from '../../lib/supabase';
 import { getPlanConfig } from '../../lib/planConfig';
 import { parseDeckSpec, slidesNeedingImages, renderDeckHtml, extractDeckSpec, type DeckSpec, type DeckSlide, type DeckPalette } from '../../lib/deck';
@@ -5187,10 +5187,12 @@ The prompt must be production-ready — specific enough for a motion designer to
         for (const r of rows) {
           const name = r.cells['name'];
           if (!name) continue;
-          // A lead row can be a COMPANY page rather than a person; there is nobody to message or
-          // connect with there, so it is not an outreach contact.
+          // A lead row can be a COMPANY rather than a person; there is nobody to send a connection
+          // request to. A company LinkedIn URL proves it, but plenty of company rows have no URL at
+          // all ("Housejoy | Home Services | — "), so shape is checked too.
           const li = r.cells['linkedin'] || '';
           if (li && /linkedin\.com\/company\//i.test(li)) continue;
+          if (!looksLikePersonLead(name, r.cells['company'] || '')) continue;
           const urlMatch = /(https?:\/\/[^\s)\]]*linkedin\.com\/in\/[^\s)\]]+)/i.exec(li);
           out.push({
             name,
@@ -5252,9 +5254,41 @@ The prompt must be production-ready — specific enough for a motion designer to
       || /\|\s*status\s*\|/i.test(f.content || '')
       || /message sent|to do\s*\|/i.test(f.content || '');
 
+    // A LEAD list and a CONNECTIONS list are both "Name | … | LinkedIn" tables, so
+    // looksLikeConnectionsFile() accepts either — but they mean opposite things. Attaching a lead
+    // list and having everyone treated as an existing connection is the difference between getting
+    // connection-request notes and getting messages you have no way to send. Sector/City/Website
+    // columns only ever appear on a researched lead list; /scan never produces them.
+    const looksLikeLeadFile = (f: { name?: string; content?: string }) => {
+      const head = (extractTableRows(f.content || '')[0] || '').toLowerCase();
+      if (!head) return false;
+      return ['sector', 'city', 'website', 'phone', 'email'].filter((k) => head.includes(k)).length >= 2;
+    };
+
     if (attachedConn.length) {
       // Everything the user attached counts (statuses included — add() keeps them on dedupe).
-      attachedConn.forEach((f) => parseContactRows(f.content).forEach(add));
+      attachedConn.forEach((f) => {
+        if (looksLikeLeadFile(f)) {
+          const { rows } = parseLeadRows(f.content, 0);
+          rows.forEach((r) => {
+            const nm = r.cells['name'];
+            const li = r.cells['linkedin'] || '';
+            if (!nm || (li && /linkedin\.com\/company\//i.test(li))) return;
+            if (!looksLikePersonLead(nm, r.cells['company'] || '')) return;
+            const m = /(https?:\/\/[^\s)\]]*linkedin\.com\/in\/[^\s)\]]+)/i.exec(li);
+            add({
+              name: nm,
+              headline: [r.cells['company'], r.cells['sector'], r.cells['city']].filter(Boolean).join(' · '),
+              url: m ? m[1] : '',
+              status: leadConnStatusToOutreach(r.cells['conn_status']),
+              source: 'leads',
+              leadList: f.name,
+            });
+          });
+          return;
+        }
+        parseContactRows(f.content).forEach((c) => add({ ...c, source: 'connections' }));
+      });
       // If ALL they gave us was progress, top the roster up from the saved connections so anyone
       // added by a later scan is included. Existing people keep the status just parsed above,
       // because add() only fills gaps on a duplicate rather than overwriting.

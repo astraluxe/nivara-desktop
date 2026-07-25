@@ -192,6 +192,49 @@ export function setLeadConnStatus(md: string, name: string, cell: string): strin
   }).join('\n');
 }
 
+// Words that mark a row as an ORGANISATION rather than a person.
+const ORG_WORDS = /\b(associates|assoc|advocates?|solicitors?|consultancy|ltd|limited|pvt|private|llp|inc|corp|technologies|developers?|solutions?|systems?|labs?|studios?|partners|group|school|college|institute|academy|foundation|trust|society|enterprises?|industries|holdings|agency|firm)\b/i;
+// A real JOB TITLE in the Company/Role cell is the strongest signal the row is a PERSON.
+//
+// Deliberately excludes "developer", "engineer", "intern" and similar: those describe what an
+// ORGANISATION does or is hiring for far more often than they name a person here. "Total
+// Environment | Real Estate Developer" and "Khatabook | Active: SDE Intern" are both companies,
+// and both were read as people until this list was tightened.
+const ROLE_TITLE = /\b(ceo|cto|coo|cfo|cmo|cio|founder|co-?founder|owner|director|head|lead|manager|vp|vice president|president|partner|principal|chief|advocate|doctor|dr)\b/i;
+
+/**
+ * Is this lead row a PERSON you could send a LinkedIn connection request to?
+ *
+ * Lead lists legitimately mix people and organisations — "find me law firms in HSR" produces rows
+ * that are companies, and that is correct for lead-gen. But you cannot connect with or message a
+ * company page, so outreach has to tell them apart. This filter lives here rather than in
+ * isJunkName deliberately: dropping company rows from the PARSER would break lead-gen itself.
+ *
+ * Also rejects text that is obviously not a name at all — a chat sentence can end up in the Name
+ * column when a model writes its commentary into the table ("Pramod S processed your first 9
+ * connections; would you like me to…"), and without this it becomes an outreach "contact".
+ */
+export function looksLikePersonLead(name: string, role = ''): boolean {
+  const n = (name || '').trim();
+  if (!n) return false;
+  // Real names are short. 48 chars comfortably fits "Shreeram Ravichandran" and rejects prose.
+  if (n.length > 48) return false;
+  // Sentence punctuation never appears in a name.
+  if (/[;?!]|\.{2,}/.test(n)) return false;
+  const words = n.split(/\s+/).filter(Boolean);
+  if (words.length > 5) return false;
+  if (ORG_WORDS.test(n)) return false;
+  const r = (role || '').trim();
+  const described = r && r !== '—' && r !== '-';
+  // When the row SAYS what this is, believe it: a job title means a person ("Hiver / CEO",
+  // "COO at Rashbhar Healthcare"), and a description with no title is a company ("Home Services",
+  // "Law Firm", "Real Estate Developer", "Active: SDE Intern").
+  if (described) return ROLE_TITLE.test(r);
+  // No role given — fall back to shape, and stay lenient so a real person with a sparse row is
+  // never silently dropped from outreach.
+  return words.length >= 2;
+}
+
 /** The reverse — what to write into the lead list so the next run and the user both understand it. */
 export function outreachStatusToLeadCell(s?: string): string {
   switch (s) {
