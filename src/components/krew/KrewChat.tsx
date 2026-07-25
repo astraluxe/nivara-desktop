@@ -12,7 +12,7 @@ import { TaskProgress, type TaskPhase } from './TaskProgress';
 import { runParallelResearch } from '../../lib/researchSources';
 import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, type KrewAgent } from '../../lib/krewAgents';
 import { useAuth } from '../../contexts/AuthContext';
-import { extractTableRows, mergeLeadTables, parseLeadRows, rowsToMarkdown } from '../../lib/leadTable';
+import { extractTableRows, mergeLeadTables, parseLeadRows, rowsToMarkdown, leadConnStatusToOutreach } from '../../lib/leadTable';
 import { supabase } from '../../lib/supabase';
 import { getPlanConfig } from '../../lib/planConfig';
 import { parseDeckSpec, slidesNeedingImages, renderDeckHtml, extractDeckSpec, type DeckSpec, type DeckSlide, type DeckPalette } from '../../lib/deck';
@@ -5159,6 +5159,52 @@ The prompt must be production-ready — specific enough for a motion designer to
     return out;
   }
 
+  // ─── Brain lead lists as an outreach source ────────────────────────────────────────────────
+  // Outreach could only ever work from people the user is ALREADY connected to (/scan). The lead
+  // lists adris builds — the actual prospects — had no way in, so the two halves of the product
+  // never met: you researched 40 leads and then had to work them by hand.
+  //
+  // These people are NOT connections, so they arrive with source:'leads' and the copilot puts them
+  // through connect-request-first rather than straight to a message. Their saved "Connection
+  // Status" cell comes with them, which is what makes progress survive re-running /verify or
+  // /enrich on the same list (that column is already merge-protected in leadTable.ts).
+  function loadLeadListContacts(): Array<{ name: string; headline: string; url: string; status?: OutreachContact['status']; leadList: string }> {
+    const out: Array<{ name: string; headline: string; url: string; status?: OutreachContact['status']; leadList: string }> = [];
+    try {
+      const nodes = brainStore.all().nodes.filter((n) => {
+        if (n.kind !== 'list') return false;
+        // "LinkedIn connections" is the /scan note — people already handled by the existing path.
+        if (/linkedin connections/i.test(n.title)) return false;
+        const body = nodeToMarkdown(n.body || '');
+        // Same shape test the lead-list saver uses: a bare "Name" column is not a lead list.
+        const header = (extractTableRows(body)[0] || '').toLowerCase();
+        if (!header) return false;
+        return header.includes('linkedin')
+          || ['company', 'website', 'email', 'phone', 'sector', 'designation'].filter((k) => header.includes(k)).length >= 2;
+      });
+      for (const n of nodes) {
+        const { rows } = parseLeadRows(nodeToMarkdown(n.body || ''), 0);
+        for (const r of rows) {
+          const name = r.cells['name'];
+          if (!name) continue;
+          // A lead row can be a COMPANY page rather than a person; there is nobody to message or
+          // connect with there, so it is not an outreach contact.
+          const li = r.cells['linkedin'] || '';
+          if (li && /linkedin\.com\/company\//i.test(li)) continue;
+          const urlMatch = /(https?:\/\/[^\s)\]]*linkedin\.com\/in\/[^\s)\]]+)/i.exec(li);
+          out.push({
+            name,
+            headline: [r.cells['company'], r.cells['sector'], r.cells['city']].filter(Boolean).join(' · '),
+            url: urlMatch ? urlMatch[1] : '',
+            status: leadConnStatusToOutreach(r.cells['conn_status']),
+            leadList: n.title,
+          });
+        }
+      }
+    } catch { /* Brain unavailable — outreach still works from connections alone */ }
+    return out;
+  }
+
   async function launchOutreachFromConnections(max = 50, focus = '', userText = '', destTitle = '') {
     if (busy) return;
     const sid = await ensureSession('LinkedIn outreach');
@@ -5176,7 +5222,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       || (focusedFile && !looksLikeConnectionsFile(focusedFile) ? { name: focusedFile.name, content: focusedFile.content } : undefined);
 
     // Build the contact list (name + headline + profile URL + any saved status).
-    type ParsedContact = { name: string; headline: string; url: string; status?: OutreachContact['status'] };
+    type ParsedContact = { name: string; headline: string; url: string; status?: OutreachContact['status']; source?: OutreachContact['source']; leadList?: string };
     const contacts: ParsedContact[] = [];
     const seen = new Set<string>();
     const add = (c: ParsedContact) => {
@@ -5186,7 +5232,15 @@ The prompt must be production-ready — specific enough for a motion designer to
       // Same person on two rows (e.g. an outreach table AND an appended connections list): keep the
       // row that carries a real status / URL / longer headline so progress isn't lost to a bare dup.
       const ex = contacts.find((x) => x.name.toLowerCase().trim() === k);
-      if (ex) { if (!ex.status && c.status) ex.status = c.status; if (!ex.url && c.url) ex.url = c.url; if (c.headline && c.headline.length > ex.headline.length) ex.headline = c.headline; }
+      if (ex) {
+        if (!ex.status && c.status) ex.status = c.status;
+        if (!ex.url && c.url) ex.url = c.url;
+        if (c.headline && c.headline.length > ex.headline.length) ex.headline = c.headline;
+        // Someone on a lead list who ALSO shows up in the connections scan is a connection —
+        // they need no connection request, so 'connections' always wins the merge.
+        if (c.source === 'connections') ex.source = 'connections';
+        if (!ex.leadList && c.leadList) ex.leadList = c.leadList;
+      }
     };
     // An outreach PROGRESS file (a campaign note: Name | Company | Status) records HOW FAR YOU GOT
     // — it is not the universe of people you know. A connections list is. Telling them apart
@@ -5216,16 +5270,21 @@ The prompt must be production-ready — specific enough for a motion designer to
       // No file attached → use the scan's saved JSON, then the Brain note.
       try {
         const arr = JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
-        if (Array.isArray(arr)) arr.filter((c) => c?.name).forEach((c) => add({ name: String(c.name), headline: String(c.headline || ''), url: String(c.url || '') }));
+        if (Array.isArray(arr)) arr.filter((c) => c?.name).forEach((c) => add({ name: String(c.name), headline: String(c.headline || ''), url: String(c.url || ''), source: 'connections' }));
       } catch { /* ignore */ }
       if (!contacts.length) {
         const node = brainStore.all().nodes.find((n) => /linkedin connections/i.test(n.title));
-        if (node) parseContactRows(nodeToMarkdown(node.body || '')).forEach(add);
+        if (node) parseContactRows(nodeToMarkdown(node.body || '')).forEach((c) => add({ ...c, source: 'connections' }));
         if (contacts.length) { try { localStorage.setItem('nv-li-connections', JSON.stringify(contacts.map((c) => ({ name: c.name, headline: c.headline, url: c.url })))); } catch { /* quota */ } }
       }
     }
+    // ── Leads. Added AFTER the connections above so add() has already claimed anyone who is both,
+    // and those people keep source:'connections' (no connection request needed). Leads come last in
+    // list order too, which keeps the people you can message today at the top of the copilot.
+    const leadsFound = loadLeadListContacts();
+    leadsFound.forEach((l) => add({ ...l, source: 'leads' }));
     if (!contacts.length) {
-      const noConn = 'I don\'t have any saved LinkedIn connections to reach out to yet. Run **/scan** first (it saves them), or attach your connections list — then ask me to draft outreach.';
+      const noConn = 'I don\'t have anyone to reach out to yet. Run **/scan** to pull in your LinkedIn connections, ask me to **build a lead list** for the people you want to reach, or attach a list — then ask me to draft outreach.';
       addMsg({ role: 'assistant', content: noConn });
       if (sid) krewDb.saveMessage(sid, 'assistant', noConn).catch(() => {});
       return;
@@ -5282,13 +5341,29 @@ The prompt must be production-ready — specific enough for a motion designer to
     // reused below either way. Leaving them in the batch just burned the run's 50 slots on work
     // already done, which is why people added by a later scan kept waiting their turn. Spend the
     // batch on those with no message yet; everyone else keeps what they have.
-    const hasDraft = (name: string) => !!priorByName.get(nrm(name))?.linkedin_message?.trim();
+    // "Already written" means whichever text THIS person actually needs: a message for a
+    // connection, a connection note for a lead. Checking only linkedin_message would re-draft every
+    // lead on every run, quietly spending the batch on work already done.
+    const hasDraft = (name: string) => {
+      const p = priorByName.get(nrm(name));
+      if (!p) return false;
+      return p.source === 'leads' && p.status !== 'accepted'
+        ? !!p.connect_note?.trim()
+        : !!p.linkedin_message?.trim();
+    };
     const needsDraft = todoAll.filter((c) => !hasDraft(c.name));
     const alreadyDrafted = todoAll.length - needsDraft.length;
     // Profile-URL people first ("Copy & open chat" opens their chat box directly), URL-less last.
     const draftQueue = [...needsDraft].sort((a, b) => (b.url && /linkedin\.com\/in\//i.test(b.url) ? 1 : 0) - (a.url && /linkedin\.com\/in\//i.test(a.url) ? 1 : 0));
     const pick = draftQueue.slice(0, Math.max(1, max));
     const pickSet = new Set(pick.map((c) => nrm(c.name)));
+    // A lead you are not connected to cannot be messaged at all on a free account — LinkedIn only
+    // allows DMs to 1st-degree connections. Writing them a 40-word message would produce something
+    // the user can never send, so they get a connection NOTE instead (LinkedIn's 300-char limit)
+    // and the real message is written later, the moment a check confirms they accepted.
+    const needsNote = (c: ParsedContact) => c.source === 'leads';
+    const pickConn = pick.filter((c) => !needsNote(c));
+    const pickLeads = pick.filter(needsNote);
     const more = needsDraft.length - pick.length;
     addMsg({ role: 'assistant', content: `${alreadyDone > 0 ? `Continuing your outreach — ${alreadyDone} already sent, ` : ''}${alreadyDrafted > 0 ? `${alreadyDrafted} already written (keeping those), ` : ''}writing ${pick.length} new message${pick.length === 1 ? '' : 's'}${more > 0 ? ` — ${more} still without one after this` : ''} and opening the copilot…`, streaming: true });
     setBusy(true);
@@ -5323,14 +5398,14 @@ The prompt must be production-ready — specific enough for a motion designer to
       // Hosted models draft the whole batch in one fast call; only a slow local model needs to be
       // fed 3 at a time so each finishes quickly and can't truncate a big array.
       const B = mode === 'local' ? 3 : 30;
-      for (let i = 0; i < pick.length; i += B) {
+      for (let i = 0; i < pickConn.length; i += B) {
         if (stopRef.current) break;
-        const batch = pick.slice(i, i + B);
-        const range = `${i + 1}–${Math.min(i + batch.length, pick.length)} of ${pick.length}`;
+        const batch = pickConn.slice(i, i + B);
+        const range = `${i + 1}–${Math.min(i + batch.length, pickConn.length)} of ${pickConn.length}`;
         // Once-a-second heartbeat + live word count, so a slow local model (incl. the ~40s cold-load
         // with no tokens) visibly proves it's working instead of sitting on a frozen "Writing 1–6".
         let chars = 0;
-        const tick = () => { if (pick.length > 1) updateLastMsg(`Writing messages ${range}…\n\n_Working… ${Math.round((Date.now() - draftStart) / 1000)}s${chars ? `, ~${Math.round(chars / 5)} words written` : (mode === 'local' ? ' — loading the model on first use can take up to a minute' : '')}._`); };
+        const tick = () => { if (pickConn.length > 1) updateLastMsg(`Writing messages ${range}…\n\n_Working… ${Math.round((Date.now() - draftStart) / 1000)}s${chars ? `, ~${Math.round(chars / 5)} words written` : (mode === 'local' ? ' — loading the model on first use can take up to a minute' : '')}._`); };
         tick();
         const hb = setInterval(tick, 1000);
         const usr = `MY GOAL FOR THIS OUTREACH:\n${goal || 'Reconnect and open a genuine conversation about a possible fit — no hard pitch.'}\n\nWHAT I DO / WHAT I\'M BUILDING:\n${productCtx || '(not specified — keep it about them and a friendly reconnect)'}\n\nWrite one message for EACH of these ${batch.length} connections (use their exact name; personalise from their headline). Return the JSON array of exactly ${batch.length} objects:\n${batch.map((c) => `- ${c.name} — ${c.headline || '(no headline)'}`).join('\n')}`;
@@ -5346,6 +5421,56 @@ The prompt must be production-ready — specific enough for a motion designer to
           if (msg) { byName[norm(c.name)] = msg; byName[norm(firstNameOf(c.name))] ??= msg; }
         });
       }
+      // ── Second pass: connection notes for the leads ──────────────────────────────────────────
+      // Deliberately a SEPARATE pass rather than a mixed batch. The message prompt above is tuned
+      // for people who already accepted you ("great to be connected"), which is exactly wrong for a
+      // stranger, and one prompt trying to do both jobs does neither well. Keeping them apart also
+      // means the connections path above is byte-for-byte the behaviour it always had.
+      const noteByName: Record<string, string> = {};
+      if (pickLeads.length) {
+        const sysNote = [
+          'You write LinkedIn CONNECTION REQUEST notes to people the user has NOT met and is NOT connected to.',
+          'Rules for every note:',
+          '- HARD LIMIT 280 characters including spaces. LinkedIn rejects anything over 300; stay under 280.',
+          '- Greet by FIRST NAME ONLY (write "Hi Sneha", never "Hi Dr" or "Hi Dr. Sneha").',
+          '- One concrete, specific reason you want to connect, drawn from THAT person\'s company or role.',
+          '- NO pitch, NO selling, NO asking for a meeting or a call. The only goal is that they accept.',
+          '- No buzzwords, no flattery, no "I hope this finds you well", no hashtags, no emojis.',
+          senderName ? `- If you sign off at all, use the sender's real name: ${senderName}. Never a bracketed placeholder.`
+                     : '- Do NOT add a signature or any bracketed placeholder.',
+          'Return ONLY a valid JSON array: [{"name":"<exact name as given>","message":"<the note>"}] — one object per person, EXACT names, nothing else.',
+        ].join('\n');
+        for (let i = 0; i < pickLeads.length; i += B) {
+          if (stopRef.current) break;
+          const batch = pickLeads.slice(i, i + B);
+          const range = `${i + 1}–${Math.min(i + batch.length, pickLeads.length)} of ${pickLeads.length}`;
+          let chars = 0;
+          const tick = () => updateLastMsg(`Writing connection notes ${range}…\n\n_Working… ${Math.round((Date.now() - draftStart) / 1000)}s${chars ? `, ~${Math.round(chars / 5)} words written` : ''}._`);
+          tick();
+          const hb = setInterval(tick, 1000);
+          const usr = `WHY I'M REACHING OUT:\n${goal || 'Start a genuine conversation with people in my space.'}\n\nWHAT I DO / WHAT I'M BUILDING:\n${productCtx || '(not specified — keep the note about them)'}\n\nWrite one connection-request note for EACH of these ${batch.length} people (use their exact name). Return the JSON array of exactly ${batch.length} objects:\n${batch.map((c) => `- ${c.name} — ${c.headline || '(no details)'}`).join('\n')}`;
+          let text = '';
+          try { ({ text } = await streamTurnWithRetry([{ role: 'user', content: usr }], sysNote, (t) => { chars += t.length; })); }
+          catch { clearInterval(hb); continue; }
+          finally { clearInterval(hb); }
+          const pairs = parseNameMessagePairs(text);
+          batch.forEach((c, j) => {
+            let note = pairs.find((p) => norm(p.name) === norm(c.name) || norm(p.name) === norm(firstNameOf(c.name)))?.message;
+            if (!note && pairs.length === batch.length) note = pairs[j]?.message;
+            // Enforce the limit ourselves — a model that ignores "280 chars" would otherwise hand
+            // the user a note LinkedIn silently refuses to send.
+            if (note) noteByName[norm(c.name)] = note.trim().slice(0, 280);
+          });
+        }
+      }
+      const fallbackNote = (c: { name: string; headline: string }) => {
+        const first = firstNameOf(c.name);
+        const hook = headlineHook(c.headline);
+        return `Hi ${first}, I came across your profile${hook ? ` and your work at ${hook}` : ''} and would value connecting — I work in a similar space and always like hearing what others are building.`
+          .replace(/\s+/g, ' ').trim().slice(0, 280);
+      };
+      const noteFor = (c: ParsedContact) => noteByName[norm(c.name)] || fallbackNote(c);
+
       const fallbackMsg = (c: { name: string; headline: string }) => {
         const first = firstNameOf(c.name);
         const hook = headlineHook(c.headline);
@@ -5360,17 +5485,33 @@ The prompt must be production-ready — specific enough for a motion designer to
         const k = nrm(c.name);
         const priorC = priorByName.get(k);
         const st = statusByName.get(k);
+        // Carried on every branch so a lead keeps its identity and its lead-list link no matter
+        // which path rebuilt it — otherwise a second run would forget where to write status back.
+        const meta = {
+          source: c.source ?? priorC?.source,
+          leadList: c.leadList ?? priorC?.leadList,
+          connect_note: priorC?.connect_note,
+          requestedAt: priorC?.requestedAt,
+          acceptedAt: priorC?.acceptedAt,
+        };
         if (isDone(c.name)) {
-          built.push({ name: c.name, company: c.headline || priorC?.company, linkedin_url: c.url || priorC?.linkedin_url, linkedin_message: priorC?.linkedin_message || '', status: st });
+          built.push({ ...meta, name: c.name, company: c.headline || priorC?.company, linkedin_url: c.url || priorC?.linkedin_url, linkedin_message: priorC?.linkedin_message || '', status: st });
           usedNames.add(k);
         } else if (pickSet.has(k)) {
-          built.push({ name: c.name, company: c.headline || priorC?.company, linkedin_url: c.url || priorC?.linkedin_url, linkedin_message: priorC?.linkedin_message || draftFor(c), status: st });
+          built.push({
+            ...meta, name: c.name, company: c.headline || priorC?.company, linkedin_url: c.url || priorC?.linkedin_url,
+            // Leads get a connection note; the full message is written once they accept. Anyone
+            // already connected keeps the normal message path unchanged.
+            linkedin_message: needsNote(c) ? (priorC?.linkedin_message || '') : (priorC?.linkedin_message || draftFor(c)),
+            connect_note: needsNote(c) ? (priorC?.connect_note || noteFor(c)) : priorC?.connect_note,
+            status: st,
+          });
           usedNames.add(k);
         } else if (hasDraft(c.name)) {
           // Already had a message from an earlier run and wasn't re-drafted this time — keep them
           // in the campaign with the text they already have, or they would silently vanish from
           // the copilot the moment the batch got spent on other people.
-          built.push({ name: c.name, company: c.headline || priorC?.company, linkedin_url: c.url || priorC?.linkedin_url, linkedin_message: priorC?.linkedin_message || '', status: st });
+          built.push({ ...meta, name: c.name, company: c.headline || priorC?.company, linkedin_url: c.url || priorC?.linkedin_url, linkedin_message: priorC?.linkedin_message || '', status: st });
           usedNames.add(k);
         }
         // an undrafted to-do beyond the cap is left for a later "draft the rest" run

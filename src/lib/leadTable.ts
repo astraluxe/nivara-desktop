@@ -121,6 +121,89 @@ export function isJunkName(name: string): boolean {
 
 export type LeadRow = { key: string; cells: Record<string, string>; order: number };
 
+/**
+ * Read the free-text "Connection Status" cell back into an outreach status.
+ *
+ * The cell is written by both this app and, sometimes, a model filling the table, so it has to
+ * cope with phrasing rather than an enum. Anything unrecognised returns undefined — meaning
+ * "no progress recorded", which is safer than guessing a status the user never set.
+ */
+export function leadConnStatusToOutreach(raw?: string): 'todo' | 'connect' | 'sent' | 'accepted' | 'replied' | 'skip' | undefined {
+  const s = (raw || '').toLowerCase().trim();
+  if (!s || s === '—' || s === '-') return undefined;
+  if (/replied|responded|answered/.test(s)) return 'replied';
+  if (/messag(e|ed)\s*sent|dm sent|sent message/.test(s)) return 'sent';
+  if (/accepted|connected|1st/.test(s)) return 'accepted';
+  if (/pending|requested|invite|invitation|sent/.test(s)) return 'connect';
+  if (/skip|ignore|not a fit|declined/.test(s)) return 'skip';
+  return undefined;
+}
+
+/**
+ * Write one person's connection status into a lead-list markdown table.
+ *
+ * Returns the table unchanged if the person isn't in it. If the list has no "Connection Status"
+ * column yet the column is APPENDED properly — header, separator and every row — because
+ * mergeLeadTables only emits columns that already carry data, so a freshly built list never has
+ * one. (Writing into the last existing column instead would quietly overwrite someone's email.)
+ */
+export function setLeadConnStatus(md: string, name: string, cell: string): string {
+  const lines = (md || '').split('\n');
+  const headerIdx = lines.findIndex((l) => l.trim().startsWith('|'));
+  if (headerIdx === -1 || !name) return md;
+
+  const key = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const target = key(name);
+  const isSep = (l: string) => /^\|?[\s:|-]+\|?$/.test(l) && /-/.test(l);
+  const cols = splitTableRow(lines[headerIdx]);
+  const nameCol = cols.findIndex((h) => /\bname\b/i.test(h));
+  if (nameCol === -1) return md;
+  let statusCol = cols.findIndex((h) => /connection.?status/i.test(h));
+
+  const rowCells = (l: string) => splitTableRow(l);
+  const join = (c: string[]) => '| ' + c.join(' | ') + ' |';
+
+  // Nothing to do if the person isn't on this list — don't touch the file at all.
+  const present = lines.some((l, i) => i > headerIdx && l.trim().startsWith('|') && !isSep(l)
+    && key(rowCells(l)[nameCol] || '') === target);
+  if (!present) return md;
+
+  const appending = statusCol === -1;
+  const width = cols.length + (appending ? 1 : 0);
+  if (appending) statusCol = cols.length;
+
+  return lines.map((line, i) => {
+    if (!line.trim().startsWith('|')) return line;
+    if (i === headerIdx) {
+      const c = rowCells(line);
+      if (appending) c.push('Connection Status');
+      return join(c);
+    }
+    if (isSep(line)) {
+      const c = rowCells(line);
+      if (appending) c.push('---');
+      return join(c);
+    }
+    const c = rowCells(line);
+    while (c.length < width) c.push('—');
+    if (key(c[nameCol] || '') !== target) return join(c);
+    c[statusCol] = cell;
+    return join(c);
+  }).join('\n');
+}
+
+/** The reverse — what to write into the lead list so the next run and the user both understand it. */
+export function outreachStatusToLeadCell(s?: string): string {
+  switch (s) {
+    case 'connect':  return 'Request sent';
+    case 'accepted': return 'Connected';
+    case 'sent':     return 'Message sent';
+    case 'replied':  return 'Replied';
+    case 'skip':     return 'Skipped';
+    default:         return '';
+  }
+}
+
 export function parseLeadRows(md: string, startOrder: number): { rows: LeadRow[]; next: number } {
   const raw = extractTableRows(md);
   const rows: LeadRow[] = [];

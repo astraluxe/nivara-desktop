@@ -634,7 +634,7 @@ async function main() {
   if (cmd !== 'open' && cmd !== 'close'
       && cmd !== 'connections' && cmd !== 'logincheck' && cmd !== 'message' && cmd !== 'printpdf'
       && cmd !== 'findprofile' && cmd !== 'messages' && cmd !== 'typemsg' && cmd !== 'meetlink' && cmd !== 'whatsapp'
-      && cmd !== 'readthread' && cmd !== 'gcalcheck') {
+      && cmd !== 'readthread' && cmd !== 'gcalcheck' && cmd !== 'sentinvites') {
     var state   = readState();
 
     var conn    = await ensureChrome();
@@ -1434,6 +1434,118 @@ async function main() {
     await hideBanner(fPage);
     writeState({ url: fFinal });
     process.stdout.write('PROFILE_JSON:' + JSON.stringify(results || []));
+    return;
+  }
+
+  // ── sentinvites ─────────────────────────────────────────────────────────────
+  // Read the connection requests the user has SENT that are still pending, from LinkedIn's own
+  // invitation manager.
+  //
+  // Why this rather than visiting each prospect's profile: checking N people one at a time is N
+  // page loads of a logged-in account hitting stranger profiles in a burst, which is exactly the
+  // pattern LinkedIn's automation detection looks for. This is ONE page. Combined with the existing
+  // `connections` scan it answers all three questions at once — accepted (now in connections),
+  // still pending (listed here), or gone (in neither: withdrawn, declined, or expired). A profile's
+  // degree badge alone cannot tell the last case apart from "never sent".
+  if (cmd === 'sentinvites') {
+    var siConn = await ensureChrome();
+    var siCtx  = siConn.context;
+    if (!siCtx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
+    var siPage = siCtx.pages().at(-1) || await siCtx.newPage();
+    try { await siPage.bringToFront(); } catch (_) {}
+    try {
+      await siPage.goto('https://www.linkedin.com/mynetwork/invitation-manager/sent/',
+        { waitUntil: 'domcontentloaded', timeout: 20000 });
+    } catch (_) {}
+    var siUrl = siPage.url();
+    if (isAuthWall(siUrl)) {
+      await showBanner(siPage, 'Sign in to LinkedIn in THIS window, then press Check again.');
+      try { await siPage.bringToFront(); } catch (_) {}
+      writeState({ url: siUrl });
+      process.stdout.write('[SIGN_IN_REQUIRED] Opened LinkedIn in the ADRIS browser — please sign in there, then press Check again.');
+      return;
+    }
+    await showBanner(siPage, 'ADRIS is checking which connection requests are still pending — please don’t close this window.');
+    try { await siPage.waitForSelector('a[href*="/in/"]', { timeout: 9000 }); } catch (_) {}
+    try { await waitForContentStability(siPage, 300, 1200); } catch (_) {}
+
+    // The sent list paginates ("Show more"). Pull a few pages so a long-running campaign is fully
+    // covered, but stop early — this must finish well inside the 45s the caller allows.
+    var siStart = Date.now();
+    for (var siPass = 0; siPass < 6; siPass++) {
+      if (Date.now() - siStart > 20000) break;
+      var more = await siPage.evaluate(function () {
+        var btns = Array.prototype.slice.call(document.querySelectorAll('button'));
+        for (var i = 0; i < btns.length; i++) {
+          var t = (btns[i].innerText || '').trim().toLowerCase();
+          if (t === 'show more' || t === 'load more' || t.indexOf('show more') === 0) { btns[i].click(); return true; }
+        }
+        return false;
+      }).catch(function () { return false; });
+      if (!more) break;
+      try { await waitForContentStability(siPage, 300, 1500); } catch (_) {}
+    }
+
+    var invites = await siPage.evaluate(function () {
+      function clean(s) { return (s || '').replace(/[ \t]+/g, ' ').trim(); }
+      // The anchor's OWN innerText is empty on this page — the name lives a couple of levels up, in
+      // the card. Verified against the live page: every invite renders as
+      //     Praveen Savarapu / <headline> / Sent 1 week ago / Withdraw
+      // Reading only the anchor made all 70 invites fall back to their URL slug, and a slug is not
+      // a name: "Nicole D." has the slug "dangelo-nicole". A lead with no saved profile URL is
+      // matched on name, so that mismatch would report a pending invite as expired — the exact
+      // confusion this feature exists to remove.
+      var noise = /^(withdraw|message|pending|sent |view |• |status is|people \(|pages \(|received$|sent$|manage invitations)/i;
+      var scope = document.querySelector('main') || document.body;
+      var out = [], seen = {};
+      var anchors = scope.querySelectorAll('a[href*="/in/"]');
+      for (var i = 0; i < anchors.length; i++) {
+        var a = anchors[i];
+        var href = a.getAttribute('href') || '';
+        if (href.indexOf('/in/') === -1) continue;
+        var url = href.split('?')[0].replace(/\/$/, '');
+        if (!/^https?:/i.test(url)) url = 'https://www.linkedin.com' + url;
+        var key = url.toLowerCase();
+        if (seen[key]) continue;
+
+        // Walk up to the invite card — the nearest ancestor that carries the whole entry.
+        var card = a, hops = 0;
+        while (card && hops < 6) {
+          var ct = card.innerText || '';
+          if (/\bWithdraw\b/i.test(ct) && ct.split('\n').filter(function (x) { return x.trim(); }).length >= 2) break;
+          card = card.parentElement; hops++;
+        }
+        var lines = ((card && card.innerText) || a.innerText || '')
+          .split('\n').map(clean).filter(Boolean);
+        var nameRaw = '';
+        for (var j = 0; j < lines.length; j++) {
+          var ln = lines[j].replace(/\bView\b.*$/i, '').replace(/•\s*\d+(st|nd|rd|th).*$/i, '').trim();
+          if (!ln || ln.length > 90 || noise.test(ln)) continue;
+          nameRaw = ln; break;
+        }
+        // "Sent 1 week ago" straight from LinkedIn beats asking the user to remember when they
+        // sent it — and it is the only age we have for invites sent outside this app.
+        var sentAgo = '';
+        for (var k = 0; k < lines.length; k++) {
+          var m = /^Sent\s+(.+ago)$/i.exec(lines[k]);
+          if (m) { sentAgo = m[1]; break; }
+        }
+        if (!nameRaw) {
+          // Last resort so a pending invite is never MISSED because its name was unreadable —
+          // a missed pending invite gets wrongly reported as expired.
+          var slug = (url.split('/in/')[1] || '').split('/')[0].replace(/-[0-9a-f]{6,}$/i, '');
+          nameRaw = slug ? slug.replace(/-/g, ' ') : '';
+          if (!nameRaw) continue;
+        }
+        seen[key] = 1;
+        out.push({ name: nameRaw, url: url, sent: sentAgo });
+      }
+      return out;
+    }).catch(function () { return []; });
+
+    await hideBanner(siPage);
+    writeState({ url: siUrl });
+    process.stdout.write('SENTINV_JSON:' + JSON.stringify(invites || []));
     return;
   }
 

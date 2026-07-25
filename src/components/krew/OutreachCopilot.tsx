@@ -2,6 +2,8 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { brain } from '../../lib/knowledgeStore';
 import { todos } from '../../lib/todoStore';
 import { setAgentBrowserHold, bestProfileMatch } from '../../lib/krewTools';
+import { checkPendingConnections, runBrowserCmd, waitingLabel, type ReconcileResult } from '../../lib/outreachConnections';
+import { outreachStatusToLeadCell, setLeadConnStatus } from '../../lib/leadTable';
 import { planReply, planFollowUp, verifyWork, refineMessage, type ReplyPlan, type VerifyResult } from '../../lib/verify';
 import { listAttachableDocs, isAttachableFile, type GeneratedDoc } from '../../lib/docgen';
 
@@ -33,6 +35,10 @@ function buildOwnerContext(): string {
 
 export type OutreachStatus = 'todo' | 'connect' | 'sent' | 'accepted' | 'replied' | 'skip';
 
+/** Where a person came from. 'connections' = already a 1st-degree connection (from /scan);
+ *  'leads' = a prospect off a Brain lead list, who probably still needs a connection request. */
+export type OutreachSource = 'connections' | 'leads';
+
 export interface OutreachContact {
   name: string;
   company?: string;
@@ -42,6 +48,21 @@ export interface OutreachContact {
   email_subject?: string;
   email_body?: string;
   status?: OutreachStatus;
+  // ── Connection tracking. All optional: campaigns saved before this existed load unchanged and
+  // simply behave as connections, which is what they were.
+  source?: OutreachSource;
+  /** ≤300 chars — what LinkedIn allows on a connection request. Used instead of the full message
+   *  while the person is not connected yet. */
+  connect_note?: string;
+  /** When the user marked the request as sent, so the copilot can say "waiting 6 days". */
+  requestedAt?: number;
+  /** Set when a check confirmed they accepted — drives the one-time auto-draft of the real message. */
+  acceptedAt?: number;
+  /** Brain lead-list note this person came from, so their Connection Status can be written back. */
+  leadList?: string;
+  /** LinkedIn's own age for a still-pending request ("1 week ago"). Covers invites the user sent
+   *  by hand, long before this campaign existed. */
+  sentAgo?: string;
 }
 
 export interface OutreachCampaign {
@@ -265,7 +286,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   const [contacts, setContacts] = useState<OutreachContact[]>(
     campaign.contacts.map((c) => ({ ...c, status: c.status || 'todo' })));
   const [idx, setIdx] = useState(() => firstUndoneIdx(campaign.contacts));
-  const [copied, setCopied] = useState<'msg' | 'email' | null>(null);
+  const [copied, setCopied] = useState<'msg' | 'email' | 'note' | null>(null);
   const [whyOpen, setWhyOpen] = useState(false);
   const [search, setSearch] = useState('');   // jump-to-a-contact by name, instead of Prev/Next spam
   const [opening, setOpening] = useState(false);
@@ -290,6 +311,9 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   const [refining, setRefining] = useState(false);
   const [refineNote, setRefineNote] = useState('');       // feedback when a refine fails / returns nothing
   const [statusFilter, setStatusFilter] = useState<OutreachStatus | null>(null);  // filter list by status
+  const [sourceFilter, setSourceFilter] = useState<OutreachSource | null>(null);  // connections vs leads
+  const [checking, setChecking] = useState(false);        // a connection check is running
+  const [checkNote, setCheckNote] = useState('');         // what the last check found
   const [lastThread, setLastThread] = useState('');       // remembered so refine/re-verify have context
   const [lastOwnerCtx, setLastOwnerCtx] = useState('');
   const planRef = useRef<HTMLDivElement | null>(null);
@@ -394,6 +418,11 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
 
   const cur = contacts[idx];
   const channel = campaign.channel || 'linkedin';
+  // Someone off a lead list who hasn't accepted yet cannot be messaged on LinkedIn at all, so the
+  // card shows the connection-request step instead of a message they'd have no way to send. Once
+  // any check (or the user) marks them accepted/sent/replied, they behave like any other contact.
+  const needsConnect = !!cur && cur.source === 'leads'
+    && !(cur.status === 'accepted' || cur.status === 'sent' || cur.status === 'replied' || cur.status === 'skip');
 
   // When the parent opens a DIFFERENT campaign object (resume, /verifylinks re-open, a fresh draft),
   // resync the local contacts + jump to the first to-do. The prop reference only changes when
@@ -430,12 +459,140 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
 
   function jumpTo(i: number) { setIdx(i); setSearch(''); }
 
+  // ─── Write progress back to the Brain lead list ────────────────────────────────────────────
+  // A lead's "Connection Status" cell is the record that survives outside this campaign — it is
+  // already protected from being wiped by /verify and /enrich (leadTable.ts LEAD_CANON), so keeping
+  // it current is what stops the user re-inviting someone they invited three weeks ago.
+  function writeLeadStatus(c: OutreachContact, status: OutreachStatus) {
+    if (c.source !== 'leads' || !c.leadList) return;
+    const cell = outreachStatusToLeadCell(status);
+    if (!cell) return;
+    try {
+      const node = brain.findByTitle(c.leadList);
+      if (!node?.body) return;
+      const before = String(node.body);
+      const after = setLeadConnStatus(before, c.name, cell);
+      if (after !== before) brain.updateNode(node.id, { body: after });
+    } catch { /* the campaign is still the source of truth — a failed write-back is not fatal */ }
+  }
+
   function setStatus(s: OutreachStatus) {
-    setContacts((prev) => prev.map((c, i) => (i === idx ? { ...c, status: s } : c)));
+    const c = contacts[idx];
+    if (c) writeLeadStatus(c, s);
+    setContacts((prev) => prev.map((x, i) => (i === idx
+      // Stamp when the request went out so the copilot can say "waiting 6 days" instead of leaving
+      // the user counting back through their own memory.
+      ? { ...x, status: s, requestedAt: s === 'connect' ? (x.requestedAt || Date.now()) : x.requestedAt }
+      : x)));
     // The user asked for this explicitly: the moment someone is marked "Replied", don't just log it
     // — read what they actually said and plan the next move. Auto-runs the scan (if not already done
     // for this person) so the flow never dead-ends at "Replied".
     if (s === 'replied' && !(plan && planIdx === idx)) { scanReplyAndPlan(); }
+  }
+
+  /** People we're waiting on — what the "Check all pending" button acts on. */
+  const pendingCount = useMemo(
+    () => contacts.filter((c) => c.status === 'connect').length,
+    [contacts],
+  );
+
+  // ─── Did they accept? ───────────────────────────────────────────────────────────────────────
+  // Reconciles every pending request in ONE browser pass (see lib/outreachConnections.ts for why
+  // that beats visiting each profile). Nothing here calls a model, so it behaves identically on
+  // adris.tech, a BYOK key, or a local model — and costs no tokens at all.
+  //
+  // `only` limits the effect to one person (the per-card button); omitted, it does the whole list.
+  async function runConnectionCheck(only?: number) {
+    if (checking) return;
+    setChecking(true);
+    setCheckNote('Checking LinkedIn…');
+    try {
+      setAgentBrowserHold(true); setBrowserOpen(true);
+      const report = await checkPendingConnections(contacts, runBrowserCmd);
+      if (report.signIn) {
+        setCheckNote('Sign in to LinkedIn in the ADRIS browser window, then press Check again.');
+        return;
+      }
+      if (!report.connectionsOk) {
+        // Deliberately explicit: nothing was changed. Silently "finding no updates" after a failed
+        // read would look identical to "nobody accepted", and the user would stop trusting it.
+        setCheckNote("Couldn't read your connections just now, so nothing was changed. Try again in a moment.");
+        return;
+      }
+      const results: ReconcileResult[] = only === undefined
+        ? report.results
+        : report.results.filter((r) => r.index === only);
+
+      const accepted = results.filter((r) => r.outcome === 'accepted');
+      const gone = results.filter((r) => r.outcome === 'gone');
+      const stillPending = results.filter((r) => r.outcome === 'pending');
+
+      if (results.length) {
+        setContacts((prev) => prev.map((c, i) => {
+          const r = results.find((x) => x.index === i);
+          if (!r) return c;
+          if (r.outcome === 'accepted') {
+            return { ...c, status: 'accepted', acceptedAt: c.acceptedAt || Date.now(), linkedin_url: c.linkedin_url || r.url };
+          }
+          // An expired or declined invite goes back to To do — it is genuinely actionable again,
+          // and leaving it as "requested" forever is exactly the state the user said they lose
+          // track of. Their note is kept so re-sending is one tap.
+          if (r.outcome === 'gone') return { ...c, status: 'todo', requestedAt: undefined, sentAgo: undefined };
+          // LinkedIn's own "1 week ago" is better than our stamp, and it is the ONLY age we have
+          // for requests the user sent by hand outside this app.
+          if (r.outcome === 'pending' && r.sentAgo) return { ...c, sentAgo: r.sentAgo, linkedin_url: c.linkedin_url || r.url };
+          return c;
+        }));
+        accepted.forEach((r) => { const c = contacts[r.index]; if (c) writeLeadStatus(c, 'accepted'); });
+      }
+
+      const bits: string[] = [];
+      if (accepted.length) bits.push(`${accepted.length} accepted`);
+      if (stillPending.length) bits.push(`${stillPending.length} still pending`);
+      if (gone.length) bits.push(`${gone.length} expired or declined — back on your To do list`);
+      if (!report.pendingOk && !accepted.length) {
+        setCheckNote("Read your connections but couldn't open the sent-invitations page, so only acceptances were checked.");
+      } else {
+        setCheckNote(bits.length ? bits.join(' · ') : 'No changes — nobody has accepted yet.');
+      }
+
+      // The user's ask: once someone accepts, write their real message WITHOUT being told to.
+      if (accepted.length) void draftMessagesForAccepted(accepted.map((r) => r.index));
+    } catch (e) {
+      setCheckNote('Check failed: ' + String(e).slice(0, 140));
+    } finally {
+      setAgentBrowserHold(false);
+      setChecking(false);
+    }
+  }
+
+  /**
+   * Write the real, personalised LinkedIn message for people who just accepted.
+   *
+   * Uses refineMessage() — the same source-aware path the rest of the copilot uses (it resolves to
+   * the user's chosen BYOK key, local model, or adris.tech), so this adds no new assumption about
+   * where AI runs. Grounded in the owner context so the message is as personalised as the ones
+   * written for existing connections, which is what the user asked for.
+   */
+  async function draftMessagesForAccepted(indexes: number[]) {
+    const ownerContext = lastOwnerCtx || buildOwnerContext();
+    for (const i of indexes) {
+      const c = contacts[i];
+      if (!c || c.linkedin_message?.trim()) continue;   // never overwrite something already written
+      try {
+        const text = await refineMessage({
+          person: [c.name, c.company].filter(Boolean).join(' — '),
+          current: c.connect_note || '',
+          instruction:
+            `${c.name} has just ACCEPTED my connection request. Write the FIRST direct message to send them now — `
+            + '30–50 words, warm and specific, referencing what they do. Thank them briefly for connecting, then ONE '
+            + 'low-pressure, specific opener. No pitch, no buzzwords, no placeholders.',
+          ownerContext,
+        });
+        const msg = (text || '').trim();
+        if (msg) setContacts((prev) => prev.map((x, j) => (j === i && !x.linkedin_message?.trim() ? { ...x, linkedin_message: msg } : x)));
+      } catch { /* leave it blank — the card still works, the user can ask for a draft */ }
+    }
   }
 
   // ── Read this person's real thread and prepare the next message, then verify it ──
@@ -770,6 +927,36 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
         {/* Filter — see everyone at a given stage (who replied, who's been messaged) and jump back to
             any of them to continue. Tapping a chip lists those contacts; tapping a name jumps there. */}
         <div className="px-4 py-2 border-b border-nv-border shrink-0">
+          {/* Where each person came from. Leads need a connection request first; connections can be
+              messaged today — so being able to see one group at a time is the difference between a
+              workable list and a confusing one. */}
+          {contacts.some((c) => c.source === 'leads') && (
+            <div className="flex items-center gap-1.5 flex-wrap mb-1.5">
+              <span className="text-[10px] text-nv-faint">Who:</span>
+              {([null, 'connections', 'leads'] as (OutreachSource | null)[]).map((s) => {
+                const n = s === null ? contacts.length : contacts.filter((c) => (c.source ?? 'connections') === s).length;
+                const label = s === null ? 'Everyone' : s === 'leads' ? 'Lead list' : 'My connections';
+                return (
+                  <button
+                    key={String(s)}
+                    onClick={() => setSourceFilter(s)}
+                    className={`text-[10px] font-medium px-2 py-0.5 rounded-full border transition-fast ${sourceFilter === s ? 'border-accent bg-accent text-white' : 'border-nv-border text-nv-faint hover:bg-nv-surface2'}`}
+                  >{label} {n}</button>
+                );
+              })}
+              {pendingCount > 0 && (
+                <button
+                  onClick={() => runConnectionCheck()}
+                  disabled={checking}
+                  title="Checks every pending request in one pass, without opening each profile"
+                  className="ml-auto text-[10px] font-semibold px-2.5 py-1 rounded-lg border border-amber-500/50 text-amber-600 bg-amber-500/10 hover:bg-amber-500/20 transition-fast disabled:opacity-60"
+                >{checking ? 'Checking…' : `Check ${pendingCount} pending`}</button>
+              )}
+            </div>
+          )}
+          {checkNote && (
+            <div className="mb-1.5 text-[10px] text-nv-faint leading-relaxed">{checkNote}</div>
+          )}
           <div className="flex items-center gap-1.5 flex-wrap">
             <span className="text-[10px] text-nv-faint">Filter:</span>
             {(['replied', 'sent', 'accepted', 'connect', 'todo', 'skip'] as OutreachStatus[]).map((s) => {
@@ -785,11 +972,35 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
               );
             })}
           </div>
+          {/* Picking a source on its own lists that group so you can jump straight to any of them —
+              otherwise the chips would only ever narrow the status list, which is not what "show me
+              my leads" means. */}
+          {sourceFilter && !statusFilter && (
+            <div className="mt-1.5 max-h-40 overflow-y-auto rounded-lg border border-nv-border bg-nv-bg">
+              {contacts.map((c, i) => ({ c, i })).filter(({ c }) => (c.source ?? 'connections') === sourceFilter).length === 0
+                ? <div className="px-3 py-2 text-[10.5px] text-nv-faint">Nobody here yet.</div>
+                : contacts.map((c, i) => ({ c, i })).filter(({ c }) => (c.source ?? 'connections') === sourceFilter).map(({ c, i }) => (
+                  <button
+                    key={i}
+                    onClick={() => jumpTo(i)}
+                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-nv-surface2 transition-fast ${i === idx ? 'bg-accent/10' : ''}`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[11.5px] font-medium truncate">{c.name || 'Unknown'}</div>
+                      {c.company && <div className="text-[9.5px] text-nv-faint truncate">{c.company}</div>}
+                    </div>
+                    <span className={`shrink-0 text-[9px] px-1.5 py-0.5 rounded border ${STATUS_META[c.status || 'todo'].cls}`}>
+                      {STATUS_META[c.status || 'todo'].label}
+                    </span>
+                  </button>
+                ))}
+            </div>
+          )}
           {statusFilter && (
             <div className="mt-1.5 max-h-40 overflow-y-auto rounded-lg border border-nv-border bg-nv-bg">
-              {contacts.map((c, i) => ({ c, i })).filter(({ c }) => (c.status || 'todo') === statusFilter).length === 0
+              {contacts.map((c, i) => ({ c, i })).filter(({ c }) => (c.status || 'todo') === statusFilter && (!sourceFilter || (c.source ?? 'connections') === sourceFilter)).length === 0
                 ? <div className="px-3 py-2 text-[10.5px] text-nv-faint">No one at “{STATUS_META[statusFilter].label}” yet.</div>
-                : contacts.map((c, i) => ({ c, i })).filter(({ c }) => (c.status || 'todo') === statusFilter).map(({ c, i }) => (
+                : contacts.map((c, i) => ({ c, i })).filter(({ c }) => (c.status || 'todo') === statusFilter && (!sourceFilter || (c.source ?? 'connections') === sourceFilter)).map(({ c, i }) => (
                   <button
                     key={i}
                     onClick={() => { jumpTo(i); setStatusFilter(null); }}
@@ -853,12 +1064,77 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
             </span>
           </div>
           <div>
-            <div className="text-sm font-semibold">{cur.name || 'Unknown contact'}</div>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-sm font-semibold">{cur.name || 'Unknown contact'}</span>
+              {/* Which list they came off. Without this the two groups are indistinguishable, and
+                  the reason one card asks for a connection request and the next doesn't is a
+                  mystery. Untagged contacts predate lead lists, so they are connections. */}
+              <span className={`text-[9px] px-1.5 py-0.5 rounded-full border font-medium ${cur.source === 'leads'
+                ? 'border-orange-500/50 text-orange-600 bg-orange-500/10'
+                : 'border-sky-600/40 text-sky-600 bg-sky-600/10'}`}>
+                {cur.source === 'leads' ? 'Lead list' : 'Your connection'}
+              </span>
+              {cur.source === 'leads' && cur.leadList && (
+                <span className="text-[9px] text-nv-faint truncate max-w-[140px]" title={cur.leadList}>from {cur.leadList}</span>
+              )}
+            </div>
             {cur.company && <div className="text-xs text-nv-faint">{cur.company}</div>}
           </div>
 
-          {/* Copy the message AND open the chat box in one click */}
-          {(channel === 'linkedin' || channel === 'both') && (
+          {/* ── Not connected yet ────────────────────────────────────────────────────────────
+              A free LinkedIn account cannot message anyone who isn't a 1st-degree connection, so
+              for these people the connection request IS the step — showing them a full message
+              they can't send is what made the lead list unusable for outreach. */}
+          {needsConnect && (
+            <div className="rounded-lg border border-orange-500/30 bg-orange-500/[0.06] p-2.5 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-semibold text-orange-600">
+                  {cur.status === 'connect' ? `Request sent — ${cur.sentAgo ? `sent ${cur.sentAgo}` : (waitingLabel(cur.requestedAt) || 'waiting')}` : 'Not connected yet'}
+                </span>
+                <span className="text-[9px] text-nv-faint">{(cur.connect_note || '').length}/300</span>
+              </div>
+              <textarea
+                value={cur.connect_note || ''}
+                onChange={(e) => setContacts((prev) => prev.map((c, i) => (i === idx ? { ...c, connect_note: e.target.value.slice(0, 300) } : c)))}
+                rows={4}
+                maxLength={300}
+                className="w-full text-xs bg-nv-bg border border-nv-border rounded-lg p-2 leading-relaxed resize-none focus:outline-none focus:border-accent/40 select-text"
+                placeholder="Short note to send with the connection request…"
+              />
+              <div className="flex gap-1.5">
+                <button
+                  onClick={async () => {
+                    const ok = await copyText(fillTokens(cur.connect_note || '', cur));
+                    setCopied(ok ? 'note' : null);
+                    openLink(profileUrl(cur));
+                  }}
+                  className={`flex-1 text-[10.5px] px-2 py-1.5 rounded-lg border transition-fast ${copied === 'note' ? 'border-emerald-400/50 text-emerald-600 bg-emerald-400/10' : 'border-accent/40 text-accent hover:bg-accent/10'}`}
+                >{copied === 'note' ? '✓ Note copied — paste it in the request' : 'Copy note & open profile'}</button>
+                {cur.status !== 'connect' && (
+                  <button
+                    onClick={() => setStatus('connect')}
+                    className="shrink-0 text-[10.5px] px-2 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
+                  >I sent it</button>
+                )}
+              </div>
+              {cur.status === 'connect' && (
+                <button
+                  onClick={() => runConnectionCheck(idx)}
+                  disabled={checking}
+                  className="w-full text-[10.5px] font-semibold px-2 py-1.5 rounded-lg border border-amber-500/50 text-amber-600 bg-amber-500/10 hover:bg-amber-500/20 transition-fast disabled:opacity-60"
+                >{checking ? 'Checking LinkedIn…' : 'Check if they accepted'}</button>
+              )}
+              <p className="text-[9.5px] text-nv-faint leading-relaxed">
+                LinkedIn only allows messages to people you're connected to. Send the request with this note —
+                once they accept, Krew writes the full message for you automatically.
+              </p>
+            </div>
+          )}
+
+          {/* Copy the message AND open the chat box in one click.
+              Hidden while a connection request is still outstanding: LinkedIn has no chat box to
+              open for a non-connection, so this button could only ever fail for them. */}
+          {(channel === 'linkedin' || channel === 'both') && !needsConnect && (
             <div className="space-y-1.5">
               <button
                 onClick={copyAndOpenChat}
@@ -892,8 +1168,8 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
             </div>
           )}
 
-          {/* The message to paste */}
-          {(channel === 'linkedin' || channel === 'both') && (
+          {/* The message to paste. Only once they can actually receive it. */}
+          {(channel === 'linkedin' || channel === 'both') && !needsConnect && (
             <div>
               <div className="flex items-center justify-between mb-1">
                 <div className="text-[10px] text-nv-faint uppercase tracking-wide">LinkedIn message</div>
