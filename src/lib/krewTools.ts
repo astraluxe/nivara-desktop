@@ -3191,8 +3191,18 @@ async function executeToolCore(
     // (every 3 rows instead of 6), so a slow stretch never looks like a silent hang.
     const BATCH = forceConfirm ? 3 : 6;
     const slice = rows.slice(0, MAX);
+    // The run WILL use the browser before it ends, so mark it for auto-close now. But do NOT
+    // announce "the browser is in use" yet: enrichment opens with a pure-HTTP search phase and no
+    // window appears for the first stretch of it. Announcing up front described something the user
+    // could plainly see wasn't happening, which made every other status message look like a lie.
+    // The announcement moved into readPages(), i.e. the first genuine browser read.
     _browserActiveThisRun = true;
-    emit('agent-browser-active', {}).catch(() => {});
+    let announcedBrowser = false;
+    const announceBrowser = () => {
+      if (announcedBrowser) return;
+      announcedBrowser = true;
+      emit('agent-browser-active', {}).catch(() => {});
+    };
 
     const readPage = async (rawUrl: string): Promise<string> => {
       const full = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl.replace(/^\/+/, '')}`;
@@ -3215,6 +3225,7 @@ async function executeToolCore(
       const out = new Map<string, string>();
       const uniq = Array.from(new Set(rawUrls.filter(Boolean)));
       if (!uniq.length) return out;
+      announceBrowser();   // a window is genuinely about to open — now the banner is honest
       for (let i = 0; i < uniq.length; i += 2) {
         const chunk = uniq.slice(i, i + 2);
         const arg = `openmany ${chunk.join('|')}`;
@@ -3289,31 +3300,52 @@ async function executeToolCore(
     const sameUrl2 = (a: string, b: string) => a.replace(/^https?:\/\/(www\.|in\.)?/i, '').replace(/\/+$/, '').toLowerCase() === b.replace(/^https?:\/\/(www\.|in\.)?/i, '').replace(/\/+$/, '').toLowerCase();
     // Returns { url, matched } — matched=true only when a REAL search actually surfaced a URL whose
     // slug matches the person's name. matched=false means "top hit, but not name-confirmed" (weak).
+    // SPEED: this used to run STRICTLY SEQUENTIALLY — up to 4 search engines (each with a 400ms
+    // sleep after it) and then 7 company-website paths, one HTTP round-trip after another, for
+    // every person in turn. On a list where nobody has a LinkedIn cell yet (which is exactly what
+    // /leads produces — the model is forbidden from inventing URLs, so every row arrives blank),
+    // that is ~11 serial requests per person and it is what turned a 23-row enrich into a 400s+
+    // "Enriching 1–3 of 23" that looked like a hang.
+    //
+    // The shape now: try the BEST engine alone (it usually hits, so the common case costs one
+    // request), and only if that misses fire everything else CONCURRENTLY. Order is preserved when
+    // collecting results, so the weak "top hit" fallback still picks the same URL it always did.
     const findLinkedIn = async (name: string, company: string, website: string): Promise<{ url: string; matched: boolean }> => {
       const q = `${name} ${company} LinkedIn`;
       const urls: string[] = []; const seen = new Set<string>();
+      const get = (u: string, h: Record<string, string>) =>
+        invoke<string>('krew_http_call', { method: 'GET', url: u, headers: h, body: null }).catch(() => '');
       const srcs: Array<{ u: string; h: Record<string, string> }> = [];
       if (braveKey2) srcs.push({ u: `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(q)}`, h: { Accept: 'application/json', 'X-Subscription-Token': braveKey2 } });
       srcs.push({ u: `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`, h: { 'User-Agent': ua2 } });
       srcs.push({ u: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}`, h: { 'User-Agent': ua2 } });
       srcs.push({ u: `https://www.bing.com/search?q=${encodeURIComponent(q)}`, h: { 'User-Agent': ua2 } });
-      for (const s of srcs) {
-        const raw = await invoke<string>('krew_http_call', { method: 'GET', url: s.u, headers: s.h, body: null }).catch(() => '');
-        pullAllIn(raw, urls, seen);
+
+      // Round 1 — the single best engine on its own. A name-matching slug here ends the hunt.
+      pullAllIn(await get(srcs[0].u, srcs[0].h), urls, seen);
+      {
         const hit = urls.find(u => slugMatchesName(u, name));
         if (hit) return { url: hit, matched: true }; // strong: name-matching URL from a real search
-        await new Promise((r) => setTimeout(r, 400));
       }
-      // Company website — founders/leaders are usually linked from the site (about/team/leadership).
+      if (_leadStopRequested) return urls.length ? { url: urls[0], matched: false } : { url: '', matched: false };
+
+      // Round 2 — the remaining engines AND the company website, all at once. These are independent
+      // reads of different hosts; running them in parallel costs the slowest one, not their sum.
+      // (The old 400ms inter-engine pause existed to be polite to a single engine being hit
+      // repeatedly — here each engine is touched once, so there is nothing to pace.)
+      const rest = srcs.slice(1).map(s => get(s.u, s.h));
+      const sitePaths: string[] = [];
       if (website) {
+        // Founders/leaders are usually linked from the site (about/team/leadership).
         const base = (website.startsWith('http') ? website : 'https://' + website).replace(/\/+$/, '');
-        for (const path of ['', '/about', '/team', '/about-us', '/leadership', '/company', '/people']) {
-          const raw = await invoke<string>('krew_http_call', { method: 'GET', url: base + path, headers: { 'User-Agent': ua2 }, body: null }).catch(() => '');
-          pullAllIn(raw, urls, seen);
-          const hit = urls.find(u => slugMatchesName(u, name));
-          if (hit) return { url: hit, matched: true };
-        }
+        for (const path of ['', '/about', '/team', '/about-us', '/leadership', '/company', '/people']) sitePaths.push(base + path);
       }
+      const siteReqs = sitePaths.map(u => get(u, { 'User-Agent': ua2 }));
+      // Promise.all preserves input order, so candidates accumulate in the same priority order as
+      // the old serial version — engines first, then the website paths.
+      for (const raw of await Promise.all([...rest, ...siteReqs])) pullAllIn(raw, urls, seen);
+      const hit = urls.find(u => slugMatchesName(u, name));
+      if (hit) return { url: hit, matched: true };
       // No name-matching URL anywhere — return the top raw hit only as a weak/unconfirmed candidate.
       return urls.length ? { url: urls[0], matched: false } : { url: '', matched: false };
     };
@@ -3362,8 +3394,14 @@ async function executeToolCore(
     // Process ONE small sub-batch of rows: discover LinkedIn candidates (HTTP), then Phases A/B/C
     // (parallel browser reads). Returned rows carry the resolved linkedin/phone/email.
     const processBatch = async (batchRows: Row[], progressLabel: string): Promise<Row[]> => {
-      const rds: RD[] = [];
-      for (const row of batchRows) {
+      // DISCOVERY — search the web for each person's LinkedIn. This phase is pure HTTP: it opens
+      // NO browser window, which is why the status line must not claim one is being used (the user
+      // rightly lost trust in the progress text when it said "Reading LinkedIn" while nothing was
+      // visibly happening). Rows run CONCURRENTLY: they hit different queries on the same handful
+      // of engines, and the batch is small (3–6), so this is a few parallel requests, not a flood —
+      // but it turns "sum of every row" into "the slowest row".
+      emit('agent-progress', { text: `${progressLabel} — searching the web for their LinkedIn (no browser needed yet)` }).catch(() => {});
+      const rds: RD[] = await Promise.all(batchRows.map(async (row): Promise<RD> => {
         let found = { url: '', matched: false };
         if (row.name && row.company) found = await findLinkedIn(row.name, row.company, row.website || '');
         const existingLinkedin = cleanLI(row.linkedinRaw || '');
@@ -3372,8 +3410,9 @@ async function executeToolCore(
         if (found.matched) pushC(found.url);
         pushC(existingLinkedin);
         pushC(found.url);
-        rds.push({ row, found, cands: cands.slice(0, 3), linkedin: '', phone: row.phone || '', email: row.email || '' });
-      }
+        return { row, found, cands: cands.slice(0, 3), linkedin: '', phone: row.phone || '', email: row.email || '' };
+      }));
+      if (_leadStopRequested) return rds.map(rd => ({ ...rd.row, linkedin: cleanLI(rd.row.linkedinRaw || ''), phone: rd.phone, email: rd.email }));
 
       // BROWSER-SEARCH FALLBACK — recover LinkedIns the headless HTTP engines missed (they throttle
       // after a few rapid requests → later rows came back blank even though the profile EXISTS). The
