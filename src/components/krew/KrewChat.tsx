@@ -187,6 +187,10 @@ interface DisplayMsg {
   role:      'user' | 'assistant' | 'tool_call' | 'tool_result' | 'delegation' | 'proposal' | 'choices' | 'deck_setup' | 'deck_result' | 'social_schedule' | 'next_task' | 'lead_setup' | 'lead_result';
   leadCount?: number;
   leadTable?: string;
+  /** How many rows came back without a usable LinkedIn URL. Drives the warning on the result
+   *  card — it used to be a line of italic prose that scrolled away and told the user to run a
+   *  command that does not even act on lead lists. */
+  leadMissingLinks?: number;
   content:   string;
   toolName?: string;
   streaming?: boolean;
@@ -6010,11 +6014,12 @@ PREFER people and companies that appear above: they are known to exist. You may 
         + (relaxed
           ? `
 
-_None of them had everything you ticked (most are missing a LinkedIn URL), so I've saved them rather than lose the run. Run **/verifylinks** on that list to fill the profiles in._`
+_None of them had everything you ticked, so I've saved them rather than lose the run — see the card below to fill in what's missing._`
           : '');
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: summary, streaming: false }; return c; });
       if (sid) krewDb.saveMessage(sid, 'assistant', summary).catch(() => {});
-      post({ role: 'lead_result', content: title, leadCount: kept2.length, leadTable: finalMd });
+      const missingLinks = kept2.filter((r) => !/linkedin\.com\/in\//i.test(r.cells['linkedin'] || '')).length;
+      post({ role: 'lead_result', content: title, leadCount: kept2.length, leadTable: finalMd, leadMissingLinks: missingLinks });
     } catch (e) {
       if (String(e).includes(ABORT)) {
         // Stopped, or the user moved to another chat. Say so in the chat it belongs to, and
@@ -6444,6 +6449,131 @@ _None of them had everything you ticked (most are missing a LinkedIn URL), so I'
     }
   }
 
+  /**
+   * Fold a saved lead list into the outreach campaign that is ALREADY running, instead of
+   * starting a new one over the top of it.
+   *
+   * People already in the campaign are matched by name and left exactly as they are — their
+   * status, their drafted message and their sent/accepted history all survive. Only genuinely new
+   * people are appended, so pressing this twice cannot duplicate anyone.
+   */
+  async function addLeadsToRunningOutreach(listTitle: string) {
+    if (busy) return;
+    const campaign = loadResumableCampaign();
+    if (!campaign) { addMsg({ role: 'assistant', content: 'There is no outreach in progress to add to — use **Send to outreach** to start one.' }); return; }
+    const node = brainStore.findByTitle(listTitle);
+    if (!node) { addMsg({ role: 'assistant', content: `I couldn't find a list called **${listTitle}** in your Brain any more.` }); return; }
+
+    const key = (n: string) => (n || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const have = new Set(campaign.contacts.map((c) => key(c.name)));
+    const { rows } = parseLeadRows(nodeToMarkdown(node.body || ''), 0);
+    const added: OutreachContact[] = [];
+    for (const r of rows) {
+      const name = (r.cells['name'] || '').trim();
+      if (!name || !looksLikePersonLead(name, r.cells['company'] || '')) continue;
+      if (have.has(key(name))) continue;
+      have.add(key(name));
+      added.push({
+        name,
+        company: (r.cells['company'] || '').trim(),
+        linkedin_url: (r.cells['linkedin'] || '').trim(),
+        email: (r.cells['email'] || '').trim(),
+        status: 'todo',
+        source: 'leads',
+        leadList: listTitle,
+      });
+    }
+    if (!added.length) {
+      addMsg({ role: 'assistant', content: `Everyone in **${listTitle}** is already in the outreach you have going — nothing to add.` });
+      return;
+    }
+    saveCampaign({ ...campaign, contacts: [...campaign.contacts, ...added] });
+    const msg = `Added **${added.length}** new ${added.length === 1 ? 'person' : 'people'} from **${listTitle}** to the outreach already in progress.`
+      + ` Everyone already there kept their status and drafted message. Open the outreach copilot to write messages for the new ones.`;
+    addMsg({ role: 'assistant', content: msg });
+    const sid = sidRef.current;
+    if (sid) krewDb.saveMessage(sid, 'assistant', msg).catch(() => {});
+  }
+  /**
+   * Fill in the missing LinkedIn profiles for ONE saved Brain lead list.
+   *
+   * This is what the result card's warning offers, and it exists because the advice it replaced
+   * was wrong: /verifylinks repairs the saved OUTREACH campaign and has no notion of a Brain lead
+   * list at all, so a user following that instruction got "I don't have any saved outreach
+   * contacts to check yet" for a list sitting right there in front of them.
+   *
+   * Runs the same deterministic enrichment the lead flow uses, on the named list, and merges the
+   * result back into that node cell-by-cell so nothing already correct is overwritten.
+   */
+  async function fillMissingProfiles(listTitle: string) {
+    if (busy) return;
+    const node = brainStore.findByTitle(listTitle);
+    if (!node) {
+      addMsg({ role: 'assistant', content: `I couldn't find a list called **${listTitle}** in your Brain any more — it may have been renamed or deleted.` });
+      return;
+    }
+    const sid = await ensureSession('Fill missing profiles');
+    const shown = `Find the missing LinkedIn profiles for "${listTitle}"`;
+    addMsg({ role: 'user', content: shown });
+    if (sid) krewDb.saveMessage(sid, 'user', shown).catch(() => {});
+
+    setBusy(true);
+    resetLeadStop();
+    const t0 = Date.now();
+    addMsg({ role: 'assistant', content: statusBlock(t0, `Filling in profiles for ${listTitle}`, 'Getting ready…'), streaming: true });
+    setAgentBrowserHold(true);
+
+    let last = '';
+    let painted = '';
+    const paint = () => {
+      const [head, ...rest] = (last || '').split(' — ');
+      const next = stopRef.current
+        ? statusBlock(t0, `Filling in profiles — stopping`, 'Finishing the batch already in flight.', 'halt')
+        : statusBlock(t0, head || `Filling in profiles for ${listTitle}`,
+            `${rest.length ? rest.join(' — ') : 'Working through the list'}. Press Stop to halt after the current batch.`);
+      if (next === painted) return;
+      painted = next;
+      updateLastMsg(next);
+    };
+    paint();
+    const hb = setInterval(() => { if (stopRef.current) requestLeadStop(); paint(); }, 1000);
+    const un = await listen('agent-progress', (e) => {
+      const t = (e.payload as { text?: string } | undefined)?.text;
+      if (!t) return;
+      last = t;
+      if (!/no browser needed/i.test(t) && /open|browser|profile|checking|maps|site|google/i.test(t)) setBrowserActive(true);
+      paint();
+    });
+
+    try {
+      const listMd = nodeToMarkdown(node.body || '');
+      const out = await executeTool('enrich_lead_list', { list: listMd }, creds, requestTerminalApproval,
+        'research_agent', user?.id ?? '', `${sidRef.current ?? 'main'}-fill`);
+      const tbl = out && out.indexOf('|') >= 0 ? out.slice(out.indexOf('|')) : '';
+      if (tbl && extractTableRows(tbl).length > 2) {
+        brainStore.updateNode(node.id, { body: mergeLeadTables(listMd, tbl).slice(0, 16000) });
+        const { rows } = parseLeadRows(tbl, 0);
+        const withLink = rows.filter((r) => /linkedin\.com\/in\//i.test(r.cells['linkedin'] || '')).length;
+        const stillMissing = rows.length - withLink;
+        const done = `Filled in **${listTitle}** — ${withLink} of ${rows.length} now have a LinkedIn profile`
+          + (stillMissing ? `, ${stillMissing} still without one (no real profile could be confirmed, so they were left blank rather than guessed).` : '.');
+        setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: done, streaming: false }; return c; });
+        if (sid) krewDb.saveMessage(sid, 'assistant', done).catch(() => {});
+        addMsg({ role: 'lead_result', content: listTitle, leadCount: rows.length, leadTable: tbl, leadMissingLinks: stillMissing });
+      } else {
+        const bad = `I couldn't fill anything in for **${listTitle}** this time — nothing was changed.`;
+        setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: bad, streaming: false }; return c; });
+      }
+    } catch (e) {
+      const err = `Couldn't finish filling in the profiles: ${sanitiseError(e)}`;
+      setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: err, streaming: false }; return c; });
+    } finally {
+      clearInterval(hb); un();
+      setAgentBrowserHold(false); setBrowserActive(false);
+      closeAgentBrowserIfActive().catch(() => {});
+      setBusy(false); setAgentStep(null); setAgentTool(null);
+    }
+  }
   /**
    * Verify & repair the profile links saved for outreach. Symptom this fixes: after the first
    * several contacts, "Copy message & open chat" opened a LinkedIn *search* (often "No results
@@ -8972,6 +9102,29 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                       </div>
                     </details>
                   )}
+                  {!!msg.leadMissingLinks && (
+                    /* Prominent, and actionable. This was a line of italic prose under the table that
+                       scrolled out of sight, and it pointed at /verifylinks — which repairs the
+                       OUTREACH campaign and does nothing for a Brain lead list. The button runs the
+                       thing that actually fills these in, on this exact list. */
+                    <div className="mx-3.5 mb-2.5 flex items-start gap-2.5 px-3 py-2 rounded-lg border border-amber-500/40 bg-amber-500/10">
+                      <span className="text-[13px] leading-none mt-px">⚠️</span>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[11px] font-semibold text-amber-600">
+                          {msg.leadMissingLinks} of {msg.leadCount} have no LinkedIn profile yet
+                        </p>
+                        <p className="text-[10.5px] text-nv-muted leading-snug mt-0.5">
+                          They are saved either way. Filling these in opens each person in the browser, so it
+                          takes a few minutes — but outreach needs a profile to send anything.
+                        </p>
+                      </div>
+                      <button
+                        disabled={busy}
+                        onClick={() => fillMissingProfiles(msg.content)}
+                        className="shrink-0 text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-amber-500 text-white hover:bg-amber-400 transition-fast disabled:opacity-60"
+                      >Find the missing profiles</button>
+                    </div>
+                  )}
                   <div className="px-3.5 pb-3 flex flex-wrap gap-1.5">
                     <button
                       disabled={busy}
@@ -8981,7 +9134,19 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                         '', msg.content,
                       )}
                       className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 transition-fast disabled:opacity-60"
-                    >Send to outreach →</button>
+                    >{loadResumableCampaign() ? 'Start a new outreach →' : 'Send to outreach →'}</button>
+                    {/* Adding to a campaign already in progress. Without this the only route was
+                        "Send to outreach", which starts a FRESH campaign — so a user with an
+                        outreach half-done in their To-do had no way to fold a new list into it and
+                        risked replacing the one they were working through. */}
+                    {!!loadResumableCampaign() && (
+                      <button
+                        disabled={busy}
+                        title="Keep the outreach you already have going and add these people to the end of it"
+                        onClick={() => addLeadsToRunningOutreach(msg.content)}
+                        className="text-[11px] font-semibold px-3 py-1.5 rounded-lg border border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10 transition-fast disabled:opacity-60"
+                      >Add to the outreach in progress</button>
+                    )}
                     <button
                       disabled={busy}
                       onClick={() => { setInput(`Add more leads to "${msg.content}" — new people only, do not repeat anyone already there.`); }}

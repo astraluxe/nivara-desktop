@@ -2875,6 +2875,7 @@ async function executeToolCore(
         // is minutes of screen time; without this the status line sat unchanged throughout and the
         // user could not tell a working run from a dead one. Naming the actual page being opened
         // is also the only way to see it is doing something sensible.
+        if (_leadStopRequested) break;   // Stop lands here, not only between sub-batches
         stepPages(i, uniq.length, chunk[0]);
         const resp = await withBrowserLock(() => invoke<string>('run_browser_persistent', { args: `openmany ${chunk.join('|')}` }).catch(e => String(e)));
         if (!resp || !resp.includes('===BATCH===')) {
@@ -2956,9 +2957,12 @@ async function executeToolCore(
     };
     let pagesLabel = 'Checking';
     const stepPages = (done: number, total: number, next: string) => {
+      // A LinkedIn page can take 20-40s to open and settle, so this line legitimately stays put
+      // for a while. Saying so is the difference between "slow" and "broken".
+      const pace = ' (each page takes ~20s)';
       step(total > 2
-        ? `${pagesLabel} — reading ${Math.min(done + 2, total)} of ${total}: ${describeUrl(next)}`
-        : `${pagesLabel} — reading ${describeUrl(next)}`);
+        ? `${pagesLabel} — reading ${Math.min(done + 2, total)} of ${total}: ${describeUrl(next)}${pace}`
+        : `${pagesLabel} — reading ${describeUrl(next)}${pace}`);
     };
     // The Company/Role cell holds both ("Delhivery / Co-Founder"); searching for the job title as
     // well as the company turns a good query into no results. Same rule as enrich_lead_list.
@@ -3293,10 +3297,11 @@ async function executeToolCore(
     };
     let pagesLabelE = 'Checking';
     const stepPagesE = (done: number, total: number, next: string) => {
+      const pace = ' (each page takes ~20s)';
       emit('agent-progress', {
         text: total > 2
-          ? `${pagesLabelE} — reading ${Math.min(done + 2, total)} of ${total}: ${describeUrlE(next)}`
-          : `${pagesLabelE} — reading ${describeUrlE(next)}`,
+          ? `${pagesLabelE} — reading ${Math.min(done + 2, total)} of ${total}: ${describeUrlE(next)}${pace}`
+          : `${pagesLabelE} — reading ${describeUrlE(next)}${pace}`,
       }).catch(() => {});
     };
 
@@ -3326,6 +3331,7 @@ async function executeToolCore(
         const chunk = uniq.slice(i, i + 2);
         // Name each pair of pages as it opens — a batch is minutes of browser time, and a status
         // line that does not move for minutes reads as a dead app.
+        if (_leadStopRequested) break;   // Stop lands here, not only between sub-batches
         stepPagesE(i, uniq.length, chunk[0]);
         const arg = `openmany ${chunk.join('|')}`;
         const resp = await withBrowserLock(() => invoke<string>('run_browser_persistent', { args: arg }).catch(e => String(e)));
@@ -3696,7 +3702,12 @@ async function executeToolCore(
       // visibly happening). Rows run CONCURRENTLY: they hit different queries on the same handful
       // of engines, and the batch is small (3–6), so this is a few parallel requests, not a flood —
       // but it turns "sum of every row" into "the slowest row".
-      emit('agent-progress', { text: `${progressLabel} — checking the company sites` }).catch(() => {});
+      {
+        const names = batchRows.map(r => cleanCompany(r.company || r.name || '')).filter(Boolean).slice(0, 3);
+        emit('agent-progress', {
+          text: `${progressLabel} — checking ${names.length ? names.join(', ') : 'the company sites'}`,
+        }).catch(() => {});
+      }
       const rds: RD[] = await Promise.all(batchRows.map(async (row): Promise<RD> => {
         let found = { url: '', matched: false };
         if (row.name && row.company) found = await findLinkedIn(row.name, row.company, row.website || '');
