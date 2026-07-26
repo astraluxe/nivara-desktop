@@ -45,7 +45,7 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.77',
+  version: '1.6.78',
   items: [
     'Local business leads now come back with a real person on them. Google Maps gives you the business, not the owner — so the app now searches for who runs each one, opens their profile, and keeps the name ONLY where that profile actually names the business. Get that wrong and you address a complete stranger by name in your first message, so where it cannot be confirmed the name is left blank on purpose and you are told which ones need a name adding by hand. It never invents one.',
     'Profiles are cross-checked against the business, not just found. A search for "Sharma Textiles owner" will happily return some unrelated Sharma; that match is now rejected unless the business is named on the profile itself. The check reads only the person\'s own section of the page — the suggestions further down are full of other people and other companies, and one of those was enough to wrongly confirm a profile.',
