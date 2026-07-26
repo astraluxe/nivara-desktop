@@ -9,6 +9,7 @@ import { listMcpServers, mcpToolDefs } from '../../lib/krewMcp';
 import { brain as brainStore, nodeToMarkdown } from '../../lib/knowledgeStore';
 import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, LEAD_TOOLS, getAutopilotTools, buildKrewSystemPrompt, executeTool, needsCompression, resetBrowserRunState, closeAgentBrowserIfActive, setAgentBrowserHold, requestLeadStop, resetLeadStop, isLeadStopRequested, KREW_PROFILE_KEY, type ToolDef } from '../../lib/krewTools';
 import { TaskProgress, type TaskPhase } from './TaskProgress';
+import { StatusGlobe } from './StatusGlobe';
 import { runParallelResearch } from '../../lib/researchSources';
 import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, type KrewAgent } from '../../lib/krewAgents';
 import { useAuth } from '../../contexts/AuthContext';
@@ -1194,19 +1195,19 @@ function StatusBlock({ startedAt, headline, detail, tone }: {
   }, []);
   const secs = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
   const clock = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${String(secs % 60).padStart(2, '0')}s`;
-  // Neutral by default. Colour is reserved for the two states where the user genuinely needs to
-  // look: a stop in progress, and a wait they didn't ask for. 'halt' uses the faintest text colour
-  // rather than nv-muted, which in the light theme is near-black and read as MORE urgent than the
-  // live state — the opposite of what a winding-down run should look like.
-  const dot = tone === 'halt' ? 'bg-nv-faint' : tone === 'wait' ? 'bg-amber-500' : 'bg-accent';
+  // Colour is reserved for the two states where the user genuinely needs to look: a stop in
+  // progress, and a wait they did not ask for. 'halt' uses the faintest text colour rather than
+  // nv-muted, which in the light theme is near-black and read as MORE urgent than the live state —
+  // the opposite of what a winding-down run should look like. The globe inherits it via
+  // currentColor, so the tone is set in one place.
+  const toneColor = tone === 'halt' ? 'text-nv-faint' : tone === 'wait' ? 'text-amber-500' : 'text-accent';
 
   return (
-    // items-start, not items-center: when the detail line wraps, a centred dot floats between the
-    // two lines instead of marking where the message starts.
+    // items-start, not items-center: when the detail line wraps, a centred marker floats between
+    // the two lines instead of marking where the message starts.
     <div className="my-2 flex items-start gap-3 px-3.5 py-2.5 rounded-xl border border-nv-border bg-nv-surface2/60 font-sans">
-      <span className="relative flex h-2 w-2 shrink-0 mt-[5px]">
-        {tone !== 'halt' && <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${dot} opacity-50`} />}
-        <span className={`relative inline-flex rounded-full h-2 w-2 ${dot}`} />
+      <span className={`shrink-0 mt-px ${toneColor}`}>
+        <StatusGlobe size={20} tone={tone} />
       </span>
       <div className="min-w-0 flex-1">
         <p className="text-[12px] font-medium text-nv-text leading-snug truncate">{headline}</p>

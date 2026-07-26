@@ -47,6 +47,8 @@ function saveSettings(s: NvSettings) {
 const WHATS_NEW: { version: string; items: string[] } = {
   version: '1.6.77',
   items: [
+    'The "working on it" panel now carries a small rotating globe made of dots instead of a plain blinking dot. Each dot grows and brightens as it turns to the front and fades as it passes behind, so a wave travels around the sphere as it spins. It stays small enough to sit quietly beside the text, and it stops turning when a run is winding down — so movement always means work is happening.',
+
     'Asking for 25 leads now really gives you 25 on a free key or a downloaded model. Large requests were already split into small batches — eight at a time on your own key, four on a local model — and they keep going until the full number is reached, even when the model returns fewer than asked each time. The simpler rescue request added in the last version was the exception: it asked once for at most ten, so a search for 25 that needed rescuing quietly ended at ten. It now batches to the full number too, and tells each batch who it already has so nobody comes back twice.',
 
     'Fixed lead searches ending with "your model didn\'t return any usable rows" on a free key or a downloaded model. Two things caused it. The instruction to avoid inventing companies had been written strongly enough that a cautious model would answer with nothing at all rather than risk a wrong name — it is now told just as plainly that returning nothing is a failure. And when no sector was chosen, the web search built from your wording came out as nonsense ("top founders and decision makers startups Bengaluru founders"), so the grounding it was meant to provide never arrived.',
