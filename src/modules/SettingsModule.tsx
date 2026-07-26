@@ -45,7 +45,7 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.78',
+  version: '1.6.79',
   items: [
     'When leads come back missing their LinkedIn profiles, the result card now says so plainly and gives you a button that fixes it. That warning used to be a line of small italic text under the table which scrolled out of sight — and it told you to run /verifylinks, which repairs your saved outreach campaign and does nothing at all for a lead list, so following the instruction got you "I don\'t have any saved outreach contacts to check yet". The button runs the right thing, on that exact list, and merges the results back in.',
     'You can now add a new lead list to the outreach you already have going, instead of only being able to start a fresh one over the top of it. People already in your campaign keep their status, their drafted message and their sent history; only genuinely new people are added, so pressing it twice cannot duplicate anyone.',
