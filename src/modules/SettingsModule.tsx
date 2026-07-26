@@ -45,8 +45,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.73',
+  version: '1.6.74',
   items: [
+    'You can now watch the leads arrive one by one. The first stretch of a lead search is your AI naming people, which can take minutes on a free key — and the counter only moved when a whole batch finished, so "0 of 25" sat frozen and looked dead. The names were streaming in the whole time and were simply being thrown away. Each person now appears the moment they are named, with their company, so you can see it working and spot a search that has gone off-brief early instead of waiting minutes to find out.',
+    'The wait before your AI starts writing is accounted for too — it now says it is waiting for the model, and says so differently for a local model, where loading it the first time genuinely can take a minute.',
+
     'The sector and seniority you pick are now actually enforced. They were being written into the request and then never checked against what came back, so when the AI drifted nothing caught it — asking for logistics founders could return someone working at Intel, and the run still reported success. Every row is now checked against both before it is saved, with the wording treated sensibly (a logistics search keeps freight, shipping, supply chain, courier and warehousing; a founders search keeps MDs, chairpersons and heads of a function).',
     'Fixed search being quietly broken across the whole app. DuckDuckGo has started answering with a "select all squares containing a duck" challenge instead of results — on a normal 200 response with a full page of content, so nothing detected it. That challenge text was being handed to your agents as if it were real search results, and pasted into deck research as market data. It is now recognised and refused everywhere, and searches fall through to Google in the browser, which works.',
     'Verifying profiles no longer sits there doing nothing. It was running the same dead search engines and then a DuckDuckGo page that renders blank, so it could take minutes to achieve nothing at all — which is exactly what it looked like. It now searches Google in the browser like the rest of the app, checks people in parallel instead of one at a time, and says what it is on: which profile it is opening, and how many are left in the batch.',

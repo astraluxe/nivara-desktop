@@ -5492,12 +5492,55 @@ The prompt must be production-ready — specific enough for a motion designer to
         // Their real profiles are found (and wrong ones dropped) in the checking step that follows.
         say(statusBlock(t0,
           `Finding leads — ${collected.size} of ${cfg.count} so far`,
-          'Your AI is naming people who fit your brief. Each one gets looked up and confirmed in the next step.'));
+          `Asking your AI for ${want} more…`));
+
+        // WATCH THE MODEL WRITE. This step is the long silent one — minutes on a free key — and
+        // the count only moved when a whole round finished, so "0 of 25" sat frozen for over a
+        // minute and looked dead. The tokens were streaming the entire time; the leads path was
+        // passing an empty onChunk and throwing them away.
+        //
+        // Now each completed row is surfaced as it arrives: the count climbs one person at a time
+        // and the newest name is shown. That proves it is working, and it lets the user see the
+        // KIND of people coming back early enough to stop a run that has gone off-brief instead of
+        // waiting minutes to find out.
+        let streamed = '';
+        let lastPaint = 0;
+        const onLeadChunk = (chunk: string) => {
+          streamed += chunk;
+          if (!chunk.includes('\n')) return;          // a row is only complete at a newline
+          const now = Date.now();
+          if (now - lastPaint < 600) return;          // a repaint per row, not per token
+          lastPaint = now;
+          // Parse only up to the last newline: a half-written line yields a truncated company.
+          const done = streamed.slice(0, streamed.lastIndexOf('\n'));
+          const fresh = harvestLeadRows(done)
+            .map((r) => ({ name: (r.split('|')[1] || '').trim(), company: (r.split('|')[2] || '').trim() }))
+            .filter((p) => p.name && !/^name$/i.test(p.name))
+            .filter((p) => !collected.has(nameKey(p.name)) && !existingNames.has(nameKey(p.name)));
+          if (!fresh.length) return;
+          const newest = fresh[fresh.length - 1];
+          say(statusBlock(t0,
+            `Finding leads — ${Math.min(collected.size + fresh.length, cfg.count)} of ${cfg.count} so far`,
+            `Just named: ${newest.name}${newest.company && newest.company !== '—' ? ` — ${newest.company}` : ''}`));
+        };
+
+        // Before the FIRST token there is nothing to show — and on a free key that wait can be
+        // 20-40s, or a minute on a local model loading for the first time. Say what is being waited
+        // for, so even the silence is accounted for.
+        const waitHb = setInterval(() => {
+          if (streamed) return;                       // tokens flowing — onLeadChunk owns the panel
+          say(statusBlock(t0,
+            `Finding leads — ${collected.size} of ${cfg.count} so far`,
+            mode === 'local'
+              ? `Waiting for your local model to answer — loading it the first time can take a minute.`
+              : `Waiting for your AI to start writing (asked for ${want} more)…`));
+        }, 4000);
+
         let text = '';
         try {
           ({ text } = await streamTurnWithRetry(
             [{ role: 'user', content: `${filters}\nHOW MANY: exactly ${want} rows${already}\n\nReturn the table now.` }],
-            sys, () => {},
+            sys, onLeadChunk,
           ));
         } catch (e) {
           // A RATE LIMIT is not a failed batch — it is "ask me again shortly".
@@ -5520,6 +5563,8 @@ The prompt must be production-ready — specific enough for a motion designer to
             continue;
           }
           continue;           // any other single bad batch must never sink the whole run
+        } finally {
+          clearInterval(waitHb);
         }
         const before = collected.size;
         for (const row of harvestLeadRows(text)) {
