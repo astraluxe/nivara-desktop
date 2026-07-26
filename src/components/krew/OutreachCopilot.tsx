@@ -203,6 +203,31 @@ export function bestProfileUrl(results: Array<{ name?: string; url?: string; deg
  * what makes a mixed list usable: profiles go to LinkedIn, the rest go to email, and anyone with
  * neither is called out rather than sitting there looking finished.
  */
+/**
+ * Extra search terms that tell two people with the same name apart.
+ *
+ * A bare name search on LinkedIn returns everyone who shares it, and taking the top hit is how a
+ * lead ends up pointing at a stranger — which then gets a message addressed to the wrong person.
+ * The company and city are the two things that actually disambiguate, and both are already on the
+ * contact. Role words are dropped: they narrow the search to a job title rather than a person.
+ */
+function profileFilter(c: OutreachContact): string {
+  // The cell comes in BOTH orders — "Sharma Textiles / Owner" and "Co-Founder & CEO, BakeMyTrip"
+  // — so taking the part before the separator is wrong half the time. Strip the role words from
+  // every part and keep the first that still says something. Taking the first part blindly turned
+  // "Co-Founder & CEO, BakeMyTrip" into "&", which would have been appended to the search as
+  // literal noise rather than narrowing anything.
+  for (const part of (c.company || '').split(/\s*[/|·—–,]\s*|\s+\bat\b\s+/i)) {
+    const stripped = part
+      .replace(/\b(co-?founders?|founders?|ceo|cto|coo|cmo|cfo|md|managing director|directors?|owners?|partners?|presidents?|heads? of[\w\s]*|head|vp|vice president|leads?|principal)\b/gi, ' ')
+      .replace(/[&|,]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    // Two characters of leftover punctuation is not a company name.
+    if (stripped.length > 2) return stripped.slice(0, 60);
+  }
+  return '';
+}
 export type ContactChannel = 'linkedin' | 'email' | 'none';
 export function contactChannel(c: OutreachContact): ContactChannel {
   if (c.linkedin_url && /linkedin\.com\/in\//i.test(c.linkedin_url)) return 'linkedin';
@@ -678,13 +703,38 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       const { invoke } = await import('@tauri-apps/api/core');
       setAgentBrowserHold(true); setBrowserOpen(true);
 
+      // EMAIL CONTACTS read their Gmail conversation instead. Everything after this point — the
+      // strategist, the verifier, the draft box, the slot suggestions — works on plain thread text
+      // and never cared which channel it came from, so this is the only branch needed. Looking for
+      // a LinkedIn chat with someone who was emailed could only ever come back empty.
+      if (contactChannel(contact) === 'email' && contact.email) {
+        setPlanNote('Reading your email conversation…');
+        const gm = await invoke<string>('run_browser_persistent', { args: `gmailthread ${contact.email}` }).catch((e) => String(e));
+        if (gm.includes('SIGN_IN_REQUIRED') || gm.includes('[NEEDS_LOGIN]')) {
+          setPlanNote('Sign in to Gmail in the ADRIS browser window, then click "Scan their reply" again.');
+          setPlanning(false); await refocusAppToPlan(); return;
+        }
+        const gj = gm.indexOf('GMAIL_JSON:');
+        if (gj >= 0) {
+          try {
+            const obj = JSON.parse(gm.slice(gj + 'GMAIL_JSON:'.length).trim()) as { subject?: string; messages?: Array<{ isYou?: boolean; text?: string }> };
+            if (obj.messages?.length) {
+              thread = (obj.subject ? `SUBJECT: ${obj.subject}\n` : '')
+                + obj.messages.map((m) => `${m.isYou ? 'YOU' : (contact.name || 'THEM')}: ${m.text || ''}`).join('\n');
+            }
+          } catch { /* fall through to the paste box */ }
+        }
+      }
+
       // Open ONLY this person's chat and read it — no whole-inbox scan. We need their profile URL;
       // if we don't have it yet, find it once by name and save it for next time.
-      let targetUrl = contact.linkedin_url && /linkedin\.com\/in\//i.test(contact.linkedin_url) ? contact.linkedin_url : '';
-      if (!targetUrl) {
+      let targetUrl = thread.trim()
+        ? ''   // already have the conversation from Gmail — no reason to touch LinkedIn at all
+        : (contact.linkedin_url && /linkedin\.com\/in\//i.test(contact.linkedin_url) ? contact.linkedin_url : '');
+      if (!targetUrl && !thread.trim() && contactChannel(contact) !== 'email') {
         setPlanNote('Finding their profile…');
         try {
-          const fp = await invoke<string>('run_browser_persistent', { args: `findprofile "${(contact.name || '').replace(/["\n\r]/g, ' ').trim()}"` });
+          const fp = await invoke<string>('run_browser_persistent', { args: `findprofile "${(contact.name || '').replace(/["\n\r]/g, ' ').trim()}" ::: ${profileFilter(contact)}` });
           if (fp.includes('SIGN_IN_REQUIRED') || fp.includes('[NEEDS_LOGIN]')) {
             setPlanNote('Sign in to LinkedIn in the ADRIS browser window, then click "Scan their reply" again.');
             setPlanning(false); await refocusAppToPlan(); return;
@@ -734,7 +784,9 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       // and let the user paste the thread — the plan panel still appears.
       setPlanNote(mode === 'followup'
         ? `Couldn't read your past thread with ${contact.name || 'them'} automatically. Paste the last message(s) below and I'll draft a follow-up.`
-        : `Couldn't find a recent reply from ${contact.name || 'them'} in your inbox. If they DID reply, paste it below and I'll draft your response; otherwise there's nothing to reply to yet.`);
+        : contactChannel(contact) === 'email'
+          ? `Couldn't find an email conversation with ${contact.name || 'them'}${contact.email ? ` (${contact.email})` : ''}. If they DID reply, paste it below and I'll draft your response; otherwise there's nothing to reply to yet.`
+          : `Couldn't find a recent reply from ${contact.name || 'them'} in your inbox. If they DID reply, paste it below and I'll draft your response; otherwise there's nothing to reply to yet.`);
       setPlanning(false);
       setPlan({ intent: 'unclear', read: `Paste your thread with ${contact.name || 'them'} here and I'll ${mode === 'followup' ? 'draft a follow-up' : 'plan your response'}.`, draftReply: '', attachSuggested: false });
       await refocusAppToPlan();
@@ -868,7 +920,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       let targetUrl = contact.linkedin_url && /linkedin\.com\/in\//i.test(contact.linkedin_url) ? contact.linkedin_url : '';
       if (!targetUrl) {
         try {
-          const raw = await invoke<string>('run_browser_persistent', { args: `findprofile "${(contact.name || '').replace(/["\n\r]/g, ' ').trim()}"` });
+          const raw = await invoke<string>('run_browser_persistent', { args: `findprofile "${(contact.name || '').replace(/["\n\r]/g, ' ').trim()}" ::: ${profileFilter(contact)}` });
           const pj = raw.indexOf('PROFILE_JSON:');
           if (pj >= 0) { const arr = JSON.parse(raw.slice(pj + 'PROFILE_JSON:'.length).trim()); targetUrl = bestProfileUrl(Array.isArray(arr) ? arr : [], contact.name); }
         } catch { /* fall through */ }
@@ -928,7 +980,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       if (!targetUrl) {
         setOpenNote('Finding the right profile…');
         try {
-          const raw = await invoke<string>('run_browser_persistent', { args: `findprofile "${(cur.name || '').replace(/["\n\r]/g, ' ').trim()}"` });
+          const raw = await invoke<string>('run_browser_persistent', { args: `findprofile "${(cur.name || '').replace(/["\n\r]/g, ' ').trim()}" ::: ${profileFilter(cur)}` });
           if (raw.includes('SIGN_IN_REQUIRED') || raw.includes('[NEEDS_LOGIN]')) {
             setOpenNote('Sign in to LinkedIn in the ADRIS browser window, then click again.');
             return;

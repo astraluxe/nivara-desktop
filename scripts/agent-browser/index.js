@@ -634,7 +634,8 @@ async function main() {
   if (cmd !== 'open' && cmd !== 'close'
       && cmd !== 'connections' && cmd !== 'logincheck' && cmd !== 'message' && cmd !== 'printpdf'
       && cmd !== 'findprofile' && cmd !== 'messages' && cmd !== 'typemsg' && cmd !== 'meetlink' && cmd !== 'whatsapp'
-      && cmd !== 'readthread' && cmd !== 'gcalcheck' && cmd !== 'sentinvites' && cmd !== 'humancheck') {
+      && cmd !== 'readthread' && cmd !== 'gcalcheck' && cmd !== 'sentinvites' && cmd !== 'humancheck'
+      && cmd !== 'gmailthread') {
     var state   = readState();
 
     var conn    = await ensureChrome();
@@ -1366,14 +1367,22 @@ async function main() {
   // the caller matches the returned names against the contact and writes the correct /in/ URL back.
   // Opens fast and returns quickly (no deep scroll) to stay well under the 45s process budget.
   if (cmd === 'findprofile') {
-    var fq = argv.slice(1).join(' ').replace(/^"|"$/g, '').trim();
+    // findprofile "<name>" ::: <city or extra keywords>
+    //
+    // A bare name search returns everyone who shares it, and picking the top hit is how a lead
+    // ends up pointing at a stranger. The extra terms go into the query AND come back out as each
+    // result's own location line, so the caller can insist on the right city rather than hoping.
+    var fRaw = argv.slice(1).join(' ').replace(/^"|"$/g, '').trim();
+    var fParts = fRaw.split(':::');
+    var fq = (fParts[0] || '').replace(/^"|"$/g, '').trim();
+    var fFilter = (fParts[1] || '').replace(/^"|"$/g, '').trim();
     if (!fq) { process.stdout.write('PROFILE_JSON:[]'); return; }
     var fConn = await ensureChrome();
     var fCtx  = fConn.context;
     if (!fCtx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
     var fPage = fCtx.pages().at(-1) || await fCtx.newPage();
     try { await fPage.bringToFront(); } catch (_) {}
-    var searchUrl = 'https://www.linkedin.com/search/results/people/?keywords=' + encodeURIComponent(fq);
+    var searchUrl = 'https://www.linkedin.com/search/results/people/?keywords=' + encodeURIComponent(fFilter ? (fq + ' ' + fFilter) : fq);
     try { await fPage.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }); } catch (_) {}
     var fFinal = fPage.url();
     if (isAuthWall(fFinal)) {
@@ -1416,6 +1425,14 @@ async function main() {
         var nameRaw = clean((a.innerText || '').split('\n')[0] || (lines[0] || ''));
         nameRaw = nameRaw.replace(/\bView\b.*$/i, '').replace(/•\s*\d+(st|nd|rd|th).*$/i, '').replace(/\s+\d+(st|nd|rd|th)\b.*$/i, '').trim();
         if (!nameRaw || nameRaw.length > 90 || noise.test(nameRaw)) continue;
+        // The location sits on its own line in a result card and is the single most useful thing
+        // for telling apart two people with the same name.
+        var locLine = '';
+        for (var li = 1; li < lines.length; li++) {
+          var cand = lines[li];
+          if (/^(•|\d(st|nd|rd|th))/i.test(cand) || noise.test(cand)) continue;
+          if (/,\s*[A-Za-z]/.test(cand) && cand.length < 60 && !/\bat\b|\|/.test(cand)) { locLine = cand; break; }
+        }
         var degMatch = scopeText.match(/\b(1st|2nd|3rd)\b/i);
         var degree = degMatch ? degMatch[1].toLowerCase() : '';
         // Headline = first line after the name that isn't the degree/location/noise.
@@ -1427,7 +1444,7 @@ async function main() {
           headline = ln; break;
         }
         seen[key] = 1;
-        out.push({ name: nameRaw, headline: headline, url: url, degree: degree });
+        out.push({ name: nameRaw, headline: headline, url: url, degree: degree, location: locLine });
       }
       return out;
     }).catch(function () { return []; });
@@ -1817,6 +1834,87 @@ async function main() {
     return;
   }
 
+  // ── gmailthread <email> ──────────────────────────────────────────────────────
+  // Read the most recent email conversation with one person, so the outreach copilot can plan a
+  // reply to an EMAIL the same way it already does for a LinkedIn message. Everything downstream
+  // (the strategist, the verifier, the draft box) works on plain thread text and never cared
+  // which channel it came from — this is the piece that was missing.
+  //
+  // Uses Gmail's own search rather than scrolling the inbox: `from:x OR to:x` finds the thread
+  // wherever it is, including archived, and puts the newest first.
+  if (cmd === 'gmailthread') {
+    var gmAddr = argv.slice(1).join(' ').replace(/^"|"$/g, '').trim();
+    if (!gmAddr) { process.stdout.write('GMAIL_NO_ADDRESS'); return; }
+    var gmConn = await ensureChrome();
+    var gmCtx = gmConn.context;
+    if (!gmCtx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
+    var gmPage = gmCtx.pages().at(-1) || await gmCtx.newPage();
+    try { await gmPage.bringToFront(); } catch (_) {}
+    var gmQuery = encodeURIComponent('from:' + gmAddr + ' OR to:' + gmAddr);
+    try { await gmPage.goto('https://mail.google.com/mail/u/0/#search/' + gmQuery, { waitUntil: 'domcontentloaded', timeout: 25000 }); } catch (_) {}
+    if (isAuthWall(gmPage.url())) {
+      var gmTok = await pollForLoginCompletion(gmPage, 30000);
+      if (!gmTok) { writeState({ url: gmPage.url() }); process.stdout.write('[SIGN_IN_REQUIRED] Please sign in to Gmail in the ADRIS browser window that just opened, then try again.'); return; }
+    }
+    await showBanner(gmPage, 'ADRIS is reading this email conversation to plan your reply — please don’t close this window.');
+    // The result rows are a table of <tr>; wait for one rather than a fixed sleep.
+    try { await gmPage.waitForSelector('tr.zA, div.Cp, .ae4', { timeout: 9000 }); } catch (_) {}
+    await new Promise(function (r) { setTimeout(r, 900); });
+    // Open the newest matching conversation.
+    var gmOpened = await gmPage.evaluate(function () {
+      var row = document.querySelector('tr.zA');
+      if (!row) return false;
+      row.click();
+      return true;
+    }).catch(function () { return false; });
+    if (!gmOpened) {
+      await hideBanner(gmPage);
+      writeState({ url: gmPage.url() });
+      process.stdout.write('GMAIL_NO_THREAD No email conversation with ' + gmAddr + ' was found.');
+      return;
+    }
+    try { await gmPage.waitForSelector('div.a3s, div.ii', { timeout: 9000 }); } catch (_) {}
+    await new Promise(function (r) { setTimeout(r, 700); });
+    // Expand a collapsed "show trimmed content" / stacked-message view so older replies are read
+    // too — a thread read down to only its newest message loses the context the reply needs.
+    await gmPage.evaluate(function () {
+      var more = document.querySelectorAll('span.ajT, div.adx, .iX .ajR');
+      for (var i = 0; i < more.length && i < 6; i++) { try { more[i].click(); } catch (e) {} }
+    }).catch(function () {});
+    await new Promise(function (r) { setTimeout(r, 600); });
+    var gmThread = await gmPage.evaluate(function (addr) {
+      function clean(s) { return (s || '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim(); }
+      var out = [];
+      // Each message in an opened conversation is a .adn/.gs block with a sender span and a body.
+      var blocks = document.querySelectorAll('div.adn, div.gs');
+      for (var i = 0; i < blocks.length; i++) {
+        var b = blocks[i];
+        var bodyEl = b.querySelector('div.a3s, div.ii');
+        if (!bodyEl) continue;
+        var text = clean(bodyEl.innerText || '');
+        if (!text) continue;
+        // Drop the quoted history Gmail folds into each reply, or every message repeats the last.
+        text = text.split(/\nOn .{10,80} wrote:\n/)[0];
+        text = text.replace(/\n>.*/g, '').trim();
+        if (!text) continue;
+        var fromEl = b.querySelector('span.gD, span[email]');
+        var from = fromEl ? (fromEl.getAttribute('email') || clean(fromEl.innerText)) : '';
+        // isYou: anything NOT from the person we searched for is the account owner's own message.
+        var isOther = from && addr && from.toLowerCase().indexOf(addr.toLowerCase()) !== -1;
+        out.push({ from: from || (isOther ? addr : 'You'), isYou: !isOther, text: text.slice(0, 2000) });
+      }
+      var subjEl = document.querySelector('h2.hP');
+      return { subject: subjEl ? clean(subjEl.innerText) : '', messages: out.slice(-12) };
+    }, gmAddr).catch(function () { return { subject: '', messages: [] }; });
+    await hideBanner(gmPage);
+    writeState({ url: gmPage.url() });
+    if (!gmThread.messages || !gmThread.messages.length) {
+      process.stdout.write('GMAIL_EMPTY Opened the conversation but could not read any messages yet.');
+      return;
+    }
+    process.stdout.write('GMAIL_JSON:' + JSON.stringify(gmThread));
+    return;
+  }
   // ── readthread <profileUrl> ──────────────────────────────────────────────────
   // Read ONE person's conversation, by opening their chat directly from their profile — instead of
   // scanning the whole inbox. This is what the outreach copilot uses to "scan a reply": it targets

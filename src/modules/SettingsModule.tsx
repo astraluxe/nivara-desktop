@@ -45,8 +45,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.80',
+  version: '1.6.81',
   items: [
+    '"Scan their reply" now works for email, not just LinkedIn. For anyone you reach by email it finds your conversation with them in Gmail, reads it — stripping the quoted history Gmail folds into every reply, so it answers what they actually just said rather than something from three replies back — and plans your response exactly as it does for a LinkedIn message. The draft, the checks and the calendar suggestions are all the same; only where the conversation is read from changed.',
+    'Looking someone up on LinkedIn now uses their company as well as their name. A name on its own returns everyone who shares it, and taking the first result is how a lead ends up pointing at a stranger — who then gets a message addressed to somebody else. Each result now also carries its location, so two people with the same name can be told apart by where they are.',
+
     'A lead with an email but no LinkedIn profile can now actually be contacted. The Email column was being read off your lead list and then silently dropped on the way to the outreach copilot, so those people arrived with nothing on them at all — which is why "find the missing profiles" failing left them useless. The address now travels with them, and Gmail opens with the whole message already written, ready for you to send.',
     'The copilot now shows how each person can be reached — LinkedIn, Email, or "No contact yet" — right next to their name. Gmail also appears for anyone who has an email, instead of only when the whole campaign was set to email mode. A list mixing profiles and bare addresses used to look uniform, and someone you had no way of contacting looked exactly like someone ready to send to.',
 
