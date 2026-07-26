@@ -45,8 +45,12 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.74',
+  version: '1.6.75',
   items: [
+    'Lead searches now look the companies up BEFORE naming anyone. Until now the first step was pure recall — your AI was asked for people matching your brief and answered from memory, which is where companies that do not exist came from. Checking afterwards could catch them but never prevent them. It now runs a couple of ordinary web searches first and hands your AI the real companies and the real people who run them, so the job becomes reading results rather than remembering. It is also told outright that six real people is a success and padding to twenty-five with invented ones is a failure.',
+    'When a search engine asks you to confirm you are human, the app now waits properly — about three minutes instead of barely one — and says so unmistakably, with the browser window brought to the front. Tick the box and it carries on from exactly where it stopped; nothing is lost and nothing needs restarting.',
+    'Your AI costs less to run. Everything that never changes between messages — the agent briefing and the full tool documentation, around 10,000 tokens — was being sent after your memories, your usage and today\'s date, all of which change constantly. That meant none of it could be cached and it was charged in full on every single message. The unchanging part now comes first, which makes it cacheable; measured on a real prompt, the reusable portion went from 5% to 99.8%.',
+
     'You can now watch the leads arrive one by one. The first stretch of a lead search is your AI naming people, which can take minutes on a free key — and the counter only moved when a whole batch finished, so "0 of 25" sat frozen and looked dead. The names were streaming in the whole time and were simply being thrown away. Each person now appears the moment they are named, with their company, so you can see it working and spot a search that has gone off-brief early instead of waiting minutes to find out.',
     'The wait before your AI starts writing is accounted for too — it now says it is waiting for the model, and says so differently for a local model, where loading it the first time genuinely can take a minute.',
 

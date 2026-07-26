@@ -1460,7 +1460,10 @@ async function main() {
     try { await hcPage.goto(hcUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }); } catch (_) {}
     await showBanner(hcPage, 'The search engine wants to confirm you are human — please complete the check in this window. ADRIS continues on its own the moment it clears.');
 
-    var blockedRe = /unusual traffic|verify[^.\n]{0,24}human|are you a human|i.?m not a robot|captcha|access denied|automated (queries|requests)|request could not be processed/i;
+    // Must match the app's looksBlockedPage, or a page can be declared "cleared" while the
+    // challenge is still on screen. DuckDuckGo's duck puzzle in particular names none of the usual
+    // words — no captcha, no robot, no unusual traffic.
+    var blockedRe = /unusual traffic|verify[^.\n]{0,24}human|are you a human|i.?m not a robot|captcha|access denied|automated (queries|requests)|request could not be processed|bots use duckduckgo|complete the following challenge|search was made by a human|select all squares|before you continue to google|enable javascript and cookies to continue|our systems have detected/i;
     var hcStart = Date.now(), hcText = '', hcCleared = false;
     while (Date.now() - hcStart < 38000) {
       await new Promise(function (r) { setTimeout(r, 1500); });

@@ -233,14 +233,30 @@ function ensureBrowserWarm(): Promise<void> {
 //
 // Two ~40s windows: a single browser command that overruns gets abandoned by the bridge beneath it.
 async function clearHumanCheck(url: string): Promise<string> {
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // WAIT FOR THE PERSON. The check exists to confirm a human is present, and one is — they are
+  // sitting in front of the app. Each browser attempt can only poll for ~38s (a single browser
+  // command that runs longer gets abandoned by the bridge underneath it), so the wait is built out
+  // of several of those back to back. Two attempts gave barely 76 seconds, which is not long enough
+  // for someone who stepped away for a cup of tea, and giving up meant losing the whole run.
+  const ATTEMPTS = 5;                       // ≈3 minutes of standing by
+  for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
     try {
-      emit('agent-progress', { text: 'Waiting for you to confirm you are human in the browser…' }).catch(() => {});
+      // The wording is deliberately an instruction, not a status: this is the one moment in a run
+      // where nothing at all progresses until the user does something, so it has to read as a
+      // request aimed at them. The UI picks the phrase up and paints it as a waiting state.
+      emit('agent-progress', {
+        text: attempt === 0
+          ? 'Confirm you are human in the browser window — I will carry on by myself the moment you do'
+          : `Confirm you are human in the browser window — still waiting (${attempt + 1}/${ATTEMPTS})`,
+      }).catch(() => {});
       const res = await withBrowserLock(() => invoke<string>('run_browser_persistent', { args: `humancheck "${url}"` }).catch(e => String(e)));
       const i = res.indexOf('HUMANCHECK:CLEARED');
       if (i >= 0) {
         const text = cleanBrowserText(res.slice(i + 'HUMANCHECK:CLEARED'.length));
-        if (text && !looksBlockedPage(text)) return text;
+        if (text && !looksBlockedPage(text)) {
+          emit('agent-progress', { text: 'Thanks — carrying on where it left off' }).catch(() => {});
+          return text;
+        }
       }
       if (!res.includes('HUMANCHECK:PENDING')) return '';   // crashed / unsupported — stop asking
     } catch { return ''; }
