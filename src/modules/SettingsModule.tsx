@@ -45,8 +45,13 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.72',
+  version: '1.6.73',
   items: [
+    'The sector and seniority you pick are now actually enforced. They were being written into the request and then never checked against what came back, so when the AI drifted nothing caught it — asking for logistics founders could return someone working at Intel, and the run still reported success. Every row is now checked against both before it is saved, with the wording treated sensibly (a logistics search keeps freight, shipping, supply chain, courier and warehousing; a founders search keeps MDs, chairpersons and heads of a function).',
+    'Fixed search being quietly broken across the whole app. DuckDuckGo has started answering with a "select all squares containing a duck" challenge instead of results — on a normal 200 response with a full page of content, so nothing detected it. That challenge text was being handed to your agents as if it were real search results, and pasted into deck research as market data. It is now recognised and refused everywhere, and searches fall through to Google in the browser, which works.',
+    'Verifying profiles no longer sits there doing nothing. It was running the same dead search engines and then a DuckDuckGo page that renders blank, so it could take minutes to achieve nothing at all — which is exactly what it looked like. It now searches Google in the browser like the rest of the app, checks people in parallel instead of one at a time, and says what it is on: which profile it is opening, and how many are left in the batch.',
+    'Long steps now narrate themselves. Every pair of pages opened is announced by name, so instead of one frozen line for minutes you can see it moving through the list — and tell at a glance that it is working.',
+
     'Every company on a lead list is now checked to make sure it actually exists. Your AI names companies from what it knows, and some of them are not real — which is why certain profiles led nowhere. Each employer is now confirmed against four independent sources: its LinkedIn company page, Google Maps, the open web, and its own website. Any one of them vouching for it is enough, so a young startup with no Maps listing is not punished for it, and you are told plainly which companies nothing could find.',
     'This check costs no extra waiting. It reads the Google results and the Maps page the search was already opening for the person\'s profile and phone number — the same pages, looked at more carefully, rather than a new round of searching.',
 

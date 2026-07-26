@@ -39,7 +39,16 @@ export const KREW_PROFILE_KEY = '__krew_profile__';
 // block page for real search results.
 function looksBlockedPage(t: string): boolean {
   const s = t.toLowerCase().slice(0, 600);
-  return /unusual traffic|verify[^.\n]{0,24}human|are you a human|i.?m not a robot|captcha|blocked|access denied|request could not be processed|automated (queries|requests)/.test(s);
+  return /unusual traffic|verify[^.\n]{0,24}human|are you a human|i.?m not a robot|captcha|blocked|access denied|request could not be processed|automated (queries|requests)/.test(s)
+    // DuckDuckGo's bot wall, word for word off the live page: "Unfortunately, bots use DuckDuckGo
+    // too. Please complete the following challenge to confirm this search was made by a human.
+    // Select all squares containing a duck:". It matched NONE of the patterns above — no
+    // "captcha", no "robot", no "unusual traffic" — so it sailed through as a successful search
+    // and every agent was handed the challenge text fenced as real web results. It is served on a
+    // plain 200 with 33 KB of body, so neither the status code nor the length caught it either.
+    || /bots use duckduckgo|complete the following challenge|search was made by a human|select all squares/.test(s)
+    // Google's interstitials, for the same reason.
+    || /before you continue to google|enable javascript and cookies to continue|our systems have detected/.test(s);
 }
 
 function cleanBrowserText(text: string): string {
@@ -2447,17 +2456,22 @@ async function executeToolCore(
       }
     } catch { /* fall through to browser path */ }
 
-    // 3) Browser-session fallback (covers cases where the plain fetch is blocked).
-    try {
-      const opened = await invoke<string>('run_agent_browser_session', { sessionId, args: `open "${ddgUrl}"` });
-      if (!opened.includes('[agent-browser not installed]')) {
+    // 3) GOOGLE, in the browser session — the step that actually works when the plain fetch is
+    //    walled, which is now the normal case rather than the exception. DuckDuckGo serves a bot
+    //    challenge to the HTTP fetch above AND renders blank in this browser, so the old
+    //    DuckDuckGo-in-the-browser attempt here could never succeed; it was two more failing
+    //    round-trips on the way to giving up. Real Chrome on Google returns real results.
+    for (const searchUrl of [`https://www.google.com/search?q=${q}`, ddgUrl]) {
+      try {
+        const opened = await invoke<string>('run_agent_browser_session', { sessionId, args: `open "${searchUrl}"` });
+        if (opened.includes('[agent-browser not installed]')) break;
         const raw = await invoke<string>('run_agent_browser_session', { sessionId, args: 'get text body' });
         const text = cleanBrowserText(raw);
         if (text && text.length > 40 && !looksBlockedPage(text)) {
           return fenceUntrusted('web search results', text.length > 5000 ? text.slice(0, 5000) + '\n…[truncated]' : text);
         }
-      }
-    } catch { /* fall through */ }
+      } catch { /* try the next engine, then the human check below */ }
+    }
 
     // 4) Blocked by a "confirm you're human" check — ASK THE USER instead of giving up.
     //
@@ -2471,7 +2485,9 @@ async function executeToolCore(
     // too long gets abandoned by the bridge underneath it.
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const res = await invoke<string>('run_agent_browser_session', { sessionId, args: `humancheck "${ddgUrl}"` });
+        // Put GOOGLE in front of them, not DuckDuckGo: clearing a DuckDuckGo duck-puzzle still
+        // leaves a page this browser renders blank, so the user would have solved it for nothing.
+        const res = await invoke<string>('run_agent_browser_session', { sessionId, args: `humancheck "https://www.google.com/search?q=${q}"` });
         if (res.includes('HUMANCHECK:CLEARED')) {
           const text = cleanBrowserText(res.slice(res.indexOf('HUMANCHECK:CLEARED') + 'HUMANCHECK:CLEARED'.length));
           if (text && text.length > 80 && !looksBlockedPage(text)) {
@@ -2533,11 +2549,21 @@ async function executeToolCore(
       urls = [source.startsWith('http') ? source : `https://${source}`];
     } else {
       try {
-        const raw = await withTimeout(invoke<string>('krew_http_call', {
+        // DuckDuckGo answers this fetch with a bot challenge rather than results, so the uddg=
+        // extraction below found nothing and the tool silently resolved a search term to zero
+        // pages. Ask the browser (Google) when the plain fetch comes back unusable — same
+        // extraction, an engine that answers.
+        let raw = await withTimeout(invoke<string>('krew_http_call', {
           method: 'GET',
           url: `https://html.duckduckgo.com/html/?q=${encodeURIComponent(source)}`,
           headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }, body: null,
         }), 8000).catch(() => '');
+        if (!raw || looksBlockedPage(cleanBrowserText(raw)) || !/uddg=|https?:\/\//.test(raw)) {
+          _browserActiveThisRun = true;
+          raw = await withBrowserLock(() => invoke<string>('run_browser_persistent', {
+            args: `openmany https://www.google.com/search?q=${encodeURIComponent(source)}`,
+          }).catch(() => '')) || '';
+        }
         const seen = new Set<string>();
         let m: RegExpExecArray | null;
         const reUddg = /uddg=([^&"']+)/g;
@@ -2829,6 +2855,11 @@ async function executeToolCore(
       if (!uniq.length) return out;
       for (let i = 0; i < uniq.length; i += 2) {
         const chunk = uniq.slice(i, i + 2);
+        // Report EVERY pair of pages. Each pair takes tens of seconds, so a batch of six profiles
+        // is minutes of screen time; without this the status line sat unchanged throughout and the
+        // user could not tell a working run from a dead one. Naming the actual page being opened
+        // is also the only way to see it is doing something sensible.
+        stepPages(i, uniq.length, chunk[0]);
         const resp = await withBrowserLock(() => invoke<string>('run_browser_persistent', { args: `openmany ${chunk.join('|')}` }).catch(e => String(e)));
         if (!resp || !resp.includes('===BATCH===')) {
           for (const u of chunk) { out.set(u, await withBrowserLock(() => readPage(u))); }
@@ -2894,6 +2925,35 @@ async function executeToolCore(
     };
     const httpGet = (url: string) => invoke<string>('krew_http_call', { method: 'GET', url, headers: { 'User-Agent': ua }, body: null }).catch(() => '');
     const braveKey = (creds as Record<string, { api_key?: string } | undefined>).brave?.api_key ?? '';
+    // Say what is happening RIGHT NOW, not once per batch. Verification emitted a single line per
+    // sub-batch and then went quiet for minutes while it worked, which is indistinguishable from a
+    // hang — and was the more so because, until this version, it genuinely was achieving nothing.
+    const step = (text: string) => { emit('agent-progress', { text }).catch(() => {}); };
+    // Turn a URL into something a person can read: the profile slug, the company being looked up on
+    // Maps, or the site's domain — so the status names what is on screen rather than a raw URL.
+    const describeUrl = (u: string): string => {
+      const li = u.match(/linkedin\.com\/(?:in|company)\/([^/?#]+)/i);
+      if (li) return li[1].replace(/-+\d+$/, '').replace(/-/g, ' ');
+      if (/google\.[a-z.]+\/maps/i.test(u)) return `${decodeURIComponent(u.split('/maps/search/')[1] || '').replace(/\+/g, ' ')} on Maps`;
+      if (/google\.[a-z.]+\/search/i.test(u)) return 'Google';
+      try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return 'a page'; }
+    };
+    let pagesLabel = 'Checking';
+    const stepPages = (done: number, total: number, next: string) => {
+      step(total > 2
+        ? `${pagesLabel} — reading ${Math.min(done + 2, total)} of ${total}: ${describeUrl(next)}`
+        : `${pagesLabel} — reading ${describeUrl(next)}`);
+    };
+    // The Company/Role cell holds both ("Delhivery / Co-Founder"); searching for the job title as
+    // well as the company turns a good query into no results. Same rule as enrich_lead_list.
+    const ROLE_RE_V = /\b(co-?founders?|founders?|ceo|cto|coo|cmo|cfo|cxo|md|managing directors?|directors?|owners?|partners?|presidents?|heads? of[\w\s]*|vp|vice presidents?|chiefs?[\w\s]*|principals?|leads?)\b/gi;
+    const cleanCompanyV = (raw: string): string => {
+      for (const p of (raw || '').split(/\s*[/|·—–,]\s*|\s+\bat\b\s+/i)) {
+        const s = p.replace(ROLE_RE_V, '').replace(/[&]+/g, ' ').replace(/\s+/g, ' ').trim();
+        if (s.length > 1) return s;
+      }
+      return (raw || '').trim();
+    };
     const findCandidates = async (name: string, company: string, website: string): Promise<string[]> => {
       const q = `${name} ${company} LinkedIn`;
       const urls: string[] = []; const seen = new Set<string>();
@@ -2907,26 +2967,22 @@ async function executeToolCore(
         pullLinkedIn(braw, urls, seen); // JSON has "url":"https://…linkedin.com/in/…" — bare regex catches it
         if (urls.length) return urls;
       }
-      // Search engines — try in order, stop as soon as one yields a candidate (keeps request count low).
-      const engines = [
-        `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`,
-        `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}`,
-        `https://www.bing.com/search?q=${encodeURIComponent(q)}`,
-        `https://search.brave.com/search?q=${encodeURIComponent(q)}`,
-      ];
-      for (const url of engines) {
-        if (urls.length) break;
-        pullLinkedIn(await httpGet(url), urls, seen);
-        if (!urls.length) await new Promise((r) => setTimeout(r, 400)); // gentle pacing between engines
-      }
-      // Company website — founders/leaders are usually linked on the site (about/team/leadership),
-      // and each company domain has its OWN rate limit, so this keeps working when engines throttle.
-      if (!urls.length && website) {
+      // The headless search engines are GONE from this path — html/lite.duckduckgo.com fail to
+      // connect at all, and bing/search.brave return pages with zero linkedin.com links (measured;
+      // see findLinkedIn in enrich_lead_list for the full table). Verification was therefore doing
+      // four sequential requests per person that could not return anything, then falling through to
+      // a DuckDuckGo browser search that renders blank — which is exactly why "Verifying 1–6 of 25"
+      // sat for minutes with nothing happening and nothing verified. Google, in the real browser,
+      // is now the search step (below, batched across the whole sub-batch).
+      //
+      // What remains here is only what works over HTTP: the company's OWN website. Each company
+      // domain has its own rate limit, so this keeps working regardless, and founders/leaders are
+      // usually linked from about/team/leadership. All paths at once — same host, one round-trip's
+      // worth of waiting instead of seven.
+      if (website) {
         const base = (website.startsWith('http') ? website : 'https://' + website).replace(/\/+$/, '');
-        for (const path of ['', '/about', '/team', '/about-us', '/leadership', '/company', '/people']) {
-          if (urls.length) break;
-          pullLinkedIn(await httpGet(base + path), urls, seen);
-        }
+        const paths = ['', '/about', '/team', '/about-us', '/leadership', '/company', '/people'];
+        for (const raw of await Promise.all(paths.map(p => httpGet(base + p)))) pullLinkedIn(raw, urls, seen);
       }
       // Prefer candidates whose /in/ OR /company/ slug is built from the "Name" field — this works
       // unchanged whether Name is a PERSON ("Amol Ghemud" → checked against a /in/ slug) or an
@@ -2960,18 +3016,21 @@ async function executeToolCore(
     // "name + company" → the correct /in/ profile without needing the login-walled page), then
     // browser-confirm the top-2 candidates of every row IN PARALLEL. A login wall is never disproof
     // — we only UPGRADE a search hit to "confirmed" when a readable page matches.
-    const verifyBatch = async (batchRows: typeof slice): Promise<Result[]> => {
-      const cds: Array<{ row: typeof slice[number]; candidates: string[] }> = [];
-      for (const row of batchRows) {
-        cds.push({ row, candidates: await findCandidates(row.name, row.company, row.website) });
-      }
-      // BROWSER-SEARCH FALLBACK — the headless HTTP engines throttle after a few requests, leaving
-      // later rows with NO candidate even though the profile exists. Open a DuckDuckGo search per
-      // unresolved person in the REAL logged-in browser (not rate-limited the same way) and pull the
-      // profile URLs from the result links (openmany surfaces linkedin /in/ hrefs). No paid key.
+    const verifyBatch = async (batchRows: typeof slice, label: string): Promise<Result[]> => {
+      const who = (n: number) => batchRows[n]?.name || '';
+      step(`${label} — checking the company sites`);
+      // Rows in parallel: independent hosts, and the batch is only six.
+      const cds = await Promise.all(batchRows.map(async (row) => ({
+        row, candidates: await findCandidates(row.name, row.company, row.website),
+      })));
+      // GOOGLE, IN THE REAL BROWSER — the search step, not a fallback. It was DuckDuckGo, which
+      // renders as a blank page here, so this step reliably found nothing and every row fell
+      // through to "couldn't verify". The name is quoted and the job title stripped out of the
+      // company for the same reasons as in enrich_lead_list.
       const unresolvedV = cds.filter(cd => !cd.candidates.length && cd.row.name && cd.row.company);
       if (unresolvedV.length) {
-        const sUrls = unresolvedV.map(cd => `https://html.duckduckgo.com/html/?q=${encodeURIComponent(`${cd.row.name} ${cd.row.company} LinkedIn`)}`);
+        step(`${label} — searching Google for ${unresolvedV.length === 1 ? unresolvedV[0].row.name : `${unresolvedV.length} profiles`}`);
+        const sUrls = unresolvedV.map(cd => `https://www.google.com/search?q=${encodeURIComponent(`"${cd.row.name}" ${cleanCompanyV(cd.row.company)} LinkedIn`)}`);
         const sTexts = await readPages(sUrls);
         unresolvedV.forEach((cd, i) => {
           const txt = sTexts.get(sUrls[i])?.text || '';
@@ -2982,7 +3041,9 @@ async function executeToolCore(
           cd.candidates = uniq.sort((a, b) => Number(slugHas(b)) - Number(slugHas(a)));
         });
       }
-      const texts = await readPages(cds.flatMap(cd => cd.candidates.slice(0, 2)));
+      const toOpen = cds.flatMap(cd => cd.candidates.slice(0, 2));
+      if (toOpen.length) step(`${label} — opening ${toOpen.length} profile${toOpen.length === 1 ? '' : 's'} to confirm ${who(0) ? `(${who(0)}…)` : ''}`.trim());
+      const texts = await readPages(toOpen);
       const out: Result[] = [];
       for (const { row, candidates } of cds) {
         const r: Result = { ...row, note: '' };
@@ -3025,8 +3086,10 @@ async function executeToolCore(
     const results: Result[] = [];
     for (let i = 0; i < slice.length; i += BATCH) {
       if (_leadStopRequested) break; // user hit Stop — return what's verified so far
-      emit('agent-progress', { text: `Verifying ${i + 1}–${Math.min(i + BATCH, slice.length)} of ${slice.length}…` }).catch(() => {});
-      results.push(...await verifyBatch(slice.slice(i, i + BATCH)));
+      const vLabel = `Verifying ${i + 1}–${Math.min(i + BATCH, slice.length)} of ${slice.length}`;
+      pagesLabel = vLabel;      // so the per-page lines carry the batch they belong to
+      step(`${vLabel}…`);
+      results.push(...await verifyBatch(slice.slice(i, i + BATCH), vLabel));
       if (i + BATCH < slice.length) await new Promise((r) => setTimeout(r, 1500)); // breather between batches
     }
     // Rows not reached because of a Stop still appear unchanged (keep their original LinkedIn).
@@ -3203,6 +3266,23 @@ async function executeToolCore(
       announcedBrowser = true;
       emit('agent-browser-active', {}).catch(() => {});
     };
+    // Per-page progress, so a sub-batch that spends minutes in the browser keeps saying what it is
+    // on rather than showing one frozen line. Names the profile/company being opened.
+    const describeUrlE = (u: string): string => {
+      const li = u.match(/linkedin\.com\/(?:in|company)\/([^/?#]+)/i);
+      if (li) return li[1].replace(/-+\d+$/, '').replace(/-/g, ' ');
+      if (/google\.[a-z.]+\/maps/i.test(u)) return `${decodeURIComponent(u.split('/maps/search/')[1] || '').replace(/\+/g, ' ')} on Maps`;
+      if (/google\.[a-z.]+\/search/i.test(u)) return 'Google';
+      try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return 'a page'; }
+    };
+    let pagesLabelE = 'Checking';
+    const stepPagesE = (done: number, total: number, next: string) => {
+      emit('agent-progress', {
+        text: total > 2
+          ? `${pagesLabelE} — reading ${Math.min(done + 2, total)} of ${total}: ${describeUrlE(next)}`
+          : `${pagesLabelE} — reading ${describeUrlE(next)}`,
+      }).catch(() => {});
+    };
 
     const readPage = async (rawUrl: string): Promise<string> => {
       const full = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl.replace(/^\/+/, '')}`;
@@ -3228,6 +3308,9 @@ async function executeToolCore(
       announceBrowser();   // a window is genuinely about to open — now the banner is honest
       for (let i = 0; i < uniq.length; i += 2) {
         const chunk = uniq.slice(i, i + 2);
+        // Name each pair of pages as it opens — a batch is minutes of browser time, and a status
+        // line that does not move for minutes reads as a dead app.
+        stepPagesE(i, uniq.length, chunk[0]);
         const arg = `openmany ${chunk.join('|')}`;
         const resp = await withBrowserLock(() => invoke<string>('run_browser_persistent', { args: arg }).catch(e => String(e)));
         if (!resp || !resp.includes('===BATCH===')) {
@@ -3666,6 +3749,7 @@ async function executeToolCore(
       if (_leadStopRequested) break; // user hit Stop — return what's filled so far
       const batch = slice.slice(i, i + BATCH);
       const progressLabel = `Enriching ${i + 1}–${Math.min(i + BATCH, slice.length)} of ${slice.length}`;
+      pagesLabelE = progressLabel;   // so per-page lines carry the batch they belong to
       emit('agent-progress', { text: `${progressLabel}…` }).catch(() => {});
       results.push(...await processBatch(batch, progressLabel));
       if (i + BATCH < slice.length) await new Promise((r) => setTimeout(r, 1500)); // breather between batches

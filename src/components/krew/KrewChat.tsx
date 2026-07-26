@@ -12,7 +12,7 @@ import { TaskProgress, type TaskPhase } from './TaskProgress';
 import { runParallelResearch } from '../../lib/researchSources';
 import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, type KrewAgent } from '../../lib/krewAgents';
 import { useAuth } from '../../contexts/AuthContext';
-import { extractTableRows, mergeLeadTables, parseLeadRows, rowsToMarkdown, leadConnStatusToOutreach, looksLikePersonLead } from '../../lib/leadTable';
+import { extractTableRows, mergeLeadTables, parseLeadRows, rowsToMarkdown, leadConnStatusToOutreach, looksLikePersonLead, matchesSeniority, matchesSector } from '../../lib/leadTable';
 import { supabase } from '../../lib/supabase';
 import { getPlanConfig } from '../../lib/planConfig';
 import { parseDeckSpec, slidesNeedingImages, renderDeckHtml, extractDeckSpec, type DeckSpec, type DeckSlide, type DeckPalette } from '../../lib/deck';
@@ -3947,9 +3947,16 @@ The prompt must be production-ready — specific enough for a motion designer to
         setStatus('Researching current facts…');
         const topic = (deckTextRef.current || '').split('\n')[0].replace(/\b(make|create|build|generate|deck|presentation|ppt|slides?)\b/gi, '').replace(/\s+/g, ' ').trim().slice(0, 80);
         const q = `${topic || 'business AI'} statistics market data 2026`;
-        const raw = await invoke<string>('fetch_page_text', { url: `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}` }).catch(() => '');
+        // Go through the web_search TOOL rather than fetching DuckDuckGo directly. The direct
+        // fetch returned DuckDuckGo's bot-challenge page — "Please complete the following
+        // challenge… Select all squares containing a duck" — on a plain 200 with 33 KB of body,
+        // so it comfortably cleared the length check and was injected into the deck prompt as
+        // "SUPPLEMENTARY WEB CONTEXT". Every deck built with research on was being handed a CAPTCHA
+        // as its market data. web_search has the working engines, the block detection and the
+        // human-check flow; none of that should be reimplemented here.
+        const raw = await executeTool('web_search', { query: q }, creds, requestTerminalApproval, agent.key, user?.id ?? '', `${sidRef.current ?? 'main'}-deck`).catch(() => '');
         const clean = (raw || '').replace(/\s+/g, ' ').trim().slice(0, 2500);
-        if (clean.length > 120) {
+        if (clean.length > 120 && !clean.startsWith('[web_search is BLOCKED')) {
           requestCtx += `\n\n=== SUPPLEMENTARY WEB CONTEXT (external, verify before quoting; the user's document is the primary source) ===\n${clean}`;
         }
       }
@@ -5658,6 +5665,16 @@ The prompt must be production-ready — specific enough for a motion designer to
         if (existingNames.has((r.cells['name'] || '').toLowerCase().replace(/[^a-z0-9]/g, ''))) return false;
         if (cfg.mustHaveLinkedIn && !/linkedin\.com\/in\//i.test(r.cells['linkedin'] || '')) return false;
         if (cfg.mustHaveContact && !(r.cells['phone'] || r.cells['email'])) return false;
+        // SENIORITY and SECTOR are real constraints, not suggestions.
+        //
+        // Both were only ever pasted into the prompt and then never checked, so when the model
+        // drifted nothing caught it — asking for logistics founders returned someone working at
+        // Intel, and the run reported success. The comment above this pipeline has claimed since it
+        // was written that "these filters are applied as CONSTRAINTS: every row is checked and the
+        // ones that don't match are dropped". For company size and contact details that was true.
+        // For the two the user actually picks off the card, it was not.
+        if (!matchesSeniority(r.cells, cfg.seniority)) return false;
+        if (!matchesSector(r.cells, cfg.sector)) return false;
         return true;
       });
       let dropped = finalRows.length - kept.length;

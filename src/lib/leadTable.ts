@@ -299,3 +299,73 @@ export function mergeLeadTables(oldMd: string, newMd: string): string {
   const body = all.map((r) => '| ' + cols.map((c) => r.cells[c.key] || '—').join(' | ') + ' |');
   return [header, sep, ...body].join('\n');
 }
+
+// ─── Enforcing the two filters the user picks off the /leads card ────────────
+// SENIORITY and SECTOR were being written into the prompt and then never checked against the
+// result, so a model that drifted was never caught: a request for logistics founders came back
+// with someone working at Intel and the run reported success. These are the checks that make them
+// real constraints. They read the whole row (role, sector, company) because models put the useful
+// word in a different column each time.
+
+const DECISION_MAKER_RE =
+  /\b(founder|co-?founder|owner|ceo|cto|coo|cmo|cfo|cro|cxo|chief\b[\w\s]*|managing director|man\.? dir|md\b|president|partner|proprietor|principal|director|head\b|vp\b|vice president|avp|svp|evp|board member|chairman|chairperson|promoter)\b/i;
+
+/**
+ * Does this row's job title clear the seniority bar the user asked for?
+ *
+ * 'any' (or nothing picked) accepts everyone. Otherwise the row must carry an actual
+ * decision-making title somewhere — the point of the filter is "someone who can say yes", so a
+ * row whose role is blank or a plain individual-contributor title does not pass. Being generous
+ * about WHERE the title appears is deliberate: it lands in Company/Role most of the time, but
+ * models sometimes put it in the name cell ("Priya Nair, Founder") or leave it in the sector.
+ */
+export function matchesSeniority(cells: Record<string, string>, seniority: string[]): boolean {
+  if (!seniority?.length || seniority.includes('any')) return true;
+  const hay = `${cells['company'] || ''} ${cells['name'] || ''} ${cells['sector'] || ''}`;
+  // The user's own words come first: if they asked for a "founder" and the row says founder, that
+  // is a match regardless of what the generic list thinks.
+  const asked = seniority
+    .flatMap((s) => s.toLowerCase().split(/[^a-z]+/))
+    .filter((t) => t.length > 2 && t !== 'any' && t !== 'and' && t !== 'the');
+  if (asked.some((t) => hay.toLowerCase().includes(t))) return true;
+  return DECISION_MAKER_RE.test(hay);
+}
+
+/**
+ * Is this row plausibly in the sector the user asked for?
+ *
+ * Deliberately FORGIVING, because sector wording never matches exactly — "logistics" legitimately
+ * shows up as freight, shipping, supply chain, 3PL, courier, warehousing. One shared word anywhere
+ * in the row is enough. What it does catch is the case that actually goes wrong: a row with no
+ * connection to the sector at all. An empty request accepts everything.
+ */
+const SECTOR_SYNONYMS: Record<string, string[]> = {
+  logistics: ['logistic', 'freight', 'shipping', 'supply chain', 'supplychain', 'courier', 'warehous', 'transport', 'trucking', 'delivery', 'fulfil', 'fulfill', '3pl', 'cargo', 'last mile', 'lastmile', 'moving', 'packers'],
+  fintech: ['fintech', 'financ', 'payment', 'lending', 'bank', 'insur', 'wealth', 'invest', 'credit', 'neobank'],
+  healthcare: ['health', 'medical', 'clinic', 'hospital', 'pharma', 'diagnostic', 'wellness', 'medtech', 'biotech'],
+  edtech: ['edtech', 'educat', 'learning', 'school', 'college', 'university', 'training', 'tutor', 'course'],
+  ecommerce: ['ecommerce', 'e-commerce', 'commerce', 'retail', 'marketplace', 'd2c', 'dtc', 'shopping'],
+  saas: ['saas', 'software', 'platform', 'cloud', 'b2b software', 'enterprise software', 'tech'],
+  realestate: ['real estate', 'realestate', 'property', 'proptech', 'housing', 'construction', 'realty'],
+  manufacturing: ['manufactur', 'factory', 'industrial', 'production', 'engineering', 'fabricat'],
+  marketing: ['marketing', 'advertis', 'agency', 'brand', 'media', 'creative', 'digital marketing', 'seo', 'ads'],
+  travel: ['travel', 'tourism', 'hospitality', 'hotel', 'booking', 'trip', 'holiday'],
+  food: ['food', 'restaurant', 'beverage', 'catering', 'cloud kitchen', 'fmcg', 'dairy', 'agri'],
+};
+
+export function matchesSector(cells: Record<string, string>, sector: string): boolean {
+  const want = (sector || '').trim().toLowerCase();
+  if (!want) return true;
+  const hay = `${cells['sector'] || ''} ${cells['company'] || ''} ${cells['name'] || ''}`.toLowerCase();
+  // Every meaningful word the user typed, plus the known synonyms for any of them.
+  const asked = want.split(/[^a-z0-9]+/).filter((t) => t.length > 2);
+  const terms = new Set<string>(asked);
+  for (const key of Object.keys(SECTOR_SYNONYMS)) {
+    if (want.includes(key) || asked.some((t) => key.includes(t) || t.includes(key))) {
+      for (const syn of SECTOR_SYNONYMS[key]) terms.add(syn);
+    }
+  }
+  if (!terms.size) return true;
+  // Stem lightly so "logistics" matches "logistic" and "shipping" matches "shipment".
+  return [...terms].some((t) => hay.includes(t) || (t.length > 5 && hay.includes(t.slice(0, -1))));
+}
