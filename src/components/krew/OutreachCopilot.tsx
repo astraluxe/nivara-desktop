@@ -194,6 +194,21 @@ function profileUrl(c: OutreachContact): string {
 export function bestProfileUrl(results: Array<{ name?: string; url?: string; degree?: string }>, contactName: string): string {
   return bestProfileMatch(results, contactName)?.url || '';
 }
+/**
+ * How can THIS person actually be reached?
+ *
+ * The campaign carries a channel, but it is one setting for everybody — so a lead with an email
+ * and no LinkedIn profile was shown a LinkedIn-shaped panel with nothing on it that would work,
+ * and a lead with neither looked identical to one that was ready to go. Deciding per person is
+ * what makes a mixed list usable: profiles go to LinkedIn, the rest go to email, and anyone with
+ * neither is called out rather than sitting there looking finished.
+ */
+export type ContactChannel = 'linkedin' | 'email' | 'none';
+export function contactChannel(c: OutreachContact): ContactChannel {
+  if (c.linkedin_url && /linkedin\.com\/in\//i.test(c.linkedin_url)) return 'linkedin';
+  if ((c.email || '').includes('@')) return 'email';
+  return 'none';
+}
 function gmailComposeUrl(c: OutreachContact): string {
   const su = encodeURIComponent(fillTokens(c.email_subject || '', c));
   const body = encodeURIComponent(fillTokens(c.email_body || c.linkedin_message || '', c));
@@ -1138,6 +1153,18 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
           <div>
             <div className="flex items-center gap-1.5 flex-wrap">
               <span className="text-sm font-semibold">{cur.name || 'Unknown contact'}</span>
+              {/* Which channel this person is actually reachable on. Without it a list mixing
+                  profiles and bare email addresses looked uniform, and "no way to reach them"
+                  looked exactly like "ready to send". */}
+              {(() => {
+                const ch = contactChannel(cur);
+                const meta = ch === 'linkedin'
+                  ? { label: 'LinkedIn', cls: 'border-accent/40 text-accent bg-accent/10' }
+                  : ch === 'email'
+                    ? { label: 'Email', cls: 'border-emerald-500/40 text-emerald-600 bg-emerald-500/10' }
+                    : { label: 'No contact yet', cls: 'border-amber-500/40 text-amber-600 bg-amber-500/10' };
+                return <span className={`shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded-md border ${meta.cls}`} title={ch === 'none' ? 'Neither a LinkedIn profile nor an email address — find one before this person can be contacted' : undefined}>{meta.label}</span>;
+              })()}
               {/* Which list they came off. Without this the two groups are indistinguishable, and
                   the reason one card asks for a connection request and the next doesn't is a
                   mystery. Untagged contacts predate lead lists, so they are connections. */}
@@ -1267,7 +1294,9 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
           )}
 
           {/* Email secondary action */}
-          {cur.email && (channel === 'email' || channel === 'both') && (
+          {/* Shown whenever this person has an email — previously gated on the campaign-wide
+              channel, so an address found during enrichment sat in the record unusable. */}
+          {!!cur.email && (
             <div className="pt-1 border-t border-nv-border">
               <div className="flex items-center justify-between mb-1">
                 <div className="text-[10px] text-nv-faint uppercase tracking-wide">Email · {cur.email}</div>

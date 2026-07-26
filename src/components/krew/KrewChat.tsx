@@ -5358,8 +5358,8 @@ The prompt must be production-ready — specific enough for a motion designer to
   // through connect-request-first rather than straight to a message. Their saved "Connection
   // Status" cell comes with them, which is what makes progress survive re-running /verify or
   // /enrich on the same list (that column is already merge-protected in leadTable.ts).
-  function loadLeadListContacts(onlyTitle = ''): Array<{ name: string; headline: string; url: string; status?: OutreachContact['status']; leadList: string }> {
-    const out: Array<{ name: string; headline: string; url: string; status?: OutreachContact['status']; leadList: string }> = [];
+  function loadLeadListContacts(onlyTitle = ''): Array<{ name: string; headline: string; url: string; email: string; status?: OutreachContact['status']; leadList: string }> {
+    const out: Array<{ name: string; headline: string; url: string; email: string; status?: OutreachContact['status']; leadList: string }> = [];
     try {
       const norm = (t: string) => t.trim().toLowerCase();
       const nodes = brainStore.all().nodes.filter((n) => {
@@ -5392,6 +5392,9 @@ The prompt must be production-ready — specific enough for a motion designer to
             name,
             headline: [r.cells['company'], r.cells['sector'], r.cells['city']].filter(Boolean).join(' · '),
             url: urlMatch ? urlMatch[1] : '',
+            // The Email column was being read and then thrown away here, so a lead with an email
+            // but no profile reached outreach with no way to contact them at all.
+            email: (r.cells['email'] || '').replace(/^\[|\]$/g, '').trim(),
             status: leadConnStatusToOutreach(r.cells['conn_status']),
             leadList: n.title,
           });
@@ -6070,7 +6073,7 @@ _None of them had everything you ticked, so I've saved them rather than lose the
       || (focusedFile && !looksLikeConnectionsFile(focusedFile) ? { name: focusedFile.name, content: focusedFile.content } : undefined);
 
     // Build the contact list (name + headline + profile URL + any saved status).
-    type ParsedContact = { name: string; headline: string; url: string; status?: OutreachContact['status']; source?: OutreachContact['source']; leadList?: string };
+    type ParsedContact = { name: string; headline: string; url: string; email?: string; status?: OutreachContact['status']; source?: OutreachContact['source']; leadList?: string };
     const contacts: ParsedContact[] = [];
     const seen = new Set<string>();
     const add = (c: ParsedContact) => {
@@ -6083,6 +6086,7 @@ _None of them had everything you ticked, so I've saved them rather than lose the
       if (ex) {
         if (!ex.status && c.status) ex.status = c.status;
         if (!ex.url && c.url) ex.url = c.url;
+        if (!ex.email && c.email) ex.email = c.email;
         if (c.headline && c.headline.length > ex.headline.length) ex.headline = c.headline;
         // Someone on a lead list who ALSO shows up in the connections scan is a connection —
         // they need no connection request, so 'connections' always wins the merge.
@@ -6380,6 +6384,9 @@ _None of them had everything you ticked, so I've saved them rather than lose the
         // which path rebuilt it — otherwise a second run would forget where to write status back.
         const meta = {
           source: c.source ?? priorC?.source,
+          // Carried so a lead with an email but no LinkedIn profile still has a way to be
+          // reached — the copilot offers Gmail for exactly those people.
+          email: c.email || priorC?.email,
           leadList: c.leadList ?? priorC?.leadList,
           connect_note: priorC?.connect_note,
           requestedAt: priorC?.requestedAt,

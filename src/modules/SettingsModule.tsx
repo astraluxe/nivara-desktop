@@ -45,8 +45,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.79',
+  version: '1.6.80',
   items: [
+    'A lead with an email but no LinkedIn profile can now actually be contacted. The Email column was being read off your lead list and then silently dropped on the way to the outreach copilot, so those people arrived with nothing on them at all — which is why "find the missing profiles" failing left them useless. The address now travels with them, and Gmail opens with the whole message already written, ready for you to send.',
+    'The copilot now shows how each person can be reached — LinkedIn, Email, or "No contact yet" — right next to their name. Gmail also appears for anyone who has an email, instead of only when the whole campaign was set to email mode. A list mixing profiles and bare addresses used to look uniform, and someone you had no way of contacting looked exactly like someone ready to send to.',
+
     'When leads come back missing their LinkedIn profiles, the result card now says so plainly and gives you a button that fixes it. That warning used to be a line of small italic text under the table which scrolled out of sight — and it told you to run /verifylinks, which repairs your saved outreach campaign and does nothing at all for a lead list, so following the instruction got you "I don\'t have any saved outreach contacts to check yet". The button runs the right thing, on that exact list, and merges the results back in.',
     'You can now add a new lead list to the outreach you already have going, instead of only being able to start a fresh one over the top of it. People already in your campaign keep their status, their drafted message and their sent history; only genuinely new people are added, so pressing it twice cannot duplicate anyone.',
     'Stop now works while profiles are being read, not just between batches. Reading a batch of profiles takes minutes, so pressing Stop and watching it carry on regardless was most of why a run felt unresponsive. The status also names the businesses being checked and says outright that each page takes around 20 seconds — a line that sits still for two minutes reads as broken unless you know it is meant to.',
