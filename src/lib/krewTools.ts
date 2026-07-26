@@ -2227,12 +2227,26 @@ async function executeToolCore(
       if (i < 0) return 0;
       try { const a = JSON.parse(s.slice(i + 'CONN_JSON:'.length).trim()); return Array.isArray(a) ? a.length : 0; } catch { return 0; }
     };
-    for (let pass = 0; pass < 6; pass++) {
+    // On a 700-person network this is the difference between finding 3 new people and finding
+    // them all. Each pass is capped by Rust's 45s budget, so reaching past 200 already-saved
+    // people takes many passes — six was simply not enough, and the run ended looking as though
+    // the network had been exhausted when it had barely been read.
+    //
+    // A single pass that adds nobody is also NOT proof there is no more: LinkedIn lazy-loads, and
+    // one stalled scroll is routine. Only two barren passes in a row means the end of the list.
+    let loadedSoFar = countPeople(raw);
+    let stalled = 0;
+    for (let pass = 0; pass < 14; pass++) {
       const got = countPeople(raw);
-      if (got === 0 || got >= target) break;                       // failed, or we have enough
-      emit('agent-progress', { text: `Loaded ${got} connections — scrolling for more…` }).catch(() => {});
+      loadedSoFar = Math.max(loadedSoFar, got);
+      if (got === 0 || got >= target) break;                        // failed, or we have enough
+      emit('agent-progress', { text: `Loaded ${got} of about ${target} connections — scrolling for more…` }).catch(() => {});
       const more = await invoke<string>('run_browser_persistent', { args: `connections ${target} resume` }).catch(() => '');
-      if (countPeople(more) <= got) break;                          // no further progress
+      if (countPeople(more) <= got) {
+        if (++stalled >= 2) break;                                  // twice with no progress = the end
+        continue;                                                   // give LinkedIn one more chance to load
+      }
+      stalled = 0;
       raw = more;
     }
     emit('agent-browser-idle', {}).catch(() => {});
@@ -2310,7 +2324,16 @@ async function executeToolCore(
     // two numbers come from different parsing passes and can drift apart if either one ever
     // undercounts; counting the real rows in the final body is self-correcting and can't drift.
     const totalSaved = new Set(parseRowNames(body)).size;
-    return `Saved ${fresh.length} new connection${fresh.length === 1 ? '' : 's'} to the Brain note titled exactly "${LIST_TITLE}" (${totalSaved} total now)${linkedNote ? `, linked to "${linkedNote}"` : ''}. These are REAL names read straight from the page:\n\n${block}\n\nTell the user how many were added, that it's saved in their Brain under the note "${LIST_TITLE}" (separate from any reference file they attached), and that they can say "scan the next 50" for more, or ask you to draft outreach for the good-fit ones (which opens the LinkedIn outreach copilot). Do NOT rename anyone.`;
+    // EXPLAIN THE NUMBER. "Saved 3 new connections" out of a 700-person network reads as a broken
+    // scan, when what actually happened is that the newest 200-odd were already saved and the run
+    // reached exactly as far down the list as it had time for. Saying how deep it got, and that
+    // running it again continues further, turns a puzzling result into an obvious next step.
+    const reachedList = Math.max(loadedSoFar, all.length);
+    const alreadyKnown = Math.max(0, reachedList - fresh.length);
+    const depthNote = alreadyKnown > 0
+      ? ` It read ${reachedList} people from your connections list this run; ${alreadyKnown} of them were already saved, so ${fresh.length} ${fresh.length === 1 ? 'is' : 'are'} genuinely new. LinkedIn lists your newest connections first, so each run has to scroll past everyone already saved before it reaches anyone new — running /scan again picks up further down the list, and repeating it is how a large network gets covered.`
+      : '';
+    return `Saved ${fresh.length} new connection${fresh.length === 1 ? '' : 's'} to the Brain note titled exactly "${LIST_TITLE}" (${totalSaved} total now)${linkedNote ? `, linked to "${linkedNote}"` : ''}. These are REAL names read straight from the page:\n\n${block}\n\nTell the user how many were added and that it's saved in their Brain under the note "${LIST_TITLE}" (separate from any reference file they attached).${depthNote} Also tell them they can run /outreach to draft messages — anyone already in an outreach campaign keeps their status and drafted message, and only the new people get added. Do NOT rename anyone.`;
   }
 
   if (toolName === 'read_linkedin_messages') {

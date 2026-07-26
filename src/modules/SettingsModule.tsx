@@ -45,8 +45,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.82',
+  version: '1.6.83',
   items: [
+    '/scan now goes much deeper into a large network, and tells you how far it got. LinkedIn lists your newest connections first, so once a couple of hundred are already saved every run has to scroll past all of them before reaching anyone new — and the scan gave up long before that, which is how a 700-person network returned three names and looked broken. It now keeps scrolling far longer, treats a single stalled load as normal rather than the end of the list, and says plainly how many it read, how many were already saved, and that running it again continues further down.',
+    'After a scan, /outreach adds the new people to the outreach you already have. Anyone already in it keeps their status, their drafted message and their sent history — only the genuinely new connections are added.',
+
     'Fixed the freeze that could stop a lead search dead for minutes with nothing on screen and nothing happening in the browser. Web requests had no time limit at all, so a company website that accepted the connection and then simply never answered held the request open forever — and because the app checks a company\'s pages together, one such site froze the entire batch. "Checking [three companies]" sitting there for five minutes was never slow work; it was a request that could not finish. Requests now give up and move on, and the search carries on without that site.',
     'The reconnecting notice is now a single slim line above the message box instead of a block that pushed the conversation up the screen. A dropped connection is usually momentary, and the old panel was a bigger interruption than the thing it was reporting. It is also in the app\'s accent colour rather than warning amber — the app is handling it, and there is nothing for you to do but wait.',
 
