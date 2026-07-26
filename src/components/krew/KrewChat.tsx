@@ -5707,8 +5707,11 @@ The prompt must be production-ready — specific enough for a motion designer to
       // A small free model can fail the main request for reasons that have nothing to do with
       // whether it knows the answer: the brief is long, it carries filters and grounding and a
       // page of rules, and every extra constraint is another chance to respond with an apology
-      // instead of a table. Asked plainly for ten names in one city, the same model usually
-      // answers fine. So before telling the user their model is no good, ask it the easy way.
+      // instead of a table. Asked plainly for a handful of names in one city, the same model
+      // usually answers fine. So before telling the user their model is no good, ask it the easy
+      // way — and keep asking until the target is reached, in SMALL batches for exactly the reason
+      // the main loop uses them: a short request is one a struggling model can actually finish.
+      // Asking once for ten would have quietly turned a request for 25 into a list of 10.
       if (!collected.size && mine()) {
         say(statusBlock(t0, 'Finding leads — trying a simpler request',
           'The detailed brief came back empty, so I am asking your model the short way instead.'));
@@ -5719,33 +5722,48 @@ The prompt must be production-ready — specific enough for a motion designer to
           'Use real, well-known companies and the real people who lead them. Put — where you do not know a value.',
           'Never return an empty table and never explain yourself — always give rows.',
         ].join('\n');
-        const plainAsk = `List ${Math.min(cfg.count, 10)} real founders, CEOs or owners of companies${cfg.city ? ` based in ${cfg.city}` : ''}${cfg.sector ? ` in the ${cfg.sector} sector` : ''}.\n\nReturn the table now.`;
-        // Same live narration as the main loop — this pass is the user's last hope, so it is the
-        // worst possible moment for the panel to go quiet.
-        let lcStreamed = '';
-        let lcPaint = 0;
-        const onLastChanceChunk = (chunk: string) => {
-          lcStreamed += chunk;
-          if (!chunk.includes('\n')) return;
-          const now = Date.now();
-          if (now - lcPaint < 600) return;
-          lcPaint = now;
-          const names = harvestLeadRows(lcStreamed.slice(0, lcStreamed.lastIndexOf('\n')))
-            .map((r) => (r.split('|')[1] || '').trim())
-            .filter((n) => n && !/^name$/i.test(n));
-          if (!names.length) return;
-          say(statusBlock(t0, `Finding leads — ${names.length} so far`, `Just named: ${names[names.length - 1]}`));
-        };
-        try {
-          const { text: plainText } = await streamTurnWithRetry([{ role: 'user', content: plainAsk }], plainSys, onLastChanceChunk);
-          for (const row of harvestLeadRows(plainText)) {
-            const first = (row.split('|')[1] || '').trim();
-            if (!first || /^name$/i.test(first)) continue;
-            const k = nameKey(first);
-            if (!k || collected.has(k) || existingNames.has(k)) continue;
-            collected.set(k, row);
+        const lcBatch = mode === 'local' ? 4 : 8;
+        let lcEmpty = 0;
+        for (let lcRound = 0; lcRound < 8 && collected.size < cfg.count && lcEmpty < 2 && mine(); lcRound++) {
+          const lcWant = Math.min(lcBatch, cfg.count - collected.size);
+          // Tell it who we already have, so a later batch brings new people rather than repeats.
+          const lcHave = [...collected.values()].map((r) => (r.split('|')[1] || '').trim()).filter(Boolean).slice(-15);
+          const plainAsk = `List ${lcWant} real founders, CEOs or owners of companies${cfg.city ? ` based in ${cfg.city}` : ''}${cfg.sector ? ` in the ${cfg.sector} sector` : ''}.`
+            + (lcHave.length ? `\nDo NOT repeat any of these: ${lcHave.join(', ')}` : '')
+            + '\n\nReturn the table now.';
+          // Same live narration as the main loop — this pass is the user's last hope, so it is the
+          // worst possible moment for the panel to go quiet.
+          let lcStreamed = '';
+          let lcPaint = 0;
+          const onLastChanceChunk = (chunk: string) => {
+            lcStreamed += chunk;
+            if (!chunk.includes('\n')) return;
+            const now = Date.now();
+            if (now - lcPaint < 600) return;
+            lcPaint = now;
+            const names = harvestLeadRows(lcStreamed.slice(0, lcStreamed.lastIndexOf('\n')))
+              .map((r) => (r.split('|')[1] || '').trim())
+              .filter((n) => n && !/^name$/i.test(n) && !collected.has(nameKey(n)));
+            if (!names.length) return;
+            say(statusBlock(t0,
+              `Finding leads — ${Math.min(collected.size + names.length, cfg.count)} of ${cfg.count} so far`,
+              `Just named: ${names[names.length - 1]}`));
+          };
+          const lcBefore = collected.size;
+          try {
+            const { text: plainText } = await streamTurnWithRetry([{ role: 'user', content: plainAsk }], plainSys, onLastChanceChunk);
+            for (const row of harvestLeadRows(plainText)) {
+              const first = (row.split('|')[1] || '').trim();
+              if (!first || /^name$/i.test(first)) continue;
+              const k = nameKey(first);
+              if (!k || collected.has(k) || existingNames.has(k)) continue;
+              collected.set(k, row);
+            }
+          } catch {
+            break;   // the simple ask is the floor; if even this throws, stop and report honestly
           }
-        } catch { /* fall through to the message below */ }
+          if (collected.size === lcBefore) lcEmpty++; else lcEmpty = 0;
+        }
       }
 
       let md = [header, '| --- | --- | --- | --- | --- | --- |', ...collected.values()].join('\n');

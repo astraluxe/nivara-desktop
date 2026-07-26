@@ -45,8 +45,10 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.76',
+  version: '1.6.77',
   items: [
+    'Asking for 25 leads now really gives you 25 on a free key or a downloaded model. Large requests were already split into small batches — eight at a time on your own key, four on a local model — and they keep going until the full number is reached, even when the model returns fewer than asked each time. The simpler rescue request added in the last version was the exception: it asked once for at most ten, so a search for 25 that needed rescuing quietly ended at ten. It now batches to the full number too, and tells each batch who it already has so nobody comes back twice.',
+
     'Fixed lead searches ending with "your model didn\'t return any usable rows" on a free key or a downloaded model. Two things caused it. The instruction to avoid inventing companies had been written strongly enough that a cautious model would answer with nothing at all rather than risk a wrong name — it is now told just as plainly that returning nothing is a failure. And when no sector was chosen, the web search built from your wording came out as nonsense ("top founders and decision makers startups Bengaluru founders"), so the grounding it was meant to provide never arrived.',
     'A lead search can no longer dead-end. If the full brief comes back empty, your model is asked again the short, simple way — just names and companies, no filters, no rules — which small models handle far better. Only if that also fails do you get a message, and it now tells you what to change instead of blaming your model.',
     'If a request is too big for your key\'s per-minute limit, the extra research context is dropped and the batch retried, instead of the whole search failing.',
