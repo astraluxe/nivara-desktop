@@ -358,7 +358,23 @@ export function matchesSector(cells: Record<string, string>, sector: string): bo
   if (!want) return true;
   const hay = `${cells['sector'] || ''} ${cells['company'] || ''} ${cells['name'] || ''}`.toLowerCase();
   // Every meaningful word the user typed, plus the known synonyms for any of them.
-  const asked = want.split(/[^a-z0-9]+/).filter((t) => t.length > 2);
+  // Drop the joining words, or a sector typed as "tech and non-tech" matches on "and" and the
+  // filter stops filtering. "non" goes too: it is the negation half of a phrase, and on its own
+  // it matches nothing useful.
+  const SECTOR_STOPWORDS = new Set(['and', 'the', 'for', 'with', 'any', 'all', 'non', 'both', 'plus', 'etc', 'other', 'others', 'sector', 'sectors', 'industry', 'industries', 'companies', 'company', 'business', 'businesses']);
+  // "tech and non-tech" means BOTH, not tech. A phrase naming something AND its negation is the
+  // user saying they do not mind either way — filtering on the positive half rejected every
+  // non-tech row, which is the opposite of what was asked for.
+  const negated = [...want.matchAll(/\bnon[- ]?([a-z]+)/g)].map((m) => m[1]);
+  if (negated.length) {
+    // Compare on whole words rather than building a regex out of user input: the word is
+    // whatever they typed, and interpolating that into a pattern is both fragile and unsafe.
+    const bare = new Set(want.replace(/\bnon[- ]?[a-z]+/g, ' ').split(/[^a-z0-9]+/).filter(Boolean));
+    if (negated.some((w) => bare.has(w))) return true;
+  }
+  const asked = want.split(/[^a-z0-9]+/).filter((t) => t.length > 2 && !SECTOR_STOPWORDS.has(t));
+  // Every meaningful word was a joining word (e.g. "any industry") -> no real constraint.
+  if (!asked.length) return true;
   const terms = new Set<string>(asked);
   for (const key of Object.keys(SECTOR_SYNONYMS)) {
     if (want.includes(key) || asked.some((t) => key.includes(t) || t.includes(key))) {

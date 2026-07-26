@@ -240,8 +240,8 @@ p, li, td, th, pre, code, blockquote, h1, h2, h3, h4, h5, h6, .font-serif, .font
 }
 .nv-globe-dot {
   display: block;
-  width: 2.2px;
-  height: 2.2px;
+  width: var(--nv-globe-dot, 2.2px);
+  height: var(--nv-globe-dot, 2.2px);
   border-radius: 50%;
   background: currentColor;
   animation: nv-globe-wave 7s linear infinite;

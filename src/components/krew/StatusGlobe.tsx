@@ -33,16 +33,16 @@ const SPIN_SECONDS = 7;
  *  within a whisker of the same width, so the silhouette came out a rounded SQUARE rather than a
  *  circle. Seven gives the taper enough steps to read as a ball at 22px. */
 const RINGS: Array<{ lat: number; count: number }> = [
-  { lat: 74, count: 3 },
-  { lat: 49, count: 7 },
+  { lat: 74, count: 4 },
+  { lat: 49, count: 8 },
   { lat: 24, count: 10 },
   { lat: 0, count: 11 },
   { lat: -24, count: 10 },
-  { lat: -49, count: 7 },
-  { lat: -74, count: 3 },
+  { lat: -49, count: 8 },
+  { lat: -74, count: 4 },
 ];
 
-export function StatusGlobe({ size = 22, tone = 'work' }: { size?: number; tone?: Tone }) {
+export function StatusGlobe({ size = 28, tone = 'work' }: { size?: number; tone?: Tone }) {
   const r = size / 2 - 1.5;                     // a hair of room so the near side never clips
 
   // Positions never change, so compute them once rather than re-deriving 40 sines on every repaint
@@ -76,7 +76,9 @@ export function StatusGlobe({ size = 22, tone = 'work' }: { size?: number; tone?
   return (
     <span
       className="nv-globe"
-      style={{ width: size, height: size, perspective: size * 8 }}
+      style={{ width: size, height: size, perspective: size * 8,
+               // Dots scale with the globe, or a larger one just looks sparser.
+               ['--nv-globe-dot' as string]: `${(size / 10).toFixed(2)}px` }}
       aria-hidden="true"
     >
       <span className={`nv-globe-spin${tone === 'halt' ? ' nv-globe-still' : ''}`}>

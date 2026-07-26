@@ -9,6 +9,27 @@ import { useState } from 'react';
 // These are HARD constraints, applied as filters on the result rather than hints in a prompt.
 // Same shape as the deck setup card, so the app has one way of asking "what exactly do you want?"
 
+/**
+ * WHO YOU CAN REALISTICALLY REACH.
+ *
+ * Asking a model for "fintech founders in Bengaluru" gets you Kunal Shah at CRED and the founders
+ * of Zolve and Juspay — real people, correctly matching the brief, and useless to someone just
+ * starting out, because those are the names every model knows and every stranger emails. There is
+ * also only a handful of them, which is why such a search runs dry at seven rows however many were
+ * asked for: the well-known set is small.
+ *
+ * The fix is to say which end of the market is meant, and then look somewhere that HAS that end.
+ * Household names live in the model's memory; small local businesses do not — they live on Google
+ * Maps, listed with a real address and usually a phone number.
+ */
+export type Reach = 'local' | 'growing' | 'known';
+
+export const REACH_OPTIONS: Array<{ key: Reach; label: string; hint: string }> = [
+  { key: 'local',   label: 'Local businesses', hint: 'Found on Google Maps around your city — small, real, and far more likely to reply. Best when you are starting out.' },
+  { key: 'growing', label: 'Startups & SMEs',  hint: 'Growing companies, past the local-shop stage but not household names.' },
+  { key: 'known',   label: 'Well-known',       hint: 'Big, established names. Easiest to find, hardest to get a reply from.' },
+];
+
 export interface LeadConfig {
   /** Empty = start a new list. Otherwise the Brain lead list to READ, exclude, and append to —
    *  this is what /expand and /findleads used to do, folded in so there is one way to find leads. */
@@ -22,6 +43,9 @@ export interface LeadConfig {
   mustHaveLinkedIn: boolean;
   mustHaveContact: boolean;  // phone or email
   useMaps: boolean;          // local businesses → Google Maps
+  /** How big a company to aim at. This is the difference between a list you can actually sell
+   *  to and a list of household names who will never reply — see the Reach notes below. */
+  reach: Reach;
   verify: boolean;           // open + confirm every profile before saving
 }
 
@@ -57,6 +81,7 @@ export default function LeadSetupCard({ defaultCity, existingLists = [], onGener
   const [mustHaveLinkedIn, setMustLI] = useState(true);
   const [mustHaveContact, setMustContact] = useState(false);
   const [useMaps, setUseMaps] = useState(false);
+  const [reach, setReach] = useState<Reach>('growing');
   // Off by default. Filling in contacts ALREADY opens and confirms each profile, so ticking this
   // as well put every person through a second full browser pass — the single biggest reason a
   // 25-lead run took 25+ minutes. It only does anything when no contact-filling is requested.
@@ -138,6 +163,20 @@ export default function LeadSetupCard({ defaultCity, existingLists = [], onGener
               className="mt-1 w-full text-xs bg-nv-bg border border-nv-border rounded-lg px-2.5 py-2 focus:outline-none focus:border-accent/40"
             />
           </div>
+        </div>
+
+        <div>
+          <label className="text-[10px] text-nv-faint uppercase tracking-wide">Who to aim at</label>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {REACH_OPTIONS.map((o) => (
+              <button key={o.key} type="button" title={o.hint}
+                onClick={() => setReach(o.key)}
+                className={chip(reach === o.key)}>{o.label}</button>
+            ))}
+          </div>
+          <p className="text-[9.5px] text-nv-faint mt-1 leading-relaxed">
+            {REACH_OPTIONS.find((o) => o.key === reach)?.hint}
+          </p>
         </div>
 
         <div>
@@ -223,7 +262,7 @@ export default function LeadSetupCard({ defaultCity, existingLists = [], onGener
             setDone(true);
             onGenerate({
               addToList, what: what.trim(), sizes, seniority, city: city.trim(), sector: sector.trim(),
-              count, mustHaveLinkedIn, mustHaveContact, useMaps, verify,
+              count, mustHaveLinkedIn, mustHaveContact, useMaps, verify, reach,
             });
           }}
           className="flex-1 text-[11.5px] font-semibold px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast disabled:opacity-50"
