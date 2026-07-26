@@ -3478,6 +3478,120 @@ async function executeToolCore(
       return urls.length ? { url: urls[0], matched: false } : { url: '', matched: false };
     };
 
+
+    // ─── Resolving a PERSON from a COMPANY ──────────────────────────────────────
+    // Google Maps answers "which businesses are near me" with companies, not people. A company
+    // cannot be sent a connection request, so a local-business list is only useful once each row
+    // has a human on it. These two do that job: find who runs the place, and prove the profile
+    // found really belongs to that business rather than to a stranger with a plausible name.
+
+    /** Progress line for the owner-resolution phase. */
+    const step0 = (text: string) => { emit('agent-progress', { text }).catch(() => {}); };
+
+    /**
+     * Is this cell a PERSON, or is it a business sitting in the Name column?
+     *
+     * A Google Maps row has no person at all, and a model handed one sometimes copies the shop
+     * name across rather than leaving it blank. Both need the same treatment: go and find out who
+     * runs it. Two-to-four capitalised words with no company words in them is a person.
+     */
+    const looksLikePerson = (raw: string): boolean => {
+      const n = (raw || '').trim();
+      if (!n || n === '\u2014' || n.length > 48) return false;
+      if (/\b(pvt|ltd|llp|inc|co|corp|company|solutions|services|technologies|technology|enterprises|traders|stores|store|studio|studios|agency|clinic|hospital|works|industries|foods|motors|systems|labs|group|associates|consult\w*)\b/i.test(n)) return false;
+      if (/[0-9@&|/]/.test(n)) return false;
+      const words = n.split(/\s+/).filter(Boolean);
+      return words.length >= 2 && words.length <= 4 && words.every(w => /^[A-Z][A-Za-z.\u2019'-]*$/.test(w));
+    };
+    /**
+     * Is the Name cell just the business name repeated?
+     *
+     * looksLikePerson cannot settle this on its own: "Fi Money" is two capitalised words and so is
+     * "Priya Nair". What distinguishes them is the OTHER cell — when Name and Company say the same
+     * thing, it is a business that got copied across, which is exactly what a Google Maps row looks
+     * like when a model fills the table from it.
+     */
+    const nameEchoesCompany = (name: string, company: string): boolean => {
+      const norm = (x: string) => cleanCompany(x).toLowerCase().replace(/[^a-z0-9]/g, '');
+      const n = norm(name); const c = norm(company);
+      if (!n || !c || n.length < 3) return false;
+      return n === c || c.startsWith(n) || n.startsWith(c);
+    };
+    /** Words that appear at the top of a LinkedIn profile but are not the person. */
+    const NOT_A_NAME = /^(linkedin|sign in|join now|skip to|main content|people|jobs|search|home|my network|messaging|notifications|see all|follow|connect|message|more|about|experience|education|activity|open to|\d+)/i;
+
+    /**
+     * Pull the profile owner's real name out of a LinkedIn page.
+     *
+     * The name is the first proper-noun line near the top of the page: LinkedIn renders it before
+     * the headline and the company. Conservative on purpose — a WRONG name is far worse than a
+     * blank one, because it gets used to address a stranger by the wrong name in an outreach
+     * message. Anything that does not look unmistakably like a person's name is rejected.
+     */
+    const extractPersonName = (text: string): string => {
+      for (const raw of (text || '').split('\n').slice(0, 25)) {
+        const line = raw.replace(/\(.*?\)/g, ' ').replace(/\s+/g, ' ').trim();
+        if (!line || line.length > 48 || NOT_A_NAME.test(line)) continue;
+        if (/[0-9@|/•·,:;]|https?:/i.test(line)) continue;         // headlines and links, not names
+        const words = line.split(' ').filter(Boolean);
+        if (words.length < 2 || words.length > 4) continue;         // "Priya Nair", not one word or a sentence
+        // Every word starts with a capital and is otherwise letters. Rejects "Founder & CEO at X".
+        if (!words.every(w => /^[A-Z][A-Za-z.\u2019'-]{0,20}$/.test(w))) continue;
+        if (/\b(founder|owner|ceo|cto|coo|director|manager|partner|president|head|lead|pvt|ltd|llp|inc|solutions|services|technologies|enterprises|traders|stores|studio)\b/i.test(line)) continue;
+        return line;
+      }
+      return '';
+    };
+
+    /**
+     * Does this profile page actually belong to someone at THIS company?
+     *
+     * This is the cross-check that was missing: a search for "Sharma Textiles owner" happily
+     * returns a Sharma who has nothing to do with the business. Requiring the company name to
+     * appear on the profile itself is what connects the two ends together, and it is why a row
+     * is left blank rather than filled with a stranger.
+     */
+    /**
+     * Trim a LinkedIn profile to the part that is actually ABOUT this person.
+     *
+     * A profile page carries "People you may know", "More profiles for you" and similar blocks
+     * full of OTHER people and OTHER companies. Measured on a real profile: the person's own
+     * employer appeared at character 46, and the suggestion blocks began at 5,678 — where an
+     * unrelated "Sunita Sharma" sat, which was enough to 'confirm' that page as the owner of a
+     * business called Sharma Textiles. Everything past the first suggestion block is discarded
+     * before any matching is done.
+     */
+    const profileIdentityRegion = (text: string): string => {
+      const low = text.toLowerCase();
+      let cut = Math.min(text.length, 3500);          // backstop: identity + headline + experience
+      for (const marker of ['people also viewed', 'more profiles', 'others named', 'people you may know',
+                            'explore collaborative', 'similar pages', 'you might like', 'more from',
+                            'interests', 'recommendations']) {
+        const at = low.indexOf(marker);
+        // Floor it: a marker appearing very early would otherwise throw away the headline, which
+        // is the single most likely place the employer is named.
+        if (at > 400 && at < cut) cut = at;
+      }
+      return text.slice(0, cut);
+    };
+
+    /**
+     * Does this profile page actually belong to someone at THIS company?
+     *
+     * This is the cross-check that was missing: a search for "Sharma Textiles owner" happily
+     * returns a Sharma who has nothing to do with the business. Requiring the company to be named
+     * on the profile ITSELF is what ties the two ends together, and it is why a row is left blank
+     * rather than filled in with a stranger.
+     */
+    const profileMentionsCompany = (text: string, company: string): boolean => {
+      if (!text || text.length < 60) return false;
+      const toks = cleanCompany(company).toLowerCase()
+        .replace(/\b(pvt|ltd|llp|inc|co|company|the|and|solutions|services|technologies|enterprises)\b/g, ' ')
+        .split(/[^a-z0-9]+/).filter(t => t.length > 3);
+      if (!toks.length) return false;
+      const low = profileIdentityRegion(text).toLowerCase();
+      return toks.some(t => low.includes(t));
+    };
     // Decide whether an OPENED LinkedIn page actually belongs to this person + company.
     // The user is usually logged into LinkedIn in the agent window, so profiles ARE readable —
     // reading the page and matching the name is the STRONGEST signal (beats search). '' text = the
@@ -3568,6 +3682,9 @@ async function executeToolCore(
       compMissing?: boolean;      // Google said outright the term did not match
       compInMaps?: boolean;       // a real business came back from Google Maps
       compOnSite?: boolean;       // the company's own website loaded
+      /** Set when the person on this row was found FROM the company (a Maps business) and the
+       *  profile was confirmed to name that company — reported honestly in the result. */
+      resolvedOwner?: boolean;
     };
 
     // Process ONE small sub-batch of rows: discover LinkedIn candidates (HTTP), then Phases A/B/C
@@ -3641,6 +3758,47 @@ async function executeToolCore(
         });
       }
 
+      // PHASE 0 — WHO RUNS THIS PLACE? Rows that arrived as a business with no person on them
+      // (every Google Maps result, by definition) get a human found for them here.
+      //
+      // Search Google for the owner, open the best profile, and — crucially — only accept it if
+      // the company is named ON that profile. Without that check a search for "Sharma Textiles
+      // owner" returns some unrelated Sharma and the row goes out addressed to a stranger. The
+      // name is then read off the confirmed page rather than guessed, so it is the name LinkedIn
+      // itself shows.
+      const needPerson = rds.filter(rd => rd.row.company
+        && (!looksLikePerson(rd.row.name) || nameEchoesCompany(rd.row.name, rd.row.company)));
+      if (needPerson.length) {
+        step0(`${progressLabel} — finding who runs ${needPerson.length === 1 ? cleanCompany(needPerson[0].row.company) : `${needPerson.length} businesses`}`);
+        const oUrls = needPerson.map(rd => `https://www.google.com/search?q=${encodeURIComponent(`"${cleanCompany(rd.row.company)}" ${rd.row.city || ''} founder OR owner OR CEO LinkedIn`)}`);
+        const oTexts = await readPages(oUrls);
+        // Collect one candidate profile per business, then open them all in one batch.
+        const cand = new Map<string, string>();   // company -> profile url
+        needPerson.forEach((rd, i2) => {
+          const txt = oTexts.get(oUrls[i2]) || '';
+          const all = txt.match(/https?:\/\/[a-z]{0,3}\.?linkedin\.com\/in\/[A-Za-z0-9\-_%]+/gi) || [];
+          const uniq = Array.from(new Set(all.map(u => u.split(/[?#]/)[0].replace(/\/+$/, ''))));
+          if (uniq.length) cand.set(rd.row.company, uniq[0]);
+        });
+        if (cand.size) {
+          step0(`${progressLabel} — opening ${cand.size} profile${cand.size === 1 ? '' : 's'} to confirm who they are`);
+          const pTexts = await readPages([...cand.values()]);
+          for (const rd of needPerson) {
+            const url = cand.get(rd.row.company);
+            if (!url) continue;
+            const text = pTexts.get(url) || '';
+            if (!text) continue;                                   // walled/unreadable — leave it blank
+            if (!profileMentionsCompany(text, rd.row.company)) continue;   // a different person entirely
+            const person = extractPersonName(text);
+            if (!person) continue;                                 // could not read a name — blank beats wrong
+            rd.row.name = person;
+            rd.found = { url, matched: true };
+            rd.cands = [url];
+            rd.linkedin = url;
+            rd.resolvedOwner = true;
+          }
+        }
+      }
       // PHASE A — LinkedIn. When the HTTP search already returned a URL whose slug is built from the
       // person's name (found.matched), we're ALREADY confident — trust it WITHOUT opening a tab. Only
       // the UNSURE rows (weak/no search match, or an existing cell to validate) get a browser-confirm.
@@ -3754,6 +3912,7 @@ async function executeToolCore(
           phone: rd.phone,
           email: rd.email,
           companyCheck: confirmed ? 'real' : looked ? 'not-found' : 'unchecked',
+          ownerResolved: rd.resolvedOwner ? 'yes' : '',
         };
       });
     };
@@ -3787,12 +3946,23 @@ async function executeToolCore(
     // Name the ones whose employer nothing could find. This is the honest half of the fix: the
     // search can catch a company the model invented, but it cannot stop it being invented, so the
     // user needs telling which rows not to trust rather than being handed them silently.
+    const ownerFound = results.filter(r => r.ownerResolved === 'yes');
+    const stillNoPerson = results.filter(r => !r.name || r.name === '\u2014');
     const unfound = results.filter(r => r.companyCheck === 'not-found');
     const compNote = unfound.length
       ? `\n\nCOMPANY CHECK — ${unfound.length} of ${results.length} could not be found on LinkedIn, Google Maps, the web, or their own website: ${unfound.map(r => `${r.name} (${r.company})`).slice(0, 12).join('; ')}. Tell the user these companies could not be verified and may not exist, and that the rest were confirmed.`
       : `\n\nCOMPANY CHECK — every company was confirmed to exist (found on LinkedIn, Google Maps, the web, or its own website).`;
+    // Say plainly where the PEOPLE came from. A name read off a confirmed LinkedIn profile that
+    // names the business is a far stronger claim than a name a model supplied, and a business
+    // that never got a human attached must be reported rather than quietly dropped.
+    const ownerNote = ownerFound.length
+      ? `\n\nOWNER LOOKUP \u2014 ${ownerFound.length} row(s) started as a business with no person on them. The app searched for who runs each, opened the profile, and kept the name ONLY where that profile actually names the business: ${ownerFound.map(r => `${r.name} (${r.company})`).slice(0, 12).join('; ')}.`
+      : '';
+    const noPersonNote = stillNoPerson.length
+      ? `\n\nNO PERSON FOUND \u2014 ${stillNoPerson.length} business(es) had no owner that could be confirmed, so their Name is blank ON PURPOSE. Tell the user these need a name adding by hand; never invent one.`
+      : '';
     const more = rows.length > slice.length ? `\n\nNote: ${rows.length - slice.length} more row(s) not done this pass (cap ${MAX}). Call enrich_lead_list again with the rest.` : '';
-    return `COMPLETED LEAD LIST — the app searched Google in the browser for each person's LinkedIn, confirmed each employer really exists against LinkedIn + Google Maps + the web, and read Google Maps and the company sites for phone/email. PRESENT THIS TABLE TO THE USER EXACTLY AS-IS: never invent a link, phone or email — a "—" means none was found.\n\n${table}\n\n${results.length} row(s): ${gotLinkedIn} have a LinkedIn, ${gotPhone} got a phone, ${gotEmail} got an email.${compNote}${more}`;
+    return `COMPLETED LEAD LIST — the app searched Google in the browser for each person's LinkedIn, confirmed each employer really exists against LinkedIn + Google Maps + the web, and read Google Maps and the company sites for phone/email. PRESENT THIS TABLE TO THE USER EXACTLY AS-IS: never invent a link, phone or email — a "—" means none was found.\n\n${table}\n\n${results.length} row(s): ${gotLinkedIn} have a LinkedIn, ${gotPhone} got a phone, ${gotEmail} got an email.${compNote}${ownerNote}${noPersonNote}${more}`;
   }
 
   if (toolName === 'browser_open') {

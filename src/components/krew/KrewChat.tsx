@@ -5827,13 +5827,22 @@ PREFER people and companies that appear above: they are known to exist. You may 
       }
 
       checkpoint();
-      // 2) Drop anything that isn't a person before spending browser time on it. A company row
-      //    can't be connected with, so enriching one is wasted work.
+      // 2) Drop anything that isn't a person before spending browser time on it — EXCEPT when the
+      //    rows are businesses we deliberately went looking for.
+      //
+      //    A Google Maps result IS a business with no person on it; that is what Maps returns.
+      //    Dropping those here would have thrown away every local lead before the step that finds
+      //    out who runs them had a chance to run, leaving 'Local businesses' returning nothing at
+      //    all. So on that path the rows are kept, enrichment resolves an owner for each (and
+      //    confirms the profile really names that business), and the person check happens at the
+      //    end instead — where a business that never got a human attached is still dropped.
       {
         const { rows } = parseLeadRows(md, 0);
         const people = rows.filter((r) => {
           const nm = r.cells['name'] || '';
-          if (!looksLikePersonLead(nm, r.cells['company'] || '')) return false;
+          const isPerson = looksLikePersonLead(nm, r.cells['company'] || '');
+          const resolvableLater = cfg.reach === 'local' && !!(r.cells['company'] || '').trim();
+          if (!isPerson && !resolvableLater) return false;
           // The guarantee, not the request: anyone already on the list never comes back.
           return !existingNames.has(nm.toLowerCase().replace(/[^a-z0-9]/g, ''));
         });
