@@ -6284,9 +6284,15 @@ _None of them had everything you ticked, so I've saved them rather than lose the
       const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
       const byName: Record<string, string> = {};
       const draftStart = Date.now();
-      // Hosted models draft the whole batch in one fast call; only a slow local model needs to be
-      // fed 3 at a time so each finishes quickly and can't truncate a big array.
-      const B = mode === 'local' ? 3 : 30;
+      // Batch size by where the model actually runs.
+      //
+      // adris.tech drafts 30 in one fast call. A local model needs 3 at a time so each finishes
+      // quickly and cannot truncate a long array. YOUR OWN KEY sits between the two and was
+      // previously lumped in with adris.tech at 30 — which is the same shape of request that
+      // produced "413 Payload Too Large" on a free Groq key in the lead flow, and would truncate
+      // the JSON array on any model with a tight per-minute allowance. /leads settled on 8 for the
+      // same reason; this matches it.
+      const B = mode === 'local' ? 3 : mode === 'own_key' ? 8 : 30;
       for (let i = 0; i < pickConn.length; i += B) {
         if (stopRef.current) break;
         const batch = pickConn.slice(i, i + B);
@@ -6305,7 +6311,19 @@ _None of them had everything you ticked, so I've saved them rather than lose the
         const usr = `MY GOAL FOR THIS OUTREACH:\n${goal || 'Reconnect and open a genuine conversation about a possible fit — no hard pitch.'}\n\nWHAT I DO / WHAT I\'M BUILDING:\n${productCtx || '(not specified — keep it about them and a friendly reconnect)'}\n\nWrite one message for EACH of these ${batch.length} connections (use their exact name; personalise from their headline). Return the JSON array of exactly ${batch.length} objects:\n${batch.map((c) => `- ${c.name} — ${c.headline || '(no headline)'}`).join('\n')}`;
         let text = '';
         try { ({ text } = await streamTurnWithRetry([{ role: 'user', content: usr }], sys, (t) => { chars += t.length; })); }
-        catch { clearInterval(hb); continue; }
+        catch (e) {
+          clearInterval(hb);
+          // A per-minute limit is "ask again shortly", not "these people have no message". The
+          // lead flow already waits it out; without the same here a throttled free key quietly
+          // dropped everyone in the batch and the user was left wondering why some contacts had
+          // no draft.
+          const em = e instanceof Error ? e.message : String(e);
+          if (/\b429\b|rate.?limit|too many requests|quota/i.test(em) && !stopRef.current) {
+            await new Promise((r) => setTimeout(r, 20000));
+            i -= B;   // retry this same batch rather than losing it
+          }
+          continue;
+        }
         finally { clearInterval(hb); }
         const pairs = parseNameMessagePairs(text);
         batch.forEach((c, j) => {
@@ -6346,7 +6364,19 @@ _None of them had everything you ticked, so I've saved them rather than lose the
           const usr = `WHY I'M REACHING OUT:\n${goal || 'Start a genuine conversation with people in my space.'}\n\nWHAT I DO / WHAT I'M BUILDING:\n${productCtx || '(not specified — keep the note about them)'}\n\nWrite one connection-request note for EACH of these ${batch.length} people (use their exact name). Return the JSON array of exactly ${batch.length} objects:\n${batch.map((c) => `- ${c.name} — ${c.headline || '(no details)'}`).join('\n')}`;
           let text = '';
           try { ({ text } = await streamTurnWithRetry([{ role: 'user', content: usr }], sysNote, (t) => { chars += t.length; })); }
-          catch { clearInterval(hb); continue; }
+          catch (e) {
+          clearInterval(hb);
+          // A per-minute limit is "ask again shortly", not "these people have no message". The
+          // lead flow already waits it out; without the same here a throttled free key quietly
+          // dropped everyone in the batch and the user was left wondering why some contacts had
+          // no draft.
+          const em = e instanceof Error ? e.message : String(e);
+          if (/\b429\b|rate.?limit|too many requests|quota/i.test(em) && !stopRef.current) {
+            await new Promise((r) => setTimeout(r, 20000));
+            i -= B;   // retry this same batch rather than losing it
+          }
+          continue;
+        }
           finally { clearInterval(hb); }
           const pairs = parseNameMessagePairs(text);
           batch.forEach((c, j) => {
@@ -6804,7 +6834,19 @@ _None of them had everything you ticked, so I've saved them rather than lose the
         const hb = setInterval(tick, 1000);
         let text = '';
         try { ({ text } = await streamTurnWithRetry([{ role: 'user', content: usr(batch) }], sysBase, (t) => { chars += t.length; })); }
-        catch { clearInterval(hb); continue; }   // a failed batch shouldn't sink the rest
+        catch (e) {
+          clearInterval(hb);
+          // A per-minute limit is "ask again shortly", not "these people have no message". The
+          // lead flow already waits it out; without the same here a throttled free key quietly
+          // dropped everyone in the batch and the user was left wondering why some contacts had
+          // no draft.
+          const em = e instanceof Error ? e.message : String(e);
+          if (/\b429\b|rate.?limit|too many requests|quota/i.test(em) && !stopRef.current) {
+            await new Promise((r) => setTimeout(r, 20000));
+            b -= BATCH;   // retry this same batch rather than losing it
+          }
+          continue;
+        }   // a failed batch shouldn't sink the rest
         finally { clearInterval(hb); }
         const pairs = parseNameMessagePairs(text);
         // Name match first; then POSITIONAL fallback within the batch — the model returns messages in

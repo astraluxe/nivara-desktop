@@ -45,8 +45,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.83',
+  version: '1.6.84',
   items: [
+    'Writing outreach messages on your own key no longer asks for thirty at a time. Your key was being treated like the adris.tech service and sent one big request per batch — the same shape that produced "413 Payload Too Large" on a free Groq key when finding leads. It now drafts eight at a time on your own key and three on a downloaded model, matching what lead searches already did.',
+    'A per-minute limit while writing messages now waits and retries instead of losing that batch. Lead searches already did this; the drafting loops did not, so a throttled free key quietly left some contacts with no message and no explanation.',
+
     '/scan now goes much deeper into a large network, and tells you how far it got. LinkedIn lists your newest connections first, so once a couple of hundred are already saved every run has to scroll past all of them before reaching anyone new — and the scan gave up long before that, which is how a 700-person network returned three names and looked broken. It now keeps scrolling far longer, treats a single stalled load as normal rather than the end of the list, and says plainly how many it read, how many were already saved, and that running it again continues further down.',
     'After a scan, /outreach adds the new people to the outreach you already have. Anyone already in it keeps their status, their drafted message and their sent history — only the genuinely new connections are added.',
 
