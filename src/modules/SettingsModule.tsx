@@ -45,8 +45,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.6.81',
+  version: '1.6.82',
   items: [
+    'Fixed the freeze that could stop a lead search dead for minutes with nothing on screen and nothing happening in the browser. Web requests had no time limit at all, so a company website that accepted the connection and then simply never answered held the request open forever — and because the app checks a company\'s pages together, one such site froze the entire batch. "Checking [three companies]" sitting there for five minutes was never slow work; it was a request that could not finish. Requests now give up and move on, and the search carries on without that site.',
+    'The reconnecting notice is now a single slim line above the message box instead of a block that pushed the conversation up the screen. A dropped connection is usually momentary, and the old panel was a bigger interruption than the thing it was reporting. It is also in the app\'s accent colour rather than warning amber — the app is handling it, and there is nothing for you to do but wait.',
+
     '"Scan their reply" now works for email, not just LinkedIn. For anyone you reach by email it finds your conversation with them in Gmail, reads it — stripping the quoted history Gmail folds into every reply, so it answers what they actually just said rather than something from three replies back — and plans your response exactly as it does for a LinkedIn message. The draft, the checks and the calendar suggestions are all the same; only where the conversation is read from changed.',
     'Looking someone up on LinkedIn now uses their company as well as their name. A name on its own returns everyone who shares it, and taking the first result is how a lead ends up pointing at a stranger — who then gets a message addressed to somebody else. Each result now also carries its location, so two people with the same name can be told apart by where they are.',
 

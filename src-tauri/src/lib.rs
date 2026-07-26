@@ -3689,7 +3689,21 @@ async fn krew_http_call(
     headers: HashMap<String, String>,
     body:    Option<String>,
 ) -> Result<String, String> {
-    let client  = reqwest::Client::new();
+    // A REQUEST MUST BE ABLE TO GIVE UP.
+    //
+    // This was reqwest::Client::new(), which has no timeout of any kind. A server that accepts
+    // the connection and then simply never answers holds the call open forever — and because the
+    // lead pipeline fetches a company's website paths with Promise.all, ONE such host froze the
+    // whole batch. That is what "checking India Quotient, Practo, redBus" sitting for five
+    // minutes with nothing on screen actually was: not slow work, a request that could never end.
+    //
+    // 30s is generous for the connected-app API calls that also come through here, while still
+    // guaranteeing the caller gets an answer.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
     let mut req = match method.to_uppercase().as_str() {
         "POST"   => client.post(&url),
         "PUT"    => client.put(&url),

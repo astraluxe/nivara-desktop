@@ -2940,7 +2940,11 @@ async function executeToolCore(
       const bare = /https?:\/\/[a-z]*\.?linkedin\.com\/(?:in|company)\/[A-Za-z0-9\-_%]+/gi; let b: RegExpExecArray | null;
       while ((b = bare.exec(raw)) && out.length < 5) { const u = b[0].split('?')[0].replace(/[.,)]+$/, ''); if (!seen.has(u)) { seen.add(u); out.push(u); } }
     };
-    const httpGet = (url: string) => invoke<string>('krew_http_call', { method: 'GET', url, headers: { 'User-Agent': ua }, body: null }).catch(() => '');
+    // Same bound as enrich: a company site that never answers must not hold up verification.
+    const httpGet = (url: string) => Promise.race([
+      invoke<string>('krew_http_call', { method: 'GET', url, headers: { 'User-Agent': ua }, body: null }).catch(() => ''),
+      new Promise<string>((res) => setTimeout(() => res(''), 12000)),
+    ]);
     const braveKey = (creds as Record<string, { api_key?: string } | undefined>).brave?.api_key ?? '';
     // Say what is happening RIGHT NOW, not once per batch. Verification emitted a single line per
     // sub-batch and then went quiet for minutes while it worked, which is indistinguishable from a
@@ -3463,8 +3467,14 @@ async function executeToolCore(
     const findLinkedIn = async (name: string, company: string, website: string): Promise<{ url: string; matched: boolean }> => {
       const q = `${name} ${cleanCompany(company)} LinkedIn`;
       const urls: string[] = []; const seen = new Set<string>();
-      const get = (u: string, h: Record<string, string>) =>
-        invoke<string>('krew_http_call', { method: 'GET', url: u, headers: h, body: null }).catch(() => '');
+      // Bound every fetch. One company website that never answers used to hold the entire
+      // sub-batch open — Promise.all waits for the slowest, and "slowest" had no upper limit. A
+      // site we cannot read in 12s is not worth the run stalling on; the browser search below
+      // finds the profile anyway.
+      const get = (u: string, h: Record<string, string>) => Promise.race([
+        invoke<string>('krew_http_call', { method: 'GET', url: u, headers: h, body: null }).catch(() => ''),
+        new Promise<string>((res) => setTimeout(() => res(''), 12000)),
+      ]);
 
       const reqs: Array<Promise<string>> = [];
       if (braveKey2) reqs.push(get(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(q)}`, { Accept: 'application/json', 'X-Subscription-Token': braveKey2 }));
