@@ -118,7 +118,7 @@ function AnnouncementModal({ ann, onClose }: { ann: Announcement; onClose: () =>
         </div>
         <p className="text-sm text-nv-faint leading-relaxed mb-5">
           {updState === 'error'
-            ? <>The in-app update failed — download it directly from <span className="text-accent">adris.tech/download</span> instead.{updErr && <><br /><span className="text-[11px] font-mono text-nv-faint break-words">Reason: {updErr}</span></>}</>
+            ? <>The in-app update couldn’t finish. Download the installer directly — it’s the same signed build, and it will update you in place.{updErr && <><br /><span className="text-[11px] font-mono text-nv-faint break-words">Reason: {updErr}</span></>}</>
             : installing
             ? 'Downloading the update — the app will close and update itself automatically when it finishes. Don’t close it manually.'
             : ann.body}
@@ -144,9 +144,11 @@ function AnnouncementModal({ ann, onClose }: { ann: Announcement; onClose: () =>
             </button>
           )}
           {updState === 'error' && (
-            <button onClick={() => openExternal('https://adris.tech/download')}
+            // Straight to the signed installer on the release, not the marketing page — when the
+            // in-app update fails the user wants the file, not another page to navigate.
+            <button onClick={() => openExternal('https://github.com/astraluxe/nivara-desktop/releases/latest/download/adris-setup.exe')}
               className="flex-1 px-4 py-2 bg-accent text-white text-sm font-semibold rounded-lg hover:bg-accent/80 transition-colors">
-              Get it from the website
+              Download the installer
             </button>
           )}
           <button onClick={onClose} disabled={installing}

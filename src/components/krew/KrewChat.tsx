@@ -3728,7 +3728,9 @@ const [studioExtracting, setStudioExtracting] = useState(false);
           done.cleanup();
           reject(new Error(mode === 'local'
             ? 'The local model is taking too long to respond. It may be very large for this machine — try a smaller model in the Models tab.'
-            : 'Response stopped. Please check your connection and try again.'));
+            // Don't blame the connection for a slow model — that reading is what put a
+            // "Reconnecting…" banner on a link that was never down.
+            : 'The AI stopped responding partway through. Retrying.'));
         }, stallMs);
       };
 
@@ -3812,7 +3814,11 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     for (let attempt = 1; ; attempt++) {
       try {
         const r = await streamTurn(msgs, systemPrompt, onChunk);
-        if (attempt > 1) setReconnecting(null); // recovered — clear the banner
+        // Clear unconditionally. This used to be `if (attempt > 1)`, so a banner raised by one call
+        // was left on screen by every OTHER call that succeeded first time — which is why the chat
+        // sat on "Reconnecting…" for ages while the outreach copilot was answering perfectly well
+        // on the very same connection.
+        setReconnecting(null);
         return r;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -3855,10 +3861,19 @@ const [studioExtracting, setStudioExtracting] = useState(false);
             ? new Error("Your local model isn't responding. Open the Models tab and check a model is downloaded and loaded. This isn't an internet problem — in Local mode nothing is sent online.")
             : e;
         }
-        const isTransient = /sending request|connect(ion)?|network|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|failed to fetch|stream interrupted|response stopped/i.test(msg);
-        if (!isTransient || stopRef.current || attempt >= MAX_ATTEMPTS) { setReconnecting(null); throw e; }
-        // Show the "reconnecting" banner and wait for the connection to return before retrying.
-        setReconnecting({ attempt, max: MAX_ATTEMPTS });
+        // A DROPPED CONNECTION and a STALLED RESPONSE are different failures and were being treated
+        // as one. A stall ("Response stopped" — 90 s with no chunk, usually a slow or overloaded
+        // model) is not a network problem: retrying it ten times, each waiting another 90 s, is up
+        // to fifteen minutes of "Reconnecting…" on a connection that never went down. Only a real
+        // connection error gets the banner and the full retry budget.
+        // Order matters: the stall message itself contains the word "connection", so it has to be
+        // recognised BEFORE the network patterns or it classifies as a drop and gets the banner again.
+        const isStall = /response stopped|stopped responding/i.test(msg);
+        const isNetworkDrop = !isStall && /sending request|connect(ion)?|network|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|failed to fetch|stream interrupted/i.test(msg);
+        const budget = isNetworkDrop ? MAX_ATTEMPTS : 2;
+        if ((!isNetworkDrop && !isStall) || stopRef.current || attempt >= budget) { setReconnecting(null); throw e; }
+        // Only claim to be reconnecting when the connection is actually the suspect.
+        if (isNetworkDrop) setReconnecting({ attempt, max: MAX_ATTEMPTS });
         await waitForReconnect(Math.min(3000 + attempt * 1500, 12000));
         if (stopRef.current) { setReconnecting(null); throw e; }
       }

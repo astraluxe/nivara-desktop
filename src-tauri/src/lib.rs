@@ -1620,8 +1620,13 @@ async fn start_local_engine(
     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
 
     let mut ec = tokio::process::Command::new(&engine);
+    // Context window. 4096 was too small for the app's real prompts: the outreach copilot alone
+    // sends a system prompt plus up to 6000 chars of thread and 4000 of owner context, then still
+    // has to GENERATE a JSON plan. On 4096 the prompt overflowed, so a local model returned nothing
+    // usable while the hosted model answered fine — "I was on local and it didn't give the answer".
+    // 8192 covers those prompts with room to reply; the extra KV cache is a few hundred MB.
     ec.args(["-m", &model_path, "--port", "8080", "--host", "127.0.0.1",
-             "-c", "4096", "--log-disable"])
+             "-c", "8192", "--log-disable"])
         .kill_on_drop(true);
     #[cfg(windows)] { ec.creation_flags(0x0800_0000); } // no flashing console for the engine
     let child = ec.spawn().map_err(|e| format!("Could not start engine: {e}"))?;
@@ -6579,17 +6584,32 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     // briefly 404 / still resolve to the old release while GitHub propagates. Without this, the
     // installer silently did nothing and the UI hung on "installing…". A short retry rides out
     // the propagation window; if it still isn't ready we return a clear error the UI can show.
+    // 4 tries x 3 s = 12 s was not enough. `latest.json` is served through GitHub's CDN via the
+    // /releases/latest/download redirect, and that pointer can lag the release by a minute or more —
+    // which is exactly the window the user is in, because the update prompt fires the moment the
+    // GitHub API reports the new tag. The prompt appeared, Download did nothing, and the installer
+    // had to be fetched by hand. Wait out the propagation instead: ~8 tries with backoff, ~70 s.
     let mut found = None;
-    for attempt in 0..4 {
+    let mut err_seen: Option<String> = None;
+    for attempt in 0..8u64 {
         match updater.check().await {
             Ok(Some(u)) => { found = Some(u); break; }
-            Ok(None) => { if attempt < 3 { tokio::time::sleep(std::time::Duration::from_secs(3)).await; } }
-            Err(e) => return Err(e.to_string()),
+            // A transient error here (404/CDN miss mid-propagation) is not fatal — remember it and
+            // keep waiting, rather than aborting the whole install on the first bad response.
+            other => {
+                if let Err(e) = other { err_seen = Some(e.to_string()); }
+                if attempt < 7 {
+                    tokio::time::sleep(std::time::Duration::from_secs(5 + attempt * 2)).await;
+                }
+            }
         }
     }
     let update = match found {
         Some(u) => u,
-        None => return Err("The update is published but GitHub is still making it available. Please try again in a minute, or download it from github.com/astraluxe/nivara-desktop/releases/latest.".to_string()),
+        None => return Err(format!(
+            "The update is published but GitHub has not finished making it downloadable (this usually clears within a minute or two). Try again shortly, or use the direct download button.{}",
+            err_seen.map(|e| format!(" Last error: {e}")).unwrap_or_default(),
+        )),
     };
     {
         // Stream download progress to the UI — a silent multi-MB download looked like

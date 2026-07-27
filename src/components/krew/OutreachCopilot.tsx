@@ -20,8 +20,28 @@ function buildOwnerContext(): string {
         .map((x) => `${x.title}: ${(x.body || '').slice(0, 500)}`);
     const product = pick(/product|pitch|about|adris|company|offer/i, 2);
     const avail = pick(/avail|calendar|meeting|schedule/i, 2);
-    return [...product, ...avail].join('\n').slice(0, 3500);
+    // Saved notes are NOT a calendar. Unlabelled, a months-old note reading "meeting with X at
+    // 11:30" was treated by the verifier as a live commitment and used to reject a perfectly good
+    // proposed time. Only fetchCalendarContext() returns something authoritative.
+    const availBlock = avail.length
+      ? [
+          'SAVED NOTES THAT MENTION TIMES (from the owner\'s own notebook — these are NOT a live',
+          'calendar and are very likely out of date. Never treat one as a confirmed commitment or as',
+          'a clash unless a live calendar below also shows it):',
+          ...avail,
+        ].join('\n')
+      : '';
+    return [...product, availBlock].filter(Boolean).join('\n').slice(0, 3500);
   } catch { return ''; }
+}
+
+/** Does this draft put a specific time on the table? If so the calendar has to be consulted, even
+ *  when the prospect's own message never mentioned scheduling. */
+function proposesATime(draft: string): boolean {
+  const d = (draft || '').toLowerCase();
+  if (!d) return false;
+  return /\b\d{1,2}[:.]\d{2}\s?(am|pm)?\b|\b\d{1,2}\s?(am|pm)\b/.test(d)
+    && /\b(tomorrow|today|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next week|this week|call|chat|meet|catch up|slot)\b/.test(d);
 }
 
 // ─── Choosing which file to attach ───────────────────────────────────────────
@@ -417,7 +437,9 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   // the logged-in agent browser, so this works even without connecting Google via ConnectApps.
   async function fetchCalendarContext(schedulingLikely: boolean): Promise<string> {
     const { invoke } = await import('@tauri-apps/api/core');
-    const preface = "The owner's REAL calendar (do NOT propose or confirm a time that clashes with these; if a slot is close to or right after one of these, flag it to confirm — a meeting before it could run over):";
+    // The date matters as much as the entries: without it, a past event reads as an upcoming one.
+    const today = new Date().toLocaleString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    const preface = `The owner's REAL calendar, read just now (it is currently ${today}). Everything listed is in the FUTURE — do NOT propose or confirm a time that clashes with these; if a slot is close to or right after one of these, flag it to confirm, as a meeting before it could run over:`;
 
     // 1) Fast, structured path — Google connected via OAuth.
     if (googleToken) {
@@ -803,11 +825,23 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     // Read the real calendar first (when timing is in play) so the plan and the verifier both know
     // what the owner is actually doing before proposing or confirming any time.
     const calendar = await fetchCalendarContext(schedulingLikely);
-    const ownerContext = [buildOwnerContext(), calendar].filter(Boolean).join('\n\n');
+    let ownerContext = [buildOwnerContext(), calendar].filter(Boolean).join('\n\n');
     setLastThread(thread); setLastOwnerCtx(ownerContext);   // remember for refine / re-verify
     try {
       const args = { person: contact.name || 'them', company: contact.company, thread, ownerContext, availableDocs: docs.map((d) => ({ title: d.title, kind: d.kind, summary: d.summary })), aiCall };
       const p = mode === 'followup' ? await planFollowUp(args) : await planReply(args);
+      // The gate above looks at THEIR message, but the draft can propose a time even when the thread
+      // never mentioned one ("would you be free tomorrow at 11:30?"). That is precisely when the
+      // calendar matters, and it was the case where it silently never opened. Read it now and verify
+      // against it, rather than vetting a proposed slot with no idea what the owner is doing.
+      if (!calendar && p.draftReply && proposesATime(p.draftReply)) {
+        setPlanNote('Draft proposes a time — checking your calendar…');
+        const late = await fetchCalendarContext(true);
+        if (late) {
+          ownerContext = [ownerContext, late].filter(Boolean).join('\n\n');
+          setLastOwnerCtx(ownerContext);
+        }
+      }
       setPlan(p);
       setDraftReply(p.draftReply || '');
       // Point the user to where the draft now is, so the flow never dead-ends silently.
@@ -842,7 +876,10 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
         kind: 'outreach-reply',
         task: `Reply to ${contact.name || 'a prospect'}${contact.company ? ` at ${contact.company}` : ''} on LinkedIn, moving the conversation forward without over-promising.`,
         artifact: text,
-        context: `The conversation so far:\n${thread}${ownerCtx ? `\n\nOWNER'S REAL AVAILABILITY / CALENDAR:\n${ownerCtx}` : ''}`,
+        // The blocks inside ownerCtx label themselves — a live calendar read says so, saved notes say
+        // they are notes. Calling the whole blob "the owner's real calendar" is what turned an old
+        // notebook line into a "confirmed meeting" the verifier rejected a good time against.
+        context: `The conversation so far:\n${thread}${ownerCtx ? `\n\nWHAT WE KNOW ABOUT THE OWNER (read each block's own label — only a live calendar read is authoritative):\n${ownerCtx}` : '\n\n(No calendar was read for this draft — you cannot know the owner is busy. Do not invent a clash.)'}`,
         checklist: [
           'If the prospect asked a direct question, the reply ANSWERS it concretely in the first two sentences. A promise to explain, an offer of a call/document, or a counter-question instead of an answer is a FAIL.',
           'Every concrete example or benefit named in the reply fits THIS prospect\'s actual line of work. An example from an unrelated industry is a FAIL.',
@@ -852,7 +889,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
           'The message does not claim to be attaching, sending or "finally" sharing anything that the conversation above shows was ALREADY sent — and does not apologise for an oversight that never happened. Claiming to attach a file the prospect has already opened is a FAIL.',
           'It states nothing about the CONTENTS of an attached document — no slide numbers, page numbers, section names or figures — unless those details appear in the conversation or the owner context above. Invented document detail is a FAIL.',
           'It does not jump straight to "book a call" if the prospect only asked to know more — it gives substance first.',
-          'Any proposed or confirmed meeting time does NOT clash with the owner\'s real calendar above, including a nearby event that could run over into it — flag it to confirm if unsure.',
+          'Any proposed or confirmed meeting time does NOT clash with a LIVE CALENDAR read shown above, including a nearby event that could run over into it — flag it to confirm if unsure. Only a block that says it is a live calendar read counts: never raise a clash against a saved note, and never against an event whose date is already in the past.',
           'The message contains no placeholders like [Time], [Product Name], or [Company] — every detail is concrete.',
         ],
         aiCall,   // use the Krew chat's AI source (BYOK/local/adris) — never a separate global one
