@@ -32,6 +32,7 @@ import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill
 import SkillsPanel from './SkillsPanel';
 import LeadSetupCard, { type LeadConfig } from './LeadSetupCard';
 import { loadUserLocation, locationLabel } from '../../lib/userLocation';
+import { identityBlock } from '../../lib/userIdentity';
 import OutreachCopilot, { type OutreachCampaign, type OutreachContact, loadSavedCampaign, loadResumableCampaign, loadCampaignByTitle, saveCampaign, bestProfileUrl } from './OutreachCopilot';
 import TodoPanel from './TodoPanel';
 import Icon, { type IconName } from '../Icon';
@@ -162,6 +163,21 @@ const SKILL_TRIGGERS: Record<string, RegExp> = {
   'microsoft/azure-ai':                          /\bazure\b/i,
   'anthropics/doc-coauthoring':                  /\bproposal\b|spec document|co-?author/i,
 };
+/**
+ * Does this credential actually carry something we can authenticate with?
+ *
+ * A credential ROW can exist with no token in it — a setup that was started and abandoned leaves
+ * `{}` behind. Tools were handed out for every row that EXISTED, so an empty `gmail` row gave the
+ * agents the whole Gmail toolset, which then failed on every call. Offering a tool that cannot
+ * possibly work is worse than not offering it at all: the agent plans around it and the task dies
+ * halfway through. Same principle as refusing to send an empty Bearer header.
+ */
+function hasUsableCred(c: Record<string, string> | undefined): boolean {
+  if (!c) return false;
+  return ['api_key', 'access_token', 'token', 'bot_token', 'refresh_token', 'pat', 'key']
+    .some((k) => typeof c[k] === 'string' && c[k].trim().length > 0);
+}
+
 function detectSkill(text: string): SkillRegistryEntry | null {
   for (const s of SKILLS_REGISTRY) {
     const re = SKILL_TRIGGERS[s.id];
@@ -3618,7 +3634,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     }
     const tools: ToolDef[] = [...SYSTEM_TOOLS];
     for (const service of Object.keys(creds)) {
-      if (SERVICE_TOOLS[service]) tools.push(...SERVICE_TOOLS[service]);
+      if (SERVICE_TOOLS[service] && hasUsableCred(creds[service])) tools.push(...SERVICE_TOOLS[service]);
     }
     if (agent.category === 'Ops') tools.push(...AUTOMATION_TOOLS);
     tools.push(...BROWSER_TOOLS); // every agent can open the browser
@@ -7710,6 +7726,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
       : '';
     // Where the user is — read fresh each turn, so a location saved mid-conversation takes effect
     // on the very next message instead of after a reload.
+    const identityCtx = identityBlock();
     const savedLoc = loadUserLocation();
     const locationBlock = savedLoc
       ? `\n\n## The user's market — WHERE TO SEARCH\nThe user is in **${locationLabel(savedLoc)}**.\nUnless they name a different place for a specific task, this is the market: search here, list companies and people HERE, and use this country's sites, directories and conventions (currency, phone format, job titles). Start with their own city and widen to the surrounding region or country only if they ask or the task clearly needs it. Do NOT return companies or people from another country and present them as local, and do NOT assume any particular country's market by default — it is the one named above and nothing else. If the user names a different city/country for a task, use theirs for that task; if they say they have MOVED or changed market, call set_user_location to update it.`
@@ -7754,7 +7771,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     const systemPrt  = assembleSystemPrompt(
       [agent.systemPrompt, '\n\n', buildKrewSystemPrompt(tools), bossPostfix,
        searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective],
-      [locationBlock, (agent.key === 'boss' ? '' : userBlock), connectedAppsBlock, mcpSummary,
+      [identityCtx, locationBlock, (agent.key === 'boss' ? '' : userBlock), connectedAppsBlock, mcpSummary,
        skillsBlock, profileBlock, memBlock, tierDirective, dateBlock],
     );
 
@@ -7983,7 +8000,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
               // Build tools for the delegated agent based on its own role, not boss's tools
               const delegateTools: ToolDef[] = [...SYSTEM_TOOLS];
               for (const service of Object.keys(creds)) {
-                if (SERVICE_TOOLS[service]) delegateTools.push(...SERVICE_TOOLS[service]);
+                if (SERVICE_TOOLS[service] && hasUsableCred(creds[service])) delegateTools.push(...SERVICE_TOOLS[service]);
               }
               if (targetAgent.category === 'Ops') delegateTools.push(...AUTOMATION_TOOLS);
               delegateTools.push(...BROWSER_TOOLS); // every agent can open the browser
@@ -8005,7 +8022,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
               const delegateSystem = assembleSystemPrompt(
                 [targetAgent.systemPrompt, '\n\n', buildKrewSystemPrompt(delegateTools), pipelineRule,
                  searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective],
-                [locationBlockAuto, userBlock, connectedAppsBlock, mcpSummary,
+                [identityCtx, locationBlockAuto, userBlock, connectedAppsBlock, mcpSummary,
                  profileBlock, delegateMemBlock, tierDirective, dateBlock],
               );
               // FORWARD THE FILE the user is working with. The delegate has its OWN history
@@ -8353,7 +8370,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                 const wfMems = await krewMemoryDb.getAll(wfKey).catch(() => [] as KrewMemory[]);
                 const wfMemBlock = wfMems.length > 0 ? '\n\n## Your memory\n' + wfMems.map((m) => `- ${m.key}: ${m.value}`).join('\n') : '';
                 const wfTools: ToolDef[] = [...SYSTEM_TOOLS];
-                for (const svc of Object.keys(creds)) { if (SERVICE_TOOLS[svc]) wfTools.push(...SERVICE_TOOLS[svc]); }
+                for (const svc of Object.keys(creds)) { if (SERVICE_TOOLS[svc] && hasUsableCred(creds[svc])) wfTools.push(...SERVICE_TOOLS[svc]); }
                 if (wfAgent.category === 'Ops') wfTools.push(...AUTOMATION_TOOLS);
                 wfTools.push(...BROWSER_TOOLS); // every agent can open the browser
                 if (wfKey === 'research_agent' || wfAgent.category === 'Sales' || wfAgent.category === 'Content') wfTools.push(...RESEARCH_TOOLS);
@@ -8362,7 +8379,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                   [wfAgent.systemPrompt, '\n\n', buildKrewSystemPrompt(wfTools),
                    '\n\nCRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.',
                    searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective],
-                  [locationBlockAuto, userBlock, connectedAppsBlock, mcpSummary,
+                  [identityCtx, locationBlockAuto, userBlock, connectedAppsBlock, mcpSummary,
                    profileBlock, wfMemBlock, tierDirective, dateBlock],
                 );
                 const wfHist = [{ role: 'user', content: wfTask }];

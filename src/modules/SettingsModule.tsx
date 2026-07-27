@@ -5,6 +5,7 @@ import { getVersion } from '@tauri-apps/api/app';
 import { useAuth } from '../contexts/AuthContext';
 import AiSourcePicker from '../components/AiSourcePicker';
 import { loadUserLocation, saveUserLocation, clearUserLocation, locationLabel, type UserLocation } from '../lib/userLocation';
+import { loadUserIdentity, saveUserIdentity, clearUserIdentity } from '../lib/userIdentity';
 
 interface NvSettings {
   automationAutoRun: boolean;
@@ -347,6 +348,11 @@ export default function SettingsModule() {
   const [locCountry, setLocCountry]   = useState(() => loadUserLocation()?.country ?? '');
   const [locErr, setLocErr]           = useState('');
   const [locSaved, setLocSaved]       = useState(false);
+  // Who the user is — so an agent never mistakes them for the person they are meeting.
+  const [idName, setIdName]           = useState(() => loadUserIdentity()?.name ?? '');
+  const [idRole, setIdRole]           = useState(() => loadUserIdentity()?.role ?? '');
+  const [idCompany, setIdCompany]     = useState(() => loadUserIdentity()?.company ?? '');
+  const [idSaved, setIdSaved]         = useState(false);
   const inputStyle = { background: 'var(--nv-bg)', border: '1px solid var(--nv-border)', color: 'var(--nv-text)' };
 
   // An agent can save the location mid-conversation (set_user_location). Reflect that here without
@@ -592,6 +598,56 @@ export default function SettingsModule() {
             <p className="text-[10px] text-nv-faint mt-2 leading-relaxed">
               Whatever you pick here, saying <span className="text-nv-muted">“continue the existing list”</span> in chat always wins for that request.
             </p>
+          </div>
+        </Section>
+
+        {/* WHO the user is. Without this the agents cannot tell the user apart from the people they
+            meet — a meeting titled "Amogh x Keshav" was researched as if Amogh were the prospect,
+            and the user received a briefing about themselves. */}
+        <Section title="Your name">
+          <p className="text-[11px] text-nv-muted leading-relaxed mb-3">
+            Who Krew is working for. Calendar invites, email threads and attendee lists all contain
+            your own name next to the other person&rsquo;s — this is how the agents tell which one is
+            you, so they research the <em>other</em> party and never write a briefing about you.
+          </p>
+          <div className="flex flex-col gap-2">
+            <div className="flex gap-2">
+              <input
+                value={idName}
+                onChange={(e) => { setIdName(e.target.value); setIdSaved(false); }}
+                placeholder="Your full name, as it appears in calendar invites"
+                className="flex-1 px-3 py-2 rounded-lg text-[12px] outline-none focus:border-accent transition-fast"
+                style={inputStyle}
+              />
+            </div>
+            <div className="flex gap-2">
+              <input
+                value={idRole}
+                onChange={(e) => { setIdRole(e.target.value); setIdSaved(false); }}
+                placeholder="Your role (optional) — e.g. Founder"
+                className="flex-1 px-3 py-2 rounded-lg text-[12px] outline-none focus:border-accent transition-fast"
+                style={inputStyle}
+              />
+              <input
+                value={idCompany}
+                onChange={(e) => { setIdCompany(e.target.value); setIdSaved(false); }}
+                placeholder="Your company (optional)"
+                className="flex-1 px-3 py-2 rounded-lg text-[12px] outline-none focus:border-accent transition-fast"
+                style={inputStyle}
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  const n = idName.trim();
+                  if (!n) { clearUserIdentity(); setIdSaved(false); return; }
+                  saveUserIdentity({ name: n, role: idRole.trim() || undefined, company: idCompany.trim() || undefined });
+                  setIdSaved(true);
+                }}
+                className="text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white font-medium hover:bg-accent/85 transition-fast"
+              >Save</button>
+              {idSaved && <span className="text-[10px] text-nv-green">✓ Saved — agents will never research you.</span>}
+            </div>
           </div>
         </Section>
 

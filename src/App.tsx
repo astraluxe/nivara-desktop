@@ -227,6 +227,7 @@ function AppShell() {
   // every local-lead search would start asking for it again.
   useEffect(() => {
     import('./lib/userLocation').then(({ hydrateUserLocation }) => hydrateUserLocation()).catch(() => {});
+    import('./lib/userIdentity').then(({ hydrateUserIdentity }) => hydrateUserIdentity()).catch(() => {});
   }, []);
 
   // (The corner badge — the float-over-apps logo — is removed for now. The Quick Bar below is

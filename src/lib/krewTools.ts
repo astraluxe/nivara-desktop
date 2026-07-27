@@ -532,6 +532,15 @@ export const SYSTEM_TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'set_user_name',
+    description: "Remember the USER'S OWN name (and optionally their role/company) so you can tell them apart from the people they meet. Call this the first time the user tells you their name, or when a task needs it and you don't have it — reading a calendar invite, an attendee list or an email thread all require knowing which name is the user's. Ask once, save it, never ask again.",
+    parameters: {
+      name:    { type: 'string', description: "The user's full name as it appears in calendar invites, e.g. \"Amogh Misra\".", required: true },
+      role:    { type: 'string', description: 'Their role, e.g. "Founder". Optional.', required: false },
+      company: { type: 'string', description: 'Their company, e.g. "adris.tech". Optional.', required: false },
+    },
+  },
+  {
     name: 'read_my_calendar',
     description: "READ THE USER'S OWN CALENDAR — their real upcoming meetings, with who each one is with, the time and any video link. Needs NO connected Google account and no setup: it reads Google Calendar in the user's signed-in browser. CALL THIS FIRST, WITHOUT ASKING, whenever the user mentions a meeting, call, or appointment without naming the person — \"I have a meeting with someone tomorrow\", \"research the person I'm meeting\", \"what's on today\", \"who am I seeing this week\", \"am I free on Thursday\". The person's name is in the event title, so look it up rather than asking the user to type out what is already in their calendar. Follow it with research_person for the name you find.",
     parameters: {
@@ -1529,6 +1538,7 @@ Wait for the tool result before continuing. After receiving a result, if there a
 - If you couldn't find a real value, write "—" (or a clearly-labelled "guess: … — verify") rather than a confident fake. Fewer rows that are real beats a full table that is fabricated.
 - **Never promise an action you are not about to perform.** Saying "I'll send over a calendar invite", "I'll add that to your calendar", "I'll share the doc" does NOT make any of it happen — nothing runs on your behalf after you stop writing. If you say a meeting is being scheduled, call **create_calendar_event** in the same turn so the event really is created; if you say something will be sent, either produce it now or call create_todo so it is on the user's list. And never describe a thing as attached, sent, or booked when it is not: a calendar event is only booked once the user presses Save, and you cannot attach files or generate meeting links. A commitment made in the user's name that nobody keeps costs them the meeting.
 - **LOOK IT UP BEFORE YOU ASK. If the answer is already in the user's own calendar, inbox or files, go and read it — do not open with questions.** When the user mentions a meeting, call or appointment WITHOUT naming the person ("I have a meeting with someone tomorrow, research them", "who am I meeting on Thursday", "prep me for my next call"), call **read_my_calendar** immediately, take the name from the event title, and then call research_person on it. Asking "what is the full name of the person?" about a meeting that is sitting in their calendar with the name in the title is a FAILURE: they came to you precisely so they would not have to look it up. The same applies to "my meeting with X is when?" (read the calendar) and "reply to my messages" (read the inbox). Ask only for something genuinely not obtainable — their intent, their preference, a decision only they can make — and even then, gather everything you CAN first and ask alongside real progress, never instead of it.
+- **TWO NAMES THAT ARE NEVER RESEARCH TARGETS: the user, and your own colleagues.** Never research, profile or brief on the USER (see "Who you work for" above) — a briefing about the user, handed to the user, is a wasted task and reads as broken. And never research one of your OWN Krew agents: when the user says "I told Tom…", "ask Kai to…", "Arjun should…", those are agent handles, not people they are meeting. If a name is one of your colleagues, it is who the work was given to — not who to look up. Never ask "what is Tom's full name?".
 - **A REAL, NAMED PERSON — call research_person first, every time.** If the user names someone and wants to know who they are, their role, their employer, their career, their expertise or what they have been posting — including any meeting/call prep or "briefing" — you MUST call research_person before writing a word about them. Do NOT write a bio, job title, company, career history or "recent activity" for a named human from what you recall or what sounds plausible: a briefing that reads perfectly and is invented sends the user into a real meeting with false facts about a real person, and they will only discover it in the room. If research_person finds nothing, tell the user you could not find them and ask for a LinkedIn URL or their company — that answer is genuinely more useful than a confident fake, and it is the required one.
 
 ## Final answer
@@ -2428,6 +2438,14 @@ async function executeToolCore(
   // to asking "who are you meeting?" about a meeting sitting in the calendar with the name in its
   // title. The outreach copilot already read the calendar through the signed-in browser; this makes
   // that same path a tool every agent can call.
+  if (toolName === 'set_user_name') {
+    const name = str(args.name).trim();
+    if (!name) return '[set_user_name needs "name".]';
+    const { saveUserIdentity } = await import('./userIdentity');
+    saveUserIdentity({ name, role: str(args.role).trim() || undefined, company: str(args.company).trim() || undefined });
+    return `Saved: the user is ${name}${args.role ? `, ${str(args.role)}` : ''}${args.company ? ` at ${str(args.company)}` : ''}. From now on, never research or profile them — when a meeting or thread has two names, the one that is NOT ${name} is the person of interest.`;
+  }
+
   if (toolName === 'read_my_calendar') {
     const days = Math.max(1, Math.min(60, num(args.days_ahead, 14)));
     emit('agent-browser-active', {}).catch(() => {});
@@ -2450,14 +2468,24 @@ async function executeToolCore(
     const text = raw.slice(ci + 'CALENDAR_TEXT:'.length).trim().slice(0, 6000);
     if (!text) return "Your calendar opened but came back empty.";
     const now = new Date();
+    // Say WHO THE USER IS right next to the calendar. Without it the agent read "Amogh x Keshav
+    // intro call / Amogh Misra, Accepted", picked the first name it saw, and delivered a briefing
+    // about the user TO the user.
+    const { loadUserIdentity, otherPartyFromTitle } = await import('./userIdentity');
+    const me = loadUserIdentity();
+    const firstTitle = text.split('\n').find((l) => /\bx\b|×|\bwith\b|\/|<>/.test(l) && !/^\d|calendar:|all day/i.test(l.trim())) || '';
+    const other = firstTitle ? otherPartyFromTitle(firstTitle, me) : '';
     return [
       `THE USER'S REAL CALENDAR, read from their signed-in Google Calendar just now.`,
       `Right now it is ${now.toLocaleString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })}. Anything dated before now has already happened — never describe it as upcoming.`,
+      me?.name
+        ? `THE USER IS ${me.name.toUpperCase()}. Their own name appears in event titles and attendee lists — that is NOT the person they are meeting. Skip it and take the OTHER name.${other ? ` For the meeting below, the other party is **${other}** — research ${other}, not ${me.name}.` : ''}`
+        : `You do not know the user's own name yet, and an attendee list contains it. Call set_user_name (ask them once) before deciding who to research, so you don't end up profiling the user themselves.`,
       `Showing roughly the next ${days} days.`,
       '',
       text,
       '',
-      "Use this to answer directly. If the user asked about a person they are meeting, take the name from the event title and research THAT person — do not ask the user for a name that is written above.",
+      "Use this to answer directly. If the user asked about a person they are meeting, take the OTHER party's name from the event title and research THAT person — do not ask the user for a name that is written above, and never research the user.",
     ].join('\n');
   }
 
