@@ -82,6 +82,20 @@ export interface AutomationRow {
 function uuid() { return crypto.randomUUID(); }
 
 export async function callAutomationAI(userMessage: string, systemPrompt: string): Promise<string> {
+  // Free BYOK tiers rate-limit hard (a real NVIDIA key returned 429 on 9 of 14 quick requests), and
+  // background work — a Guard scan chunking a codebase, an automation looping rows — is exactly the
+  // pattern that trips it. Wait the limit out instead of failing the run.
+  let rateWaits = 0;
+  for (;;) {
+    try {
+      return await callAiOnce(userMessage, systemPrompt);
+    } catch (e) {
+      const m = e instanceof Error ? e.message : String(e);
+      if (!/\b429\b|too many requests|rate limit|rate-limit|quota exceeded/i.test(m) || rateWaits >= 5) break;
+      rateWaits++;
+      await new Promise((r) => setTimeout(r, Math.min(3000 * 2 ** (rateWaits - 1), 30_000)));
+    }
+  }
   try {
     return await callAiOnce(userMessage, systemPrompt);
   } catch (e) {

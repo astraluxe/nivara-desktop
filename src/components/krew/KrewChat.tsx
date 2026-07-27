@@ -3858,6 +3858,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     const MAX_ATTEMPTS = 10;
     let authRetried = false;
     let modelRepaired = false;
+    let rateWaits = 0;
     for (let attempt = 1; ; attempt++) {
       try {
         const r = await streamTurn(msgs, systemPrompt, onChunk);
@@ -3917,6 +3918,25 @@ const [studioExtracting, setStudioExtracting] = useState(false);
         // model) is not a network problem: retrying it ten times, each waiting another 90 s, is up
         // to fifteen minutes of "Reconnecting…" on a connection that never went down. Only a real
         // connection error gets the banner and the full retry budget.
+        // RATE LIMITED — wait it out, never fail the task. Measured on a free NVIDIA key: 14 quick
+        // requests returned 9 × "429 Too Many Requests", with NO Retry-After header to go on. A free
+        // tier is exactly what a multi-step agent run hammers, and a 429 used to match none of the
+        // categories below, so it threw immediately and killed the whole task a few steps in.
+        // Backoff and carry on: the limit is per-minute and clears on its own.
+        const isRateLimited = /\b429\b|too many requests|rate limit|rate-limit|quota exceeded/i.test(msg);
+        if (isRateLimited && !stopRef.current) {
+          rateWaits++;
+          if (rateWaits <= 6) {
+            const waitMs = Math.min(3000 * 2 ** (rateWaits - 1), 30_000);
+            setAgentStep(`${provider || 'Your provider'} is rate-limiting (free tier) — waiting ${Math.round(waitMs / 1000)}s, then continuing…`);
+            emit('agent-progress', { text: `Rate limited by your provider — waiting ${Math.round(waitMs / 1000)}s and continuing (attempt ${rateWaits} of 6).` }).catch(() => {});
+            await new Promise((r) => setTimeout(r, waitMs));
+            if (stopRef.current) throw e;
+            attempt--;                 // a provider limit is not a failed attempt
+            continue;
+          }
+          throw new Error(`${provider || 'Your AI provider'} kept rate-limiting this key (free tiers allow only a few requests a minute). Wait a minute and try again, or switch the chat to adris.tech AI for this task.`);
+        }
         // Order matters: the stall message itself contains the word "connection", so it has to be
         // recognised BEFORE the network patterns or it classifies as a drop and gets the banner again.
         const isStall = /response stopped|stopped responding/i.test(msg);
