@@ -730,7 +730,8 @@ export const RESEARCH_TOOLS: ToolDef[] = [
     name: 'linkedin_scan_connections',
     description: "Scan the user's OWN LinkedIn connections (their warmest leads) and save them to the Brain. This does the whole job in code: it opens the connections page in the logged-in browser, scrolls and clicks 'Load more' to load people, and reads their REAL names + headlines directly from the page — so names are never invented. It de-dupes against what's already saved and appends only new people. Use this (NOT manual browser_navigate + parsing) whenever the user says 'scan my LinkedIn', 'who am I connected with', or 'find clients among my connections'.",
     parameters: {
-      limit:   { type: 'number',  description: 'How many connections to load this run. Default 50. Only go above 50 if the user asked for a specific larger number or "all".', required: false },
+      limit:   { type: 'number',  description: 'How many NEW connections to save this run. Default 50. Pass a bigger number only if the user asked for one. Ignored when all=true.', required: false },
+      all:     { type: 'boolean', description: 'Set true when the user wants their WHOLE connections list — "scan all", "scan everyone", "all my connections", "the full list", or a repeat request to keep going until finished. The scan then keeps scrolling until LinkedIn genuinely runs out of people and saves every one of them, instead of stopping at 50. Takes longer (a few minutes on a large network) — say so before starting.', required: false },
       link_to: { type: 'string',  description: "Optional: the exact title of a Brain note to connect this list to — e.g. the reference file the user attached (\"PRODUCT.md\"). Pass it so the connections list links to that file in the graph.", required: false },
     },
   },
@@ -1567,7 +1568,9 @@ LinkedIn's rules forbid automated messaging/connecting; accounts that auto-DM ge
 
 ## Scanning the user's existing LinkedIn connections (warm leads)
 The user's OWN connections are their warmest potential clients. When they ask to "see who I'm connected with", "scan my LinkedIn", or "find clients among my connections":
-- USE THE linkedin_scan_connections TOOL. Do NOT do this by hand with browser_navigate + reading the text yourself — that led to INVENTED names. The tool opens the connections page, scrolls/loads people, reads their REAL names + headlines from the page in code, de-dupes against what's already saved, and appends new people to the ONE "LinkedIn connections" Brain note. Default 50 per run; pass a bigger limit only if the user asked for a number or "all".
+- USE THE linkedin_scan_connections TOOL. Do NOT do this by hand with browser_navigate + reading the text yourself — that led to INVENTED names. The tool opens the connections page, scrolls/loads people, reads their REAL names + headlines from the page in code, de-dupes against what's already saved, and appends new people to the ONE "LinkedIn connections" Brain note.
+- HOW MANY: default 50 per run. Pass **all: true** whenever the user wants the whole list — "scan all", "scan everyone", "all my connections", "the full list" — or when they ask you to keep going after a partial scan. A full scan keeps scrolling until LinkedIn genuinely runs out of people, which takes a few minutes on a large network; tell them it is running and let it finish rather than stopping at 50 and asking again.
+- ALWAYS SHOW THE PEOPLE. The tool returns a markdown table of who was saved — put that table in your reply so the user can see the names, not just a count. If the tool reports the scan did NOT reach the end of the list, say so plainly and offer to continue; never imply a partial scan covered everyone.
 - If the user attached a reference file (e.g. their PRODUCT.md), pass its exact title as link_to so the connections list connects to that file in the graph.
 - The tool returns the real names it saved. NEVER rename, anonymise, or replace any of them, and NEVER emit placeholder names like "[Name Found]" or fence markers like "UNTRUSTED EXTERNAL CONTENT". Just relay how many were added and offer the next step: "scan the next 50" for more, or draft outreach for the good-fit people (which opens the outreach copilot).
 - To assess fit, read the headlines the tool returned and add a short note on which suit what the user sells — but keep the names EXACTLY as returned.
@@ -1833,6 +1836,11 @@ async function executeToolCore(
 ): Promise<string> {
   const str = (v: unknown) => String(v ?? '');
   const num = (v: unknown, def: number) => typeof v === 'number' ? v : def;
+  /** One canonical form for a LinkedIn profile URL, so the same person can't be saved twice because
+   *  of a trailing slash, a query string, http vs https or a capital letter. */
+  const normUrl = (u: string) =>
+    (u || '').trim().toLowerCase().split('?')[0].split('#')[0]
+      .replace(/^http:/, 'https:').replace(/^https:\/\/www\./, 'https://').replace(/\/+$/, '');
 
   // ── Generic MCP tools (user-connected servers) ────────────────────────────
   // Namespaced `mcp__<server>__<tool>` — routed to the connected MCP server.
@@ -2176,7 +2184,11 @@ async function executeToolCore(
 
   // ── LinkedIn: scan the user's own connections (code-parsed, never hallucinated) ──
   if (toolName === 'linkedin_scan_connections') {
-    const limit = Math.max(1, Math.min(200, num(args.limit, 50)));
+    // "Scan all" means all. Fifty at a time was a safety valve for a slow scroll, but the scan now
+    // knows when LinkedIn has genuinely run out of people, so there is no reason to make someone ask
+    // fifteen times for a 766-person network. Default stays 50 when they didn't ask for everything.
+    const scanAll = args.all === true || num(args.limit, 0) >= 500;
+    const limit = scanAll ? 5000 : Math.max(1, Math.min(200, num(args.limit, 50)));
     const { brain } = await import('./knowledgeStore');
     const LIST_TITLE = 'LinkedIn connections';
     // EXACT title match only — brain.findByTitle() falls back to a SUBSTRING match, which is
@@ -2194,6 +2206,34 @@ async function executeToolCore(
       }
       return names;
     };
+    /** Profile URLs already in the note. A URL identifies a person; a name does not — two different
+     *  people share a name, and LinkedIn renders the same person under slightly different spellings
+     *  ("Akshat Vij" / "Aksht Vij"), which is how duplicates got into the note in the first place. */
+    const parseRowUrls = (body: string): string[] => {
+      const urls: string[] = [];
+      for (const m of body.matchAll(/\|\s*(https?:\/\/[^\s|]+)\s*\|?/g)) urls.push(normUrl(m[1]));
+      return urls;
+    };
+    /** Drop duplicate rows from an existing table, keeping the first of each person. Repairs notes
+     *  that already contain duplicates from earlier runs rather than leaving them there forever. */
+    const dedupeTable = (md: string): string => {
+      if (!/^\s*\|/m.test(md)) return md;                     // not a markdown table (HTML-edited note)
+      const seen = new Set<string>();
+      const out: string[] = [];
+      let dropped = 0;
+      for (const line of md.split('\n')) {
+        const isRow = /^\|/.test(line.trim()) && !/^\|\s*-+/.test(line.trim()) && !/^\|\s*name\s*\|/i.test(line.trim());
+        if (!isRow) { out.push(line); continue; }
+        const cells = line.split('|').map((c) => c.trim());
+        const url = cells.find((c) => /^https?:\/\//.test(c)) || '';
+        const key = url ? normUrl(url) : (cells[1] || '').toLowerCase();
+        if (!key) { out.push(line); continue; }
+        if (seen.has(key)) { dropped++; continue; }
+        seen.add(key);
+        out.push(line);
+      }
+      return dropped ? out.join('\n') : md;
+    };
     // Everyone already known, from TWO sources unioned — the markdown table (can go stale/odd if
     // ever hand-edited) AND the structured JSON mirror this tool also maintains (nv-li-connections,
     // never subject to markdown formatting quirks). Relying on the table alone previously let a
@@ -2205,9 +2245,13 @@ async function executeToolCore(
     const { nodeToMarkdown, appendToBody } = await import('./knowledgeStore');
     const existingMd = existingNode?.body ? nodeToMarkdown(existingNode.body) : '';
     const existingNames = new Set<string>(existingMd ? parseRowNames(existingMd) : []);
+    const existingUrls = new Set<string>(existingMd ? parseRowUrls(existingMd) : []);
     try {
-      const prevJson: { name?: string }[] = JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
-      for (const p of prevJson) if (p?.name) existingNames.add(p.name.trim().toLowerCase());
+      const prevJson: { name?: string; url?: string }[] = JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
+      for (const p of prevJson) {
+        if (p?.name) existingNames.add(p.name.trim().toLowerCase());
+        if (p?.url) existingUrls.add(normUrl(p.url));
+      }
     } catch { /* JSON mirror optional */ }
     emit('agent-browser-active', {}).catch(() => {});
     emit('agent-progress', { text: 'Opening your LinkedIn connections…' }).catch(() => {});
@@ -2215,18 +2259,29 @@ async function executeToolCore(
     // closeAgentBrowserIfActive() sees no active browser and the window is left open forever.
     _browserActiveThisRun = true;
     // Load a bit extra so that after removing already-saved people we still net ~limit new ones.
-    const target = limit + existingNames.size + 10;
+    // On a full scan, ask the browser for far more than anyone has so the only thing that stops the
+    // scroll is LinkedIn actually running out — that is what `exhausted` reports back.
+    const target = scanAll ? 5000 : limit + existingNames.size + 10;
     let raw = await invoke<string>('run_browser_persistent', { args: `connections ${target}` }).catch((e) => String(e));
     // Keep going in further passes when the first one ran out of time before reaching `target`.
     // One pass is capped by Rust's 45s budget, which on a large network is nowhere near enough to
     // scroll past everyone already saved — that is why a scan of a 700-person network kept
     // returning a single new name. Each resume pass continues from the list already on screen, so
     // progress accumulates instead of restarting. Stops early the moment a pass adds nobody.
-    const countPeople = (s: string): number => {
+    // CONN_JSON is either a bare array (older builds) or { people, exhausted } — accept both, so a
+    // stale deployed script can't break the scan.
+    type ConnPayload = { people: { name?: unknown; headline?: unknown; url?: unknown }[]; exhausted: boolean };
+    const readPayload = (s: string): ConnPayload | null => {
       const i = s.indexOf('CONN_JSON:');
-      if (i < 0) return 0;
-      try { const a = JSON.parse(s.slice(i + 'CONN_JSON:'.length).trim()); return Array.isArray(a) ? a.length : 0; } catch { return 0; }
+      if (i < 0) return null;
+      try {
+        const v = JSON.parse(s.slice(i + 'CONN_JSON:'.length).trim());
+        if (Array.isArray(v)) return { people: v, exhausted: false };
+        if (v && Array.isArray(v.people)) return { people: v.people, exhausted: !!v.exhausted };
+      } catch { /* not JSON */ }
+      return null;
     };
+    const countPeople = (s: string): number => readPayload(s)?.people.length ?? 0;
     // On a 700-person network this is the difference between finding 3 new people and finding
     // them all. Each pass is capped by Rust's 45s budget, so reaching past 200 already-saved
     // people takes many passes — six was simply not enough, and the run ended looking as though
@@ -2236,15 +2291,23 @@ async function executeToolCore(
     // one stalled scroll is routine. Only two barren passes in a row means the end of the list.
     let loadedSoFar = countPeople(raw);
     let stalled = 0;
-    for (let pass = 0; pass < 14; pass++) {
+    let exhausted = readPayload(raw)?.exhausted ?? false;
+    for (let pass = 0; pass < (scanAll ? 40 : 14) && !exhausted; pass++) {
       const got = countPeople(raw);
       loadedSoFar = Math.max(loadedSoFar, got);
       if (got === 0 || got >= target) break;                        // failed, or we have enough
       emit('agent-progress', { text: `Loaded ${got} of about ${target} connections — scrolling for more…` }).catch(() => {});
       const more = await invoke<string>('run_browser_persistent', { args: `connections ${target} resume` }).catch(() => '');
-      if (countPeople(more) <= got) {
-        if (++stalled >= 2) break;                                  // twice with no progress = the end
-        continue;                                                   // give LinkedIn one more chance to load
+      const moreP = readPayload(more);
+      // A pass that came back with NOTHING (killed by the 45s budget, a hiccup) is not evidence that
+      // the list has ended — it used to be counted as such, and two of them in a row ended the scan
+      // with "your whole network is already saved" after reading 200 of 766 people. Only a pass that
+      // genuinely read the list and found no new rows counts towards stopping.
+      if (!moreP) continue;
+      if (moreP.exhausted) { exhausted = true; if (moreP.people.length > got) raw = more; break; }
+      if (moreP.people.length <= got) {
+        if (++stalled >= 3) break;
+        continue;
       }
       stalled = 0;
       raw = more;
@@ -2274,19 +2337,32 @@ async function executeToolCore(
     // The browser command returns structured JSON (CONN_JSON:[{name,headline}]) read straight from
     // the DOM — most reliable. Fall back to text-parsing the innerText if JSON isn't present.
     let all: { name: string; headline: string; url: string }[] = [];
-    const jsonIdx = raw.indexOf('CONN_JSON:');
-    if (jsonIdx >= 0) {
-      try {
-        const arr = JSON.parse(raw.slice(jsonIdx + 'CONN_JSON:'.length).trim());
-        if (Array.isArray(arr)) all = arr
-          .map((p: { name?: unknown; headline?: unknown; url?: unknown }) => ({ name: String(p?.name || '').trim(), headline: String(p?.headline || '').trim(), url: String(p?.url || '').trim() }))
-          .filter((p) => p.name && !/^(message|connect|following|pending|load more)$/i.test(p.name));
-      } catch { /* fall through to text parse */ }
+    const payload = readPayload(raw);
+    if (payload) {
+      all = payload.people
+        .map((p) => ({ name: String(p?.name || '').trim(), headline: String(p?.headline || '').trim(), url: String(p?.url || '').trim() }))
+        .filter((p) => p.name && !/^(message|connect|following|pending|load more)$/i.test(p.name));
     }
     if (all.length === 0) all = parseLinkedInConnections(raw).map((p) => ({ ...p, url: '' }));
     if (all.length === 0) return "Opened the connections page but couldn't read any names from it (LinkedIn may not have finished loading, or you're not signed in). Make sure you're logged into LinkedIn in the ADRIS browser, then try /scan again.";
-    const fresh = all.filter((c) => !existingNames.has(c.name.toLowerCase())).slice(0, limit);
-    if (fresh.length === 0) return `Scanned your connections — all ${all.length} people I could load are already saved in the "${LIST_TITLE}" Brain note. To go further, say "scan the next 50" (I'll keep scrolling past the ones already saved) or "scan all".`;
+    // Identify people by profile URL when we have one, falling back to the name. Name-only matching
+    // both missed people (same person, spelling drift) and could hide a genuinely different person
+    // who happens to share a name.
+    const seenThisRun = new Set<string>();
+    const fresh = all.filter((c) => {
+      const u = c.url ? normUrl(c.url) : '';
+      const key = u || c.name.toLowerCase();
+      if (seenThisRun.has(key)) return false;                 // the page can render one card twice
+      seenThisRun.add(key);
+      return u ? !existingUrls.has(u) : !existingNames.has(c.name.toLowerCase());
+    }).slice(0, limit);
+    if (fresh.length === 0) {
+      // Say which of the two situations this is. Reporting "everyone is saved" when the scan simply
+      // ran out of budget at 200 of 766 people is what made a half-finished scan look complete.
+      return exhausted
+        ? `Scanned your connections — I reached the END of your LinkedIn connections list (${all.length} people loaded) and every one of them is already saved in the "${LIST_TITLE}" Brain note. Nothing new to add.`
+        : `Scanned ${all.length} people and they are all already saved — but this run did NOT reach the end of your list (LinkedIn was still loading more when the run hit its time limit). Run /scan again to continue further down; each run picks up where the last one stopped. Tell the user this plainly: the scan is not finished, it is partway through.`;
+    }
     // Save a 3-column table incl. the profile URL — the outreach copilot uses the URL to open the
     // exact chat. Replace any '|' inside a name/headline with '·' first: LinkedIn headlines are full
     // of pipes ("|| Co-Founder ||"), which would otherwise corrupt the markdown table and make the
@@ -2294,9 +2370,11 @@ async function executeToolCore(
     const cell = (s: string) => (s || '').replace(/\|/g, '·').replace(/\s+/g, ' ').trim();
     const rows = fresh.map((c) => `| ${cell(c.name)} | ${cell(c.headline) || '—'} | ${c.url || ''} |`).join('\n');
     const block = `| Name | Role / Company / Headline | Profile |\n| --- | --- | --- |\n${rows}`;
-    const body = existingNode?.body
+    // dedupeTable also REPAIRS the note: earlier runs deduped by name against a set that could come
+    // back empty (an HTML-edited body, a failed parse), which put the same people in twice.
+    const body = dedupeTable(existingNode?.body
       ? appendToBody(existingNode.body, rows)
-      : `Your LinkedIn connections — your warmest potential clients (scanned ${new Date().toLocaleDateString()}).\n\n${block}`;
+      : `Your LinkedIn connections — your warmest potential clients (scanned ${new Date().toLocaleDateString()}).\n\n${block}`);
     const node = brain.addNode({ title: LIST_TITLE, body, kind: 'list' });
     // ALSO store the connections as STRUCTURED JSON (name/headline/url) in localStorage — the
     // outreach flow reads THIS, so it never has to parse the markdown table (LinkedIn headlines are
@@ -2306,7 +2384,7 @@ async function executeToolCore(
       const prev: { name: string; headline: string; url: string }[] = JSON.parse(localStorage.getItem(KEY) || '[]');
       const byKey: Record<string, { name: string; headline: string; url: string }> = {};
       for (const p of [...(Array.isArray(prev) ? prev : []), ...fresh]) {
-        const k = (p.url || p.name || '').toLowerCase().trim();
+        const k = p.url ? normUrl(p.url) : (p.name || '').toLowerCase().trim();
         if (k) byKey[k] = { name: p.name, headline: p.headline || '', url: p.url || '' };
       }
       localStorage.setItem(KEY, JSON.stringify(Object.values(byKey)));

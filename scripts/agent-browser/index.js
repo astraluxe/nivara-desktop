@@ -1035,7 +1035,19 @@ async function main() {
     var cConn = await ensureChrome();
     var cCtx  = cConn.context;
     if (!cCtx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
-    var cPage = cCtx.pages().at(-1) || await cCtx.newPage();
+    // Pick the tab that is ACTUALLY on the connections list, not simply the last one opened. A
+    // resume pass reuses the loaded list, and `.at(-1)` handed back whatever tab happened to be
+    // newest (a profile the copilot opened, say) — so resume saw an unpopulated page, reloaded the
+    // list from scratch, and every pass came back with the same first ~200 people forever.
+    var cPage = null;
+    try {
+      var cPages = cCtx.pages();
+      for (var cpi = cPages.length - 1; cpi >= 0; cpi--) {
+        if (/\/mynetwork\/invite-connect\/connections/.test(cPages[cpi].url())) { cPage = cPages[cpi]; break; }
+      }
+      if (!cPage) cPage = cPages.at(-1);
+    } catch (_) {}
+    if (!cPage) cPage = await cCtx.newPage();
     // Bring the window forward so the user actually SEES it working (and can log in if needed).
     try { await cPage.bringToFront(); } catch (_) {}
     var connUrl = 'https://www.linkedin.com/mynetwork/invite-connect/connections/';
@@ -1089,16 +1101,19 @@ async function main() {
     // A resume pass skips the navigation + settle work above, so it can spend that time scrolling
     // instead. A fresh pass keeps the old, proven budget — the whole process must stay under Rust's
     // 45s cap or run_browser_persistent falls back to the blank-window exe.
-    var cDeadline = Date.now() + (cOnList ? 34000 : 26000);
-    var cLast = 0, cStall = 0;
-    while (Date.now() < cDeadline) {
-      // Count UNIQUE people (by profile href) — each card has ~2 /in/ anchors, so counting raw
-      // anchors made the loop stop at ~half the requested count (the "only 30 of 50" bug).
-      var cCount = await cPage.evaluate(function() {
+    var cDeadline = Date.now() + (cOnList ? 37000 : 26000);
+    var cLast = 0, cStall = 0, cExhausted = false;
+    var cCountPeople = function () {
+      return cPage.evaluate(function() {
         var s = {}, a = document.querySelectorAll('a[href*="/in/"]');
         for (var i = 0; i < a.length; i++) { var h = (a[i].getAttribute('href') || '').split('?')[0]; if (h.indexOf('/in/') > -1) s[h] = 1; }
         return Object.keys(s).length;
       }).catch(function () { return 0; });
+    };
+    while (Date.now() < cDeadline) {
+      // Count UNIQUE people (by profile href) — each card has ~2 /in/ anchors, so counting raw
+      // anchors made the loop stop at ~half the requested count (the "only 30 of 50" bug).
+      var cCount = await cCountPeople();
       if (cCount >= wantN) break;
       await cPage.evaluate(function() {
         var m = document.querySelector('.scaffold-finite-scroll__content') || document.querySelector('.scaffold-layout__main') || document.querySelector('main') || document.body;
@@ -1109,11 +1124,33 @@ async function main() {
         await cPage.evaluate(function() {
           var btn = document.querySelector('button.scaffold-finite-scroll__load-button');
           if (!btn) { var bs = [].slice.call(document.querySelectorAll('button')); for (var i = 0; i < bs.length; i++) { if (/load more/i.test(bs[i].textContent || '')) { btn = bs[i]; break; } } }
-          if (btn) btn.click();
+          // A button that is out of view can be a no-op click. Bring it into view first.
+          if (btn) { try { btn.scrollIntoView({ block: 'center' }); } catch (e) {} btn.click(); }
         }).catch(function () {});
       } catch (_) {}
-      await new Promise(function (r) { setTimeout(r, 1300); });
-      if (cCount <= cLast) { cStall++; if (cStall >= 3) break; } else cStall = 0;
+      // WAIT FOR GROWTH instead of a flat 1.3s. LinkedIn regularly takes 2-4s to append the next
+      // batch, so a fixed short wait read as "no growth" three times in a row and declared the list
+      // finished at ~200 people on a 766-person network. Poll up to 5s, and stop as soon as it grows.
+      var cGrew = false;
+      for (var cw = 0; cw < 10; cw++) {
+        await new Promise(function (r) { setTimeout(r, 500); });
+        if (Date.now() >= cDeadline) break;
+        if ((await cCountPeople()) > cCount) { cGrew = true; break; }
+      }
+      if (!cGrew) {
+        // Five seconds of no new people, twice running, with the page scrolled to the bottom and no
+        // Load-more left = genuinely the end of the list. Report that, so the caller can tell "we
+        // ran out of time" apart from "there is nobody else" instead of guessing.
+        cStall++;
+        if (cStall >= 2) {
+          cExhausted = await cPage.evaluate(function () {
+            var btn = document.querySelector('button.scaffold-finite-scroll__load-button');
+            if (!btn) { var bs = [].slice.call(document.querySelectorAll('button')); for (var i = 0; i < bs.length; i++) { if (/load more/i.test(bs[i].textContent || '')) { btn = bs[i]; break; } } }
+            return !btn;
+          }).catch(function () { return false; });
+          break;
+        }
+      } else cStall = 0;
       cLast = cCount;
     }
     await hideBanner(cPage);
@@ -1154,7 +1191,10 @@ async function main() {
       return out;
     }).catch(function () { return []; });
     writeState({ url: cFinal });
-    if (people && people.length) { process.stdout.write('CONN_JSON:' + JSON.stringify(people)); return; }
+    // `exhausted` lets the caller distinguish "LinkedIn has no more to give" from "this pass ran out
+    // of its 45s budget" — the difference between correctly stopping and wrongly telling the user
+    // their whole network is already saved.
+    if (people && people.length) { process.stdout.write('CONN_JSON:' + JSON.stringify({ people: people, exhausted: cExhausted, loaded: people.length })); return; }
     // Nothing read → return a DIAGNOSTIC (url, link count, login?, title, snippet) so the failure
     // message is accurate and pin-pointable instead of a vague "couldn't read".
     var diag = await cPage.evaluate(function() {
