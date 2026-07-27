@@ -407,10 +407,24 @@ export async function planReply(opts: {
     };
   }
 
-  const p = firstJson<Partial<ReplyPlan> & { attachSuggested?: unknown }>(raw);
+  let p = firstJson<Partial<ReplyPlan> & { attachSuggested?: unknown }>(raw);
   if (!p) {
-    // The model (often a free BYOK one) didn't return clean JSON. Rather than dead-ending, salvage a
-    // usable draft from whatever it wrote so the user still gets something to review and edit.
+    // ASK AGAIN BEFORE GIVING UP. Every model, hosted ones included, occasionally answers with prose
+    // or a half-fenced blob; one plain re-ask fixes almost all of them. Dead-ending on the first
+    // malformed answer is what produced "Couldn't get a clean draft — respond yourself" on a thread
+    // the model was perfectly capable of handling.
+    const retry = await ai(
+      `${user}\n\nYour previous answer was not valid JSON. Reply with the JSON object ONLY — no explanation, no markdown fences, nothing before or after it.`,
+      system,
+    ).catch(() => '');
+    if (retry) {
+      p = firstJson<Partial<ReplyPlan> & { attachSuggested?: unknown }>(retry);
+      if (p) raw = retry;
+    }
+  }
+  if (!p) {
+    // Still not JSON — salvage a usable draft from whatever it wrote so the user gets something to
+    // review and edit rather than nothing at all.
     const salvaged = salvageDraft(raw);
     return {
       intent: 'unclear',

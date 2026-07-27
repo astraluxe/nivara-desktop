@@ -3693,6 +3693,10 @@ async fn krew_http_call(
     url:     String,
     headers: HashMap<String, String>,
     body:    Option<String>,
+    // Per-call override. Model probing needs to give up in seconds, not thirty: an NVIDIA model the
+    // key cannot really use accepts the request and then never answers, and probing several of those
+    // at 30s each is a minute of dead air. Omitted = the 30s default below.
+    timeout_ms: Option<u64>,
 ) -> Result<String, String> {
     // A REQUEST MUST BE ABLE TO GIVE UP.
     //
@@ -3705,7 +3709,7 @@ async fn krew_http_call(
     // 30s is generous for the connected-app API calls that also come through here, while still
     // guaranteeing the caller gets an answer.
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_millis(timeout_ms.unwrap_or(30_000).clamp(1_000, 120_000)))
         .connect_timeout(std::time::Duration::from_secs(10))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());

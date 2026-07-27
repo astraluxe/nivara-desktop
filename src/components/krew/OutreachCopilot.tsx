@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { brain } from '../../lib/knowledgeStore';
 import { todos } from '../../lib/todoStore';
 import { setAgentBrowserHold, bestProfileMatch } from '../../lib/krewTools';
@@ -423,6 +424,17 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   const [refineInput, setRefineInput] = useState('');
   const [refining, setRefining] = useState(false);
   const [refineNote, setRefineNote] = useState('');       // feedback when a refine fails / returns nothing
+  // Show the AI's live progress while it drafts. Without this the panel said "drafting replies…" and
+  // then sat there — identical whether the model was writing, thinking, or never going to answer.
+  useEffect(() => {
+    if (!planning && !verifying && !refining) return;
+    let alive = true;
+    const un = listen<{ text?: string }>('agent-progress', (e) => {
+      const t = (e.payload?.text || '').trim();
+      if (alive && t) setPlanNote(t);
+    });
+    return () => { alive = false; un.then((f) => f()).catch(() => {}); };
+  }, [planning, verifying, refining]);
   const [statusFilter, setStatusFilter] = useState<OutreachStatus | null>(null);  // filter list by status
   const [sourceFilter, setSourceFilter] = useState<OutreachSource | null>(null);  // connections vs leads
   const [checking, setChecking] = useState(false);        // a connection check is running

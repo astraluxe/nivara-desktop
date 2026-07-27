@@ -92,7 +92,12 @@ export default function ConnectionBar(props: Props) {
       if (!key) { try { const c = await credentialStore.get(provider); key = (c?.api_key as string) || ''; } catch { /* none */ } }
       if (!key) { if (!cancelled) { setRankedModels(null); setModelsLoading(false); } return; }
       const list = await fetchRankedModels(provider, key);
-      if (!cancelled) { setRankedModels(list); setModelsLoading(false); }
+      // Hide models this key has already been caught not answering. The catalogue lists everything
+      // the provider hosts, not what the account can actually call — offering one of those back is
+      // how a user ends up picking a model that accepts the request and then says nothing.
+      const { isBlocked } = await import('../../lib/modelHealth');
+      const usable = list.filter((m) => !isBlocked(provider, m.id));
+      if (!cancelled) { setRankedModels(usable); setModelsLoading(false); }
     })();
     return () => { cancelled = true; };
   }, [popup, provider, apiKey]);

@@ -13,6 +13,7 @@
 // with known-good general-purpose models, and domain-specialist builds (coder/math/med/finance) are
 // never auto-picked for what is mostly writing and agent work.
 
+import { invoke } from '@tauri-apps/api/core';
 import { fetchRankedModels, PROVIDERS, type Provider } from './ai';
 import { credentialStore } from './krewDb';
 
@@ -42,32 +43,96 @@ const SPECIALIST = /(coder|codellama|starcoder|[-_/]code|math|[-_/]med(ical)?[-_
 export function isDeadModelError(msg: string): boolean {
   const s = (msg || '').toLowerCase();
   if (!s) return false;
+  // A model that accepts the request and then answers with silence is as dead as one that 410s —
+  // and far worse for the user, because it looks like the app is still working. streamTurn raises
+  // NO_MODEL_RESPONSE for exactly that case.
+  if (/no_model_response/.test(s)) return true;
   if (/no longer available|model_not_found|model not found|unknown model|invalid model|does not exist|decommissioned|has been (removed|retired|deprecated)|not a valid model/.test(s)) return true;
   // NVIDIA answers a withdrawn model with a bare 410; a 404 that mentions the model is the same thing.
   if (/\b410\b/.test(s)) return true;
   return /\b404\b/.test(s) && /model/.test(s);
 }
 
+/** Models this key has been SEEN to hang or reject, so we never pick one of them again. */
+const BAD_KEY = 'nv-model-blocklist';
+function blocklist(): Record<string, number> {
+  try { const v = JSON.parse(localStorage.getItem(BAD_KEY) || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; }
+}
+function blockModel(provider: string, model: string): void {
+  if (!model) return;
+  try {
+    const v = blocklist();
+    v[`${provider}:${model.toLowerCase()}`] = Date.now();
+    localStorage.setItem(BAD_KEY, JSON.stringify(v));
+  } catch { /* quota */ }
+}
+function isBlocked(provider: string, model: string): boolean {
+  const at = blocklist()[`${provider}:${(model || '').toLowerCase()}`];
+  // Forget after a week — a model that was down for the account may come back.
+  return !!at && Date.now() - at < 7 * 86_400_000;
+}
+export { blockModel, isBlocked };
+
 /**
- * Best live model this key can actually call. Asks the provider's own /models endpoint, so we never
- * store an id that isn't in the catalogue. Returns '' when the provider can't be reached and there
- * is no safe default.
+ * Does this model ACTUALLY answer for this key?
+ *
+ * Appearing in /v1/models means nothing about access. Measured on a real NVIDIA key:
+ * `meta/llama-3.3-70b-instruct` and `openai/gpt-oss-120b` are both listed, accept the request, and
+ * then never respond at all — no data, no error, no close. Others reply `404 … Not found for
+ * account`. Only `meta/llama-3.1-8b-instruct` (281 ms) and `meta/llama-3.1-70b-instruct` (4.3 s)
+ * actually worked. That silent hang is exactly what left the copilot "drafting…" forever, so a
+ * candidate model is not trusted until it has said something back.
+ */
+export async function probeModel(provider: Provider, apiKey: string, model: string, timeoutMs = 12_000): Promise<boolean> {
+  const endpoint = PROVIDERS[provider]?.endpoint;
+  if (!endpoint || !apiKey || !model) return false;
+  try {
+    // krew_http_call REJECTS on a timeout or any non-2xx, so both "never answered" and
+    // "404 not found for account" land in the catch below.
+    const raw = await invoke<string>('krew_http_call', {
+      method: 'POST', url: endpoint,
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: 'hi' }], max_tokens: 4, stream: false }),
+      timeoutMs,
+    });
+    if (!raw) return false;
+    const j = JSON.parse(raw) as { choices?: unknown[]; error?: unknown; detail?: unknown };
+    if (j.error || j.detail) return false;
+    return Array.isArray(j.choices) && j.choices.length > 0;
+  } catch { return false; }
+}
+
+/**
+ * Best model this key can actually call — verified, not assumed. Walks the preference list and then
+ * the live catalogue, PROBING each candidate and returning the first that genuinely answers.
  */
 export async function pickBestModel(provider: Provider, apiKey: string, exclude: string[] = []): Promise<string> {
   const bad = new Set(exclude.filter(Boolean).map((s) => s.toLowerCase()));
-  const live = (await fetchRankedModels(provider, apiKey).catch(() => [])).filter((m) => !bad.has(m.id.toLowerCase()));
+  const skip = (id: string) => bad.has(id.toLowerCase()) || isBlocked(provider, id);
+  const live = (await fetchRankedModels(provider, apiKey).catch(() => [])).filter((m) => !skip(m.id));
 
+  // Candidates in the order we'd like them, deduped: preferred (present in the catalogue) first,
+  // then general-purpose catalogue entries, smart tier before fast.
+  const ordered: string[] = [];
+  const push = (id: string) => { if (id && !ordered.some((o) => o.toLowerCase() === id.toLowerCase())) ordered.push(id); };
   for (const want of PREFERRED[provider] ?? []) {
     const hit = live.find((m) => m.id.toLowerCase() === want.toLowerCase());
-    if (hit) return hit.id;
+    if (hit) push(hit.id);
   }
   const general = live.filter((m) => !SPECIALIST.test(m.id));
-  const chosen = general.find((m) => m.tier === 'smart') ?? general[0] ?? live[0];
-  if (chosen) return chosen.id;
+  for (const m of general) if (m.tier === 'smart') push(m.id);
+  for (const m of general) push(m.id);
 
-  // Catalogue unreachable (offline, or the key can't list models) — fall back to a known id.
-  const fallback = (PREFERRED[provider] ?? [])[0] ?? PROVIDERS[provider]?.defaultModel ?? '';
-  return fallback && !bad.has(fallback.toLowerCase()) ? fallback : '';
+  // Probe a bounded number — enough to get past a couple of dead ones without stalling setup.
+  for (const id of ordered.slice(0, 6)) {
+    if (await probeModel(provider, apiKey, id)) return id;
+    blockModel(provider, id);            // it is listed but does not answer — never offer it again
+  }
+
+  // Nothing probed clean (offline, or the probe endpoint is blocked). Fall back to a known id rather
+  // than leaving the user with no model at all.
+  const fallback = (PREFERRED[provider] ?? []).find((m) => !skip(m)) ?? PROVIDERS[provider]?.defaultModel ?? '';
+  return fallback && !bad.has(fallback.toLowerCase()) ? fallback : (ordered[0] ?? '');
 }
 
 /**

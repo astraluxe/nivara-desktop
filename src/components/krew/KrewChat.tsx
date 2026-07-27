@@ -23,7 +23,7 @@ import UpgradeModal from '../UpgradeModal';
 import { type AutomationProposal } from './AutomationProposalModal';
 import AgentStatus from './AgentStatus';
 import { type ConnectionMode, type Provider } from '../../lib/ai';
-import { isDeadModelError, repairDeadModel } from '../../lib/modelHealth';
+import { isDeadModelError, repairDeadModel, blockModel } from '../../lib/modelHealth';
 import ConnectionBar from '../coder/ConnectionBar';
 import { getMonthlyUsage } from '../../lib/tokenTracker';
 import { getImageBudget, unitsForModel } from '../../lib/imageQuota';
@@ -3722,16 +3722,28 @@ const [studioExtracting, setStudioExtracting] = useState(false);
       // stall cap (fine for a cloud call) would abort with "Response stopped" before the model even
       // finished loading, so give local mode a much longer leash. Cloud calls keep the tight 90 s.
       const stallMs = mode === 'local' ? 300_000 : 90_000;
+      // FIRST-TOKEN timeout, separate from the mid-stream stall. A BYOK model the key cannot really
+      // use accepts the request and then never says anything — measured on a live NVIDIA key, both
+      // meta/llama-3.3-70b-instruct and openai/gpt-oss-120b behave exactly like this. Waiting the
+      // full 90 s (twice) for silence is what left the copilot "drafting replies…" for three minutes.
+      // If nothing at all has arrived by now, the model is not going to answer: say so and let the
+      // retry swap it for one that does.
+      const firstTokenMs = mode === 'local' ? 300_000 : 40_000;
+      let gotFirst = false;
       const resetStall = () => {
         if (stallTimer) clearTimeout(stallTimer);
         stallTimer = setTimeout(() => {
           done.cleanup();
-          reject(new Error(mode === 'local'
-            ? 'The local model is taking too long to respond. It may be very large for this machine — try a smaller model in the Models tab.'
-            // Don't blame the connection for a slow model — that reading is what put a
-            // "Reconnecting…" banner on a link that was never down.
-            : 'The AI stopped responding partway through. Retrying.'));
-        }, stallMs);
+          reject(new Error(
+            mode === 'local'
+              ? 'The local model is taking too long to respond. It may be very large for this machine — try a smaller model in the Models tab.'
+              : gotFirst
+                // Don't blame the connection for a slow model — that reading is what put a
+                // "Reconnecting…" banner on a link that was never down.
+                ? 'The AI stopped responding partway through. Retrying.'
+                : `NO_MODEL_RESPONSE: the model${effectiveModelName ? ` (${effectiveModelName})` : ''} accepted the request but sent nothing back.`,
+          ));
+        }, gotFirst ? stallMs : firstTokenMs);
       };
 
       const u1 = await listen<{ id: string; text: string }>('krew-chunk', (e) => {
@@ -3740,6 +3752,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
         // back with "Thinking…" on a turn the user already cancelled.
         if (stopRef.current) { if (!earlyStopped) { earlyStopped = true; if (stallTimer) clearTimeout(stallTimer); done.cleanup(); resolve({ text: fullText, truncated }); } return; }
         fullText += e.payload.text;
+        gotFirst = true;
         onChunk(e.payload.text);
         resetStall();
         // SAFETY NET (defends every backend, even ones that ignore stopSequences): the instant a
@@ -3830,6 +3843,10 @@ const [studioExtracting, setStudioExtracting] = useState(false);
           modelRepaired = true;
           const { provider: prov, apiKey: usedKey, model: deadModel } = lastByokRef.current;
           if (prov) {
+            // Remember that this one is a dud for this key, so the replacement search never offers
+            // it again on any later run.
+            if (deadModel) blockModel(prov, deadModel);
+            emit('agent-progress', { text: `${deadModel || 'That model'} isn't responding on your key — finding one that does…` }).catch(() => {});
             const next = await repairDeadModel(prov, usedKey, deadModel).catch(() => '');
             if (next) {
               modelFixRef.current[prov] = next;
@@ -9961,8 +9978,19 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
           /* Give the copilot the SAME AI path this chat uses, so reply planning/verification run on
              the user's chosen source (BYOK / local / adris.tech) — not a separate global setting that
              was quietly spending adris.tech tokens and hitting the monthly limit. */
+          /* Report progress WHILE it writes. A silent await looked identical to a hang — which is
+             exactly how a model that never answered read as "drafting replies…" for three minutes. */
           aiCall={async (userMsg: string, systemPrompt: string) => {
-            const { text } = await streamTurnWithRetry([{ role: 'user', content: userMsg }], systemPrompt, () => {});
+            const started = Date.now();
+            let chars = 0;
+            let lastPing = 0;
+            const { text } = await streamTurnWithRetry([{ role: 'user', content: userMsg }], systemPrompt, (chunk) => {
+              chars += chunk.length;
+              const secs = Math.round((Date.now() - started) / 1000);
+              if (Date.now() - lastPing < 700) return;   // don't spam the event bus per token
+              lastPing = Date.now();
+              emit('agent-progress', { text: `Writing… ${chars} characters so far (${secs}s)` }).catch(() => {});
+            });
             return text;
           }}
         />
