@@ -4358,6 +4358,11 @@ async fn krew_ai_stream(
     let emit_done  = { let app = app.clone(); move || { let _ = app.emit("krew-done",  serde_json::json!({ "id": cid })); } };
     let cid = call_id.clone();
     let emit_error = { let app = app.clone(); move |e: String| { let _ = app.emit("krew-error", serde_json::json!({ "id": cid, "error": e })); } };
+    // The hosted path reports a cut-off answer so the agent loop can continue it. The own-key path
+    // never did, so on BYOK a long piece of work — a research briefing, a batch of drafts — just
+    // stopped mid-sentence and was treated as finished. Same signal, both paths.
+    let cid = call_id.clone();
+    let emit_truncated_ok = { let app = app.clone(); move || { let _ = app.emit("krew-truncated", serde_json::json!({ "id": cid })); } };
 
     let sys = system_prompt.unwrap_or_default();
 
@@ -4504,7 +4509,10 @@ async fn krew_ai_stream(
                 let mut all_msgs: Vec<serde_json::Value> = Vec::new();
                 if !sys.is_empty() { all_msgs.push(serde_json::json!({"role":"system","content":sys})); }
                 for m in &messages { all_msgs.push(serde_json::json!({"role":m.role,"content":strip_image_markers(&m.content)})); }
-                let body = serde_json::json!({ "model": model, "messages": all_msgs, "stream": true, "stop": ["</tool_call>", "</tool_code>"] });
+                // Ask for real room explicitly. Left unset, the ceiling is whatever the provider
+                // happens to default to, which on some OpenAI-compatible endpoints is tiny — and a
+                // free-tier user doing a long piece of work is exactly who gets cut off by it.
+                let body = serde_json::json!({ "model": model, "messages": all_msgs, "stream": true, "max_tokens": 4096, "stop": ["</tool_call>", "</tool_code>"] });
                 let resp = reqwest::Client::new().post(&endpoint)
                     .header(header::AUTHORIZATION, format!("Bearer {}", key))
                     .header(header::CONTENT_TYPE, "application/json").json(&body).send().await
@@ -4520,6 +4528,9 @@ async fn krew_ai_stream(
                             if data.trim() == "[DONE]" { emit_done(); return Ok(()); }
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
                                 if let Some(t) = v["choices"][0]["delta"]["content"].as_str() { if !t.is_empty() { emit_chunk(t.to_string()); } }
+                                // Hit the token ceiling — tell the UI so it continues the answer
+                                // instead of presenting half a briefing as the whole thing.
+                                if v["choices"][0]["finish_reason"].as_str() == Some("length") { emit_truncated_ok(); }
                             }
                         }
                     }

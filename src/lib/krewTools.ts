@@ -532,6 +532,13 @@ export const SYSTEM_TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'read_my_calendar',
+    description: "READ THE USER'S OWN CALENDAR — their real upcoming meetings, with who each one is with, the time and any video link. Needs NO connected Google account and no setup: it reads Google Calendar in the user's signed-in browser. CALL THIS FIRST, WITHOUT ASKING, whenever the user mentions a meeting, call, or appointment without naming the person — \"I have a meeting with someone tomorrow\", \"research the person I'm meeting\", \"what's on today\", \"who am I seeing this week\", \"am I free on Thursday\". The person's name is in the event title, so look it up rather than asking the user to type out what is already in their calendar. Follow it with research_person for the name you find.",
+    parameters: {
+      days_ahead: { type: 'number', description: 'How far ahead to read, in days. Default 14.', required: false },
+    },
+  },
+  {
     name: 'save_to_brain',
     description: 'Save important data to the shared BRAIN — a persistent, visual knowledge store the user can see and every agent can recall. Use it to keep a company/lead list, an outreach draft, research findings, a contact and their outreach progress, or any result worth reusing — so it is NEVER re-fetched (this saves the user tokens). Optionally connect it to a related Brain item.',
     parameters: {
@@ -1521,6 +1528,7 @@ Wait for the tool result before continuing. After receiving a result, if there a
 - Do NOT claim you "verified", "confirmed", or "checked" something unless you actually opened it with a tool and read the result. If you did not verify, say what is confirmed vs a labelled guess.
 - If you couldn't find a real value, write "—" (or a clearly-labelled "guess: … — verify") rather than a confident fake. Fewer rows that are real beats a full table that is fabricated.
 - **Never promise an action you are not about to perform.** Saying "I'll send over a calendar invite", "I'll add that to your calendar", "I'll share the doc" does NOT make any of it happen — nothing runs on your behalf after you stop writing. If you say a meeting is being scheduled, call **create_calendar_event** in the same turn so the event really is created; if you say something will be sent, either produce it now or call create_todo so it is on the user's list. And never describe a thing as attached, sent, or booked when it is not: a calendar event is only booked once the user presses Save, and you cannot attach files or generate meeting links. A commitment made in the user's name that nobody keeps costs them the meeting.
+- **LOOK IT UP BEFORE YOU ASK. If the answer is already in the user's own calendar, inbox or files, go and read it — do not open with questions.** When the user mentions a meeting, call or appointment WITHOUT naming the person ("I have a meeting with someone tomorrow, research them", "who am I meeting on Thursday", "prep me for my next call"), call **read_my_calendar** immediately, take the name from the event title, and then call research_person on it. Asking "what is the full name of the person?" about a meeting that is sitting in their calendar with the name in the title is a FAILURE: they came to you precisely so they would not have to look it up. The same applies to "my meeting with X is when?" (read the calendar) and "reply to my messages" (read the inbox). Ask only for something genuinely not obtainable — their intent, their preference, a decision only they can make — and even then, gather everything you CAN first and ask alongside real progress, never instead of it.
 - **A REAL, NAMED PERSON — call research_person first, every time.** If the user names someone and wants to know who they are, their role, their employer, their career, their expertise or what they have been posting — including any meeting/call prep or "briefing" — you MUST call research_person before writing a word about them. Do NOT write a bio, job title, company, career history or "recent activity" for a named human from what you recall or what sounds plausible: a briefing that reads perfectly and is invented sends the user into a real meeting with false facts about a real person, and they will only discover it in the room. If research_person finds nothing, tell the user you could not find them and ask for a LinkedIn URL or their company — that answer is genuinely more useful than a confident fake, and it is the required one.
 
 ## Final answer
@@ -2412,6 +2420,45 @@ async function executeToolCore(
       ? ` It read ${reachedList} people from your connections list this run; ${alreadyKnown} of them were already saved, so ${fresh.length} ${fresh.length === 1 ? 'is' : 'are'} genuinely new. LinkedIn lists your newest connections first, so each run has to scroll past everyone already saved before it reaches anyone new — running /scan again picks up further down the list, and repeating it is how a large network gets covered.`
       : '';
     return `Saved ${fresh.length} new connection${fresh.length === 1 ? '' : 's'} to the Brain note titled exactly "${LIST_TITLE}" (${totalSaved} total now)${linkedNote ? `, linked to "${linkedNote}"` : ''}. These are REAL names read straight from the page:\n\n${block}\n\nTell the user how many were added and that it's saved in their Brain under the note "${LIST_TITLE}" (separate from any reference file they attached).${depthNote} Also tell them they can run /outreach to draft messages — anyone already in an outreach campaign keeps their status and drafted message, and only the new people get added. Do NOT rename anyone.`;
+  }
+
+  // ── The user's own calendar, WITHOUT a connected Google account ───────────────
+  // gcal_list_events only exists when a `google` credential is connected, so a user who has never
+  // connected Google gave their agents NO way to see their calendar at all — and the agent fell back
+  // to asking "who are you meeting?" about a meeting sitting in the calendar with the name in its
+  // title. The outreach copilot already read the calendar through the signed-in browser; this makes
+  // that same path a tool every agent can call.
+  if (toolName === 'read_my_calendar') {
+    const days = Math.max(1, Math.min(60, num(args.days_ahead, 14)));
+    emit('agent-browser-active', {}).catch(() => {});
+    emit('agent-progress', { text: 'Reading your calendar…' }).catch(() => {});
+    _browserActiveThisRun = true;
+    const raw = await invoke<string>('run_browser_persistent', { args: 'gcalcheck' }).catch((e) => String(e));
+    emit('agent-browser-idle', {}).catch(() => {});
+    _browserLoginPending = raw.includes('[SIGN_IN_REQUIRED]');
+    if (raw.includes('[SIGN_IN_REQUIRED]')) {
+      return "[NEEDS_LOGIN] I opened Google Calendar in the ADRIS browser — please sign in there once (it's saved), and I'll read your schedule.";
+    }
+    if (raw.startsWith('[browser-') || raw.includes('[agent-browser not installed') || raw.includes('[custom-browser-unavailable')) {
+      return "The ADRIS browser engine didn't respond just now. Make sure Google Chrome (or Edge) is installed, then ask again.";
+    }
+    if (raw.includes('CALENDAR_EMPTY')) {
+      return 'I opened your calendar but it had not finished loading. Ask again in a moment.';
+    }
+    const ci = raw.indexOf('CALENDAR_TEXT:');
+    if (ci < 0) return "Couldn't read your calendar just now — try again.";
+    const text = raw.slice(ci + 'CALENDAR_TEXT:'.length).trim().slice(0, 6000);
+    if (!text) return "Your calendar opened but came back empty.";
+    const now = new Date();
+    return [
+      `THE USER'S REAL CALENDAR, read from their signed-in Google Calendar just now.`,
+      `Right now it is ${now.toLocaleString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })}. Anything dated before now has already happened — never describe it as upcoming.`,
+      `Showing roughly the next ${days} days.`,
+      '',
+      text,
+      '',
+      "Use this to answer directly. If the user asked about a person they are meeting, take the name from the event title and research THAT person — do not ask the user for a name that is written above.",
+    ].join('\n');
   }
 
   if (toolName === 'read_linkedin_messages') {
