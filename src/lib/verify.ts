@@ -428,9 +428,15 @@ export async function planReply(opts: {
     const salvaged = salvageDraft(raw);
     return {
       intent: 'unclear',
+      // SAY WHICH FAILURE IT WAS. "Couldn't get a clean draft" covered two completely different
+      // problems — the AI returning nothing at all (a quota, a dead model, a dropped stream) and the
+      // AI returning prose we couldn't parse — and pointed at neither. The user can act on the
+      // difference; they can't act on the blanket sentence.
       read: salvaged
         ? 'Drafted a reply, though the AI didn\'t format it cleanly — read it carefully before sending.'
-        : 'Couldn\'t get a clean draft from the AI — read the thread and respond yourself, or try again.',
+        : raw.trim()
+          ? 'The AI replied but not in a form I could use, twice. Press "Scan their reply" again, or write this one yourself.'
+          : 'The AI returned nothing at all — that usually means the model is unavailable or your allowance is used up. Try switching the chat between adris.tech AI and your own key, then scan again.',
       draftReply: salvaged,
       attachSuggested: false,
       degraded: true,

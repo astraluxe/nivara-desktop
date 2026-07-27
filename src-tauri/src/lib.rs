@@ -2717,17 +2717,42 @@ async fn ping_service(service_id: String, creds_json: String) -> Result<String, 
                 ("https://api.groq.com/openai/v1/chat/completions", "llama-3.1-8b-instant")
             };
             let model = creds["model"].as_str().filter(|m| !m.is_empty()).unwrap_or(default_model);
-            let body = serde_json::json!({ "model": model, "messages": [{"role":"user","content":"hi"}], "max_tokens": 1 });
-            let r = client.post(url)
-                .header("Authorization", format!("Bearer {key}"))
-                .header("Content-Type", "application/json")
-                .json(&body).send().await.map_err(|e| e.to_string())?;
-            let st = r.status();
-            if st.is_success() { Ok("Connected — your key works ✓".into()) }
-            else if st.as_u16() == 401 || st.as_u16() == 403 { Err("API key rejected — check you copied the whole key.".into()) }
-            else {
-                let t = r.text().await.unwrap_or_default();
-                Err(format!("Provider returned {} — {}", st, t.chars().take(140).collect::<String>()))
+            // Test the KEY and the CHOSEN MODEL as two separate questions, because they fail
+            // independently. Swept against a real NVIDIA key: of 76 chat models only 16 answered,
+            // 13 accepted the request and never replied at all, and 47 said "not found for account".
+            // A test that only tried the saved model therefore sat spinning and then reported a
+            // dead connection, when the key itself was perfectly fine.
+            let try_model = |m: String| {
+                let c = client.clone();
+                let (u, k) = (url.to_string(), key.to_string());
+                async move {
+                    let body = serde_json::json!({ "model": m, "messages": [{"role":"user","content":"hi"}], "max_tokens": 1 });
+                    c.post(&u).header("Authorization", format!("Bearer {k}"))
+                        .header("Content-Type", "application/json")
+                        .json(&body).send().await
+                }
+            };
+            match try_model(model.to_string()).await {
+                Ok(r) if r.status().is_success() => Ok(format!("Connected — your key works ✓ (model: {model})")),
+                Ok(r) if r.status().as_u16() == 401 || r.status().as_u16() == 403 =>
+                    Err("API key rejected — check you copied the whole key.".into()),
+                other => {
+                    // The chosen model failed or never answered. Is the KEY still good?
+                    let key_ok = matches!(try_model(default_model.to_string()).await, Ok(r) if r.status().is_success());
+                    if key_ok {
+                        Err(format!(
+                            "Your API key is VALID, but the selected model \"{model}\" never answered. \
+                             {} lists models your account cannot actually call. Open the model picker and choose another — \"{default_model}\" works.",
+                            if service_id == "nvidia" { "NVIDIA" } else { "Groq" },
+                        ))
+                    } else {
+                        match other {
+                            Ok(r) => { let st = r.status(); let t = r.text().await.unwrap_or_default();
+                                Err(format!("Provider returned {} — {}", st, t.chars().take(140).collect::<String>())) }
+                            Err(e) => Err(format!("Couldn't reach {} — {}", if service_id == "nvidia" { "NVIDIA" } else { "Groq" }, e)),
+                        }
+                    }
+                }
             }
         }
         "claude" => {

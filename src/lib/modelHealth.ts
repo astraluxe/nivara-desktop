@@ -19,12 +19,19 @@ import { credentialStore } from './krewDb';
 
 /** Known-good, general-purpose chat/agent models, best first. Matched against the LIVE catalogue,
  *  so a retired entry here is simply skipped rather than becoming the next dead model. */
+// Swept all 76 chat models in NVIDIA's catalogue against a real free-tier key: only 16 answered,
+// 13 accepted the request and never replied (including meta/llama-3.3-70b, meta/llama-3.1-70b,
+// deepseek-v4-pro, z-ai/glm-5.2, openai/gpt-oss-120b) and 47 returned "not found for account".
+// NVIDIA's OWN nemotron builds were the ones consistently available on their own endpoint, so they
+// lead here. The list is a starting order only — every candidate is still probed before use, because
+// availability moves: meta/llama-3.1-70b answered in 4.3s early in one session and hung an hour later.
 const PREFERRED: Partial<Record<Provider, string[]>> = {
   nvidia: [
-    'meta/llama-3.3-70b-instruct',
-    'nvidia/llama-3.1-nemotron-70b-instruct',
-    'meta/llama-3.1-70b-instruct',
-    'openai/gpt-oss-120b',
+    'nvidia/nemotron-3-super-120b-a12b',
+    'nvidia/llama-3.3-nemotron-super-49b-v1.5',
+    'nvidia/nemotron-3-nano-30b-a3b',
+    'nvidia/nvidia-nemotron-nano-9b-v2',
+    'openai/gpt-oss-20b',
     'meta/llama-3.1-8b-instruct',
   ],
   groq: [
@@ -68,8 +75,10 @@ function blockModel(provider: string, model: string): void {
 }
 function isBlocked(provider: string, model: string): boolean {
   const at = blocklist()[`${provider}:${(model || '').toLowerCase()}`];
-  // Forget after a week — a model that was down for the account may come back.
-  return !!at && Date.now() - at < 7 * 86_400_000;
+  // Forget after 2 hours, not a week. Availability is transient, not permanent — the same NVIDIA
+  // model answered in 4.3s and then hung an hour later on the same key. A week-long ban would
+  // permanently retire a model over one busy afternoon.
+  return !!at && Date.now() - at < 2 * 3_600_000;
 }
 export { blockModel, isBlocked };
 

@@ -5114,7 +5114,32 @@ The prompt must be production-ready — specific enough for a motion designer to
       }
 
       if (!parsed.length || /^NONE$/im.test(clean)) {
-        const none = `I read your LinkedIn messages — nothing is currently waiting on a reply from you.\n\n${threadsText}`;
+        // SHOW THE CONVERSATIONS, NOT THE BRIEFING. threadsText is the TOOL RESULT — it opens with
+        // instructions written for the model ("WHO IS WHO — read this before drafting anything…")
+        // and ends with instructions about which tool to call next. Pasting it into the chat dumped
+        // all of that in the user's face. Keep only the transcript sections.
+        const transcript = threadsText
+          .split(/\n(?=###\s)/).slice(1).join('\n')
+          .split(/\n\nWhen drafting a reply, call draft_linkedin_reply/)[0]
+          .trim();
+
+        // WORK OUT FOR OURSELVES WHO IS WAITING. A thread whose last labelled line is `THEM >` is
+        // objectively unanswered — no model needed. Previously an empty or unparseable answer from
+        // the AI was reported as "nothing is waiting on a reply", so a model failure looked like an
+        // empty inbox and real replies (a prospect who had just said "Sounds interesting") were
+        // silently written off.
+        const waiting: string[] = [];
+        for (const seg of transcript.split(/^###\s+/m).slice(1)) {
+          const name = seg.slice(0, seg.indexOf('\n')).replace(/\s*\[UNREAD\]\s*$/i, '').trim();
+          const labelled = seg.split('\n').map((l) => l.trim()).filter((l) => /^(YOU|THEM)\s*[(>]/i.test(l));
+          const last = labelled[labelled.length - 1] || '';
+          if (name && /^THEM/i.test(last)) waiting.push(name);
+        }
+
+        const head = waiting.length
+          ? `I read your LinkedIn messages. The AI didn't return usable drafts this time, but **${waiting.length} thread${waiting.length === 1 ? '' : 's'} ${waiting.length === 1 ? 'is' : 'are'} waiting on you**: ${waiting.join(', ')}.\n\nSay "draft a reply to ${waiting[0]}" and I'll write that one, or open the outreach copilot for it.`
+          : 'I read your LinkedIn messages — every thread was last answered by you, so nothing is waiting on a reply right now.';
+        const none = `${head}\n\n${transcript}`;
         setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: none, streaming: false }; return c; });
         if (sid) krewDb.saveMessage(sid, 'assistant', none).catch(() => {});
         return;
