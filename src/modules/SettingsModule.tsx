@@ -329,6 +329,7 @@ export default function SettingsModule() {
   const uid = session?.user?.id;
   const [settings, setSettings] = useState<NvSettings>(loadSettings);
   const [appVersion, setAppVersion]   = useState<string>('');
+  const [clearNote, setClearNote]     = useState('');   // confirmation for the "clear local data" buttons
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('idle');
   const [showWhatsNew, setShowWhatsNew] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<{ version?: string; body?: string; current?: string; propagating?: boolean }>({});
@@ -717,8 +718,10 @@ export default function SettingsModule() {
           <div className="pt-3 border-t border-nv-border/60">
             <p className="text-[11px] text-nv-muted mb-3">Clear specific local data:</p>
             <div className="flex flex-wrap gap-2">
+              {/* alert() is swallowed by the Tauri webview — these two buttons did their work and
+                  then gave no sign of it, so they read as broken. Confirm inline instead. */}
               <button
-                onClick={() => { localStorage.removeItem('nv-coder-state'); alert('Coder state cleared.'); }}
+                onClick={() => { localStorage.removeItem('nv-coder-state'); setClearNote('Coder state cleared.'); }}
                 className="text-[10px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:border-nv-red hover:text-nv-red transition-fast"
               >Clear Coder state</button>
               <button
@@ -727,11 +730,12 @@ export default function SettingsModule() {
                   const setupKey = uid ? `nv-first-run-done-v1-${uid}` : 'nv-first-run-done-v1';
                   localStorage.removeItem(key);
                   localStorage.removeItem(setupKey);
-                  alert('Onboarding reset. Relaunch the app to see it again.');
+                  setClearNote('Onboarding reset — relaunch the app to see it again.');
                 }}
                 className="text-[10px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:border-accent hover:text-accent transition-fast"
               >Reset onboarding tour</button>
             </div>
+            {clearNote && <p className="text-[10px] text-nv-green mt-2">✓ {clearNote}</p>}
           </div>
         </Section>
 

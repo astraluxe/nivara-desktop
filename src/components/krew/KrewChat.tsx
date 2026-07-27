@@ -5118,8 +5118,11 @@ The prompt must be production-ready — specific enough for a motion designer to
         // instructions written for the model ("WHO IS WHO — read this before drafting anything…")
         // and ends with instructions about which tool to call next. Pasting it into the chat dumped
         // all of that in the user's face. Keep only the transcript sections.
-        const transcript = threadsText
-          .split(/\n(?=###\s)/).slice(1).join('\n')
+        // Cut from the first `### ` heading rather than dropping the first split part: if the
+        // briefing above it ever changes shape or disappears, dropping part [0] would silently
+        // delete the FIRST conversation instead of the preamble.
+        const firstSection = threadsText.search(/^###\s/m);
+        const transcript = (firstSection >= 0 ? threadsText.slice(firstSection) : threadsText)
           .split(/\n\nWhen drafting a reply, call draft_linkedin_reply/)[0]
           .trim();
 

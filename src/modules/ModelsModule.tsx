@@ -946,6 +946,10 @@ export default function ModelsModule() {
   }
 
   async function handleRun(filename: string) {
+    // alert() DOES NOTHING in the Tauri webview — it is swallowed with no dialog and no error. Every
+    // failure below was therefore completely silent: press Run, nothing happens, no reason given.
+    // These go to the error banner that is already on this screen.
+    setDlError(null);
     // Step 1 — ensure the engine binary is installed
     if (!engineInstalled) {
       setEngineDownloading(true);
@@ -956,7 +960,7 @@ export default function ModelsModule() {
         setEngineInstalled(true);
       } catch (e) {
         setEngineDownloading(false);
-        alert(`Could not download AI engine: ${e}`);
+        setDlError({ modelId: filename, msg: `Could not download the AI engine: ${e}. Check your connection and press Run again.` });
         return;
       }
       setEngineDownloading(false);
@@ -965,7 +969,7 @@ export default function ModelsModule() {
     // Step 2 — start the engine with this model (waits up to 30 s for /health)
     await invoke('models_run', { modelFilename: filename })
       .then(() => invoke<boolean>('models_check_engine').then(setOllamaOk).catch(() => {}))
-      .catch(e => alert(`Could not start model: ${e}`));
+      .catch((e) => setDlError({ modelId: filename, msg: `Could not start this model: ${e}. It may be too large for this machine's memory — try a smaller one.` }));
   }
 
   async function handlePickFile() {
@@ -993,7 +997,9 @@ export default function ModelsModule() {
       setImportPath('');
       setImportName('');
     } catch (e) {
-      alert(`Import failed: ${e}`);
+      // Same reason as handleRun: alert() is swallowed in the Tauri webview, so a failed import
+      // looked exactly like a successful one.
+      setDlError({ modelId: importPath, msg: `Import failed: ${e}` });
     } finally {
       setImporting(false);
     }
