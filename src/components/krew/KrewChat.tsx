@@ -3302,6 +3302,9 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
   }, [busy]);
   const [agentTool,     setAgentTool]     = useState<string | null>(null);
   const [creds,         setCreds]         = useState<Record<string, Record<string, string>>>({});
+  // Mirror of `creds` readable synchronously — streamTurn needs the real keys even when a reload is
+  // in flight, and a stale-but-correct key beats an empty one.
+  const credsRef = useRef<Record<string, Record<string, string>>>({});
   const [mcpTools,      setMcpTools]      = useState<ToolDef[]>([]);
   const [mcpSummary,    setMcpSummary]    = useState<string>('');
   const [agentMemories, setAgentMemories] = useState<KrewMemory[]>([]);
@@ -3491,13 +3494,21 @@ const [studioExtracting, setStudioExtracting] = useState(false);
 
   // Load credentials
   const reloadCreds = useCallback(async () => {
-    const services = await credentialStore.list().catch(() => [] as string[]);
+    let listFailed = false;
+    const services = await credentialStore.list().catch(() => { listFailed = true; return [] as string[]; });
     const entries: Record<string, Record<string, string>> = {};
     for (const s of services) {
       if (s.startsWith('__')) continue; // reserved keys (e.g. MCP server registry)
       const d = await credentialStore.get(s).catch(() => null);
       if (d) entries[s] = d;
     }
+    // NEVER WIPE A GOOD SET OF KEYS ON A BAD READ. If the store hiccups mid-task this used to
+    // replace every credential with {}, and the next own_key call went out with an empty key —
+    // NVIDIA answers that with a 500 about a missing Authorization Bearer extension, which reads
+    // like a LinkedIn failure and has nothing to do with LinkedIn. A failed read means "unknown",
+    // not "the user disconnected everything".
+    if (listFailed || (Object.keys(entries).length === 0 && Object.keys(credsRef.current).length > 0)) return;
+    credsRef.current = entries;
     setCreds(entries);
     // Load user-connected MCP servers and expose their tools to agents.
     const mcpServers = await listMcpServers().catch(() => []);
@@ -3678,15 +3689,35 @@ const [studioExtracting, setStudioExtracting] = useState(false);
       // dropdown (so with several keys they can choose), else the first connected (free NVIDIA/Groq
       // first). This is what lets a user with both Gemini and NVIDIA pick which one to run on.
       if (!effectiveKey) {
+        // Prefer the ref: it holds the last known-good credentials even while a reload is in flight.
+        const src = Object.keys(credsRef.current).length ? credsRef.current : creds;
         for (const svc of [provider, 'nvidia', 'groq', 'gemini', 'openai', 'claude']) {
-          if (creds[svc]?.api_key) {
-            effectiveKey       = creds[svc].api_key;
+          if (src[svc]?.api_key) {
+            effectiveKey       = src[svc].api_key;
             effectiveProvider  = svc as Provider;
-            effectiveModelName = creds[svc].model || (svc !== provider ? '' : modelName);
+            effectiveModelName = src[svc].model || (svc !== provider ? '' : modelName);
             effectiveBaseUrl   = '';
             break;
           }
         }
+      }
+      // LAST RESORT — read the store directly. React state can genuinely be empty on the first turn
+      // after a cold start, and sending no key is never the right answer: the provider replies with
+      // an obscure 500 that gets reported as whatever the task happened to be.
+      if (!effectiveKey) {
+        for (const svc of [provider, 'nvidia', 'groq', 'gemini', 'openai', 'claude']) {
+          const d = await credentialStore.get(svc).catch(() => null);
+          if (d?.api_key) {
+            effectiveKey       = d.api_key;
+            effectiveProvider  = svc as Provider;
+            effectiveModelName = d.model || (svc !== provider ? '' : modelName);
+            effectiveBaseUrl   = '';
+            break;
+          }
+        }
+      }
+      if (!effectiveKey) {
+        throw new Error('No API key is connected for "your own key" mode. Open Connect Apps and add a key (NVIDIA and Groq are free), or switch the chat to adris.tech AI.');
       }
       // SAFETY NET — route by the KEY's OWN prefix. An nvapi-/gsk_/sk-ant-/AIza key is unambiguous,
       // so it can NEVER be sent to the wrong endpoint because a dropdown was left on another provider

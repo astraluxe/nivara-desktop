@@ -937,7 +937,7 @@ async fn ai_stream(
                 }.to_string());
 
                 let model = model_name.filter(|_| !key_corrected).unwrap_or_else(|| match prov.as_str() {
-                    "nvidia" => "meta/llama-3.3-70b-instruct".to_string(),
+                    "nvidia" => "meta/llama-3.1-8b-instruct".to_string(),  // NOT 3.3-70b: listed but silently unanswered on some accounts
                     "groq"   => "llama-3.3-70b-versatile".to_string(),
                     _        => "gpt-4o".to_string(),
                 });
@@ -4460,10 +4460,19 @@ async fn krew_ai_stream(
                     "deepseek"   => "https://api.deepseek.com/v1/chat/completions",
                     _            => "https://api.openai.com/v1/chat/completions",
                 }.to_string());
+                // Never send "Bearer " with nothing after it. NVIDIA answers an empty bearer with a
+                // 500 about a missing `Authorization<Bearer>` axum extension — an error naming
+                // neither the key nor the provider, so it surfaced as "Couldn't read your LinkedIn
+                // messages: 500 …". Fail with something the user can actually act on.
+                if key.trim().is_empty() {
+                    let e = "No API key was supplied for your own-key mode. Open Connect Apps and add a key (NVIDIA and Groq are free), or switch the chat to adris.tech AI.".to_string();
+                    emit_error(e.clone());
+                    return Ok(());
+                }
                 // If the key's prefix forced a provider correction, the caller's model_name is for
                 // the WRONG provider (e.g. gpt-4o) — ignore it and use the corrected provider's default.
                 let model = model_name.filter(|_| !key_corrected).unwrap_or_else(|| match prov.as_str() {
-                    "nvidia" => "meta/llama-3.3-70b-instruct".to_string(),
+                    "nvidia" => "meta/llama-3.1-8b-instruct".to_string(),  // NOT 3.3-70b: listed but silently unanswered on some accounts
                     "groq"   => "llama-3.3-70b-versatile".to_string(),
                     _        => "gpt-4o".to_string(),
                 });

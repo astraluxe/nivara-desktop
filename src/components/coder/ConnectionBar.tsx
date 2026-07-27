@@ -50,6 +50,8 @@ export default function ConnectionBar(props: Props) {
   const [installedModels, setInstalledModels] = useState<InstalledModel[] | null>(null);
   const [engineStatus, setEngineStatus] = useState<'idle' | 'starting' | 'running' | 'error'>('idle');
   const [rankedModels, setRankedModels] = useState<RankedModel[] | null>(null);
+  const [checking, setChecking] = useState<string | null>(null);   // model id being verified
+  const [checkNote, setCheckNote] = useState('');
   const [modelsLoading, setModelsLoading] = useState(false);
   const [byokList, setByokList] = useState<{ api_key: string; model?: string }[]>([]);
   const [byokActive, setByokActive] = useState('');
@@ -361,9 +363,26 @@ export default function ConnectionBar(props: Props) {
                                       const short = m.id.split('/').pop() || m.id;
                                       const on = modelName === m.id;
                                       return (
-                                        <button key={m.id} onClick={() => onModelNameChange(m.id)} title={m.id}
-                                          className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${on ? 'border-accent bg-accent/10 text-accent font-medium' : 'border-nv-border text-nv-muted hover:text-nv-text'}`}>
-                                          {short}
+                                        <button key={m.id} title={m.id} disabled={checking === m.id}
+                                          /* CHECK IT BEFORE COMMITTING TO IT. A key cannot tell us which
+                                             models it may use — the catalogue lists everything the provider
+                                             hosts, and some of those accept a request and then never answer.
+                                             One tiny call settles it in a second, so nobody picks a model
+                                             that will silently hang every task they run. */
+                                          onClick={async () => {
+                                            setCheckNote(''); setChecking(m.id);
+                                            const { probeModel, blockModel } = await import('../../lib/modelHealth');
+                                            let key = apiKey;
+                                            if (!key) { try { const c = await credentialStore.get(provider); key = (c?.api_key as string) || ''; } catch { /* none */ } }
+                                            const ok = await probeModel(provider, key, m.id);
+                                            setChecking(null);
+                                            if (ok) { onModelNameChange(m.id); setCheckNote(`✓ ${short} answered — using it.`); return; }
+                                            blockModel(provider, m.id);
+                                            setRankedModels((prev) => (prev ? prev.filter((x) => x.id !== m.id) : prev));
+                                            setCheckNote(`${short} didn't respond on your key — your account may not have access to it. Removed from the list; pick another.`);
+                                          }}
+                                          className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${on ? 'border-accent bg-accent/10 text-accent font-medium' : 'border-nv-border text-nv-muted hover:text-nv-text'} ${checking === m.id ? 'opacity-60' : ''}`}>
+                                          {checking === m.id ? `checking ${short}…` : short}
                                         </button>
                                       );
                                     })}
@@ -371,7 +390,8 @@ export default function ConnectionBar(props: Props) {
                                 </div>
                               );
                             })}
-                            <p className="text-[9.5px] text-nv-faint mt-1">Not sure? Leave the ★ Recommended one — it behaves closest to adris.tech’s own AI.</p>
+                            {checkNote && <p className={`text-[9.5px] mt-1 ${checkNote.startsWith('✓') ? 'text-emerald-400' : 'text-amber-400'}`}>{checkNote}</p>}
+                            <p className="text-[9.5px] text-nv-faint mt-1">Each one is tested against your key when you pick it — an NVIDIA key doesn’t say which models your account may use, and a few accept requests without ever answering.</p>
                           </>
                         )}
                   </div>
