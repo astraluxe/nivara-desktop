@@ -642,10 +642,12 @@ export default function ServiceSetupModal({ service, onDone, onClose }: Props) {
           if (pasted) out.model = pasted;
           else if (service === 'nvidia' || service === 'groq') {
             try {
-              const { fetchRankedModels } = await import('../../lib/ai');
-              const ranked = await fetchRankedModels(service as import('../../lib/ai').Provider, key);
-              const best = ranked.find((m) => m.tier === 'smart') || ranked[0];
-              if (best) out.model = best.id;
+              // Preference-ordered against the LIVE catalogue. This used to take the alphabetically
+              // first "smart" id, which picked obscure third-party builds (that is how a user landed
+              // on abacusai/dracarys-…, later withdrawn → every AI call 410'd).
+              const { pickBestModel } = await import('../../lib/modelHealth');
+              const best = await pickBestModel(service as import('../../lib/ai').Provider, key);
+              if (best) out.model = best;
             } catch { /* fall back to the provider default in aiSource */ }
           }
         }

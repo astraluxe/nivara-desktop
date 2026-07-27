@@ -1962,26 +1962,67 @@ async function main() {
     // every message so the sender never drifts.
     var rtConvo = await rtPage.evaluate(function() {
       function clean(s) { return (s || '').replace(/[ \t]+/g, ' ').trim(); }
+      // Files sent in a LinkedIn message live OUTSIDE `__body` (their own attachment node), so a
+      // body-only read reported the thread as text alone. The follow-up writer then believed nothing
+      // had been sent and drafted "I realised I hadn't sent the deck yet — attached it here" on a
+      // thread where the PDF had already been delivered and read. Capture attachments per message.
+      var FILE_RE = /[\w][\w .,()\[\]&+-]{0,80}\.(pdf|docx?|pptx?|xlsx?|csv|txt|rtf|zip|png|jpe?g|gif|mp4|mov)\b/gi;
+      function attachmentsIn(item) {
+        if (!item) return [];
+        var names = {};
+        var nodes = item.querySelectorAll('[class*="attachment"], [class*="file"], .msg-s-event-listitem__footer a, a[href*="/dms/"], a[download]');
+        for (var a = 0; a < nodes.length; a++) {
+          var t = clean(nodes[a].innerText || nodes[a].getAttribute('title') || nodes[a].getAttribute('download') || '');
+          if (!t) continue;
+          var m = t.match(FILE_RE);
+          if (m) for (var k = 0; k < m.length; k++) names[clean(m[k])] = 1;
+        }
+        // Fallback: the filename can render as plain text in the bubble with no tell-tale class.
+        if (!Object.keys(names).length) {
+          var whole = clean(item.innerText || '').match(FILE_RE);
+          if (whole) for (var w = 0; w < whole.length; w++) names[clean(whole[w])] = 1;
+        }
+        return Object.keys(names);
+      }
       var groups = document.querySelectorAll('li.msg-s-message-list__event, .msg-s-message-list__event');
-      var out = []; var lastSender = '';
+      var out = []; var lastSender = ''; var seenDone = {};
       for (var i = 0; i < groups.length; i++) {
         var g = groups[i];
         var nameEl = g.querySelector('.msg-s-message-group__name, .msg-s-message-group__profile-link');
         var name = nameEl ? clean(nameEl.innerText) : '';
         if (name) lastSender = name;
-        var bodyEls = g.querySelectorAll('.msg-s-event-listitem__body');
-        for (var j = 0; j < bodyEls.length; j++) {
-          var text = clean(bodyEls[j].innerText);
-          if (!text) continue;
-          var item = bodyEls[j].closest('.msg-s-event-listitem');
-          var isOther = !!(item && item.classList.contains('msg-s-event-listitem--other'));
+        // Walk the message ITEMS, not just bodies — an attachment-only message has no body node and
+        // was being dropped entirely.
+        var items = g.querySelectorAll('.msg-s-event-listitem');
+        if (!items.length) items = [g];
+        for (var j = 0; j < items.length; j++) {
+          var item = items[j];
+          var bodyEl = item.querySelector ? item.querySelector('.msg-s-event-listitem__body') : null;
+          var text = bodyEl ? clean(bodyEl.innerText) : '';
+          var files = attachmentsIn(item);
+          // A filename repeated from the body text isn't a second attachment.
+          files = files.filter(function (f) { return text.toLowerCase().indexOf(f.toLowerCase()) === -1; });
+          if (!text && !files.length) continue;
+          var isOther = !!(item.classList && item.classList.contains('msg-s-event-listitem--other'));
+          if (files.length) text = (text ? text + '\n' : '') + '[attached file: ' + files.join(', ') + ']';
+          var key = (isOther ? 'o' : 'y') + '|' + text;
+          if (seenDone[key]) continue;          // guard against a node matched twice by both queries
+          seenDone[key] = 1;
           out.push({ from: lastSender || (isOther ? 'them' : 'You'), isYou: !isOther, text: text });
         }
       }
+      // "Seen by …" read receipt — proof they opened the last message rather than missing it, which
+      // changes what a good follow-up says.
+      var seen = '';
+      var receipts = document.querySelectorAll('[class*="seen-receipt"], .msg-s-message-list__typing-indicator-container ~ * [class*="seen"]');
+      for (var r = 0; r < receipts.length; r++) {
+        var rt = clean(receipts[r].innerText || '');
+        if (/^seen\b/i.test(rt)) seen = rt;
+      }
       var hdr = document.querySelector('.msg-overlay-bubble-header__title, .msg-thread__link-to-profile');
       var who = hdr ? clean(hdr.innerText) : '';
-      return { who: who, messages: out.slice(-20) };
-    }).catch(function () { return { who: '', messages: [] }; });
+      return { who: who, seen: seen, messages: out.slice(-20) };
+    }).catch(function () { return { who: '', seen: '', messages: [] }; });
     await hideBanner(rtPage);
     if (!rtConvo.messages || !rtConvo.messages.length) { process.stdout.write('READTHREAD_EMPTY Opened their chat but could not read any messages yet — it may still be loading.'); return; }
     process.stdout.write('THREAD_JSON:' + JSON.stringify(rtConvo));

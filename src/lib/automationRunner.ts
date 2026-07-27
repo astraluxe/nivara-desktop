@@ -1,5 +1,6 @@
 ﻿import { invoke } from '@tauri-apps/api/core';
 import { resolveAiSource } from './aiSource';
+import { isDeadModelError, repairDeadModel } from './modelHealth';
 import { listen, emit } from '@tauri-apps/api/event';
 import { credentialStore } from './krewDb';
 import { buildTwitterOAuthHeader } from './krewTools';
@@ -81,6 +82,24 @@ export interface AutomationRow {
 function uuid() { return crypto.randomUUID(); }
 
 export async function callAutomationAI(userMessage: string, systemPrompt: string): Promise<string> {
+  try {
+    return await callAiOnce(userMessage, systemPrompt);
+  } catch (e) {
+    // The provider retired the saved model (NVIDIA: "410 Gone — no longer available"). Re-pick a
+    // live one from their catalogue and run the same call again, so a background job — a Guard scan,
+    // an automation, an outreach follow-up — doesn't die on something the user can't act on.
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!isDeadModelError(msg)) throw e;
+    const src = await resolveAiSource().catch(() => null);
+    if (src?.mode !== 'own_key' || !src.provider || !src.apiKey) throw e;
+    const next = await repairDeadModel(src.provider, src.apiKey, src.modelName ?? '').catch(() => '');
+    if (!next) throw e;
+    return await callAiOnce(userMessage, systemPrompt, next);
+  }
+}
+
+/** One shot at the AI. `modelOverride` is used by the dead-model retry above. */
+async function callAiOnce(userMessage: string, systemPrompt: string, modelOverride?: string): Promise<string> {
   const callId = uuid();
 
   // Honour the user's explicit choice of where AI runs (Settings, or the picker in Guard).
@@ -91,7 +110,7 @@ export async function callAutomationAI(userMessage: string, systemPrompt: string
   const mode         = src.mode;
   const apiKey       = src.apiKey;
   const provider     = src.provider;
-  const modelName    = src.modelName;
+  const modelName    = modelOverride || src.modelName;
   const sessionToken = src.sessionToken;
   const localModel   = src.localModel;
 

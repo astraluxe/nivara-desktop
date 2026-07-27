@@ -766,9 +766,12 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
           const tj = raw.indexOf('THREAD_JSON:');
           if (tj >= 0) {
             try {
-              const obj = JSON.parse(raw.slice(tj + 'THREAD_JSON:'.length).trim()) as { messages?: Array<{ isYou?: boolean; text?: string }> };
+              const obj = JSON.parse(raw.slice(tj + 'THREAD_JSON:'.length).trim()) as { messages?: Array<{ isYou?: boolean; text?: string }>; seen?: string };
               if (obj.messages?.length) {
                 thread = obj.messages.map((m) => `${m.isYou ? 'YOU' : (contact.name || 'THEM')}: ${m.text || ''}`).join('\n');
+                // LinkedIn's read receipt, when present — "Seen by X at 10:54 AM" means the last
+                // message landed and was opened, which a follow-up must not contradict.
+                if (obj.seen) thread += `\n[read receipt: ${obj.seen}]`;
               }
             } catch { /* fall through to another attempt, then the manual paste */ }
           }
@@ -846,6 +849,8 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
           'The reply directly addresses what the prospect actually said, not a generic script.',
           'If the prospect already replied, the message does not treat them as if they ignored it ("just following up on my previous message").',
           'No invented facts, features, prices, or commitments.',
+          'The message does not claim to be attaching, sending or "finally" sharing anything that the conversation above shows was ALREADY sent — and does not apologise for an oversight that never happened. Claiming to attach a file the prospect has already opened is a FAIL.',
+          'It states nothing about the CONTENTS of an attached document — no slide numbers, page numbers, section names or figures — unless those details appear in the conversation or the owner context above. Invented document detail is a FAIL.',
           'It does not jump straight to "book a call" if the prospect only asked to know more — it gives substance first.',
           'Any proposed or confirmed meeting time does NOT clash with the owner\'s real calendar above, including a nearby event that could run over into it — flag it to confirm if unsure.',
           'The message contains no placeholders like [Time], [Product Name], or [Company] — every detail is concrete.',

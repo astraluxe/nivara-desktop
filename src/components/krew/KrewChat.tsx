@@ -23,6 +23,7 @@ import UpgradeModal from '../UpgradeModal';
 import { type AutomationProposal } from './AutomationProposalModal';
 import AgentStatus from './AgentStatus';
 import { type ConnectionMode, type Provider } from '../../lib/ai';
+import { isDeadModelError, repairDeadModel } from '../../lib/modelHealth';
 import ConnectionBar from '../coder/ConnectionBar';
 import { getMonthlyUsage } from '../../lib/tokenTracker';
 import { getImageBudget, unitsForModel } from '../../lib/imageQuota';
@@ -3374,6 +3375,10 @@ const [studioExtracting, setStudioExtracting] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const atBottomRef        = useRef(true);
   const callIdRef          = useRef(0);
+  // Which BYOK key/model the last call actually used, and any model we had to repair after the
+  // provider retired the saved one. See streamTurnWithRetry's dead-model recovery.
+  const lastByokRef        = useRef<{ provider: string; apiKey: string; model: string }>({ provider: '', apiKey: '', model: '' });
+  const modelFixRef        = useRef<Record<string, string>>({});
   const sidRef             = useRef<string | null>(sessionId);
   const freshSessionRef    = useRef<string | null>(null);
   const deckRequestRef     = useRef<string>('');   // context for the pending deck request
@@ -3696,6 +3701,13 @@ const [studioExtracting, setStudioExtracting] = useState(false);
         effectiveBaseUrl   = '';                              // drop any base url meant for the wrong provider
         effectiveModelName = creds[byPrefix]?.model || '';    // and a matching model, not the wrong one (e.g. gpt-4o → NVIDIA)
       }
+      // A model saved at connect time can be RETIRED by the provider later (NVIDIA answers 410 Gone).
+      // When that happened we repaired it below; use the repaired id from here on, because `creds` is
+      // React state and still holds the dead one until it refreshes.
+      const fixed = effectiveProvider ? modelFixRef.current[effectiveProvider] : '';
+      if (fixed) effectiveModelName = fixed;
+      // Remember what this call actually used, so the retry knows which key/model to repair.
+      lastByokRef.current = { provider: effectiveProvider || '', apiKey: effectiveKey || '', model: effectiveModelName || '' };
     }
 
     // Refresh the auth token right before the call so a long preceding tool/browser pass can't
@@ -3796,6 +3808,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
   ): Promise<{ text: string; truncated: boolean }> {
     const MAX_ATTEMPTS = 10;
     let authRetried = false;
+    let modelRepaired = false;
     for (let attempt = 1; ; attempt++) {
       try {
         const r = await streamTurn(msgs, systemPrompt, onChunk);
@@ -3803,6 +3816,24 @@ const [studioExtracting, setStudioExtracting] = useState(false);
         return r;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
+        // The provider RETIRED the model saved when this key was connected — e.g. NVIDIA answers
+        // "410 Gone — the model '…' is no longer available". Nothing the user can fix by retrying,
+        // and it used to kill the whole task (a follow-up draft, a scan, an automation). Re-pick a
+        // live model from the provider's own catalogue, save it, and run the SAME turn again.
+        if (mode === 'own_key' && !modelRepaired && isDeadModelError(msg) && !stopRef.current) {
+          modelRepaired = true;
+          const { provider: prov, apiKey: usedKey, model: deadModel } = lastByokRef.current;
+          if (prov) {
+            const next = await repairDeadModel(prov, usedKey, deadModel).catch(() => '');
+            if (next) {
+              modelFixRef.current[prov] = next;
+              setReconnecting(null);
+              continue; // same turn, live model — doesn't consume a network-retry attempt
+            }
+          }
+          setReconnecting(null);
+          throw new Error(`Your ${prov || 'AI'} model${deadModel ? ` (${deadModel})` : ''} has been retired by the provider and no replacement could be reached. Open Connect Apps → ${prov || 'your provider'} and pick a model, or switch to adris.tech AI.`);
+        }
         // Auth/JWT expiry (e.g. the token lapsed during a long browser pass): force ONE refresh and
         // retry the same turn before giving up. streamTurn re-reads the (now refreshed) token, so
         // this recovers silently instead of ending the task with "Session expired".
