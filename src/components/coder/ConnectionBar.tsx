@@ -51,6 +51,14 @@ export default function ConnectionBar(props: Props) {
   const [engineStatus, setEngineStatus] = useState<'idle' | 'starting' | 'running' | 'error'>('idle');
   const [rankedModels, setRankedModels] = useState<RankedModel[] | null>(null);
   const [checking, setChecking] = useState<string | null>(null);   // model id being verified
+  // Bumped when a model is repaired mid-task, so this panel re-reads the credential instead of
+  // displaying the model that just failed.
+  const [credsNonce, setCredsNonce] = useState(0);
+  useEffect(() => {
+    const bump = () => setCredsNonce((n) => n + 1);
+    window.addEventListener('nv-creds-changed', bump);
+    return () => window.removeEventListener('nv-creds-changed', bump);
+  }, []);
   const [checkNote, setCheckNote] = useState('');
   const [modelsLoading, setModelsLoading] = useState(false);
   const [byokList, setByokList] = useState<{ api_key: string; model?: string }[]>([]);
@@ -102,7 +110,7 @@ export default function ConnectionBar(props: Props) {
       if (!cancelled) { setRankedModels(usable); setModelsLoading(false); }
     })();
     return () => { cancelled = true; };
-  }, [popup, provider, apiKey]);
+  }, [popup, provider, apiKey, credsNonce]);
 
   // Open the guided setup for a free provider and preselect it as the own-key provider. Does NOT
   // fling the user out to the website — the wizard has a link they click when THEY are ready

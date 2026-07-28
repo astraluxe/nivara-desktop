@@ -4000,6 +4000,11 @@ const [studioExtracting, setStudioExtracting] = useState(false);
             const next = await repairDeadModel(prov, usedKey, deadModel).catch(() => '');
             if (next) {
               modelFixRef.current[prov] = next;
+              // SAY WHICH ONE, and refresh the stored credentials so the connection popup stops
+              // showing the model that just failed. "Shifting to one that responds" without naming
+              // it left the user with no idea what was actually doing the work.
+              emit('agent-progress', { text: `Switched to ${next} — carrying on.` }).catch(() => {});
+              void reloadCreds();
               setReconnecting(null);
               continue; // same turn, live model — doesn't consume a network-retry attempt
             }
@@ -5119,6 +5124,13 @@ The prompt must be production-ready — specific enough for a motion designer to
       ].join('\n');
       const replyUser = [
         `TODAY IS: ${today.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
+        // Stating the date was not enough on a smaller model: it still wrote "our call tomorrow"
+        // about a meeting three days out. Relative words have to be banned outright, because a
+        // wrong one sends the other person to a call on the wrong day.
+        'NEVER write "tomorrow", "today", "tonight" or "next week" in a message unless you have',
+        'checked it against TODAY IS above and it is genuinely correct. Name the actual day instead —',
+        `"Friday 31 July at 1 PM", not "tomorrow at 1 PM". If a date is more than one day from`,
+        'TODAY IS, "tomorrow" is WRONG and will send the recipient to the wrong day.',
         facts ? `\nWHAT I KNOW ABOUT MY BUSINESS (the ONLY business facts you may state as true):\n${facts}` : '\nI have NOT given you any verified facts about my business. Therefore you may not state ANY specific claim about how my product works, where its data comes from, what it costs, or who uses it. Keep replies to what was said in the thread and put what you would have needed on the NEEDS line.',
         guidance ? `\nMY INSTRUCTIONS / AVAILABILITY (use these exactly — they override anything you assume):\n${guidance}` : '',
         `\nMY REAL LINKEDIN THREADS (each thread in order, oldest message first, most recent last):\n${threadsText}`,

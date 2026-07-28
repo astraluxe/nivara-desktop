@@ -236,12 +236,24 @@ export async function verifyWork(opts: {
     };
   }
 
-  const parsed = firstJson<{ verdict?: string; summary?: string; issues?: VerifyIssue[]; revised?: string }>(raw);
+  let parsed = firstJson<{ verdict?: string; summary?: string; issues?: VerifyIssue[]; revised?: string }>(raw);
+  if (!parsed) {
+    // ASK AGAIN BEFORE GIVING UP — the same rescue planReply already has. A free BYOK model
+    // regularly narrates around the object on its first attempt; one plain re-ask fixes most of
+    // them, and "the verification agent returned an unreadable result" helps nobody.
+    const retry = await ai(
+      `${user}
+
+Your previous answer was not valid JSON. Reply with the JSON object ONLY — no explanation, no markdown fences, nothing before or after it.`,
+      system,
+    ).catch(() => '');
+    if (retry) parsed = firstJson<{ verdict?: string; summary?: string; issues?: VerifyIssue[]; revised?: string }>(retry);
+  }
   if (!parsed) {
     return {
       verdict: 'warn',
       summary: 'Could not parse the check result — please review this yourself.',
-      issues: [{ severity: 'low', issue: 'The verification agent returned an unreadable result.' }],
+      issues: [{ severity: 'low', issue: 'The verification agent could not return a readable result, twice. This does NOT mean the draft is wrong — it means it was not checked, so read it yourself before sending.' }],
       degraded: true,
     };
   }
