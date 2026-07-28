@@ -522,8 +522,10 @@ export const SYSTEM_TOOLS: ToolDef[] = [
     description: 'PUT A MEETING IN THE USER\'S CALENDAR. Opens Google Calendar in the browser with the event already filled in — title, date, time, timezone, guests and notes — so the user just presses Save. Needs NO connected account and no setup. CALL THIS whenever a specific time has been agreed or the user says to put something in the calendar. CRITICAL: if you tell someone a meeting is being scheduled, you MUST actually call this — saying "I\'ll send a calendar invite" without calling it means nothing happens at all and the meeting is silently lost. Be honest in what you write to the other person: this prepares the event for the user to save, it does not send an invitation by itself, and it cannot create a video link (the user adds Google Meet with one click on the same screen). Never claim a link has been attached.',
     parameters: {
       title:      { type: 'string', description: 'Event title, e.g. "Amogh × Keshav — adris.tech intro call".', required: true },
-      date:       { type: 'string', description: 'Date as YYYY-MM-DD. Work it out from the real date given to you — never guess a year.', required: true },
-      start_time: { type: 'string', description: 'Start time in 24-hour HH:MM, e.g. "14:00".', required: true },
+      date:       { type: 'string', description: 'Date as YYYY-MM-DD (the START date for an all-day block). Work it out from the real date given to you — never guess a year.', required: true },
+      start_time: { type: 'string', description: 'Start time in 24-hour HH:MM, e.g. "14:00". Leave empty and set all_day:true for a whole-day block.', required: false },
+      all_day:    { type: 'boolean', description: 'True for a whole-day event with no clock time — "block the 5th", "I am away", "out of office", "leave", "holiday", "busy that day". Use this WITH end_date for a run of days: blocking the 5th, 6th and 7th is ONE all-day event from 2026-08-05 to 2026-08-07, not three separate ones.', required: false },
+      end_date:   { type: 'string', description: 'Last day of an all-day block, YYYY-MM-DD, INCLUSIVE. Omit for a single day.', required: false },
       timezone:   { type: 'string', description: 'IANA timezone the time is expressed in, e.g. "Asia/Kolkata" for IST, "America/New_York" for ET. Default Asia/Kolkata.', required: false },
       duration_minutes: { type: 'number', description: 'Length in minutes. Default 30.', required: false },
       details:    { type: 'string', description: 'Notes/agenda for the event body — e.g. what was agreed in the thread.', required: false },
@@ -1922,7 +1924,38 @@ async function executeToolCore(
     const startTime = str(args.start_time ?? args.start).trim();
     if (!title) return '[create_calendar_event needs "title".]';
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return `[create_calendar_event needs "date" as YYYY-MM-DD (got "${date}"). Work the real date out from today's date — do not guess.]`;
-    if (!/^\d{1,2}:\d{2}$/.test(startTime)) return `[create_calendar_event needs "start_time" as 24-hour HH:MM (got "${startTime}").]`;
+
+    // ALL-DAY / MULTI-DAY BLOCKS. "Block the 5th, 6th and 7th — I'm away" is one of the most ordinary
+    // calendar requests there is, and it was impossible to express: start_time was required, so the
+    // agent either invented a time or quietly did nothing. An all-day span is one event, not three.
+    const allDay = args.all_day === true || (!startTime && !!str(args.end_date).trim()) || (!startTime && args.all_day !== false);
+    if (allDay) {
+      const endDateRaw = str(args.end_date).trim() || date;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(endDateRaw)) return `[create_calendar_event: "end_date" must be YYYY-MM-DD (got "${endDateRaw}").]`;
+      if (endDateRaw < date) return `[create_calendar_event: end_date (${endDateRaw}) is before date (${date}).]`;
+      const compact = (s: string) => s.replace(/-/g, '');
+      // Google's all-day end is EXCLUSIVE: to block the 5th–7th inclusive the end must be the 8th.
+      const endExclusive = new Date(`${endDateRaw}T00:00:00Z`);
+      endExclusive.setUTCDate(endExclusive.getUTCDate() + 1);
+      const p2 = (n: number) => String(n).padStart(2, '0');
+      const endStamp = `${endExclusive.getUTCFullYear()}${p2(endExclusive.getUTCMonth() + 1)}${p2(endExclusive.getUTCDate())}`;
+      const adParams = new URLSearchParams({ action: 'TEMPLATE', text: title, dates: `${compact(date)}/${endStamp}` });
+      const adDetails = str(args.details).trim();
+      if (adDetails) adParams.set('details', adDetails);
+      const adUrl = `https://calendar.google.com/calendar/render?${adParams.toString()}`;
+      emit('agent-browser-active', {}).catch(() => {});
+      _browserActiveThisRun = true;
+      setAgentBrowserHold(true);   // the user presses Save — never close the window under them
+      const adRaw = await withBrowserLock(() => invoke<string>('run_browser_persistent', { args: `open "${adUrl}"` }).catch((e) => String(e)));
+      emit('agent-browser-idle', {}).catch(() => {});
+      if (/\[agent-browser not installed|\[browser-crash|\[custom-browser-unavailable/i.test(adRaw)) {
+        return `Couldn't open the browser. The user can create it themselves with this link:\n${adUrl}`;
+      }
+      const span = date === endDateRaw ? date : `${date} to ${endDateRaw} inclusive`;
+      return `Google Calendar is open in the ADRIS browser with an ALL-DAY block "${title}" for ${span}, ready to save.\n\nTELL THE USER, PLAINLY: the event is filled in but NOT saved — they must press **Save** in that window. Nothing is in their calendar until they do. Do not say it is booked, blocked or added; say it is ready and waiting for them to press Save.`;
+    }
+
+    if (!/^\d{1,2}:\d{2}$/.test(startTime)) return `[create_calendar_event needs "start_time" as 24-hour HH:MM (got "${startTime}"), or pass all_day:true for a whole-day block.]`;
     const tz = str(args.timezone).trim() || 'Asia/Kolkata';
     const mins = Math.max(5, Math.min(600, num(args.duration_minutes, 30)));
     const [hh, mm] = startTime.split(':').map((n) => parseInt(n, 10));

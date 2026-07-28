@@ -1522,6 +1522,35 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                         Use the verifier's improved version
                       </button>
                     )}
+                    {/* FLAGGING IS NOT FIXING. The verifier often reports a problem without offering
+                        a rewrite, and "Re-verify" only re-reports it — so the user pressed a button,
+                        saw "verified", and the flagged sentence was still sitting in the draft. This
+                        turns the issues themselves into the rewrite instruction. */}
+                    {verify && !verify.revised && verify.issues.length > 0 && (
+                      <button
+                        disabled={refining || !draftReply.trim()}
+                        onClick={() => {
+                          setRefineNote('');
+                          setRefining(true);
+                          const instruction = `Rewrite the message so that every one of these problems is GONE. Change only what is needed to fix them; keep the rest of the message, the tone and any real detail exactly as it is. Do not introduce placeholders.\n${verify.issues.map((it) => `- ${it.issue}${it.fix ? ` (fix: ${it.fix})` : ''}`).join('\n')}`;
+                          refineMessage({ current: draftReply, instruction, person: cur?.name, thread: lastThread, ownerContext: lastOwnerCtx, aiCall })
+                            .then((next) => {
+                              if (next?.trim()) {
+                                setDraftReply(next.trim());
+                                setVerify(null);
+                                runVerify(next.trim(), cur, lastThread || (plan?.read ?? ''), lastOwnerCtx);
+                              } else {
+                                setRefineNote("The AI returned nothing for that — edit the draft yourself, or use the Redo box.");
+                              }
+                            })
+                            .catch((e) => setRefineNote(`Couldn't apply the fix: ${(e instanceof Error ? e.message : String(e)).slice(0, 140)}`))
+                            .finally(() => setRefining(false));
+                        }}
+                        className="mt-1.5 text-[11px] font-medium px-2.5 py-1 rounded-md border border-amber-500/50 text-amber-600 hover:bg-amber-500/10 transition-fast disabled:opacity-60"
+                      >
+                        {refining ? 'Fixing…' : `Fix ${verify.issues.length === 1 ? 'this' : `these ${verify.issues.length}`} and re-check`}
+                      </button>
+                    )}
 
                     <div className="flex items-center gap-1.5 mt-1.5">
                       <button onClick={sendDraftReply} disabled={opening || !draftReply.trim()} className="flex-1 text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast disabled:opacity-60">
