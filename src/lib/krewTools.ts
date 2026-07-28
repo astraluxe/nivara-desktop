@@ -2504,10 +2504,27 @@ async function executeToolCore(
     // Say WHO THE USER IS right next to the calendar. Without it the agent read "Amogh x Keshav
     // intro call / Amogh Misra, Accepted", picked the first name it saw, and delivered a briefing
     // about the user TO the user.
-    const { loadUserIdentity, otherPartyFromTitle } = await import('./userIdentity');
-    const me = loadUserIdentity();
-    const firstTitle = text.split('\n').find((l) => /\bx\b|×|\bwith\b|\/|<>/.test(l) && !/^\d|calendar:|all day/i.test(l.trim())) || '';
-    const other = firstTitle ? otherPartyFromTitle(firstTitle, me) : '';
+    const { loadUserIdentity, saveUserIdentity, otherPartyFromTitle } = await import('./userIdentity');
+    let me = loadUserIdentity();
+    // LEARN THE OWNER'S NAME FROM THE CALENDAR ITSELF. Without it the agent is told to ask who the
+    // user is, so "research the person I'm meeting Friday" came back as "what is their full name?"
+    // - with the name sitting in the event title. Google's own page states whose calendar it is,
+    // which is as authoritative as it gets and costs the user nothing.
+    if (!me?.name) {
+      const owner = raw.match(/reflected only on this calendar:\s*([A-Za-z][A-Za-z.'\- ]{1,60})/i)?.[1]?.trim();
+      if (owner) { saveUserIdentity({ name: owner }); me = loadUserIdentity(); }
+    }
+    // Look at EVERY event line, not just the first containing a separator - that first match was
+    // regularly an unrelated entry further down the month.
+    const candidates = text.split('\n').map((l) => l.trim()).filter((l) =>
+      l.length > 3 && !/^\d+$/.test(l)
+      && !/^(calendar:|all day|jul|aug|sep|oct|nov|dec|mon|tue|wed|thu|fri|sat|sun)/i.test(l)
+      && !/^\d{1,2}\s*[–-]/.test(l));
+    let other = '';
+    for (const line of candidates) {
+      const guess = otherPartyFromTitle(line, me);
+      if (guess && guess.length > 1) { other = guess; break; }
+    }
     return [
       `THE USER'S REAL CALENDAR, read from their signed-in Google Calendar just now.`,
       `Right now it is ${now.toLocaleString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })}. Anything dated before now has already happened — never describe it as upcoming.`,
