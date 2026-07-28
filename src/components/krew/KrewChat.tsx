@@ -3573,6 +3573,36 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     setOutreachCampaign(null);
   }, [newChatNonce]);
 
+  /**
+   * Open the copilot, whatever state the user is in.
+   *
+   * It used to require a campaign, so someone with no outreach running — the ordinary case of
+   * "someone messaged me on LinkedIn, help me answer" — had no way in at all, and the reply was
+   * improvised in the chat with nothing checking it. Fall back through: the campaign with work
+   * left, the last saved one, one built from saved connections, and finally an empty one, which is
+   * still useful because the copilot can scan a thread and draft from it on its own.
+   */
+  function openCopilot() {
+    const resumable = loadResumableCampaign() || loadSavedCampaign();
+    if (resumable?.contacts?.length) { setOutreachCampaign(resumable); return; }
+    let contacts: OutreachContact[] = [];
+    try {
+      const saved: { name?: string; headline?: string; url?: string }[] =
+        JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
+      if (Array.isArray(saved)) {
+        contacts = saved.filter((c) => c?.name).slice(0, 50).map((c) => ({
+          name: String(c.name), company: '', title: String(c.headline || ''),
+          linkedin: String(c.url || ''), linkedin_message: '', status: 'todo' as const,
+        }));
+      }
+    } catch { /* no saved connections */ }
+    setOutreachCampaign({
+      title: contacts.length ? `LinkedIn — ${new Date().toLocaleDateString()}` : 'LinkedIn replies',
+      contacts,
+      channel: 'linkedin',
+    });
+  }
+
   // Load credentials
   const reloadCreds = useCallback(async () => {
     let listFailed = false;
@@ -7482,6 +7512,21 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     // Belt-and-braces after the send-reply route above: anything that OPENS by telling us to send
     // or type a specific reply is never a request to re-read the inbox, however many inbox words
     // it happens to contain further down.
+    // REPLIES BELONG TO THE COPILOT. The chat drafts a reply with nothing checking it — that is how
+    // an invented email reached a calendar invite. The copilot reads the thread, drafts, verifies
+    // against a checklist, and lets the draft be fixed and re-checked before it goes anywhere. So a
+    // request to ANSWER someone goes there, while reading the inbox stays here.
+    if (isDirectCommand && !skipShortcuts
+        && /\blinked\s?in\b/i.test(text)
+        && /\b(repl(y|ies)|respond|answer|get back to|write back)\b/i.test(text)
+        && !/^\s*(?:send|type|paste|put)\b/i.test(text)
+        && !/\bconnections\b/i.test(text)) {
+      setInput('');
+      addMsg({ role: 'user', content: text });
+      addMsg({ role: 'assistant', content: 'Opening the Copilot — it reads the thread, drafts your reply and checks it before anything is sent. Pick the person, then press **Scan their reply**.' });
+      openCopilot();
+      return;
+    }
     if (isDirectCommand
         // A card that already knows exactly what it wants must not be re-routed by keyword
         // matching. Answering "yes, I'm free" mentions LinkedIn, a reply and drafting, so it hit
@@ -9161,6 +9206,19 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
               <path d="M2 4.5l1.5 1.5L6 3.5M2 11.5L3.5 13 6 10.5M8.5 4.5H14M8.5 11.5H14" />
             </svg>
             To-do{todoCount > 0 ? ` ${todoCount}` : ''}
+          </button>
+          {/* The copilot was only reachable by pressing Continue on a to-do, so the one surface that
+              actually verifies a message before it goes out was effectively hidden. It is a place
+              you should be able to walk into. */}
+          <button
+            onClick={(e) => { e.stopPropagation(); openCopilot(); }}
+            title="Copilot — read a thread, draft a reply, and have it checked before you send"
+            className="flex items-center gap-1 h-5 px-1.5 rounded transition-fast shrink-0 text-[9px] font-mono border text-accent bg-accent/5 border-accent/30 hover:bg-accent/10 hover:border-accent/50"
+          >
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M2.5 3.5h11v8h-6l-3 2.5v-2.5h-2z" />
+            </svg>
+            Copilot
           </button>
         </div>
 
