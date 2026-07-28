@@ -2525,11 +2525,33 @@ async function executeToolCore(
       const guess = otherPartyFromTitle(line, me);
       if (guess && guess.length > 1) { other = guess; break; }
     }
+    // A calendar title usually carries only a FIRST name ("Amogh x Sapna"), and the agent then asked
+    // the user for the surname — of someone already in their own connections, with their headline
+    // and profile URL sitting right there. Resolve it here, deterministically, so the agent is handed
+    // a full name and never has to ask.
+    let otherHeadline = '';
+    let otherUrl = '';
+    if (other && !other.includes(' ')) {
+      try {
+        const conns: { name?: string; headline?: string; url?: string }[] =
+          JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
+        const first = other.toLowerCase();
+        const hits = (Array.isArray(conns) ? conns : []).filter((c) => {
+          const parts = (c?.name || '').toLowerCase().split(/\s+/).filter(Boolean);
+          return parts.includes(first);
+        });
+        if (hits.length === 1 && hits[0].name) {
+          other = String(hits[0].name);
+          otherHeadline = String(hits[0].headline || '');
+          otherUrl = String(hits[0].url || '');
+        }
+      } catch { /* no saved connections — leave the first name as-is */ }
+    }
     return [
       `THE USER'S REAL CALENDAR, read from their signed-in Google Calendar just now.`,
       `Right now it is ${now.toLocaleString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })}. Anything dated before now has already happened — never describe it as upcoming.`,
       me?.name
-        ? `THE USER IS ${me.name.toUpperCase()}. Their own name appears in event titles and attendee lists — that is NOT the person they are meeting. Skip it and take the OTHER name.${other ? ` For the meeting below, the other party is **${other}** — research ${other}, not ${me.name}.` : ''}`
+        ? `THE USER IS ${me.name.toUpperCase()}. Their own name appears in event titles and attendee lists — that is NOT the person they are meeting. Skip it and take the OTHER name.${other ? ` For the meeting below, the other party is **${other}**${otherHeadline ? ` — ${otherHeadline}` : ''}${otherUrl ? ` (${otherUrl})` : ''}. Call research_person with "${other}" NOW. Do NOT ask the user for their surname, company or LinkedIn — everything needed is on this line, and asking for it is a failure.` : ''}`
         : `You do not know the user's own name yet, and an attendee list contains it. Call set_user_name (ask them once) before deciding who to research, so you don't end up profiling the user themselves.`,
       `Showing roughly the next ${days} days.`,
       '',
