@@ -178,6 +178,68 @@ function hasUsableCred(c: Record<string, string> | undefined): boolean {
     .some((k) => typeof c[k] === 'string' && c[k].trim().length > 0);
 }
 
+/**
+ * "Are you free at 1pm on Friday?" answered with a button instead of a paragraph.
+ *
+ * The app deliberately refuses to book a time the user has not confirmed — it once created a
+ * meeting and a Meet link off the back of a time the OTHER person suggested. But the only way to
+ * confirm was to type your availability back in prose, so in practice the flow stopped dead there
+ * and the meeting was never made. Yes / No, with a box for the times that do work.
+ */
+function AvailConfirmCard({ who, when, disabled, onAnswer }: {
+  who: string; when: string; disabled?: boolean;
+  onAnswer: (free: boolean, alternative?: string) => void;
+}) {
+  const [showAlt, setShowAlt] = useState(false);
+  const [alt, setAlt] = useState('');
+  return (
+    <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-3 my-2">
+      <p className="text-[12px] text-nv-text leading-snug">
+        📅 <b>{who}</b> proposed <b>{when}</b>. Nothing is booked yet — are you free?
+      </p>
+      {!showAlt ? (
+        <div className="flex gap-2 mt-2.5">
+          <button
+            disabled={disabled}
+            onClick={() => onAnswer(true)}
+            className="text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white font-medium hover:bg-accent-dim transition-fast disabled:opacity-60"
+          >
+            Yes — book it &amp; reply
+          </button>
+          <button
+            disabled={disabled}
+            onClick={() => setShowAlt(true)}
+            className="text-[11px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:text-nv-text hover:bg-nv-surface2 transition-fast disabled:opacity-60"
+          >
+            No — I'm busy then
+          </button>
+        </div>
+      ) : (
+        <div className="mt-2.5">
+          <p className="text-[10.5px] text-nv-faint mb-1.5">When are you free? I'll offer those times instead.</p>
+          <div className="flex gap-2">
+            <input
+              autoFocus
+              value={alt}
+              onChange={(e) => setAlt(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !disabled) onAnswer(false, alt.trim()); }}
+              placeholder="e.g. tomorrow any time, or Thursday from 11 AM"
+              className="flex-1 px-2.5 py-1.5 rounded-lg text-[11px] bg-nv-bg border border-nv-border text-nv-text outline-none focus:border-accent transition-fast"
+            />
+            <button
+              disabled={disabled}
+              onClick={() => onAnswer(false, alt.trim())}
+              className="shrink-0 text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white font-medium hover:bg-accent-dim transition-fast disabled:opacity-60"
+            >
+              Send
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function detectSkill(text: string): SkillRegistryEntry | null {
   for (const s of SKILLS_REGISTRY) {
     const re = SKILL_TRIGGERS[s.id];
@@ -201,13 +263,16 @@ interface ChoiceSet {
 }
 
 interface DisplayMsg {
-  role:      'user' | 'assistant' | 'tool_call' | 'tool_result' | 'delegation' | 'proposal' | 'choices' | 'deck_setup' | 'deck_result' | 'social_schedule' | 'next_task' | 'lead_setup' | 'lead_result';
+  role:      'user' | 'assistant' | 'tool_call' | 'tool_result' | 'delegation' | 'proposal' | 'choices' | 'deck_setup' | 'deck_result' | 'social_schedule' | 'next_task' | 'lead_setup' | 'lead_result' | 'avail_confirm';
   leadCount?: number;
   leadTable?: string;
   /** How many rows came back without a usable LinkedIn URL. Drives the warning on the result
    *  card — it used to be a line of italic prose that scrolled away and told the user to run a
    *  command that does not even act on lead lists. */
   leadMissingLinks?: number;
+  /** A time the OTHER person proposed, waiting on a yes/no from the user before anything is booked.
+   *  Typing out "yes I'm free" was the only way to answer, so the flow usually just stopped there. */
+  avail?: { who: string; when: string; prompt: string };
   content:   string;
   toolName?: string;
   streaming?: boolean;
@@ -5229,6 +5294,24 @@ The prompt must be production-ready — specific enough for a motion designer to
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: finalMsg, streaming: false }; return c; });
       if (sid) krewDb.saveMessage(sid, 'assistant', finalMsg).catch(() => {});
 
+      // ANSWERING "are you free?" SHOULD BE ONE CLICK. Every proposed time was a paragraph asking
+      // the user to type their availability back, so the flow reliably stopped there and the
+      // meeting never got made. Put a real yes/no in front of them instead, one card per person.
+      for (const p of parsed) {
+        const cm = p.action.match(/^confirm-avail\s*:\s*(.+)$/i);
+        if (!cm) continue;
+        const when = cm[1].trim().replace(/\.$/, '');
+        addMsg({
+          role: 'avail_confirm',
+          content: '',
+          avail: {
+            who: p.name,
+            when,
+            prompt: `${p.name} proposed meeting at ${when} on LinkedIn.`,
+          },
+        });
+      }
+
       // Persist so this survives closing the chat: a to-do per pending reply, deep-linked to that
       // person's chat, plus a Brain note of the drafts themselves.
       try {
@@ -7325,8 +7408,10 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     if (open) setSlashIdx(0);
   }
 
-  async function send() {
-    const text = input.trim();
+  // `override` lets a card submit a turn directly. Setting the input box and then calling send()
+  // cannot work — the state update has not landed yet, so send() would read the previous value.
+  async function send(override?: string) {
+    const text = (override ?? input).trim();
     if ((!text && attachedFiles.length === 0) || busy) return;
 
     // Is this an INSTRUCTION, or a document that happens to contain instruction-shaped words?
@@ -9332,6 +9417,24 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                     if (sidRef.current) krewDb.saveMessage(sidRef.current, 'assistant', content).catch(() => {});
                   }}
                 />
+              ) : msg.role === 'avail_confirm' && msg.avail ? (
+                <AvailConfirmCard
+                  key={i}
+                  who={msg.avail.who}
+                  when={msg.avail.when}
+                  disabled={busy}
+                  onAnswer={(free, alt) => {
+                    const a = msg.avail!;
+                    setMessages((prev) => prev.filter((m) => m !== msg));
+                    // Hand it back through the normal turn, which already has create_calendar_event,
+                    // the Meet link and the reply drafting — so "yes" finishes the job rather than
+                    // starting another conversation about it.
+                    const prompt = free
+                      ? `${a.prompt} I AM free then — go ahead: create the calendar event and the Google Meet link with create_calendar_event, then draft the confirming reply to ${a.who} with the real link in it.`
+                      : `${a.prompt} I am NOT free then.${alt ? ` I am free ${alt}.` : ''} Draft a reply to ${a.who} that declines that slot warmly and offers ${alt ? 'those times' : 'to find another time'} instead. Do not book anything yet.`;
+                    void send(prompt);
+                  }}
+                />
               ) : msg.role === 'lead_setup' ? (
                 <LeadSetupCard
                   key={i}
@@ -10117,7 +10220,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
               >Stop</button>
             ) : (
               <button
-                onClick={send}
+                onClick={() => send()}
                 disabled={!input.trim() && attachedFiles.length === 0}
                 className="text-[11px] px-2.5 py-1.5 rounded-lg bg-accent text-white
                   hover:bg-accent-dim transition-fast disabled:opacity-40 shrink-0"
