@@ -19,11 +19,20 @@ const WINDOWS: Array<[RegExp, number]> = [
   [/llama-3\.1-8b|gpt-oss-20b|nemotron-nano-9b|step-3\.7-flash/i, 32_768],
   [/nemotron-3-nano|nemotron-nano-12b|inkling/i, 32_768],
   [/llama-3\.3-nemotron-super|nemotron-3-super/i, 65_536],
-  [/nemotron-3-ultra|llama-3\.[13]-70b|llama-3\.3-70b/i, 128_000],
+  // NOTE: nemotron-3-ultra is NOT listed here — it is a 1M-context model and is matched lower
+  // down. First match wins, so leaving it here would have silently capped it at 128k.
+  [/llama-3\.[13]-70b|llama-3\.3-70b/i, 128_000],
   [/gpt-4o|gpt-4\.1|o[34]-/i, 128_000],
   [/claude-/i, 200_000],
   [/gemini-/i, 1_000_000],
   [/llama-3\.[13]-8b-instant|llama-3\.1-8b-instant/i, 32_768],
+  // The rest of NVIDIA's free catalogue. Several of these are long-context models, and treating
+  // them as a 32k default threw away room the user is entitled to use.
+  [/nemotron-3-ultra|deepseek-v4|kimi-k2/i, 1_000_000],
+  [/glm-5|minimax-m3|laguna-xs/i, 128_000],
+  [/mistral-medium-3\.5|mistral-large/i, 128_000],
+  [/gemma-4-31b|diffusiongemma/i, 32_768],
+  [/ising-calibration/i, 16_384],
 ];
 
 const DEFAULT_TOKENS = 32_768;      // safe middle ground for an unrecognised BYOK model

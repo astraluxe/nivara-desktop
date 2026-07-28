@@ -27,7 +27,12 @@ import { credentialStore } from './krewDb';
 // availability moves: meta/llama-3.1-70b answered in 4.3s early in one session and hung an hour later.
 const PREFERRED: Partial<Record<Provider, string[]>> = {
   nvidia: [
+    // Ordered by capability among the models that ACTUALLY answered on a real free-tier key.
+    // Ultra first: 1M context and the strongest agentic/tool behaviour of the free set.
+    'nvidia/nemotron-3-ultra-550b-a55b',
     'nvidia/nemotron-3-super-120b-a12b',
+    'stepfun-ai/step-3.7-flash',
+    'thinkingmachines/inkling',
     'nvidia/llama-3.3-nemotron-super-49b-v1.5',
     'nvidia/nemotron-3-nano-30b-a3b',
     'nvidia/nvidia-nemotron-nano-9b-v2',
