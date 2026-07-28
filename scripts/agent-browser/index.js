@@ -2141,7 +2141,13 @@ async function main() {
   // ── LinkedIn-specific post extraction (firecrawl platform-specific pattern) ─
   var markdown = null;
   if (hostname.includes('linkedin.com')) {
-    markdown = await extractLinkedInFeed(openPage);
+    // A PROFILE is not a feed. The feed extractor was run on every linkedin.com URL, so opening
+    // /in/<someone> returned their recent posts and stopped there — the headline, About, Experience
+    // and Education were never read, which is why a "research this person" briefing came back thin
+    // and generic. Read the profile body for /in/ pages; keep the feed extractor for the feed and
+    // for the recent-activity tab, which really are post lists.
+    var isProfilePage = /\/in\//.test(openPage.url()) && !/recent-activity|detail\/recent-activity/.test(openPage.url());
+    if (!isProfilePage) markdown = await extractLinkedInFeed(openPage);
     // If structured extraction found nothing, fall back to a SIMPLE fast body read.
     // Never run the heavy DOM-scoring/domToMd path on LinkedIn — its enormous feed DOM
     // makes that recursion hang (this was the real cause of the "stuck / login screen" bug).

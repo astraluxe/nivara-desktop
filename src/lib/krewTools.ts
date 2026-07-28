@@ -3347,7 +3347,49 @@ async function executeToolCore(
     //    matcher must agree the result is actually this person before we read anything from it.
     let hit: ProfileHit | null = null;
     let signInNeeded = false;
-    for (const q of org ? [`${person} ${org}`, person] : [person]) {
+    let fromConnections = '';
+    let ambiguous: { name: string; headline: string; url: string }[] = [];
+
+    // 0) THE USER'S OWN CONNECTIONS COME FIRST. A LinkedIn search for a first name returns
+    //    strangers: "Keshav" came back as six 2nd-degree people in Delhi, and the matcher picked
+    //    one of them — so the briefing was about the wrong human entirely. If the user is already
+    //    connected to someone by that name, that IS the person they are meeting: a scheduled intro
+    //    call is with a connection, not with a stranger who happens to share a first name.
+    try {
+      const saved: { name: string; headline: string; url: string }[] =
+        JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
+      if (Array.isArray(saved) && saved.length) {
+        const want = person.toLowerCase().trim();
+        const wantToks = want.split(/\s+/).filter(Boolean);
+        const matches = saved.filter((c) => {
+          const n = (c?.name || '').toLowerCase();
+          if (!n) return false;
+          if (n === want) return true;
+          const nToks = n.split(/\s+/).filter(Boolean);
+          // Every word the user gave must appear in the saved name — "Keshav" matches
+          // "Keshav Sharma", "Keshav Sharma" matches itself, "Kesh" matches nothing.
+          return wantToks.every((t) => nToks.includes(t));
+        });
+        if (matches.length === 1 && matches[0].url) {
+          hit = { name: matches[0].name, headline: matches[0].headline || '', url: matches[0].url.split('?')[0], degree: '1st', location: '' } as ProfileHit;
+          fromConnections = matches[0].name;
+        } else if (matches.length > 1) {
+          ambiguous = matches.slice(0, 6);
+        }
+      }
+    } catch { /* no saved connections — fall through to the LinkedIn search */ }
+
+    // Several of the user's own connections share this name — asking is right; guessing is not.
+    if (!hit && ambiguous.length) {
+      return [
+        `You are connected to ${ambiguous.length} people called "${person}". I have NOT researched anyone yet — tell me which one and I will:`,
+        ...ambiguous.map((c) => `- **${c.name}** — ${c.headline || 'no headline'} (${c.url})`),
+        '',
+        'Say which one (or paste their LinkedIn URL) and I will pull the full briefing.',
+      ].join('\n');
+    }
+
+    for (const q of hit ? [] : org ? [`${person} ${org}`, person] : [person]) {
       const raw = await withBrowserLock(() => invoke<string>('run_browser_persistent', { args: `findprofile "${q.replace(/["\n\r]/g, ' ').trim()}"` }).catch((e) => String(e)));
       if (raw.includes('SIGN_IN_REQUIRED') || raw.includes('[NEEDS_LOGIN]')) { signInNeeded = true; break; }
       const pj = raw.indexOf('PROFILE_JSON:');
@@ -3356,6 +3398,19 @@ async function executeToolCore(
       try { const a = JSON.parse(raw.slice(pj + 'PROFILE_JSON:'.length).trim()); if (Array.isArray(a)) results = a; } catch { /* malformed → treat as no results */ }
       hit = bestProfileMatch(results, person);
       if (hit) break;
+    }
+
+    // 1b) A SINGLE FIRST NAME MUST NOT RESOLVE TO A STRANGER. Searching "Keshav" returns whoever
+    //     LinkedIn feels like showing — six 2nd-degree people in Delhi, in the real case that
+    //     produced this guard — and picking the best of those means briefing the user on someone
+    //     they have never met. If the name is one word and the match is not one of their own
+    //     connections, refuse and ask, rather than research a stranger.
+    if (hit && !fromConnections && person.trim().split(/\s+/).length === 1 && hit.degree !== '1st') {
+      return [
+        `I could not confidently identify "${person}". A first name on its own matches a lot of people on LinkedIn — the closest result was **${hit.name}** (${hit.url}), a ${hit.degree || 'distant'} connection, and I am not willing to brief you on someone who may well be a stranger.`,
+        '',
+        'Give me their full name, their company, or their LinkedIn URL and I will pull the real briefing. If they are one of your connections, "scan my LinkedIn connections" first will let me match them by name from then on.',
+      ].join('\n');
     }
 
     // 2) Read the profile itself, then their recent activity feed (best-effort — the activity tab
@@ -3392,7 +3447,7 @@ async function executeToolCore(
     // 5) Hand back exactly what was read — fenced, because a profile page is stranger-written text.
     const parts: string[] = [];
     parts.push(`RESEARCH ON: ${person}${org ? ` (${org})` : ''}${purpose ? ` — for: ${purpose}` : ''}`);
-    if (hit?.url) parts.push(`\n## Matched LinkedIn profile\n${hit.name || person}${hit.headline ? ` — ${hit.headline}` : ''}\n${hit.url}`);
+    if (hit?.url) parts.push(`\n## Matched LinkedIn profile\n${hit.name || person}${hit.headline ? ` — ${hit.headline}` : ''}\n${hit.url}${fromConnections ? `\n(Matched from the user's OWN saved LinkedIn connections — they are already connected to ${fromConnections}, so this is the right person, not a same-name stranger.)` : ''}`);
     else parts.push(`\n## Matched LinkedIn profile\nNone — no profile could be confidently matched to this name. Do not present any LinkedIn-sourced claim below as fact; there is none.`);
     if (profileText) parts.push(`\n## LinkedIn profile page (read just now)\n${profileText.slice(0, 6000)}`);
     if (activityText) parts.push(`\n## Recent activity tab (read just now)\n${activityText.slice(0, 2500)}`);
