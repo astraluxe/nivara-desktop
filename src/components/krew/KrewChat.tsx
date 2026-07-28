@@ -24,6 +24,7 @@ import { type AutomationProposal } from './AutomationProposalModal';
 import AgentStatus from './AgentStatus';
 import { type ConnectionMode, type Provider } from '../../lib/ai';
 import { isDeadModelError, repairDeadModel, blockModel } from '../../lib/modelHealth';
+import { noteActiveModel } from '../../lib/contextBudget';
 import ConnectionBar from '../coder/ConnectionBar';
 import { getMonthlyUsage } from '../../lib/tokenTracker';
 import { getImageBudget, unitsForModel } from '../../lib/imageQuota';
@@ -3853,10 +3854,13 @@ const [studioExtracting, setStudioExtracting] = useState(false);
       if (fixed) effectiveModelName = fixed;
       // Remember what this call actually used, so the retry knows which key/model to repair.
       lastByokRef.current = { provider: effectiveProvider || '', apiKey: effectiveKey || '', model: effectiveModelName || '' };
+      // Record what this call runs on, so prompt budgeting sizes itself to the real model.
+      noteActiveModel('own_key', effectiveModelName || '', '');
     }
 
     // Refresh the auth token right before the call so a long preceding tool/browser pass can't
     // leave us sending an expired JWT (which 401'd → "Session expired" at the end of the task).
+    if (mode !== 'own_key') noteActiveModel(mode, '', localModel || '');
     const freshToken = await freshSessionToken(session?.access_token ?? null);
 
     return new Promise<{ text: string; truncated: boolean }>(async (resolve, reject) => {
