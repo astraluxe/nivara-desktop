@@ -26,18 +26,28 @@ import { credentialStore } from './krewDb';
 // lead here. The list is a starting order only — every candidate is still probed before use, because
 // availability moves: meta/llama-3.1-70b answered in 4.3s early in one session and hung an hour later.
 const PREFERRED: Partial<Record<Provider, string[]>> = {
+  // MEASURED, not assumed. Benchmarked on a real free-tier key: time to first token, and whether the
+  // model actually returned the JSON it was asked for — this app runs on JSON (reply plans, deck
+  // specs, verification results), so a model that answers in prose is useless however clever it is.
+  //
+  //   nemotron-3-super-120b   813ms   JSON ok   <- big model AND fast: the right default
+  //   llama-3.1-8b            191ms   JSON ok   <- fastest of all
+  //   inkling                3258ms   JSON ok
+  //   llama-3.2-3b            619ms   JSON ok
+  //   nemotron-3-ultra-550b 26741ms   JSON FAIL <- was first here; slow and unusable in practice
+  //   step-3.7-flash        24096ms   JSON FAIL <- reasoning model, thinks for 24s
+  //   nano-30b / nano-9b / gpt-oss-20b / nemotron-super-49b   fast but JSON FAIL
+  //
+  // Ultra keeps its 1M window in contextBudget for the rare long job, but it must never be the
+  // everyday pick. Order below is: reliable JSON first, then fastest.
   nvidia: [
-    // Ordered by capability among the models that ACTUALLY answered on a real free-tier key.
-    // Ultra first: 1M context and the strongest agentic/tool behaviour of the free set.
-    'nvidia/nemotron-3-ultra-550b-a55b',
     'nvidia/nemotron-3-super-120b-a12b',
-    'stepfun-ai/step-3.7-flash',
+    'meta/llama-3.1-8b-instruct',
     'thinkingmachines/inkling',
+    'meta/llama-3.2-3b-instruct',
     'nvidia/llama-3.3-nemotron-super-49b-v1.5',
     'nvidia/nemotron-3-nano-30b-a3b',
-    'nvidia/nvidia-nemotron-nano-9b-v2',
     'openai/gpt-oss-20b',
-    'meta/llama-3.1-8b-instruct',
   ],
   groq: [
     'llama-3.3-70b-versatile',
