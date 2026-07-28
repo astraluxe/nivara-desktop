@@ -5368,13 +5368,17 @@ The prompt must be production-ready — specific enough for a motion designer to
     // The profile URL: the one captured from the thread wins, else the saved connections list —
     // never a guessed slug.
     let url = /linkedin\.com\/in\//i.test(knownUrl) ? knownUrl : '';
-    if (!url) {
-      try {
-        const conns: { name?: string; url?: string }[] = JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
-        url = conns.find((c) => (c.name || '').toLowerCase() === name.toLowerCase())?.url
-          || conns.find((c) => (c.name || '').toLowerCase().includes(target))?.url || '';
-      } catch { /* connections list optional */ }
-    }
+    // The saved connection URL, kept as a SECOND candidate even when the thread gave us one: a link
+    // read out of the inbox can be stale and land on "This page doesn't exist", and the saved
+    // vanity URL is then the way back in rather than a dead end.
+    let altUrl = '';
+    try {
+      const conns: { name?: string; url?: string }[] = JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
+      altUrl = conns.find((c) => (c.name || '').toLowerCase() === name.toLowerCase())?.url
+        || conns.find((c) => (c.name || '').toLowerCase().includes(target))?.url || '';
+    } catch { /* connections list optional */ }
+    if (!url) url = altUrl;
+    if (altUrl && altUrl === url) altUrl = '';
     if (!url) {
       addMsg({ role: 'assistant', content: `I have the draft for ${name}, but not their profile link — run **/scan** once so I know their LinkedIn URL, then ask again. Here's the draft to paste manually:\n\n\`\`\`email ${name}\n${reply}\n\`\`\`` });
       return;
@@ -5391,7 +5395,20 @@ The prompt must be production-ready — specific enough for a motion designer to
     resetLeadStop();
     setBusy(true); setBrowserActive(true);
     try {
-      const res = await executeTool('draft_linkedin_reply', { profile_url: url, message: reply }, creds, requestTerminalApproval, agent.key, user?.id ?? '', `${sidRef.current ?? 'main'}-lisend`);
+      let res = await executeTool('draft_linkedin_reply', { profile_url: url, message: reply }, creds, requestTerminalApproval, agent.key, user?.id ?? '', `${sidRef.current ?? 'main'}-lisend`);
+      // The link from the thread was dead — try the one saved from /scan before giving up. This is
+      // the "it opened a 404" case: there IS a working link for this person, just not the one the
+      // inbox handed us.
+      if (res.includes('PROFILE_NOT_FOUND') && altUrl) {
+        updateLastMsg(`That saved link for ${name} is dead — trying their profile from your connections…`);
+        res = await executeTool('draft_linkedin_reply', { profile_url: altUrl, message: reply }, creds, requestTerminalApproval, agent.key, user?.id ?? '', `${sidRef.current ?? 'main'}-lisend2`);
+      }
+      if (res.includes('PROFILE_NOT_FOUND')) {
+        const dead = `I couldn't open ${name}'s chat — LinkedIn says that profile link no longer exists. Run **/scan** to refresh your connections, or open their chat yourself and paste this in:\n\n\`\`\`email ${name}\n${reply}\n\`\`\``;
+        setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: dead, streaming: false }; return c; });
+        const sid2 = sidRef.current; if (sid2) krewDb.saveMessage(sid2, 'assistant', dead).catch(() => {});
+        return;
+      }
       // HOLD the window open. The finally below closes the agent browser, which meant we typed the
       // reply, told the user to go and press Enter, and then shut the window in their face before
       // they could. The outreach copilot already claims this hold for the same reason; this path

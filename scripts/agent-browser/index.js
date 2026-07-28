@@ -1853,6 +1853,19 @@ async function main() {
       var tok = await pollForLoginCompletion(tPage, 30000);
       if (!tok) { writeState({ url: tFinal }); process.stdout.write('[SIGN_IN_REQUIRED] Please sign in to LinkedIn in the ADRIS browser window that just opened, then try again.'); return; }
     }
+    // DEAD PROFILE URL. A stale or wrong link lands on LinkedIn's "This page doesn't exist", and we
+    // used to carry on regardless — hunting for a compose box that cannot be there, then reporting
+    // some vague failure. Say plainly that the link is dead so the caller can retry with the URL it
+    // has saved for this person instead.
+    var tMissing = await tPage.evaluate(function () {
+      var t = (document.body && document.body.innerText) || '';
+      return /this page doesn.{0,3}t exist|page not found|check your URL/i.test(t);
+    }).catch(function () { return false; });
+    if (tMissing) {
+      writeState({ url: tFinal });
+      process.stdout.write('[typemsg-error] PROFILE_NOT_FOUND — LinkedIn says that profile page does not exist (' + tFinal + '). The saved link for this person is stale.');
+      return;
+    }
     await showBanner(tPage, 'ADRIS drafted a reply here — review it, then press Enter/Send yourself.');
     try { await tPage.waitForLoadState('networkidle', { timeout: 4000 }); } catch (_) {}
     await new Promise(function (r) { setTimeout(r, 1200); });
