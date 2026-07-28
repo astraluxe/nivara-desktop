@@ -4775,6 +4775,13 @@ The prompt must be production-ready — specific enough for a motion designer to
     if (sid) krewDb.saveMessage(sid, 'user', shown).catch(() => {});
     addMsg({ role: 'assistant', content: 'Opening your LinkedIn connections and reading the list…', streaming: true });
     setAgentBrowserHold(false);   // a previous reply may still be holding the window open
+    // A new user-initiated run must clear the Stop flag. It was only reset by the main chat
+    // turn, so after ANY Stop press every one of these flows streamed straight back empty —
+    // the stream resolves on the first chunk when stopRef is set, with no error — and stayed
+    // broken until the user happened to send a normal message. That is what "the model didn't
+    // return usable rewrites in 0s" was: not the model, a stale Stop.
+    stopRef.current = false;
+    resetLeadStop();
     setBusy(true); setBrowserActive(true);
     const scanT0 = Date.now();
     const unlisten = await listen('agent-progress', (e) => {
@@ -4874,6 +4881,13 @@ The prompt must be production-ready — specific enough for a motion designer to
     if (sid) krewDb.saveMessage(sid, 'user', userText || 'Check my LinkedIn messages and draft replies').catch(() => {});
     addMsg({ role: 'assistant', content: 'Opening LinkedIn and reading your messages…', streaming: true });
     setAgentBrowserHold(false);   // a previous reply may still be holding the window open
+    // A new user-initiated run must clear the Stop flag. It was only reset by the main chat
+    // turn, so after ANY Stop press every one of these flows streamed straight back empty —
+    // the stream resolves on the first chunk when stopRef is set, with no error — and stayed
+    // broken until the user happened to send a normal message. That is what "the model didn't
+    // return usable rewrites in 0s" was: not the model, a stale Stop.
+    stopRef.current = false;
+    resetLeadStop();
     setBusy(true); setBrowserActive(true);
     const inboxT0 = Date.now();
     const unlisten = await listen('agent-progress', (e) => {
@@ -5368,6 +5382,13 @@ The prompt must be production-ready — specific enough for a motion designer to
     addMsg({ role: 'user', content: `Send the reply to ${name}` });
     addMsg({ role: 'assistant', content: `Opening ${name}'s chat and typing the reply…`, streaming: true });
     setAgentBrowserHold(false);   // a previous reply may still be holding the window open
+    // A new user-initiated run must clear the Stop flag. It was only reset by the main chat
+    // turn, so after ANY Stop press every one of these flows streamed straight back empty —
+    // the stream resolves on the first chunk when stopRef is set, with no error — and stayed
+    // broken until the user happened to send a normal message. That is what "the model didn't
+    // return usable rewrites in 0s" was: not the model, a stale Stop.
+    stopRef.current = false;
+    resetLeadStop();
     setBusy(true); setBrowserActive(true);
     try {
       const res = await executeTool('draft_linkedin_reply', { profile_url: url, message: reply }, creds, requestTerminalApproval, agent.key, user?.id ?? '', `${sidRef.current ?? 'main'}-lisend`);
@@ -5581,6 +5602,13 @@ The prompt must be production-ready — specific enough for a motion designer to
   async function runLeadGeneration(cfg: LeadConfig) {
     if (busy) return;
     const sid = await ensureSession('Lead list');
+    // A new user-initiated run must clear the Stop flag. It was only reset by the main chat
+    // turn, so after ANY Stop press every one of these flows streamed straight back empty —
+    // the stream resolves on the first chunk when stopRef is set, with no error — and stayed
+    // broken until the user happened to send a normal message. That is what "the model didn't
+    // return usable rewrites in 0s" was: not the model, a stale Stop.
+    stopRef.current = false;
+    resetLeadStop();
     setBusy(true);
     resetLeadStop();          // clear any Stop left over from a previous run
     // The run's start time. Progress panels count up from this themselves (see StatusBlock), so
@@ -6416,6 +6444,13 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     const pickLeads = pick.filter(needsNote);
     const more = needsDraft.length - pick.length;
     addMsg({ role: 'assistant', content: `${alreadyDone > 0 ? `Continuing your outreach — ${alreadyDone} already sent, ` : ''}${alreadyDrafted > 0 ? `${alreadyDrafted} already written (keeping those), ` : ''}writing ${pick.length} new message${pick.length === 1 ? '' : 's'}${more > 0 ? ` — ${more} still without one after this` : ''} and opening the copilot…`, streaming: true });
+    // A new user-initiated run must clear the Stop flag. It was only reset by the main chat
+    // turn, so after ANY Stop press every one of these flows streamed straight back empty —
+    // the stream resolves on the first chunk when stopRef is set, with no error — and stayed
+    // broken until the user happened to send a normal message. That is what "the model didn't
+    // return usable rewrites in 0s" was: not the model, a stale Stop.
+    stopRef.current = false;
+    resetLeadStop();
     setBusy(true);
     // Real name for the sign-off, taken from the signed-in account.
     const senderName = [profile?.first_name, profile?.last_name].filter(Boolean).join(' ').trim()
@@ -6715,6 +6750,13 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     addMsg({ role: 'user', content: shown });
     if (sid) krewDb.saveMessage(sid, 'user', shown).catch(() => {});
 
+    // A new user-initiated run must clear the Stop flag. It was only reset by the main chat
+    // turn, so after ANY Stop press every one of these flows streamed straight back empty —
+    // the stream resolves on the first chunk when stopRef is set, with no error — and stayed
+    // broken until the user happened to send a normal message. That is what "the model didn't
+    // return usable rewrites in 0s" was: not the model, a stale Stop.
+    stopRef.current = false;
+    resetLeadStop();
     setBusy(true);
     resetLeadStop();
     const t0 = Date.now();
@@ -6819,6 +6861,13 @@ _None of them had everything you ticked, so I've saved them rather than lose the
 
     addMsg({ role: 'assistant', content: `Checking ${contacts.length} saved link${contacts.length === 1 ? '' : 's'} — ${todo.length} need a correct profile URL. Finding each on LinkedIn (opening the ADRIS browser)…`, streaming: true });
     setAgentBrowserHold(false);   // a previous reply may still be holding the window open
+    // A new user-initiated run must clear the Stop flag. It was only reset by the main chat
+    // turn, so after ANY Stop press every one of these flows streamed straight back empty —
+    // the stream resolves on the first chunk when stopRef is set, with no error — and stayed
+    // broken until the user happened to send a normal message. That is what "the model didn't
+    // return usable rewrites in 0s" was: not the model, a stale Stop.
+    stopRef.current = false;
+    resetLeadStop();
     setBusy(true); setBrowserActive(true);
     const nameNorm = (s: string) => (s || '').toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
     let fixed = 0; const failed: string[] = []; let signInHit = false;
@@ -6972,6 +7021,13 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     const startedAt = Date.now();
     const elapsed = () => Math.round((Date.now() - startedAt) / 1000);
     addMsg({ role: 'assistant', content: `Refining ${slice.length} untouched message${slice.length === 1 ? '' : 's'} to be more personal${guidance ? ` — ${guidance}` : ''}…${local ? '\n\n_On a local model this runs at your machine\'s pace — you\'ll see it writing live below._' : ''}`, streaming: true });
+    // A new user-initiated run must clear the Stop flag. It was only reset by the main chat
+    // turn, so after ANY Stop press every one of these flows streamed straight back empty —
+    // the stream resolves on the first chunk when stopRef is set, with no error — and stayed
+    // broken until the user happened to send a normal message. That is what "the model didn't
+    // return usable rewrites in 0s" was: not the model, a stale Stop.
+    stopRef.current = false;
+    resetLeadStop();
     setBusy(true);
 
     // Apply refinements onto a working copy of the campaign, saving after each batch so partial

@@ -1,7 +1,7 @@
 {
   "name": "nivara-desktop",
   "private": true,
-  "version": "1.6.94",
+  "version": "1.6.95",
   "type": "module",
   "scripts": {
     "dev": "vite",
