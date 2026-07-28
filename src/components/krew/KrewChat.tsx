@@ -3384,6 +3384,9 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
   }, [busy]);
   const [agentTool,     setAgentTool]     = useState<string | null>(null);
   const [creds,         setCreds]         = useState<Record<string, Record<string, string>>>({});
+  // Which model actually produced the last answer. Set on the FIRST chunk, so it reflects what
+  // really replied — including after a mid-task switch to a different model.
+  const [answeredBy, setAnsweredBy] = useState('');
   // Mirror of `creds` readable synchronously — streamTurn needs the real keys even when a reload is
   // in flight, and a stale-but-correct key beats an empty one.
   const credsRef = useRef<Record<string, Record<string, string>>>({});
@@ -3860,6 +3863,9 @@ const [studioExtracting, setStudioExtracting] = useState(false);
 
     // Refresh the auth token right before the call so a long preceding tool/browser pass can't
     // leave us sending an expired JWT (which 401'd → "Session expired" at the end of the task).
+    const answerLabel = mode === 'own_key'
+      ? (effectiveModelName || effectiveProvider || 'your key')
+      : mode === 'local' ? (localModel || 'local model') : 'adris.tech';
     if (mode !== 'own_key') noteActiveModel(mode, '', localModel || '');
     const freshToken = await freshSessionToken(session?.access_token ?? null);
 
@@ -3902,6 +3908,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
         if (stopRef.current) { if (!earlyStopped) { earlyStopped = true; if (stallTimer) clearTimeout(stallTimer); done.cleanup(); resolve({ text: fullText, truncated }); } return; }
         fullText += e.payload.text;
         gotFirst = true;
+        if (!earlyStopped) setAnsweredBy(answerLabel);
         onChunk(e.payload.text);
         resetStall();
         // SAFETY NET (defends every backend, even ones that ignore stopSequences): the instant a
@@ -9236,6 +9243,18 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
             </svg>
             Copilot
           </button>
+          {/* WHICH MODEL ACTUALLY ANSWERED. The connection popup shows what is CONFIGURED, which is
+              not the same thing once a dead model has been swapped mid-task — so there was no way
+              to tell what was really doing the work, or to report it when an answer was poor. */}
+          {answeredBy && (
+            <span
+              title={`The last answer came from ${answeredBy}`}
+              className="flex items-center gap-1 h-5 px-1.5 rounded shrink-0 text-[9px] font-mono border border-nv-border text-nv-faint bg-nv-surface2/40 max-w-[190px]"
+            >
+              <span className="w-1 h-1 rounded-full bg-nv-green shrink-0" />
+              <span className="truncate">{answeredBy.split('/').pop()}</span>
+            </span>
+          )}
         </div>
 
         {showTodos && <TodoPanel onResume={resumeTodo} />}
