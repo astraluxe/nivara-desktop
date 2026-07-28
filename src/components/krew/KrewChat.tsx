@@ -5153,6 +5153,15 @@ The prompt must be production-ready — specific enough for a motion designer to
         const norm = (v: string) => v.toLowerCase().replace(/[^a-z ]/g, ' ').replace(/\s+/g, ' ').trim();
         const target = norm(person);
         if (!target) return '';
+        // THE THREAD WINS. If this person typed an address in the conversation, that IS their
+        // address — nothing saved elsewhere can outrank it. Without this, a loosely-matching row in
+        // the Brain was preferred and a real prospect got a calendar invite sent to a stranger's
+        // mailbox, with her actual address sitting in the thread the whole time.
+        try {
+          const section = threadsText.split(/^###\s+/m).find((s) => norm(s.slice(0, s.indexOf('\n'))) === target);
+          const inThread = section?.match(EMAIL)?.[0];
+          if (inThread) return inThread;
+        } catch { /* fall through to the saved sources */ }
         try {
           const camp = loadResumableCampaign() || loadSavedCampaign();
           const hit = camp?.contacts?.find((c) => norm(c.name || '') === target);
@@ -7410,7 +7419,8 @@ _None of them had everything you ticked, so I've saved them rather than lose the
 
   // `override` lets a card submit a turn directly. Setting the input box and then calling send()
   // cannot work — the state update has not landed yet, so send() would read the previous value.
-  async function send(override?: string) {
+  async function send(override?: string, opts?: { skipShortcuts?: boolean }) {
+    const skipShortcuts = opts?.skipShortcuts === true;
     const text = (override ?? input).trim();
     if ((!text && attachedFiles.length === 0) || busy) return;
 
@@ -7473,6 +7483,10 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     // or type a specific reply is never a request to re-read the inbox, however many inbox words
     // it happens to contain further down.
     if (isDirectCommand
+        // A card that already knows exactly what it wants must not be re-routed by keyword
+        // matching. Answering "yes, I'm free" mentions LinkedIn, a reply and drafting, so it hit
+        // every test below and re-read the whole inbox instead of just booking that one meeting.
+        && !skipShortcuts
         && !/^\s*(?:send|type|paste|put)\b/i.test(text)
         && /\blinked\s?in\b/i.test(text)
         && /\b(messages?|inbox|dms?|replies|reply|responded|replied)\b/i.test(text)
@@ -9432,7 +9446,8 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                     const prompt = free
                       ? `${a.prompt} I AM free then — go ahead: create the calendar event and the Google Meet link with create_calendar_event, then draft the confirming reply to ${a.who} with the real link in it.`
                       : `${a.prompt} I am NOT free then.${alt ? ` I am free ${alt}.` : ''} Draft a reply to ${a.who} that declines that slot warmly and offers ${alt ? 'those times' : 'to find another time'} instead. Do not book anything yet.`;
-                    void send(prompt);
+                    // skipShortcuts: this is an explicit instruction, not a phrase to be matched.
+                    void send(prompt, { skipShortcuts: true });
                   }}
                 />
               ) : msg.role === 'lead_setup' ? (
