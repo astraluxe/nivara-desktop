@@ -238,6 +238,17 @@ function salvageDeckSpec(text: string): DeckSpec | null {
 export function parseDeckSpec(raw: string): DeckSpec | null {
   if (!raw) return null;
   let text = raw.trim();
+  // REASONING-MODEL SCRATCHPAD. Several of NVIDIA's free models (the nemotron/deepseek/qwen
+  // reasoning ones) answer with a <think>…</think> block before the JSON, and inside it they
+  // reason ALOUD about the JSON they are about to write — braces and all. indexOf('{') below
+  // then landed in the middle of the thinking, balancedSpan closed on the wrong brace, and the
+  // deck came back "malformed" from a model that had actually produced a perfectly good one.
+  // verify.ts and modelHealth.ts already strip this; the deck parser was the one that didn't.
+  text = text.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').trim();
+  // An UNCLOSED tag means the model was cut off mid-thought (or lost its closing tag), so
+  // everything from there on is scratchpad rather than deck — drop it and salvage the rest.
+  const openThink = text.search(/<think(?:ing)?>/i);
+  if (openThink >= 0) text = text.slice(0, openThink).trim();
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fence) text = fence[1].trim();
   const start = text.indexOf('{');

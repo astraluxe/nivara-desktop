@@ -330,18 +330,53 @@ export function detectWritingSections(text: string): { preamble: string; section
 }
 
 // Detect "schedule / publish these posts" so we can offer the schedule + connect card.
+//
+// This used to test for a scheduling VERB anywhere in the text and a social OBJECT anywhere
+// else in it — with bare pronouns ("it", "this", "them") counting as objects. Over a long
+// message that is very nearly a tautology: a fifteen-slide presentation brief whose closing
+// slide said "schedule demo" and which said "this" somewhere matched, and the user got the
+// social scheduling card instead of their deck. Verb and object now have to belong to the
+// same phrase, and a pronoun only counts when the verb itself already names the object.
 function looksLikeScheduleIntent(text: string): boolean {
   const t = text.toLowerCase();
-  const verb = /\b(schedule|publish|auto[- ]?post|queue|post now|post this|post these|post them|post it|share (this|these|them))\b/.test(t);
-  const obj  = /\b(post|posts|tweet|social|linkedin|instagram|facebook|threads|twitter|reddit|tiktok|youtube|it|this|these|them)\b/.test(t);
-  return verb && obj;
+  // A slide brief that happens to say "schedule a demo" in its call-to-action is not a request
+  // to publish anything. Whatever it is asking for, it is not the social scheduler.
+  if (looksLikePresentation(text)) return false;
+  const social = '(posts?|tweets?|social|linkedin|instagram|facebook|threads|twitter|reddit|tiktok|youtube|captions?)';
+  // "schedule these posts", "publish the linkedin post on Friday"
+  if (new RegExp(`\\b(schedule|publish|auto[- ]?post|queue|share)\\b[^.\\n]{0,24}\\b${social}\\b`).test(t)) return true;
+  // "…those posts scheduled", "the tweet published"
+  if (new RegExp(`\\b${social}\\b[^.\\n]{0,24}\\b(scheduled?|published?|queued?)\\b`).test(t)) return true;
+  // "post it", "publish this", "post now" — the verb phrase carries its own object.
+  return /\b(post|publish|schedule|share)\s+(it|this|these|them|now)\b/.test(t);
+}
+
+// The marks of a real slide-by-slide brief. These only show up when someone is genuinely
+// asking for a presentation — an email that mentions "the ppt" in passing has none of them,
+// which is what makes them safe to trust over the message/research veto below.
+function deckBriefSignals(t: string): number {
+  let n = 0;
+  const numbered = (t.match(/\bslide\s*#?\s*\d{1,2}\s*[:.–-]/g) || []).length;
+  if (numbered >= 2) n += 2; else if (numbered === 1) n += 1;   // "Slide 1: …" through "Slide 15: …"
+  if (/\bslide count\b|\b\d{1,2}\s*(?:-|–|to)\s*\d{1,2}\s+slides?\b|\b\d{1,2}\s+slides?\b/.test(t)) n++;
+  if (/\b(title slide|agenda slide|closing slide|speaker notes?|slide deck|deck outline|presentation outline|slide[- ]by[- ]slide)\b/.test(t)) n++;
+  return n;
 }
 
 // Detect a "make me a presentation / PPT" request so we can offer the deck setup card.
 function looksLikePresentation(text: string): boolean {
   const t = text.toLowerCase();
+  // "email me the deck", "attach the ppt" — about SENDING a deck that already exists, which is
+  // not a request to build one. Kept separate so it can't satisfy the explicit-make test below.
+  const sendExisting = /\b(e-?mail|send|attach|forward|share)\b[^.]{0,24}\b(deck|presentation|slides?|ppt|pptx)\b/.test(t);
   // Does the user EXPLICITLY ask to MAKE a deck (make/create/build … a deck/ppt/slides/presentation)?
-  const makeDeckExplicit = /\b(make|create|build|design|generate|prepare|put together|need|want|draft|turn (this|it) into)\b[^.]{0,28}\b(deck|presentation|slides?|ppt|pptx|pitch\s?deck|keynote|power\s?point)\b/.test(t);
+  const makeDeckExplicit = !sendExisting &&
+    /\b(make|create|build|design|generate|prepare|produce|put together|need|want|draft|turn (this|it) into)\b[^.]{0,28}\b(deck|presentation|slides?|ppt|pptx|pitch\s?deck|keynote|power\s?point)\b/.test(t);
+  // A FULL slide-by-slide brief is the ask, full stop — however many times its bullets happen
+  // to say "email" (as in "integrates with email and calendar") or "message" (as in "Core
+  // message:"). Those incidental mentions were tripping the veto below and sending a detailed
+  // fifteen-slide PowerPoint brief off to the scheduler instead of the deck maker.
+  if (deckBriefSignals(t) >= 2) return true;
   // Is the PRIMARY ask really a written message / email / outreach / research?
   const wantsMessageOrResearch = /\b(message|messages|email|e-?mail|linkedin|outreach|dm|whatsapp|cold\s*(mail|email)|reply|caption|research|analy[sz]e|summar|strategy|go[- ]to[- ]market|gtm)\b/.test(t);
   // If they want a message/research and did NOT explicitly ask to MAKE a deck, then a "ppt/deck"
@@ -350,7 +385,7 @@ function looksLikePresentation(text: string): boolean {
 
   if (/\b(power\s?point|\.pptx|\bppt\b|pitch\s?deck|slide\s?deck|slidedeck|keynote)\b/.test(t)) return true;
   if (/\b(presentation|slides?|deck)\b/.test(t) &&
-      /\b(make|create|build|generate|design|prepare|put together|need|want|draft|do|turn (this|it) into)\b/.test(t)) return true;
+      /\b(make|create|build|generate|design|prepare|produce|put together|need|want|draft|do|turn (this|it) into)\b/.test(t)) return true;
   return false;
 }
 
