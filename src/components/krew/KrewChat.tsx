@@ -3567,6 +3567,18 @@ const [studioExtracting, setStudioExtracting] = useState(false);
       if (stored) {
         try { msgs.push({ role: 'proposal', content: '', proposal: JSON.parse(stored) as AutomationProposal }); } catch {}
       }
+      // COMING BACK TO A CONVERSATION THAT IS STILL WORKING.
+      // The turn kept running while the user was away (only its drawing was paused). Re-open the
+      // live box so it visibly picks up again — subsequent chunks write to the last message, so
+      // appending it here is what reconnects the stream to the view.
+      if (busyRef.current && runSidRef.current === sessionId) {
+        const w = workRef.current;
+        msgs.push({
+          role: 'assistant',
+          content: statusBlock(w?.t0 ?? Date.now(), w?.headline ?? 'Still working on this', 'Carried on while you were in another chat.'),
+          streaming: true,
+        });
+      }
       setMessages(msgs);
     }).catch(() => {});
   }, [sessionId]);
@@ -4160,7 +4172,10 @@ const [studioExtracting, setStudioExtracting] = useState(false);
         const budget = isNetworkDrop ? MAX_ATTEMPTS : 2;
         if ((!isNetworkDrop && !isStall) || stopRef.current || attempt >= budget) { setReconnecting(null); throw e; }
         // Only claim to be reconnecting when the connection is actually the suspect.
-        if (isNetworkDrop) setReconnecting({ attempt, max: MAX_ATTEMPTS });
+        // Only banner the conversation this turn belongs to. Following the user into another chat
+        // with "Reconnecting 1/10" was the single most misleading part of switching away: the turn
+        // was fine and still running, and the banner made it look like the app had fallen over.
+        if (isNetworkDrop && owns()) setReconnecting({ attempt, max: MAX_ATTEMPTS });
         await waitForReconnect(Math.min(3000 + attempt * 1500, 12000));
         if (stopRef.current) { setReconnecting(null); throw e; }
       }
@@ -8071,6 +8086,10 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
       sid = await krewDb.newSession((text || currentFiles[0]?.name || 'File').slice(0, 40), mode, agent.key, localModel).catch(() => null);
       if (sid) { freshSessionRef.current = sid; onSessionCreated(sid); sidRef.current = sid; }
     }
+    // This turn belongs to THIS conversation from here on. Everything it draws is gated on the user
+    // still being here; everything it saves happens regardless, so switching away pauses the view
+    // and never the work.
+    runSidRef.current = sid;
 
     // Add user message to display (typed text + file names only)
     addMsg({ role: 'user', content: displayText });
@@ -9153,11 +9172,20 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
       // empty-turn check, or a box left behind would read as "this turn produced output" and
       // suppress the recovery that exists for exactly the silent-model case.
       hideWork();
+      // Hand ownership back BEFORE the cleanup below: if the user switched away mid-turn, the
+      // stale bubbles left behind in THIS conversation still need tidying, and the guards would
+      // otherwise skip that and leave a permanent "streaming" message in their history.
+      const stillHere = runSidRef.current === sidRef.current;
+      runSidRef.current = undefined;
       // NEVER end blank and never hang on "thinking…". Drop empty streaming bubbles, then — if this
       // turn produced NO visible output — try a clean DIRECT answer on the same model before giving
       // up (the agent framing, not the model, is usually why a free model went silent). See
       // recoverEmptyTurn(). Awaited so the recovery finishes before the run is torn down below.
-      if (!stopRef.current) {
+      // Only when the user is still looking at the conversation this turn ran in. Otherwise this
+      // would strip the last message of whichever chat they opened, and recoverEmptyTurn would
+      // judge "did this turn produce output?" against somebody else's history and re-ask the model.
+      // The turn's real output is already saved, so going back shows it either way.
+      if (!stopRef.current && stillHere) {
         setMessages((prev) => {
           const copy = [...prev];
           while (copy.length && copy[copy.length - 1].streaming && !copy[copy.length - 1].content.trim() && copy[copy.length - 1].role === 'assistant') copy.pop();
@@ -9215,10 +9243,17 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
   // ── Message helpers ───────────────────────────────────────────────────────
 
   function addMsg(msg: DisplayMsg) {
+    // A tool result or an answer produced by a turn running in ANOTHER conversation must not appear
+    // in the one currently open. It is still saved to that conversation's history, so it is there
+    // when the user goes back — the guard only decides what is DRAWN, never what is kept.
+    if (!owns()) return;
     setMessages((prev) => [...prev, msg]);
   }
 
   function updateLastMsg(content: string) {
+    // Never write into a conversation this turn does not belong to — that used to overwrite the
+    // last message of whichever chat the user had just opened.
+    if (!owns()) return;
     setMessages((prev) => {
       const copy = [...prev];
       if (copy.length) copy[copy.length - 1] = { ...copy[copy.length - 1], content, streaming: true };
@@ -9372,6 +9407,9 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
   }
 
   function removeLastMsg() {
+    // Same reasoning as addMsg — this would otherwise delete the last message of a conversation the
+    // turn has nothing to do with.
+    if (!owns()) return;
     setMessages((prev) => prev.slice(0, -1));
   }
 
@@ -9390,9 +9428,24 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
   const workRef = useRef<{ t0: number; headline: string } | null>(null);
   const isWorkBox = (m?: DisplayMsg) => !!m && m.role === 'assistant' && m.content.startsWith('```status ');
 
+  // ── A running turn belongs to the conversation it started in ──────────────
+  //
+  // Opening another conversation calls setMessages([]) and loads that one's rows. The turn itself
+  // is just an async function — nothing cancels it, so it kept running — but every UI write it made
+  // (updateLastMsg, the work box) landed on whatever was now on screen. From the user's side the
+  // task "stopped": its bubble had gone, and the only thing that followed them across was the
+  // global "Reconnecting 1/10" banner, which made a still-working turn look like a broken one.
+  //
+  // runSidRef records which conversation the in-flight turn belongs to; owns() is the gate every UI
+  // write goes through. Nothing about the turn's own progress depends on it: tools keep running and
+  // krewDb.saveMessage keeps writing, so the work completes and is waiting when you come back.
+  const runSidRef = useRef<string | null | undefined>(undefined);
+  const owns = () => runSidRef.current === undefined || runSidRef.current === sidRef.current;
+
   function showWork(headline: string, detail?: string) {
     const t0 = Date.now();
     workRef.current = { t0, headline };
+    if (!owns()) return;   // still tracked, just not drawn into someone else's chat
     setMessages((prev) => {
       const copy = [...prev];
       const last = copy[copy.length - 1];
@@ -9413,6 +9466,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
     const w = workRef.current;
     if (!w) return;
     if (headline) w.headline = headline;
+    if (!owns()) return;
     setMessages((prev) => {
       if (!isWorkBox(prev[prev.length - 1])) return prev;
       const copy = [...prev];
@@ -9424,6 +9478,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
   /** Take the box away — the work it described is finished (or something else is taking over). */
   function hideWork() {
     workRef.current = null;
+    if (!owns()) return;
     setMessages((prev) => (isWorkBox(prev[prev.length - 1]) ? prev.slice(0, -1) : prev));
   }
 
