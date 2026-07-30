@@ -5,7 +5,10 @@ import { todos } from '../../lib/todoStore';
 import { setAgentBrowserHold, bestProfileMatch } from '../../lib/krewTools';
 import { checkPendingConnections, runBrowserCmd, waitingLabel, type ReconcileResult } from '../../lib/outreachConnections';
 import { outreachStatusToLeadCell, setLeadConnStatus } from '../../lib/leadTable';
-import { planReply, planFollowUp, verifyWork, refineMessage, type ReplyPlan, type VerifyResult } from '../../lib/verify';
+import {
+  planReply, planFollowUp, verifyWork, refineMessage, applyPromiseAudit, parseMeetingTime,
+  type ReplyPlan, type VerifyResult,
+} from '../../lib/verify';
 import { listAttachableDocs, isAttachableFile, type GeneratedDoc } from '../../lib/docgen';
 
 // Assemble what the strategist/verifier needs to know about the USER's side: their pitch and any
@@ -421,6 +424,16 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   const [verifying, setVerifying] = useState(false);
   const [docs, setDocs] = useState<GeneratedDoc[]>([]);
   const [attachDoc, setAttachDoc] = useState<GeneratedDoc | null>(null);
+  // ── Making the meeting real ──
+  // The copilot could read a calendar and it could put "Meeting: Friday 6 PM" on screen, but it had
+  // no way to CREATE anything — so a reply saying "I've sent the calendar invite" was a promise the
+  // panel that produced it was structurally incapable of keeping. These carry what genuinely
+  // happened, and feed the promise audit above.
+  const [meetingMade, setMeetingMade] = useState(false);
+  const [meetLink, setMeetLink] = useState('');
+  const [meetingGuests, setMeetingGuests] = useState('');
+  const [meetingBusy, setMeetingBusy] = useState(false);
+  const [meetingNote, setMeetingNote] = useState('');
   const [refineInput, setRefineInput] = useState('');
   const [refining, setRefining] = useState(false);
   const [refineNote, setRefineNote] = useState('');       // feedback when a refine fails / returns nothing
@@ -530,7 +543,12 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
 
   // Clear any plan/verification when moving to a different contact — a plan belongs to one person.
   useEffect(() => {
-    if (planIdx !== idx) { setPlan(null); setVerify(null); setPlanNote(''); setDraftReply(''); setAttachDoc(null); }
+    if (planIdx !== idx) {
+      setPlan(null); setVerify(null); setPlanNote(''); setDraftReply(''); setAttachDoc(null);
+      // A meeting belongs to ONE person. Carrying "created" across to the next contact would tell
+      // the promise audit an invite exists for someone it was never made for.
+      setMeetingMade(false); setMeetLink(''); setMeetingGuests(''); setMeetingNote('');
+    }
   }, [idx]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function closeBrowserNow() {
@@ -912,8 +930,102 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
         v.revised = undefined;
         v.issues = [{ severity: 'medium', issue: 'A rewrite was discarded because it introduced placeholders. Edit the draft yourself where needed.' }, ...v.issues];
       }
-      setVerify(v);
-    } catch { /* verification is best-effort */ } finally { setVerifying(false); }
+      setVerify(applyPromiseAudit(v, text, outwardState()));
+    } catch {
+      // Even when the model-driven verifier fails outright, the deterministic audit still runs —
+      // it needs no network and cannot time out. That matters most on a small free-tier key, which
+      // is precisely where the verifier returns something unreadable AND the draft over-promises.
+      const forced = applyPromiseAudit(
+        { verdict: 'warn', summary: 'The draft was not checked by the verifier.', issues: [], degraded: true },
+        text, outwardState(),
+      );
+      setVerify(forced.verdict === 'fail' ? forced : null);
+    } finally { setVerifying(false); }
+  }
+
+  /**
+   * What has ACTUALLY happened for the contact on screen, for the promise audit to check the draft
+   * against. All false until `createMeeting` below has genuinely run — which is exactly why a draft
+   * claiming "I've sent the invite" must be caught rather than trusted.
+   */
+  function outwardState() {
+    return {
+      calendarCreated: !!meetingMade,
+      meetLink: meetLink || undefined,
+      guestsInvited: !!meetingGuests,
+      attachmentReady: !!attachDoc,
+    };
+  }
+
+  /**
+   * Actually create the meeting the reply is about.
+   *
+   * The copilot could read a calendar and print "Meeting: Friday 6 PM", but it could not book one —
+   * so the only way a meeting ever got made was for the user to notice and go do it themselves,
+   * while the drafted reply happily said an invite had been sent. Two routes, best first:
+   *
+   *   Google connected  → gcal_create_event. A REAL event; with the prospect's email on it Google
+   *                       sends them a genuine invitation. This is the one that makes the sentence
+   *                       "I've sent you the calendar invite" true.
+   *   otherwise         → create_calendar_event, which prefills Google Calendar in the ADRIS browser
+   *                       for the user to press Save. Honest about needing that press.
+   *
+   * The time is parsed deterministically (parseMeetingTime); if it cannot be read with certainty
+   * nothing is booked and the user is asked, because a meeting on the wrong day is worse than none.
+   */
+  async function createMeeting() {
+    const cur = contacts[idx];
+    if (!cur || meetingBusy) return;
+    const raw = plan?.meeting?.proposedTime || plan?.meeting?.note || draftReply;
+    const when = parseMeetingTime(raw);
+    if (!when) {
+      setMeetingNote("I couldn't read a definite date and time from this thread. Put the day and time in the reply (e.g. \"Friday 31 July at 1 PM\") and press this again — I won't book a guess.");
+      return;
+    }
+    setMeetingBusy(true); setMeetingNote('');
+    const title = cur.name ? `Call with ${cur.name}` : 'Intro call';
+    const guest = (cur.email || '').trim();
+    try {
+      const { executeTool } = await import('../../lib/krewTools');
+      const noApproval = async () => true;
+      if (googleToken) {
+        // A real event on the real calendar. Local wall-clock + the zone Google resolves from the
+        // calendar; the parser already normalised the time.
+        const startIso = `${when.date}T${when.time}:00`;
+        const endMins = parseInt(when.time.slice(0, 2), 10) * 60 + parseInt(when.time.slice(3), 10) + 30;
+        const endIso = `${when.date}T${String(Math.floor(endMins / 60) % 24).padStart(2, '0')}:${String(endMins % 60).padStart(2, '0')}:00`;
+        const res = await executeTool('gcal_create_event', {
+          summary: title, start: startIso, end: endIso,
+          description: `Agreed on LinkedIn with ${cur.name}.`,
+          attendees: guest,
+        }, {} as never, noApproval, 'boss', '', 'copilot-cal');
+        if (/did NOT approve/i.test(res)) { setMeetingNote('Cancelled — nothing was created.'); return; }
+        if (/"error"/i.test(res)) { setMeetingNote(`Google refused to create it: ${res.slice(0, 160)}`); return; }
+        const link = res.match(/https:\/\/meet\.google\.com\/[a-z-]+/i)?.[0] ?? '';
+        setMeetingMade(true); setMeetLink(link); setMeetingGuests(guest);
+        setMeetingNote(`Created: ${title} on ${when.spelled} at ${when.time}.${guest ? ` ${guest} has been sent a real invitation.` : ' No email saved for them, so nobody was invited — add their email and they will get one.'}`);
+      } else {
+        const res = await executeTool('create_calendar_event', {
+          title, date: when.date, start_time: when.time, timezone: when.timezone,
+          duration_minutes: 30,
+          details: `Agreed on LinkedIn with ${cur.name}.`,
+          guests: guest,
+        }, {} as never, noApproval, 'boss', '', 'copilot-cal');
+        const link = res.match(/https:\/\/meet\.google\.com\/[a-z-]+/i)?.[0] ?? '';
+        if (/Couldn't open the browser/i.test(res)) { setMeetingNote(res.slice(0, 240)); return; }
+        // NOT booked yet — the template URL needs a Save press. Say so, and leave calendarCreated
+        // false so the audit still challenges a draft claiming the invite went out.
+        setMeetLink(link); setMeetingGuests(guest);
+        setMeetingNote(`Google Calendar is open with "${title}" on ${when.spelled} at ${when.time} filled in — press **Save** in that window and it is booked.${guest ? ` ${guest} is on it and will be emailed once you save.` : ' Nobody is invited to it — add their email in that window if they should be.'}`);
+      }
+    } catch (e) {
+      setMeetingNote(`Couldn't create the meeting: ${String(e).slice(0, 200)}`);
+    } finally {
+      setMeetingBusy(false);
+      // Re-check the draft against what is now true — a promise that was false a moment ago may be
+      // honest now, and vice versa.
+      if (draftReply) setVerify((v) => (v ? applyPromiseAudit({ ...v, verdict: 'warn', issues: v.issues.filter((i) => !/did not actually happen|calendar invite was sent|no guest email/i.test(i.issue)) }, draftReply, outwardState()) : v));
+    }
   }
 
   // Reshape the current draft from a plain-English instruction the user types ("say yes to the call
@@ -1642,6 +1754,32 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                       <p className="text-[10px] text-nv-text leading-snug">
                         <span className="text-accent font-semibold">Meeting:</span> {plan.meeting.proposedTime || plan.meeting.note} {plan.meeting.confirmed ? '(confirmed)' : '(proposed — confirm it)'}
                       </p>
+                    )}
+                    {/* MAKE IT REAL. Printing the time was as far as this went, so a reply could
+                        promise an invite the copilot had no way to send. One press books it — a
+                        genuine Google event when Google is connected, otherwise the calendar
+                        prefilled for a Save press, and the wording below never overstates which. */}
+                    {plan.meeting && (plan.meeting.proposedTime || plan.meeting.note) && (
+                      <>
+                        <button
+                          onClick={createMeeting}
+                          disabled={meetingBusy || meetingMade}
+                          className={`w-full text-[10.5px] px-3 py-1.5 rounded-lg border transition-fast text-left ${
+                            meetingMade
+                              ? 'border-emerald-500/40 text-emerald-400 bg-emerald-500/10'
+                              : 'border-accent/40 text-accent hover:bg-accent/10 disabled:opacity-50'}`}
+                        >
+                          {meetingMade ? '✓ Meeting created' : meetingBusy ? 'Creating the meeting…' : (googleToken ? '📅 Create this meeting & invite them' : '📅 Create this meeting')}
+                        </button>
+                        {!meetingMade && !meetingBusy && (
+                          <p className="text-[9px] text-nv-faint leading-relaxed">
+                            {googleToken
+                              ? 'Google is connected, so this books a real event and emails them the invitation.'
+                              : 'Opens your calendar with everything filled in — you press Save. Connect Google in Connect Apps to have it booked and the invite emailed for you.'}
+                          </p>
+                        )}
+                        {meetingNote && <p className="text-[9.5px] text-nv-text leading-relaxed">{meetingNote}</p>}
+                      </>
                     )}
                     {plan.nextAction && (
                       <button

@@ -68,6 +68,270 @@ export interface VerifyResult {
   degraded?: boolean;
 }
 
+// ─── Deterministic guard over OUTWARD-FACING actions ─────────────────────────
+//
+// The model-driven verifier below is good but it is still a model: on a small free-tier model it can
+// return prose, time out, or simply miss things — and it is exactly on those models that the worst
+// failure happened. A reply went out saying "I've sent the calendar invite to intel@… for 6:00 PM
+// IST today" when NO event had been created at all. Nothing in the system had noticed, because
+// nothing was comparing what the message CLAIMED against what actually ran.
+//
+// So this is a second, dumber, unskippable layer: pure string matching, no model, no network. It
+// runs identically on a 3B local model, an 8B free key and the hosted AI, and it cannot time out.
+// It answers one question — "does this text claim something that did not happen?" — and that single
+// question covers the whole class of failures where the user's name is put to a promise nobody kept.
+
+/** What genuinely happened alongside a draft, as recorded by the code that actually did it. */
+export interface OutwardAction {
+  /** A calendar event was really created/prefilled (create_calendar_event returned successfully). */
+  calendarCreated?: boolean;
+  /** A real, minted meeting URL. Never a link the model wrote. */
+  meetLink?: string;
+  /** A guest address was actually put on the event, so saving it notifies somebody. */
+  guestsInvited?: boolean;
+  /** A real file exists and is queued to go with this message. */
+  attachmentReady?: boolean;
+}
+
+export interface PromiseIssue {
+  /** The exact phrase in the draft that made the promise. */
+  claim: string;
+  /** Why it is wrong, in the user's terms. */
+  problem: string;
+  /** What to do instead. */
+  fix: string;
+}
+
+/** Find `re` in the draft and return the sentence it sits in, for quoting back at the user. */
+function sentenceWith(draft: string, re: RegExp): string {
+  const m = re.exec(draft);
+  if (!m) return '';
+  const at = m.index;
+  const start = Math.max(0, draft.lastIndexOf('.', at - 1) + 1);
+  const endDot = draft.indexOf('.', at);
+  const end = endDot === -1 ? Math.min(draft.length, at + 160) : endDot + 1;
+  return draft.slice(start, end).trim().slice(0, 200);
+}
+
+/**
+ * Compare what an outgoing message CLAIMS against what actually ran.
+ *
+ * `draft` is the text about to reach another human; `done` is the truth from the code paths that
+ * performed (or failed to perform) each action. Returns one issue per unkept promise. An empty
+ * array means every claim in the text is backed by something that really happened.
+ */
+export function auditPromises(draft: string, done: OutwardAction = {}): PromiseIssue[] {
+  const text = String(draft || '');
+  if (!text.trim()) return [];
+  const issues: PromiseIssue[] = [];
+
+  // 1. "I've sent the calendar invite" — the exact failure that started this.
+  const INVITE = /\b(?:i(?:'ve| have)?\s+(?:just\s+)?(?:sent|shared|fired off|popped over|put)|sending you|i(?:'ve| have)?\s+(?:booked|scheduled|set up|added)|invite is on its way|invitation (?:has been )?sent)\b[^.!?]{0,80}\b(?:calendar\s+)?(?:invite|invitation|event|meeting|slot|call)\b/i;
+  const ADDED = /\b(?:added|popped|put)\b[^.!?]{0,40}\b(?:to|in|on)\s+(?:your|the|our)\s+calendar\b/i;
+  if (!done.calendarCreated && (INVITE.test(text) || ADDED.test(text))) {
+    issues.push({
+      claim: sentenceWith(text, INVITE.test(text) ? INVITE : ADDED),
+      problem: 'This says a calendar invite was sent or a meeting was booked. No calendar event was created, so nothing exists and the other person will get nothing.',
+      fix: 'Either create the event first (then this sentence is true), or reword it to what is actually happening — e.g. "I\'ll send the invite across shortly."',
+    });
+  }
+
+  // 2. A meeting link that was never minted. A fabricated meet.google.com URL is worse than none:
+  //    the recipient turns up at a room that does not exist.
+  const realLink = /https?:\/\/(?:meet\.google\.com|[a-z0-9-]+\.zoom\.us|zoom\.us|teams\.microsoft\.com|meet\.jit\.si)\/\S+/i;
+  const linkInDraft = realLink.exec(text)?.[0] ?? '';
+  const PROMISES_LINK = /\b(?:here(?:'s| is) the link|joining link|meeting link|video link|link to join|i(?:'ve| have)?\s+(?:created|generated|attached)\s+(?:a|the)\s+(?:meet|zoom|video)\b)/i;
+  if (linkInDraft && (!done.meetLink || !text.includes(done.meetLink))) {
+    issues.push({
+      claim: linkInDraft,
+      problem: 'This message contains a meeting URL that was not created by the app. A made-up link sends the other person to a room that does not exist.',
+      fix: 'Remove it and create a real meeting (which mints a genuine link), or paste a link you created yourself.',
+    });
+  } else if (!linkInDraft && !done.meetLink && PROMISES_LINK.test(text)) {
+    issues.push({
+      claim: sentenceWith(text, PROMISES_LINK),
+      problem: 'This promises a joining link but there is no link in the message and none was created.',
+      fix: 'Create the meeting so a real link exists, or drop the sentence.',
+    });
+  }
+
+  // 3. Attachments. LinkedIn DMs cannot carry files at all, and no channel here attaches anything
+  //    automatically — so "please find attached" is always a promise the reader will find broken.
+  const ATTACHED = /\b(?:please find attached|i(?:'ve| have)\s+attached|attached (?:is|are|you'll find)|enclosed (?:is|are)|see the attached)\b/i;
+  if (!done.attachmentReady && ATTACHED.test(text)) {
+    issues.push({
+      claim: sentenceWith(text, ATTACHED),
+      problem: 'This says something is attached. Nothing is attached to this message — and a LinkedIn message cannot carry a file at all.',
+      fix: 'Offer to email it instead, or paste a link to it.',
+    });
+  }
+
+  // 4. Relative dates. A meeting on the 31st described as "tomorrow" sends someone to the wrong day,
+  //    and it is the single easiest mistake for a small model to make because it is the natural way
+  //    to write. The fix is always the same: name the day.
+  const RELATIVE = /\b(?:tomorrow|today|tonight|this evening|next week|day after tomorrow)\b[^.!?]{0,40}\b(?:at\s*)?\d{1,2}(?::\d{2})?\s*(?:am|pm|hrs|o'clock)?\b|\b(?:at\s*)?\d{1,2}(?::\d{2})?\s*(?:am|pm)\b[^.!?]{0,20}\b(?:tomorrow|today|tonight|next week)\b/i;
+  if (RELATIVE.test(text)) {
+    issues.push({
+      claim: sentenceWith(text, RELATIVE),
+      problem: 'The time is written relative to today ("tomorrow", "today"). By the time this is read that can mean a different day, and it already caused a meeting to be confirmed for the wrong date.',
+      fix: 'Name the actual day and date instead — e.g. "Friday 31 July at 1 PM".',
+    });
+  }
+
+  // 5. Unfilled placeholders. Sending "[Your Name]" to a prospect is unrecoverable.
+  const PLACEHOLDER = /\[(?:your |the |insert |add )?(?:name|first ?name|company|product|date|time|link|title|role|x{2,}|y{2,})\]|\{\{[a-z_]+\}\}|<(?:name|your name|company|date)>/i;
+  if (PLACEHOLDER.test(text)) {
+    issues.push({
+      claim: sentenceWith(text, PLACEHOLDER),
+      problem: 'There is an unfilled placeholder in the message. Sent as-is it reads as an unedited template.',
+      fix: 'Replace it with the real value before sending.',
+    });
+  }
+
+  // 6. Guest-less invite. The event exists but nobody was invited to it, so "you\'ll get the invite"
+  //    is still false — a quieter version of failure 1, and one the user hit.
+  if (done.calendarCreated && !done.guestsInvited && /\b(?:you(?:'ll| will) (?:get|receive)|sending you|you should (?:get|see))\b[^.!?]{0,40}\b(?:invite|invitation|calendar)\b/i.test(text)) {
+    issues.push({
+      claim: sentenceWith(text, /\b(?:you(?:'ll| will) (?:get|receive)|sending you|you should (?:get|see))\b[^.!?]{0,40}\b(?:invite|invitation|calendar)\b/i),
+      problem: 'The event was created but no guest email was added to it, so saving it invites nobody — the other person receives nothing.',
+      fix: 'Add their email to the event, or send them the meeting details in the message instead.',
+    });
+  }
+
+  return issues;
+}
+
+// ─── Turning an agreed time into something bookable ──────────────────────────
+// The plan gives a meeting time as free text ("Friday 31 July at 1 PM"), because that is how people
+// write. Creating the event needs YYYY-MM-DD + HH:MM. Doing that conversion with a model is how a
+// meeting lands on the wrong day, so it is done here — deterministically, from a known "now".
+
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+function ymd(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+export interface ParsedMeetingTime {
+  date: string;          // YYYY-MM-DD
+  time: string;          // HH:MM, 24-hour
+  timezone: string;      // IANA
+  /** How the day was worked out, so the UI can show it and the user can catch a wrong reading. */
+  spelled: string;
+}
+
+/**
+ * Read a date+time out of ordinary English. Returns null when it cannot be certain — a null is a
+ * prompt to the user to pick the time, which is always better than booking a guess.
+ */
+export function parseMeetingTime(text: string, now = new Date()): ParsedMeetingTime | null {
+  const s = String(text || '').toLowerCase().replace(/–|—/g, '-').trim();
+  if (!s) return null;
+
+  // Time first — without one there is nothing to book.
+  const t = /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/.exec(s) || /\b(\d{1,2}):(\d{2})\b(?!\s*(?:am|pm))/.exec(s);
+  if (!t) return null;
+  let hh = parseInt(t[1], 10);
+  const mm = t[2] ? parseInt(t[2], 10) : 0;
+  const ampm = (t[3] || '').toLowerCase();
+  if (ampm === 'pm' && hh < 12) hh += 12;
+  if (ampm === 'am' && hh === 12) hh = 0;
+  if (hh > 23 || mm > 59) return null;
+  const time = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+
+  // Timezone, if one was named. Only common abbreviations — an unrecognised one falls back to the
+  // machine's own zone rather than being guessed at.
+  const TZ: Record<string, string> = {
+    ist: 'Asia/Kolkata', pst: 'America/Los_Angeles', pdt: 'America/Los_Angeles',
+    est: 'America/New_York', edt: 'America/New_York', et: 'America/New_York',
+    ct: 'America/Chicago', cst: 'America/Chicago', cdt: 'America/Chicago',
+    gmt: 'Europe/London', bst: 'Europe/London', uk: 'Europe/London',
+    cet: 'Europe/Berlin', cest: 'Europe/Berlin', utc: 'UTC',
+  };
+  // Longest abbreviations first: alternation is left-to-right, so "et" listed before "est" would
+  // swallow the E of EST and pick the wrong coast.
+  const tzHit = /\b(cest|cdt|cet|cst|edt|est|pdt|pst|bst|gmt|utc|ist|et|ct|uk)\b/.exec(s);
+  const timezone = (tzHit && TZ[tzHit[1]]) || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+
+  const spell = (d: Date) => d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+
+  // 1. An explicit ISO date wins outright.
+  const iso = /\b(\d{4})-(\d{2})-(\d{2})\b/.exec(s);
+  if (iso) return { date: iso[0], time, timezone, spelled: spell(new Date(`${iso[0]}T00:00:00`)) };
+
+  // 2. "31 July" / "July 31" / "31 Jul 2026".
+  const dm = /\b(\d{1,2})(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b(?:\s+(\d{4}))?/.exec(s)
+          || (() => {
+            const md = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s+(\d{4}))?/.exec(s);
+            return md ? ([md[0], md[2], md[1], md[3]] as unknown as RegExpExecArray) : null;
+          })();
+  if (dm) {
+    const day = parseInt(dm[1], 10);
+    const mon = MONTHS.indexOf(dm[2]);
+    if (day >= 1 && day <= 31 && mon >= 0) {
+      let year = dm[3] ? parseInt(dm[3], 10) : now.getFullYear();
+      const cand = new Date(year, mon, day, hh, mm);
+      // No year given and the date has already passed → they mean next year, not last month.
+      if (!dm[3] && cand.getTime() < now.getTime() - 86_400_000) { year += 1; }
+      const d = new Date(year, mon, day);
+      if (d.getMonth() === mon && d.getDate() === day) return { date: ymd(d), time, timezone, spelled: spell(d) };
+    }
+  }
+
+  // 3. "today" / "tomorrow".
+  if (/\btoday\b|\bthis (?:evening|afternoon|morning)\b|\btonight\b/.test(s)) {
+    return { date: ymd(now), time, timezone, spelled: spell(now) };
+  }
+  if (/\btomorrow\b/.test(s)) {
+    const d = new Date(now.getTime() + 86_400_000);
+    return { date: ymd(d), time, timezone, spelled: spell(d) };
+  }
+
+  // 4. A weekday name means the NEXT one of those, never one already gone.
+  const wd = /\b(sun|mon|tues?|wed(?:nes)?|thur?s?|fri|sat(?:ur)?)(?:day)?\b/.exec(s);
+  if (wd) {
+    const stub = wd[1];
+    const idx = WEEKDAYS.findIndex((w) => w.startsWith(stub.slice(0, 3)));
+    if (idx >= 0) {
+      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      let delta = (idx - d.getDay() + 7) % 7;
+      // "Friday at 1 PM" said ON Friday morning means today; said Friday afternoon means next week.
+      if (delta === 0 && (hh * 60 + mm) <= (now.getHours() * 60 + now.getMinutes())) delta = 7;
+      if (delta === 0 && /\bnext\b/.test(s)) delta = 7;
+      else if (/\bnext\b/.test(s) && delta < 7) delta += 7;
+      d.setDate(d.getDate() + delta);
+      return { date: ymd(d), time, timezone, spelled: spell(d) };
+    }
+  }
+
+  return null;   // a time with no day is not bookable — ask rather than guess
+}
+
+/** Fold a promise audit into a model-produced verdict. Deterministic issues always win: they are
+ *  facts about what ran, not opinions, so they can turn a "pass" into a "fail". */
+export function applyPromiseAudit(result: VerifyResult, draft: string, done: OutwardAction = {}): VerifyResult {
+  const found = auditPromises(draft, done);
+  if (!found.length) return result;
+  const issues: VerifyIssue[] = found.map((p) => ({
+    severity: 'high',
+    issue: `${p.problem}${p.claim ? ` — "${p.claim}"` : ''}`,
+    fix: p.fix,
+  }));
+  return {
+    ...result,
+    verdict: 'fail',
+    summary: found.length === 1
+      ? 'This message promises something that did not actually happen.'
+      : `This message makes ${found.length} promises that did not actually happen.`,
+    issues: [...issues, ...result.issues],
+    // A "revised" version produced before the audit may carry the same false claim, so it is not
+    // safe to offer as a one-click replacement.
+    revised: undefined,
+  };
+}
+
 function firstJson<T>(text: string): T | null {
   // Models wrap JSON in prose or ```json fences despite instructions, and reasoning models emit a
   // <think>…</think> preamble first. Strip those, then pull the first balanced object out rather

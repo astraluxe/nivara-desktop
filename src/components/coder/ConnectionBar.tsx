@@ -1,6 +1,8 @@
 ﻿import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ConnectionMode, Provider, PROVIDERS, fetchRankedModels, type RankedModel } from '../../lib/ai';
+import { contextWindowFor } from '../../lib/contextBudget';
+import { rankScan } from '../../lib/modelHealth';
 import { credentialStore } from '../../lib/krewDb';
 import { PLAN_CONFIG, Plan } from '../../lib/planConfig';
 
@@ -61,6 +63,11 @@ export default function ConnectionBar(props: Props) {
   }, []);
   const [checkNote, setCheckNote] = useState('');
   const [modelsLoading, setModelsLoading] = useState(false);
+  // Measured results for THIS key: which models answer, how fast, and whether they can return JSON.
+  // Without this the picker could only show ids — the user picked a name, got something slow or
+  // prose-only, and had no way to see why. `scanning` drives the live progress line.
+  const [scan, setScan] = useState<import('../../lib/modelHealth').ModelScan | null>(null);
+  const [scanning, setScanning] = useState<{ done: number; total: number } | null>(null);
   const [byokList, setByokList] = useState<{ api_key: string; model?: string }[]>([]);
   const [byokActive, setByokActive] = useState('');
   const [connectedAi, setConnectedAi] = useState<Provider[]>([]);
@@ -108,9 +115,40 @@ export default function ConnectionBar(props: Props) {
       const { isBlocked } = await import('../../lib/modelHealth');
       const usable = list.filter((m) => !isBlocked(provider, m.id));
       if (!cancelled) { setRankedModels(usable); setModelsLoading(false); }
+
+      // Show whatever was measured before, then — if this key has never been swept — sweep it in
+      // the background. Nothing waits on it: the popup stays usable and the numbers fill in.
+      const { loadScan } = await import('../../lib/modelHealth');
+      const saved = loadScan(provider, key);
+      if (!cancelled) setScan(saved);
+      if (!saved && !cancelled) void runScan(key);
     })();
     return () => { cancelled = true; };
   }, [popup, provider, apiKey, credsNonce]);
+
+  /** Measure every model this key can call. Fired on first open and by the Rescan button. */
+  async function runScan(explicitKey?: string) {
+    let key = explicitKey || apiKey;
+    if (!key) { try { const c = await credentialStore.get(provider); key = (c?.api_key as string) || ''; } catch { /* none */ } }
+    if (!key) return;
+    setScanning({ done: 0, total: 0 });
+    try {
+      const { scanModels } = await import('../../lib/modelHealth');
+      const result = await scanModels(provider, key, (done, total) => setScanning({ done, total }));
+      setScan(result);
+      // A model already proven dead must not stay in the picker.
+      const { isBlocked } = await import('../../lib/modelHealth');
+      setRankedModels((prev) => (prev ? prev.filter((m) => !isBlocked(provider, m.id)) : prev));
+    } catch { /* offline or the probe endpoint is blocked — keep whatever we had */ }
+    setScanning(null);
+  }
+
+  /** The measured row for a model id, if this key has been scanned. */
+  const rowFor = (id: string) => scan?.rows.find((r) => r.id === id);
+  /** Ranked exactly as pickBestModel ranks — the list and the automatic choice cannot disagree. */
+  const rankedScan = scan ? rankScan(scan) : [];
+  /** "65k" / "1M" — a context window a non-technical user can compare at a glance. */
+  const win = (t: number) => (t >= 1_000_000 ? `${Math.round(t / 1_000_000)}M` : `${Math.round(t / 1000)}k`);
 
   // Open the guided setup for a free provider and preselect it as the own-key provider. Does NOT
   // fling the user out to the website — the wizard has a link they click when THEY are ready
@@ -353,25 +391,69 @@ export default function ConnectionBar(props: Props) {
                     instead of reading 130 cryptic ids. */}
                 {(provider === 'nvidia' || provider === 'groq') && (
                   <div className="mb-3">
-                    <label className="text-nv-faint text-[11px] block mb-1.5">Model</label>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-nv-faint text-[11px]">Model</label>
+                      <button
+                        onClick={() => runScan()}
+                        disabled={!!scanning}
+                        className="text-[9.5px] px-1.5 py-0.5 rounded-md border border-nv-border text-nv-faint hover:text-nv-text disabled:opacity-50 transition-fast"
+                      >{scanning ? `Testing ${scanning.done}/${scanning.total || '…'}` : 'Rescan models'}</button>
+                    </div>
+
+                    {/* WHAT IS ACTUALLY CONNECTED, with its measured numbers. The popup used to show
+                        only an id, so "connected to a 49b model" and "answers like an 8b model"
+                        could both be true with no way to tell which was doing the work. */}
+                    {modelName && (
+                      <div className="mb-2 px-2 py-1.5 rounded-lg border border-accent/30 bg-accent/5">
+                        <p className="text-[10px] text-accent font-medium truncate" title={modelName}>Connected: {modelName.split('/').pop()}</p>
+                        <p className="text-[9.5px] text-nv-faint mt-0.5">
+                          {win(contextWindowFor(modelName))} context
+                          {rowFor(modelName)
+                            ? ` · ${rowFor(modelName)!.ok ? `${rowFor(modelName)!.ms}ms · JSON ${rowFor(modelName)!.jsonOk ? '✓' : '✗ (answers in prose — weak for agent work)'}` : 'did not answer when last tested'}`
+                            : ' · not measured yet — press Rescan models'}
+                        </p>
+                      </div>
+                    )}
+                    {scanning && (
+                      <p className="text-[9.5px] text-nv-faint mb-1.5">
+                        Testing every model your key can call — this runs in the background, keep using the app.
+                      </p>
+                    )}
                     {rankedModels === null
                       ? <p className="text-[10.5px] text-nv-faint">{modelsLoading ? 'Finding the models your key can use…' : 'Connect the key first (Connect Apps → ' + (provider === 'nvidia' ? 'NVIDIA' : 'Groq') + '), then reopen this to choose a model.'}</p>
                       : rankedModels.length === 0
                         ? <p className="text-[10.5px] text-amber-400">Couldn’t list models for this key — it may be new. The default works; you can type a model id below.</p>
                         : (
                           <>
-                            {(['smart', 'fast'] as const).map((tier) => {
-                              const list = rankedModels.filter((m) => m.tier === tier);
+                            {/* MEASURED first when we have measurements. A model that answered in
+                                813ms with clean JSON is objectively the better pick than one that
+                                merely sounds bigger, and the numbers are shown so the user can see
+                                why — no hidden hardcoded favourite. */}
+                            {(scan ? ['measured'] as const : ['smart', 'fast'] as const).map((tier) => {
+                              const list = tier === 'measured'
+                                ? (() => {
+                                    // Same ordering the app itself uses to pick — so what the user
+                                    // sees at the top IS what gets chosen for them.
+                                    const byId = new Map(rankedModels.map((m) => [m.id, m] as const));
+                                    return rankedScan.map((r) => byId.get(r.id) ?? { id: r.id, tier: 'other' as const }).slice(0, 10);
+                                  })()
+                                : rankedModels.filter((m) => m.tier === tier);
                               if (!list.length) return null;
                               return (
                                 <div key={tier} className="mb-1.5">
-                                  <p className="text-[9.5px] text-nv-faint mb-1">{tier === 'smart' ? '★ Recommended — handles agents, tools, research (closest to the default)' : 'Fast — quick replies & writing'}</p>
+                                  <p className="text-[9.5px] text-nv-faint mb-1">{
+                                    tier === 'measured' ? `★ Tested on your key ${new Date(scan!.scannedAt).toLocaleDateString()} — best first (JSON-capable, then fastest)`
+                                    : tier === 'smart' ? '★ Recommended — handles agents, tools, research (closest to the default)'
+                                    : 'Fast — quick replies & writing'}</p>
                                   <div className="flex flex-wrap gap-1">
-                                    {list.slice(0, tier === 'smart' ? 6 : 4).map((m) => {
+                                    {list.slice(0, tier === 'fast' ? 4 : tier === 'smart' ? 6 : 10).map((m) => {
                                       const short = m.id.split('/').pop() || m.id;
                                       const on = modelName === m.id;
+                                      const r = rowFor(m.id);
                                       return (
-                                        <button key={m.id} title={m.id} disabled={checking === m.id}
+                                        <button key={m.id}
+                                          title={`${m.id}\n${win(contextWindowFor(m.id))} context${r ? `\n${r.ms}ms · JSON ${r.jsonOk ? 'ok' : 'not returned'}` : '\nnot measured yet'}`}
+                                          disabled={checking === m.id}
                                           /* CHECK IT BEFORE COMMITTING TO IT. A key cannot tell us which
                                              models it may use — the catalogue lists everything the provider
                                              hosts, and some of those accept a request and then never answer.
@@ -389,8 +471,15 @@ export default function ConnectionBar(props: Props) {
                                             setRankedModels((prev) => (prev ? prev.filter((x) => x.id !== m.id) : prev));
                                             setCheckNote(`${short} didn't respond on your key — your account may not have access to it. Removed from the list; pick another.`);
                                           }}
-                                          className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${on ? 'border-accent bg-accent/10 text-accent font-medium' : 'border-nv-border text-nv-muted hover:text-nv-text'} ${checking === m.id ? 'opacity-60' : ''}`}>
+                                          className={`text-[10px] px-2 py-1 rounded-md border transition-fast flex items-center gap-1 ${on ? 'border-accent bg-accent/10 text-accent font-medium' : 'border-nv-border text-nv-muted hover:text-nv-text'} ${checking === m.id ? 'opacity-60' : ''}`}>
                                           {checking === m.id ? `checking ${short}…` : short}
+                                          {/* The numbers that decide whether this model is any good,
+                                              on the chip itself — speed, JSON, and how much it can read. */}
+                                          {checking !== m.id && r && (
+                                            <span className="text-[8.5px] text-nv-faint font-mono">
+                                              {r.ms < 1000 ? `${r.ms}ms` : `${(r.ms / 1000).toFixed(1)}s`}·{r.jsonOk ? 'JSON' : 'prose'}·{win(contextWindowFor(m.id))}
+                                            </span>
+                                          )}
                                         </button>
                                       );
                                     })}
@@ -399,7 +488,11 @@ export default function ConnectionBar(props: Props) {
                               );
                             })}
                             {checkNote && <p className={`text-[9.5px] mt-1 ${checkNote.startsWith('✓') ? 'text-emerald-400' : 'text-amber-400'}`}>{checkNote}</p>}
-                            <p className="text-[9.5px] text-nv-faint mt-1">Each one is tested against your key when you pick it — an NVIDIA key doesn’t say which models your account may use, and a few accept requests without ever answering.</p>
+                            <p className="text-[9.5px] text-nv-faint mt-1">
+                              {scan
+                                ? `${scan.rows.filter((r) => r.ok).length} of ${scan.rows.length} models answered on your key; ${scan.rows.filter((r) => r.ok && r.jsonOk).length} can return JSON (needed for research, decks and reply checking). The list is measured, not a fixed favourite — press Rescan when NVIDIA adds models.`
+                                : 'Each one is tested against your key when you pick it — an NVIDIA key doesn’t say which models your account may use, and a few accept requests without ever answering.'}
+                            </p>
                           </>
                         )}
                   </div>

@@ -23,8 +23,10 @@ import UpgradeModal from '../UpgradeModal';
 import { type AutomationProposal } from './AutomationProposalModal';
 import AgentStatus from './AgentStatus';
 import { type ConnectionMode, type Provider } from '../../lib/ai';
-import { isDeadModelError, repairDeadModel, blockModel } from '../../lib/modelHealth';
+import { isDeadModelError, repairDeadModel, blockModel, scanModelsIfStale } from '../../lib/modelHealth';
 import { noteActiveModel } from '../../lib/contextBudget';
+import { slugLooksLikeName } from '../../lib/outreachConnections';
+import { auditPromises, type PromiseIssue } from '../../lib/verify';
 import ConnectionBar from '../coder/ConnectionBar';
 import { getMonthlyUsage } from '../../lib/tokenTracker';
 import { getImageBudget, unitsForModel } from '../../lib/imageQuota';
@@ -3640,6 +3642,36 @@ const [studioExtracting, setStudioExtracting] = useState(false);
 
   useEffect(() => { reloadCreds(); }, [reloadCreds]);
 
+  // ── Make the connection panel show the model that will actually answer ──
+  //
+  // Two different values were in play. Every own-key call resolves its model from the CREDENTIAL
+  // (`creds[svc].model`), while the panel rendered `modelName` — a separate piece of state seeded
+  // from localStorage. They agree right up until something changes the credential without going
+  // through the panel: a mid-task repair swapping a dead model, or a key toggled elsewhere. After
+  // that the panel confidently displayed a model that was doing none of the work, which is exactly
+  // the "it says llama 70b but something else is answering" the user hit — and it made every
+  // report about a bad answer impossible to attribute.
+  //
+  // So the credential is treated as the single source of truth and the panel follows it.
+  useEffect(() => {
+    if (mode !== 'own_key') return;
+    const src = Object.keys(credsRef.current).length ? credsRef.current : creds;
+    for (const svc of [provider, 'nvidia', 'groq', 'gemini', 'openai', 'claude']) {
+      const cred = src[svc];
+      if (!cred?.api_key) continue;
+      if (cred.model && cred.model !== modelName) setModelName(cred.model);
+      // Also correct the provider when the dropdown points at one with no key behind it — otherwise
+      // the panel names the wrong company as well as the wrong model.
+      if (svc !== provider && !src[provider]?.api_key) setProvider(svc as Provider);
+      // Measure this key's whole catalogue in the background, at most once every 12 hours. Users who
+      // connected a key long before this existed get the measured ranking too, without having to
+      // reconnect or find a button — and a model NVIDIA adds shows up on its own merits at the next
+      // sweep, rather than waiting for someone to edit a list in the source.
+      if (svc === 'nvidia' || svc === 'groq') scanModelsIfStale(svc, cred.api_key);
+      break;
+    }
+  }, [creds, mode, provider]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Refresh MCP tools whenever the Connect Apps panel updates a connection.
   useEffect(() => {
     const reload = () => { reloadCreds(); };
@@ -5150,7 +5182,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       // Parse "### Name / WHY: / REPLY: / ACTION: / NEEDS:" blocks so each reply becomes its own
       // actionable card. REPLY must stop at the next labelled line, otherwise ACTION/NEEDS would be
       // swallowed into the message body and sent to the prospect.
-      const parsed: { name: string; why: string; reply: string; action: string; needs: string; calendar?: { ok: boolean; guests: string; link: string; when: string; needsConfirm?: boolean } }[] = [];
+      const parsed: { name: string; why: string; reply: string; action: string; needs: string; calendar?: { ok: boolean; guests: string; link: string; when: string; needsConfirm?: boolean }; promiseIssues?: PromiseIssue[] }[] = [];
       for (const blk of clean.split(/^###\s+/m).slice(1)) {
         const nl = blk.indexOf('\n');
         const name = (nl >= 0 ? blk.slice(0, nl) : blk).trim();
@@ -5284,6 +5316,22 @@ The prompt must be production-ready — specific enough for a motion designer to
         }
       }
 
+      // ── The last gate before a draft reaches a human to send ──
+      // Every reply above is about to be shown as ready-to-send text. Compare what each one CLAIMS
+      // against what actually ran a few lines up. This is where "I've sent the calendar invite to
+      // intel@… for 6:00 PM IST today" escaped: the invite had been downgraded to a confirm-first
+      // because no availability was known, so nothing was created, and the sentence went out
+      // regardless. Deterministic — no model, no network — so it holds on a 3B local model, a free
+      // 8B key and the hosted AI alike.
+      for (const p of parsed) {
+        const issues = auditPromises(p.reply, {
+          calendarCreated: !!p.calendar?.ok,
+          meetLink: p.calendar?.link || undefined,
+          guestsInvited: !!p.calendar?.guests,
+        });
+        if (issues.length) p.promiseIssues = issues;
+      }
+
       // Map each drafted reply back to the profile URL read from that thread, so "open the chat"
       // targets the right person instead of guessing a slug.
       const urlByName = new Map<string, string>();
@@ -5347,8 +5395,14 @@ The prompt must be production-ready — specific enough for a motion designer to
           : p.calendar
             ? `\n\n📅 Couldn't set the meeting up automatically — the to-do below still has it.`
             : '';
+        // A promise the draft makes that nothing actually kept. Shown FIRST, above everything else,
+        // because the user is one copy-paste from putting their name to it.
+        const promises = p.promiseIssues?.length
+          ? `\n\n> 🚫 **Do not send as-is — ${p.promiseIssues.length === 1 ? 'this claims something that did not happen' : 'this claims things that did not happen'}:**\n`
+            + p.promiseIssues.map((i) => `> - ${i.problem} _${i.fix}_`).join('\n')
+          : '';
         const next = hint ? `\n\n↳ ${hint.label}` : '';
-        return `### ${p.name}\n${p.why ? `_${p.why}_\n\n` : ''}\`\`\`email ${p.name}\n${p.reply}\n\`\`\`${warn}${cal}${next}`;
+        return `### ${p.name}\n${p.why ? `_${p.why}_\n\n` : ''}\`\`\`email ${p.name}\n${p.reply}\n\`\`\`${promises}${warn}${cal}${next}`;
       }).join('\n\n');
       const head = `I read your LinkedIn inbox and drafted ${parsed.length} repl${parsed.length === 1 ? 'y' : 'ies'} from what was actually said in each thread:`;
       const tail = '\n\n_Say **"send the reply to <name>"** and I\'ll type it into their chat box for you to review and send — I never send anything myself._';
@@ -6509,10 +6563,18 @@ _None of them had everything you ticked, so I've saved them rather than lose the
         const arr = JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
         if (Array.isArray(arr)) arr.filter((c) => c?.name).forEach((c) => add({ name: String(c.name), headline: String(c.headline || ''), url: String(c.url || ''), source: 'connections' }));
       } catch { /* ignore */ }
-      if (!contacts.length) {
-        const node = brainStore.all().nodes.find((n) => /linkedin connections/i.test(n.title));
-        if (node) parseContactRows(nodeToMarkdown(node.body || '')).forEach((c) => add({ ...c, source: 'connections' }));
-        if (contacts.length) { try { localStorage.setItem('nv-li-connections', JSON.stringify(contacts.map((c) => ({ name: c.name, headline: c.headline, url: c.url })))); } catch { /* quota */ } }
+      // ALWAYS read the Brain note too — the two stores drift apart, and the union is the only
+      // honest answer to "who do I know". The Brain note was previously consulted ONLY when
+      // localStorage came back completely empty, so a user with 500+ people saved in their
+      // "LinkedIn connections" note and a stale 180-entry JSON blob got the 180: outreach opened
+      // with nothing left to draft while the great majority of their network was never considered.
+      // add() dedupes by name and only fills gaps, so merging cannot lose a status or a URL.
+      const before = contacts.length;
+      const node = brainStore.all().nodes.find((n) => /linkedin connections/i.test(n.title));
+      if (node) parseContactRows(nodeToMarkdown(node.body || '')).forEach((c) => add({ ...c, source: 'connections' }));
+      // Write the union back so the JSON store stops being the smaller of the two.
+      if (contacts.length > before || !before) {
+        try { localStorage.setItem('nv-li-connections', JSON.stringify(contacts.map((c) => ({ name: c.name, headline: c.headline, url: c.url })))); } catch { /* quota */ }
       }
     }
     // ── Leads. Added AFTER the connections above so add() has already claimed anyone who is both,
@@ -6823,7 +6885,16 @@ _None of them had everything you ticked, so I've saved them rather than lose the
         contacts: [...carriedPrior, ...built],
       };
       setOutreachCampaign(campaign); // opens the popup deterministically, positioned on the first to-do
-      const done = `Opened the outreach copilot with ${pick.length} message${pick.length === 1 ? '' : 's'} to send${alreadyDone > 0 ? ` — ${alreadyDone} already done are kept with their status` : ''}${more > 0 ? `; ${more} more still to do (say "draft outreach for all" to include them)` : ''}. For each: tap **Copy message & open chat**, paste (Ctrl+V) and send, then mark it. Every message is editable before you send.`;
+      // Say what is actually waiting for them. "0 messages to send" was true of the new drafts and
+      // completely wrong as a summary — there were dozens already written and ready, and the user
+      // reasonably read it as the run having done nothing.
+      const ready = campaign.contacts.filter((c) => !isDoneStatus(c.status) && (c.linkedin_message?.trim() || c.connect_note?.trim())).length;
+      const head = pick.length > 0
+        ? `Opened the outreach copilot — ${pick.length} newly written, ${ready} ready to send in total`
+        : ready > 0
+          ? `Opened the outreach copilot — ${ready} message${ready === 1 ? '' : 's'} already written and ready to send (nothing new needed writing)`
+          : 'Opened the outreach copilot';
+      const done = `${head}${alreadyDone > 0 ? ` — ${alreadyDone} already done are kept with their status` : ''}${more > 0 ? `; ${more} more still to write (say "draft outreach for all" to include them)` : ''}. For each: tap **Copy message & open chat**, paste (Ctrl+V) and send, then mark it. Every message is editable before you send.`;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: done, streaming: false }; return c; });
       if (sid) krewDb.saveMessage(sid, 'assistant', done).catch(() => {});
       setAttachedFiles([]);
@@ -6948,7 +7019,45 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     });
 
     try {
-      const listMd = nodeToMarkdown(node.body || '');
+      let listMd = nodeToMarkdown(node.body || '');
+      // BLANK THE WRONG ONES FIRST, so enrichment refills them.
+      //
+      // enrich_lead_list only ever fills EMPTY cells, and on a researched list the bad LinkedIn URLs
+      // are not empty — they are present and belong to somebody else entirely (the user found this
+      // by opening eight or nine and landing on strangers). A wrong URL therefore survived every
+      // repair pass. A LinkedIn slug is built from the member's own name, so one that shares nothing
+      // with the row's name is cleared here and re-found below.
+      let wiped = 0;
+      {
+        const rows = extractTableRows(listMd);
+        if (rows.length > 1) {
+          // extractTableRows keeps whole lines that start with "|", so splitting on "|" puts the
+          // text before the first pipe at index 0 and column N at index N — for the header and for
+          // every body row alike. Both are indexed the same way, which is what keeps this safe.
+          const cols = rows[0].split('|').map((c) => c.trim().toLowerCase());
+          const li = cols.findIndex((c) => /linkedin/.test(c));
+          const nameCol = cols.findIndex((c) => /\bname\b/.test(c));
+          if (li >= 0 && nameCol >= 0) {
+            const out: string[] = [];
+            for (const line of listMd.split('\n')) {
+              const cells = line.split('|');
+              if (cells.length <= Math.max(li, nameCol) || /^\s*\|[\s|:-]*$/.test(line)) { out.push(line); continue; }
+              const nm = cells[nameCol].trim();
+              const m = /(https?:\/\/\S*linkedin\.com\/in\/[^\s)\]|]+)/i.exec(cells[li]);
+              if (m && nm && !/^name$/i.test(nm) && !slugLooksLikeName(m[1], nm)) {
+                cells[li] = ' ';
+                wiped++;
+                out.push(cells.join('|'));
+                continue;
+              }
+              out.push(line);
+            }
+            if (wiped) listMd = out.join('\n');
+          }
+        }
+      }
+      if (wiped) updateLastMsg(statusBlock(t0, `Filling in profiles for ${listTitle}`,
+        `${wiped} saved link${wiped === 1 ? '' : 's'} pointed at the wrong person — clearing ${wiped === 1 ? 'it' : 'those'} and finding the right profile.`));
       const out = await executeTool('enrich_lead_list', { list: listMd }, creds, requestTerminalApproval,
         'research_agent', user?.id ?? '', `${sidRef.current ?? 'main'}-fill`);
       const tbl = out && out.indexOf('|') >= 0 ? out.slice(out.indexOf('|')) : '';
@@ -6958,7 +7067,8 @@ _None of them had everything you ticked, so I've saved them rather than lose the
         const withLink = rows.filter((r) => /linkedin\.com\/in\//i.test(r.cells['linkedin'] || '')).length;
         const stillMissing = rows.length - withLink;
         const done = `Filled in **${listTitle}** — ${withLink} of ${rows.length} now have a LinkedIn profile`
-          + (stillMissing ? `, ${stillMissing} still without one (no real profile could be confirmed, so they were left blank rather than guessed).` : '.');
+          + (stillMissing ? `, ${stillMissing} still without one (no real profile could be confirmed, so they were left blank rather than guessed).` : '.')
+          + (wiped ? `\n\nI also found **${wiped}** saved link${wiped === 1 ? '' : 's'} pointing at somebody whose name didn't match the row — ${wiped === 1 ? 'that one was' : 'those were'} cleared and re-searched, so you won't open a stranger's profile from this list.` : '');
         setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: done, streaming: false }; return c; });
         if (sid) krewDb.saveMessage(sid, 'assistant', done).catch(() => {});
         addMsg({ role: 'lead_result', content: listTitle, leadCount: rows.length, leadTable: tbl, leadMissingLinks: stillMissing });
@@ -7013,15 +7123,26 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     }
 
     const isRealProfile = (u?: string) => !!(u && /linkedin\.com\/in\//i.test(u));
-    const todo = contacts.filter((c) => !isRealProfile(c.linkedin_url));
+    // A MISSING link and a WRONG link are both broken, and only the first was ever checked. On a
+    // researched lead list the URLs are present and confidently wrong — the user found that out by
+    // opening eight or nine profiles and landing on strangers. A LinkedIn slug is built from the
+    // member's own name, so a slug sharing nothing with the name we have is not that person, and
+    // it gets re-searched exactly like a blank one.
+    const mismatched = contacts.filter((c) => isRealProfile(c.linkedin_url) && !slugLooksLikeName(c.linkedin_url, c.name));
+    const missing = contacts.filter((c) => !isRealProfile(c.linkedin_url));
+    const todo = [...missing, ...mismatched];
     if (!todo.length) {
-      const ok = `All ${contacts.length} saved contacts already have a real profile link (\`linkedin.com/in/…\`) — nothing to fix. "Copy message & open chat" will land on the right person for each.`;
+      const ok = `All ${contacts.length} saved contacts have a real profile link (\`linkedin.com/in/…\`) and every one matches the person's name — nothing to fix. "Copy message & open chat" will land on the right person for each.`;
       addMsg({ role: 'assistant', content: ok });
       if (sid) krewDb.saveMessage(sid, 'assistant', ok).catch(() => {});
       return;
     }
 
-    addMsg({ role: 'assistant', content: `Checking ${contacts.length} saved link${contacts.length === 1 ? '' : 's'} — ${todo.length} need a correct profile URL. Finding each on LinkedIn (opening the ADRIS browser)…`, streaming: true });
+    const breakdown = [
+      missing.length ? `${missing.length} with no link` : '',
+      mismatched.length ? `${mismatched.length} pointing at someone whose name doesn't match` : '',
+    ].filter(Boolean).join(' and ');
+    addMsg({ role: 'assistant', content: `Checking ${contacts.length} saved link${contacts.length === 1 ? '' : 's'} — ${breakdown}. Finding each on LinkedIn (opening the ADRIS browser)…`, streaming: true });
     setAgentBrowserHold(false);   // a previous reply may still be holding the window open
     // A new user-initiated run must clear the Stop flag. It was only reset by the main chat
     // turn, so after ANY Stop press every one of these flows streamed straight back empty —
@@ -7032,7 +7153,7 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     resetLeadStop();
     setBusy(true); setBrowserActive(true);
     const nameNorm = (s: string) => (s || '').toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
-    let fixed = 0; const failed: string[] = []; let signInHit = false;
+    let fixed = 0; let cleared = 0; const failed: string[] = []; let signInHit = false;
     const fixT0 = Date.now();
     try {
       for (let i = 0; i < todo.length; i++) {
@@ -7054,8 +7175,15 @@ _None of them had everything you ticked, so I've saved them rather than lose the
         // match + ≥half the name tokens overlap, 1st-degree preferred — so we never point a button at
         // a stranger who merely shares a surname.
         const foundUrl = bestProfileUrl(results, c.name);
-        if (foundUrl) { c.linkedin_url = foundUrl; fixed++; }
-        else failed.push(c.name);
+        if (foundUrl && foundUrl !== c.linkedin_url) { c.linkedin_url = foundUrl; fixed++; }
+        else if (foundUrl) { /* already correct after all — leave it, don't count it as a fix */ }
+        else {
+          failed.push(c.name);
+          // BLANK BEATS WRONG. If we could not confirm the right profile and the saved one does not
+          // match this person's name, keep it out of the way: a blank makes the copilot offer "Find
+          // them on LinkedIn", whereas a wrong link silently opens a stranger's chat.
+          if (c.linkedin_url && !slugLooksLikeName(c.linkedin_url, c.name)) { c.linkedin_url = ''; cleared++; }
+        }
         await new Promise((r) => setTimeout(r, 400)); // gentle pacing — never hammer LinkedIn
       }
     } finally {
@@ -7066,7 +7194,7 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     // Persist the repaired URLs. `todo` holds the SAME objects as `contacts` (filter keeps refs), so
     // `contacts` already reflects every fix. Save back to the campaign the copilot reads, and also
     // patch the scanned-connections JSON (by name) so future /outreach drafts get the right link too.
-    if (fixed > 0) {
+    if (fixed > 0 || cleared > 0) {
       if (campaign) saveCampaign({ ...campaign, contacts });
       try {
         const arr = JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
@@ -7075,8 +7203,14 @@ _None of them had everything you ticked, so I've saved them rather than lose the
           for (const c of contacts) if (c.linkedin_url && isRealProfile(c.linkedin_url)) fixedByName.set(nameNorm(c.name), c.linkedin_url);
           let touched = false;
           for (const row of arr) {
-            const u = fixedByName.get(nameNorm(String(row?.name || '')));
-            if (u && (!row.url || !/linkedin\.com\/in\//i.test(String(row.url)))) { row.url = u; touched = true; }
+            const nm = nameNorm(String(row?.name || ''));
+            const u = fixedByName.get(nm);
+            const saved = String(row?.url || '');
+            // Write a repaired URL over a blank one AND over one that does not match the name —
+            // leaving the old wrong link here is how a fixed campaign got re-broken by the next
+            // /outreach run, which reads this store.
+            if (u && (!saved || !/linkedin\.com\/in\//i.test(saved) || !slugLooksLikeName(saved, String(row?.name || '')))) { row.url = u; touched = true; }
+            else if (saved && !slugLooksLikeName(saved, String(row?.name || ''))) { row.url = ''; touched = true; }
           }
           if (touched) localStorage.setItem('nv-li-connections', JSON.stringify(arr));
         }
@@ -7091,7 +7225,7 @@ _None of them had everything you ticked, so I've saved them rather than lose the
       ? `You're not signed in to LinkedIn in the ADRIS browser, so I couldn't verify the links. I fixed ${fixed} before that. Sign in there, then run **/verifylinks** again.`
       : stopped
         ? `Stopped — fixed ${fixed} link${fixed === 1 ? '' : 's'} before you cancelled. Run **/verifylinks** again to finish the rest.${failLine}`
-        : `Done. Fixed **${fixed}** of ${todo.length} broken link${todo.length === 1 ? '' : 's'} — each now points to the person's real profile, so "Copy message & open chat" opens their actual chat instead of a search.${failLine}`;
+        : `Done. Fixed **${fixed}** of ${todo.length} broken link${todo.length === 1 ? '' : 's'} — each now points to the person's real profile, so "Copy message & open chat" opens their actual chat instead of a search.${cleared > 0 ? ` ${cleared} link${cleared === 1 ? ' that pointed' : 's that pointed'} at the wrong person and couldn't be re-matched ${cleared === 1 ? 'was' : 'were'} cleared rather than left to open a stranger's chat — use **Find them on LinkedIn** in the copilot for those.` : ''}${failLine}`;
     setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: summary, streaming: false }; return c; });
     if (sid) krewDb.saveMessage(sid, 'assistant', summary).catch(() => {});
     // Reopen the copilot with the corrected links so the user can carry on immediately.
@@ -7539,10 +7673,21 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     // an invented email reached a calendar invite. The copilot reads the thread, drafts, verifies
     // against a checklist, and lets the draft be fixed and re-checked before it goes anywhere. So a
     // request to ANSWER someone goes there, while reading the inbox stays here.
+    // …but ONLY when answering someone is the whole of the ask. "I'm going to reply to X on
+    // LinkedIn, but I need YOU to create the meeting" mentions LinkedIn and a reply, so it matched
+    // here and opened the copilot — throwing away the actual instruction and the message the user
+    // had already written. A keyword shortcut must never outrank an explicit verb the user typed:
+    // if they asked for a meeting booked, a person researched, or a document made, that goes to the
+    // boss, which has the tools for it and can read the whole message.
+    const asksSomethingElse = /\b(creat|book|schedul|set ?up|arrang|add|put)\w*\b[^.]{0,40}\b(meeting|event|invite|invitation|call|calendar)\b/i.test(text)
+      || /\bcalendar\b/i.test(text)
+      || /\b(research|find out|look ?up|dig|brief me|tell me about)\b/i.test(text)
+      || /\b(make|create|write|generate|build)\b[^.]{0,30}\b(deck|pdf|doc|document|one-?pager|presentation|report|list)\b/i.test(text);
     if (isDirectCommand && !skipShortcuts
         && /\blinked\s?in\b/i.test(text)
         && /\b(repl(y|ies)|respond|answer|get back to|write back)\b/i.test(text)
         && !/^\s*(?:send|type|paste|put)\b/i.test(text)
+        && !asksSomethingElse
         && !/\bconnections\b/i.test(text)) {
       setInput('');
       addMsg({ role: 'user', content: text });
@@ -7559,6 +7704,9 @@ _None of them had everything you ticked, so I've saved them rather than lose the
         && /\blinked\s?in\b/i.test(text)
         && /\b(messages?|inbox|dms?|replies|reply|responded|replied)\b/i.test(text)
         && /\b(check|read|see|look|any|go to|open|reply|replies|respond|answer|draft|new)\b/i.test(text)
+        // Same guard as the copilot route above: an explicit "create the meeting" / "research this
+        // person" instruction is the ask, and re-reading the whole inbox is not a substitute for it.
+        && !asksSomethingElse
         && !/\bconnections\b/i.test(text)) {
       setInput('');
       runLinkedInMessages(text);
@@ -8055,7 +8203,21 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
       if ((mode === 'own_key' || mode === 'local') && agent.key === 'boss') {
         const uReq = lastUserRequest();
         const looksToolTask = /\b(find|generate|create|build|make|scan|scrape|send|email|post|publish|tweet|draft outreach|open|browse|navigate|enrich|verify)\b[\s\S]{0,40}\b(leads?|companies|company|deck|ppt|presentation|slides?|website|app|image|images|photo|video|email|emails|message|messages|browser|linkedin|gmail|calendar|automation)\b/i;
-        if (detectWritingSections(uReq).sections.length >= 2 && !looksToolTask.test(uReq)) {
+        // ANYTHING THAT NEEDS A LOOK-UP IS NOT A WRITING TASK.
+        //
+        // This shortcut answers from the model's own head. That is right for "write me three
+        // sections comparing X and Y", and completely wrong for "research the person I'm meeting on
+        // Friday" — which is a well-structured request with many headed sections, so it matched, and
+        // the model produced a confident briefing without ever opening the calendar, LinkedIn or the
+        // Brain. That is what "the answers are very bad" and "cant it read files from brain?" were:
+        // not the model's ability, but the app answering a research question from memory.
+        //
+        // The old guard only caught a verb sitting within 40 characters of a tool-ish noun, which
+        // "Generate a comprehensive briefing about the individual I will meet on Friday" sails past.
+        // So: if the request names something only a look-up can supply, it goes down the normal
+        // agent path with the tools.
+        const needsLookup = /\b(research|look ?up|find out|dig into|background on|brief(ing)? (on|about)|profile|prospect|my calendar|calendar|meeting|the person|this person|who (i'?m|i am|we'?re) meeting|my (notes|brain|connections|contacts|leads|list)|from (the )?brain|recent (posts|activity|news)|publicly available|up to today)\b/i;
+        if (detectWritingSections(uReq).sections.length >= 2 && !looksToolTask.test(uReq) && !needsLookup.test(uReq)) {
           // Ground each section in any attached text file (e.g. the meeting briefing) so the answer
           // uses the real specifics, not generic advice.
           const refFile = attachedFiles.find((f) => f.content && !f.isImage && /\.(md|markdown|txt|pdf|docx?)$/i.test(f.name)) || attachedFiles.find((f) => f.content && !f.isImage);

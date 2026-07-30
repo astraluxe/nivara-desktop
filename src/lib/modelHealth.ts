@@ -126,13 +126,194 @@ export async function probeModel(provider: Provider, apiKey: string, model: stri
   } catch { return false; }
 }
 
+// ─── Measured model scan ──────────────────────────────────────────────────────
+// PREFERRED above is a hand-written order, and hand-written orders go stale: it was built from one
+// sweep of one key at one moment, and NVIDIA's free tier grants different models to different
+// accounts and changes what it grants over time. So the app measures the user's OWN key instead —
+// probe every chat model in their live catalogue, record how fast it answers and whether it can
+// return JSON, and rank from that. PREFERRED then survives only as the cold-start order used before
+// a scan has ever run.
+//
+// Nothing here is hardcoded to a model NAME. A model NVIDIA adds tomorrow is picked up by the next
+// scan on its merits, and one that quietly stops working drops out of the ranking on its own.
+
+export interface ModelScanRow {
+  id: string;
+  /** Milliseconds to a complete short answer. The number the user feels as "slow". */
+  ms: number;
+  /** Did it return the JSON it was explicitly asked for? This app runs on JSON — reply plans, deck
+   *  specs, verification results — so a fast model that answers in prose is not usable. */
+  jsonOk: boolean;
+  /** Answered at all. False = listed in the catalogue but hangs or rejects on this account. */
+  ok: boolean;
+  /** Rough context window in tokens, so the popup can show what a model has room for. */
+  window: number;
+  /** 'smart' = big/agentic/reasoning family, 'fast' = small. From the id, via rankChatModel. */
+  tier?: 'smart' | 'fast' | 'other';
+}
+
+export interface ModelScan {
+  provider: string;
+  /** Last 6 chars of the key it was measured on — results are never reused across keys, because
+   *  access genuinely differs per account. */
+  keyTail: string;
+  scannedAt: number;
+  rows: ModelScanRow[];
+}
+
+const SCAN_KEY = 'nv-model-scan';
+const SCAN_FRESH_MS = 12 * 3_600_000;   // a day's work; availability drifts slower than that
+
+function keyTail(apiKey: string): string { return (apiKey || '').slice(-6); }
+
+function allScans(): ModelScan[] {
+  try { const v = JSON.parse(localStorage.getItem(SCAN_KEY) || '[]'); return Array.isArray(v) ? v : []; } catch { return []; }
+}
+
+/** The saved scan for this provider+key, or null. */
+export function loadScan(provider: string, apiKey: string): ModelScan | null {
+  const t = keyTail(apiKey);
+  return allScans().find((s) => s.provider === provider && s.keyTail === t) ?? null;
+}
+
+export function scanIsFresh(scan: ModelScan | null): boolean {
+  return !!scan && Date.now() - scan.scannedAt < SCAN_FRESH_MS && scan.rows.some((r) => r.ok);
+}
+
+function saveScan(scan: ModelScan): void {
+  try {
+    const rest = allScans().filter((s) => !(s.provider === scan.provider && s.keyTail === scan.keyTail));
+    // Keep the last few keys' results only — this is a cache, not an archive.
+    localStorage.setItem(SCAN_KEY, JSON.stringify([scan, ...rest].slice(0, 4)));
+  } catch { /* quota */ }
+}
+
+/** Beyond this, a model is "slow" no matter how clever — a user waiting 25 seconds for a chat reply
+ *  has already decided the app is broken. Measured: the models that felt unusable were 24–27s. */
+const SLOW_MS = 8_000;
+
 /**
- * Best model this key can actually call — verified, not assumed. Walks the preference list and then
- * the live catalogue, PROBING each candidate and returning the first that genuinely answers.
+ * Models that answered, best first.
+ *
+ * Three things decide it, in this order:
+ *   1. Can it return JSON? This app runs on JSON — reply plans, deck specs, verification results —
+ *      so one that answers in prose is not usable however clever it sounds.
+ *   2. Is it fast enough to sit in front of? A capable model that takes 25 seconds is demoted, not
+ *      promoted, whatever its size.
+ *   3. Then capability before size. Among models that are both reliable and quick, the bigger
+ *      agentic family wins: the user's own experience is that 7–9B models are poor at real work,
+ *      and raw speed alone would keep handing them the smallest thing on the list.
+ *
+ * All three are read off measurements of THIS key. No model is named anywhere.
+ */
+export function rankScan(scan: ModelScan | null): ModelScanRow[] {
+  if (!scan) return [];
+  const tierRank = (t?: string) => (t === 'smart' ? 0 : t === 'other' ? 1 : 2);
+  const bucket = (r: ModelScanRow) => (r.jsonOk ? 0 : 2) + (r.ms > SLOW_MS ? 1 : 0);
+  return scan.rows.filter((r) => r.ok)
+    .slice()
+    .sort((a, b) => bucket(a) - bucket(b) || tierRank(a.tier) - tierRank(b.tier) || a.ms - b.ms);
+}
+
+/**
+ * Probe one model and MEASURE it: does it answer, how fast, and can it return JSON on request.
+ * One call does both jobs — asking for a tiny JSON object costs the same as asking for "hi".
+ */
+export async function probeModelDetailed(
+  provider: Provider, apiKey: string, model: string, timeoutMs = 12_000,
+): Promise<{ ok: boolean; ms: number; jsonOk: boolean }> {
+  const endpoint = PROVIDERS[provider]?.endpoint;
+  const t0 = Date.now();
+  if (!endpoint || !apiKey || !model) return { ok: false, ms: 0, jsonOk: false };
+  try {
+    const raw = await invoke<string>('krew_http_call', {
+      method: 'POST', url: endpoint,
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: 'Reply with only this JSON and nothing else: {"ok":1}' }],
+        max_tokens: 24, temperature: 0, stream: false,
+      }),
+      timeoutMs,
+    });
+    const ms = Date.now() - t0;
+    if (!raw) return { ok: false, ms, jsonOk: false };
+    const j = JSON.parse(raw) as { choices?: Array<{ message?: { content?: string } }>; error?: unknown; detail?: unknown };
+    if (j.error || j.detail) return { ok: false, ms, jsonOk: false };
+    if (!Array.isArray(j.choices) || !j.choices.length) return { ok: false, ms, jsonOk: false };
+    const content = String(j.choices[0]?.message?.content ?? '');
+    // A reasoning model wraps its answer in <think>…</think>; that is not a JSON failure, so strip
+    // it before judging. Anything still containing a bare {"ok"…} object counts.
+    const body = content.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/```(?:json)?|```/gi, '');
+    const jsonOk = /\{\s*"ok"\s*:\s*1\s*\}/.test(body);
+    return { ok: true, ms, jsonOk };
+  } catch { return { ok: false, ms: Date.now() - t0, jsonOk: false }; }
+}
+
+/**
+ * Sweep every chat model this key lists, in small parallel batches, and save the measurements.
+ *
+ * Meant to be fired and forgotten (`void scanModels(...)`) right after a key is connected: the user
+ * keeps working on whatever model is current while this runs in the background, and the ranking is
+ * simply better the next time a model has to be chosen. `onProgress` is for the popup's live count.
+ */
+export async function scanModels(
+  provider: Provider, apiKey: string,
+  onProgress?: (done: number, total: number, row?: ModelScanRow) => void,
+  opts: { batch?: number; timeoutMs?: number; max?: number } = {},
+): Promise<ModelScan> {
+  const { contextWindowFor } = await import('./contextBudget');
+  const batch = opts.batch ?? 6;
+  const timeoutMs = opts.timeoutMs ?? 10_000;
+  const live = await fetchRankedModels(provider, apiKey).catch(() => []);
+  // fetchRankedModels already drops embedding/vision/etc. Domain specialists are listed but never
+  // auto-picked, so measuring them is wasted time on a free key's rate limit.
+  const candidates = live.filter((m) => !SPECIALIST.test(m.id)).slice(0, opts.max ?? 90);
+  const ids = candidates.map((m) => m.id);
+  const tierById = new Map(candidates.map((m) => [m.id, m.tier] as const));
+
+  const rows: ModelScanRow[] = [];
+  for (let i = 0; i < ids.length; i += batch) {
+    const chunk = ids.slice(i, i + batch);
+    const measured = await Promise.all(chunk.map(async (id) => {
+      const r = await probeModelDetailed(provider, apiKey, id, timeoutMs);
+      return { id, ms: r.ms, jsonOk: r.jsonOk, ok: r.ok, window: contextWindowFor(id), tier: tierById.get(id) } as ModelScanRow;
+    }));
+    for (const row of measured) {
+      rows.push(row);
+      // Feed the blocklist as we go, so even an interrupted scan leaves the app better off.
+      if (!row.ok) blockModel(provider, row.id);
+      onProgress?.(rows.length, ids.length, row);
+    }
+  }
+  const scan: ModelScan = { provider, keyTail: keyTail(apiKey), scannedAt: Date.now(), rows };
+  saveScan(scan);
+  try { window.dispatchEvent(new CustomEvent('nv-model-scan-done', { detail: { provider } })); } catch { /* no window */ }
+  return scan;
+}
+
+/** Run a scan only if there isn't a fresh one already. Safe to call on every connect. */
+export function scanModelsIfStale(provider: Provider, apiKey: string): void {
+  if (!apiKey || !PROVIDERS[provider]?.endpoint) return;
+  if (scanIsFresh(loadScan(provider, apiKey))) return;
+  void scanModels(provider, apiKey).catch(() => { /* background work never surfaces an error */ });
+}
+
+/**
+ * Best model this key can actually call — verified, not assumed. Prefers the MEASURED ranking from
+ * a background scan of this key; falls back to the preference list and then the live catalogue,
+ * PROBING each candidate and returning the first that genuinely answers.
  */
 export async function pickBestModel(provider: Provider, apiKey: string, exclude: string[] = []): Promise<string> {
   const bad = new Set(exclude.filter(Boolean).map((s) => s.toLowerCase()));
   const skip = (id: string) => bad.has(id.toLowerCase()) || isBlocked(provider, id);
+
+  // MEASURED FIRST. A scan of this very key beats any list we shipped: it knows what this account
+  // was actually granted, how fast each one is today, and which can return JSON. Every row here has
+  // already answered once, so the winner needs no re-probe and the pick is instant.
+  const scanned = rankScan(loadScan(provider, apiKey)).filter((r) => !skip(r.id));
+  if (scanned[0]) return scanned[0].id;   // rankScan already ordered it: reliable, quick, capable
+
   const live = (await fetchRankedModels(provider, apiKey).catch(() => [])).filter((m) => !skip(m.id));
 
   // Candidates in the order we'd like them, deduped: preferred (present in the catalogue) first,

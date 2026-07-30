@@ -47,6 +47,14 @@ export function noteActiveModel(mode: string, modelName: string, localModel?: st
   try { localStorage.setItem(ACTIVE_KEY, JSON.stringify({ mode, modelName: modelName || '', localModel: localModel || '' })); } catch { /* quota */ }
 }
 
+/** Context window, in tokens, for a NAMED model — so the connection popup can tell the user how
+ *  much room the model they are about to pick actually has, instead of them finding out when a
+ *  long job comes back wrong. Same table the budgeter uses, so the two can never disagree. */
+export function contextWindowFor(modelId: string): number {
+  for (const [re, n] of WINDOWS) if (re.test(modelId || '')) return n;
+  return DEFAULT_TOKENS;
+}
+
 /** Context window, in tokens, of the model the next call will use. */
 export function activeContextTokens(): number {
   let mode = '', modelName = '';

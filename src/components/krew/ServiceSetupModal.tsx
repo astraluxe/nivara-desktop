@@ -656,6 +656,16 @@ export default function ServiceSetupModal({ service, onDone, onClose }: Props) {
         if ((service === 'nvidia' || service === 'groq') && out.api_key) {
           const { addByokKey } = await import('../../lib/byokKeys');
           await addByokKey(service, { api_key: out.api_key, model: out.model });
+          // MEASURE THE WHOLE CATALOGUE IN THE BACKGROUND. The pick above probes a handful of
+          // candidates and stops at the first that answers — good enough to get started, but it
+          // cannot know whether something else on this key is faster or better at JSON. This sweeps
+          // every chat model the key lists and records speed + JSON reliability, so from the next
+          // pick onwards the choice is measured on THIS account rather than read off a shipped list.
+          // Deliberately not awaited: the user carries on immediately.
+          try {
+            const { scanModelsIfStale } = await import('../../lib/modelHealth');
+            scanModelsIfStale(service as import('../../lib/ai').Provider, out.api_key);
+          } catch { /* background only — never blocks connecting */ }
         } else {
           await credentialStore.save(service, out);
         }

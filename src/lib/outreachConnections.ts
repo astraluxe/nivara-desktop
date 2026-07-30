@@ -78,6 +78,38 @@ export function normName(n?: string): string {
   return out || (n || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+/**
+ * Does this profile URL plausibly belong to this person?
+ *
+ * The symptom: on a researched lead list, roughly every profile after the first eight or nine
+ * opened the WRONG person. Those URLs were not missing — they were present and confidently wrong,
+ * so /verifylinks (which only ever repaired blanks) reported everything fine and the user found out
+ * one profile at a time, in front of the people they were trying to reach.
+ *
+ * The check that catches it costs nothing: a LinkedIn slug is derived from the member's own name
+ * ("sapnasinghal", "keshav-sharma", "john-doe-3a91b7"). If the slug shares no part of the name we
+ * have, the two are not the same person. Deliberately generous — one matching name token, or a
+ * name token appearing anywhere in the slug, is enough — because the cost of a false alarm is one
+ * wasted search, while the cost of a miss is messaging a stranger.
+ *
+ * Returns true when it cannot tell (no URL, no name, an opaque numeric slug), so nothing is thrown
+ * away on a hunch.
+ */
+export function slugLooksLikeName(url: string | undefined, name: string | undefined): boolean {
+  const slug = slugOf(url);
+  if (!slug) return true;                       // no /in/ URL at all — not this function's business
+  const clean = slug.replace(/[^a-z0-9]/g, '');
+  // Some profiles have no vanity URL at all — LinkedIn puts its opaque member id there instead
+  // ("ACoAAB12cD3e…"). There is no name in that to compare, so it must not be judged as a mismatch.
+  if (!/[a-z]/.test(clean) || clean.length < 3) return true;
+  if (/^acoa/.test(clean) || (clean.length >= 16 && (clean.match(/\d/g) || []).length >= 4)) return true;
+  const tokens = normName(name).length ? (name || '').toLowerCase()
+    .normalize('NFKD').replace(/[^a-z\s]/g, ' ').split(/\s+/)
+    .map((t) => t.trim()).filter((t) => t.length >= 3) : [];
+  if (!tokens.length) return true;              // single-letter or non-Latin name — cannot judge
+  return tokens.some((t) => clean.includes(t) || t.includes(clean));
+}
+
 function indexPeople(people: ConnPerson[]): { slugs: Map<string, ConnPerson>; names: Map<string, ConnPerson> } {
   const slugs = new Map<string, ConnPerson>();
   const names = new Map<string, ConnPerson>();
