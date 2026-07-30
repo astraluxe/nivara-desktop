@@ -23,7 +23,7 @@ import UpgradeModal from '../UpgradeModal';
 import { type AutomationProposal } from './AutomationProposalModal';
 import AgentStatus from './AgentStatus';
 import { type ConnectionMode, type Provider } from '../../lib/ai';
-import { isDeadModelError, repairDeadModel, blockModel, scanModelsIfStale } from '../../lib/modelHealth';
+import { isDeadModelError, repairDeadModel, blockModel, scanModelsIfStale, measuredMsFor } from '../../lib/modelHealth';
 import { noteActiveModel } from '../../lib/contextBudget';
 import { slugLooksLikeName } from '../../lib/outreachConnections';
 import { auditPromises, type PromiseIssue } from '../../lib/verify';
@@ -3701,7 +3701,14 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     // Only reflect progress while a turn is actually running. A stray event from a background flow
     // (or one arriving after a run ended) used to leave the status bar counting up forever with no
     // way to dismiss it — it even survived opening a new chat.
-    listen('agent-progress', (e) => { const t = (e.payload as { text?: string } | undefined)?.text; if (t && busyRef.current) setAgentStep(t); }).then(fn => { un3 = fn; });
+    listen('agent-progress', (e) => {
+      const t = (e.payload as { text?: string } | undefined)?.text;
+      if (!t || !busyRef.current) return;
+      setAgentStep(t);
+      // Same text into the in-stream box, so the running commentary is where the user is already
+      // looking rather than only in the thin bar above the whole panel.
+      paintWork(undefined, t);
+    }).then(fn => { un3 = fn; });
     return () => { un1?.(); un2?.(); un3?.(); };
   }, []);
 
@@ -3947,7 +3954,20 @@ const [studioExtracting, setStudioExtracting] = useState(false);
       // full 90 s (twice) for silence is what left the copilot "drafting replies…" for three minutes.
       // If nothing at all has arrived by now, the model is not going to answer: say so and let the
       // retry swap it for one that does.
-      const firstTokenMs = mode === 'local' ? 300_000 : 40_000;
+      //
+      // …but 40 s flat cannot tell SLOW apart from DEAD, and that difference matters: a big
+      // reasoning model measured 26.7 s to first token on a trivial probe, so on a real agent
+      // prompt it sails past 40 s, gets declared dead, is swapped for a weaker model AND blocked
+      // for two hours. The user watched exactly that — a 550B answering well, then replaced by a
+      // 49B mid-task for no reason they could see. So if this model has been MEASURED answering,
+      // give it a budget built from its own measurement instead of a flat guess.
+      const measured = measuredMsFor(effectiveModelName);
+      const firstTokenMs = mode === 'local'
+        ? 300_000
+        : measured === null ? 40_000
+        // Three times its measured pace plus 20 s of headroom — a real prompt is far bigger than
+        // the probe — capped so a truly hung model still fails in a reasonable time.
+        : Math.min(180_000, Math.max(40_000, measured * 3 + 20_000));
       let gotFirst = false;
       const resetStall = () => {
         if (stallTimer) clearTimeout(stallTimer);
@@ -3960,7 +3980,12 @@ const [studioExtracting, setStudioExtracting] = useState(false);
                 // Don't blame the connection for a slow model — that reading is what put a
                 // "Reconnecting…" banner on a link that was never down.
                 ? 'The AI stopped responding partway through. Retrying.'
-                : `NO_MODEL_RESPONSE: the model${effectiveModelName ? ` (${effectiveModelName})` : ''} accepted the request but sent nothing back.`,
+                // A model we have SEEN answer is not dead just because it is slow today. Word it so
+                // it does NOT match isDeadModelError, so the self-heal leaves the user's chosen
+                // model alone instead of silently demoting them to whatever answers fastest.
+                : measured !== null
+                  ? `The model you chose (${effectiveModelName}) is taking longer than ${Math.round(firstTokenMs / 1000)}s to start answering. It answered in ${(measured / 1000).toFixed(1)}s when tested, so it is slow right now rather than broken — press Continue to wait again, or pick a quicker model in the connection panel.`
+                  : `NO_MODEL_RESPONSE: the model${effectiveModelName ? ` (${effectiveModelName})` : ''} accepted the request but sent nothing back.`,
           ));
         }, gotFirst ? stallMs : firstTokenMs);
       };
@@ -8313,6 +8338,17 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
                 .replace(/<tool_code>[\s\S]*/g, '')
                 .replace(/CHOICES_BLOCK:[\s\S]*/g, '')
                 .trim();
+              // Nothing showable yet means the model is working out what to do — almost always
+              // composing a tool call, whose raw XML is (rightly) hidden. Left as-is that renders
+              // an empty bubble, which is indistinguishable from a hung app. Show the work box
+              // instead, with a live size so it is visibly moving, and hand back to the real text
+              // the moment there is any.
+              if (!displayText) {
+                if (!workRef.current) showWork(`${agentHandle(agent)} is working out the next step`);
+                paintWork(undefined, stepText.length > 40 ? `Deciding which tool to use — ${Math.round(stepText.length / 5)} words in` : 'Thinking…');
+                return;
+              }
+              if (workRef.current) workRef.current = null;   // real prose now — the box gives way
               updateLastMsg(displayText);
             },
           );
@@ -8422,6 +8458,12 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
         // Show tool call bubble (hidden for delegation — DelegationBubble handles it)
         if (tool !== 'delegate_to_agent') {
           addMsg({ role: 'tool_call', content: JSON.stringify(args, null, 2), toolName: tool });
+          // …and, under it, a live box for as long as the tool actually runs. A web search or a
+          // browser page is easily thirty seconds, and until now that time was completely silent:
+          // the collapsed JSON bubble sat there looking finished. browserActionLabel already turns
+          // a call into plain English ("Searching the web for …"), so say that, and let the
+          // agent-progress events from inside the tool fill in the detail line as it goes.
+          showWork(browserActionLabel(tool, args) ?? tool.replace(/_/g, ' '), 'Starting…');
         }
         if (sid) krewDb.saveMessage(sid, 'tool_call', JSON.stringify(args, null, 2), tool).catch(() => {});
 
@@ -9026,6 +9068,9 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
           toolResult = `Error: ${e}`;
         }
 
+        // The tool is done, so its live box has nothing left to describe — take it away before the
+        // result lands, so the box never sits above a finished answer still claiming to be working.
+        hideWork();
         // Show result bubble (skip for delegation — it already has its own bubble)
         if (!isDelegation && tool === 'suggest_next_task' && toolResult.includes('NEXTTASK_JSON:')) {
           try {
@@ -9102,6 +9147,12 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
         finaliseLastMsg(sanitiseError(e));
       }
     } finally {
+      // The work box goes FIRST, and outside the stop guard. It is not an empty bubble, so the
+      // cleanup below would not have caught it — it would have been left on screen for good,
+      // claiming to be working on a turn that had ended. It also has to go before the
+      // empty-turn check, or a box left behind would read as "this turn produced output" and
+      // suppress the recovery that exists for exactly the silent-model case.
+      hideWork();
       // NEVER end blank and never hang on "thinking…". Drop empty streaming bubbles, then — if this
       // turn produced NO visible output — try a clean DIRECT answer on the same model before giving
       // up (the agent framing, not the model, is usually why a free model went silent). See
@@ -9322,6 +9373,58 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
 
   function removeLastMsg() {
     setMessages((prev) => prev.slice(0, -1));
+  }
+
+  // ── The live work box ─────────────────────────────────────────────────────
+  //
+  // Every long-running flow in this file (leads, outreach, link repair, profile fill) puts a
+  // `statusBlock` in the stream: a titled box with what is happening, a detail line and a running
+  // clock. The MAIN chat turn never had one. While the model was composing a tool call the bubble
+  // showed the empty string, and while the tool itself ran — a web search, a browser page, a
+  // calendar read, easily thirty seconds — the only sign of life was a one-line bar above the
+  // whole panel. So an ordinary question looked like nothing was happening, on every model.
+  //
+  // These three helpers give the main turn the same box. They are deliberately defensive: the box
+  // is only ever updated or removed when the last message really is the box, so a tool that adds
+  // its own bubble mid-flight can never have its content overwritten or be deleted by mistake.
+  const workRef = useRef<{ t0: number; headline: string } | null>(null);
+  const isWorkBox = (m?: DisplayMsg) => !!m && m.role === 'assistant' && m.content.startsWith('```status ');
+
+  function showWork(headline: string, detail?: string) {
+    const t0 = Date.now();
+    workRef.current = { t0, headline };
+    setMessages((prev) => {
+      const copy = [...prev];
+      const last = copy[copy.length - 1];
+      // Same t0 the later repaints use, so the clock in the box counts from when the work began
+      // rather than resetting on the first progress event.
+      const block = statusBlock(t0, headline, detail);
+      // Reuse the empty streaming bubble the turn already opened rather than stacking a second one.
+      if (last && last.role === 'assistant' && last.streaming && !last.content.trim()) {
+        copy[copy.length - 1] = { ...last, content: block };
+        return copy;
+      }
+      return [...copy, { role: 'assistant' as const, content: block, streaming: true }];
+    });
+  }
+
+  /** Update the box's headline/detail in place. No-op if the box is no longer on screen. */
+  function paintWork(headline?: string, detail?: string) {
+    const w = workRef.current;
+    if (!w) return;
+    if (headline) w.headline = headline;
+    setMessages((prev) => {
+      if (!isWorkBox(prev[prev.length - 1])) return prev;
+      const copy = [...prev];
+      copy[copy.length - 1] = { ...copy[copy.length - 1], content: statusBlock(w.t0, w.headline, detail), streaming: true };
+      return copy;
+    });
+  }
+
+  /** Take the box away — the work it described is finished (or something else is taking over). */
+  function hideWork() {
+    workRef.current = null;
+    setMessages((prev) => (isWorkBox(prev[prev.length - 1]) ? prev.slice(0, -1) : prev));
   }
 
   // ── Render ────────────────────────────────────────────────────────────────

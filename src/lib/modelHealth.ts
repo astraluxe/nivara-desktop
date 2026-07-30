@@ -188,6 +188,32 @@ function saveScan(scan: ModelScan): void {
   } catch { /* quota */ }
 }
 
+/**
+ * How long this model took to answer when it was last measured, or null if it never has been.
+ *
+ * Searches every saved scan rather than needing the key, because a model id is unique to its
+ * provider and the caller (deep inside the streaming path) has no clean way to know which key the
+ * scan was recorded against.
+ *
+ * This exists to tell SLOW apart from DEAD. The streaming path gives a model 40 seconds to say its
+ * first word and treats silence as "this model is gone" — which is right for one the account cannot
+ * really use, and wrong for one that genuinely takes half a minute to think. Without this the app
+ * cannot distinguish them, so it retires a working model mid-task and swaps in a weaker one.
+ */
+export function measuredMsFor(modelId: string): number | null {
+  if (!modelId) return null;
+  const id = modelId.toLowerCase();
+  let best: number | null = null;
+  for (const s of allScans()) {
+    for (const r of s.rows) {
+      if (r.id.toLowerCase() !== id || !r.ok) continue;
+      // Slowest observation wins: the point is to be patient enough, not accurate on average.
+      if (best === null || r.ms > best) best = r.ms;
+    }
+  }
+  return best;
+}
+
 /** Beyond this, a model is "slow" no matter how clever — a user waiting 25 seconds for a chat reply
  *  has already decided the app is broken. Measured: the models that felt unusable were 24–27s. */
 const SLOW_MS = 8_000;
