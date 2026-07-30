@@ -461,12 +461,43 @@ export default function ConnectionBar(props: Props) {
                                              that will silently hang every task they run. */
                                           onClick={async () => {
                                             setCheckNote(''); setChecking(m.id);
-                                            const { probeModel, blockModel } = await import('../../lib/modelHealth');
+                                            const { probeModelDetailed, blockModel } = await import('../../lib/modelHealth');
                                             let key = apiKey;
                                             if (!key) { try { const c = await credentialStore.get(provider); key = (c?.api_key as string) || ''; } catch { /* none */ } }
-                                            const ok = await probeModel(provider, key, m.id);
+                                            // MEASURE, don't just ping. The old probe asked "did it
+                                            // answer" and nothing else, so a model that takes 27
+                                            // seconds and cannot return JSON passed exactly like a
+                                            // fast reliable one — and the user found out over the
+                                            // following days, task by task.
+                                            const res = await probeModelDetailed(provider, key, m.id, 30_000);
                                             setChecking(null);
-                                            if (ok) { onModelNameChange(m.id); setCheckNote(`✓ ${short} answered — using it.`); return; }
+                                            if (res.ok) {
+                                              onModelNameChange(m.id);
+                                              // PERSIST THE CHOICE. Lifting it into React state was
+                                              // all this used to do, and the call path reads the
+                                              // credential — so picking a big model changed the
+                                              // label and nothing else, and the model auto-picked at
+                                              // connect time went on answering every message.
+                                              if (provider === 'nvidia' || provider === 'groq') {
+                                                const { setByokModel } = await import('../../lib/byokKeys');
+                                                await setByokModel(provider, m.id).catch(() => {});
+                                              }
+                                              // Record what we just learned so the ranking and the
+                                              // chips reflect it without waiting for a full rescan.
+                                              setScan((prev) => (prev
+                                                ? { ...prev, rows: [...prev.rows.filter((x) => x.id !== m.id), { id: m.id, ms: res.ms, jsonOk: res.jsonOk, ok: true, window: contextWindowFor(m.id), tier: m.tier }] }
+                                                : prev));
+                                              const speed = res.ms < 1000 ? `${res.ms}ms` : `${(res.ms / 1000).toFixed(1)}s`;
+                                              // Say plainly what they have just chosen. A big slow
+                                              // model that answers in prose is a downgrade for this
+                                              // app however impressive its parameter count, and the
+                                              // user deserves to know before they live with it.
+                                              const warn = !res.jsonOk
+                                                ? ` ⚠ It answered in prose instead of the JSON it was asked for, so research plans, decks and reply-checking will be unreliable on it.`
+                                                : res.ms > 8000 ? ` ⚠ That is slow — expect a long wait on every message.` : '';
+                                              setCheckNote(`✓ ${short} answered in ${speed}${res.jsonOk ? ' with clean JSON' : ''} — now using it for every chat and agent.${warn}`);
+                                              return;
+                                            }
                                             blockModel(provider, m.id);
                                             setRankedModels((prev) => (prev ? prev.filter((x) => x.id !== m.id) : prev));
                                             setCheckNote(`${short} didn't respond on your key — your account may not have access to it. Removed from the list; pick another.`);
@@ -487,7 +518,9 @@ export default function ConnectionBar(props: Props) {
                                 </div>
                               );
                             })}
-                            {checkNote && <p className={`text-[9.5px] mt-1 ${checkNote.startsWith('✓') ? 'text-emerald-400' : 'text-amber-400'}`}>{checkNote}</p>}
+                            {/* A "✓ it works, BUT it can't do JSON" is not good news — colour it
+                                by the warning, not by the tick that happens to start the line. */}
+                            {checkNote && <p className={`text-[9.5px] mt-1 ${checkNote.startsWith('✓') && !checkNote.includes('⚠') ? 'text-emerald-400' : 'text-amber-400'}`}>{checkNote}</p>}
                             <p className="text-[9.5px] text-nv-faint mt-1">
                               {scan
                                 ? `${scan.rows.filter((r) => r.ok).length} of ${scan.rows.length} models answered on your key; ${scan.rows.filter((r) => r.ok && r.jsonOk).length} can return JSON (needed for research, decks and reply checking). The list is measured, not a fixed favourite — press Rescan when NVIDIA adds models.`
@@ -503,6 +536,14 @@ export default function ConnectionBar(props: Props) {
                 <input
                   value={modelName}
                   onChange={(e) => onModelNameChange(e.target.value)}
+                  // Save when they finish typing, not on every keystroke — a half-typed model id
+                  // written to the credential would be used by the next call.
+                  onBlur={async () => {
+                    if ((provider === 'nvidia' || provider === 'groq') && modelName.trim()) {
+                      const { setByokModel } = await import('../../lib/byokKeys');
+                      await setByokModel(provider, modelName.trim()).catch(() => {});
+                    }
+                  }}
                   placeholder={meta.defaultModel || 'model-name'}
                   className="w-full bg-nv-bg border border-nv-border rounded-lg px-3 py-2
                     text-[12px] text-nv-text outline-none focus:border-accent transition-fast mb-3"

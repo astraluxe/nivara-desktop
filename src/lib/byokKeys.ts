@@ -34,6 +34,34 @@ export async function addByokKey(service: string, key: ByokKey): Promise<void> {
   await persist(service, next, key);
 }
 
+/**
+ * Record the model the user CHOSE, against the key that is currently active.
+ *
+ * This was the missing write. Picking a model in the connection popup only ever set a piece of
+ * React state, while every own-key call resolves its model from the CREDENTIAL — so the choice was
+ * silently discarded and the model auto-picked at connect time kept answering. Choosing a 550B and
+ * being answered by an 8B was not a display bug: the 8B genuinely was doing the work.
+ *
+ * Merges rather than overwrites, so nothing else stored on the credential is lost, and updates the
+ * matching entry in the multi-key list so the choice survives toggling keys and restarting.
+ */
+export async function setByokModel(service: string, model: string): Promise<void> {
+  if (!model) return;
+  const cur = await credentialStore.get(service).catch(() => null) as
+    (Record<string, string> & { api_key?: string; keys?: string }) | null;
+  if (!cur?.api_key) return;
+  const save: Record<string, string> = { ...cur, model };
+  try {
+    const parsed = cur.keys ? JSON.parse(cur.keys) : null;
+    if (Array.isArray(parsed)) {
+      save.keys = JSON.stringify(parsed.map((k: { api_key?: string }) =>
+        (k?.api_key === cur.api_key ? { ...k, model } : k)));
+    }
+  } catch { /* malformed list — the active credential is what streaming reads, and that is set */ }
+  await credentialStore.save(service, save);
+  notifyCredsChanged();
+}
+
 /** Switch which saved key is active (what the agents use). */
 export async function setActiveByokKey(service: string, apiKey: string): Promise<void> {
   const { keys } = await getByokKeys(service);
