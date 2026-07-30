@@ -7,6 +7,7 @@ import { checkPendingConnections, runBrowserCmd, waitingLabel, type ReconcileRes
 import { outreachStatusToLeadCell, setLeadConnStatus } from '../../lib/leadTable';
 import {
   planReply, planFollowUp, verifyWork, refineMessage, applyPromiseAudit, parseMeetingTime,
+  actionableIssues, madeProgress, MAX_FIX_ROUNDS,
   type ReplyPlan, type VerifyResult,
 } from '../../lib/verify';
 import { listAttachableDocs, isAttachableFile, type GeneratedDoc } from '../../lib/docgen';
@@ -434,6 +435,12 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   const [meetingGuests, setMeetingGuests] = useState('');
   const [meetingBusy, setMeetingBusy] = useState(false);
   const [meetingNote, setMeetingNote] = useState('');
+  // ── Keeping the fix loop finite ──
+  // On a free/small model the verifier is not a stable judge: rewrite the draft and it returns a
+  // fresh crop of complaints, so "Fix and re-check" could be pressed forever. These track how many
+  // goes have been had and whether the last one actually got anywhere.
+  const [fixRound, setFixRound] = useState(0);
+  const [fixStalled, setFixStalled] = useState(false);
   const [refineInput, setRefineInput] = useState('');
   const [refining, setRefining] = useState(false);
   const [refineNote, setRefineNote] = useState('');       // feedback when a refine fails / returns nothing
@@ -548,6 +555,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       // A meeting belongs to ONE person. Carrying "created" across to the next contact would tell
       // the promise audit an invite exists for someone it was never made for.
       setMeetingMade(false); setMeetLink(''); setMeetingGuests(''); setMeetingNote('');
+      setFixRound(0); setFixStalled(false);
     }
   }, [idx]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -661,7 +669,15 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       if (!report.connectionsOk) {
         // Deliberately explicit: nothing was changed. Silently "finding no updates" after a failed
         // read would look identical to "nobody accepted", and the user would stop trusting it.
-        setCheckNote("Couldn't read your connections just now, so nothing was changed. Try again in a moment.");
+        // Say WHY. checkPendingConnections has carried the real reason all along and it was thrown
+        // away here, so every distinct failure — Chrome not starting, the page not loading, the
+        // window being busy — read as the same shrug and there was nothing to act on or report.
+        const why = (report.error || '').replace(/\s+/g, ' ').trim();
+        const hint = /browser-crash|not installed/i.test(why) ? ' The ADRIS browser could not start — check Google Chrome is installed.'
+          : /timed out|timeout/i.test(why) ? ' LinkedIn took too long to load. Press Check again — a second pass usually gets it.'
+          : /custom-browser-unavailable|busy/i.test(why) ? ' The browser window is busy with another job — let it finish, then press Check again.'
+          : ' Press Check again in a moment.';
+        setCheckNote(`Couldn't read your connections, so nothing was changed.${hint}${why ? ` (${why.slice(0, 120)})` : ''}`);
         return;
       }
       const results: ReconcileResult[] = only === undefined
@@ -750,6 +766,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     if (!contact) return;
     setPlanning(true);
     setPlan(null); setVerify(null); setPlanNote('Reading their reply…'); setPlanIdx(idx);
+    setFixRound(0); setFixStalled(false);   // a brand-new draft gets a brand-new fix allowance
     let thread = '';
     try {
       const { invoke } = await import('@tauri-apps/api/core');
@@ -898,8 +915,8 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   // Independent verification pass on a drafted reply — the second agent that checks the first
   // agent's work before the human commits to it. Never blocks; only informs. `ownerCtx` carries the
   // owner's real calendar/availability so the verifier can catch a clashing meeting time.
-  async function runVerify(text: string, contact: OutreachContact, thread: string, ownerCtx = '') {
-    if (!text.trim()) return;
+  async function runVerify(text: string, contact: OutreachContact, thread: string, ownerCtx = ''): Promise<VerifyResult | null> {
+    if (!text.trim()) return null;
     setVerifying(true); setVerify(null);
     try {
       const v = await verifyWork({
@@ -930,7 +947,9 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
         v.revised = undefined;
         v.issues = [{ severity: 'medium', issue: 'A rewrite was discarded because it introduced placeholders. Edit the draft yourself where needed.' }, ...v.issues];
       }
-      setVerify(applyPromiseAudit(v, text, outwardState()));
+      const finalV = applyPromiseAudit(v, text, outwardState());
+      setVerify(finalV);
+      return finalV;
     } catch {
       // Even when the model-driven verifier fails outright, the deterministic audit still runs —
       // it needs no network and cannot time out. That matters most on a small free-tier key, which
@@ -939,7 +958,9 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
         { verdict: 'warn', summary: 'The draft was not checked by the verifier.', issues: [], degraded: true },
         text, outwardState(),
       );
-      setVerify(forced.verdict === 'fail' ? forced : null);
+      const out = forced.verdict === 'fail' ? forced : null;
+      setVerify(out);
+      return out;
     } finally { setVerifying(false); }
   }
 
@@ -1610,7 +1631,9 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                     </div>
                     <textarea
                       value={draftReply}
-                      onChange={(e) => { setDraftReply(e.target.value); setVerify(null); }}
+                      // A hand edit is a fresh start: the user has taken over, so give the checker
+                      // its full allowance again rather than leaving it stuck at "you decide".
+                      onChange={(e) => { setDraftReply(e.target.value); setVerify(null); setFixRound(0); setFixStalled(false); }}
                       rows={6}
                       className="w-full text-xs bg-nv-bg border border-nv-border rounded-lg p-2.5 leading-relaxed resize-none focus:outline-none focus:border-accent/40 select-text"
                     />
@@ -1638,30 +1661,55 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                         a rewrite, and "Re-verify" only re-reports it — so the user pressed a button,
                         saw "verified", and the flagged sentence was still sitting in the draft. This
                         turns the issues themselves into the rewrite instruction. */}
-                    {verify && !verify.revised && verify.issues.length > 0 && (
+                    {/* Only REAL problems earn a rewrite, and only twice. A small model asked to
+                        judge the same message twice answers differently, so an unbounded loop was
+                        guaranteed on a free key: fix, new nitpicks, fix, new nitpicks. */}
+                    {verify && !verify.revised && actionableIssues(verify).length > 0 && fixRound < MAX_FIX_ROUNDS && !fixStalled && (
                       <button
                         disabled={refining || !draftReply.trim()}
                         onClick={() => {
                           setRefineNote('');
                           setRefining(true);
-                          const instruction = `Rewrite the message so that every one of these problems is GONE. Change only what is needed to fix them; keep the rest of the message, the tone and any real detail exactly as it is. Do not introduce placeholders.\n${verify.issues.map((it) => `- ${it.issue}${it.fix ? ` (fix: ${it.fix})` : ''}`).join('\n')}`;
+                          const before = verify;
+                          const beforeText = draftReply;
+                          const todo = actionableIssues(verify);
+                          const instruction = `Rewrite the message so that every one of these problems is GONE. Change only what is needed to fix them; keep the rest of the message, the tone and any real detail exactly as it is. Do not introduce placeholders.\n${todo.map((it) => `- ${it.issue}${it.fix ? ` (fix: ${it.fix})` : ''}`).join('\n')}`;
                           refineMessage({ current: draftReply, instruction, person: cur?.name, thread: lastThread, ownerContext: lastOwnerCtx, aiCall })
-                            .then((next) => {
-                              if (next?.trim()) {
-                                setDraftReply(next.trim());
-                                setVerify(null);
-                                runVerify(next.trim(), cur, lastThread || (plan?.read ?? ''), lastOwnerCtx);
-                              } else {
+                            .then(async (next) => {
+                              if (!next?.trim()) {
                                 setRefineNote("The AI returned nothing for that — edit the draft yourself, or use the Redo box.");
+                                return;
                               }
+                              setDraftReply(next.trim());
+                              setVerify(null);
+                              setFixRound((n) => n + 1);
+                              const after = await runVerify(next.trim(), cur, lastThread || (plan?.read ?? ''), lastOwnerCtx);
+                              // Did that round get anywhere? If the same substantive complaints came
+                              // back, another go will not help — stop asking and hand it over.
+                              if (!madeProgress(before, after, beforeText, next.trim())) setFixStalled(true);
                             })
                             .catch((e) => setRefineNote(`Couldn't apply the fix: ${(e instanceof Error ? e.message : String(e)).slice(0, 140)}`))
                             .finally(() => setRefining(false));
                         }}
                         className="mt-1.5 text-[11px] font-medium px-2.5 py-1 rounded-md border border-amber-500/50 text-amber-600 hover:bg-amber-500/10 transition-fast disabled:opacity-60"
                       >
-                        {refining ? 'Fixing…' : `Fix ${verify.issues.length === 1 ? 'this' : `these ${verify.issues.length}`} and re-check`}
+                        {refining ? 'Fixing…' : `Fix ${actionableIssues(verify).length === 1 ? 'this' : `these ${actionableIssues(verify).length}`} and re-check${fixRound > 0 ? ' (last try)' : ''}`}
                       </button>
+                    )}
+                    {/* THE LOOP ENDS WITH A PERSON, NOT A VERDICT. Said plainly, because the
+                        alternative the user actually lived through was pressing Fix forever. */}
+                    {verify && !verify.revised && actionableIssues(verify).length > 0 && (fixRound >= MAX_FIX_ROUNDS || fixStalled) && (
+                      <p className="mt-1.5 text-[10px] text-nv-text leading-relaxed rounded-md border border-nv-border bg-nv-surface2 px-2.5 py-1.5">
+                        I&apos;ve rewritten this {fixRound === 1 ? 'once' : `${fixRound} times`} and the checker keeps finding something new rather than converging — that&apos;s the checker being fussy, not the draft getting worse.
+                        <b className="text-nv-text"> Its remaining notes are above; you decide.</b> Edit the message directly, or tell me exactly what to change in the Redo box below. You were always the one sending it.
+                      </p>
+                    )}
+                    {/* Low-severity remarks alone are not a defect. Saying so stops the panel looking
+                        like something is wrong when nothing is. */}
+                    {verify && verify.issues.length > 0 && actionableIssues(verify).length === 0 && (
+                      <p className="mt-1.5 text-[10px] text-nv-faint leading-relaxed">
+                        Nothing above is a real problem — those are style notes. This is fine to send as it is.
+                      </p>
                     )}
 
                     <div className="flex items-center gap-1.5 mt-1.5">
@@ -1741,6 +1789,33 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                         </button>
                       )}
                     </div>
+                    {/* NOTHING ON FILE FITS? MAKE ONE. The panel could only offer documents that
+                        already existed, so when a prospect asked to see something the user had to
+                        close the copilot and describe the whole thing again in chat. This carries
+                        the thread's own context over — who they are, what they asked for — and
+                        hands it to the deck builder, which then asks for slide count as usual. */}
+                    <button
+                      onClick={() => {
+                        const who = [cur.name, cur.company].filter(Boolean).join(' — ');
+                        const brief = [
+                          `Build a presentation to send to ${who || 'this prospect'} after a LinkedIn conversation.`,
+                          plan?.read ? `\nWhat they want: ${plan.read}` : '',
+                          plan?.attachHint ? `They asked for: ${plan.attachHint}` : '',
+                          lastThread ? `\n=== THE CONVERSATION SO FAR ===\n${lastThread.slice(0, 6000)}` : '',
+                          lastOwnerCtx ? `\n=== WHAT WE KNOW ABOUT THE SENDER / PRODUCT ===\n${lastOwnerCtx.slice(0, 4000)}` : '',
+                          '\nSpeak to THIS person\'s situation, not a generic pitch. Use only facts present above — invent no figures, prices or customers.',
+                        ].filter(Boolean).join('\n');
+                        try {
+                          window.dispatchEvent(new CustomEvent('nv-krew-make-deck', {
+                            detail: { brief, ask: `Make a deck for ${who || 'this prospect'}` },
+                          }));
+                          onClose();
+                        } catch { /* no window */ }
+                      }}
+                      className="w-full mt-1.5 text-[10.5px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast text-left"
+                    >
+                      + Make a deck for {cur.name?.split(' ')[0] || 'them'} — using this thread
+                    </button>
                     {docs.length === 0 && !attachDoc && (
                       <p className="text-[9.5px] text-nv-faint leading-relaxed mt-1">Pick a file above, or ask Krew to "make a one-pager PDF about adris for them". A PDF you save in the Brain shows up here too. (Working notes like .md are never offered.)</p>
                     )}

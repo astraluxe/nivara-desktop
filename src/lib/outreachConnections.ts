@@ -185,12 +185,23 @@ function parseTagged(raw: string, tag: string): { ok: boolean; people: ConnPerso
   const i = s.indexOf(tag);
   if (i === -1) return { ok: false, people: [], signIn: false };
   try {
-    const arr = JSON.parse(s.slice(i + tag.length));
-    if (!Array.isArray(arr)) return { ok: false, people: [], signIn: false };
+    const v = JSON.parse(s.slice(i + tag.length).trim());
+    // TWO SHAPES, BOTH VALID.
+    //
+    // `connections` used to emit a bare array and now emits { people, exhausted, loaded } — the
+    // extra fields were added so /scan could tell "LinkedIn has no more to give" apart from "this
+    // pass ran out of its 45-second budget". /scan was taught both shapes; THIS parser was not, so
+    // it hit `!Array.isArray` and reported a total failure on a perfectly good read. That is the
+    // copilot's "Couldn't read your connections just now" — it had nothing to do with which model
+    // was connected (no model is involved here at all), and it had been failing every single time.
+    const arr = Array.isArray(v) ? v : (v && Array.isArray(v.people) ? v.people : null);
+    if (!arr) return { ok: false, people: [], signIn: false };
     return {
       ok: true,
-      people: arr.filter((p) => p && (p.name || p.url))
-        .map((p) => ({ name: String(p.name || ''), url: String(p.url || ''), sent: p.sent ? String(p.sent) : undefined })),
+      people: arr.filter((p: { name?: unknown; url?: unknown }) => p && (p.name || p.url))
+        .map((p: { name?: unknown; url?: unknown; sent?: unknown }) => ({
+          name: String(p.name || ''), url: String(p.url || ''), sent: p.sent ? String(p.sent) : undefined,
+        })),
       signIn: false,
     };
   } catch { return { ok: false, people: [], signIn: false }; }

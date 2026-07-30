@@ -309,6 +309,54 @@ export function parseMeetingTime(text: string, now = new Date()): ParsedMeetingT
   return null;   // a time with no day is not bookable — ask rather than guess
 }
 
+// ─── Making the fix loop converge ────────────────────────────────────────────
+//
+// On the hosted AI the verifier returns a corrected version and the loop ends in one press. On a
+// free 8B key it does not: press Fix, the draft is rewritten, the re-check invents a fresh crop of
+// nitpicks, the button comes back, and round and round. The model is not converging because a small
+// model is not a stable judge of its own output — asked twice it answers differently.
+//
+// The honest response is to stop treating it as an oracle. Two rules do that:
+//   · only real problems (high/medium) justify another rewrite — a "low" is a note, not a defect;
+//   · if a round made no real progress, say so and hand the decision back to the human, who was
+//     always the final approver anyway.
+
+/** A comparable fingerprint of a verdict's substantive complaints, for spotting a loop. */
+export function issueSignature(issues: VerifyIssue[]): string {
+  return issues
+    .filter((i) => i.severity !== 'low')
+    .map((i) => (i.issue || '').toLowerCase().replace(/[^a-z ]/g, '').split(/\s+/).filter((w) => w.length > 3).slice(0, 6).join(' '))
+    .sort()
+    .join('|');
+}
+
+/** Issues worth rewriting for. A low-severity remark never earns another round. */
+export function actionableIssues(v: VerifyResult | null): VerifyIssue[] {
+  if (!v) return [];
+  return v.issues.filter((i) => i.severity === 'high' || i.severity === 'medium');
+}
+
+/**
+ * Did a fix round actually get anywhere? False when the same substantive complaints came back, or
+ * when the rewrite barely moved the text — either way, going round again will not help.
+ */
+export function madeProgress(before: VerifyResult | null, after: VerifyResult | null, beforeText = '', afterText = ''): boolean {
+  // The rewrite didn't change the text, so nothing can have improved — whatever the checker says.
+  if (beforeText && afterText && beforeText.trim() === afterText.trim()) return false;
+  const a = actionableIssues(before).length;
+  const b = actionableIssues(after).length;
+  // Progress means FEWER real problems. The same number of different complaints is not progress —
+  // it is exactly the churn this exists to catch: a small model re-judging the same message and
+  // finding fresh things to say about it every time it is asked.
+  if (b >= a) return false;
+  // And the same complaints restated in new words are not new complaints.
+  return issueSignature(before?.issues || []) !== issueSignature(after?.issues || []);
+}
+
+/** How many rewrite attempts are worth making before the human decides. Two is plenty: a third
+ *  round has never once been the one that worked, and each costs the user a wait. */
+export const MAX_FIX_ROUNDS = 2;
+
 /** Fold a promise audit into a model-produced verdict. Deterministic issues always win: they are
  *  facts about what ran, not opinions, so they can turn a "pass" into a "fail". */
 export function applyPromiseAudit(result: VerifyResult, draft: string, done: OutwardAction = {}): VerifyResult {

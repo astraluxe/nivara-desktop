@@ -1542,10 +1542,17 @@ function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled }: {
           <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1.5">Detail level</p>
           <div className="flex gap-2">
             <Opt active={mode === 'basic'} onClick={() => setMode('basic')} title="Basic" sub="Clean designed slides · fast" />
-            <Opt active={mode === 'advanced'} lock={!unlockedAdvanced} onClick={() => setMode('advanced')} title="Advanced" sub={unlockedAdvanced ? 'Images on every key slide · richer' : 'Adds images · paid plan or own key'} />
+            <Opt active={mode === 'advanced'} lock={!unlockedAdvanced} onClick={() => setMode('advanced')} title="Advanced" sub={unlockedAdvanced ? 'Images on every key slide · richer' : 'Adds images · needs a Gemini key or a paid plan'} />
           </div>
+          {/* BE EXACT ABOUT WHAT UNLOCKS THIS. "own key" read as "any own key", so someone on a
+              free NVIDIA key expected images and got a locked button with no explanation. Only
+              Gemini generates the images, and the difference is images ONLY — the slides, writing
+              and layout are identical in Basic, on any key, including a free one. */}
           {!unlockedAdvanced && (
-            <p className="text-[9.5px] text-nv-faint mt-1.5">Advanced adds images to your slides. Upgrade your plan, or add your own AI key in Connect Apps, to unlock it.</p>
+            <p className="text-[9.5px] text-nv-faint mt-1.5">
+              <b className="text-nv-text">Basic builds the full deck</b> — every slide, written and laid out — and works on any key, including a free NVIDIA one.
+              Advanced only adds AI <i>images</i>, which need a <b className="text-nv-text">Gemini</b> key specifically (Connect Apps → Gemini) or a paid plan. An NVIDIA or Groq key can&apos;t make images.
+            </p>
           )}
         </div>
         {mode === 'advanced' && unlockedAdvanced && (
@@ -3719,6 +3726,31 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     return () => window.removeEventListener('nv-brain-chat-focus', onFocus);
   }, []);
 
+  // "Make a deck for them" from the outreach copilot.
+  //
+  // The copilot could OFFER an existing generated file to attach, but it could not create one — so
+  // when a prospect asked to see something, the user had to close the copilot, remember what the
+  // thread needed, and describe it again in chat. This carries the brief across and runs the same
+  // deck flow the chat already uses, rather than a second, less-tested copy of it: the deck path
+  // has the retry, the continuation loop for missing slides and the JSON repair that a free model
+  // genuinely needs, and none of that should be duplicated.
+  useEffect(() => {
+    const onDeck = (e: Event) => {
+      const d = (e as CustomEvent<{ brief?: string; ask?: string }>).detail || {};
+      if (!d.brief || busyRef.current) return;
+      setInput('');
+      // Same two refs + card the typed path sets, so the user still chooses slide count and detail
+      // level, and every downstream feature (pictures, logo, "edit slide 3") behaves identically.
+      deckRequestRef.current = `=== USER'S REQUEST / NOTES ===\n${d.brief}`;
+      deckTextRef.current = d.ask || d.brief;
+      deckImagesRef.current = [];
+      addMsg({ role: 'user', content: d.ask || 'Make a deck for this prospect' });
+      addMsg({ role: 'deck_setup', content: d.ask || 'Deck for this prospect' });
+    };
+    window.addEventListener('nv-krew-make-deck', onDeck);
+    return () => window.removeEventListener('nv-krew-make-deck', onDeck);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Load agent memories when agent changes
   useEffect(() => {
     krewMemoryDb.getAll(agent.key).then(setAgentMemories).catch(() => {});
@@ -4295,7 +4327,19 @@ The prompt must be production-ready — specific enough for a motion designer to
       const suggested = strict && planCount >= 4 ? planCount : Math.round(cfg.slideCount || 12);
       const target = Math.max(4, Math.min(30, suggested));
       const maxSlides = strict ? target : Math.min(30, target + 5); // flexible may run a little over
-      const minSlides = strict ? target : Math.max(4, target - 2);
+      // ASK A SMALL MODEL FOR LESS, THEN ASK AGAIN.
+      //
+      // A free NVIDIA or local model has a 32k window and a modest output cap. Asked for twelve
+      // complete slide objects in one JSON array it truncates mid-array, parseDeckSpec gets nothing
+      // usable, and the whole deck fails — which is what "PPT on the free key" untested really
+      // meant. The continuation loop below already knows how to ask for the MISSING slides and
+      // append them, so on a weak model we accept a smaller first pass and let it fill the rest in.
+      // Nothing about the finished deck differs; it simply arrives in two or three shorter calls
+      // that each fit, instead of one long one that does not.
+      const weakModel = mode === 'own_key' || mode === 'local';
+      const minSlides = strict
+        ? (weakModel ? Math.max(4, Math.min(target, 6)) : target)
+        : Math.max(4, target - (weakModel ? 6 : 2));
       const planDirective = strict
         ? `\n\n## FOLLOW THE USER'S OUTLINE EXACTLY\nThe user's request is an explicit slide plan. Produce ONE slide per item, in their order, with their titles/content. Fix obvious typos and pull the real numbers from the document, but do NOT change the structure or the count.`
         : `\n\n## THE REQUEST + DOCUMENT ARE REFERENCE — DESIGN YOUR OWN BEST DECK\nTreat the user's notes/outline and the attached document as REFERENCE and SOURCE MATERIAL, not a script to copy. Understand what they want to achieve, then PLAN AND DESIGN your OWN professional, well-structured presentation: fix errors, typos and garbled/incomplete lines in their notes; merge or split points for better flow; choose the strongest layout for each slide; drop weak slides; and ADD slides where they make the story clearer or more persuasive. Keep EVERY real figure, price and name from the source — but the structure, wording and slide choices are YOURS to make excellent. Do not reproduce their rough outline verbatim.`;
@@ -4371,17 +4415,25 @@ The prompt must be production-ready — specific enough for a motion designer to
       // 10) however firmly we ask, and re-asking for "all N" just returns the same short deck. So
       // instead we ask it to CONTINUE — output ONLY the missing slides — and append them. This
       // reliably reaches the requested count without truncating one giant response.
+      // A weak model gets MORE rounds of FEWER slides. Asking a 32k free model for "the remaining
+      // seven" truncates for the same reason the first pass did; asking for four at a time fits,
+      // and eight rounds still reach a 24-slide deck. The hosted model is unchanged.
       let contTries = 0, contMisses = 0;
-      while (spec.slides.length < target && contTries < 6 && contMisses < 3 && !stopRef.current) {
+      const maxContTries = weakModel ? 8 : 6;
+      const contChunk = weakModel ? 4 : 30;
+      while (spec.slides.length < target && contTries < maxContTries && contMisses < 3 && !stopRef.current) {
         contTries++;
         const have = spec.slides.length;
+        // How many to ask for THIS round — never more than are actually missing.
+        const want = Math.min(contChunk, target - have);
+        const upto = have + want;
         setStatus(`Writing slides ${have + 1}–${target}…`);
         const done = spec.slides.map((s, i) => `${i + 1}. ${s.title || s.layout}`).join('; ');
         // Include the LAYOUTS guidance so the continuation slides use varied templates too (not
         // all bullets), and keep retrying (a single unparseable reply no longer aborts the count).
         const contSys = AGENT_BY_KEY['deck_maker'].systemPrompt + contentDirective + coverageDirective + chartDirective + layoutsDirective + dateBlock
-          + `\n\n## CONTINUE — OUTPUT ONLY THE MISSING SLIDES\nA deck is already in progress with ${have} slides. Output ONLY the REMAINING ${target - have} slides (slide ${have + 1} to ${target}) as a compact JSON object {"slides":[ ... ]}. Do NOT repeat any slide already made; do NOT include title/subtitle/preset/palette — just the "slides" array continuing the brief's narrative, using VARIED layouts. No imagePrompt fields.`;
-        const contUser = requestCtx + `\n\n(Slides already created: ${done}. Now produce ONLY slides ${have + 1}–${target} — that's ${target - have} more.)`;
+          + `\n\n## CONTINUE — OUTPUT ONLY THE MISSING SLIDES\nA deck is already in progress with ${have} slides, and the finished deck will have ${target}. Output ONLY slides ${have + 1} to ${upto} — that is ${want} slide object(s) — as a compact JSON object {"slides":[ ... ]}. Do NOT repeat any slide already made; do NOT include title/subtitle/preset/palette — just the "slides" array continuing the brief's narrative, using VARIED layouts. No imagePrompt fields.`;
+        const contUser = requestCtx + `\n\n(Slides already created: ${done}. Now produce ONLY slides ${have + 1}–${upto} — that's ${want} more. The deck will end at ${target}.)`;
         // Best-effort: a transient AI 5xx here must NOT discard the deck we already parsed —
         // just stop adding more and use what we have (the outer catch would have shown
         // "AI service temporarily unavailable" and thrown the whole deck away).
