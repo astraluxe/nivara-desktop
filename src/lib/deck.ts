@@ -260,6 +260,38 @@ export function parseDeckSpec(raw: string): DeckSpec | null {
   return salvageDeckSpec(text);
 }
 
+/**
+ * Apply inline click-to-edit changes onto a spec.
+ *
+ * The rendered deck posts `{ s, f, value }` for every edited element, where `f` is a path like
+ * `bullet.2`, `col.0.head`, `plan.1.bullets.3`. This lived inside the chat's deck bubble; the
+ * Brain now offers the same editing, and two copies of THIS function is exactly the kind of pair
+ * that drifts until one layout silently stops being editable in one of the two places.
+ * Pure: returns a new spec, never mutates the one passed in.
+ */
+export function applyDeckEdits(sp: DeckSpec, edits: Record<string, string>): DeckSpec {
+  const keys = Object.keys(edits);
+  if (!keys.length) return sp;
+  const copy: DeckSpec = JSON.parse(JSON.stringify(sp));
+  const at = <T,>(arr: T[] | undefined, i: number, def: T): T[] => { const a = Array.isArray(arr) ? arr : []; if (!a[i]) a[i] = def; return a; };
+  for (const k of keys) {
+    const bar = k.indexOf('|'); const si = +k.slice(0, bar); const field = k.slice(bar + 1);
+    const sl = copy.slides[si] as unknown as Record<string, unknown>; if (!sl) continue;
+    const v = edits[k]; const p = field.split('.'); const n = (x: string) => parseInt(x, 10);
+    // Nested inline-edit paths so EVERY layout's fields are editable (columns, cards, timeline,
+    // pricing, team, logos, bullets), plus the flat fields (title/body/stat/quote…).
+    if (p[0] === 'bullet') { sl.bullets = at(sl.bullets as string[], n(p[1]), ''); (sl.bullets as string[])[n(p[1])] = v; }
+    else if (p[0] === 'col') { sl.columns = at(sl.columns as object[], n(p[1]), { heading: '', bullets: [] }); const c = (sl.columns as Array<{ heading: string; bullets: string[] }>)[n(p[1])]; if (p[2] === 'head') c.heading = v; else { c.bullets = at(c.bullets, n(p[3]), ''); c.bullets[n(p[3])] = v; } }
+    else if (p[0] === 'card') { sl.cards = at(sl.cards as object[], n(p[1]), { heading: '', body: '' }); const c = (sl.cards as Array<{ heading: string; body?: string }>)[n(p[1])]; if (p[2] === 'head') c.heading = v; else c.body = v; }
+    else if (p[0] === 'tl') { sl.timeline = at(sl.timeline as object[], n(p[1]), { label: '', text: '' }); const r = (sl.timeline as Array<{ label: string; text?: string }>)[n(p[1])]; if (p[2] === 'label') r.label = v; else r.text = v; }
+    else if (p[0] === 'plan') { sl.plans = at(sl.plans as object[], n(p[1]), { name: '' }); const pn = (sl.plans as Array<{ name: string; price?: string; bullets?: string[] }>)[n(p[1])]; if (p[2] === 'name') pn.name = v; else if (p[2] === 'price') pn.price = v; else { pn.bullets = at(pn.bullets, n(p[3]), ''); pn.bullets[n(p[3])] = v; } }
+    else if (p[0] === 'team') { sl.people = at(sl.people as object[], n(p[1]), { name: '' }); const m = (sl.people as Array<{ name: string; role?: string }>)[n(p[1])]; if (p[2] === 'name') m.name = v; else m.role = v; }
+    else if (p[0] === 'logo') { sl.logos = at(sl.logos as string[], n(p[1]), ''); (sl.logos as string[])[n(p[1])] = v; }
+    else sl[field] = v;
+  }
+  return copy;
+}
+
 // Slides that carry an imagePrompt (Advanced mode work list).
 export function slidesNeedingImages(spec: DeckSpec): number[] {
   return spec.slides.map((s, i) => (s.imagePrompt && !s.imageData ? i : -1)).filter((i) => i >= 0);

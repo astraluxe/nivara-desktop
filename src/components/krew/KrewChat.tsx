@@ -16,7 +16,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { extractTableRows, mergeLeadTables, parseLeadRows, rowsToMarkdown, leadConnStatusToOutreach, looksLikePersonLead, matchesSeniority, matchesSector } from '../../lib/leadTable';
 import { supabase } from '../../lib/supabase';
 import { getPlanConfig } from '../../lib/planConfig';
-import { parseDeckSpec, slidesNeedingImages, renderDeckHtml, extractDeckSpec, type DeckSpec, type DeckSlide, type DeckPalette } from '../../lib/deck';
+import { parseDeckSpec, slidesNeedingImages, renderDeckHtml, extractDeckSpec, applyDeckEdits, type DeckSpec, type DeckSlide, type DeckPalette } from '../../lib/deck';
 import { setLastDeck } from '../../lib/deckStore';
 import { CHANNEL_META, listConnections, saveConnection, schedulePost, postNow, type SocialConnection, type SocialChannel, type PostContent } from '../../lib/social';
 import UpgradeModal from '../UpgradeModal';
@@ -26,7 +26,7 @@ import { type ConnectionMode, type Provider } from '../../lib/ai';
 import { isDeadModelError, repairDeadModel, blockModel, scanModelsIfStale, measuredMsFor } from '../../lib/modelHealth';
 import { noteActiveModel } from '../../lib/contextBudget';
 import { slugLooksLikeName } from '../../lib/outreachConnections';
-import { auditPromises, type PromiseIssue } from '../../lib/verify';
+import { auditPromises, cleanOutboundMessage, type PromiseIssue } from '../../lib/verify';
 import ConnectionBar from '../coder/ConnectionBar';
 import { getMonthlyUsage } from '../../lib/tokenTracker';
 import { getImageBudget, unitsForModel } from '../../lib/imageQuota';
@@ -1718,28 +1718,8 @@ function DeckResultBubble({ html, spec: specProp }: { html: string; spec: DeckSp
   // listener always calls the latest handler without re-subscribing.
   const actionsRef = useRef<{ pdf: () => void; present: () => void }>({ pdf: () => {}, present: () => {} });
   const autoSaveRef = useRef<() => void>(() => {}); // set to scheduleAutoSave below; called on inline edits
-  const applyEdits = useCallback((sp: DeckSpec): DeckSpec => {
-    const keys = Object.keys(editsRef.current);
-    if (!keys.length) return sp;
-    const copy: DeckSpec = JSON.parse(JSON.stringify(sp));
-    const at = <T,>(arr: T[] | undefined, i: number, def: T): T[] => { const a = Array.isArray(arr) ? arr : []; if (!a[i]) a[i] = def; return a; };
-    for (const k of keys) {
-      const bar = k.indexOf('|'); const si = +k.slice(0, bar); const field = k.slice(bar + 1);
-      const sl = copy.slides[si] as unknown as Record<string, unknown>; if (!sl) continue;
-      const v = editsRef.current[k]; const p = field.split('.'); const n = (x: string) => parseInt(x, 10);
-      // Nested inline-edit paths so EVERY layout's fields are editable (columns, cards, timeline,
-      // pricing, team, logos, bullets), plus the flat fields (title/body/stat/quote…).
-      if (p[0] === 'bullet') { sl.bullets = at(sl.bullets as string[], n(p[1]), ''); (sl.bullets as string[])[n(p[1])] = v; }
-      else if (p[0] === 'col') { sl.columns = at(sl.columns as object[], n(p[1]), { heading: '', bullets: [] }); const c = (sl.columns as Array<{ heading: string; bullets: string[] }>)[n(p[1])]; if (p[2] === 'head') c.heading = v; else { c.bullets = at(c.bullets, n(p[3]), ''); c.bullets[n(p[3])] = v; } }
-      else if (p[0] === 'card') { sl.cards = at(sl.cards as object[], n(p[1]), { heading: '', body: '' }); const c = (sl.cards as Array<{ heading: string; body?: string }>)[n(p[1])]; if (p[2] === 'head') c.heading = v; else c.body = v; }
-      else if (p[0] === 'tl') { sl.timeline = at(sl.timeline as object[], n(p[1]), { label: '', text: '' }); const r = (sl.timeline as Array<{ label: string; text?: string }>)[n(p[1])]; if (p[2] === 'label') r.label = v; else r.text = v; }
-      else if (p[0] === 'plan') { sl.plans = at(sl.plans as object[], n(p[1]), { name: '' }); const pn = (sl.plans as Array<{ name: string; price?: string; bullets?: string[] }>)[n(p[1])]; if (p[2] === 'name') pn.name = v; else if (p[2] === 'price') pn.price = v; else { pn.bullets = at(pn.bullets, n(p[3]), ''); pn.bullets[n(p[3])] = v; } }
-      else if (p[0] === 'team') { sl.people = at(sl.people as object[], n(p[1]), { name: '' }); const m = (sl.people as Array<{ name: string; role?: string }>)[n(p[1])]; if (p[2] === 'name') m.name = v; else m.role = v; }
-      else if (p[0] === 'logo') { sl.logos = at(sl.logos as string[], n(p[1]), ''); (sl.logos as string[])[n(p[1])] = v; }
-      else sl[field] = v;
-    }
-    return copy;
-  }, []);
+  // Shared with the Brain's deck editor — see applyDeckEdits in lib/deck.ts.
+  const applyEdits = useCallback((sp: DeckSpec): DeckSpec => applyDeckEdits(sp, editsRef.current), []);
   useEffect(() => {
     function onMsg(e: MessageEvent) {
       const d = e.data as { __deckEdit?: boolean; __deckPdf?: boolean; __deckPresent?: boolean; id?: string; s?: number; f?: string; value?: string };
@@ -3608,11 +3588,12 @@ const [studioExtracting, setStudioExtracting] = useState(false);
       // appending it here is what reconnects the stream to the view.
       if (busyRef.current && runSidRef.current === sessionId) {
         const w = workRef.current;
-        msgs.push({
-          role: 'assistant',
-          content: statusBlock(w?.t0 ?? Date.now(), w?.headline ?? 'Still working on this', 'Carried on while you were in another chat.'),
-          streaming: true,
-        });
+        const body = statusBlock(w?.t0 ?? Date.now(), w?.headline ?? 'Still working on this', 'Carried on while you were in another chat.');
+        // Show it under the agent that is ACTUALLY running. A deck is built by Slade, so putting
+        // its progress under the boss's name was simply mislabelling whose work it was.
+        msgs.push(runAgentRef.current
+          ? { role: 'delegation', toolName: runAgentRef.current, content: body, streaming: true }
+          : { role: 'assistant', content: body, streaming: true });
       }
       setMessages(msgs);
     }).catch(() => {});
@@ -3803,6 +3784,52 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     };
     window.addEventListener('nv-krew-make-deck', onDeck);
     return () => window.removeEventListener('nv-krew-make-deck', onDeck);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── A DECK SENT OVER FROM THE BRAIN, TO BE CHANGED BY THE AGENT ──────────────────────────
+  // Typing on the slides in the Brain handles fixing wording. This handles everything that needs
+  // new content WRITTEN — "add a slide on pricing", "expand the ROI section", "reorder this".
+  // Seeding lastDeckSpecRef is the whole trick: the in-chat editor already routes follow-up
+  // messages to runDeckEdit whenever a deck is live in the thread, so the deck from the Brain
+  // becomes editable by exactly the same path a freshly-built one is, with no second code path.
+  useEffect(() => {
+    // Read the deck off disk from its path. The Brain saves before handing over, so this is the
+    // stored deck; the sidecar is preferred and the HTML is the fallback for older decks.
+    async function openDeckFromPath(p: string) {
+      if (!p || busyRef.current) return;
+      let spec: DeckSpec | null = null;
+      try { spec = JSON.parse(await invoke<string>('read_deck_spec', { path: p })) as DeckSpec; }
+      catch {
+        try { spec = extractDeckSpec(await invoke<string>('read_file', { path: p })); } catch { spec = null; }
+      }
+      if (!spec?.slides?.length) {
+        addMsg({ role: 'assistant', content: "I couldn't read that deck's contents, so I can't edit it here. Open it in the Brain and use \"Edit deck\" to change the text directly." });
+        return;
+      }
+      // Seeding this ref is the whole trick: send() already routes follow-ups to runDeckEdit
+      // whenever a deck is live in the thread, so a deck from the Brain becomes editable by
+      // exactly the same path a freshly-built one is — no second implementation to keep in step.
+      lastDeckSpecRef.current = spec;
+      setLastDeck(spec);
+      addMsg({ role: 'deck_result', content: '', deckSpec: spec, deckHtml: renderDeckHtml(spec) });
+      addMsg({
+        role: 'assistant',
+        content: `Opened **${spec.title || 'your deck'}** (${spec.slides.length} slides) from your Brain. Tell me what to change — "add a slide on pricing", "expand the ROI section", "make it navy", "remove slide 4" — and I'll rebuild it here.\n\nEditing here saves a new deck to your Brain; the one you opened stays as it is.`,
+      });
+    }
+    // On mount: the Brain left the path here before switching modules (Krew was not mounted yet,
+    // so a live event would have gone nowhere).
+    try {
+      const pending = sessionStorage.getItem('nv-deck-to-edit');
+      if (pending) { sessionStorage.removeItem('nv-deck-to-edit'); void openDeckFromPath(pending); }
+    } catch { /* private mode */ }
+    // And for the case where this chat is already mounted when the Brain hands one over.
+    const onEditDeck = (e: Event) => {
+      const d = (e as CustomEvent<{ path?: string }>).detail;
+      if (d?.path) { try { sessionStorage.removeItem('nv-deck-to-edit'); } catch { /* ignore */ } void openDeckFromPath(d.path); }
+    };
+    window.addEventListener('nv-krew-edit-deck', onEditDeck);
+    return () => window.removeEventListener('nv-krew-edit-deck', onEditDeck);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load agent memories when agent changes
@@ -4016,9 +4043,31 @@ const [studioExtracting, setStudioExtracting] = useState(false);
         // the probe — capped so a truly hung model still fails in a reasonable time.
         : Math.min(180_000, Math.max(40_000, measured * 3 + 20_000));
       let gotFirst = false;
+      // A HIDDEN WINDOW IS NOT A DEAD MODEL.
+      //
+      // Switching virtual desktop, alt-tabbing, or minimising backgrounds the webview, and Chromium
+      // then throttles background timers hard — down to roughly once a minute. This watchdog fires
+      // on a timer, so it can go off long past its deadline on a stream that is perfectly healthy,
+      // and the retry that follows raises "Reconnecting…" about a connection that never dropped.
+      // That is why the banner appeared every time the user did anything outside the app while the
+      // internet was fine.
+      //
+      // So: if the window was hidden at any point during the wait, treat the expiry as a false
+      // alarm and grant one more full window. Bounded at three, so a genuinely hung model still
+      // fails and still gets its honest error — this delays that verdict, it does not remove it.
+      let hiddenWhileWaiting = document.visibilityState === 'hidden';
+      let forgiven = 0;
+      const onVis = () => { if (document.visibilityState === 'hidden') hiddenWhileWaiting = true; };
+      document.addEventListener('visibilitychange', onVis);
       const resetStall = () => {
         if (stallTimer) clearTimeout(stallTimer);
         stallTimer = setTimeout(() => {
+          if (hiddenWhileWaiting && forgiven < 3) {
+            forgiven++;
+            hiddenWhileWaiting = document.visibilityState === 'hidden'; // still away? keep forgiving
+            resetStall();
+            return;
+          }
           done.cleanup();
           reject(new Error(
             mode === 'local'
@@ -4077,7 +4126,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
         truncated = true;
       });
 
-      done.cleanup = () => { u1(); u2(); u3(); u4(); if (stallTimer) clearTimeout(stallTimer); };
+      done.cleanup = () => { u1(); u2(); u3(); u4(); document.removeEventListener('visibilitychange', onVis); if (stallTimer) clearTimeout(stallTimer); };
       resetStall(); // start stall timer immediately
 
       invoke('krew_ai_stream', {
@@ -4119,7 +4168,20 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     let rateWaits = 0;
     for (let attempt = 1; ; attempt++) {
       try {
-        const r = await streamTurn(msgs, systemPrompt, onChunk);
+        // TAKE THE BANNER DOWN THE MOMENT THE LINK PROVES ITSELF, not when the answer finishes.
+        //
+        // This is why "Reconnecting… 2 of 10" sat there frozen for minutes on a connection that
+        // was completely fine. The banner was raised when attempt 2 failed and only cleared when
+        // an attempt RESOLVED — but the very next attempt then streamed a fifteen-slide deck,
+        // which on a free key takes minutes. For all of that time the retry was succeeding,
+        // token by token, behind a banner announcing that it was broken.
+        //
+        // The first chunk is proof the connection is alive; nothing after that is news.
+        let alive = false;
+        const r = await streamTurn(msgs, systemPrompt, (t) => {
+          if (!alive) { alive = true; setReconnecting(null); }
+          onChunk(t);
+        });
         // Clear unconditionally. This used to be `if (attempt > 1)`, so a banner raised by one call
         // was left on screen by every OTHER call that succeeded first time — which is why the chat
         // sat on "Reconnecting…" for ages while the outreach copilot was answering perfectly well
@@ -4347,11 +4409,48 @@ The prompt must be production-ready — specific enough for a motion designer to
       try { await invoke('fetch_session_key', { sessionToken: await freshSessionToken(session.access_token) }); } catch { /* falls back to edge + stock/abstract images */ }
     }
     addMsg({ role: 'delegation', toolName: 'deck_maker', content: 'Designing your deck…', streaming: true });
+    // Only ever draw into the conversation this deck belongs to. Same reasoning as the ownership
+    // gate on the chat helpers: the work continues if the user wanders off, the drawing does not.
+    const deckSid = sidRef.current;
+    // Claim the run explicitly rather than inheriting whatever send() happened to leave behind —
+    // generation starts when the user presses Generate on the setup card, which is a separate
+    // call from the send() that showed it. Claiming here is what makes "come back and it is still
+    // going" correct for decks, and what names Slade on the resumed box instead of the boss.
+    runSidRef.current = deckSid;
+    runAgentRef.current = 'deck_maker';
     const setStatus = (t: string) => setMessages((prev) => {
+      if (sidRef.current !== deckSid) return prev;
       const c = [...prev]; const l = c[c.length - 1];
       if (l?.role === 'delegation') c[c.length - 1] = { ...l, content: t };
       return c;
     });
+
+    // ── A STATUS LINE THAT ACTUALLY MOVES ────────────────────────────────────────────────────
+    // "Slade is structuring your 15 slides…" was written once and then never touched again for
+    // however long the model took. On a free NVIDIA key that is minutes of a completely static
+    // line, which is indistinguishable from a hang — the user reported staring at it with no idea
+    // whether it was working. It was.
+    //
+    // liveStatus ticks every second so the line visibly moves, and counts the slides as they
+    // arrive in the stream (every slide object carries a "layout", so counting those is an honest
+    // read of real progress rather than a fake progress bar). If the model has not started yet it
+    // says so, because on a free key first-token latency alone can be 30-40 seconds.
+    const fmtSecs = (s: number) => (s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`);
+    function liveStatus(label: (elapsed: string, slides: number) => string) {
+      const t0 = Date.now();
+      let seen = 0, buf = '';
+      const render = () => setStatus(label(fmtSecs(Math.round((Date.now() - t0) / 1000)), seen));
+      render();
+      const iv = setInterval(render, 1000);
+      return {
+        onChunk: (t: string) => {
+          buf += t;
+          const n = (buf.match(/"layout"\s*:/g) || []).length;
+          if (n !== seen) { seen = n; render(); }
+        },
+        stop: () => clearInterval(iv),
+      };
+    }
     // ── WEB RESEARCH PRE-PASS — pull a little live context from the internet to enrich the deck
     // with current facts/stats. Runs when the deck would benefit (no source doc attached, or the
     // ask explicitly wants research/latest/market data). Best-effort; failures are ignored, and it
@@ -4458,8 +4557,12 @@ The prompt must be production-ready — specific enough for a motion designer to
         // If the RETRY (attempt 2) hits a transient AI error but attempt 1 already gave us a
         // usable deck, keep that deck instead of failing the whole thing.
         let text = '', truncated = false;
-        try { ({ text, truncated } = await streamTurnWithRetry([{ role: 'user', content: requestCtx }], sysTry, () => {})); }
+        const prog = liveStatus((el, n) => n === 0
+          ? `Slade is planning your ${target} slides — waiting for the model to start · ${el}`
+          : `Slade is writing your deck — ${n} of ${target} slides drafted · ${el}`);
+        try { ({ text, truncated } = await streamTurnWithRetry([{ role: 'user', content: requestCtx }], sysTry, prog.onChunk)); }
         catch (e) { if (spec) break; throw e; }
+        finally { prog.stop(); }
         lastText = text;
         wasTruncated = truncated;
         const parsed = parseDeckSpec(text);
@@ -4502,7 +4605,6 @@ The prompt must be production-ready — specific enough for a motion designer to
         // How many to ask for THIS round — never more than are actually missing.
         const want = Math.min(contChunk, target - have);
         const upto = have + want;
-        setStatus(`Writing slides ${have + 1}–${target}…`);
         const done = spec.slides.map((s, i) => `${i + 1}. ${s.title || s.layout}`).join('; ');
         // Include the LAYOUTS guidance so the continuation slides use varied templates too (not
         // all bullets), and keep retrying (a single unparseable reply no longer aborts the count).
@@ -4513,8 +4615,14 @@ The prompt must be production-ready — specific enough for a motion designer to
         // just stop adding more and use what we have (the outer catch would have shown
         // "AI service temporarily unavailable" and thrown the whole deck away).
         let text = '';
-        try { ({ text } = await streamTurnWithRetry([{ role: 'user', content: contUser }], contSys, () => {})); }
+        // Count from the slides ALREADY finished, so the number climbs across rounds instead of
+        // resetting to zero on every continuation — on a weak model there can be eight of these.
+        const cprog = liveStatus((el, n) => n === 0
+          ? `Writing slides ${have + 1}–${upto} of ${target} — ${have} done · ${el}`
+          : `Writing slides ${have + 1}–${upto} of ${target} — ${have + n} done · ${el}`);
+        try { ({ text } = await streamTurnWithRetry([{ role: 'user', content: contUser }], contSys, cprog.onChunk)); }
         catch { break; }
+        finally { cprog.stop(); }
         const more = parseDeckSpec(text);
         if (more && more.slides.length) {
           // Append but DROP duplicates the model re-emits (this is the "slide used twice / loops"
@@ -4545,7 +4653,14 @@ The prompt must be production-ready — specific enough for a motion designer to
         // a transient AI error. Include a trimmed slice of the doc for fact-checking only.
         const reviewBrief = (deckTextRef.current || requestCtx).slice(0, 6000);
         const reviewUser = `BRIEF:\n${reviewBrief}\n\n=== DRAFT DECK TO REVIEW (return the corrected full spec) ===\n${draftJson}`;
-        const { text: rtext } = await streamTurnWithRetry([{ role: 'user', content: reviewUser }], reviewSys, () => {});
+        // The review rewrites the WHOLE deck, so it is the longest single call in the run and the
+        // one the user watched sit motionless. Report it the same way as the drafting passes.
+        const rprog = liveStatus((el, n) => n === 0
+          ? `Reviewing the whole deck — ${spec!.slides.length} slides to check · ${el}`
+          : `Polishing — ${n} of ${spec!.slides.length} slides rewritten · ${el}`);
+        let rtext = '';
+        try { ({ text: rtext } = await streamTurnWithRetry([{ role: 'user', content: reviewUser }], reviewSys, rprog.onChunk)); }
+        finally { rprog.stop(); }
         const reviewed = parseDeckSpec(rtext);
         if (reviewed && reviewed.slides.length >= Math.max(4, spec.slides.length - 3)) {
           reviewed.palette = spec.palette; reviewed.font = spec.font; reviewed.template = spec.template;
@@ -4825,6 +4940,10 @@ The prompt must be production-ready — specific enough for a motion designer to
       });
     } finally {
       setBusy(false);
+      // Release the run. Leaving these set would make a finished deck look permanently in-flight
+      // to the resume box, and would keep gating unrelated later writes to this conversation.
+      runSidRef.current = undefined;
+      runAgentRef.current = null;
       deckRequestRef.current = '';
       deckTextRef.current = '';
       deckImagesRef.current = [];
@@ -6877,6 +6996,9 @@ _None of them had everything you ticked, so I've saved them rather than lose the
           let msg = pairs.find((p) => norm(p.name) === norm(c.name) || norm(p.name) === norm(firstNameOf(c.name)))?.message;
           if (!msg && pairs[j] && norm(pairs[j].name) === '') msg = pairs[j].message;   // unnamed → by position
           if (!msg && pairs.length === batch.length) msg = pairs[j]?.message;            // count matches → trust order
+          // Every one of these is about to be pasted into a real LinkedIn chat, so it gets the
+          // outbound hygiene pass: no em dashes, and no sentence explaining the machinery.
+          if (msg) msg = cleanOutboundMessage(msg);
           if (msg) { byName[norm(c.name)] = msg; byName[norm(firstNameOf(c.name))] ??= msg; }
         });
       }
@@ -6931,7 +7053,8 @@ _None of them had everything you ticked, so I've saved them rather than lose the
             if (!note && pairs.length === batch.length) note = pairs[j]?.message;
             // Enforce the limit ourselves — a model that ignores "280 chars" would otherwise hand
             // the user a note LinkedIn silently refuses to send.
-            if (note) noteByName[norm(c.name)] = note.trim().slice(0, 280);
+            // Clean BEFORE the length cap, so replacing a dash can't push the note back over 280.
+            if (note) noteByName[norm(c.name)] = cleanOutboundMessage(note).slice(0, 280);
           });
         }
       }
@@ -8125,6 +8248,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     // still being here; everything it saves happens regardless, so switching away pauses the view
     // and never the work.
     runSidRef.current = sid;
+    runAgentRef.current = null;   // an ordinary chat turn — the resume box uses the chat agent
 
     // Add user message to display (typed text + file names only)
     addMsg({ role: 'user', content: displayText });
@@ -9212,6 +9336,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
       // otherwise skip that and leave a permanent "streaming" message in their history.
       const stillHere = runSidRef.current === sidRef.current;
       runSidRef.current = undefined;
+      runAgentRef.current = null;
       // NEVER end blank and never hang on "thinking…". Drop empty streaming bubbles, then — if this
       // turn produced NO visible output — try a clean DIRECT answer on the same model before giving
       // up (the agent framing, not the model, is usually why a free model went silent). See
@@ -9476,6 +9601,10 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
   // krewDb.saveMessage keeps writing, so the work completes and is waiting when you come back.
   const runSidRef = useRef<string | null | undefined>(undefined);
   const owns = () => runSidRef.current === undefined || runSidRef.current === sidRef.current;
+  // WHICH agent the in-flight turn belongs to. The resume box used to be a plain assistant
+  // message, so coming back to a deck that Slade was building showed it under the boss (Arjun) —
+  // the wrong name against work he was not doing. Null means the ordinary chat agent.
+  const runAgentRef = useRef<string | null>(null);
 
   function showWork(headline: string, detail?: string) {
     const t0 = Date.now();

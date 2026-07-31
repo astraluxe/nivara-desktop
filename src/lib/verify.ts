@@ -321,6 +321,54 @@ export function parseMeetingTime(text: string, now = new Date()): ParsedMeetingT
 //   · if a round made no real progress, say so and hand the decision back to the human, who was
 //     always the final approver anyway.
 
+// ─── OUTBOUND MESSAGE HYGIENE ────────────────────────────────────────────────────────────────
+// Applied to text that goes to a REAL PERSON — a LinkedIn message, a reply, a follow-up. Never to
+// prose the owner reads inside the app, where an em dash is just punctuation and an explanation of
+// what the app can do is useful.
+//
+// Two separate problems, both of which a prompt alone does not fix because models revert:
+//
+//  1. THE EM DASH. It is the single most recognisable tell that text was machine-written, and a
+//     prospect who spots it reads the whole message as automated. Humans typing into a message box
+//     use commas and full stops.
+//
+//  2. NARRATING THE MACHINERY. A drafted reply went out saying "Since I don't have my calendar
+//     synced here, what time works best for you?" — which announces to a prospect that something
+//     automated is writing, and was not even true: the calendar is connected. Asking what time
+//     suits them is right; explaining WHY is a confession no human would make. The excuse is
+//     removed and the question it was attached to is kept.
+
+/** Sentences that leak the machinery. Each is dropped whole; the rest of the message is untouched. */
+const LEAKY_SENTENCE = new RegExp(
+  '[^.!?\\n]*\\b(?:' +
+  "(?:i (?:don'?t|do not|can'?t|cannot) (?:have|access|see|sync)[^.!?\\n]{0,40}\\b(?:calendar|inbox|email|access|synced?|integration|system))|" +
+  "(?:my (?:calendar|system|tools?|access)[^.!?\\n]{0,30}\\b(?:is|are|isn'?t|aren'?t|not)\\s+(?:synced?|connected|available|set up))|" +
+  "(?:as an ai\\b)|(?:i(?:'m| am) an ai\\b)|(?:as a language model\\b)|" +
+  "(?:i (?:don'?t|do not) have (?:real[- ]time |direct )?access\\b)|" +
+  "(?:(?:since|because|as) i (?:don'?t|do not|can'?t|cannot)[^.!?\\n]{0,50}\\b(?:calendar|access|sync))" +
+  ')[^.!?\\n]*[.!?]?\\s*', 'gi');
+
+/** Make a drafted message read as though a person typed it. Text-only; changes no meaning. */
+export function cleanOutboundMessage(text: string): string {
+  let s = String(text || '');
+  // Drop the machinery excuses first, so any dash inside them goes with them.
+  s = s.replace(LEAKY_SENTENCE, (m) => {
+    // Keep a trailing question that was welded onto the excuse ("Since I don't have X, what
+    // time works?") — the question is the useful half and must survive.
+    const q = m.match(/,\s*([a-z][^,]*\?)\s*$/i);
+    // Pad both sides: the match swallows the space after the previous sentence, which otherwise
+    // welds the next word onto it ("happy to chat.What time…"). Doubles are collapsed below, and
+    // a blanket /([.!?])([A-Za-z])/ fix is not usable here — it would split "adris.tech".
+    return q ? ' ' + q[1].charAt(0).toUpperCase() + q[1].slice(1) + ' ' : ' ';
+  });
+  // Em dash, en dash and the typed "--" all read as machine punctuation.
+  s = s.replace(/\s*[—–]\s*|\s+--\s+/g, (_m, off: number) => {
+    const before = s.slice(0, off).trimEnd().slice(-1);
+    return /[,;:.!?]$/.test(before) ? ' ' : ', ';
+  });
+  return s.replace(/ {2,}/g, ' ').replace(/\s+([,.!?])/g, '$1').replace(/,\s*,/g, ',').trim();
+}
+
 /** A comparable fingerprint of a verdict's substantive complaints, for spotting a loop. */
 export function issueSignature(issues: VerifyIssue[]): string {
   return issues
@@ -385,8 +433,13 @@ function firstJson<T>(text: string): T | null {
   // <think>…</think> preamble first. Strip those, then pull the first balanced object out rather
   // than trusting the whole string to parse.
   let src = String(text || '');
-  src = src.replace(/<think>[\s\S]*?<\/think>/gi, '');   // reasoning-model scratchpad
-  src = src.replace(/<\/?[a-z_]+>/gi, (m) => (/^<\/?(think|reasoning|analysis)>$/i.test(m) ? '' : m));
+  src = src.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '');   // reasoning-model scratchpad
+  // An UNCLOSED scratchpad means the model spent its whole output budget thinking and was cut off
+  // before it ever wrote the answer. Free NVIDIA keys cap output at 4096 tokens, so this is common
+  // on the reasoning models in that catalogue. Everything from the tag on is thinking, not answer.
+  const openThink = src.search(/<think(?:ing)?>/i);
+  if (openThink >= 0) src = src.slice(0, openThink);
+  src = src.replace(/<\/?[a-z_]+>/gi, (m) => (/^<\/?(think|thinking|reasoning|analysis)>$/i.test(m) ? '' : m));
   const fenced = src.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = fenced ? fenced[1] : src;
   const start = candidate.indexOf('{');
@@ -412,6 +465,59 @@ function firstJson<T>(text: string): T | null {
         }
       }
     }
+  }
+  // NOTHING BALANCED — the object was CUT OFF mid-write, not malformed.
+  //
+  // This is the ordinary result of a 4096-token output cap: the model writes a perfectly good
+  // verdict and summary, then runs out of budget somewhere inside the issues array and the final
+  // braces never arrive. Discarding all of that produced "the verification agent could not return
+  // a readable result, twice" — telling the user their draft went unchecked when in fact most of
+  // the check had come back. Salvage what completed instead.
+  return repairTruncatedJson<T>(candidate.slice(start));
+}
+
+/** Close an object that was cut off mid-write and parse what survived.
+ *
+ *  There is no single "right" place to cut — a truncation can land after a key with no value,
+ *  inside a string, or halfway through a number. So collect every position that COULD be a clean
+ *  boundary and try them newest-first, keeping the first that actually parses. That way a cut
+ *  landing on `{"severity"` falls back to the complete issue before it rather than giving up.
+ *  Returns null when nothing usable survives, so a model that answered nothing is still reported
+ *  as having answered nothing. */
+function repairTruncatedJson<T>(src: string): T | null {
+  const cuts: number[] = [];
+  let inStr = false, esc = false;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (esc) { esc = false; continue; }
+    if (ch === '\\') { esc = true; continue; }
+    if (ch === '"') { inStr = !inStr; if (!inStr) cuts.push(i + 1); continue; }  // a closed string
+    if (inStr) continue;
+    if (ch === '}' || ch === ']') cuts.push(i + 1);                              // a closed value
+    else if (ch === ',') cuts.push(i);                                           // before the comma
+    else if (/[0-9a-z]/i.test(ch) && (i + 1 >= src.length || /[,\]}\s]/.test(src[i + 1]))) cuts.push(i + 1);
+  }
+  for (let k = cuts.length - 1; k >= 0; k--) {
+    const body = src.slice(0, cuts[k]).replace(/[,\s]*$/, '');
+    if (!body) continue;
+    // Work out what is still open at this cut, and whether it landed inside a string.
+    const open: string[] = [];
+    let s2 = false, e2 = false;
+    for (const ch of body) {
+      if (e2) { e2 = false; continue; }
+      if (ch === '\\') { e2 = true; continue; }
+      if (ch === '"') { s2 = !s2; continue; }
+      if (s2) continue;
+      if (ch === '{') open.push('}');
+      else if (ch === '[') open.push(']');
+      else if (ch === '}' || ch === ']') open.pop();
+    }
+    if (s2 || !open.length) continue;   // mid-string, or nothing left open → not a clean boundary
+    const closed = body + open.reverse().join('');
+    try {
+      const v = JSON.parse(closed);
+      if (v && typeof v === 'object') return v as T;
+    } catch { /* this boundary didn't work — try an earlier one */ }
   }
   return null;
 }
@@ -556,7 +662,10 @@ export async function verifyWork(opts: {
     const retry = await ai(
       `${user}
 
-Your previous answer was not valid JSON. Reply with the JSON object ONLY — no explanation, no markdown fences, nothing before or after it.`,
+Your previous answer was not valid JSON. Reply with the JSON object ONLY — no explanation, no markdown fences, nothing before or after it.
+Do NOT think out loud and do NOT emit any <think> block: on a free key the whole output budget is
+about 4,000 tokens, and reasoning first is what left no room for the answer last time. Write the
+JSON immediately, keep "summary" to one sentence and list at most three issues.`,
       system,
     ).catch(() => '');
     if (retry) parsed = firstJson<{ verdict?: string; summary?: string; issues?: VerifyIssue[]; revised?: string }>(retry);
@@ -697,6 +806,14 @@ export async function planReply(opts: {
     '  * If NO calendar/availability is in the context, DO NOT invent times — leave suggestedSlots EMPTY',
     '    ([]) and word the draftReply to ASK the prospect what time suits them. Never fabricate a slot the',
     '    owner may not actually be free for.',
+    '  * ASK PLAINLY, NEVER EXPLAIN WHY. Just "what time suits you this week?" — never "since I don\'t',
+    '    have my calendar synced here", "I don\'t have access to my calendar", or any other account of',
+    '    what you can and cannot see. The prospect is reading a message from the OWNER, a person with a',
+    '    calendar; a sentence about tooling tells them software wrote it, and is usually false anyway.',
+    '  * Never mention being an AI, a model, an assistant, syncing, integrations, or any limitation of',
+    '    yours. Nothing about the machinery ever appears in a message to another human being.',
+    '  * Do not use em dashes (—) or en dashes (–). Use commas and full stops, the way someone typing',
+    '    into a message box does. A dash like that is the clearest signal that a message was generated.',
     '',
     'BOOKING A CALL — ASK FOR THEIR EMAIL FIRST, LINK SECOND.',
     '- A calendar invite sent to their address is the thing that actually holds a meeting: it lands in',
@@ -781,7 +898,7 @@ export async function planReply(opts: {
         : raw.trim()
           ? 'The AI replied but not in a form I could use, twice. Press "Scan their reply" again, or write this one yourself.'
           : 'The AI returned nothing at all — that usually means the model is unavailable or your allowance is used up. Try switching the chat between adris.tech AI and your own key, then scan again.',
-      draftReply: salvaged,
+      draftReply: cleanOutboundMessage(salvaged),
       attachSuggested: false,
       degraded: true,
     };
@@ -792,7 +909,7 @@ export async function planReply(opts: {
   return {
     intent,
     read: String(p.read || 'Reply received.').slice(0, 300),
-    draftReply: String(p.draftReply || '').slice(0, 2000),
+    draftReply: cleanOutboundMessage(String(p.draftReply || '')).slice(0, 2000),
     attachSuggested: !!p.attachSuggested,
     attachHint: p.attachHint ? String(p.attachHint).slice(0, 120) : undefined,
     nextAction: p.nextAction ? String(p.nextAction).slice(0, 240) : undefined,
@@ -857,7 +974,8 @@ export async function refineMessage(opts: {
   out = out.replace(/^\s*(sure|okay|ok|certainly|absolutely|got it)[!,.]?\s*(here('?s| is)[^:\n]*:)?\s*\n+/i, '');
   out = out.replace(/^\s*here('?s| is)[^:\n]*:\s*\n+/i, '');
   if ((out.startsWith('"') && out.endsWith('"')) || (out.startsWith('“') && out.endsWith('”'))) out = out.slice(1, -1).trim();
-  return out.trim().slice(0, 2000);
+  // A rewrite is still a message to a real person, so it gets the same hygiene as a fresh draft.
+  return cleanOutboundMessage(out).slice(0, 2000);
 }
 
 /**
@@ -994,12 +1112,12 @@ export async function planFollowUp(opts: {
     return {
       intent: 'unclear',
       read: salvaged ? 'Drafted a follow-up, though the AI didn\'t format it cleanly — read it before sending.' : "Couldn't get a clean follow-up from the AI — write one yourself, or try again.",
-      draftReply: salvaged, attachSuggested: false, degraded: true,
+      draftReply: cleanOutboundMessage(salvaged), attachSuggested: false, degraded: true,
     };
   }
 
   const intents: ReplyIntent[] = ['interested', 'wants_info', 'wants_meeting', 'objection', 'not_interested', 'question', 'unclear'];
-  const draftReply = String(p.draftReply || '').slice(0, 2000);
+  const draftReply = cleanOutboundMessage(String(p.draftReply || '')).slice(0, 2000);
   const hint = p.attachHint ? String(p.attachHint).slice(0, 120) : '';
   // Don't pre-select a file the prospect was already sent — re-attaching the same brief reads as if
   // the owner forgot the last message.

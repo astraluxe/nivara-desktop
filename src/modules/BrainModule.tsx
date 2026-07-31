@@ -1,6 +1,8 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import { brain, BRAIN_EVENT, nodeToMarkdown, type BrainNode, type BrainNodeKind, type BrainData } from '../lib/knowledgeStore';
+import { renderDeckHtml, extractDeckSpec, applyDeckEdits, type DeckSpec, type DeckPalette } from '../lib/deck';
 import { todos, type TodoItem } from '../lib/todoStore';
 
 // ─── Kind metadata ────────────────────────────────────────────────────────────
@@ -383,19 +385,135 @@ function ImageViewer({ path }: { path: string }) {
   );
 }
 
-// ─── Deck preview ───────────────────────────────────────────────────────────
+// Mix two hex colours — used to derive surface/muted so the palette editor needs only 3 picks.
+function mixHex(a: string, b: string, t: number): string {
+  const pa = (a || '#000000').replace('#', '').match(/.{2}/g)?.map((x) => parseInt(x, 16)) ?? [0, 0, 0];
+  const pb = (b || '#000000').replace('#', '').match(/.{2}/g)?.map((x) => parseInt(x, 16)) ?? [0, 0, 0];
+  return '#' + pa.map((v, i) => Math.max(0, Math.min(255, Math.round(v + ((pb[i] ?? 0) - v) * t))).toString(16).padStart(2, '0')).join('');
+}
+
+// ─── Deck preview + editor ──────────────────────────────────────────────────
 // Shows a saved deck AS the deck (its rendered HTML in an iframe) instead of the summary
 // text — so a presentation saved to the Brain actually looks like the presentation.
-function DeckPreview({ path }: { path: string }) {
+//
+// EDITING. A deck in the Brain used to be frozen: to change one word you had to go back to the
+// chat that made it, and once that chat was gone the deck was permanently read-only. It now
+// offers the SAME editing as the chat — click any text on the slide and type — because it is
+// literally the same mechanism: renderDeckHtml(spec, true, id) makes the deck's own text
+// editable and posts each change out; applyDeckEdits folds those onto the spec (both shared
+// with the chat, so the two cannot drift apart).
+//
+// Two ways to keep the result, which is the distinction the user asked for:
+//   · Save changes — overwrites this deck's .html and its .json sidecar in place.
+//   · Save a copy  — writes a NEW pair of files and adds a NEW Brain node pointing at them, so
+//                    the original is untouched and the copy is itself fully editable.
+function DeckPreview({ path, onCopySaved }: { path: string; onCopySaved?: (nodeId: string) => void }) {
   const [html, setHtml] = useState<string | null>(null);
   const [err, setErr] = useState(false);
   const [pdfMsg, setPdfMsg] = useState('');
+  // The spec behind this deck. Read from the .json sidecar; if that is missing (older decks
+  // saved before the sidecar existed) it is recovered from the HTML itself.
+  const [spec, setSpec] = useState<DeckSpec | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [pal, setPal] = useState<DeckPalette | null>(null);
+  const [saveMsg, setSaveMsg] = useState('');
+  const [dirtyTick, setDirtyTick] = useState(0);          // bumped on every inline edit
+  const editsRef = useRef<Record<string, string>>({});
+  const editId = useRef('bd-' + Math.random().toString(36).slice(2, 9)).current;
   const iframeRef = useRef<HTMLIFrameElement>(null);
   useEffect(() => {
     let cancelled = false;
-    invoke<string>('read_file', { path }).then((h) => { if (!cancelled) setHtml(h); }).catch(() => { if (!cancelled) setErr(true); });
+    setEditing(false); setSaveMsg(''); editsRef.current = {};
+    invoke<string>('read_file', { path }).then((h) => {
+      if (cancelled) return;
+      setHtml(h);
+      // The spec is what editing works on. Prefer the sidecar; fall back to reading it back out
+      // of the HTML, so decks saved before the sidecar existed are editable too rather than
+      // silently offering an Edit button that cannot do anything.
+      invoke<string>('read_deck_spec', { path })
+        .then((j) => { if (!cancelled) { const s = JSON.parse(j) as DeckSpec; setSpec(s); setPal(s.palette); } })
+        .catch(() => { if (!cancelled) { const s = extractDeckSpec(h); setSpec(s); setPal(s?.palette ?? null); } });
+    }).catch(() => { if (!cancelled) setErr(true); });
     return () => { cancelled = true; };
   }, [path]);
+
+  // The spec as it stands right now: the saved one, plus any inline text edits, plus any live
+  // palette change. Everything below (preview, save, copy, hand-off to chat) works from this.
+  const current: DeckSpec | null = useMemo(() => {
+    if (!spec) return null;
+    const withEdits = applyDeckEdits(spec, editsRef.current);
+    if (!pal) return withEdits;
+    return { ...withEdits, palette: { ...pal, surface: mixHex(pal.bg, pal.text, 0.06), muted: mixHex(pal.bg, pal.text, 0.55) } };
+    // dirtyTick is in the deps on purpose: inline edits live in a ref (so typing never reloads
+    // the iframe mid-keystroke) and the tick is what tells React they happened.
+  }, [spec, pal, dirtyTick]);
+
+  const paletteChanged = !!(spec && pal && (pal.bg !== spec.palette.bg || pal.text !== spec.palette.text || pal.accent !== spec.palette.accent));
+  const dirty = paletteChanged || Object.keys(editsRef.current).length > 0;
+
+  // Write the deck's two files. `to` null = overwrite this deck; otherwise a fresh pair via
+  // save_deck_files, which returns the new .html path.
+  async function persist(mode: 'save' | 'copy'): Promise<string | null> {
+    if (!current) return null;
+    const out = renderDeckHtml(current);
+    const json = JSON.stringify(current);
+    if (mode === 'save') {
+      await invoke('write_file', { path, content: out });
+      // The sidecar sits next to the html with the same stem. Keeping it in step matters: it is
+      // what the next edit (and the pptx/PDF export) reads.
+      await invoke('write_file', { path: path.replace(/\.html$/i, '.json'), content: json });
+      return path;
+    }
+    const slug = (current.title || 'deck').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'deck';
+    return await invoke<string>('save_deck_files', { slug, html: out, specJson: json });
+  }
+
+  async function onSave() {
+    setSaveMsg('Saving…');
+    try {
+      await persist('save');
+      setHtml(renderDeckHtml(current!));
+      setSpec(current);                       // the edits are now the saved state
+      editsRef.current = {};
+      setSaveMsg('✓ Saved'); setTimeout(() => setSaveMsg(''), 2500);
+    } catch (e) { setSaveMsg(`Couldn't save: ${e instanceof Error ? e.message : String(e)}`); }
+  }
+
+  async function onSaveCopy() {
+    setSaveMsg('Saving a copy…');
+    try {
+      const newPath = await persist('copy');
+      if (!newPath || !current) { setSaveMsg('Could not save the copy.'); return; }
+      const summary = `Presentation · ${current.slides.length} slides\n\n` + current.slides.map((s, i) => `${i + 1}. ${s.title || s.layout}`).join('\n');
+      // addUniqueNode so a second copy becomes "… (2)" instead of overwriting the first.
+      const node = brain.addUniqueNode({ title: `${current.title || 'Presentation'} (copy)`, kind: 'file', body: summary });
+      brain.updateNode(node.id, { filePath: newPath });
+      setSaveMsg('✓ Copy saved to your Brain');
+      onCopySaved?.(node.id);
+      setTimeout(() => setSaveMsg(''), 3000);
+    } catch (e) { setSaveMsg(`Couldn't copy: ${e instanceof Error ? e.message : String(e)}`); }
+  }
+
+  // Hand the deck to Krew so the AGENT can change it — "add a slide on pricing", "expand the
+  // ROI section". Manual typing covers fixing words; this covers everything that needs new
+  // content written. The chat listens for this and picks up from the spec, so it edits THIS
+  // deck rather than starting a new one.
+  async function onEditInChat() {
+    if (!current) return;
+    setSaveMsg('Opening in Krew…');
+    // Save first: the chat reads the deck back off DISK, so anything unsaved would simply not
+    // travel. This also means what the agent edits is exactly what is stored.
+    try { await persist('save'); setSpec(current); editsRef.current = {}; } catch { /* hand over the stored version */ }
+    // Hand over the PATH, not the spec. A deck with images is megabytes of data URIs, which
+    // overflows sessionStorage; the path is a few dozen bytes and the chat can read the rest.
+    // sessionStorage rather than an event because Krew is NOT mounted while the Brain is open,
+    // so a live event would be dispatched into nothing. The chat picks this up when it mounts.
+    try { sessionStorage.setItem('nv-deck-to-edit', path); } catch { /* private mode */ }
+    // A DOM event as well, for the case where Krew IS already mounted behind this module.
+    window.dispatchEvent(new CustomEvent('nv-krew-edit-deck', { detail: { path } }));
+    emit('nv-navigate', { module: 'krew' }).catch(() => {});
+    setSaveMsg('');
+  }
 
   // The deck's own ⛶ Present / ⭳ PDF buttons live INSIDE the sandboxed iframe and postMessage to
   // us (the parent) — without this listener those clicks did nothing in the Brain preview (only
@@ -404,7 +522,14 @@ function DeckPreview({ path }: { path: string }) {
   useEffect(() => {
     async function onMsg(e: MessageEvent) {
       if (!iframeRef.current || e.source !== iframeRef.current.contentWindow) return;
-      const d = e.data as { __deckPdf?: boolean; __deckPresent?: boolean };
+      const d = e.data as { __deckPdf?: boolean; __deckPresent?: boolean; __deckEdit?: boolean; id?: string; s?: number; f?: string; value?: string };
+      // An inline text edit made by clicking on the slide. Collected in a ref so typing never
+      // re-renders the iframe under the cursor; the tick tells the rest of the UI it is dirty.
+      if (d?.__deckEdit && d.id === editId && typeof d.s === 'number' && typeof d.f === 'string') {
+        editsRef.current[`${d.s}|${d.f}`] = String(d.value ?? '');
+        setDirtyTick((n) => n + 1);
+        return;
+      }
       if (d?.__deckPresent) {
         const el = iframeRef.current as (HTMLIFrameElement & { webkitRequestFullscreen?: () => void });
         try { (el.requestFullscreen || el.webkitRequestFullscreen)?.call(el); el.focus?.(); } catch { /* ignore */ }
@@ -425,16 +550,60 @@ function DeckPreview({ path }: { path: string }) {
     }
     window.addEventListener('message', onMsg);
     return () => window.removeEventListener('message', onMsg);
-  }, [html, path]);
+  }, [html, path, editId]);
+
+  // In edit mode the iframe shows the LIVE spec with its text made editable. Rendering only on
+  // structural change (not on every keystroke) is why the edits are collected in a ref.
+  const shown = editing && current ? renderDeckHtml(current, true, editId) : html;
+  const btn = 'rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-opacity hover:opacity-80 disabled:opacity-40';
 
   return (
     <div className="flex-1 min-w-0 overflow-y-auto p-4 flex flex-col items-center justify-start" style={{ background: 'var(--nv-bg)' }}>
+      {/* Edit toolbar — only once we actually have a spec to edit. */}
+      {spec && !err && (
+        <div className="w-full flex flex-wrap items-center gap-2 mb-3" style={{ maxWidth: 820 }}>
+          {!editing ? (
+            <>
+              <button onClick={() => setEditing(true)} className={btn} style={{ background: 'var(--nv-accent, #7C5CFF)', color: '#fff' }}>Edit deck</button>
+              <button onClick={onEditInChat} className={btn} style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-text)' }}>Edit with Krew</button>
+              <span className="text-[10px]" style={{ color: 'var(--nv-faint)' }}>Type on the slides yourself, or ask Krew to add slides and content.</span>
+            </>
+          ) : (
+            <>
+              <button onClick={onSave} disabled={!dirty} className={btn} style={{ background: 'var(--nv-accent, #7C5CFF)', color: '#fff' }}>Save changes</button>
+              <button onClick={onSaveCopy} className={btn} style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-text)' }}>Save a copy</button>
+              <button onClick={onEditInChat} className={btn} style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-text)' }}>Edit with Krew</button>
+              <button
+                onClick={() => { editsRef.current = {}; setPal(spec.palette); setDirtyTick((n) => n + 1); setEditing(false); setSaveMsg(''); }}
+                className={btn} style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-faint)' }}
+              >{dirty ? 'Discard' : 'Done'}</button>
+              {pal && (
+                <span className="flex items-center gap-2 ml-1">
+                  {([['bg', 'Background'], ['text', 'Text'], ['accent', 'Accent']] as const).map(([k, label]) => (
+                    <label key={k} className="flex items-center gap-1 text-[10px]" style={{ color: 'var(--nv-faint)' }} title={label}>
+                      <input type="color" value={pal[k]} onChange={(e) => setPal({ ...pal, [k]: e.target.value })}
+                        className="w-5 h-5 rounded cursor-pointer" style={{ border: '1px solid var(--nv-border)', background: 'none' }} />
+                      {label}
+                    </label>
+                  ))}
+                </span>
+              )}
+            </>
+          )}
+          {saveMsg && <span className="text-[10px] ml-auto" style={{ color: saveMsg.startsWith('Could') ? '#f87171' : 'var(--nv-faint)' }}>{saveMsg}</span>}
+        </div>
+      )}
+      {editing && (
+        <p className="w-full text-[10px] mb-2" style={{ maxWidth: 820, color: 'var(--nv-faint)' }}>
+          Click any text on the slide and type. "Save changes" replaces this deck; "Save a copy" keeps this one and adds a new, separately editable deck to your Brain.
+        </p>
+      )}
       {err ? (
         <div className="m-auto text-[12px]" style={{ color: '#f87171' }}>Couldn't load the deck preview.</div>
-      ) : html === null ? (
+      ) : shown === null ? (
         <div className="m-auto text-[12px]" style={{ color: 'var(--nv-faint)' }}>Loading deck…</div>
       ) : (
-        <iframe ref={iframeRef} srcDoc={html} sandbox="allow-scripts allow-same-origin" title="Deck preview"
+        <iframe ref={iframeRef} srcDoc={shown} sandbox="allow-scripts allow-same-origin" title="Deck preview"
           allow="fullscreen"
           className="rounded-lg" style={{ width: '100%', maxWidth: 820, aspectRatio: '16 / 9', border: '1px solid var(--nv-border)', background: '#000' }} />
       )}
@@ -1221,7 +1390,9 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
         {/* Body — deck preview for decks, PDF viewer for PDFs, else the note editor + sidebar */}
         <div className="flex flex-1 min-h-0">
           {isDeck ? (
-            <DeckPreview path={filePath} />
+            /* Saving a copy jumps straight to it, so the user lands on the new deck they just
+               made rather than having to hunt for it in the graph. */
+            <DeckPreview path={filePath} onCopySaved={onJump} />
           ) : isPdf ? (
             <PdfViewer path={filePath} />
           ) : isImage ? (
