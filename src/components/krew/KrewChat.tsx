@@ -8395,18 +8395,46 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     let leadSourceText = [...nonImageFiles.map(f => f.content), focusedFile?.content || '']
       .find(c => c.includes('|') && /\bname\b/i.test(c) && (/\blinkedin\b/i.test(c) || /\bcompany\b/i.test(c))) || '';
     // Not attached this message? If they point at their saved list ("go to the tech lead list",
-    // "check the list", "verify those") pull it from the Brain so the deterministic path still runs.
-    const refsList = /\b(list|those|these|them|the (leads?|contacts?|people)|tech lead)\b/i.test(text);
+    // "check the list", "verify those leads") pull it from the Brain so the deterministic path
+    // still runs.
+    //
+    // THIS MUST NAME A LIST, NOT JUST CONTAIN A PRONOUN. It used to match a bare "them"/"these"/
+    // "those"/"people" anywhere in the message, which is how "…not only as THEM as a user…" — in a
+    // question about a person before a meeting — reached in and loaded a lead table that had
+    // nothing to do with the request. A pronoun is not a reference to a list; it is just a pronoun.
+    const refsList = /\b(?:the|this|that|my|our)\s+(?:\w+\s+){0,2}list\b|\blead\s*list\b|\bthose\s+(?:leads?|contacts?|companies|rows|prospects)\b|\bthe\s+(?:leads?|contacts?)\b/i.test(text);
     if (!leadSourceText && refsList) {
       const bl = findBrainLeadList();
       if (bl.md) { leadSourceText = bl.md; lastAttachedTitleRef.current = bl.title; attachedTitlesRef.current = [bl.title]; }
     }
-    const fillIntent = /\b(add|fill|complete|update|get|find|put|check|sort|verify)\b[\s\S]{0,60}\b(linkedin|contact|phone|email|detail|missing|proper|info|each|every|all)\b|fill (it|them|the rest|this)|missing (content|linkedin|detail|info)|proper linkedin|their linkedin|update the (list|rest)|verify (each|every|all|the)/i;
+    // And the ask must be about the FIELDS a lead list holds. The old pattern paired ordinary verbs
+    // (check, get, find) with words as generic as "detail", "info", "all", "each" — so "check with
+    // that and get me all the details about the person" read as an enrich instruction. Asking for
+    // details about someone is the most ordinary sentence in the language; it cannot be a routing
+    // signal. Naming linkedin/phone/email, or "missing" something, is.
+    const fillIntent = /\b(add|fill|complete|update|get|find|put|check|sort|verify)\b[\s\S]{0,60}\b(linkedin|phone|e-?mail|contact details?|contact info)\b|\bmissing\s+(linkedin|contact|phone|e-?mail|details?|info|fields?|cells?)\b|fill (it|them|the rest|this) in\b|proper linkedin|their linkedin|update the (list|rest)|verify (each|every|all|the)\s+(row|lead|contact|compan|person|people)/i;
     const expandIntent = /\b(more|new|additional|expand|others?|another)\b[\s\S]{0,30}\b(people|compan|founder|lead|prospect|name)|find (me )?(more|new|additional)|add \d+ (more|new)/i;
     // "verify each and every / check the whole list / re-verify everything" → process ALL rows, not
     // just the ones missing a LinkedIn.
     const verifyAll = /\b(re-?verify|verify (each|every|all|the whole|the entire)|check (the )?(whole|entire|all|each and every)|each and every|double.?check|re-?check|everything|all of (them|it))\b/i.test(text);
-    if (leadSourceText && text && fillIntent.test(text) && !expandIntent.test(text)) {
+    // WHEN A HARDCODED PATH MAY PRE-EMPT THE BOSS AT ALL.
+    //
+    // This short-circuit exists because the boss's step budget used to run out before it reached
+    // enrich_lead_list on a big table. That is a real problem and the fix is worth keeping — but
+    // only for the case it was built for: a lead table in hand and an instruction to fill it in.
+    //
+    // The cost of guessing wrong is high and one-sided. Firing when it should not have sends the
+    // user somewhere they did not ask to go; NOT firing costs nothing at all, because every agent
+    // already carries LEAD_TOOLS (see getActiveTools) — the boss can still call enrich_lead_list
+    // itself, having actually read the request. So when the evidence is not unmistakable, the
+    // right move is to say nothing and let the boss decide, which is what it is for.
+    //
+    // Unmistakable means: the table is ATTACHED to this message, or the user NAMED their list.
+    // A table dredged out of the Brain because a sentence happened to contain a pronoun is not
+    // evidence of anything.
+    const leadTableInHand = [...nonImageFiles.map((f) => f.content), focusedFile?.content || '']
+      .some((c) => c.includes('|') && /\bname\b/i.test(c) && (/\blinkedin\b/i.test(c) || /\bcompany\b/i.test(c)));
+    if (leadSourceText && text && (leadTableInHand || refsList) && fillIntent.test(text) && !expandIntent.test(text)) {
       const handled = await runDirectLeadFill(leadSourceText, sid, verifyAll);
       if (handled) { setBusy(false); setAgentStep(null); setAgentTool(null); return; }
     }
