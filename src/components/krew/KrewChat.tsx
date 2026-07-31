@@ -8848,8 +8848,17 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
             if (!targetAgent) {
               toolResult = `Unknown agent key: "${targetKey}". Valid keys are found in krewAgents.ts.`;
             } else if (delegatedAgents.has(targetKey)) {
-              // Boss tried to re-delegate to an agent that already ran — stop the loop
-              removeLastMsg();
+              // Boss tried to re-delegate to an agent that already ran — stop the loop.
+              //
+              // Do NOT removeLastMsg() here. By this point the boss's own prose has ALREADY been
+              // finalised into the last message a few lines above (the proseBeforeTool branch),
+              // so removing it deleted finished, visible text — which is exactly the "Arjun was
+              // typing something and then it vanished, leaving only kai.ops's table" report. The
+              // only thing safe to drop is an empty streaming placeholder.
+              setMessages((prev) => {
+                const last = prev[prev.length - 1];
+                return last && last.streaming && !last.content.trim() ? prev.slice(0, -1) : prev;
+              });
               break;
             } else {
               isDelegation = true;
