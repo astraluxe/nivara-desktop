@@ -150,6 +150,26 @@ export default function ConnectionBar(props: Props) {
   /** "65k" / "1M" — a context window a non-technical user can compare at a glance. */
   const win = (t: number) => (t >= 1_000_000 ? `${Math.round(t / 1_000_000)}M` : `${Math.round(t / 1000)}k`);
 
+  // ─── Capability, in words rather than numbers ────────────────────────────────────────────
+  //
+  // "128k context" means nothing to most of the people this app is for. What they actually need
+  // to know is whether a model can hold a long document, or only a short chat — so say that, and
+  // keep the number in the tooltip for anyone who wants it.
+  const CAPABILITY = [
+    { min: 200_000, label: 'High',   rank: 0, blurb: 'holds long documents — research, decks, big lists', cls: 'border-emerald-500/50 text-emerald-600 bg-emerald-500/10' },
+    { min: 32_000,  label: 'Medium', rank: 1, blurb: 'good for chat, drafting and most everyday tasks',   cls: 'border-sky-500/50 text-sky-600 bg-sky-500/10' },
+    { min: 0,       label: 'Basic',  rank: 2, blurb: 'short chats only — long tasks will get cut off',    cls: 'border-nv-border text-nv-faint' },
+  ];
+  const capabilityOf = (id: string) => {
+    const w = contextWindowFor(id);
+    return CAPABILITY.find((c) => w >= c.min) ?? CAPABILITY[CAPABILITY.length - 1];
+  };
+  // Filter + sort the picker. Default sort stays the app's own ranking, so what sits at the top is
+  // genuinely what gets chosen for the user; "Most capable" is there for when they want the
+  // biggest model rather than the most reliable one.
+  const [capFilter, setCapFilter] = useState<'all' | 'High' | 'Medium' | 'Basic'>('all');
+  const [capSort, setCapSort] = useState<'recommended' | 'capable'>('recommended');
+
   // Open the guided setup for a free provider and preselect it as the own-key provider. Does NOT
   // fling the user out to the website — the wizard has a link they click when THEY are ready
   // (jumping straight to the browser on click was jarring). Reuses the open-Connect-Apps path.
@@ -435,24 +455,57 @@ export default function ConnectionBar(props: Props) {
                                     // Same ordering the app itself uses to pick — so what the user
                                     // sees at the top IS what gets chosen for them.
                                     const byId = new Map(rankedModels.map((m) => [m.id, m] as const));
-                                    return rankedScan.map((r) => byId.get(r.id) ?? { id: r.id, tier: 'other' as const }).slice(0, 10);
+                                    // NO .slice(10) any more. Capping the list at ten is why the
+                                    // header could say "16 of 23 models answered" while far fewer
+                                    // were clickable — including, on a key whose best model sat
+                                    // eleventh, the only one big enough for the job. Every model
+                                    // that answered is now offered; the list scrolls.
+                                    let all = rankedScan.map((r) => byId.get(r.id) ?? { id: r.id, tier: 'other' as const });
+                                    if (capFilter !== 'all') all = all.filter((m) => capabilityOf(m.id).label === capFilter);
+                                    if (capSort === 'capable') {
+                                      all = all.slice().sort((a, b) =>
+                                        capabilityOf(a.id).rank - capabilityOf(b.id).rank
+                                        || contextWindowFor(b.id) - contextWindowFor(a.id));
+                                    }
+                                    return all;
                                   })()
                                 : rankedModels.filter((m) => m.tier === tier);
                               if (!list.length) return null;
                               return (
                                 <div key={tier} className="mb-1.5">
                                   <p className="text-[9.5px] text-nv-faint mb-1">{
-                                    tier === 'measured' ? `★ Tested on your key ${new Date(scan!.scannedAt).toLocaleDateString()} — best first (JSON-capable, then fastest)`
+                                    tier === 'measured' ? `★ All ${rankedScan.length} models that answered on your key, tested ${new Date(scan!.scannedAt).toLocaleDateString()} — ${capSort === 'recommended' ? 'most reliable first' : 'biggest first'}`
                                     : tier === 'smart' ? '★ Recommended — handles agents, tools, research (closest to the default)'
                                     : 'Fast — quick replies & writing'}</p>
-                                  <div className="flex flex-wrap gap-1">
-                                    {list.slice(0, tier === 'fast' ? 4 : tier === 'smart' ? 6 : 10).map((m) => {
+                                  {/* Filter + sort, shown only for the measured list (the one that
+                                      can be long). Plain words: someone choosing a model should not
+                                      have to know what a token is. */}
+                                  {tier === 'measured' && (
+                                    <div className="flex items-center gap-1 flex-wrap mb-1.5">
+                                      {(['all', 'High', 'Medium', 'Basic'] as const).map((f) => (
+                                        <button key={f} onClick={() => setCapFilter(f)}
+                                          className={`text-[9px] px-1.5 py-0.5 rounded-full border transition-fast ${capFilter === f ? 'border-accent bg-accent text-white' : 'border-nv-border text-nv-faint hover:text-nv-text'}`}
+                                        >{f === 'all' ? 'All' : f}</button>
+                                      ))}
+                                      <button
+                                        onClick={() => setCapSort((s) => (s === 'recommended' ? 'capable' : 'recommended'))}
+                                        className="ml-auto text-[9px] px-1.5 py-0.5 rounded-md border border-nv-border text-nv-faint hover:text-nv-text transition-fast"
+                                        title="Recommended = most reliable for agent work. Most capable = biggest first."
+                                      >{capSort === 'recommended' ? 'Sort: Recommended' : 'Sort: Most capable'}</button>
+                                    </div>
+                                  )}
+                                  <div className="flex flex-wrap gap-1 max-h-56 overflow-y-auto">
+                                    {list.length === 0 && tier === 'measured' && (
+                                      <p className="text-[9.5px] text-nv-faint">No model on your key is in this band. Choose “All”, or press Rescan models.</p>
+                                    )}
+                                    {list.slice(0, tier === 'fast' ? 4 : tier === 'smart' ? 6 : list.length).map((m) => {
                                       const short = m.id.split('/').pop() || m.id;
                                       const on = modelName === m.id;
                                       const r = rowFor(m.id);
+                                      const cap = capabilityOf(m.id);
                                       return (
                                         <button key={m.id}
-                                          title={`${m.id}\n${win(contextWindowFor(m.id))} context${r ? `\n${r.ms}ms · JSON ${r.jsonOk ? 'ok' : 'not returned'}` : '\nnot measured yet'}`}
+                                          title={`${m.id}\n${cap.label} capability — ${cap.blurb}\n${win(contextWindowFor(m.id))} context${r ? `\n${r.ms}ms · JSON ${r.jsonOk ? 'ok' : 'not returned'}` : '\nnot measured yet'}`}
                                           disabled={checking === m.id}
                                           /* CHECK IT BEFORE COMMITTING TO IT. A key cannot tell us which
                                              models it may use — the catalogue lists everything the provider
@@ -504,8 +557,15 @@ export default function ConnectionBar(props: Props) {
                                           }}
                                           className={`text-[10px] px-2 py-1 rounded-md border transition-fast flex items-center gap-1 ${on ? 'border-accent bg-accent/10 text-accent font-medium' : 'border-nv-border text-nv-muted hover:text-nv-text'} ${checking === m.id ? 'opacity-60' : ''}`}>
                                           {checking === m.id ? `checking ${short}…` : short}
-                                          {/* The numbers that decide whether this model is any good,
-                                              on the chip itself — speed, JSON, and how much it can read. */}
+                                          {/* CAPABILITY IN WORDS, first. "High / Medium / Basic"
+                                              answers the question someone is actually asking —
+                                              can this thing handle my document? — where "128k"
+                                              only answers it for people who already know. The
+                                              measured numbers stay alongside for those who want
+                                              them, and the full detail is in the tooltip. */}
+                                          {checking !== m.id && (
+                                            <span className={`text-[8px] px-1 py-px rounded border ${cap.cls}`}>{cap.label}</span>
+                                          )}
                                           {checking !== m.id && r && (
                                             <span className="text-[8.5px] text-nv-faint font-mono">
                                               {r.ms < 1000 ? `${r.ms}ms` : `${(r.ms / 1000).toFixed(1)}s`}·{r.jsonOk ? 'JSON' : 'prose'}·{win(contextWindowFor(m.id))}
