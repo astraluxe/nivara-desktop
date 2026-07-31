@@ -449,16 +449,39 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   const [refineInput, setRefineInput] = useState('');
   const [refining, setRefining] = useState(false);
   const [refineNote, setRefineNote] = useState('');       // feedback when a refine fails / returns nothing
-  // Show the AI's live progress while it drafts. Without this the panel said "drafting replies…" and
-  // then sat there — identical whether the model was writing, thinking, or never going to answer.
+  // ── The panel must never look frozen ───────────────────────────────────────────────────────
+  //
+  // "Checking your calendar & planning the next move…" was written once and then sat there for a
+  // minute and a half while a big model read the thread. Ninety-five seconds of a motionless line
+  // is indistinguishable from a hang — the user assumed it had broken, and any user would.
+  //
+  // stageRef holds WHAT is happening; the ticker below appends HOW LONG it has been happening and
+  // repaints every second. The elapsed count is the part that proves it is alive, so it matters
+  // more than the wording. Live tool progress writes into the same ref rather than to the note
+  // directly, so the two cannot fight over the line.
+  const stageRef = useRef('');
+  const stageStartRef = useRef(0);
+  const setStage = (t: string) => { stageRef.current = t; if (!stageStartRef.current) stageStartRef.current = Date.now(); };
   useEffect(() => {
-    if (!planning && !verifying && !refining) return;
+    if (!planning && !verifying && !refining) { stageStartRef.current = 0; stageRef.current = ''; return; }
     let alive = true;
+    if (!stageStartRef.current) stageStartRef.current = Date.now();
+    const paint = () => {
+      if (!alive || !stageRef.current) return;
+      const secs = Math.round((Date.now() - stageStartRef.current) / 1000);
+      const el = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${String(secs % 60).padStart(2, '0')}s`;
+      // Past a minute, say plainly that a long wait is expected on a big model rather than leaving
+      // the user to guess whether to keep waiting.
+      const hint = secs >= 60 ? ' — a large model can take a couple of minutes to start' : '';
+      setPlanNote(`${stageRef.current} · ${el}${hint}`);
+    };
+    const iv = setInterval(paint, 1000);
+    paint();
     const un = listen<{ text?: string }>('agent-progress', (e) => {
       const t = (e.payload?.text || '').trim();
-      if (alive && t) setPlanNote(t);
+      if (alive && t) { stageRef.current = t; paint(); }
     });
-    return () => { alive = false; un.then((f) => f()).catch(() => {}); };
+    return () => { alive = false; clearInterval(iv); un.then((f) => f()).catch(() => {}); };
   }, [planning, verifying, refining]);
   const [statusFilter, setStatusFilter] = useState<OutreachStatus | null>(null);  // filter list by status
   const [sourceFilter, setSourceFilter] = useState<OutreachSource | null>(null);  // connections vs leads
@@ -924,7 +947,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     // Only involve the calendar when the thread is actually about timing (a call, a meeting, "when
     // are you free", a day/time) — so an ordinary reply doesn't open Calendar in the browser.
     const schedulingLikely = /\b(call|meet(ing)?|schedule|available|availability|free|calendar|catch up|hop on|zoom|google meet|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d\s?(am|pm)|\d{1,2}[:.]\d{2})\b/i.test(thread);
-    setPlanNote(mode === 'followup' ? 'Reading the thread & drafting a follow-up…' : (schedulingLikely ? 'Checking your calendar & planning the next move…' : 'Planning the next move…'));
+    setStage(mode === 'followup' ? 'Reading the thread & drafting a follow-up' : (schedulingLikely ? 'Checking your calendar & planning the next move' : 'Planning the next move'));
     // Read the real calendar first (when timing is in play) so the plan and the verifier both know
     // what the owner is actually doing before proposing or confirming any time.
     const calendar = await fetchCalendarContext(schedulingLikely);
@@ -938,7 +961,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       // calendar matters, and it was the case where it silently never opened. Read it now and verify
       // against it, rather than vetting a proposed slot with no idea what the owner is doing.
       if (!calendar && p.draftReply && proposesATime(p.draftReply)) {
-        setPlanNote('Draft proposes a time — checking your calendar…');
+        setStage('Draft proposes a time, checking your calendar');
         const late = await fetchCalendarContext(true);
         if (late) {
           ownerContext = [ownerContext, late].filter(Boolean).join('\n\n');
@@ -952,7 +975,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
           // Now the clash is detected deterministically first, and only a draft that actually
           // conflicts is redrafted, so a good draft is never thrown away.
           if (auditScheduling(p.draftReply, late).length) {
-            setPlanNote('That time clashes with your calendar — picking another…');
+            setStage('That time clashes with your calendar, picking another');
             const better = await planReply({ ...args, ownerContext }).catch(() => null);
             if (better?.draftReply && !better.degraded && !auditScheduling(better.draftReply, late).length) p = better;
           }
@@ -960,6 +983,9 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       }
       setPlan(p);
       setDraftReply(p.draftReply || '');
+      // Stop the elapsed ticker BEFORE writing the result, or its next repaint (within a second)
+      // would overwrite "✓ your draft is ready" with a stale "planning… · 96s".
+      stageRef.current = '';
       // Point the user to where the draft now is, so the flow never dead-ends silently.
       setPlanNote(p.degraded ? p.read : (mode === 'followup' ? '✓ Follow-up drafted below — review & send.' : '✓ Read their reply — your draft is ready below to review & send.'));
       setTimeout(() => setPlanNote((n) => (n.startsWith('✓ ') ? '' : n)), 4000);
@@ -974,6 +1000,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       if (p.draftReply && !p.degraded) runVerify(p.draftReply, contact, thread, ownerContext);
       await refocusAppToPlan();
     } catch {
+      stageRef.current = '';   // same reason as above: don't let the ticker repaint over this
       setPlanNote('Could not plan the reply. Read the thread and respond yourself.');
       await refocusAppToPlan();
     } finally {
