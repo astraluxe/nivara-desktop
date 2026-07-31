@@ -4087,13 +4087,28 @@ const [studioExtracting, setStudioExtracting] = useState(false);
       // for two hours. The user watched exactly that — a 550B answering well, then replaced by a
       // 49B mid-task for no reason they could see. So if this model has been MEASURED answering,
       // give it a budget built from its own measurement instead of a flat guess.
+      // …and scaling that budget off the PROBE was still wrong, in a way that reads as absurd from
+      // the outside: "taking longer than 40s to start answering. It answered in 4.4s when tested."
+      // A fast probe produced a SMALL budget, because measured*3+20s collapses onto the 40 s floor
+      // for anything quick. But the probe is a few words and the real prompt is a whole thread plus
+      // the owner context plus a long system prompt — so the faster a big model reads a toy input,
+      // the less time it was given for a real one. Backwards.
+      //
+      // Time to first token depends mostly on how much there is to READ, so the budget is built
+      // from the prompt actually being sent, plus what the model has been seen to do, plus an
+      // allowance for reasoning models — which are silent while they think by design, not fault.
       const measured = measuredMsFor(effectiveModelName);
+      const promptChars = systemPrompt.length + msgs.reduce((n, m) => n + (m.content?.length || 0), 0);
+      // ~1 s per 1,000 characters of prompt. Generous on purpose: the cost of waiting too long is
+      // a slower failure, and the cost of not waiting long enough is a working model declared dead.
+      const readAllowance = Math.min(120_000, promptChars);
+      const reasoner = /nemotron|reason|thinking|deepseek-r[1-9]|qwen[3-9]|magistral|\bo[1-9]\b/i.test(effectiveModelName || '');
       const firstTokenMs = mode === 'local'
         ? 300_000
-        : measured === null ? 40_000
-        // Three times its measured pace plus 20 s of headroom — a real prompt is far bigger than
-        // the probe — capped so a truly hung model still fails in a reasonable time.
-        : Math.min(180_000, Math.max(40_000, measured * 3 + 20_000));
+        : Math.min(300_000,
+            Math.max(60_000, measured === null ? 60_000 : measured * 3 + 20_000)
+            + readAllowance
+            + (reasoner ? 60_000 : 0));
       let gotFirst = false;
       // A HIDDEN WINDOW IS NOT A DEAD MODEL.
       //
@@ -4132,7 +4147,10 @@ const [studioExtracting, setStudioExtracting] = useState(false);
                 // it does NOT match isDeadModelError, so the self-heal leaves the user's chosen
                 // model alone instead of silently demoting them to whatever answers fastest.
                 : measured !== null
-                  ? `The model you chose (${effectiveModelName}) is taking longer than ${Math.round(firstTokenMs / 1000)}s to start answering. It answered in ${(measured / 1000).toFixed(1)}s when tested, so it is slow right now rather than broken — press Continue to wait again, or pick a quicker model in the connection panel.`
+                  // Quoting the probe time next to the real one invited the obvious objection —
+                  // "you allowed 40s and it answered in 4.4s" — because the two measure different
+                  // things: a few words versus this whole prompt. Say what was actually sent.
+                  ? `The model you chose (${effectiveModelName}) hasn't started answering after ${Math.round(firstTokenMs / 1000)}s on a ${Math.round(promptChars / 1000)}k-character prompt${reasoner ? ' (and it thinks before it writes)' : ''}. It does answer, so it is slow right now rather than broken — press Continue to wait again, or pick a quicker model in the connection panel.`
                   : `NO_MODEL_RESPONSE: the model${effectiveModelName ? ` (${effectiveModelName})` : ''} accepted the request but sent nothing back.`,
           ));
         }, gotFirst ? stallMs : firstTokenMs);
@@ -4316,7 +4334,12 @@ const [studioExtracting, setStudioExtracting] = useState(false);
         }
         // Order matters: the stall message itself contains the word "connection", so it has to be
         // recognised BEFORE the network patterns or it classifies as a drop and gets the banner again.
-        const isStall = /response stopped|stopped responding/i.test(msg);
+        // "hasn't started answering after …" belongs here too. It used to match neither this nor
+        // the network patterns, so a model that was merely having a slow minute got NO retry at
+        // all and the copilot dead-ended on the first try — which is how a one-off wait turned
+        // into "couldn't reach the AI to plan this". It is a stall like any other: wait, try once
+        // more, and only then tell the user.
+        const isStall = /response stopped|stopped responding|hasn't started answering/i.test(msg);
         const isNetworkDrop = !isStall && /sending request|connect(ion)?|network|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|failed to fetch|stream interrupted/i.test(msg);
         const budget = isNetworkDrop ? MAX_ATTEMPTS : 2;
         if ((!isNetworkDrop && !isStall) || stopRef.current || attempt >= budget) { setReconnecting(null); throw e; }
