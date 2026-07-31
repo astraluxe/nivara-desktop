@@ -18,6 +18,12 @@ export const LEAD_CANON: Array<{ key: string; label: string; match: RegExp }> = 
   { key: 'linkedin', label: 'LinkedIn',     match: /linkedin/i },
   { key: 'phone',    label: 'Phone',        match: /phone|mobile|number|\bcontact\b/i },
   { key: 'email',    label: 'Email',        match: /email|mail/i },
+  // Handle columns, so a list built for influencer or founder outreach carries the channels those
+  // people actually use through to the copilot instead of them having to be re-typed per contact.
+  // "twitter" is matched as well as "x" because both spellings are still in everyday use; the X
+  // pattern is anchored so it cannot swallow an unrelated single-letter column.
+  { key: 'x',        label: 'X',            match: /^\s*(x|x[\s/_-]?handle|twitter(\s*handle)?)\s*$/i },
+  { key: 'instagram', label: 'Instagram',   match: /instagram|\binsta\b|\big\b/i },
   // Deliberately SEPARATE from a bare "Status" column (still dropped, per the comment above —
   // that's one-off verify commentary, not meant to persist). "Connection Status" tracks LinkedIn
   // connection-request progress (sent/accepted/pending) and DOES need to survive every merge —

@@ -125,6 +125,10 @@ export interface OutreachContact {
   company?: string;
   linkedin_url?: string;
   email?: string;
+  /** X/Twitter handle — stored bare or as a URL; bareHandle() normalises either. */
+  x_handle?: string;
+  /** Instagram handle — same. Used for influencer outreach, where there is no LinkedIn. */
+  instagram_handle?: string;
   linkedin_message?: string;
   email_subject?: string;
   email_body?: string;
@@ -258,12 +262,68 @@ function profileFilter(c: OutreachContact): string {
   }
   return '';
 }
-export type ContactChannel = 'linkedin' | 'email' | 'none';
+export type ContactChannel = 'linkedin' | 'email' | 'x' | 'instagram' | 'none';
+
+/**
+ * Normalise a handle the way people actually write it — "@amogh", "amogh",
+ * "x.com/amogh", "https://twitter.com/amogh?s=21", "instagram.com/amogh/" — down to the bare
+ * handle. Returns '' when there is nothing usable, so a blank field never produces a button
+ * pointing at a broken profile.
+ */
+export function bareHandle(raw?: string): string {
+  let s = String(raw || '').trim();
+  if (!s) return '';
+  s = s.replace(/^https?:\/\//i, '').replace(/^www\./i, '');
+  s = s.replace(/^(?:x\.com|twitter\.com|instagram\.com)\//i, '');
+  s = s.split(/[?#]/)[0].replace(/\/+$/, '');
+  s = s.replace(/^@/, '');
+  // A handle is one path segment of legal characters; anything else (a post URL, a sentence)
+  // is not a profile and must not be turned into one.
+  return /^[A-Za-z0-9._]{1,30}$/.test(s) ? s : '';
+}
+
+/**
+ * Which channel this person is actually reachable on.
+ *
+ * Order is deliberate and reflects what works, not what is fashionable: LinkedIn and email are
+ * the two the copilot can also READ replies from, so they come first. X and Instagram are
+ * send-only here — the copilot opens the right DM with the message on your clipboard, and you
+ * press send. Nothing is ever sent automatically on any channel; on these two that is doubly
+ * deliberate, since automated DMs are what gets a real account restricted.
+ */
 export function contactChannel(c: OutreachContact): ContactChannel {
   if (c.linkedin_url && /linkedin\.com\/in\//i.test(c.linkedin_url)) return 'linkedin';
   if ((c.email || '').includes('@')) return 'email';
+  if (bareHandle(c.x_handle)) return 'x';
+  if (bareHandle(c.instagram_handle)) return 'instagram';
   return 'none';
 }
+
+/** Every channel this person can be reached on, for showing all the options rather than only the
+ *  best one — an influencer with Instagram AND an agency email should show both. */
+export function allChannels(c: OutreachContact): ContactChannel[] {
+  const out: ContactChannel[] = [];
+  if (c.linkedin_url && /linkedin\.com\/in\//i.test(c.linkedin_url)) out.push('linkedin');
+  if ((c.email || '').includes('@')) out.push('email');
+  if (bareHandle(c.x_handle)) out.push('x');
+  if (bareHandle(c.instagram_handle)) out.push('instagram');
+  return out;
+}
+
+/** The page that opens the DM composer for a handle-based channel. */
+export function dmUrl(c: OutreachContact, ch: 'x' | 'instagram'): string {
+  const h = bareHandle(ch === 'x' ? c.x_handle : c.instagram_handle);
+  if (!h) return '';
+  // X opens a real message composer for a handle. Instagram has no public deep link that opens a
+  // thread by username, so it opens the profile — one click from Message, and it always resolves,
+  // which a guessed thread URL would not.
+  return ch === 'x' ? `https://x.com/messages/compose?recipient_id=${encodeURIComponent(h)}`
+                    : `https://www.instagram.com/${encodeURIComponent(h)}/`;
+}
+
+export const CHANNEL_LABEL: Record<ContactChannel, string> = {
+  linkedin: 'LinkedIn', email: 'Email', x: 'X', instagram: 'Instagram', none: 'No contact yet',
+};
 function gmailComposeUrl(c: OutreachContact): string {
   const su = encodeURIComponent(fillTokens(c.email_subject || '', c));
   const body = encodeURIComponent(fillTokens(c.email_body || c.linkedin_message || '', c));
@@ -409,7 +469,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   const [contacts, setContacts] = useState<OutreachContact[]>(
     campaign.contacts.map((c) => ({ ...c, status: c.status || 'todo' })));
   const [idx, setIdx] = useState(() => firstUndoneIdx(campaign.contacts));
-  const [copied, setCopied] = useState<'msg' | 'email' | 'note' | null>(null);
+  const [copied, setCopied] = useState<'msg' | 'email' | 'note' | 'x' | 'ig' | null>(null);
   const [whyOpen, setWhyOpen] = useState(false);
   const [search, setSearch] = useState('');   // jump-to-a-contact by name, instead of Prev/Next spam
   const [opening, setOpening] = useState(false);
@@ -879,6 +939,17 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       let targetUrl = thread.trim()
         ? ''   // already have the conversation from Gmail — no reason to touch LinkedIn at all
         : (contact.linkedin_url && /linkedin\.com\/in\//i.test(contact.linkedin_url) ? contact.linkedin_url : '');
+      // SEND-ONLY CHANNELS. There is no way to read an X or Instagram inbox from here, and hunting
+      // LinkedIn for someone who only has an Instagram handle finds either nobody or the wrong
+      // person. Say so and take the pasted thread instead — a plan built from their real words is
+      // the point, and it works identically once the words are in front of it.
+      const only = allChannels(contact);
+      if (!thread.trim() && only.length && !only.includes('linkedin') && !only.includes('email')) {
+        const where = CHANNEL_LABEL[only[0]];
+        setPlanNote(`I can't read ${where} messages, so paste their reply below and I'll plan the response and draft it.`);
+        setPlan({ intent: 'unclear', read: `Paste ${contact.name || 'their'} ${where} reply here and I'll draft your response.`, draftReply: '', attachSuggested: false });
+        setPlanning(false); await refocusAppToPlan(); return;
+      }
       if (!targetUrl && !thread.trim() && contactChannel(contact) !== 'email') {
         setPlanNote('Finding their profile…');
         try {
@@ -1493,13 +1564,24 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                   profiles and bare email addresses looked uniform, and "no way to reach them"
                   looked exactly like "ready to send". */}
               {(() => {
-                const ch = contactChannel(cur);
-                const meta = ch === 'linkedin'
-                  ? { label: 'LinkedIn', cls: 'border-accent/40 text-accent bg-accent/10' }
-                  : ch === 'email'
-                    ? { label: 'Email', cls: 'border-emerald-500/40 text-emerald-600 bg-emerald-500/10' }
-                    : { label: 'No contact yet', cls: 'border-amber-500/40 text-amber-600 bg-amber-500/10' };
-                return <span className={`shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded-md border ${meta.cls}`} title={ch === 'none' ? 'Neither a LinkedIn profile nor an email address — find one before this person can be contacted' : undefined}>{meta.label}</span>;
+                // Show EVERY channel this person is reachable on, not just the best one — an
+                // influencer with Instagram and an agency email should show both, so the choice
+                // of where to reach them is visible rather than decided silently.
+                const chans = allChannels(cur);
+                const CLS: Record<ContactChannel, string> = {
+                  linkedin:  'border-accent/40 text-accent bg-accent/10',
+                  email:     'border-emerald-500/40 text-emerald-600 bg-emerald-500/10',
+                  x:         'border-nv-border text-nv-text bg-nv-surface2',
+                  instagram: 'border-pink-500/40 text-pink-600 bg-pink-500/10',
+                  none:      'border-amber-500/40 text-amber-600 bg-amber-500/10',
+                };
+                if (!chans.length) {
+                  return <span className={`shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded-md border ${CLS.none}`}
+                    title="No LinkedIn profile, email, X or Instagram handle — find one before this person can be contacted">{CHANNEL_LABEL.none}</span>;
+                }
+                return chans.map((ch) => (
+                  <span key={ch} className={`shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded-md border ${CLS[ch]}`}>{CHANNEL_LABEL[ch]}</span>
+                ));
               })()}
               {/* Which list they came off. Without this the two groups are indistinguishable, and
                   the reason one card asks for a connection request and the next doesn't is a
@@ -1648,6 +1730,58 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
               )}
             </div>
           )}
+
+          {/* ── X and Instagram ──────────────────────────────────────────────────────────────
+              Same shape as the LinkedIn action that already works: put the message on the
+              clipboard, open the right place, YOU press send. Deliberately not automated — an
+              app that sends DMs on your behalf is how a real account gets restricted, and the
+              whole copilot is built on you approving every message that goes out.
+              Editing the handle here writes it straight back to the campaign, so a handle found
+              during research can be pasted in and used immediately. */}
+          {(['x', 'instagram'] as const).map((ch) => {
+            const val = ch === 'x' ? cur.x_handle : cur.instagram_handle;
+            const h = bareHandle(val);
+            const has = allChannels(cur).includes(ch);
+            // Show the row when there IS a handle, or when there is no other way to reach them —
+            // so a contact with nothing usable gets somewhere to put one instead of a dead end.
+            if (!has && allChannels(cur).length) return null;
+            return (
+              <div key={ch} className="pt-1 border-t border-nv-border">
+                <div className="flex items-center justify-between mb-1 gap-2">
+                  <div className="text-[10px] text-nv-faint uppercase tracking-wide shrink-0">{CHANNEL_LABEL[ch]}</div>
+                  <input
+                    value={val || ''}
+                    onChange={(e) => setContacts((prev) => prev.map((c, i) => (i === idx
+                      ? { ...c, ...(ch === 'x' ? { x_handle: e.target.value } : { instagram_handle: e.target.value }) }
+                      : c)))}
+                    placeholder={ch === 'x' ? '@handle or x.com/handle' : '@handle or instagram.com/handle'}
+                    className="flex-1 min-w-0 text-[11px] bg-nv-bg border border-nv-border rounded-md px-2 py-1 focus:outline-none focus:border-accent/40 select-text"
+                  />
+                </div>
+                {h ? (
+                  <button
+                    onClick={async () => {
+                      const ok = await copyText(fillTokens(msg || cur.linkedin_message || '', cur));
+                      setCopied(ok ? (ch === 'x' ? 'x' : 'ig') : null);
+                      openLink(dmUrl(cur, ch));
+                    }}
+                    className="w-full text-[11px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
+                  >
+                    {copied === (ch === 'x' ? 'x' : 'ig')
+                      ? '✓ Message copied — paste and send'
+                      : ch === 'x' ? `Copy & open the DM to @${h}` : `Copy & open @${h} — then tap Message`}
+                  </button>
+                ) : val ? (
+                  <p className="text-[9.5px] text-amber-600">That doesn't look like a handle — use "@name" or the profile link.</p>
+                ) : (
+                  <p className="text-[9.5px] text-nv-faint">Paste their handle to message them here.</p>
+                )}
+                {h && ch === 'instagram' && (
+                  <p className="text-[9.5px] text-nv-faint mt-1">Instagram has no link that opens a chat directly, so this opens their profile — tap Message and paste.</p>
+                )}
+              </div>
+            );
+          })}
 
           {/* Status */}
           <div>

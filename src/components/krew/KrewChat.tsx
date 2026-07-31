@@ -7308,6 +7308,10 @@ _None of them had everything you ticked, so I've saved them rather than lose the
         company: (r.cells['company'] || '').trim(),
         linkedin_url: (r.cells['linkedin'] || '').trim(),
         email: (r.cells['email'] || '').trim(),
+        // Carry the handle columns through, so a list built for influencer or founder outreach is
+        // usable the moment it reaches the copilot instead of being re-typed contact by contact.
+        x_handle: (r.cells['x'] || '').trim(),
+        instagram_handle: (r.cells['instagram'] || '').trim(),
         status: 'todo',
         source: 'leads',
         leadList: listTitle,
