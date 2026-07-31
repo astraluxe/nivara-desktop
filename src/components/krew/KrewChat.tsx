@@ -8577,6 +8577,11 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     // to get through a useful batch before answering. Fast mode stays lean.
     const MAX_STEPS = agent.key === 'boss' ? 4 : (searchMode === 'advanced' ? 16 : 8);
     let steps       = 0;
+    // How many times the model has answered with a tool call we could not read. A free reasoning
+    // model gets the format wrong now and again, and one bad attempt should not end the task —
+    // it is told what was wrong and asked once more. Bounded, so a model that cannot do it at all
+    // still stops instead of looping.
+    let badToolFormat = 0;
     const delegatedAgents = new Set<string>();
 
     // Add placeholder assistant message for streaming
@@ -8705,12 +8710,46 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
             if (clean.startsWith('{')) match = ['', clean] as unknown as RegExpMatchArray;
           }
         }
+        // ONE MORE GO WHEN THE ONLY PROBLEM WAS THE FORMAT.
+        //
+        // If the model's whole answer was a tool call we could not parse, it was trying to do the
+        // work and fumbled the syntax — which is a different thing from having nothing to say, and
+        // ending the task there is what turned a recoverable slip into "no response received".
+        // Tell it exactly what was wrong and let it try once. Only once: a model that cannot get
+        // the format right will not get it right on the fifth attempt either.
+        if (!match && /<tool_(?:call|code)>/.test(fullResponse) && badToolFormat < 1 && !stopRef.current) {
+          badToolFormat++;
+          history.push({ role: 'assistant', content: fullResponse });
+          history.push({
+            role: 'user',
+            content: 'That tool call could not be read — it was not valid JSON inside a single <tool_call>…</tool_call> block. Send it again as exactly:\n<tool_call>\n{"name":"<tool>","arguments":{…}}\n</tool_call>\nNothing before or after the block. If you do not actually need a tool, just answer in plain text instead.',
+          });
+          continue;
+        }
         if (!match) {
           // Strip any partial/orphaned tool block before showing to user
-          const displayResponse = fullResponse
+          const stripped = fullResponse
             .replace(/<tool_call>[\s\S]*/g, '')
             .replace(/<tool_code>[\s\S]*/g, '')
-            .trim() || "No response received. Go to Connect Apps and check your API key, then try again.";
+            .trim();
+          // DON'T BLAME THE API KEY FOR SOMETHING THE KEY DID NOT DO.
+          //
+          // This said "No response received. Go to Connect Apps and check your API key" whenever
+          // the stripped text came out empty — which happens most often when the model DID answer
+          // and its whole answer was a tool call we could not parse. The key was fine; the user
+          // was sent to check a setting that was never the problem, and the real fault (a model
+          // that formats tool calls badly, common on free reasoning models) went unmentioned.
+          //
+          // Three different situations, three different truths:
+          const emittedSomething = fullResponse.trim().length > 0;
+          const triedATool = /<tool_(?:call|code)>/.test(fullResponse);
+          const displayResponse = stripped || (
+            triedATool
+              ? `The model tried to use a tool but wrote the request in a form I couldn't read, so nothing ran. This is usually the model rather than your setup${mode === 'own_key' ? ' — smaller and reasoning-heavy models get this format wrong more often' : ''}. Send the message again, or try a different model for this task.`
+              : emittedSomething
+                ? "The model replied, but there was nothing usable in it once the incomplete parts were removed. Send that again — if it keeps happening, try a different model for this task."
+                : "The model accepted the request and sent nothing back. That is usually the model being unavailable or out of quota, not your key — try again, or switch the chat to another model."
+          );
           finaliseLastMsg(displayResponse);
           if (sid) krewDb.saveMessage(sid, 'assistant', fullResponse).catch(() => {});
           history.push({ role: 'assistant', content: fullResponse });
