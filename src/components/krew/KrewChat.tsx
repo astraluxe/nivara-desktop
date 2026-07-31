@@ -8575,7 +8575,12 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
 
     // Advanced mode opens + reads + verifies pages one at a time, so it needs more steps
     // to get through a useful batch before answering. Fast mode stays lean.
-    const MAX_STEPS = agent.key === 'boss' ? 4 : (searchMode === 'advanced' ? 16 : 8);
+    // The boss is a router, so it stays lean — but four steps was too lean once it is expected to
+    // LOOK THINGS UP before asking (recall the product note, check the profile, maybe one search)
+    // and then still delegate and write the answer. At four, gathering context used the whole
+    // budget and the safest-looking move became "ask the user five questions", which is exactly
+    // the behaviour being complained about. Six leaves room to check, delegate and compile.
+    const MAX_STEPS = agent.key === 'boss' ? 6 : (searchMode === 'advanced' ? 16 : 8);
     let steps       = 0;
     // How many times the model has answered with a tool call we could not read. A free reasoning
     // model gets the format wrong now and again, and one bad attempt should not end the task —
@@ -9168,7 +9173,12 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
               const bubbleContent = finalDelegateOut.trim() ||
                 (delegateChoices ? `Here are ${delegateChoices.choices.length} variants — pick the one you want:` :
                  delegateProposal ? 'Automation plan ready — review the card below.'
-                 : "I couldn't pull that together just now — the data sources may have been slow. Try again, or tell me a specific area/sector and I'll narrow it down.");
+                 // Same principle as the boss's "no response" message: name what actually
+                 // happened. The delegate finished and produced nothing visible — which is the
+                 // model going quiet, not the data sources being slow. Blaming "slow sources"
+                 // sent the user off to retry a network that was never the problem, and asking
+                 // them to "narrow it down" implies their request was too vague when it wasn't.
+                 : `${targetAgent.name} finished without producing anything to show — the model went quiet rather than returning a result. Send it again${mode === 'own_key' ? ', or switch this chat to another model — smaller models sometimes stop mid-task on a long brief' : ''}.`);
               delegationDisplay = bubbleContent; // saved to DB so reload shows this, not the boss note
               setMessages(prev => {
                 const copy = [...prev];
