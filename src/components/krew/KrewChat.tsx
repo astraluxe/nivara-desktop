@@ -13,7 +13,7 @@ import { StatusGlobe } from './StatusGlobe';
 import { runParallelResearch } from '../../lib/researchSources';
 import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, type KrewAgent } from '../../lib/krewAgents';
 import { useAuth } from '../../contexts/AuthContext';
-import { extractTableRows, mergeLeadTables, parseLeadRows, rowsToMarkdown, leadConnStatusToOutreach, looksLikePersonLead, matchesSeniority, matchesSector } from '../../lib/leadTable';
+import { extractTableRows, hasPopulatedLeadTable, mergeLeadTables, parseLeadRows, rowsToMarkdown, leadConnStatusToOutreach, looksLikePersonLead, matchesSeniority, matchesSector } from '../../lib/leadTable';
 import { supabase } from '../../lib/supabase';
 import { getPlanConfig } from '../../lib/planConfig';
 import { parseDeckSpec, slidesNeedingImages, renderDeckHtml, extractDeckSpec, applyDeckEdits, type DeckSpec, type DeckSlide, type DeckPalette } from '../../lib/deck';
@@ -2747,9 +2747,21 @@ function dedupeLeadTables(text: string): string {
     return prefix ? prefix + '\n\n' + rebuilt : rebuilt;
   }
   const prefix = lines.slice(0, firstHeaderIdx).join('\n').trim();
-  const tableText = lines.slice(firstHeaderIdx).join('\n');
+  // ONLY the contiguous table under this header belongs to it.
+  //
+  // This used to take every line from the header to the END of the message and force the lot into
+  // the lead schema. In a research answer that is never just one table: a keyword matrix, a
+  // commission-tier table and stray prose all followed the people table, and all of it was
+  // rewritten into Name/Company/Sector/City/Website/LinkedIn columns padded out with "—" — so
+  // "| Category | Keywords |" and a sentence the model wrote about correcting itself were
+  // rendered as if they were prospects. A markdown table ends at the first line that is not a
+  // row, so that is where this stops now; everything after it is passed through untouched.
+  let end = firstHeaderIdx;
+  while (end < lines.length && lines[end].trim().startsWith('|')) end++;
+  const tableText = lines.slice(firstHeaderIdx, end).join('\n');
+  const suffix = lines.slice(end).join('\n').trim();
   const rebuilt = mergeLeadTables('', tableText);
-  return prefix ? prefix + '\n\n' + rebuilt : rebuilt;
+  return [prefix, rebuilt, suffix].filter(Boolean).join('\n\n');
 }
 
 // Deterministic safety net for lead tables: fix broken markdown links, force every
@@ -9124,10 +9136,12 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
                 // slugs (rajeshgbgf, priyankarao-mkt, ...) get shown as if they were real: the
                 // model researched real company names but wrote the LinkedIn URLs itself. Run the
                 // REAL browser verification now, deterministically, instead of trusting them.
-                const tRows = extractTableRows(finalDelegateOut);
-                const hasUnverifiedLinkedIn = tRows.length >= 2
-                  && /\bname\b/i.test(tRows[0]) && /linkedin/i.test(tRows[0])
-                  && tRows.slice(1).some((r) => /linkedin\.com\/in\//i.test(r));
+                // Find the PEOPLE table wherever it sits in the answer. This used to test rows[0],
+                // which is the first pipe line in the WHOLE message — so a research answer that
+                // opened with a keyword matrix ("| Category | Keywords |") failed the check and
+                // the fabricated LinkedIn URLs below it were shown to the user unverified. That is
+                // the precise route by which invented people reached a deliverable.
+                const hasUnverifiedLinkedIn = hasPopulatedLeadTable(finalDelegateOut);
                 if (hasUnverifiedLinkedIn && !stopRef.current) {
                   const prose = finalDelegateOut.split('\n').filter(l => !/^\s*\|/.test(l)).join('\n').trim();
                   setAgentStep(`${agentHandle(targetAgent)} · verifying LinkedIn links…`);

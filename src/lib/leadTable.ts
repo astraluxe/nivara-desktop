@@ -9,6 +9,33 @@ export function extractTableRows(text: string): string[] {
   return text.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('|'));
 }
 
+/**
+ * Index of the row that is the header of a PEOPLE table (has a name column and a LinkedIn column).
+ * -1 when the text contains no such table.
+ *
+ * This exists because extractTableRows flattens every pipe line in the whole answer into one list,
+ * so callers that assumed rows[0] was "the header" were reading whichever table happened to come
+ * first. A research answer that opened with a keyword matrix — "| Category | Keywords |" — made the
+ * checks below look at THAT header, find no LinkedIn column, and conclude there was no lead table
+ * to verify. The fabricated profile URLs underneath it then went to the user unchecked, which is
+ * the exact failure the verification was written to prevent.
+ */
+export function findLeadHeaderIndex(rows: string[]): number {
+  for (let i = 0; i < rows.length; i++) {
+    if (/\bname\b/i.test(rows[i]) && /linkedin/i.test(rows[i])) return i;
+  }
+  return -1;
+}
+
+/** Does this text contain a people table whose LinkedIn column is already filled in? */
+export function hasPopulatedLeadTable(text: string): boolean {
+  const rows = extractTableRows(text);
+  const h = findLeadHeaderIndex(rows);
+  // Only rows BELOW that header count — a profile URL sitting in some other table is not evidence
+  // that this one was filled in.
+  return h >= 0 && rows.slice(h + 1).some((r) => /linkedin\.com\/in\//i.test(r));
+}
+
 export const LEAD_CANON: Array<{ key: string; label: string; match: RegExp }> = [
   { key: 'name',     label: 'Name',         match: /\bname\b/i },
   { key: 'company',  label: 'Company/Role', match: /company|role|firm|organi[sz]/i },
