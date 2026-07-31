@@ -5899,6 +5899,10 @@ The prompt must be production-ready — specific enough for a motion designer to
     const t = (cell || '').trim().toLowerCase();
     if (/^message sent$|^sent$/.test(t)) return 'sent';
     if (/^replied$|^reply$/.test(t)) return 'replied';
+    // Without these two, re-attaching a campaign read "Meeting booked" as nothing and dropped the
+    // person back to "to do" — which is how someone you already have a call with gets pitched again.
+    if (/^meeting booked$|^meeting$|^call booked$/.test(t)) return 'meeting';
+    if (/^meeting done$|^met$|^call done$/.test(t)) return 'met';
     if (/^accepted$|^connected$/.test(t)) return 'accepted';
     if (/^connect requested$|^invite sent$|^pending$/.test(t)) return 'connect';
     if (/^skipped$|^skip$/.test(t)) return 'skip';
@@ -6869,7 +6873,7 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     const mergePrior = carryOver && !!prior && attachedConn.length === 0; // an attached list is authoritative
     const priorByName = new Map<string, OutreachContact>();
     if (prior) for (const c of prior.contacts) priorByName.set(nrm(c.name), c);
-    const isDoneStatus = (s?: OutreachContact['status']) => s === 'sent' || s === 'accepted' || s === 'replied' || s === 'skip';
+    const isDoneStatus = (s?: OutreachContact['status']) => s === 'sent' || s === 'accepted' || s === 'replied' || s === 'meeting' || s === 'met' || s === 'skip';
     // Status per person: the attached list wins, else the running campaign.
     const statusByName = new Map<string, OutreachContact['status']>();
     for (const c of contacts) if (c.status) statusByName.set(nrm(c.name), c.status);
@@ -7508,7 +7512,7 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     // heard back or skipped someone, re-writing their message is pointless (and for a sent message,
     // wrong — you'd change what you already said). This is what the user asked: refine the ones you
     // haven't acted on, leave the rest exactly as they are.
-    const isDone = (s?: OutreachContact['status']) => s === 'sent' || s === 'accepted' || s === 'replied' || s === 'skip';
+    const isDone = (s?: OutreachContact['status']) => s === 'sent' || s === 'accepted' || s === 'replied' || s === 'meeting' || s === 'met' || s === 'skip';
     const isUntouched = (s?: OutreachContact['status']) => !s || s === 'todo';
     const targets = campaign.contacts.filter((c) => isUntouched(c.status));
     if (!targets.length) {

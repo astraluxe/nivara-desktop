@@ -128,9 +128,13 @@ export type LeadRow = { key: string; cells: Record<string, string>; order: numbe
  * cope with phrasing rather than an enum. Anything unrecognised returns undefined — meaning
  * "no progress recorded", which is safer than guessing a status the user never set.
  */
-export function leadConnStatusToOutreach(raw?: string): 'todo' | 'connect' | 'sent' | 'accepted' | 'replied' | 'skip' | undefined {
+export function leadConnStatusToOutreach(raw?: string): 'todo' | 'connect' | 'sent' | 'accepted' | 'replied' | 'meeting' | 'met' | 'skip' | undefined {
   const s = (raw || '').toLowerCase().trim();
   if (!s || s === '—' || s === '-') return undefined;
+  // Meeting states are checked BEFORE "replied": "Meeting booked" is further along, and matching
+  // it as a mere reply would lose the fact that a call is already in the diary.
+  if (/meeting done|call done|\bmet\b/.test(s)) return 'met';
+  if (/meeting booked|call booked|\bmeeting\b/.test(s)) return 'meeting';
   if (/replied|responded|answered/.test(s)) return 'replied';
   if (/messag(e|ed)\s*sent|dm sent|sent message/.test(s)) return 'sent';
   if (/accepted|connected|1st/.test(s)) return 'accepted';
@@ -242,6 +246,8 @@ export function outreachStatusToLeadCell(s?: string): string {
     case 'accepted': return 'Connected';
     case 'sent':     return 'Message sent';
     case 'replied':  return 'Replied';
+    case 'meeting':  return 'Meeting booked';
+    case 'met':      return 'Meeting done';
     case 'skip':     return 'Skipped';
     default:         return '';
   }

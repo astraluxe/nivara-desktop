@@ -7,7 +7,7 @@ import { checkPendingConnections, runBrowserCmd, waitingLabel, type ReconcileRes
 import { outreachStatusToLeadCell, setLeadConnStatus } from '../../lib/leadTable';
 import {
   planReply, planFollowUp, verifyWork, refineMessage, applyPromiseAudit, parseMeetingTime,
-  actionableIssues, madeProgress, MAX_FIX_ROUNDS, auditScheduling,
+  actionableIssues, madeProgress, MAX_FIX_ROUNDS, auditScheduling, parseCalendarBusy,
   type ReplyPlan, type VerifyResult,
 } from '../../lib/verify';
 import { listAttachableDocs, isAttachableFile, type GeneratedDoc } from '../../lib/docgen';
@@ -111,7 +111,10 @@ function pickAttachment(docs: GeneratedDoc[], hint: string, context: string): Ge
 // opens the right profile, tracks who was contacted and who accepted — and the
 // user does the one thing only a human safely can: paste and hit send (2s each).
 
-export type OutreachStatus = 'todo' | 'connect' | 'sent' | 'accepted' | 'replied' | 'skip';
+// 'meeting' and 'met' close the loop the list previously stopped short of: "Replied" was the last
+// thing you could record, so a booked call and a call that already happened looked identical to
+// someone who had merely answered a message.
+export type OutreachStatus = 'todo' | 'connect' | 'sent' | 'accepted' | 'replied' | 'meeting' | 'met' | 'skip';
 
 /** Where a person came from. 'connections' = already a 1st-degree connection (from /scan);
  *  'leads' = a prospect off a Brain lead list, who probably still needs a connection request. */
@@ -185,6 +188,8 @@ const STATUS_META: Record<OutreachStatus, { label: string; cls: string }> = {
   sent:     { label: 'Message sent',      cls: 'border-sky-600/60 text-sky-600 bg-sky-600/15' },
   accepted: { label: 'Accepted',          cls: 'border-emerald-600/60 text-emerald-600 bg-emerald-600/15' },
   replied:  { label: 'Replied',           cls: 'border-violet-600/60 text-violet-600 bg-violet-600/15' },
+  meeting:  { label: 'Meeting booked',    cls: 'border-teal-600/60 text-teal-600 bg-teal-600/15' },
+  met:      { label: 'Meeting done',      cls: 'border-emerald-700/60 text-emerald-700 bg-emerald-700/20' },
   skip:     { label: 'Skipped',           cls: 'border-nv-border text-nv-faint/60 line-through' },
 };
 
@@ -627,6 +632,57 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       const after = setLeadConnStatus(before, c.name, cell);
       if (after !== before) brain.updateNode(node.id, { body: after });
     } catch { /* the campaign is still the source of truth — a failed write-back is not fatal */ }
+  }
+
+  // ─── Today's meeting → a reminder they will actually get ───────────────────────────────────
+  //
+  // Reads the real calendar, finds the event that belongs to THIS person, and writes the reminder
+  // from the event itself. The time and the day come from the diary, not from a model — which is
+  // the whole point, because a reminder with the wrong time is worse than no reminder. The user
+  // can still edit it, and it goes through the same verifier as any other draft.
+  const [reminderNote, setReminderNote] = useState('');
+  const [remindBusy, setRemindBusy] = useState(false);
+
+  /** The calendar entry today that looks like it belongs to this contact. */
+  function todaysMeetingFor(calendarText: string, c?: OutreachContact): { title: string; start: Date; end: Date } | null {
+    const busy = parseCalendarBusy(calendarText);
+    const now = new Date();
+    const today = busy.filter((b) => b.start.getFullYear() === now.getFullYear() && b.start.getMonth() === now.getMonth() && b.start.getDate() === now.getDate());
+    if (!today.length) return null;
+    const first = (c?.name || '').trim().split(/\s+/)[0].toLowerCase();
+    // Prefer an event that names them; otherwise, if there is exactly one thing today, that is it.
+    const named = first.length > 2 ? today.find((b) => b.title.toLowerCase().includes(first)) : undefined;
+    return named || (today.length === 1 ? today[0] : null);
+  }
+
+  async function draftMeetingReminder() {
+    const c = contacts[idx];
+    if (!c) return;
+    setRemindBusy(true); setReminderNote('Checking your calendar…');
+    try {
+      const cal = await fetchCalendarContext(true);
+      if (!cal) { setReminderNote("Couldn't read your calendar, so I won't guess at a time. Open Calendar in the adris browser and sign in, then try again."); return; }
+      const ev = todaysMeetingFor(cal, c);
+      if (!ev) {
+        const any = parseCalendarBusy(cal).length;
+        setReminderNote(any
+          ? `Nothing in today's calendar looks like a meeting with ${c.name || 'them'}. Rename the event to include their name, or write the reminder yourself.`
+          : 'Your calendar has nothing today, so there is no meeting to remind them about.');
+        return;
+      }
+      const when = ev.start.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+      const first = (c.name || '').trim().split(/\s+/)[0] || 'there';
+      // Written here, not generated: every fact in it came from the calendar entry above.
+      const text = `Hi ${first}, quick reminder that we're on for ${when} today. Looking forward to it. If anything has changed on your side, just say and we'll move it.`;
+      setDraftReply(text);
+      setLastOwnerCtx((prev) => [prev, cal].filter(Boolean).join('\n\n'));
+      setReminderNote(`Reminder ready for "${ev.title}" at ${when} today — review and send.`);
+      setFixRound(0); setFixStalled(false);
+      void runVerify(text, c, lastThread || `Reminder about ${ev.title}`, cal);
+      setTimeout(() => setReminderNote(''), 6000);
+    } catch (e) {
+      setReminderNote(`Couldn't build the reminder: ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}`);
+    } finally { setRemindBusy(false); }
   }
 
   function setStatus(s: OutreachStatus) {
@@ -1570,7 +1626,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
           <div>
             <div className="text-[10px] text-nv-faint uppercase tracking-wide mb-1.5">After you send, mark it</div>
             <div className="flex flex-wrap gap-1.5">
-              {(['connect', 'sent', 'accepted', 'replied', 'skip'] as OutreachStatus[]).map((s) => (
+              {(['connect', 'sent', 'accepted', 'replied', 'meeting', 'met', 'skip'] as OutreachStatus[]).map((s) => (
                 <button
                   key={s}
                   onClick={() => setStatus(cur.status === s ? 'todo' : s)}
@@ -1580,6 +1636,20 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                 </button>
               ))}
             </div>
+            {/* Once a meeting is booked the useful next action is not another pitch — it is making
+                sure they turn up. Offered on the two statuses where that is true. */}
+            {(cur.status === 'meeting' || cur.status === 'replied') && (
+              <div className="mt-2">
+                <button
+                  disabled={remindBusy}
+                  onClick={draftMeetingReminder}
+                  className="text-[10px] px-2.5 py-1 rounded-lg border border-teal-600/50 text-teal-700 bg-teal-600/10 hover:bg-teal-600/20 transition-fast disabled:opacity-50"
+                >
+                  {remindBusy ? 'Checking your calendar…' : "Remind them about today's meeting"}
+                </button>
+                {reminderNote && <p className="text-[9.5px] text-nv-faint mt-1 leading-relaxed">{reminderNote}</p>}
+              </div>
+            )}
           </div>
 
           {/* ── They replied → scan the reply & plan the next move ── */}
