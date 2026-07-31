@@ -7,7 +7,7 @@ import { checkPendingConnections, runBrowserCmd, waitingLabel, type ReconcileRes
 import { outreachStatusToLeadCell, setLeadConnStatus } from '../../lib/leadTable';
 import {
   planReply, planFollowUp, verifyWork, refineMessage, applyPromiseAudit, parseMeetingTime,
-  actionableIssues, madeProgress, MAX_FIX_ROUNDS,
+  actionableIssues, madeProgress, MAX_FIX_ROUNDS, auditScheduling,
   type ReplyPlan, type VerifyResult,
 } from '../../lib/verify';
 import { listAttachableDocs, isAttachableFile, type GeneratedDoc } from '../../lib/docgen';
@@ -876,7 +876,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     setLastThread(thread); setLastOwnerCtx(ownerContext);   // remember for refine / re-verify
     try {
       const args = { person: contact.name || 'them', company: contact.company, thread, ownerContext, availableDocs: docs.map((d) => ({ title: d.title, kind: d.kind, summary: d.summary })), aiCall };
-      const p = mode === 'followup' ? await planFollowUp(args) : await planReply(args);
+      let p = mode === 'followup' ? await planFollowUp(args) : await planReply(args);
       // The gate above looks at THEIR message, but the draft can propose a time even when the thread
       // never mentioned one ("would you be free tomorrow at 11:30?"). That is precisely when the
       // calendar matters, and it was the case where it silently never opened. Read it now and verify
@@ -887,6 +887,19 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
         if (late) {
           ownerContext = [ownerContext, late].filter(Boolean).join('\n\n');
           setLastOwnerCtx(ownerContext);
+          // RE-PLAN, don't just hand the calendar to the verifier.
+          //
+          // The draft above was written with NO idea what the owner was doing, so its times are
+          // guesses. Previously the late calendar was only used to check them — which relies on
+          // the verifier being sharp enough to catch the clash, and on a free key it is not. That
+          // is how "today at 2:00 PM" reached the user on a day that already had a meeting.
+          // Now the clash is detected deterministically first, and only a draft that actually
+          // conflicts is redrafted, so a good draft is never thrown away.
+          if (auditScheduling(p.draftReply, late).length) {
+            setPlanNote('That time clashes with your calendar — picking another…');
+            const better = await planReply({ ...args, ownerContext }).catch(() => null);
+            if (better?.draftReply && !better.degraded && !auditScheduling(better.draftReply, late).length) p = better;
+          }
         }
       }
       setPlan(p);
@@ -947,7 +960,8 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
         v.revised = undefined;
         v.issues = [{ severity: 'medium', issue: 'A rewrite was discarded because it introduced placeholders. Edit the draft yourself where needed.' }, ...v.issues];
       }
-      const finalV = applyPromiseAudit(v, text, outwardState());
+      // Pass the owner context so the scheduling audit can see the LIVE calendar block inside it.
+      const finalV = applyPromiseAudit(v, text, outwardState(), ownerCtx);
       setVerify(finalV);
       return finalV;
     } catch {
@@ -956,7 +970,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       // is precisely where the verifier returns something unreadable AND the draft over-promises.
       const forced = applyPromiseAudit(
         { verdict: 'warn', summary: 'The draft was not checked by the verifier.', issues: [], degraded: true },
-        text, outwardState(),
+        text, outwardState(), ownerCtx,
       );
       const out = forced.verdict === 'fail' ? forced : null;
       setVerify(out);
@@ -1045,7 +1059,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       setMeetingBusy(false);
       // Re-check the draft against what is now true — a promise that was false a moment ago may be
       // honest now, and vice versa.
-      if (draftReply) setVerify((v) => (v ? applyPromiseAudit({ ...v, verdict: 'warn', issues: v.issues.filter((i) => !/did not actually happen|calendar invite was sent|no guest email/i.test(i.issue)) }, draftReply, outwardState()) : v));
+      if (draftReply) setVerify((v) => (v ? applyPromiseAudit({ ...v, verdict: 'warn', issues: v.issues.filter((i) => !/did not actually happen|calendar invite was sent|no guest email/i.test(i.issue)) }, draftReply, outwardState(), lastOwnerCtx) : v));
     }
   }
 

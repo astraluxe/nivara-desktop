@@ -55,6 +55,14 @@ export interface VerifyIssue {
   issue: string;
   /** Optional concrete fix, so the human (or a re-draft) knows what "good" looks like. */
   fix?: string;
+  /**
+   * Where this came from. 'computed' issues are facts this code worked out (an unkept promise, a
+   * calendar clash, a weekday that does not match its date) and are identical on every model.
+   * 'checked' issues are the model's opinion, which on a small free key is not a stable judge —
+   * ask it twice about the same message and it finds different things to say. Marking them apart
+   * is what stops an unreliable verdict from driving an endless rewrite loop.
+   */
+  source?: 'computed' | 'checked';
 }
 
 export interface VerifyResult {
@@ -381,7 +389,16 @@ export function issueSignature(issues: VerifyIssue[]): string {
 /** Issues worth rewriting for. A low-severity remark never earns another round. */
 export function actionableIssues(v: VerifyResult | null): VerifyIssue[] {
   if (!v) return [];
-  return v.issues.filter((i) => i.severity === 'high' || i.severity === 'medium');
+  const real = v.issues.filter((i) => i.severity === 'high' || i.severity === 'medium');
+  // A DEGRADED verdict means the verifier could not do its job properly this time — it failed, or
+  // its answer had to be salvaged from a truncated reply. Whatever opinions came back with it are
+  // not worth rewriting a message over, and chasing them is precisely the loop the user hit on a
+  // free key. The computed facts still stand, because they never depended on the model at all.
+  if (v.degraded) {
+    const computed = real.filter((i) => i.source === 'computed');
+    return computed;
+  }
+  return real;
 }
 
 /**
@@ -403,24 +420,188 @@ export function madeProgress(before: VerifyResult | null, after: VerifyResult | 
 
 /** How many rewrite attempts are worth making before the human decides. Two is plenty: a third
  *  round has never once been the one that worked, and each costs the user a wait. */
+// ─── SCHEDULING FACTS, CHECKED WITHOUT A MODEL ───────────────────────────────────────────────
+//
+// A 550B model with a million-token window still wrote a weekday against the wrong date, and still
+// offered a slot on a day the owner already had a meeting. That is not a context-size problem and
+// no bigger model fixes it: asking any LLM to do calendar arithmetic and then trusting the answer
+// is the mistake. Whether 3 August is a Monday, and whether 2pm today is already booked, are
+// facts this code can compute exactly.
+//
+// So they are computed here, with no model and no network — which is also the honest answer to
+// "whatever adris.tech can do, NVIDIA should do too". These checks do not vary by model at all.
+
+// MONTHS/WEEKDAYS are the ones parseMeetingTime already uses, deliberately shared: two lists
+// would be two chances for the same date to be read two ways.
+const MON = MONTHS.join('|');
+const WD = 'sun|mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat';
+
+/** A date/time the draft offers the prospect. */
+interface ProposedSlot {
+  text: string;          // the phrase as written, for quoting back
+  date: Date;            // resolved calendar date (time applied when the draft gave one)
+  namedWeekday: number | null;  // the weekday the draft CLAIMED, if it named one
+  hasTime: boolean;
+}
+
+function weekdayIndex(s: string): number | null {
+  const t = s.toLowerCase().replace(/\.$/, '');
+  const i = WEEKDAYS.findIndex((d) => d.startsWith(t.slice(0, 3)));
+  return i < 0 ? null : i;
+}
+
+/** Every date the draft proposes, with the weekday it claimed and the time if it gave one. */
+export function parseProposedSlots(draft: string, now = new Date()): ProposedSlot[] {
+  const text = String(draft || '');
+  const out: ProposedSlot[] = [];
+  // "Mon 3 Aug", "Monday, 3 August", "3 Aug" … and the American order "August 3", "Mon, Aug 3".
+  const re = new RegExp(
+    `(?:(${WD})[a-z]*\\.?,?\\s+)?(?:(\\d{1,2})\\s*(?:st|nd|rd|th)?\\s+(${MON})[a-z]*|(${MON})[a-z]*\\s+(\\d{1,2})\\s*(?:st|nd|rd|th)?)`,
+    'gi');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const day = parseInt(m[2] || m[5], 10);
+    const mon = MONTHS.indexOf((m[3] || m[4]).slice(0, 3).toLowerCase());
+    if (!day || day > 31 || mon < 0) continue;
+    let d = new Date(now.getFullYear(), mon, day);
+    // A date well behind us means the draft meant next year (a December message about January).
+    if (d.getTime() < now.getTime() - 180 * 86_400_000) d = new Date(now.getFullYear() + 1, mon, day);
+    if (d.getMonth() !== mon) continue;   // 31 Feb and friends
+    // A time within the next stretch of text ("Monday 3 Aug at 10:00 AM").
+    const tail = text.slice(m.index + m[0].length, m.index + m[0].length + 40);
+    const tm = tail.match(/\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i)
+            || tail.match(/\b(?:at\s+)?(\d{1,2}):(\d{2})\b/);
+    let hasTime = false;
+    if (tm) {
+      let h = parseInt(tm[1], 10); const mi = parseInt(tm[2] || '0', 10);
+      const ap = (tm[3] || '').toLowerCase();
+      if (ap === 'pm' && h < 12) h += 12;
+      if (ap === 'am' && h === 12) h = 0;
+      if (h <= 23 && mi <= 59) { d.setHours(h, mi, 0, 0); hasTime = true; }
+    }
+    out.push({ text: (m[0] + (tm ? ' ' + tm[0].trim() : '')).trim(), date: d, namedWeekday: m[1] ? weekdayIndex(m[1]) : null, hasTime });
+  }
+  return out;
+}
+
+/** Busy intervals from a LIVE calendar read. Only ISO timestamps are trusted — free-text lines are
+ *  skipped rather than guessed at, because inventing a clash is worse than missing one. */
+export function parseCalendarBusy(calendarText: string): Array<{ title: string; start: Date; end: Date }> {
+  const out: Array<{ title: string; start: Date; end: Date }> = [];
+  // Only a block that says it is a live read counts (the same rule the model-side checklist uses).
+  if (!/REAL calendar, read just now/i.test(calendarText || '')) return out;
+  for (const line of String(calendarText).split('\n')) {
+    const iso = line.match(/(\d{4}-\d{2}-\d{2}T[\d:]+(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\s*(?:→|->|to)?\s*(\d{4}-\d{2}-\d{2}T[\d:]+(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?/);
+    if (!iso) continue;
+    const start = new Date(iso[1]);
+    if (isNaN(start.getTime())) continue;
+    const end = iso[2] ? new Date(iso[2]) : new Date(start.getTime() + 3_600_000);
+    const title = (line.match(/^\s*-\s*([^:]{1,60}):/) || [])[1]?.trim() || 'an existing event';
+    out.push({ title, start, end: isNaN(end.getTime()) ? new Date(start.getTime() + 3_600_000) : end });
+  }
+  return out;
+}
+
+/**
+ * Check the scheduling claims in a draft against the calendar and the actual date.
+ * Returns the same shape as auditPromises so both feed one deterministic layer.
+ */
+export function auditScheduling(draft: string, calendarText = '', now = new Date()): PromiseIssue[] {
+  const issues: PromiseIssue[] = [];
+  const slots = parseProposedSlots(draft, now);
+  if (!slots.length) return issues;
+  const fmt = (d: Date) => d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  for (const s of slots) {
+    // 1. THE WEEKDAY DOES NOT MATCH THE DATE. Flagged, not silently corrected: only the owner
+    //    knows whether they meant that weekday or that date, and quietly changing which day a
+    //    meeting is on is a worse failure than asking.
+    if (s.namedWeekday !== null && s.date.getDay() !== s.namedWeekday) {
+      const claimed = WEEKDAYS[s.namedWeekday];
+      const real = WEEKDAYS[s.date.getDay()];
+      const nextClaimed = new Date(s.date);
+      nextClaimed.setDate(nextClaimed.getDate() + ((s.namedWeekday - s.date.getDay() + 7) % 7 || 7));
+      issues.push({
+        claim: s.text,
+        problem: `The day and the date disagree: ${s.date.getDate()} ${s.date.toLocaleDateString(undefined, { month: 'long' })} is a ${real[0].toUpperCase()}${real.slice(1)}, not a ${claimed[0].toUpperCase()}${claimed.slice(1)}. Sending this asks the prospect to work out which one you meant.`,
+        fix: `Pick one: "${fmt(s.date)}", or the next ${claimed[0].toUpperCase()}${claimed.slice(1)}, which is ${fmt(nextClaimed)}.`,
+      });
+    }
+    // 2. A DATE THAT HAS ALREADY GONE.
+    const slotDay = new Date(s.date.getFullYear(), s.date.getMonth(), s.date.getDate());
+    if (slotDay.getTime() < today.getTime()) {
+      issues.push({
+        claim: s.text,
+        problem: `This offers ${fmt(s.date)}, which is already in the past.`,
+        fix: 'Offer a time from today onwards.',
+      });
+    } else if (s.hasTime && s.date.getTime() < now.getTime()) {
+      issues.push({
+        claim: s.text,
+        problem: `This offers ${s.date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })} today, which has already passed.`,
+        fix: 'Offer a later time today, or another day.',
+      });
+    }
+  }
+
+  // 3. A SLOT THAT COLLIDES WITH SOMETHING REALLY IN THE CALENDAR. This is the check that caught
+  //    nothing when the verifier degraded on a free key — the draft offered "today at 2:00 PM"
+  //    with a meeting already in the diary.
+  const busy = parseCalendarBusy(calendarText);
+  if (busy.length) {
+    for (const s of slots) {
+      if (!s.hasTime) continue;
+      const t = s.date.getTime();
+      for (const b of busy) {
+        const overlaps = t >= b.start.getTime() && t < b.end.getTime();
+        // A meeting that ends right before can run over, which is the same problem in practice.
+        const tooSoonAfter = t >= b.end.getTime() && t - b.end.getTime() < 30 * 60_000;
+        if (!overlaps && !tooSoonAfter) continue;
+        issues.push({
+          claim: s.text,
+          problem: overlaps
+            ? `You are already busy then — "${b.title}" runs ${b.start.toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })}–${b.end.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}. Offering it means double-booking yourself.`
+            : `"${b.title}" ends at ${b.end.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}, only ${Math.round((t - b.end.getTime()) / 60_000)} minutes before this. If it runs over you will be late.`,
+          fix: 'Offer a slot that is genuinely clear, or leave a proper gap after the earlier meeting.',
+        });
+        break;   // one complaint per proposed slot is enough
+      }
+    }
+  }
+  return issues;
+}
+
 export const MAX_FIX_ROUNDS = 2;
 
 /** Fold a promise audit into a model-produced verdict. Deterministic issues always win: they are
  *  facts about what ran, not opinions, so they can turn a "pass" into a "fail". */
-export function applyPromiseAudit(result: VerifyResult, draft: string, done: OutwardAction = {}): VerifyResult {
-  const found = auditPromises(draft, done);
+export function applyPromiseAudit(result: VerifyResult, draft: string, done: OutwardAction = {}, calendarText = ''): VerifyResult {
+  // Both deterministic layers: unkept promises, and scheduling that does not survive a calendar
+  // and a calendar arithmetic check. Neither involves a model, so neither degrades on a free key.
+  const promises = auditPromises(draft, done);
+  const scheduling = auditScheduling(draft, calendarText);
+  const found = [...promises, ...scheduling];
   if (!found.length) return result;
   const issues: VerifyIssue[] = found.map((p) => ({
     severity: 'high',
     issue: `${p.problem}${p.claim ? ` — "${p.claim}"` : ''}`,
     fix: p.fix,
+    source: 'computed',
   }));
+  const summary = promises.length && scheduling.length
+    ? `This message has ${found.length} problems: promises that were not kept, and times that do not hold up.`
+    : promises.length
+      ? (promises.length === 1
+        ? 'This message promises something that did not actually happen.'
+        : `This message makes ${promises.length} promises that did not actually happen.`)
+      : (scheduling.length === 1
+        ? 'A time in this message does not hold up against your calendar.'
+        : `${scheduling.length} of the times in this message do not hold up against your calendar.`);
   return {
     ...result,
     verdict: 'fail',
-    summary: found.length === 1
-      ? 'This message promises something that did not actually happen.'
-      : `This message makes ${found.length} promises that did not actually happen.`,
+    summary,
     issues: [...issues, ...result.issues],
     // A "revised" version produced before the audit may carry the same false claim, so it is not
     // safe to offer as a one-click replacement.
