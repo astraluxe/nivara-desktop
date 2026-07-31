@@ -1,4 +1,4 @@
-﻿import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+﻿import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { listen, emit } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import * as pdfjsLib from 'pdfjs-dist';
@@ -677,6 +677,58 @@ function VideoLinkCard({ url }: { url: string }) {
       )}
     </div>
   );
+}
+
+// ─── One bad message must never take the chat with it ────────────────────────
+//
+// A long research answer full of markdown tables streamed in, and then the whole chat went blank —
+// tables, text, everything. That is what an unhandled render exception looks like in React: it
+// unmounts the entire tree, and there was no error boundary anywhere in the app to stop it. The
+// content was not "lost" by the model; it was thrown away by the renderer at the last step.
+//
+// Streaming makes this far more likely than it sounds, because every intermediate state of a
+// half-written table gets rendered — a header with three columns, then a row with two, then a
+// second header appearing mid-table. Most of those parse fine, and hunting the single input that
+// does not is guesswork. A boundary is the guarantee: whatever throws, the message falls back to
+// its raw text, still readable and still copyable, and everything around it keeps working.
+//
+// Deliberately per MESSAGE, not around the whole list: the blast radius of a bad render should be
+// one bubble, not the conversation.
+class MessageBoundary extends React.Component<
+  { children: React.ReactNode; raw?: string },
+  { failed: boolean }
+> {
+  constructor(props: { children: React.ReactNode; raw?: string }) {
+    super(props);
+    this.state = { failed: false };
+  }
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch(err: unknown) {
+    // Keep it in the console for diagnosis; never surface a stack trace to the user.
+    console.error('[chat] a message failed to render — showing its raw text instead', err);
+  }
+  render() {
+    if (!this.state.failed) return this.props.children;
+    const raw = (this.props.raw || '').trim();
+    return (
+      <div className="my-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2">
+        <div className="flex items-center justify-between gap-2 mb-1">
+          <span className="text-[9.5px] font-mono uppercase tracking-wide text-amber-600">
+            shown as plain text — the formatting in this one wouldn't display
+          </span>
+          {raw && (
+            <button
+              onClick={() => copyToClipboard(raw)}
+              className="text-[10px] text-nv-faint hover:text-nv-muted transition-fast font-mono shrink-0"
+            >copy</button>
+          )}
+        </div>
+        {raw
+          ? <pre className="text-[11px] leading-relaxed whitespace-pre-wrap break-words text-nv-text font-sans">{raw}</pre>
+          : <p className="text-[11px] text-nv-faint">This message could not be displayed.</p>}
+      </div>
+    );
+  }
 }
 
 function TableBlock({ mdTable, headers, aligns, rows }: {
@@ -10238,7 +10290,9 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                   onDismiss={() => setMessages((prev) => prev.filter((m) => m !== msg))}
                 />
               ) : (
-                <MessageRow key={i} msg={msg} agent={agent} />
+                <MessageBoundary key={i} raw={msg.content}>
+                  <MessageRow msg={msg} agent={agent} />
+                </MessageBoundary>
               )
             )}
               <div ref={bottomRef} />
