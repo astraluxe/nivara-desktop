@@ -174,10 +174,16 @@ export function auditPromises(draft: string, done: OutwardAction = {}): PromiseI
     });
   }
 
-  // 4. Relative dates. A meeting on the 31st described as "tomorrow" sends someone to the wrong day,
-  //    and it is the single easiest mistake for a small model to make because it is the natural way
-  //    to write. The fix is always the same: name the day.
-  const RELATIVE = /\b(?:tomorrow|today|tonight|this evening|next week|day after tomorrow)\b[^.!?]{0,40}\b(?:at\s*)?\d{1,2}(?::\d{2})?\s*(?:am|pm|hrs|o'clock)?\b|\b(?:at\s*)?\d{1,2}(?::\d{2})?\s*(?:am|pm)\b[^.!?]{0,20}\b(?:tomorrow|today|tonight|next week)\b/i;
+  // 4. Relative dates that can drift between writing and reading. A meeting on the 31st described
+  //    as "tomorrow" sends someone to the wrong day if they open the message the next morning.
+  //
+  //    "TODAY" IS DELIBERATELY NOT HERE. It used to be, and it fired on a perfectly good same-day
+  //    reminder — "we've got our walkthrough at 1pm today", sent on the day of a meeting that
+  //    really was in the diary. Rewriting that as "Friday 31 July at 1 PM" is stilted, and the
+  //    drift argument barely applies to a message sent hours before the thing it refers to.
+  //    "today" is now checked in auditScheduling instead, where the live calendar is available, so
+  //    it can be a fact check — does a meeting today actually exist? — rather than a style note.
+  const RELATIVE = /\b(?:tomorrow|next week|day after tomorrow)\b[^.!?]{0,40}\b(?:at\s*)?\d{1,2}(?::\d{2})?\s*(?:am|pm|hrs|o'clock)?\b|\b(?:at\s*)?\d{1,2}(?::\d{2})?\s*(?:am|pm)\b[^.!?]{0,20}\b(?:tomorrow|next week)\b/i;
   if (RELATIVE.test(text)) {
     issues.push({
       claim: sentenceWith(text, RELATIVE),
@@ -508,8 +514,9 @@ export function parseCalendarBusy(calendarText: string): Array<{ title: string; 
  */
 export function auditScheduling(draft: string, calendarText = '', now = new Date()): PromiseIssue[] {
   const issues: PromiseIssue[] = [];
+  // NOT an early return when there are no dated slots: a same-day reminder ("at 1pm today") names
+  // no date at all, and check 3 below is exactly the one that has to look at it.
   const slots = parseProposedSlots(draft, now);
-  if (!slots.length) return issues;
   const fmt = (d: Date) => d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
@@ -545,10 +552,49 @@ export function auditScheduling(draft: string, calendarText = '', now = new Date
     }
   }
 
-  // 3. A SLOT THAT COLLIDES WITH SOMETHING REALLY IN THE CALENDAR. This is the check that caught
+  const busy = parseCalendarBusy(calendarText);
+
+  // 3. "AT 1PM TODAY" — TRUE OR NOT?
+  //    A same-day reminder naming "today" is the normal way to write one, and flagging it on sight
+  //    was a false alarm on a meeting that genuinely was today. What matters is whether the meeting
+  //    EXISTS. With a live calendar we can answer that: complain only when the diary is readable
+  //    and has nothing at that hour today, which means the message asserts a meeting that is not
+  //    there. With no calendar we cannot know, so we say nothing rather than nag.
+  const todayRef = draft.match(/\b(?:today|tonight|this evening)\b[^.!?]{0,40}?\b(?:at\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b|\b(?:at\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b[^.!?]{0,25}?\b(?:today|tonight|this evening)\b/i);
+  if (todayRef && busy.length) {
+    let h = parseInt(todayRef[1] || todayRef[4], 10);
+    const mi = parseInt(todayRef[2] || todayRef[5] || '0', 10);
+    const ap = (todayRef[3] || todayRef[6] || '').toLowerCase();
+    if (ap === 'pm' && h < 12) h += 12;
+    if (ap === 'am' && h === 12) h = 0;
+    // With no am/pm, read a bare 1–7 as the afternoon — nobody reminds anyone about 1am.
+    if (!ap && h >= 1 && h <= 7) h += 12;
+    if (h <= 23 && mi <= 59) {
+      const claimed = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, mi);
+      const sameDay = (d: Date) => d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+      const anyToday = busy.some((b) => sameDay(b.start));
+      // Within the hour either side counts as "this is that meeting" — people round the time they
+      // quote, and a reminder saying 1pm for a 1:15 start is not a factual error worth raising.
+      const matches = busy.some((b) => sameDay(b.start) && Math.abs(b.start.getTime() - claimed.getTime()) <= 60 * 60_000);
+      if (anyToday && !matches) {
+        issues.push({
+          claim: todayRef[0].trim(),
+          problem: `This says there is something today at ${claimed.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}, but today's calendar shows ${busy.filter((b) => sameDay(b.start)).map((b) => `"${b.title}" at ${b.start.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`).join(', ')} and nothing at that time.`,
+          fix: 'Check the time against your calendar before sending, and quote the one that is really booked.',
+        });
+      } else if (!anyToday) {
+        issues.push({
+          claim: todayRef[0].trim(),
+          problem: 'This tells them about a meeting today, but there is nothing at all in today\'s calendar.',
+          fix: 'Confirm the meeting really is today before sending this reminder.',
+        });
+      }
+    }
+  }
+
+  // 4. A SLOT THAT COLLIDES WITH SOMETHING REALLY IN THE CALENDAR. This is the check that caught
   //    nothing when the verifier degraded on a free key — the draft offered "today at 2:00 PM"
   //    with a meeting already in the diary.
-  const busy = parseCalendarBusy(calendarText);
   if (busy.length) {
     for (const s of slots) {
       if (!s.hasTime) continue;
