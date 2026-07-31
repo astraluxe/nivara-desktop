@@ -305,7 +305,15 @@ function fontParam(f: string) { return f.replace(/ /g, '+'); }
 // ── HTML deck ────────────────────────────────────────────────────────────────
 // 16:9 slides scaled to fit the viewport. Arrow keys / space to navigate, F to
 // present fullscreen, P to print (→ Save as PDF). Fully self-contained.
-export function renderDeckHtml(spec: DeckSpec, editable = false, editId = ''): string {
+/**
+ * @param startSlide Which slide to open on. Defaults to the first.
+ *
+ *   Editing a deck re-renders it, and a re-rendered iframe starts from scratch — so every saved
+ *   change threw the user back to slide 1 and they had to click forward to slide 13 again to make
+ *   the next one. The deck now opens where it was and reports its position as it moves, so the
+ *   surrounding editor can put it back after a re-render.
+ */
+export function renderDeckHtml(spec: DeckSpec, editable = false, editId = '', startSlide = 0): string {
   const p = spec.palette, H = spec.font.heading, B = spec.font.body;
   const families = Array.from(new Set([H, B]));
   const fontLink = `https://fonts.googleapis.com/css2?${families
@@ -502,6 +510,9 @@ export function renderDeckHtml(spec: DeckSpec, editable = false, editId = ''): s
     slides.forEach(function(el,i){ el.classList.toggle('active', i===cur); });
     document.getElementById('count').textContent = (cur+1)+' / '+slides.length;
     fitOne(slides[cur]);
+    // Tell the app which slide we are on, so that if it re-renders this deck (a save, a colour
+    // change) it can reopen at the same place instead of snapping back to the first slide.
+    try { parent.postMessage({ __deckSlide: cur, id: '${editId}' }, '*'); } catch(e){}
   }
   // Are we embedded inside the app (an iframe), or opened standalone in a real browser?
   // When embedded, fullscreen + print are blocked by the iframe sandbox, so we ask the parent
@@ -533,7 +544,7 @@ export function renderDeckHtml(spec: DeckSpec, editable = false, editId = ''): s
   // Re-fit once fonts have loaded (text metrics change → overflow can appear after load).
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(function(){ fitOne(slides[cur]); });
   setTimeout(function(){ fitOne(slides[cur]); }, 350);
-  fit(); show(0);
+  fit(); show(${Math.max(0, Math.floor(startSlide) || 0)});
 ${editable ? `
   // Post every text edit back to the parent app so the deck spec stays in sync (used for
   // downloads / Save to Brain). Fires when a field loses focus.

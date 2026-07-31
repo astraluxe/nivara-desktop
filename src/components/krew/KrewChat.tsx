@@ -1419,7 +1419,17 @@ function splitEmailSections(text: string): Array<{ type: 'email' | 'prose'; cont
 
   for (let k = 0; k < lines.length; k++) {
     const line = lines[k].trim();
-    const isSubject = /^Subject:\s/i.test(line);
+    // A "Subject:" that is INDENTED is part of a document, not an email being drafted.
+    //
+    // The line was trimmed before testing, so an indented "  Subject: …" inside a playbook —
+    // nested under "Email sequence:" alongside the templates it describes — read as the start of
+    // a real email and swallowed the rest of the answer into an email card. That is the "it
+    // entered a box and started writing in that only" report: the prose around it was restructured
+    // and appeared to vanish, while a finished table above stayed put.
+    //
+    // A genuine drafted email starts at the left margin. Anything indented is being quoted or
+    // described, so it stays prose.
+    const isSubject = /^Subject:\s/i.test(line) && !/^\s/.test(lines[k]);
     // A salutation only starts an email if a sign-off appears later (so "Hi, here's the list" stays prose).
     const isSalutationStart = type === 'prose' && SALUTATION_RE.test(line) &&
       lines.slice(k + 1).some(l => SIGNOFF_RE.test(l.trim()));
@@ -1763,6 +1773,7 @@ function DeckResultBubble({ html, spec: specProp }: { html: string; spec: DeckSp
   // messages to THIS deck when several decks are in the thread.
   const editId = useRef('dk-' + Math.random().toString(36).slice(2, 9)).current;
   const editsRef = useRef<Record<string, string>>({});
+  const slideRef = useRef(0);   // which slide the deck is showing, so a re-render can restore it
   const iframeRef = useRef<HTMLIFrameElement>(null);
   // The deck's own ⛶ Present / ⭳ PDF buttons live inside the sandboxed iframe where fullscreen
   // and print are blocked — so the deck posts a message and WE do the action out here (fullscreen
@@ -1774,12 +1785,15 @@ function DeckResultBubble({ html, spec: specProp }: { html: string; spec: DeckSp
   const applyEdits = useCallback((sp: DeckSpec): DeckSpec => applyDeckEdits(sp, editsRef.current), []);
   useEffect(() => {
     function onMsg(e: MessageEvent) {
-      const d = e.data as { __deckEdit?: boolean; __deckPdf?: boolean; __deckPresent?: boolean; id?: string; s?: number; f?: string; value?: string };
+      const d = e.data as { __deckEdit?: boolean; __deckPdf?: boolean; __deckPresent?: boolean; __deckSlide?: number; id?: string; s?: number; f?: string; value?: string };
       if (!d) return;
       // present/pdf carry no id, so only react if the message came from THIS deck's iframe
       // (several decks can share the thread).
       const fromThis = iframeRef.current && e.source === iframeRef.current.contentWindow;
-      if (d.__deckEdit && d.id === editId && typeof d.s === 'number' && typeof d.f === 'string') {
+      if (d.__deckSlide !== undefined && d.id === editId) {
+        // Remember where the reader is, so a re-render can put them back.
+        slideRef.current = Number(d.__deckSlide) || 0;
+      } else if (d.__deckEdit && d.id === editId && typeof d.s === 'number' && typeof d.f === 'string') {
         editsRef.current[`${d.s}|${d.f}`] = String(d.value ?? '');
         autoSaveRef.current(); // live-save the text edit to Brain
       } else if (d.__deckPdf && fromThis) {
@@ -1795,7 +1809,11 @@ function DeckResultBubble({ html, spec: specProp }: { html: string; spec: DeckSp
   const liveSpec = useMemo(() => ({ ...spec, palette: pal }), [spec, pal]);
   // Editable preview. It intentionally does NOT depend on the edits ref, so typing/blur never
   // reloads the iframe; a palette change re-renders and re-applies the accumulated edits.
-  const liveHtml = useMemo(() => { try { return renderDeckHtml(applyEdits(liveSpec), true, editId); } catch { return html; } }, [liveSpec, html, editId, applyEdits]);
+  // slideRef is read, never depended on: it must NOT be in the dep list, or every arrow-key press
+  // would re-render the deck. It is only consulted when a re-render happens for some other reason
+  // (a save, a colour change, a slide added/removed) — which is exactly when the position would
+  // otherwise be lost.
+  const liveHtml = useMemo(() => { try { return renderDeckHtml(applyEdits(liveSpec), true, editId, slideRef.current); } catch { return html; } }, [liveSpec, html, editId, applyEdits]);
   // Clean, non-editable spec/html for downloads & saving (palette + inline text edits baked in).
   const finalSpec = () => applyEdits(liveSpec);
   const finalHtml = () => { try { return renderDeckHtml(finalSpec(), false); } catch { return liveHtml; } };
@@ -2868,8 +2886,25 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
       {parts.map((part, i) => {
         if (part.startsWith('```')) {
           const m    = part.match(/^```(\w*)\n?([\s\S]*?)```$/);
-          const lang = m?.[1] ?? '';
-          const code = m?.[2] ?? part.slice(3, -3);
+          // AN UNCLOSED FENCE IS NOT A CODE BLOCK — IT IS A MESSAGE STILL BEING WRITTEN.
+          //
+          // The split above only pairs ``` with a matching ```, so a fence whose closer has not
+          // arrived yet lands here with m === null. The old fallback (part.slice(3, -3)) then put
+          // EVERYTHING after that fence into one monospace box — and lopped three characters off
+          // the end for good measure. That is what the user watched happen live: prose disappeared
+          // into a box mid-answer, a finished table above it stayed normal, and the whole thing
+          // came right again the moment the closing fence finally streamed in.
+          //
+          // Nothing was ever lost; it was just being drawn as code. So while the closer is
+          // missing, drop the opening marker and render the remainder as ordinary prose. When the
+          // fence closes on the next chunk this branch stops matching and the real block renders.
+          if (!m) {
+            const openLen = (part.match(/^```\w*[^\n]*\n?/) || [''])[0].length;
+            const rest = part.slice(openLen);
+            return rest.trim() ? <div key={i} className="mb-1">{renderMarkdown(rest)}</div> : null;
+          }
+          const lang = m[1] ?? '';
+          const code = m[2] ?? '';
           // Outreach drafts the agent fenced as ```email / ```draft / ```message render as a
           // proper email card (Subject header + copy), not a raw monospace code box.
           if (['email', 'draft', 'message', 'outreach'].includes(lang.toLowerCase())) {

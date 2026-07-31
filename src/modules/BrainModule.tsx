@@ -419,6 +419,7 @@ function DeckPreview({ path, onCopySaved }: { path: string; onCopySaved?: (nodeI
   const [saveMsg, setSaveMsg] = useState('');
   const [dirtyTick, setDirtyTick] = useState(0);          // bumped on every inline edit
   const editsRef = useRef<Record<string, string>>({});
+  const slideRef = useRef(0);   // the slide on screen, so a rebuild reopens where the reader was
   const editId = useRef('bd-' + Math.random().toString(36).slice(2, 9)).current;
   const iframeRef = useRef<HTMLIFrameElement>(null);
   useEffect(() => {
@@ -447,6 +448,23 @@ function DeckPreview({ path, onCopySaved }: { path: string; onCopySaved?: (nodeI
     // dirtyTick is in the deps on purpose: inline edits live in a ref (so typing never reloads
     // the iframe mid-keystroke) and the tick is what tells React they happened.
   }, [spec, pal, dirtyTick]);
+
+  // WHAT THE IFRAME SHOWS is deliberately NOT `current`.
+  //
+  // `current` changes on every inline edit, and feeding that to srcDoc reloads the deck each time
+  // — which threw the user back to slide 1 every time they changed a word on slide 13, over and
+  // over. The edit is already on screen: they typed it, in the live document. Re-rendering to
+  // display text that is visible already is pure cost.
+  //
+  // So the deck is re-rendered only for changes the DOM cannot show by itself — a palette change,
+  // entering or leaving edit mode, a save, a different deck — and `current` is still what gets
+  // SAVED, so nothing typed is ever lost.
+  const renderedSpec = useMemo(() => {
+    if (!spec) return null;
+    const withEdits = applyDeckEdits(spec, editsRef.current);
+    if (!pal) return withEdits;
+    return { ...withEdits, palette: { ...pal, surface: mixHex(pal.bg, pal.text, 0.06), muted: mixHex(pal.bg, pal.text, 0.55) } };
+  }, [spec, pal]);   // NOT dirtyTick — that is the whole point
 
   const paletteChanged = !!(spec && pal && (pal.bg !== spec.palette.bg || pal.text !== spec.palette.text || pal.accent !== spec.palette.accent));
   const dirty = paletteChanged || Object.keys(editsRef.current).length > 0;
@@ -522,7 +540,10 @@ function DeckPreview({ path, onCopySaved }: { path: string; onCopySaved?: (nodeI
   useEffect(() => {
     async function onMsg(e: MessageEvent) {
       if (!iframeRef.current || e.source !== iframeRef.current.contentWindow) return;
-      const d = e.data as { __deckPdf?: boolean; __deckPresent?: boolean; __deckEdit?: boolean; id?: string; s?: number; f?: string; value?: string };
+      const d = e.data as { __deckPdf?: boolean; __deckPresent?: boolean; __deckEdit?: boolean; __deckSlide?: number; id?: string; s?: number; f?: string; value?: string };
+      // Where the reader is. Kept in a ref so it never triggers a render of its own; consulted
+      // only when the deck is rebuilt for another reason, to reopen on the same slide.
+      if (d?.__deckSlide !== undefined && d.id === editId) { slideRef.current = Number(d.__deckSlide) || 0; return; }
       // An inline text edit made by clicking on the slide. Collected in a ref so typing never
       // re-renders the iframe under the cursor; the tick tells the rest of the UI it is dirty.
       if (d?.__deckEdit && d.id === editId && typeof d.s === 'number' && typeof d.f === 'string') {
@@ -554,7 +575,7 @@ function DeckPreview({ path, onCopySaved }: { path: string; onCopySaved?: (nodeI
 
   // In edit mode the iframe shows the LIVE spec with its text made editable. Rendering only on
   // structural change (not on every keystroke) is why the edits are collected in a ref.
-  const shown = editing && current ? renderDeckHtml(current, true, editId) : html;
+  const shown = editing && renderedSpec ? renderDeckHtml(renderedSpec, true, editId, slideRef.current) : html;
   const btn = 'rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-opacity hover:opacity-80 disabled:opacity-40';
 
   return (
