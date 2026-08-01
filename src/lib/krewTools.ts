@@ -2530,7 +2530,7 @@ async function executeToolCore(
     // regularly an unrelated entry further down the month.
     const candidates = text.split('\n').map((l) => l.trim()).filter((l) =>
       l.length > 3 && !/^\d+$/.test(l)
-      && !/^(calendar:|all day|jul|aug|sep|oct|nov|dec|mon|tue|wed|thu|fri|sat|sun)/i.test(l)
+      && !/^(calendar:|all day|jul|aug|sep|oct|nov|dec|mon|tue|wed|thu|fri|sat|sun)\b/i.test(l)
       && !/^\d{1,2}\s*[–-]/.test(l));
     let other = '';
     for (const line of candidates) {

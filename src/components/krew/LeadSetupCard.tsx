@@ -144,7 +144,7 @@ export default function LeadSetupCard({ defaultCity, existingLists = [], onGener
   if (done) {
     return (
       <div className="mx-1 my-1 px-3 py-2 rounded-xl border border-nv-border bg-nv-surface text-[11px] text-nv-faint">
-        Finding leads — {count} {seniority.includes('any') ? 'people' : 'decision-makers'}
+        Finding leads — {count} {find === 'people' || seniority.includes('any') ? 'people' : 'decision-makers'}
         {city ? ` in ${city}` : ''}…
       </div>
     );
@@ -296,7 +296,12 @@ export default function LeadSetupCard({ defaultCity, existingLists = [], onGener
           </p>
         </div>}
 
-        <div>
+        {/* Seniority is a question about a job inside a company. In people mode it is not just
+            noise, it actively contradicted the search: the preset asks for account executives,
+            channel managers and BD leads, while this control sat above it defaulting to
+            "Founder / C-level" — and the run then echoed "(11-50, 51-200 employees, founder)" back
+            as if that was what had been asked for. */}
+        {find === 'companies' && <div>
           <label className="text-[10px] text-nv-faint uppercase tracking-wide">Seniority</label>
           <div className="mt-1 flex flex-wrap gap-1.5">
             {SENIORITY.map((s) => (
@@ -305,7 +310,7 @@ export default function LeadSetupCard({ defaultCity, existingLists = [], onGener
                 className={chip(seniority.includes(s.key))}>{s.label}</button>
             ))}
           </div>
-        </div>
+        </div>}
 
         <div>
           <label className="text-[10px] text-nv-faint uppercase tracking-wide">How many</label>
@@ -360,9 +365,17 @@ export default function LeadSetupCard({ defaultCity, existingLists = [], onGener
           disabled={disabled || !what.trim()}
           onClick={() => {
             setDone(true);
+            // THE CARD SENDS WHAT THE CARD SHOWED. In people mode the size, seniority and reach
+            // controls are hidden because they do not apply — so their leftover values must not
+            // travel either. They were still being sent, still echoed back in the chat, and (until
+            // the filter was fixed) still used to throw away everyone who was not a founder.
             onGenerate({
-              addToList, what: what.trim(), sizes, seniority, city: city.trim(), sector: sector.trim(),
-              count, mustHaveLinkedIn, mustHaveContact, useMaps, verify, reach,
+              addToList, what: what.trim(),
+              sizes:     find === 'people' ? [] : sizes,
+              seniority: find === 'people' ? ['any'] : seniority,
+              reach:     find === 'people' ? 'growing' : reach,
+              city: city.trim(), sector: sector.trim(),
+              count, mustHaveLinkedIn, mustHaveContact, useMaps, verify,
               find, sources: find === 'people' ? sources : [],
             });
           }}

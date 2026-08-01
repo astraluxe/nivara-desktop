@@ -13,7 +13,7 @@ import { StatusGlobe } from './StatusGlobe';
 import { runParallelResearch } from '../../lib/researchSources';
 import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, type KrewAgent } from '../../lib/krewAgents';
 import { useAuth } from '../../contexts/AuthContext';
-import { extractTableRows, hasPopulatedLeadTable, mergeLeadTables, parseLeadRows, rowsToMarkdown, leadConnStatusToOutreach, looksLikePersonLead, matchesSeniority, matchesSector } from '../../lib/leadTable';
+import { extractTableRows, hasPopulatedLeadTable, mergeLeadTables, parseLeadRows, rowsToMarkdown, leadConnStatusToOutreach, looksLikePersonLead, matchesSeniority, matchesSector, peopleSearchPhrases } from '../../lib/leadTable';
 import { supabase } from '../../lib/supabase';
 import { getPlanConfig } from '../../lib/planConfig';
 import { parseDeckSpec, slidesNeedingImages, renderDeckHtml, extractDeckSpec, applyDeckEdits, type DeckSpec, type DeckSlide, type DeckPalette } from '../../lib/deck';
@@ -6206,6 +6206,9 @@ The prompt must be production-ready — specific enough for a motion designer to
     const sizeLabel = cfg.sizes.length && cfg.sizes.length < 5 ? cfg.sizes.join(', ') + ' employees' : 'any size';
     const senLabel = cfg.seniority.includes('any') || !cfg.seniority.length
       ? 'anyone' : cfg.seniority.join(' / ');
+    // What a people search is actually filtered by: where it looked, not how big anyone's employer is.
+    const srcLabelForEcho = (cfg.sources || [])
+      .map((s) => (s === 'x' ? 'X' : s === 'web' ? 'the web' : s === 'linkedin' ? 'LinkedIn' : 'Instagram')).join(', ');
     // Adding to a list keeps that list's name; a new search gets its own so unrelated searches
     // never collide into one node.
     const existingNode = cfg.addToList ? brainStore.findByTitle(cfg.addToList) : undefined;
@@ -6221,10 +6224,25 @@ The prompt must be production-ready — specific enough for a motion designer to
       }
     }
 
-    post({ role: 'user', content: `Find ${cfg.count} leads — ${cfg.what}${cfg.city ? ` in ${cfg.city}` : ''} (${sizeLabel}, ${senLabel})` });
-    post({ role: 'assistant', content: `Finding ${cfg.count} leads…`, streaming: true });
+    // Echo back what was ACTUALLY asked for. A people search was reported as
+    // "…(11-50, 51-200 employees, founder)" — company-shaped filters that people mode does not use
+    // and no longer even shows on the card. Reading that back after asking for account executives
+    // and partnership managers makes the whole run look like it misunderstood the question, and in
+    // the case of the seniority filter it genuinely had.
+    const askLine = cfg.find === 'people'
+      ? `Find ${cfg.count} people — ${cfg.what}${cfg.city ? ` in ${cfg.city}` : ''}${srcLabelForEcho ? ` (on ${srcLabelForEcho})` : ''}`
+      : `Find ${cfg.count} leads — ${cfg.what}${cfg.city ? ` in ${cfg.city}` : ''} (${sizeLabel}, ${senLabel})`;
+    post({ role: 'user', content: askLine });
+    post({ role: 'assistant', content: `Finding ${cfg.count} ${cfg.find === 'people' ? 'people' : 'leads'}…`, streaming: true });
 
     try {
+      // WHAT ARE WE FINDING? Known up here, not thirty lines below, because the system prompt has to
+      // be built differently for each. The people rules used to be appended AFTER a block that told
+      // the model to "name its founder, CEO, or the specific decision-maker" — so a search for
+      // account executives and partnership managers was being asked for founders in the same breath,
+      // and founders are what came back.
+      const peopleMode = cfg.find === 'people';
+
       // 1) Ask for the candidates. Kept to ONE table and no prose so a local model has the least
       //    possible to get wrong, and so the result parses whatever wrote it.
       const sys = [
@@ -6234,17 +6252,20 @@ The prompt must be production-ready — specific enough for a motion designer to
         '- Name = a REAL, NAMED INDIVIDUAL. Never a company, firm, agency or brand in the Name column.',
         '- The point is to reach a PERSON. A company page cannot be sent a connection request or a',
         '  message, so a row naming a company is useless and will be discarded.',
-        '- If you know the COMPANY but not the person, use the company to identify the individual:',
-        '  name its founder, CEO, or the specific decision-maker for this purpose — then put THAT',
-        '  person in the Name column and the company in Company/Role. Never fall back to the company.',
-        '- If you genuinely cannot name a real person at a company, LEAVE THAT COMPANY OUT entirely.',
-        '- Company/Role must contain their actual job title (e.g. "Zenwork / CEO", "COO at Acme").',
+        ...(peopleMode ? [] : [
+          '- If you know the COMPANY but not the person, use the company to identify the individual:',
+          '  name its founder, CEO, or the specific decision-maker for this purpose — then put THAT',
+          '  person in the Name column and the company in Company/Role. Never fall back to the company.',
+          '- If you genuinely cannot name a real person at a company, LEAVE THAT COMPANY OUT entirely.',
+          '- Company/Role must contain their actual job title (e.g. "Zenwork / CEO", "COO at Acme").',
+        ]),
         '- Only people who plausibly match EVERY filter given below. Fewer correct rows beat more wrong ones.',
         // The size of the company is not a detail, it is the whole usefulness of the list. A
         // person starting out cannot sell to CRED, and those famous names are also the only
         // ones a model reliably knows — which is why an ungrounded search runs dry after about
         // seven rows however many were asked for.
-        cfg.reach === 'local'
+        peopleMode ? ''
+          : cfg.reach === 'local'
           ? '- AIM SMALL AND LOCAL. Ordinary nearby businesses — shops, studios, clinics, agencies, workshops, small firms. NOT household names, NOT funded startups, NOT anyone famous. If you name a company most people would recognise, that row is wrong.'
           : cfg.reach === 'known'
             ? '- Aim at established, well-known companies.'
@@ -6258,7 +6279,9 @@ The prompt must be production-ready — specific enough for a motion designer to
         '- THE COMPANY MUST BE REAL. Only name a company you are confident actually exists and that',
         '  the person genuinely works at. A plausible-sounding startup name you are not sure about is',
         '  a fabrication, and it wastes the whole pipeline: the app then searches for a profile that',
-        '  cannot exist. Prefer well-known, verifiable companies over obscure-sounding ones.',
+        peopleMode
+          ? '  cannot exist. Only name an employer, channel or client you are confident is real.'
+          : '  cannot exist. Prefer well-known, verifiable companies over obscure-sounding ones.',
         // Balance matters here, and the first attempt got it wrong. Telling the model that a short
         // list is a success — without also telling it that nothing is a failure — reads to a small
         // free model as permission to return an empty table, and that is exactly what happened:
@@ -6273,7 +6296,6 @@ The prompt must be production-ready — specific enough for a motion designer to
       // The person is the target, not a way into a company. Size and market position stop being
       // filters, the sources they actually live on become the search, and the columns change so a
       // creator's handles survive into the outreach copilot rather than being dropped on the floor.
-      const peopleMode = cfg.find === 'people';
       const srcLabel = (cfg.sources || []).map((s) => (s === 'x' ? 'X (Twitter)' : s === 'web' ? 'the open web' : s === 'linkedin' ? 'LinkedIn' : 'Instagram')).join(', ');
       const peopleRules = peopleMode ? [
         '',
@@ -6330,7 +6352,13 @@ The prompt must be production-ready — specific enough for a motion designer to
         const cityWords = new Set((cfg.city || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
         const topic = (cfg.sector || '').trim()
           || (cfg.what || '')
-            .replace(/(find|get|list|leads?|founders?|co-?founders?|decision[- ]?makers?|ceos?|ctos?|owners?|directors?|people|persons?|contacts?|prospects?|companies|company|business(?:es)?|firms?|startups?|who|that|the|and|or|in|at|for|with|from|based)/gi, ' ')
+            // Two literal BACKSPACE characters had replaced the \b word boundaries here at some
+            // point, which meant this whole strip list could only ever match text wrapped in
+            // backspaces — i.e. never. The topic was the user's entire brief, so a people search
+            // sent Google a 44-word sentence, got nothing back, and fell through to whatever the
+            // model remembered. \b also has to be there on its own merits: without the boundaries
+            // it eats letters inside words ("selling" -> "sell g", "marketing" -> "market g").
+            .replace(/\b(find|get|list|leads?|founders?|co-?founders?|decision[- ]?makers?|ceos?|ctos?|owners?|directors?|people|persons?|contacts?|prospects?|companies|company|business(?:es)?|firms?|startups?|who|that|the|and|or|in|at|for|with|from|based)\b/gi, ' ')
             .replace(/[0-9,()\-–—]/g, ' ')
             .split(/\s+/)
             .filter((w) => w && !cityWords.has(w.toLowerCase()))
@@ -6361,9 +6389,28 @@ The prompt must be production-ready — specific enough for a motion designer to
         // author, so the queries are built from the sources chosen on the card instead. Plain
         // English, no site: operators — Google answers those with a bot challenge (measured).
         const peopleQueries = (() => {
-          const base = topic || (cfg.what || '').split(/\s+/).slice(0, 6).join(' ') || 'software';
-          const out: string[] = [];
           const on = (s: string) => (cfg.sources || []).includes(s as never);
+          // SEARCH FOR THE ROLES THE USER NAMED, one query each.
+          //
+          // `topic` is the whole brief with a stopword list subtracted, which for a people search
+          // is a 30-word sentence — Google returns nothing for it, so the grounding step came back
+          // empty and the run fell through to the model's memory. Memory answers "people in
+          // Bengaluru" with the founders everyone has heard of, which is why a search for affiliate
+          // partners returned a co-founder of Pazcare. A people brief already names its roles in
+          // plain English; peopleSearchPhrases hands them back as things a person would type.
+          const roles = peopleSearchPhrases(cfg.what || '');
+          const out: string[] = [];
+          if (roles.length) {
+            const where = on('linkedin') ? ' LinkedIn' : '';
+            for (const r of roles) out.push(`${r}${cityWord}${where}`.trim());
+            // One source-flavoured query so a creator hunt still looks where creators are.
+            if (on('instagram')) out.push(`${roles[0]} on Instagram${cityWord}`);
+            else if (on('x')) out.push(`${roles[0]} to follow on X${cityWord}`);
+            return out.slice(0, 4);
+          }
+          // No role named in the brief — fall back to a SHORT slice of it. The old code only
+          // applied this trim when `topic` was empty, which it almost never is.
+          const base = (topic || cfg.what || 'software').split(/\s+/).slice(0, 6).join(' ');
           if (on('instagram')) out.push(`${base} reviewers on Instagram${cityWord}`, `best ${base} Instagram accounts to follow`);
           if (on('x')) out.push(`${base} creators to follow on X${cityWord}`);
           if (on('linkedin')) out.push(`${base} partnerships and channel managers LinkedIn${cityWord}`);

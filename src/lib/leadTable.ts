@@ -363,6 +363,66 @@ export function mergeLeadTables(oldMd: string, newMd: string): string {
   return [header, sep, ...body].join('\n');
 }
 
+// ─── Turning a people brief into searches you could actually type ────────────
+//
+// A people brief names ROLES: "account executives, channel and partnership managers,
+// business-development leads at companies selling adjacent software, plus consultants and agency
+// owners who already recommend tools to their clients". Those role names are the whole search.
+//
+// What was being searched instead was the entire brief with a stopword list subtracted from it,
+// which produced a 33-word Google query — "would promote a product to a audience account executives
+// channel partnership managers development sell g adjacent software plus consultants agency already
+// recommend tools to ir clients partnerships and channel managers LinkedIn Bengaluru". Google
+// returns nothing for that. So the grounding step came back empty, the run fell through to the
+// model's memory, and memory answers "people in Bengaluru" with the founders everybody has heard
+// of. That is why a search for affiliates returned a co-founder of Pazcare.
+//
+// Splitting on the punctuation the user already wrote gives the phrases back intact, and each one
+// is a search a person would actually type.
+const ROLE_NOUN = /\b(executives?|managers?|leads?|heads?|directors?|owners?|consultants?|founders?|partners?|reps?|representatives?|specialists?|advisors?|resellers?|affiliates?|creators?|reviewers?|influencers?|bloggers?|podcasters?|youtubers?|newsletters?|communit(?:y|ies)|agenc(?:y|ies)|marketers?|evangelists?|advocates?)\b/i;
+
+/**
+ * The two or three role phrases worth searching for, taken from the user's own words.
+ *
+ * Returns [] when the brief names no role at all — the caller then falls back to a short slice of
+ * the brief, which is still better than the whole thing.
+ */
+export function peopleSearchPhrases(what: string, max = 3): string[] {
+  const brief = (what || '')
+    // Drop a leading framing clause: "people who would promote a product to a business audience — "
+    // is context for the model, not something to type into a search box.
+    .replace(/^[^—:]{0,120}[—:]\s*/, '')
+    .trim();
+  if (!brief) return [];
+
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const chunk of brief.split(/,|;| plus | as well as /i)) {
+    const clean = (s: string) => s
+      .replace(/^\s*(and|or|plus)\b/i, '')
+      .replace(/[^a-zA-Z0-9&/\- ]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    // Prefer the phrase with its trailing qualifier removed — "business-development leads at
+    // companies selling adjacent software" searches far better as "business-development leads".
+    // But only if the role survives the cut: "people who run communities" loses everything that
+    // makes it a role if you stop at "who", so that one keeps its qualifier.
+    const cut = clean(chunk.replace(/\b(at|for|who|that|which|with|from|in|on|to)\b[\s\S]*$/i, ''));
+    const full = clean(chunk);
+    let p = ROLE_NOUN.test(cut) ? cut : full;
+    if (!ROLE_NOUN.test(p)) continue;
+    // Keep it to a searchable length — the last few words are the role, the rest is description.
+    const words = p.split(' ');
+    if (words.length > 5) p = words.slice(-5).join(' ');
+    const key = p.toLowerCase();
+    if (p.length < 4 || seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
 // ─── Enforcing the two filters the user picks off the /leads card ────────────
 // SENIORITY and SECTOR were being written into the prompt and then never checked against the
 // result, so a model that drifted was never caught: a request for logistics founders came back
