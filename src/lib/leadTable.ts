@@ -51,6 +51,11 @@ export const LEAD_CANON: Array<{ key: string; label: string; match: RegExp }> = 
   // pattern is anchored so it cannot swallow an unrelated single-letter column.
   { key: 'x',        label: 'X',            match: /^\s*(x|x[\s/_-]?handle|twitter(\s*handle)?)\s*$/i },
   { key: 'instagram', label: 'Instagram',   match: /instagram|\binsta\b|\big\b/i },
+  // Follower counts are READ off the public profile by enrich_social_profiles. Without a canon
+  // key for them, parseLeadRows dropped the column and rowsToMarkdown never wrote it back — so
+  // the numbers were fetched from the page and then thrown away the moment the list was saved,
+  // which would have looked exactly like the counts never worked.
+  { key: 'followers', label: 'Followers',   match: /follower/i },
   // Deliberately SEPARATE from a bare "Status" column (still dropped, per the comment above —
   // that's one-off verify commentary, not meant to persist). "Connection Status" tracks LinkedIn
   // connection-request progress (sent/accepted/pending) and DOES need to survive every merge —
