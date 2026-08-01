@@ -738,7 +738,9 @@ export default function BrainModule() {
   useEffect(() => {
     const open = (q: string | null) => {
       if (!q) return;
-      const n = brain.findByTitle(q) ?? brain.all().nodes.find((x) => x.id === q);
+      // Exact first. The fuzzy fallback exists for typed searches; used here it would flash a node
+      // whose title merely CONTAINS the one we saved — pointing the user at the wrong list.
+      const n = brain.findExactByTitle(q) ?? brain.all().nodes.find((x) => x.id === q) ?? brain.findByTitle(q);
       // Give the stage a frame to mount before centring on it — its size is measured from the DOM.
       if (n) setTimeout(() => jumpTo(n.id), 60);
     };

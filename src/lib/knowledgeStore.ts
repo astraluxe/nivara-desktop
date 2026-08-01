@@ -340,11 +340,28 @@ export const brain = {
     return added;
   },
 
+  /**
+   * FUZZY LOOKUP — a search, not an identity check.
+   *
+   * The substring fallback is what makes "find me the product note" work when the node is actually
+   * called "PRODUCT.MD — adris.tech". It is the wrong tool for deciding whether a node ALREADY
+   * EXISTS, because "Lead list — Bengaluru" is a substring of "Tech lead list — Bengaluru": asking
+   * this whether a new list exists yet answers "yes, here is a completely different list", and the
+   * caller then writes into it. Use findExactByTitle for that. Kept fuzzy here because the recall
+   * paths genuinely want it.
+   */
   findByTitle(q: string): BrainNode | undefined {
     const d = read();
     const ql = q.trim().toLowerCase();
     return d.nodes.find((n) => n.title.toLowerCase() === ql)
         ?? d.nodes.find((n) => n.title.toLowerCase().includes(ql));
+  },
+
+  /** EXACT title match, ignoring case and a trailing .md/.txt/.json/.csv — the same normalisation
+   *  addNode de-dupes on, so "does this node exist?" is answered the same way everywhere. */
+  findExactByTitle(q: string): BrainNode | undefined {
+    const nt = normTitle(q);
+    return read().nodes.find((n) => normTitle(n.title) === nt);
   },
 
   // Relevance-SCORED, not a blind single-substring match. The old version treated the whole

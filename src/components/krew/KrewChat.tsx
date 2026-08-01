@@ -2330,6 +2330,19 @@ function saysContinueExistingList(text: string): boolean {
       || /\bdon'?t (make|create)\b[^.]{0,20}\bnew\b[^.]{0,20}\b(list|note|file)\b/i.test(text);
 }
 
+/**
+ * Did the user ASK for a brand-new list, as opposed to just not saying either way?
+ *
+ * This is the difference between "put these somewhere sensible" and "do not touch what I already
+ * have". Only the second is a promise, and it is the one that was being broken.
+ */
+function wantsBrandNewList(text: string): boolean {
+  if (saysContinueExistingList(text)) return false;
+  if (loadSettings().listMode === 'new') return true;      // the setting says every save is its own file
+  return /(new|separate|another|second|different|fresh|its own|it'?s own)[^.]{0,40}(list|file|note|table)/i.test(text)
+      || /(don'?t|do not) (add|append|merge|put)[^.]{0,40}(to|into)[^.]{0,30}(existing|old|current|that|the) (list|file|note)/i.test(text);
+}
+
 function computeSeparateListTitle(text: string): string {
   // 1. "continue the existing list" — explicit and absolute.
   if (saysContinueExistingList(text)) return '';
@@ -2451,7 +2464,26 @@ function harvestLeadRows(text: string): string[] {
   return out;
 }
 
-function autoSaveLeadTableToBrain(text: string, fileTitles: string[], separateListTitle = '', requestText = ''): Promise<string | undefined> {
+/**
+ * Save a table the agents just produced into the Brain.
+ *
+ * `forceNew` is the user having SAID this is a new list — the "Start a new list" choice on the
+ * /leads card, or wording like "make a separate list". When it is set, nothing is ever written into
+ * an existing node: the list lands in its own, and a name clash becomes "… (2)" rather than a merge.
+ *
+ * That distinction was missing, and the consequence was silent. A brand-new list was matched
+ * against existing nodes with brain.findByTitle, whose substring fallback treats
+ * "Lead list — Bengaluru" as already existing because "Tech lead list — Bengaluru" contains it —
+ * so a fresh search was appended into an unrelated older list, and the only sign was a Brain note
+ * that had quietly grown. Identity now uses findExactByTitle, and an explicit new list never even
+ * looks.
+ *
+ * Returns the node's title and whether it was created or added to, so callers can tell the user
+ * which of the two happened instead of always saying "Saved".
+ */
+export interface LeadSaveResult { title: string; created: boolean }
+
+function autoSaveLeadTableToBrain(text: string, fileTitles: string[], separateListTitle = '', requestText = '', forceNew = false): Promise<LeadSaveResult | undefined> {
   const pipeLines = extractTableRows(text);
   if (pipeLines.length < 4) return Promise.resolve(undefined);
   // A "Name" column alone does NOT make something a lead list — hotels, tools, events and books
@@ -2483,22 +2515,24 @@ function autoSaveLeadTableToBrain(text: string, fileTitles: string[], separateLi
       const data = brain.all();
       const anchorIds = (): string[] => {
         const ids = new Set<string>();
-        for (const t of cleanTitles) { const f = brain.findByTitle(t); if (f) ids.add(f.id); }
+        for (const t of cleanTitles) { const f = brain.findExactByTitle(t) ?? brain.findByTitle(t); if (f) ids.add(f.id); }
         if (ids.size === 0) {
           const prod = data.nodes.find((n) => /product|profile|business|about (me|us)|company/i.test(n.title));
           if (prod) ids.add(prod.id);
         }
         return [...ids];
       };
+      // EXACT, not fuzzy: with the substring fallback a title that merely CONTAINED this one
+      // counted as taken, so a first save could land on "… (2)" for no reason.
       const uniqueTitle = (base: string): string => {
-        if (!brain.findByTitle(base)) return base;
-        for (let i = 2; i < 50; i++) { const t = `${base} (${i})`; if (!brain.findByTitle(t)) return t; }
+        if (!brain.findExactByTitle(base)) return base;
+        for (let i = 2; i < 50; i++) { const t = `${base} (${i})`; if (!brain.findExactByTitle(t)) return t; }
         return `${base} (${Date.now()})`;
       };
       const title = uniqueTitle(deriveGenericTableTitle(requestText, text));
       const node = brain.addNode({ title, kind: 'data', body: text.slice(0, 16000) });
       for (const aid of anchorIds()) brain.link(aid, node.id, 'built from this');
-      return node.title;
+      return { title: node.title, created: true };
     }).catch(() => undefined);
   }
   // Strip trailing .md/.txt etc — Brain nodes are stored WITHOUT the extension, so
@@ -2506,7 +2540,7 @@ function autoSaveLeadTableToBrain(text: string, fileTitles: string[], separateLi
   const cleanTitles = (fileTitles || [])
     .map((t) => (t || '').replace(/\.(md|txt|json|csv|markdown)$/i, '').trim())
     .filter(Boolean);
-  let savedTitle: string | undefined;
+  let saved: LeadSaveResult | undefined;
   return import('../../lib/knowledgeStore').then(({ brain, nodeToMarkdown }) => {
     const data = brain.all();
     // ALWAYS connect the list to context, so the boss/agents have it linked — without the
@@ -2515,7 +2549,7 @@ function autoSaveLeadTableToBrain(text: string, fileTitles: string[], separateLi
     // so the list never sits orphaned in the graph.
     const anchorIds = (): string[] => {
       const ids = new Set<string>();
-      for (const t of cleanTitles) { const f = brain.findByTitle(t); if (f) ids.add(f.id); }
+      for (const t of cleanTitles) { const f = brain.findExactByTitle(t) ?? brain.findByTitle(t); if (f) ids.add(f.id); }
       if (ids.size === 0) {
         const prod = data.nodes.find((n) => /product|profile|business|about (me|us)|company/i.test(n.title));
         if (prod) ids.add(prod.id);
@@ -2526,52 +2560,60 @@ function autoSaveLeadTableToBrain(text: string, fileTitles: string[], separateLi
       for (const aid of anchorIds()) { if (aid !== nodeId) brain.link(aid, nodeId, 'leads for this'); }
     };
     const uniqueTitle = (base: string): string => {
-      if (!brain.findByTitle(base)) return base;
-      for (let i = 2; i < 50; i++) { const t = `${base} (${i})`; if (!brain.findByTitle(t)) return t; }
+      if (!brain.findExactByTitle(base)) return base;
+      for (let i = 2; i < 50; i++) { const t = `${base} (${i})`; if (!brain.findExactByTitle(t)) return t; }
       return `${base} (${Date.now()})`;
     };
     // When the user asked for a NEW / SEPARATE list (e.g. a "techie lead list"), keep it as its
-    // OWN node — never merge it into the main list. Reuse a node of that exact title if it
-    // already exists, otherwise create a fresh one.
+    // OWN node — never merge it into the main list.
     if (separateListTitle) {
-      const own = brain.findByTitle(separateListTitle);
+      // "Start a new list" means a new list. Not "a new list unless something similar exists",
+      // which is what this was: the lookup was FUZZY, so a fresh "Lead list — Bengaluru" found the
+      // unrelated "Tech lead list — Bengaluru" (it contains the string) and appended itself to it.
+      // The user gets a node they never asked to grow, and nothing anywhere tells them.
+      const own = forceNew ? undefined : brain.findExactByTitle(separateListTitle);
       if (own) {
         const mergedBody = mergeLeadTables(nodeToMarkdown(own.body), text).slice(0, 16000);
         brain.updateNode(own.id, { body: mergedBody });
         linkAll(own.id);
-        savedTitle = own.title;
+        saved = { title: own.title, created: false };
       } else {
-        const node = brain.addNode({ title: separateListTitle, kind: 'list', body: text.slice(0, 16000) });
+        // uniqueTitle FIRST: addNode de-dupes on the title, so creating "Lead list — Bengaluru" a
+        // second time would overwrite the first one's body instead of making a second node. The
+        // clash becomes "Lead list — Bengaluru (2)".
+        const node = brain.addNode({ title: uniqueTitle(separateListTitle), kind: 'list', body: text.slice(0, 16000) });
         linkAll(node.id);
-        savedTitle = node.title;
+        saved = { title: node.title, created: true };
       }
-      return savedTitle;
+      return saved;
     }
     // Prefer the ATTACHED lead-list file the user is actually looking at, so the verified list
     // updates IN PLACE where they expect it — not in a separate "Lead list" node they never see.
     const attachedListNode = cleanTitles
-      .map((t) => brain.findByTitle(t))
+      .map((t) => brain.findExactByTitle(t))
       .find((n) => !!n && /lead|prospect|contact|list/i.test(n.title));
     // Only fold into an EXISTING generic-titled list when the user's own wording says this is a
     // continuation ("verify this", "add more", "expand") — otherwise a same-shaped-but-unrelated
     // search (e.g. non-tech companies right after a tech-companies list) would silently merge two
     // different audiences into one node. No attachment + no continuation wording = always new.
-    const existing = attachedListNode
+    // forceNew short-circuits all of it: the user said this is a new list, so nothing already in
+    // the Brain is a candidate however well it matches.
+    const existing = forceNew ? undefined : (attachedListNode
       || (isExplicitListContinuation(requestText)
-          ? (data.nodes.find((n) => n.kind === 'list' && /lead|prospect|compan/i.test(n.title)) || brain.findByTitle('Lead list'))
-          : undefined);
+          ? (data.nodes.find((n) => n.kind === 'list' && /lead|prospect|compan/i.test(n.title)) || brain.findExactByTitle('Lead list'))
+          : undefined));
     if (existing) {
       const mergedBody = mergeLeadTables(nodeToMarkdown(existing.body), text).slice(0, 16000);
       brain.updateNode(existing.id, { body: mergedBody });
       linkAll(existing.id);
-      savedTitle = existing.title;
+      saved = { title: existing.title, created: false };
     } else {
       const title = uniqueTitle(deriveListTitle(requestText));
       const node = brain.addNode({ title, kind: 'list', body: text.slice(0, 16000) });
       linkAll(node.id);
-      savedTitle = node.title;
+      saved = { title: node.title, created: true };
     }
-    return savedTitle;
+    return saved;
   }).catch(() => undefined);
 }
 
@@ -2631,7 +2673,7 @@ function autoSaveDraftsToBrain(text: string, fileTitles: string[], requestText =
     const data = brain.all();
     const anchorIds = (): string[] => {
       const ids = new Set<string>();
-      for (const t of cleanTitles) { const f = brain.findByTitle(t); if (f) ids.add(f.id); }
+      for (const t of cleanTitles) { const f = brain.findExactByTitle(t) ?? brain.findByTitle(t); if (f) ids.add(f.id); }
       const lead = data.nodes.find((n) => n.kind === 'list' && /lead|prospect|compan/i.test(n.title)) || brain.findByTitle('Lead list');
       if (lead) ids.add(lead.id);
       if (ids.size === 0) { const prod = data.nodes.find((n) => /product|profile|business/i.test(n.title)); if (prod) ids.add(prod.id); }
@@ -6211,9 +6253,21 @@ The prompt must be production-ready — specific enough for a motion designer to
       .map((s) => (s === 'x' ? 'X' : s === 'web' ? 'the web' : s === 'linkedin' ? 'LinkedIn' : 'Instagram')).join(', ');
     // Adding to a list keeps that list's name; a new search gets its own so unrelated searches
     // never collide into one node.
-    const existingNode = cfg.addToList ? brainStore.findByTitle(cfg.addToList) : undefined;
+    const peopleMode = cfg.find === 'people';
+    const existingNode = cfg.addToList ? brainStore.findExactByTitle(cfg.addToList) : undefined;
     const existingMd = existingNode?.body ? nodeToMarkdown(existingNode.body) : '';
-    const title = cfg.addToList || deriveListTitle(`${cfg.sector || cfg.what} ${cfg.city}`.trim());
+    // NAME IT AFTER WHAT WAS ASKED FOR. deriveListTitle looks for a sector keyword and otherwise
+    // falls back to the bare "Lead list — <city>" — so an affiliates hunt and a resellers hunt in
+    // the same city both came out as "Lead list — Bengaluru" and the second was liable to be folded
+    // into the first. A people brief already names its roles; use the first one.
+    const peopleTitle = (() => {
+      if (!peopleMode) return '';
+      const role = peopleSearchPhrases(cfg.what || '', 1)[0];
+      if (!role) return '';
+      const nice = role[0].toUpperCase() + role.slice(1);
+      return cfg.city ? `${nice} — ${cfg.city}` : nice;
+    })();
+    const title = cfg.addToList || peopleTitle || deriveListTitle(`${cfg.sector || cfg.what} ${cfg.city}`.trim());
     // Everyone already on the list, so the search can be told to skip them AND anything that slips
     // through can be dropped. Asking a model politely not to repeat itself is not enough.
     const existingNames = new Set<string>();
@@ -6236,13 +6290,6 @@ The prompt must be production-ready — specific enough for a motion designer to
     post({ role: 'assistant', content: `Finding ${cfg.count} ${cfg.find === 'people' ? 'people' : 'leads'}…`, streaming: true });
 
     try {
-      // WHAT ARE WE FINDING? Known up here, not thirty lines below, because the system prompt has to
-      // be built differently for each. The people rules used to be appended AFTER a block that told
-      // the model to "name its founder, CEO, or the specific decision-maker" — so a search for
-      // account executives and partnership managers was being asked for founders in the same breath,
-      // and founders are what came back.
-      const peopleMode = cfg.find === 'people';
-
       // 1) Ask for the candidates. Kept to ONE table and no prose so a local model has the least
       //    possible to get wrong, and so the result parses whatever wrote it.
       const sys = [
@@ -6906,10 +6953,13 @@ PREFER people and companies that appear above: they are known to exist. You may 
 
       // 6) Save to Brain, then offer the one-click hand-off. Appending merges cell-by-cell into the
       //    node the user picked, so nothing already there is overwritten or lost.
+      let savedInfo: LeadSaveResult | undefined;
       if (existingNode) {
         brainStore.updateNode(existingNode.id, { body: mergeLeadTables(existingMd, finalMd).slice(0, 16000) });
       } else {
-        await autoSaveLeadTableToBrain(finalMd, [], title, cfg.what);
+        // cfg.addToList empty = the user chose "Start a new list" on the card. That is as explicit
+        // as an instruction gets, so nothing existing may be written into.
+        savedInfo = await autoSaveLeadTableToBrain(finalMd, [], title, cfg.what, true);
       }
       // Name the reasons that actually fired, biggest first, so a short list points at the tick-box
       // to loosen instead of listing every possible cause.
@@ -6923,7 +6973,14 @@ PREFER people and companies that appear above: they are known to exist. You may 
       ] as [number, string][])
         .filter(([n]) => n > 0).sort((a, b) => b[0] - a[0])
         .map(([n, why]) => `${n} ${why}`).join(', ');
-      const summary = `${existingNode ? 'Added' : 'Saved'} **${kept2.length}** lead${kept2.length === 1 ? '' : 's'} to **${title}**`
+      // THE TITLE THE LIST ACTUALLY GOT. A name clash makes it "… (2)", and reporting the name we
+      // asked for rather than the one it was given would send "Open in Brain" to the wrong node —
+      // the very confusion this whole change is about.
+      const savedTitle = savedInfo?.title || title;
+      const wentTo = existingNode || savedInfo?.created === false
+        ? `Added **${kept2.length}** lead${kept2.length === 1 ? '' : 's'} to your existing **${savedTitle}**`
+        : `Saved **${kept2.length}** lead${kept2.length === 1 ? '' : 's'} as a new list, **${savedTitle}**`;
+      const summary = wentTo
         + `${dropped > 0 ? ` — ${dropped} left out: ${reasonText || 'they didn\'t match what you asked for'}` : ''}.`
         + (kept2.length < cfg.count / 2
           ? `\n\n_You asked for ${cfg.count}. ${dropped > 0 ? 'Loosening whichever filter above dropped the most would get you more' : 'Widening the brief — a bigger city, or fewer requirements — usually gets you more'}, or press "Find more like these"._`
@@ -6936,7 +6993,7 @@ _None of them had everything you ticked, so I've saved them rather than lose the
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: summary, streaming: false }; return c; });
       if (sid) krewDb.saveMessage(sid, 'assistant', summary).catch(() => {});
       const missingLinks = kept2.filter((r) => !/linkedin\.com\/in\//i.test(r.cells['linkedin'] || '')).length;
-      post({ role: 'lead_result', content: title, leadCount: kept2.length, leadTable: finalMd, leadMissingLinks: missingLinks });
+      post({ role: 'lead_result', content: savedTitle, leadCount: kept2.length, leadTable: finalMd, leadMissingLinks: missingLinks });
     } catch (e) {
       if (String(e).includes(ABORT)) {
         // Stopped, or the user moved to another chat. Say so in the chat it belongs to, and
@@ -9307,7 +9364,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
               // of merging into the main lead list. An explicit custom name ("name it as X",
               // "call it X") always wins; non-tech is classified before tech (see helper).
               const separateTitle = computeSeparateListTitle(text);
-              autoSaveLeadTableToBrain(finalDelegateOut, brainTitles, separateTitle, text).then((t) => { if (t) lastAutoSavedListTitleRef.current = t; });
+              autoSaveLeadTableToBrain(finalDelegateOut, brainTitles, separateTitle, text, wantsBrandNewList(text)).then((r) => { if (r) lastAutoSavedListTitleRef.current = r.title; });
               const draftTitle = autoSaveDraftsToBrain(finalDelegateOut, brainTitles, text); // save any LinkedIn/email drafts too
               if (draftTitle) lastAutoSavedListTitleRef.current = draftTitle;
               // The FULL delegate output is shown to the user in the delegation bubble below.
@@ -9553,7 +9610,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
               }) ?? wfResults.find((r) => looksLikeAnyTable(extractTableRows(r)));
               const wfBrainTitles = attachedTitlesRef.current.length ? attachedTitlesRef.current : [lastAttachedTitleRef.current];
               if (wfLeadResult) {
-                autoSaveLeadTableToBrain(wfLeadResult, wfBrainTitles, computeSeparateListTitle(text), text).then((t) => { if (t) lastAutoSavedListTitleRef.current = t; });
+                autoSaveLeadTableToBrain(wfLeadResult, wfBrainTitles, computeSeparateListTitle(text), text, wantsBrandNewList(text)).then((r) => { if (r) lastAutoSavedListTitleRef.current = r.title; });
               }
               // Drafts were NOT being saved from the workflow path at all — a "find X then draft
               // outreach" plan lost its messages. Save drafts from whichever step produced them.
@@ -9631,7 +9688,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
           const bdTable = (bdTblStart >= 0 ? toolResult.slice(bdTblStart) : toolResult).trim();
           if (bdTable.includes('|')) {
             const bdBrainTitles = attachedTitlesRef.current.length ? attachedTitlesRef.current : [lastAttachedTitleRef.current];
-            autoSaveLeadTableToBrain(bdTable, bdBrainTitles, computeSeparateListTitle(text), text).then((t) => { if (t) lastAutoSavedListTitleRef.current = t; });
+            autoSaveLeadTableToBrain(bdTable, bdBrainTitles, computeSeparateListTitle(text), text, wantsBrandNewList(text)).then((r) => { if (r) lastAutoSavedListTitleRef.current = r.title; });
           }
         }
         // Save delegations with role 'delegation' + agent key so they restore correctly on reload.
