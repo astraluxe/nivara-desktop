@@ -109,12 +109,14 @@ export default function ConnectionBar(props: Props) {
       if (!key) { try { const c = await credentialStore.get(provider); key = (c?.api_key as string) || ''; } catch { /* none */ } }
       if (!key) { if (!cancelled) { setRankedModels(null); setModelsLoading(false); } return; }
       const list = await fetchRankedModels(provider, key);
-      // Hide models this key has already been caught not answering. The catalogue lists everything
-      // the provider hosts, not what the account can actually call — offering one of those back is
-      // how a user ends up picking a model that accepts the request and then says nothing.
-      const { isBlocked } = await import('../../lib/modelHealth');
-      const usable = list.filter((m) => !isBlocked(provider, m.id));
-      if (!cancelled) { setRankedModels(usable); setModelsLoading(false); }
+      // NOTHING IS HIDDEN ANY MORE — it is GROUPED. Models this key was caught not answering used
+      // to be filtered out here, which is right about the danger (the catalogue lists everything the
+      // provider hosts, not what your account may call) and wrong about the remedy: a model that was
+      // rate-limited for one busy minute vanished with no explanation, and a user who knows they
+      // have access to it is left thinking the app cannot see it. They are now shown under "didn't
+      // answer when tested", with the reason, and can still be tried — which is exactly how a
+      // rate-limited one gets recovered.
+      if (!cancelled) { setRankedModels(list); setModelsLoading(false); }
 
       // Show whatever was measured before, then — if this key has never been swept — sweep it in
       // the background. Nothing waits on it: the popup stays usable and the numbers fill in.
@@ -122,6 +124,31 @@ export default function ConnectionBar(props: Props) {
       const saved = loadScan(provider, key);
       if (!cancelled) setScan(saved);
       if (!saved && !cancelled) void runScan(key);
+
+      // MEASURE THE MODEL YOU ARE ACTUALLY ON, if the scan never covered it.
+      //
+      // A model connected after the last sweep — or one whose probe was rate-limited during it —
+      // has no row, so it can only be listed as "not tested" while the user watches it working. One
+      // probe settles that: it moves into the answered group with its real speed and JSON result,
+      // and the popup stops disagreeing with the user's own experience. Costs a single tiny call,
+      // and only when there is nothing on record.
+      if (!cancelled && modelName && !(saved?.rows ?? []).some((r) => r.id === modelName)) {
+        try {
+          const { probeModelDetailed, contextWindowFor: ctxFor } = {
+            ...(await import('../../lib/modelHealth')),
+            contextWindowFor: (await import('../../lib/contextBudget')).contextWindowFor,
+          };
+          const res = await probeModelDetailed(provider, key, modelName, 20_000);
+          if (!cancelled) {
+            setScan((prev) => {
+              const row = { id: modelName, ms: res.ms, jsonOk: res.jsonOk, ok: res.ok, reason: res.reason, window: ctxFor(modelName), tier: 'other' as const };
+              return prev
+                ? { ...prev, rows: [...prev.rows.filter((x) => x.id !== modelName), row] }
+                : { provider, keyTail: key.slice(-6), scannedAt: Date.now(), rows: [row] };
+            });
+          }
+        } catch { /* the popup is perfectly usable without this — it just shows "not tested" */ }
+      }
     })();
     return () => { cancelled = true; };
   }, [popup, provider, apiKey, credsNonce]);
@@ -449,38 +476,63 @@ export default function ConnectionBar(props: Props) {
                                 813ms with clean JSON is objectively the better pick than one that
                                 merely sounds bigger, and the numbers are shown so the user can see
                                 why — no hidden hardcoded favourite. */}
-                            {(scan ? ['measured'] as const : ['smart', 'fast'] as const).map((tier) => {
-                              const list = tier === 'measured'
-                                ? (() => {
-                                    // Same ordering the app itself uses to pick — so what the user
-                                    // sees at the top IS what gets chosen for them.
-                                    const byId = new Map(rankedModels.map((m) => [m.id, m] as const));
-                                    // NO .slice(10) any more. Capping the list at ten is why the
-                                    // header could say "16 of 23 models answered" while far fewer
-                                    // were clickable — including, on a key whose best model sat
-                                    // eleventh, the only one big enough for the job. Every model
-                                    // that answered is now offered; the list scrolls.
-                                    let all = rankedScan.map((r) => byId.get(r.id) ?? { id: r.id, tier: 'other' as const });
-                                    if (capFilter !== 'all') all = all.filter((m) => capabilityOf(m.id).label === capFilter);
-                                    if (capSort === 'capable') {
-                                      all = all.slice().sort((a, b) =>
-                                        capabilityOf(a.id).rank - capabilityOf(b.id).rank
-                                        || contextWindowFor(b.id) - contextWindowFor(a.id));
-                                    }
-                                    return all;
-                                  })()
-                                : rankedModels.filter((m) => m.tier === tier);
-                              if (!list.length) return null;
-                              return (
-                                <div key={tier} className="mb-1.5">
-                                  <p className="text-[9.5px] text-nv-faint mb-1">{
-                                    tier === 'measured' ? `★ All ${rankedScan.length} models that answered on your key, tested ${new Date(scan!.scannedAt).toLocaleDateString()} — ${capSort === 'recommended' ? 'most reliable first' : 'biggest first'}`
-                                    : tier === 'smart' ? '★ Recommended — handles agents, tools, research (closest to the default)'
-                                    : 'Fast — quick replies & writing'}</p>
-                                  {/* Filter + sort, shown only for the measured list (the one that
-                                      can be long). Plain words: someone choosing a model should not
-                                      have to know what a token is. */}
-                                  {tier === 'measured' && (
+                            {(() => {
+                              // ONE LIST, WITH EVERYTHING ON IT.
+                              //
+                              // This used to show EITHER the scan results (models that answered)
+                              // OR, with no scan, six "smart" and four "fast" from the catalogue.
+                              // Both ways hid models: anything added to the catalogue after the
+                              // scan, anything whose probe was rate-limited during the sweep, and
+                              // — with no scan at all — every model past the tenth. So a model you
+                              // were connected to and working on could simply not be in the list.
+                              //
+                              // Now every model is here exactly once, grouped by what is actually
+                              // KNOWN about it, which is the honest distinction: it answered, it
+                              // has not been tried, or it did not answer and here is why. Nothing
+                              // is silently dropped, and a model in the last group is still
+                              // clickable — that is how a rate-limited one gets recovered.
+                              const byId = new Map(rankedModels.map((m) => [m.id, m] as const));
+                              const seen = new Set<string>();
+                              const order: string[] = [];
+                              const push = (id: string) => { if (id && !seen.has(id)) { seen.add(id); order.push(id); } };
+                              if (modelName) push(modelName);          // in use — always first
+                              rankedScan.forEach((r) => push(r.id));   // measured & working, best first
+                              rankedModels.forEach((m) => push(m.id)); // the rest of the catalogue
+                              (scan?.rows ?? []).forEach((r) => push(r.id));
+
+                              const entryFor = (id: string) => byId.get(id) ?? { id, tier: 'other' as const };
+                              const statusOf = (id: string): 'working' | 'untested' | 'failed' => {
+                                const r = rowFor(id);
+                                if (!r) return 'untested';
+                                return r.ok ? 'working' : 'failed';
+                              };
+                              const GROUPS = [
+                                { key: 'working'  as const, label: scan
+                                    ? `★ Answered on your key when tested ${new Date(scan.scannedAt).toLocaleDateString()}`
+                                    : '★ Answered on your key' },
+                                { key: 'untested' as const, label: 'Not tested yet — available on your key, press Rescan to measure them' },
+                                { key: 'failed'   as const, label: 'Did not answer when tested — you can still try one; a rate limit is temporary' },
+                              ];
+                              return GROUPS.map(({ key: gkey, label }) => {
+                                let ids = order.filter((id) => statusOf(id) === gkey);
+                                // The capability filter never hides the model you are ON.
+                                if (capFilter !== 'all') ids = ids.filter((id) => id === modelName || capabilityOf(id).label === capFilter);
+                                if (capSort === 'capable') {
+                                  ids = ids.slice().sort((a, b) =>
+                                    (a === modelName ? -1 : b === modelName ? 1 : 0)
+                                    || capabilityOf(a).rank - capabilityOf(b).rank
+                                    || contextWindowFor(b) - contextWindowFor(a));
+                                }
+                                const list = ids.map(entryFor);
+                                if (!list.length) return null;
+                                const tier = gkey;
+                                return (
+                                  <div key={tier} className="mb-1.5">
+                                  <p className="text-[9.5px] text-nv-faint mb-1">{label} · {list.length}</p>
+                                  {/* Filter + sort, on the FIRST group only — they apply to all of
+                                      them. Plain words: someone choosing a model should not have to
+                                      know what a token is. */}
+                                  {tier === 'working' && (
                                     <div className="flex items-center gap-1 flex-wrap mb-1.5">
                                       {(['all', 'High', 'Medium', 'Basic'] as const).map((f) => (
                                         <button key={f} onClick={() => setCapFilter(f)}
@@ -494,11 +546,10 @@ export default function ConnectionBar(props: Props) {
                                       >{capSort === 'recommended' ? 'Sort: Recommended' : 'Sort: Most capable'}</button>
                                     </div>
                                   )}
+                                  {/* NO CAP. Capping the list at six or ten is what made models
+                                      invisible in the first place — it scrolls instead. */}
                                   <div className="flex flex-wrap gap-1 max-h-56 overflow-y-auto">
-                                    {list.length === 0 && tier === 'measured' && (
-                                      <p className="text-[9.5px] text-nv-faint">No model on your key is in this band. Choose “All”, or press Rescan models.</p>
-                                    )}
-                                    {list.slice(0, tier === 'fast' ? 4 : tier === 'smart' ? 6 : list.length).map((m) => {
+                                    {list.map((m) => {
                                       const short = m.id.split('/').pop() || m.id;
                                       const on = modelName === m.id;
                                       const r = rowFor(m.id);
@@ -551,9 +602,30 @@ export default function ConnectionBar(props: Props) {
                                               setCheckNote(`✓ ${short} answered in ${speed}${res.jsonOk ? ' with clean JSON' : ''} — now using it for every chat and agent.${warn}`);
                                               return;
                                             }
-                                            blockModel(provider, m.id);
-                                            setRankedModels((prev) => (prev ? prev.filter((x) => x.id !== m.id) : prev));
-                                            setCheckNote(`${short} didn't respond on your key — your account may not have access to it. Removed from the list; pick another.`);
+                                            // Blame the right thing. Every failure used to read
+                                            // "your account may not have access", and the model was
+                                            // dropped from the list — so a free key that was simply
+                                            // busy for ten seconds lost a model it owns perfectly
+                                            // well, and the user was told something untrue about
+                                            // their account. Only a genuine access failure retires
+                                            // a model; a rate limit or a slow answer is worth
+                                            // another try in a moment.
+                                            if (res.reason === 'rate_limit') {
+                                              setCheckNote(`${short} is rate-limited on your key right now — that is your provider's per-minute cap, not a problem with the model. Wait a moment and press it again.`);
+                                            } else if (res.reason === 'timeout' || res.reason === 'unknown') {
+                                              setCheckNote(`${short} didn't answer within 30 seconds. It may just be slow or busy — try it again, and if it keeps happening pick another.`);
+                                            } else {
+                                              blockModel(provider, m.id);
+                                              // Record the failure rather than deleting the model.
+                                              // Removing it from the list is what left users hunting
+                                              // for a model they knew they had; it now drops into
+                                              // "did not answer", labelled, where they can see what
+                                              // happened to it.
+                                              setScan((prev) => (prev
+                                                ? { ...prev, rows: [...prev.rows.filter((x) => x.id !== m.id), { id: m.id, ms: res.ms, jsonOk: false, ok: false, reason: res.reason, window: contextWindowFor(m.id), tier: m.tier }] }
+                                                : prev));
+                                              setCheckNote(`${short} isn't available on your key — your account doesn't have access to it. It's moved to "did not answer" below; pick another.`);
+                                            }
                                           }}
                                           className={`text-[10px] px-2 py-1 rounded-md border transition-fast flex items-center gap-1 ${on ? 'border-accent bg-accent/10 text-accent font-medium' : 'border-nv-border text-nv-muted hover:text-nv-text'} ${checking === m.id ? 'opacity-60' : ''}`}>
                                           {checking === m.id ? `checking ${short}…` : short}
@@ -566,25 +638,35 @@ export default function ConnectionBar(props: Props) {
                                           {checking !== m.id && (
                                             <span className={`text-[8px] px-1 py-px rounded border ${cap.cls}`}>{cap.label}</span>
                                           )}
-                                          {checking !== m.id && r && (
+                                          {checking !== m.id && r && r.ok && (
                                             <span className="text-[8.5px] text-nv-faint font-mono">
                                               {r.ms < 1000 ? `${r.ms}ms` : `${(r.ms / 1000).toFixed(1)}s`}·{r.jsonOk ? 'JSON' : 'prose'}·{win(contextWindowFor(m.id))}
                                             </span>
+                                          )}
+                                          {/* Never measured, or measured and failed. Say which, and
+                                              what to do about it — showing nothing at all is what
+                                              made a working model look like one the app had lost. */}
+                                          {checking !== m.id && !r && (
+                                            <span className="text-[8.5px] text-nv-faint font-mono">{on ? 'in use · not tested' : 'not tested'}</span>
+                                          )}
+                                          {checking !== m.id && r && !r.ok && (
+                                            <span className="text-[8.5px] text-amber-500 font-mono">{r.reason === 'dead' ? 'no access' : 'retry'}</span>
                                           )}
                                         </button>
                                       );
                                     })}
                                   </div>
                                 </div>
-                              );
-                            })}
+                                );
+                              });
+                            })()}
                             {/* A "✓ it works, BUT it can't do JSON" is not good news — colour it
                                 by the warning, not by the tick that happens to start the line. */}
                             {checkNote && <p className={`text-[9.5px] mt-1 ${checkNote.startsWith('✓') && !checkNote.includes('⚠') ? 'text-emerald-400' : 'text-amber-400'}`}>{checkNote}</p>}
                             <p className="text-[9.5px] text-nv-faint mt-1">
                               {scan
-                                ? `${scan.rows.filter((r) => r.ok).length} of ${scan.rows.length} models answered on your key; ${scan.rows.filter((r) => r.ok && r.jsonOk).length} can return JSON (needed for research, decks and reply checking). The list is measured, not a fixed favourite — press Rescan when NVIDIA adds models.`
-                                : 'Each one is tested against your key when you pick it — an NVIDIA key doesn’t say which models your account may use, and a few accept requests without ever answering.'}
+                                ? `Every model your key lists is shown above. ${scan.rows.filter((r) => r.ok).length} of ${scan.rows.length} tested answered; ${scan.rows.filter((r) => r.ok && r.jsonOk).length} can return JSON (needed for research, decks and reply checking). Measured, not a fixed favourite — press Rescan after your provider adds models.`
+                                : 'Every model your key lists is shown above. Each is tested against your key when you pick it — a key doesn’t say which models your account may use, and a few accept requests without ever answering.'}
                             </p>
                           </>
                         )}

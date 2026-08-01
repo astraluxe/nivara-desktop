@@ -150,6 +150,8 @@ export interface ModelScanRow {
   window: number;
   /** 'smart' = big/agentic/reasoning family, 'fast' = small. From the id, via rankChatModel. */
   tier?: 'smart' | 'fast' | 'other';
+  /** Why it failed, when it did — see ProbeFailure. Absent on rows from before this was recorded. */
+  reason?: ProbeFailure;
 }
 
 export interface ModelScan {
@@ -242,15 +244,35 @@ export function rankScan(scan: ModelScan | null): ModelScanRow[] {
 }
 
 /**
+ * WHY a probe failed, because the answers are not interchangeable.
+ *
+ * 'dead' is the only one that justifies retiring a model: the account genuinely cannot call it
+ * ("404 not found for account", "model does not exist", no access). A rate limit means "ask me
+ * later" and a timeout means "I did not wait long enough" — treating either as death is how a
+ * working model disappears. A scan sweeps up to 90 models in batches of six against a free key, so
+ * 429s during it are entirely expected, and every one of them used to blocklist a model for two
+ * hours and drop it out of the picker.
+ */
+export type ProbeFailure = 'ok' | 'rate_limit' | 'timeout' | 'dead' | 'unknown';
+
+export function classifyProbeFailure(msg: string): ProbeFailure {
+  const m = (msg || '').toLowerCase();
+  if (/429|rate.?limit|too many requests|quota|capacity/.test(m)) return 'rate_limit';
+  if (/timed? ?out|timeout|deadline|aborted/.test(m)) return 'timeout';
+  if (/(404|403|401)|not found|does not exist|no access|unauthorized|not authorized|invalid model|unknown model|decommissioned/.test(m)) return 'dead';
+  return 'unknown';
+}
+
+/**
  * Probe one model and MEASURE it: does it answer, how fast, and can it return JSON on request.
  * One call does both jobs — asking for a tiny JSON object costs the same as asking for "hi".
  */
 export async function probeModelDetailed(
   provider: Provider, apiKey: string, model: string, timeoutMs = 12_000,
-): Promise<{ ok: boolean; ms: number; jsonOk: boolean }> {
+): Promise<{ ok: boolean; ms: number; jsonOk: boolean; reason: ProbeFailure }> {
   const endpoint = PROVIDERS[provider]?.endpoint;
   const t0 = Date.now();
-  if (!endpoint || !apiKey || !model) return { ok: false, ms: 0, jsonOk: false };
+  if (!endpoint || !apiKey || !model) return { ok: false, ms: 0, jsonOk: false, reason: 'dead' };
   try {
     const raw = await invoke<string>('krew_http_call', {
       method: 'POST', url: endpoint,
@@ -263,17 +285,19 @@ export async function probeModelDetailed(
       timeoutMs,
     });
     const ms = Date.now() - t0;
-    if (!raw) return { ok: false, ms, jsonOk: false };
+    if (!raw) return { ok: false, ms, jsonOk: false, reason: 'unknown' };
     const j = JSON.parse(raw) as { choices?: Array<{ message?: { content?: string } }>; error?: unknown; detail?: unknown };
-    if (j.error || j.detail) return { ok: false, ms, jsonOk: false };
-    if (!Array.isArray(j.choices) || !j.choices.length) return { ok: false, ms, jsonOk: false };
+    if (j.error || j.detail) return { ok: false, ms, jsonOk: false, reason: classifyProbeFailure(JSON.stringify(j.error ?? j.detail)) };
+    if (!Array.isArray(j.choices) || !j.choices.length) return { ok: false, ms, jsonOk: false, reason: 'unknown' };
     const content = String(j.choices[0]?.message?.content ?? '');
     // A reasoning model wraps its answer in <think>…</think>; that is not a JSON failure, so strip
     // it before judging. Anything still containing a bare {"ok"…} object counts.
     const body = content.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/```(?:json)?|```/gi, '');
     const jsonOk = /\{\s*"ok"\s*:\s*1\s*\}/.test(body);
-    return { ok: true, ms, jsonOk };
-  } catch { return { ok: false, ms: Date.now() - t0, jsonOk: false }; }
+    return { ok: true, ms, jsonOk, reason: 'ok' };
+  } catch (e) {
+    return { ok: false, ms: Date.now() - t0, jsonOk: false, reason: classifyProbeFailure(e instanceof Error ? e.message : String(e)) };
+  }
 }
 
 /**
@@ -303,12 +327,15 @@ export async function scanModels(
     const chunk = ids.slice(i, i + batch);
     const measured = await Promise.all(chunk.map(async (id) => {
       const r = await probeModelDetailed(provider, apiKey, id, timeoutMs);
-      return { id, ms: r.ms, jsonOk: r.jsonOk, ok: r.ok, window: contextWindowFor(id), tier: tierById.get(id) } as ModelScanRow;
+      return { id, ms: r.ms, jsonOk: r.jsonOk, ok: r.ok, reason: r.reason, window: contextWindowFor(id), tier: tierById.get(id) } as ModelScanRow;
     }));
     for (const row of measured) {
       rows.push(row);
-      // Feed the blocklist as we go, so even an interrupted scan leaves the app better off.
-      if (!row.ok) blockModel(provider, row.id);
+      // Feed the blocklist as we go, so even an interrupted scan leaves the app better off — but
+      // ONLY for models the account genuinely cannot call. A 429 or a slow first token during a
+      // 90-model sweep says nothing about whether the model works, and blocking on those quietly
+      // retired good models and dropped them out of the picker for two hours.
+      if (!row.ok && row.reason === 'dead') blockModel(provider, row.id);
       onProgress?.(rows.length, ids.length, row);
     }
   }
