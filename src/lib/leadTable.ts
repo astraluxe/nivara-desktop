@@ -256,7 +256,7 @@ const ROLE_TITLE = /\b(ceo|cto|coo|cfo|cmo|cio|founder|co-?founder|owner|directo
  * column when a model writes its commentary into the table ("Pramod S processed your first 9
  * connections; would you like me to…"), and without this it becomes an outreach "contact".
  */
-export function looksLikePersonLead(name: string, role = ''): boolean {
+export function looksLikePersonLead(name: string, role = '', descriptiveRoles = false): boolean {
   const n = (name || '').trim();
   if (!n) return false;
   // Real names are short. 48 chars comfortably fits "Shreeram Ravichandran" and rejects prose.
@@ -268,6 +268,14 @@ export function looksLikePersonLead(name: string, role = ''): boolean {
   if (ORG_WORDS.test(n)) return false;
   const r = (role || '').trim();
   const described = r && r !== '—' && r !== '-';
+  // PEOPLE MODE writes a DESCRIPTION where company mode writes a job title — the lead prompt
+  // asks for exactly that ("runs a 60k dev-tools newsletter", "reviews SaaS on Instagram"). Held
+  // to the company-mode rule below, every one of those rows was thrown away for not containing
+  // the word "founder" or "CEO" — the search's own instruction produced rows its own filter then
+  // deleted, which is how a request for 25 affiliates came back with 3 directors. When the caller
+  // says the roles are descriptions, judge the row on the NAME (a real person's name, not an
+  // organisation) and let the description be whatever describes them.
+  if (descriptiveRoles) return words.length >= 2 || ROLE_TITLE.test(r);
   // When the row SAYS what this is, believe it: a job title means a person ("Hiver / CEO",
   // "COO at Rashbhar Healthcare"), and a description with no title is a company ("Home Services",
   // "Law Firm", "Real Estate Developer", "Active: SDE Intern").
@@ -316,11 +324,22 @@ export function parseLeadRows(md: string, startOrder: number): { rows: LeadRow[]
 }
 
 // Render parsed rows back to a markdown table (full canonical columns). Used to build a sub-list of
-// only the rows that still need work, so the browser pass FOCUSES on the missing ones.
-export function rowsToMarkdown(rows: LeadRow[]): string {
-  const header = '| ' + LEAD_CANON.map((c) => c.label).join(' | ') + ' |';
-  const sep = '| ' + LEAD_CANON.map(() => '---').join(' | ') + ' |';
-  const body = rows.map((r) => '| ' + LEAD_CANON.map((c) => r.cells[c.key] || '—').join(' | ') + ' |');
+// only the rows that still need work, so the browser pass FOCUSES on the missing ones — those runs
+// need every column present, including the empty ones they are meant to fill in.
+//
+// `onlyPopulated` is for the OPPOSITE case: the finished list the user reads and the Brain stores.
+// Emitting all twelve columns there meant a LinkedIn-only search was shown with five columns of
+// nothing but "—" (Phone, Email, X, Instagram, Followers), which reads as a list that failed rather
+// than one that was never asked for those. Name and LinkedIn are always kept — a lead list without
+// them has no shape at all, and the blank LinkedIn column is exactly what the "find the missing
+// profiles" button acts on.
+export function rowsToMarkdown(rows: LeadRow[], opts?: { onlyPopulated?: boolean }): string {
+  const cols = opts?.onlyPopulated
+    ? LEAD_CANON.filter((c) => c.key === 'name' || c.key === 'linkedin' || rows.some((r) => r.cells[c.key]))
+    : LEAD_CANON;
+  const header = '| ' + cols.map((c) => c.label).join(' | ') + ' |';
+  const sep = '| ' + cols.map(() => '---').join(' | ') + ' |';
+  const body = rows.map((r) => '| ' + cols.map((c) => r.cells[c.key] || '—').join(' | ') + ' |');
   return [header, sep, ...body].join('\n');
 }
 

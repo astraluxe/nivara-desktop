@@ -29,6 +29,35 @@ export interface BrainData { nodes: BrainNode[]; edges: BrainEdge[] }
 const KEY = 'nv-brain-v1';
 export const BRAIN_EVENT = 'nv-brain-changed';
 
+// ─── "Show me where it went" ─────────────────────────────────────────────────
+// Anywhere in the app that saves something to the Brain can ask the Brain screen to point at it.
+// Two channels on purpose: the event handles the case where the Brain is already mounted, and the
+// localStorage key survives the module switch for the case where it is not (which is the usual
+// one — you press "Open in Brain" from the Krew chat, so the Brain mounts fresh a beat later and
+// there was nobody listening when the event fired).
+export const BRAIN_FOCUS_EVENT = 'nv-brain-focus';
+const FOCUS_KEY = 'nv-brain-focus-request';
+
+/** Ask the Brain screen to select, centre and flash the node with this title (or id). */
+export function requestBrainFocus(titleOrId: string) {
+  if (!titleOrId) return;
+  try { localStorage.setItem(FOCUS_KEY, JSON.stringify({ q: titleOrId, at: Date.now() })); } catch { /* quota */ }
+  try { window.dispatchEvent(new CustomEvent(BRAIN_FOCUS_EVENT, { detail: titleOrId })); } catch { /* no window */ }
+}
+
+/** Read and clear a pending focus request. Stale ones (over a minute old) are ignored — a request
+ *  left over from an earlier session must not hijack the graph the next time the Brain is opened. */
+export function takeBrainFocus(): string | null {
+  try {
+    const raw = localStorage.getItem(FOCUS_KEY);
+    if (!raw) return null;
+    localStorage.removeItem(FOCUS_KEY);
+    const { q, at } = JSON.parse(raw) as { q?: string; at?: number };
+    if (!q || !at || Date.now() - at > 60_000) return null;
+    return q;
+  } catch { return null; }
+}
+
 function read(): BrainData {
   try {
     const r = JSON.parse(localStorage.getItem(KEY) ?? '{}');

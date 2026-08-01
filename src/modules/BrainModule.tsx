@@ -1,7 +1,8 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
-import { brain, BRAIN_EVENT, nodeToMarkdown, type BrainNode, type BrainNodeKind, type BrainData } from '../lib/knowledgeStore';
+import { brain, BRAIN_EVENT, BRAIN_FOCUS_EVENT, takeBrainFocus, nodeToMarkdown, type BrainNode, type BrainNodeKind, type BrainData } from '../lib/knowledgeStore';
+import SkillsView from '../components/brain/SkillsView';
 import { renderDeckHtml, extractDeckSpec, applyDeckEdits, type DeckSpec, type DeckPalette } from '../lib/deck';
 import { todos, type TodoItem } from '../lib/todoStore';
 
@@ -110,13 +111,18 @@ const NOTE_CLS =
   '[&_.col-resizer]:absolute [&_.col-resizer]:top-0 [&_.col-resizer]:-right-[3px] [&_.col-resizer]:w-[6px] [&_.col-resizer]:h-full [&_.col-resizer]:cursor-col-resize [&_.col-resizer]:z-10 [&_.col-resizer:hover]:bg-accent/40';
 
 // ─── Graph stage (custom SVG + cards, like the Krew Office — no heavy lib) ─────
-function Stage({ data, selectedId, onSelect, onMoveNode }: {
+function Stage({ data, selectedId, focus, onSelect, onMoveNode }: {
   data: BrainData; selectedId: string | null;
+  /** A node to jump to. `key` is bumped on every request so asking for the SAME node twice still
+   *  re-runs the flash — otherwise pressing "Open in Brain" a second time appears to do nothing. */
+  focus?: { id: string; key: number } | null;
   onSelect: (id: string | null) => void;
   onMoveNode: (id: string, x: number, y: number) => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState({ x: 0, y: 0, scale: 1 });
+  // The node currently flashing purple. Cleared when the animation ends so it can run again later.
+  const [flashId, setFlashId] = useState<string | null>(null);
   // live positions during drag (avoids writing to storage on every move)
   const [pos, setPos] = useState<Record<string, { x: number; y: number }>>({});
   const drag = useRef<{ id: string | null; sx: number; sy: number; ox: number; oy: number; moved: boolean; pan?: boolean } | null>(null);
@@ -143,6 +149,35 @@ function Stage({ data, selectedId, onSelect, onMoveNode }: {
     });
     didFit.current = true;
   }, [data.nodes.length]);
+
+  // Centre on the requested node and flash it. Zoom in a little if the graph was scrolled right
+  // out — arriving at a node rendered 4 pixels wide is not "showing" it to anyone.
+  //
+  // Keyed on the request, not on the data. The node list has to be a dependency (the focus can
+  // arrive a frame before the node it names is in `data`), but re-running on every data change
+  // would re-centre and re-flash the canvas every time ANY note was edited or an agent wrote to
+  // the Brain — yanking the view out from under someone mid-edit. The ref makes each request fire
+  // exactly once.
+  const handledFocus = useRef<number>(0);
+  useEffect(() => {
+    if (!focus || focus.key === handledFocus.current) return;
+    const el = wrapRef.current;
+    const n = data.nodes.find((x) => x.id === focus.id);
+    if (!el || !n) return;
+    handledFocus.current = focus.key;
+    setView((v) => {
+      const scale = Math.max(v.scale, 0.85);
+      return {
+        scale,
+        x: el.clientWidth / 2 - (n.x + NODE_W / 2) * scale,
+        y: el.clientHeight / 2 - (n.y + NODE_H / 2) * scale,
+      };
+    });
+    didFit.current = true;   // a deliberate jump must not be undone by the one-time fit
+    setFlashId(focus.id);
+    const t = setTimeout(() => setFlashId(null), 2700);   // 4 × 0.62s + a little slack
+    return () => clearTimeout(t);
+  }, [focus?.id, focus?.key, data.nodes]);
 
   function onWheel(e: React.WheelEvent) {
     e.preventDefault();
@@ -250,7 +285,7 @@ function Stage({ data, selectedId, onSelect, onMoveNode }: {
               }}
             >
               <div
-                className="flex items-start gap-2 rounded-xl px-2.5 py-2"
+                className={`flex items-start gap-2 rounded-xl px-2.5 py-2${n.id === flashId ? ' nv-brain-found' : ''}`}
                 style={{
                   background: 'var(--nv-surface)',
                   border: `1.5px solid ${sel ? KIND_COLOR[n.kind] : 'var(--nv-border)'}`,
@@ -648,6 +683,13 @@ export default function BrainModule() {
   const [ghBusy, setGhBusy] = useState(false);
   const [ghNote, setGhNote] = useState('');
   const [connectNote, setConnectNote] = useState('');
+  // Knowledge (what the user has) or Skills (what the agents can do). Two graphs, one screen.
+  const [view, setView] = useState<'knowledge' | 'skills'>('knowledge');
+  // The node to jump to and flash. `key` is bumped every time so asking for the same node twice
+  // still flashes — pressing "Open in Brain" again must not look like a dead button.
+  const [focus, setFocus] = useState<{ id: string; key: number } | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   // Reload from storage on change, but COALESCE bursts: a batch of updates (e.g. saving a big
   // file, or an agent writing several nodes) used to fire brain.all() — which re-parses the whole
@@ -679,6 +721,82 @@ export default function BrainModule() {
   }, [data, deferredSearch]);
 
   const selected = data.nodes.find((n) => n.id === selectedId) || null;
+
+  // Select a node, centre the canvas on it and flash its border. Everything that says "here it is"
+  // goes through this — the search results, the Krew "Open in Brain" button, a link in a panel.
+  const jumpTo = useCallback((id: string) => {
+    setView('knowledge');
+    setSearch('');
+    setSearchOpen(false);
+    setSelectedId(id);
+    setFocus({ id, key: Date.now() });
+  }, []);
+
+  // Somebody elsewhere in the app asked us to point at a node — "Open in Brain" on a lead card is
+  // the one that matters. Landing on the canvas with nothing selected is why a saved list read as
+  // "nothing was saved": on a graph this size, one more card among a hundred is invisible.
+  useEffect(() => {
+    const open = (q: string | null) => {
+      if (!q) return;
+      const n = brain.findByTitle(q) ?? brain.all().nodes.find((x) => x.id === q);
+      // Give the stage a frame to mount before centring on it — its size is measured from the DOM.
+      if (n) setTimeout(() => jumpTo(n.id), 60);
+    };
+    open(takeBrainFocus());
+    const onFocusReq = (e: Event) => { takeBrainFocus(); open((e as CustomEvent).detail as string); };
+    window.addEventListener(BRAIN_FOCUS_EVENT, onFocusReq);
+    return () => window.removeEventListener(BRAIN_FOCUS_EVENT, onFocusReq);
+  }, [jumpTo]);
+
+  // ── Finding one note among hundreds ──────────────────────────────────────────
+  // Typing in the box used to only THIN THE GRAPH: the matches stayed scattered across a canvas
+  // the user then had to hunt across, at whatever zoom they had left it at. With a handful of
+  // notes that is fine; with a hundred files it is the thing that made the Brain feel like a place
+  // where saved work goes missing. A ranked list gives the answer directly — title matches first,
+  // then body — and clicking one flies to it and flashes it.
+  const hits = useMemo(() => {
+    const q = deferredSearch.trim().toLowerCase();
+    if (!q) return [] as { node: BrainNode; snippet: string }[];
+    const words = q.split(/\s+/).filter((w) => w.length >= 2);
+    return data.nodes
+      .map((n) => {
+        const title = n.title.toLowerCase();
+        // Lower-casing a multi-megabyte spreadsheet on every keystroke is the freeze this avoids —
+        // big bodies are matched on their title only, which is what the in-file filters are for.
+        const body = n.body.length < 60000 ? n.body.toLowerCase() : '';
+        let score = 0;
+        if (title === q) score += 40;
+        else if (title.startsWith(q)) score += 24;
+        else if (title.includes(q)) score += 16;
+        if (body.includes(q)) score += 6;
+        for (const w of words) { if (title.includes(w)) score += 3; else if (body.includes(w)) score += 1; }
+        if (!score) return null;
+        // A line of context around the hit, so two similar titles can be told apart.
+        const plain = nodeToMarkdown(n.body).replace(/\s+/g, ' ');
+        const at = plain.toLowerCase().indexOf(q);
+        const snippet = at >= 0 ? plain.slice(Math.max(0, at - 30), at + 90).trim() : plain.slice(0, 110).trim();
+        return { node: n, score, snippet };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b!.score - a!.score || b!.node.updatedAt - a!.node.updatedAt)
+      .slice(0, 30) as { node: BrainNode; snippet: string }[];
+  }, [data.nodes, deferredSearch]);
+
+  // Ctrl/⌘+F puts the cursor in the search box — the reflex everyone already has for "where is it".
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        setView('knowledge');
+        setSearchOpen(true);
+        searchRef.current?.focus();
+        searchRef.current?.select();
+      }
+      if (e.key === 'Escape' && searchOpen) { setSearchOpen(false); searchRef.current?.blur(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [searchOpen]);
 
   // Total text stored in the Brain (localStorage bodies) — a rough at-a-glance storage figure.
   // Per-file on-disk sizes are shown in each item's panel.
@@ -783,28 +901,81 @@ export default function BrainModule() {
               <p className="text-[11px] font-mono" style={{ color: 'var(--nv-faint)' }}>{data.nodes.length} items · {data.edges.length} links · {formatBytes(totalTextBytes)} · shared with your agents</p>
             </div>
           </div>
+
+          {/* Two graphs, one screen: what the user KNOWS, and what the agents can DO. */}
+          <div className="flex items-center gap-0.5 p-0.5 rounded-lg ml-2" style={{ background: 'var(--nv-surface)', border: '1px solid var(--nv-border)' }}>
+            {([['knowledge', 'Knowledge'], ['skills', 'Skills']] as const).map(([k, label]) => (
+              <button key={k} onClick={() => setView(k)}
+                className="text-[11px] px-2.5 py-1 rounded-md font-medium transition-fast"
+                style={view === k
+                  ? { background: '#7C5CFF', color: '#fff' }
+                  : { background: 'transparent', color: 'var(--nv-muted)' }}>{label}</button>
+            ))}
+          </div>
+
           <div className="flex-1" />
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search the Brain…"
-            className="w-56 rounded-lg px-3 py-1.5 text-[11px] outline-none"
-            style={{ background: 'var(--nv-surface)', border: '1px solid var(--nv-border)', color: 'var(--nv-text)' }} />
-          <button
-            onClick={() => {
-              const n = brain.autoConnect();
-              setConnectNote(n > 0 ? `Connected ${n} new link${n === 1 ? '' : 's'} between related files.` : 'Everything related is already connected.');
-              setTimeout(() => setConnectNote(''), 2600);
-            }}
-            title="Find and link related files that aren't connected yet — free, runs instantly"
-            className="text-[11px] px-3 py-1.5 rounded-lg font-medium transition-fast"
-            style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-muted)', background: 'var(--nv-surface)' }}>Connect files</button>
-          <button onClick={() => { setGhOpen((v) => !v); setGhNote(''); }}
-            title="Import a public GitHub repo or folder into the Brain, connected"
-            className="text-[11px] px-3 py-1.5 rounded-lg font-medium transition-fast"
-            style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-muted)', background: 'var(--nv-surface)' }}>GitHub</button>
-          <button onClick={addFile}
-            className="text-[11px] px-3 py-1.5 rounded-lg font-medium transition-fast"
-            style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-muted)', background: 'var(--nv-surface)' }}>+ File</button>
-          <button onClick={() => setSelectedId(brain.addNode({ title: 'New note', body: '', kind: 'note' }).id)}
-            className="text-[11px] px-3 py-1.5 rounded-lg text-white font-medium transition-fast hover:opacity-90" style={{ background: '#7C5CFF' }}>+ Note</button>
+          {view === 'knowledge' && (
+            <div className="relative">
+              <input
+                ref={searchRef}
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setSearchOpen(true); }}
+                onFocus={() => setSearchOpen(true)}
+                onKeyDown={(e) => {
+                  // Enter goes straight to the best match — the common case is "I know roughly what
+                  // it's called, take me there".
+                  if (e.key === 'Enter' && hits.length) { e.preventDefault(); jumpTo(hits[0].node.id); }
+                }}
+                placeholder="Search the Brain…   Ctrl+F"
+                className="w-64 rounded-lg px-3 py-1.5 text-[11px] outline-none"
+                style={{ background: 'var(--nv-surface)', border: '1px solid var(--nv-border)', color: 'var(--nv-text)' }} />
+              {searchOpen && search.trim() && (
+                <div className="absolute right-0 top-full mt-1.5 w-[26rem] max-h-80 overflow-y-auto rounded-xl z-50 py-1"
+                  style={{ background: 'var(--nv-surface)', border: '1px solid var(--nv-border)', boxShadow: '0 12px 40px rgba(0,0,0,.35)' }}>
+                  {hits.length === 0 ? (
+                    <p className="px-3 py-2.5 text-[11px]" style={{ color: 'var(--nv-faint)' }}>
+                      Nothing in the Brain matches “{search.trim()}”.
+                    </p>
+                  ) : hits.map(({ node: n, snippet }) => (
+                    <button key={n.id} onClick={() => jumpTo(n.id)}
+                      className="w-full text-left px-3 py-2 transition-fast hover:bg-nv-surface2">
+                      <span className="flex items-center gap-2">
+                        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: KIND_COLOR[n.kind] }} />
+                        <span className="text-[11.5px] font-medium truncate" style={{ color: 'var(--nv-text)' }}>{n.title}</span>
+                        <span className="text-[9.5px] uppercase tracking-wide shrink-0 ml-auto" style={{ color: 'var(--nv-faint)' }}>{KIND_LABEL[n.kind]}</span>
+                      </span>
+                      {snippet && <span className="block text-[10px] mt-0.5 pl-3.5 truncate" style={{ color: 'var(--nv-faint)' }}>{snippet}</span>}
+                    </button>
+                  ))}
+                  {hits.length > 0 && (
+                    <p className="px-3 pt-1.5 pb-1 text-[9.5px]" style={{ color: 'var(--nv-faint)', borderTop: '1px solid var(--nv-border)' }}>
+                      {hits.length === 30 ? 'Top 30 matches' : `${hits.length} match${hits.length === 1 ? '' : 'es'}`} · Enter opens the first · the graph flashes where it is
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          {view === 'knowledge' && (<>
+            <button
+              onClick={() => {
+                const n = brain.autoConnect();
+                setConnectNote(n > 0 ? `Connected ${n} new link${n === 1 ? '' : 's'} between related files.` : 'Everything related is already connected.');
+                setTimeout(() => setConnectNote(''), 2600);
+              }}
+              title="Find and link related files that aren't connected yet — free, runs instantly"
+              className="text-[11px] px-3 py-1.5 rounded-lg font-medium transition-fast"
+              style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-muted)', background: 'var(--nv-surface)' }}>Connect files</button>
+            <button onClick={() => { setGhOpen((v) => !v); setGhNote(''); }}
+              title="Import a public GitHub repo or folder into the Brain, connected"
+              className="text-[11px] px-3 py-1.5 rounded-lg font-medium transition-fast"
+              style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-muted)', background: 'var(--nv-surface)' }}>GitHub</button>
+            <button onClick={addFile}
+              className="text-[11px] px-3 py-1.5 rounded-lg font-medium transition-fast"
+              style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-muted)', background: 'var(--nv-surface)' }}>+ File</button>
+            <button onClick={() => setSelectedId(brain.addNode({ title: 'New note', body: '', kind: 'note' }).id)}
+              className="text-[11px] px-3 py-1.5 rounded-lg text-white font-medium transition-fast hover:opacity-90" style={{ background: '#7C5CFF' }}>+ Note</button>
+          </>)}
         </div>
 
         {connectNote && (
@@ -833,7 +1004,9 @@ export default function BrainModule() {
           </div>
         )}
 
-        {data.nodes.length === 0 ? (
+        {view === 'skills' ? (
+          <SkillsView />
+        ) : data.nodes.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center text-center px-8">
             <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-4" style={{ background: 'rgba(124,92,255,.12)', color: '#7C5CFF' }}>
               <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
@@ -851,12 +1024,12 @@ export default function BrainModule() {
               className="mt-5 text-[11px] px-4 py-2 rounded-lg text-white font-medium transition-fast hover:opacity-90" style={{ background: '#7C5CFF' }}>+ Add your first note</button>
           </div>
         ) : (
-          <Stage data={filtered} selectedId={selectedId} onSelect={setSelectedId}
+          <Stage data={filtered} selectedId={selectedId} focus={focus} onSelect={setSelectedId}
             onMoveNode={(id, x, y) => brain.updateNode(id, { x, y })} />
         )}
       </div>
 
-      {selected && (
+      {view === 'knowledge' && selected && (
         <BrainPanel key={selected.id} node={selected} allNodes={data.nodes} edges={data.edges}
           onClose={() => setSelectedId(null)} onJump={setSelectedId} />
       )}

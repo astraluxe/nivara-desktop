@@ -6,7 +6,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
 import type { Node, Edge } from '@xyflow/react';
 import { krewDb, credentialStore, krewMemoryDb, type KrewMemory } from '../../lib/krewDb';
 import { listMcpServers, mcpToolDefs } from '../../lib/krewMcp';
-import { brain as brainStore, nodeToMarkdown } from '../../lib/knowledgeStore';
+import { brain as brainStore, nodeToMarkdown, requestBrainFocus } from '../../lib/knowledgeStore';
 import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, LEAD_TOOLS, getAutopilotTools, buildKrewSystemPrompt, executeTool, needsCompression, resetBrowserRunState, closeAgentBrowserIfActive, setAgentBrowserHold, requestLeadStop, resetLeadStop, isLeadStopRequested, KREW_PROFILE_KEY, type ToolDef } from '../../lib/krewTools';
 import { TaskProgress, type TaskPhase } from './TaskProgress';
 import { StatusGlobe } from './StatusGlobe';
@@ -32,6 +32,7 @@ import { getMonthlyUsage } from '../../lib/tokenTracker';
 import { getImageBudget, unitsForModel } from '../../lib/imageQuota';
 import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining } from '../../lib/tokenTier';
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
+import { builtInSkillsBlock } from '../../lib/skillGraph';
 import SkillsPanel from './SkillsPanel';
 import LeadSetupCard, { type LeadConfig } from './LeadSetupCard';
 import { loadUserLocation, locationLabel } from '../../lib/userLocation';
@@ -151,21 +152,6 @@ function SlashIcon({ name }: { name: string }) {
 }
 
 // When the user's message clearly relates to a skill, we proactively suggest it.
-const SKILL_TRIGGERS: Record<string, RegExp> = {
-  'vercel-labs/react-best-practices':            /\breact\b|next\.?js|\bjsx\b|react hooks?/i,
-  'supabase/supabase-postgres-best-practices':   /\bpostgres\b|sql query|database index|\brls\b|schema design/i,
-  'supabase/supabase':                           /\bsupabase\b|edge function/i,
-  'anthropics/claude-api':                       /claude api|anthropic sdk|\btool use\b/i,
-  'anthropics/webapp-testing':                   /\bplaywright\b|e2e test|web ?app test/i,
-  'shadcn/shadcn-ui':                            /\bshadcn\b/i,
-  'anthropics/frontend-design':                  /\bui design\b|frontend design|landing page design|redesign/i,
-  'remotion-dev/remotion':                       /\bremotion\b|programmatic video/i,
-  'anthropics/canvas-design':                    /\bwebgl\b|generative art|creative coding/i,
-  'vercel-labs/agent-browser':                   /browser automation/i,
-  'anthropics/mcp-builder':                      /build (an? )?mcp|mcp server/i,
-  'microsoft/azure-ai':                          /\bazure\b/i,
-  'anthropics/doc-coauthoring':                  /\bproposal\b|spec document|co-?author/i,
-};
 /**
  * Does this credential actually carry something we can authenticate with?
  *
@@ -245,8 +231,7 @@ function AvailConfirmCard({ who, when, disabled, onAnswer }: {
 
 function detectSkill(text: string): SkillRegistryEntry | null {
   for (const s of SKILLS_REGISTRY) {
-    const re = SKILL_TRIGGERS[s.id];
-    if (re && re.test(text) && !isSkillInstalled(s.id)) return s;
+    if (s.triggers.test(text) && !isSkillInstalled(s.id)) return s;
   }
   return null;
 }
@@ -6583,14 +6568,26 @@ PREFER people and companies that appear above: they are known to exist. You may 
       // way — and keep asking until the target is reached, in SMALL batches for exactly the reason
       // the main loop uses them: a short request is one a struggling model can actually finish.
       // Asking once for ten would have quietly turned a request for 25 into a list of 10.
-      if (!collected.size && mine()) {
-        say(statusBlock(t0, 'Finding leads — trying a simpler request',
-          'The detailed brief came back empty, so I am asking your model the short way instead.'));
+      //
+      // It also has to run on a SHORTFALL, not only on nothing at all. The condition used to be
+      // `!collected.size`, so a run that came back with 3 of the 25 asked for was treated as a
+      // success and stopped there — the user got a twelfth of what they asked for and no attempt
+      // was made to finish the job. Under half the target is a failure to deliver, and the short
+      // ask is the one thing left to try.
+      if (collected.size < Math.ceil(cfg.count / 2) && mine()) {
+        say(statusBlock(t0,
+          collected.size ? `Finding leads — ${collected.size} of ${cfg.count}, asking a simpler way` : 'Finding leads — trying a simpler request',
+          collected.size
+            ? 'The detailed brief has run dry well short of the target, so I am asking your model the short way for the rest.'
+            : 'The detailed brief came back empty, so I am asking your model the short way instead.'));
         const plainSys = [
           'You build B2B lead lists. Return ONLY a markdown table — no preamble, no commentary, no apology.',
           'Columns EXACTLY: | Name | Company/Role | Sector | City | Website | LinkedIn |',
           'Name must be a REAL, NAMED PERSON (never a company). Company/Role holds their company and job title.',
-          'Use real, well-known companies and the real people who lead them. Put — where you do not know a value.',
+          peopleMode
+            ? 'Company/Role may instead say in a few words what they do ("runs a 40k SaaS newsletter", "channel manager at an MSP") — that is what makes the row worth having.'
+            : 'Use real, well-known companies and the real people who lead them.',
+          'Put — where you do not know a value.',
           'Never return an empty table and never explain yourself — always give rows.',
         ].join('\n');
         const lcBatch = mode === 'local' ? 4 : 8;
@@ -6599,7 +6596,13 @@ PREFER people and companies that appear above: they are known to exist. You may 
           const lcWant = Math.min(lcBatch, cfg.count - collected.size);
           // Tell it who we already have, so a later batch brings new people rather than repeats.
           const lcHave = [...collected.values()].map((r) => (r.split('|')[1] || '').trim()).filter(Boolean).slice(-15);
-          const plainAsk = `List ${lcWant} real founders, CEOs or owners of companies${cfg.city ? ` based in ${cfg.city}` : ''}${cfg.sector ? ` in the ${cfg.sector} sector` : ''}.`
+          // In people mode the user's OWN words are the brief — "account executives, channel and
+          // partnership managers, business-development leads, consultants and agency owners".
+          // Replacing that with "founders, CEOs or owners" asks for a different set of people
+          // entirely, and then the run reports back on the wrong ones.
+          const plainAsk = peopleMode
+            ? `List ${lcWant} real people who match this: ${cfg.what}${cfg.city ? `, based in or near ${cfg.city}` : ''}.`
+            : `List ${lcWant} real founders, CEOs or owners of companies${cfg.city ? ` based in ${cfg.city}` : ''}${cfg.sector ? ` in the ${cfg.sector} sector` : ''}.`
             + (lcHave.length ? `\nDo NOT repeat any of these: ${lcHave.join(', ')}` : '')
             + '\n\nReturn the table now.';
           // Same live narration as the main loop — this pass is the user's last hope, so it is the
@@ -6662,7 +6665,7 @@ PREFER people and companies that appear above: they are known to exist. You may 
         const { rows } = parseLeadRows(md, 0);
         const people = rows.filter((r) => {
           const nm = r.cells['name'] || '';
-          const isPerson = looksLikePersonLead(nm, r.cells['company'] || '');
+          const isPerson = looksLikePersonLead(nm, r.cells['company'] || '', peopleMode);
           const resolvableLater = cfg.reach === 'local' && !!(r.cells['company'] || '').trim();
           if (!isPerson && !resolvableLater) return false;
           // The guarantee, not the request: anyone already on the list never comes back.
@@ -6780,11 +6783,15 @@ PREFER people and companies that appear above: they are known to exist. You may 
       // 5) Enforce the "only keep leads that have…" boxes. Asking for them and then handing back
       //    rows without them is the thing that made the old lists feel unreliable.
       const { rows: finalRows } = parseLeadRows(md, 0);
+      // Count WHY rows go, so the summary can say something the user can act on. "3 left out
+      // (companies rather than people, duplicates, or missing what you asked for)" lists every
+      // possible reason at once, which tells them nothing about which tick-box to loosen.
+      const dropReasons = { notPerson: 0, duplicate: 0, noLinkedIn: 0, noContact: 0, seniority: 0, sector: 0 };
       const kept = finalRows.filter((r) => {
-        if (!looksLikePersonLead(r.cells['name'] || '', r.cells['company'] || '')) return false;
-        if (existingNames.has((r.cells['name'] || '').toLowerCase().replace(/[^a-z0-9]/g, ''))) return false;
-        if (cfg.mustHaveLinkedIn && !/linkedin\.com\/in\//i.test(r.cells['linkedin'] || '')) return false;
-        if (cfg.mustHaveContact && !(r.cells['phone'] || r.cells['email'])) return false;
+        if (!looksLikePersonLead(r.cells['name'] || '', r.cells['company'] || '', peopleMode)) { dropReasons.notPerson++; return false; }
+        if (existingNames.has((r.cells['name'] || '').toLowerCase().replace(/[^a-z0-9]/g, ''))) { dropReasons.duplicate++; return false; }
+        if (cfg.mustHaveLinkedIn && !/linkedin\.com\/in\//i.test(r.cells['linkedin'] || '')) { dropReasons.noLinkedIn++; return false; }
+        if (cfg.mustHaveContact && !(r.cells['phone'] || r.cells['email'])) { dropReasons.noContact++; return false; }
         // SENIORITY and SECTOR are real constraints, not suggestions.
         //
         // Both were only ever pasted into the prompt and then never checked, so when the model
@@ -6793,8 +6800,16 @@ PREFER people and companies that appear above: they are known to exist. You may 
         // was written that "these filters are applied as CONSTRAINTS: every row is checked and the
         // ones that don't match are dropped". For company size and contact details that was true.
         // For the two the user actually picks off the card, it was not.
-        if (!matchesSeniority(r.cells, cfg.seniority)) return false;
-        if (!matchesSector(r.cells, cfg.sector)) return false;
+        //
+        // EXCEPT in people mode, where the seniority band is deliberately NOT sent to the model
+        // (see the filters block above — an employee-count or founder-only band would exclude the
+        // independent creators and consultants the search exists to find). Enforcing here what was
+        // never asked for there is not a constraint, it is a trap: a brief for "account executives,
+        // channel managers and BD leads" got every one of them deleted for not being a founder,
+        // and the run still reported success. A filter the model was never told about cannot be
+        // treated as a promise the model broke.
+        if (!peopleMode && !matchesSeniority(r.cells, cfg.seniority)) { dropReasons.seniority++; return false; }
+        if (!matchesSector(r.cells, cfg.sector)) { dropReasons.sector++; return false; }
         return true;
       });
       let dropped = finalRows.length - kept.length;
@@ -6807,7 +6822,7 @@ PREFER people and companies that appear above: they are known to exist. You may 
       let relaxed = false;
       let finalKept = kept;
       if (!kept.length) {
-        finalKept = finalRows.filter((r) => looksLikePersonLead(r.cells['name'] || '', r.cells['company'] || '')
+        finalKept = finalRows.filter((r) => looksLikePersonLead(r.cells['name'] || '', r.cells['company'] || '', peopleMode)
           && !existingNames.has((r.cells['name'] || '').toLowerCase().replace(/[^a-z0-9]/g, '')));
         relaxed = finalKept.length > 0;
         dropped = finalRows.length - finalKept.length;
@@ -6818,7 +6833,10 @@ PREFER people and companies that appear above: they are known to exist. You may 
         setBusy(false); return;
       }
       const kept2 = finalKept;
-      let finalMd = rowsToMarkdown(kept2);
+      // Only the columns that actually carry something. A LinkedIn-only search rendered with the
+      // full canonical schema showed five columns of "—" (Phone, Email, X, Instagram, Followers)
+      // and read like a list that had failed, rather than one that was never asked for those.
+      let finalMd = rowsToMarkdown(kept2, { onlyPopulated: true });
 
       // ─── READ THE FOLLOWER COUNTS, FOR FREE, BEFORE SAVING ──────────────────────────────────
       //
@@ -6846,8 +6864,23 @@ PREFER people and companies that appear above: they are known to exist. You may 
       } else {
         await autoSaveLeadTableToBrain(finalMd, [], title, cfg.what);
       }
+      // Name the reasons that actually fired, biggest first, so a short list points at the tick-box
+      // to loosen instead of listing every possible cause.
+      const reasonText = ([
+        [dropReasons.notPerson, 'were companies, not people'],
+        [dropReasons.duplicate, 'were already on the list'],
+        [dropReasons.noLinkedIn, 'had no LinkedIn profile'],
+        [dropReasons.noContact, 'had no phone or email'],
+        [dropReasons.seniority, `weren't ${senLabel}`],
+        [dropReasons.sector, `weren't in ${cfg.sector}`],
+      ] as [number, string][])
+        .filter(([n]) => n > 0).sort((a, b) => b[0] - a[0])
+        .map(([n, why]) => `${n} ${why}`).join(', ');
       const summary = `${existingNode ? 'Added' : 'Saved'} **${kept2.length}** lead${kept2.length === 1 ? '' : 's'} to **${title}**`
-        + `${dropped > 0 ? ` — ${dropped} left out (companies rather than people, duplicates, or missing what you asked for)` : ''}.`
+        + `${dropped > 0 ? ` — ${dropped} left out: ${reasonText || 'they didn\'t match what you asked for'}` : ''}.`
+        + (kept2.length < cfg.count / 2
+          ? `\n\n_You asked for ${cfg.count}. ${dropped > 0 ? 'Loosening whichever filter above dropped the most would get you more' : 'Widening the brief — a bigger city, or fewer requirements — usually gets you more'}, or press "Find more like these"._`
+          : '')
         + (relaxed
           ? `
 
@@ -8625,7 +8658,16 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
       `\nBROWSER NOTE: Browsing any website NEVER requires Connected Apps. Use browser_open to SHOW any website to the user (they are logged in to everything in Chrome). Use browser_navigate to READ page content (notifications, inbox, articles, etc.) — sessions persist so user logs in once per site. Connected apps are only needed for API actions like auto-posting or automation.\n` +
       `\nMCP RECOMMENDATION RULE: When a task needs a service that is NOT connected AND the task specifically requires API access (sending messages, posting content, reading private data via API), proactively tell the user: "To do this, connect [service] in the Connect Apps tab (Krew → top-right). Higgsfield AI (https://mcp.higgsfield.ai/mcp) is the best single MCP for video generation with 30+ models." Be specific.\n`
       : '';
-    const skillsBlock = getActiveSkillsContext(agent.key);
+    // SKILLS, CHOSEN FOR THIS MESSAGE — not all of them, every time.
+    //
+    // Two blocks, same principle. builtInSkillsBlock walks the skill graph: the capabilities this
+    // request actually touches, plus whatever those need to work (outreach pulls in the browser and
+    // the Brain, because outreach without them is a skill that cannot run). getActiveSkillsContext
+    // now takes the request text too, so an installed SKILL.md — several thousand characters each —
+    // rides along only when it is relevant, instead of the Postgres, Remotion and Azure guides all
+    // being pasted into a question about a lead list.
+    const skillsBlock = builtInSkillsBlock(text, tools.map((t) => t.name))
+                      + getActiveSkillsContext(agent.key, text);
     const systemPrt  = assembleSystemPrompt(
       [agent.systemPrompt, '\n\n', buildKrewSystemPrompt(tools), bossPostfix,
        searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective],
@@ -10467,7 +10509,16 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                       // App.tsx listens for a TAURI event carrying { module }, not a DOM
                       // CustomEvent — so the old dispatch here went nowhere and the button
                       // silently did nothing.
-                      onClick={() => { import('@tauri-apps/api/event').then(({ emit }) => emit('nv-navigate', { module: 'brain' })).catch(() => {}); }}
+                      //
+                      // Opening the Brain is only half the job. On a graph with a hundred notes,
+                      // landing on the canvas with nothing selected is indistinguishable from the
+                      // list never having been saved — which is exactly how it was read. Name the
+                      // node first: the Brain selects it, centres on it and flashes its border.
+                      onClick={() => {
+                        requestBrainFocus(msg.content);
+                        import('@tauri-apps/api/event').then(({ emit }) => emit('nv-navigate', { module: 'brain' })).catch(() => {});
+                      }}
+                      title={`Show "${msg.content}" in the Brain`}
                       className="text-[11px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
                     >Open in Brain</button>
                     <button

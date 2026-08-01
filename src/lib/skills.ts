@@ -7,6 +7,10 @@ export interface SkillRegistryEntry {
   category: SkillCategory;
   description: string;
   rawUrl: string;      // GitHub raw URL to SKILL.md
+  /** What in the user's request means this skill is worth its tokens. Lives here rather than in a
+   *  separate map in the chat component so the "suggest installing it" path and the "inject it"
+   *  path can never drift apart. */
+  triggers: RegExp;
   agents: 'all' | string[];
 }
 
@@ -27,6 +31,7 @@ export const SKILLS_REGISTRY: SkillRegistryEntry[] = [
     category: 'coding',
     description: 'React and Next.js performance optimization guidelines from Vercel Engineering.',
     rawUrl: 'https://raw.githubusercontent.com/vercel-labs/agent-skills/main/skills/react-best-practices/SKILL.md',
+    triggers: /\breact\b|next\.?js|\bjsx\b|react hooks?/i,
     agents: 'all',
   },
   {
@@ -36,6 +41,7 @@ export const SKILLS_REGISTRY: SkillRegistryEntry[] = [
     category: 'coding',
     description: 'Comprehensive Postgres optimization — queries, indexes, RLS, connections, schema design.',
     rawUrl: 'https://raw.githubusercontent.com/supabase/agent-skills/main/skills/supabase-postgres-best-practices/SKILL.md',
+    triggers: /\bpostgres\b|sql query|database index|\brls\b|schema design/i,
     agents: 'all',
   },
   {
@@ -45,6 +51,7 @@ export const SKILLS_REGISTRY: SkillRegistryEntry[] = [
     category: 'coding',
     description: 'Full Supabase guide — Auth, Edge Functions, Realtime, Storage, client libraries.',
     rawUrl: 'https://raw.githubusercontent.com/supabase/agent-skills/main/skills/supabase/SKILL.md',
+    triggers: /\bsupabase\b|edge function/i,
     agents: 'all',
   },
   {
@@ -54,6 +61,7 @@ export const SKILLS_REGISTRY: SkillRegistryEntry[] = [
     category: 'coding',
     description: 'Claude API / Anthropic SDK — models, pricing, streaming, tool use, MCP, caching.',
     rawUrl: 'https://raw.githubusercontent.com/anthropics/skills/main/skills/claude-api/SKILL.md',
+    triggers: /claude api|anthropic sdk|\btool use\b/i,
     agents: 'all',
   },
   {
@@ -63,6 +71,7 @@ export const SKILLS_REGISTRY: SkillRegistryEntry[] = [
     category: 'coding',
     description: 'Playwright toolkit for testing local web apps — UI verification, screenshots, browser logs.',
     rawUrl: 'https://raw.githubusercontent.com/anthropics/skills/main/skills/webapp-testing/SKILL.md',
+    triggers: /\bplaywright\b|e2e test|web ?app test/i,
     agents: 'all',
   },
 
@@ -74,6 +83,7 @@ export const SKILLS_REGISTRY: SkillRegistryEntry[] = [
     category: 'design',
     description: 'Add, debug, style, and compose shadcn/ui components. Works with components.json projects.',
     rawUrl: 'https://raw.githubusercontent.com/shadcn/ui/main/skills/shadcn/SKILL.md',
+    triggers: /\bshadcn\b/i,
     agents: 'all',
   },
   {
@@ -83,6 +93,7 @@ export const SKILLS_REGISTRY: SkillRegistryEntry[] = [
     category: 'design',
     description: 'Distinctive, intentional visual design — typography, aesthetic direction, anti-templated defaults.',
     rawUrl: 'https://raw.githubusercontent.com/anthropics/skills/main/skills/frontend-design/SKILL.md',
+    triggers: /\bui design\b|frontend design|landing page design|redesign/i,
     agents: 'all',
   },
   {
@@ -92,6 +103,7 @@ export const SKILLS_REGISTRY: SkillRegistryEntry[] = [
     category: 'design',
     description: 'Best practices for creating programmatic videos in React using Remotion.',
     rawUrl: 'https://raw.githubusercontent.com/remotion-dev/skills/main/skills/remotion/SKILL.md',
+    triggers: /\bremotion\b|programmatic video/i,
     agents: 'all',
   },
   {
@@ -101,6 +113,7 @@ export const SKILLS_REGISTRY: SkillRegistryEntry[] = [
     category: 'design',
     description: 'Generative art and creative coding using HTML Canvas and WebGL.',
     rawUrl: 'https://raw.githubusercontent.com/anthropics/skills/main/skills/canvas-design/SKILL.md',
+    triggers: /\bwebgl\b|generative art|creative coding/i,
     agents: 'all',
   },
 
@@ -112,6 +125,7 @@ export const SKILLS_REGISTRY: SkillRegistryEntry[] = [
     category: 'agents',
     description: 'Browser automation CLI — navigation, form fills, screenshots, web scraping.',
     rawUrl: 'https://raw.githubusercontent.com/vercel-labs/agent-browser/main/skills/agent-browser/SKILL.md',
+    triggers: /browser automation/i,
     agents: 'all',
   },
   {
@@ -121,6 +135,7 @@ export const SKILLS_REGISTRY: SkillRegistryEntry[] = [
     category: 'agents',
     description: 'Build high-quality MCP servers in Python (FastMCP) or TypeScript (MCP SDK).',
     rawUrl: 'https://raw.githubusercontent.com/anthropics/skills/main/skills/mcp-builder/SKILL.md',
+    triggers: /build (an? )?mcp|mcp server/i,
     agents: 'all',
   },
   {
@@ -130,6 +145,7 @@ export const SKILLS_REGISTRY: SkillRegistryEntry[] = [
     category: 'agents',
     description: 'Helps discover and suggest relevant skills when users ask about capabilities.',
     rawUrl: 'https://raw.githubusercontent.com/vercel-labs/skills/main/skills/find-skills/SKILL.md',
+    triggers: /what can you do|which skills?|find (a )?skill|capabilit/i,
     agents: 'all',
   },
 
@@ -141,6 +157,7 @@ export const SKILLS_REGISTRY: SkillRegistryEntry[] = [
     category: 'writing',
     description: 'Structured workflow for co-authoring docs, proposals, specs, and decision documents.',
     rawUrl: 'https://raw.githubusercontent.com/anthropics/skills/main/skills/doc-coauthoring/SKILL.md',
+    triggers: /\bproposal\b|spec document|co-?author/i,
     agents: ['boss', 'executive_assistant', 'researcher', 'research_agent'],
   },
 
@@ -152,6 +169,7 @@ export const SKILLS_REGISTRY: SkillRegistryEntry[] = [
     category: 'cloud',
     description: 'Azure AI services — Search, Speech, OpenAI, Document Intelligence, vector/hybrid search.',
     rawUrl: 'https://raw.githubusercontent.com/microsoft/azure-skills/main/skills/azure-ai/SKILL.md',
+    triggers: /\bazure\b/i,
     agents: 'all',
   },
 ];
@@ -229,14 +247,28 @@ function stripFrontmatter(content: string): string {
   return content.slice(end + 4).trimStart();
 }
 
-export function getActiveSkillsContext(agentKey?: string): string {
+/**
+ * The installed skills worth attaching to THIS request.
+ *
+ * `request` is the user's message. When it is given, only skills whose triggers match are
+ * attached — which is the whole point. A SKILL.md is several thousand characters, and every active
+ * one used to be pasted into every single message: asking about a lead list shipped the Postgres
+ * guide, the Remotion guide and the Azure guide along with it. On a free key with a per-minute
+ * token cap that is not a rounding error, it is the difference between an answer and a 413.
+ *
+ * Omitting `request` keeps the old attach-everything behaviour, for callers that have no request
+ * text to judge against.
+ */
+export function getActiveSkillsContext(agentKey?: string, request?: string): string {
   const active  = getActiveSkillIds();
   if (active.size === 0) return '';
 
   const store   = getInstalledStore();
+  const text    = (request ?? '').slice(0, 4000);
   const entries = SKILLS_REGISTRY.filter((s) => {
     if (!active.has(s.id)) return false;
     if (!store[s.id]) return false;
+    if (request !== undefined && !s.triggers.test(text)) return false;
     if (s.agents === 'all') return true;
     return agentKey ? (s.agents as string[]).includes(agentKey) : true;
   });
@@ -248,6 +280,13 @@ export function getActiveSkillsContext(agentKey?: string): string {
     entries.map((e) => stripFrontmatter(store[e.id].content)).join('\n\n') +
     '\n---\n'
   );
+}
+
+/** Which installed skills a given request would pull in — for the Skills graph, which shows the
+ *  user what would be attached without spending anything to find out. */
+export function matchingInstalledSkills(request: string): SkillRegistryEntry[] {
+  const active = getActiveSkillIds();
+  return SKILLS_REGISTRY.filter((s) => active.has(s.id) && isSkillInstalled(s.id) && s.triggers.test(request));
 }
 
 export function getActiveSkillsForCoder(): string {

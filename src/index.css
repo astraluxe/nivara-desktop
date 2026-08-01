@@ -180,6 +180,19 @@ p, li, td, th, pre, code, blockquote, h1, h2, h3, h4, h5, h6, .font-serif, .font
 .ov-edge-flow { stroke-dasharray: 5 9; animation: ov-flow 1.1s linear infinite; }
 .ov-node-pop  { animation: ov-popIn 0.45s cubic-bezier(.2,.8,.2,1) both; }
 
+/* ── Brain: "here it is" ────────────────────────────────────────────────────
+   Jumping to a node from somewhere else in the app (the "Open in Brain" button on a
+   lead card, a search result) used to just open the Brain — on a graph of a hundred
+   files that reads as "nothing was saved", because the thing that WAS saved is one
+   card among many with nothing to distinguish it. The border blinks purple four
+   times so the eye lands on it, then it goes quiet. Deliberately finite: a permanent
+   highlight would just be another kind of noise. */
+@keyframes nv-brain-found {
+  0%, 100% { border-color: var(--nv-border); box-shadow: 0 2px 8px rgba(0,0,0,.16); }
+  50%      { border-color: #7C5CFF;          box-shadow: 0 0 0 4px rgba(124,92,255,.28), 0 6px 24px rgba(124,92,255,.55); }
+}
+.nv-brain-found { animation: nv-brain-found 0.62s ease-in-out 4; }
+
 /* ── Background animation keyframes ── */
 @keyframes nv-orbit-cw  { to { transform: rotate(360deg);  } }
 @keyframes nv-orbit-ccw { to { transform: rotate(-360deg); } }
