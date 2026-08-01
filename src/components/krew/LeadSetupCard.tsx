@@ -30,7 +30,48 @@ export const REACH_OPTIONS: Array<{ key: Reach; label: string; hint: string }> =
   { key: 'known',   label: 'Well-known',       hint: 'Big, established names. Easiest to find, hardest to get a reply from.' },
 ];
 
+/**
+ * WHAT KIND OF THING YOU ARE LOOKING FOR.
+ *
+ * Everything here was built to find COMPANIES and then a decision-maker inside one. That is the
+ * wrong shape for recruiting affiliates, creators or partners, where the person IS the target and
+ * the company is incidental — an Instagram reviewer has no employee count, and a channel manager
+ * matters because of who follows him, not how big his employer is.
+ *
+ * It matters that this runs through /leads rather than a research prompt: this path searches
+ * first, then lays out what the search returned, then opens and verifies each profile. A research
+ * answer lets the model write the names itself, which is how a co-founder who does not exist ends
+ * up in a table with a confident LinkedIn URL. Same reason, different target.
+ */
+export type FindKind = 'companies' | 'people';
+
+/** Where to look. Each maps to a real capability the app already has. */
+export type FindSource = 'linkedin' | 'x' | 'instagram' | 'web';
+
+export const SOURCE_OPTIONS: Array<{ key: FindSource; label: string; hint: string }> = [
+  { key: 'linkedin',  label: 'LinkedIn',  hint: 'Profiles are opened and checked before they are saved — the most reliable source.' },
+  { key: 'x',         label: 'X',         hint: 'Public profiles and bios. Handles are saved so the copilot can DM them.' },
+  { key: 'instagram', label: 'Instagram', hint: 'Public profiles. Follower counts are only recorded when actually visible — never estimated.' },
+  { key: 'web',       label: 'The web',   hint: 'Directories, podcast guest lists, conference speakers, "best of" round-ups.' },
+];
+
+/** Common people-hunts, so the usual ones are one click rather than a paragraph. */
+export const PEOPLE_PRESETS: Array<{ key: string; label: string; what: string; sources: FindSource[] }> = [
+  { key: 'affiliate_b2b', label: 'Affiliate partners (B2B)', sources: ['linkedin', 'web'],
+    what: 'people who would promote a product to a business audience — account executives, channel and partnership managers, business-development leads at companies selling adjacent software, plus consultants and agency owners who already recommend tools to their clients' },
+  { key: 'creators', label: 'Creators & reviewers', sources: ['instagram', 'x', 'web'],
+    what: 'creators who review software and productivity tools for a general audience — tech reviewers, coding and AI channels, SaaS comparison accounts' },
+  { key: 'resellers', label: 'Consultants & resellers', sources: ['linkedin', 'web'],
+    what: 'independent consultants, IT service providers and agencies who advise businesses on software and could resell or refer a product' },
+  { key: 'community', label: 'Community leaders', sources: ['x', 'linkedin', 'web'],
+    what: 'people who run communities, newsletters, meetups or podcasts for founders, developers or operators' },
+];
+
 export interface LeadConfig {
+  /** Companies (the original behaviour) or people in their own right (affiliates, creators). */
+  find: FindKind;
+  /** Which sources to search. Only meaningful when find === 'people'. */
+  sources: FindSource[];
   /** Empty = start a new list. Otherwise the Brain lead list to READ, exclude, and append to —
    *  this is what /expand and /findleads used to do, folded in so there is one way to find leads. */
   addToList: string;
@@ -86,6 +127,11 @@ export default function LeadSetupCard({ defaultCity, existingLists = [], onGener
   // as well put every person through a second full browser pass — the single biggest reason a
   // 25-lead run took 25+ minutes. It only does anything when no contact-filling is requested.
   const [verify, setVerify] = useState(false);
+  // Companies stays the default: it is what most runs are, and changing the default would change
+  // behaviour for everyone who never opens this control.
+  const [find, setFind] = useState<FindKind>('companies');
+  const [sources, setSources] = useState<FindSource[]>(['linkedin', 'web']);
+  const [preset, setPreset] = useState('');
 
   const toggle = (arr: string[], set: (v: string[]) => void, k: string) =>
     set(arr.includes(k) ? arr.filter((x) => x !== k) : [...arr, k]);
@@ -114,6 +160,58 @@ export default function LeadSetupCard({ defaultCity, existingLists = [], onGener
       </div>
 
       <div className="p-3.5 space-y-3">
+        {/* WHAT ARE YOU LOOKING FOR — first, because it changes what the rest of the card means.
+            Company size is a sensible question about a business and a meaningless one about an
+            Instagram reviewer. */}
+        <div>
+          <label className="text-[10px] text-nv-faint uppercase tracking-wide">What are you looking for?</label>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            <button type="button" onClick={() => setFind('companies')} className={chip(find === 'companies')}
+              title="Businesses, and the decision-maker inside each one">Companies</button>
+            <button type="button" onClick={() => setFind('people')} className={chip(find === 'people')}
+              title="People in their own right — affiliates, creators, consultants, community leaders">People</button>
+          </div>
+          {find === 'people' && (
+            <p className="text-[9.5px] text-nv-faint mt-1 leading-relaxed">
+              Every profile is opened and checked before it is saved, so the list is people who actually exist —
+              then it goes straight to the outreach copilot.
+            </p>
+          )}
+        </div>
+
+        {find === 'people' && (
+          <>
+            <div>
+              <label className="text-[10px] text-nv-faint uppercase tracking-wide">Who, roughly?</label>
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                {PEOPLE_PRESETS.map((p) => (
+                  <button key={p.key} type="button" title={p.what}
+                    onClick={() => { setPreset(p.key); setWhat(p.what); setSources(p.sources); }}
+                    className={chip(preset === p.key)}>{p.label}</button>
+                ))}
+              </div>
+              <p className="text-[9.5px] text-nv-faint mt-1">Pick one to fill the description below, then edit it freely.</p>
+            </div>
+            <div>
+              <label className="text-[10px] text-nv-faint uppercase tracking-wide">Where to look</label>
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                {SOURCE_OPTIONS.map((s) => (
+                  <button key={s.key} type="button" title={s.hint}
+                    onClick={() => toggle(sources, (v) => setSources(v as FindSource[]), s.key)}
+                    className={chip(sources.includes(s.key))}>{s.label}</button>
+                ))}
+              </div>
+              {(sources.includes('instagram') || sources.includes('x')) && (
+                <p className="text-[9.5px] text-nv-faint mt-1 leading-relaxed">
+                  Handles are saved so the copilot can message them there. Follower counts are recorded only when
+                  they are actually visible on the profile — never estimated, so a blank means unknown, not zero.
+                </p>
+              )}
+              {!sources.length && <p className="text-[9.5px] text-amber-600 mt-1">Pick at least one place to look.</p>}
+            </div>
+          </>
+        )}
+
         {/* Topping up an existing list is the same job with one extra rule — never return anyone
             already on it. Keeping it here means one command instead of /leads + /findleads +
             /expand, and the de-duplication is guaranteed rather than asked for politely. */}
@@ -165,7 +263,9 @@ export default function LeadSetupCard({ defaultCity, existingLists = [], onGener
           </div>
         </div>
 
-        <div>
+        {/* Company-shaped questions. A creator has no employee count and no "market position",
+            so asking is noise at best and a filter that silently drops good people at worst. */}
+        {find === 'companies' && <div>
           <label className="text-[10px] text-nv-faint uppercase tracking-wide">Who to aim at</label>
           <div className="mt-1 flex flex-wrap gap-1.5">
             {REACH_OPTIONS.map((o) => (
@@ -177,9 +277,9 @@ export default function LeadSetupCard({ defaultCity, existingLists = [], onGener
           <p className="text-[9.5px] text-nv-faint mt-1 leading-relaxed">
             {REACH_OPTIONS.find((o) => o.key === reach)?.hint}
           </p>
-        </div>
+        </div>}
 
-        <div>
+        {find === 'companies' && <div>
           <label className="text-[10px] text-nv-faint uppercase tracking-wide">Company size</label>
           <div className="mt-1 flex flex-wrap gap-1.5">
             {SIZES.map((s) => (
@@ -194,7 +294,7 @@ export default function LeadSetupCard({ defaultCity, existingLists = [], onGener
             Size is read from each company's LinkedIn page, so a size filter makes the search slower.
             Leave all of them on to skip that check.
           </p>
-        </div>
+        </div>}
 
         <div>
           <label className="text-[10px] text-nv-faint uppercase tracking-wide">Seniority</label>
@@ -263,6 +363,7 @@ export default function LeadSetupCard({ defaultCity, existingLists = [], onGener
             onGenerate({
               addToList, what: what.trim(), sizes, seniority, city: city.trim(), sector: sector.trim(),
               count, mustHaveLinkedIn, mustHaveContact, useMaps, verify, reach,
+              find, sources: find === 'people' ? sources : [],
             });
           }}
           className="flex-1 text-[11.5px] font-semibold px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast disabled:opacity-50"

@@ -6284,12 +6284,34 @@ The prompt must be production-ready — specific enough for a motion designer to
         '  failure. If you are unsure about the exact company size or sector, include the person',
         '  anyway and let the app check the details.',
       ].join('\n');
+      // ─── PEOPLE MODE ────────────────────────────────────────────────────────────────────────
+      // The person is the target, not a way into a company. Size and market position stop being
+      // filters, the sources they actually live on become the search, and the columns change so a
+      // creator's handles survive into the outreach copilot rather than being dropped on the floor.
+      const peopleMode = cfg.find === 'people';
+      const srcLabel = (cfg.sources || []).map((s) => (s === 'x' ? 'X (Twitter)' : s === 'web' ? 'the open web' : s === 'linkedin' ? 'LinkedIn' : 'Instagram')).join(', ');
+      const peopleRules = peopleMode ? [
+        '',
+        '## YOU ARE FINDING PEOPLE, NOT COMPANIES',
+        `- Look on: ${srcLabel || 'LinkedIn and the open web'}. Take people who are genuinely findable there.`,
+        '- The PERSON is the target. Company size and market position do not apply — a one-person creator with the right audience is a better row than a director at a big firm with the wrong one.',
+        '- Company/Role should say what they DO in a few words ("runs a 60k dev-tools newsletter", "channel manager at an MSP", "reviews SaaS on Instagram") — that is what makes the row worth acting on.',
+        (cfg.sources || []).includes('x') || (cfg.sources || []).includes('instagram')
+          ? '- Add an X and/or Instagram column with the bare handle (@name) when you actually saw one. A handle you did not see is a — , never a guess: a wrong handle sends a message to a stranger.'
+          : '',
+        '- FOLLOWER COUNTS: only if the number is genuinely visible to you. Never estimate, never round a guess, never write "50k+" because the brief asked for 50k+. A blank means unknown, and unknown is an honest answer that the user can check. An invented number is one they will act on.',
+        '- Engagement rate, audience age and audience location are NOT knowable from a search. Leave them out entirely rather than inventing them — say so in one line under the table if the brief asked for them.',
+      ].filter(Boolean).join('\n') : '';
+
       const filters = [
         `WHO: ${cfg.what}`,
+        peopleMode && srcLabel ? `LOOK ON: ${srcLabel}` : '',
         cfg.city    ? `CITY: ${cfg.city} (must actually be based there)` : '',
         cfg.sector  ? `SECTOR: ${cfg.sector}` : '',
-        cfg.sizes.length && cfg.sizes.length < 5 ? `COMPANY SIZE: ${cfg.sizes.join(' or ')} employees` : '',
-        !cfg.seniority.includes('any') && cfg.seniority.length ? `SENIORITY: ${senLabel} only — decision-makers` : '',
+        // Company-shaped filters are dropped in people mode: an employee-count band would exclude
+        // exactly the independent creators and consultants the search is for.
+        !peopleMode && cfg.sizes.length && cfg.sizes.length < 5 ? `COMPANY SIZE: ${cfg.sizes.join(' or ')} employees` : '',
+        !peopleMode && !cfg.seniority.includes('any') && cfg.seniority.length ? `SENIORITY: ${senLabel} only — decision-makers` : '',
         existingNames.size
           ? `ALREADY ON MY LIST — never return any of these again: ${
               parseLeadRows(existingMd, 0).rows.map((r) => r.cells['name']).filter(Boolean).slice(0, 80).join(', ')}`
@@ -6349,8 +6371,23 @@ The prompt must be production-ready — specific enough for a motion designer to
           : (cfg.reach === 'known'
               ? [`largest companies${cityWord} founders CEO`, `top employers${cityWord} leadership`]
               : [`small businesses${cityWord} owners`, `growing startups${cityWord} founders`]);
-        const queries = cfg.reach === 'local' ? mapsQueries : webQueries;
-        groundingKind = cfg.reach === 'local' ? 'maps' : 'web';
+        // PEOPLE MODE SEARCHES THE PLACES PEOPLE ARE, which is not where companies are. Looking for
+        // "top X companies founders" will never surface an Instagram reviewer or a newsletter
+        // author, so the queries are built from the sources chosen on the card instead. Plain
+        // English, no site: operators — Google answers those with a bot challenge (measured).
+        const peopleQueries = (() => {
+          const base = topic || (cfg.what || '').split(/\s+/).slice(0, 6).join(' ') || 'software';
+          const out: string[] = [];
+          const on = (s: string) => (cfg.sources || []).includes(s as never);
+          if (on('instagram')) out.push(`${base} reviewers on Instagram${cityWord}`, `best ${base} Instagram accounts to follow`);
+          if (on('x')) out.push(`${base} creators to follow on X${cityWord}`);
+          if (on('linkedin')) out.push(`${base} partnerships and channel managers LinkedIn${cityWord}`);
+          if (on('web') || !out.length) out.push(`best ${base} influencers${cityWord}`, `${base} newsletters and podcasts${cityWord}`);
+          return out.slice(0, 4);
+        })();
+        const queries = peopleMode ? peopleQueries : (cfg.reach === 'local' ? mapsQueries : webQueries);
+        // People are never a Maps lookup — Maps lists businesses, not creators.
+        groundingKind = peopleMode ? 'web' : (cfg.reach === 'local' ? 'maps' : 'web');
 
         for (let qi = 0; qi < queries.length && mine(); qi++) {
           const q = queries[qi];
@@ -6487,7 +6524,8 @@ PREFER people and companies that appear above: they are known to exist. You may 
         try {
           ({ text } = await streamTurnWithRetry(
             [{ role: 'user', content: `${filters}\nHOW MANY: exactly ${want} rows${already}${groundingBlock}\n\nReturn the table now.` }],
-            sys, onLeadChunk,
+            // peopleRules is empty in company mode, so this is byte-identical to `sys` there.
+            sys + peopleRules, onLeadChunk,
           ));
         } catch (e) {
           // A RATE LIMIT is not a failed batch — it is "ask me again shortly".
