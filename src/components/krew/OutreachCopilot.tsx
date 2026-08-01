@@ -988,14 +988,14 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
           // LinkedIn is asking the USER to prove they are human. Nothing about the inbox is known
           // yet, so saying "no reply found" would be inventing an answer.
           if (raw.includes('HUMAN_CHECK_REQUIRED')) {
-            setPlanNote('LinkedIn is asking you to confirm you are human. Solve the check in the ADRIS browser window, then click "Scan their reply" again — nothing is lost.');
+            setPlanNote('LinkedIn needs you to confirm this sign-in. Look at the ADRIS browser window — it may be waiting for you to tap Yes in the LinkedIn app on your phone (the page looks blank while it waits). Then click "Scan their reply" again; nothing is lost.');
             setPlanning(false); await refocusAppToPlan(); return;
           }
           // The browser never finished. Also not evidence about their inbox.
           if (/\[(browser-timeout|browser-crash|custom-browser-unavailable)\]/.test(raw)) {
             browserBlocked = raw.includes('browser-crash')
               ? 'The ADRIS browser could not start — check that Google Chrome is installed, then try again.'
-              : 'The ADRIS browser did not finish reading the page in time. LinkedIn may be showing a security check — look at the ADRIS window, then try again.';
+              : 'The ADRIS browser did not finish reading the page in time. LinkedIn may be waiting for you to confirm the sign-in — look at the ADRIS window (it can look blank while it waits for you to tap Yes in the LinkedIn app), then try again.';
             break;
           }
           const tj = raw.indexOf('THREAD_JSON:');

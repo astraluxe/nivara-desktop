@@ -474,7 +474,10 @@ async function openLinkedInComposeBox(page) {
 /**
  * A HUMAN CHECK is not a login page, and waiting it out is the wrong move.
  *
- * LinkedIn answers automated-looking traffic with /checkpoint/challengesV2 — a reCAPTCHA behind
+ * LinkedIn answers automated-looking traffic with /checkpoint/challengesV2. Measured live on a
+ * real session, that page was its DEVICE CONFIRMATION — "open your LinkedIn app and tap Yes" —
+ * which renders as ~400 characters and a spinner, i.e. it looks to the user like a blank window
+ * that never loads. It can also be a reCAPTCHA behind
  * li.protechts.net. isAuthWall lumps it in with a login, so the caller then sat in
  * pollForLoginCompletion for 30 seconds. Add that to a 25-second navigation and the command blows
  * past Rust's 45-second cap, gets abandoned, and the user is told something untrue about their
@@ -1092,10 +1095,10 @@ async function main() {
     // blank window and can't read LinkedIn, which is the "browser opens but nothing loads" bug).
     // Instead leave the window open on the login page and tell the user to sign in + rerun. Fast.
     if (isHumanCheck(cFinal)) {
-      await showBanner(cPage, 'LinkedIn is asking you to confirm you are human. Solve it in THIS window, then run /scan again — nothing is lost.');
+      await showBanner(cPage, 'LinkedIn needs you to confirm this sign-in — it may be waiting for you to tap Yes in the LinkedIn app on your phone. Then run /scan again; nothing is lost.');
       try { await cPage.bringToFront(); } catch (_) {}
       writeState({ url: cFinal });
-      process.stdout.write('[HUMAN_CHECK_REQUIRED] LinkedIn is showing a security check. Solve it in the ADRIS browser window, then try again.');
+      process.stdout.write('[HUMAN_CHECK_REQUIRED] LinkedIn is showing a sign-in confirmation. It may be waiting for the user to tap Yes in the LinkedIn app on their phone. Complete it in the ADRIS browser window, then try again.');
       return;
     }
     if (isAuthWall(cFinal)) {
@@ -1259,10 +1262,10 @@ async function main() {
     try { await mxPage.waitForLoadState('networkidle', { timeout: 2500 }); } catch (_) {}
     var mxFinal = mxPage.url();
     if (isHumanCheck(mxFinal)) {
-      await showBanner(mxPage, 'LinkedIn is asking you to confirm you are human. Solve it in THIS window, then ask me to check your messages again — nothing is lost.');
+      await showBanner(mxPage, 'LinkedIn needs you to confirm this sign-in — it may be waiting for you to tap Yes in the LinkedIn app on your phone. Then ask me to check your messages again; nothing is lost.');
       try { await mxPage.bringToFront(); } catch (_) {}
       writeState({ url: mxFinal });
-      process.stdout.write('[HUMAN_CHECK_REQUIRED] LinkedIn is showing a security check. Solve it in the ADRIS browser window, then try again.');
+      process.stdout.write('[HUMAN_CHECK_REQUIRED] LinkedIn is showing a sign-in confirmation. It may be waiting for the user to tap Yes in the LinkedIn app on their phone. Complete it in the ADRIS browser window, then try again.');
       return;
     }
     if (isAuthWall(mxFinal)) {
@@ -2020,10 +2023,10 @@ async function main() {
     try { await rtPage.goto(rtUrl, { waitUntil: 'domcontentloaded', timeout: 25000 }); } catch (_) {}
     var rtFinal = rtPage.url();
     if (isHumanCheck(rtFinal)) {
-      await showBanner(rtPage, 'LinkedIn is asking you to confirm you are human. Solve it in THIS window, then press the button in ADRIS again — nothing is lost.');
+      await showBanner(rtPage, 'LinkedIn needs you to confirm this sign-in. Check THIS window — it may be waiting for you to tap Yes in the LinkedIn app on your phone. Then press the button in ADRIS again; nothing is lost.');
       try { await rtPage.bringToFront(); } catch (_) {}
       writeState({ url: rtFinal });
-      process.stdout.write('[HUMAN_CHECK_REQUIRED] LinkedIn is showing a security check at ' + rtFinal + '. Solve it in the ADRIS browser window, then try again.');
+      process.stdout.write('[HUMAN_CHECK_REQUIRED] LinkedIn is showing a sign-in confirmation at ' + rtFinal + '. It may be waiting for the user to tap Yes in the LinkedIn app on their phone. Complete it in the ADRIS browser window, then try again.');
       return;
     }
     if (isAuthWall(rtFinal)) {
