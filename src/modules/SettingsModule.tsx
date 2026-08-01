@@ -46,8 +46,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.11.4',
+  version: '1.11.5',
   items: [
+    'An overloaded AI service no longer kills the job. A provider answering "service temporarily overloaded" was treated as a hard failure — it got one instant retry, which an overloaded service fails just as surely, and then you got a dead end with a raw error blob in it. Overloads and gateway errors now wait and retry the same way rate limits already did.',
+    'And if it still cannot get through, it says so in words you can act on: the reply is already read, nothing is lost, press the button again in a few seconds. Genuine faults — an expired session, no key, a model that does not exist — still show the real error, because those are the ones you need the detail for.',
+
     'Fixed "Scan their reply" opening a blank tab that just sat there loading. Seven of the app own LinkedIn and Gmail browser commands — including the one that reads a conversation — were missing from the list that stops them falling back to the generic browser engine. When a command ran long, it was handed to that engine instead, which knows nothing about LinkedIn, opens its own window and loads nothing. The list is now written the other way round: it names the few commands the generic engine understands, so every one of ours is protected automatically and a new one cannot quietly regress.',
     'The app now recognises a LinkedIn security check. LinkedIn answers activity that looks automated with a "confirm you are human" page, and that page was being treated as an ordinary sign-in — so the app waited half a minute for a login that was never going to happen, blew its time budget, and got cut off. It now spots the check immediately, brings the window to the front and tells you to solve it, which takes seconds. Nothing is lost; press the button again afterwards.',
     'The copilot no longer tells you someone did not reply when it never managed to look. "no recent reply from X in your inbox" was printed whenever reading the thread failed for ANY reason — a security check, a browser timeout, Chrome not starting. That is a statement about their inbox, made when nothing at all was known about it. Those three cases now say what actually happened and what to do about it.',

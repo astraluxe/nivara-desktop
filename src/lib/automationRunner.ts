@@ -81,6 +81,23 @@ export interface AutomationRow {
 
 function uuid() { return crypto.randomUUID(); }
 
+/**
+ * Errors that mean "ask me again shortly", not "this failed".
+ *
+ * Rate limits were already waited out. An OVERLOAD was not: a provider answering 529
+ * {"message":"Service temporarily overloaded","type":"Overloaded"} broke straight out of the
+ * wait loop, got one INSTANT retry (which an overloaded service fails just as surely), and
+ * surfaced to the user as a dead end with a raw JSON blob in it. It is the same class of thing as
+ * a 429 and wants the same treatment: back off, then try again. 500/502/503/504 are here for the
+ * same reason — a gateway hiccup is not a reason to lose a plan the user is sitting there
+ * waiting for.
+ */
+export function isTransientAiError(msg: string): boolean {
+  const m = (msg || '').toLowerCase();
+  return /429|too many requests|rate.?limit|quota exceeded/.test(m)
+      || /(500|502|503|504|529)|overloaded|temporarily unavailable|service unavailable|try again later|bad gateway|gateway time-?out/.test(m);
+}
+
 export async function callAutomationAI(userMessage: string, systemPrompt: string): Promise<string> {
   // Free BYOK tiers rate-limit hard (a real NVIDIA key returned 429 on 9 of 14 quick requests), and
   // background work — a Guard scan chunking a codebase, an automation looping rows — is exactly the
@@ -91,7 +108,7 @@ export async function callAutomationAI(userMessage: string, systemPrompt: string
       return await callAiOnce(userMessage, systemPrompt);
     } catch (e) {
       const m = e instanceof Error ? e.message : String(e);
-      if (!/\b429\b|too many requests|rate limit|rate-limit|quota exceeded/i.test(m) || rateWaits >= 5) break;
+      if (!isTransientAiError(m) || rateWaits >= 5) break;
       rateWaits++;
       await new Promise((r) => setTimeout(r, Math.min(3000 * 2 ** (rateWaits - 1), 30_000)));
     }

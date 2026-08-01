@@ -12,7 +12,7 @@
 // without removing the person from the loop (which for LinkedIn would also get the account
 // banned).
 
-import { callAutomationAI } from './automationRunner';
+import { callAutomationAI, isTransientAiError } from './automationRunner';
 import { evidenceCharBudget, fitSections } from './contextBudget';
 
 // The AI caller both functions use. Defaults to callAutomationAI (global AI source), but callers can
@@ -1088,7 +1088,14 @@ export async function planReply(opts: {
       intent: 'unclear',
       // Surface the real reason so a failure is fixable (e.g. "Session expired", a quota message,
       // "no AI configured") instead of a dead-end. Works on adris.tech, your own key, or a local model.
-      read: `Couldn't reach the AI to plan this (${why.slice(0, 120)}). Read their reply and respond yourself, or try again.`,
+      // SAY WHICH KIND OF FAILURE IT WAS. An overloaded provider is a "press it again in a moment"
+      // problem, and dumping {"message":"Service temporarily overloaded","type":"Overloaded",
+      // "code":529} at the user makes a thirty-second wait look like a broken feature. Anything
+      // else keeps the real error text, which is what makes a genuine fault (expired session, no
+      // key, quota gone) fixable rather than a dead end.
+      read: isTransientAiError(why)
+        ? `The AI service was momentarily overloaded, so I couldn't plan this one. Their reply is read and nothing is lost — press "Scan their reply" again in a few seconds.`
+        : `Couldn't reach the AI to plan this (${why.slice(0, 120)}). Read their reply and respond yourself, or try again.`,
       draftReply: '',
       attachSuggested: false,
       degraded: true,
