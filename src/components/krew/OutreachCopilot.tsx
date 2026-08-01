@@ -907,6 +907,9 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     setPlan(null); setVerify(null); setPlanNote('Reading their reply…'); setPlanIdx(idx);
     setFixRound(0); setFixStalled(false);   // a brand-new draft gets a brand-new fix allowance
     let thread = '';
+    // Whatever comes back, it is not always a thread. These are the outcomes that are NOT
+    // "they never replied" — each needs a different thing from the user.
+    let browserBlocked = '';
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       setAgentBrowserHold(true); setBrowserOpen(true);
@@ -982,6 +985,19 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
             setPlanNote('Sign in to LinkedIn in the ADRIS browser window, then click "Scan their reply" again.');
             setPlanning(false); await refocusAppToPlan(); return;
           }
+          // LinkedIn is asking the USER to prove they are human. Nothing about the inbox is known
+          // yet, so saying "no reply found" would be inventing an answer.
+          if (raw.includes('HUMAN_CHECK_REQUIRED')) {
+            setPlanNote('LinkedIn is asking you to confirm you are human. Solve the check in the ADRIS browser window, then click "Scan their reply" again — nothing is lost.');
+            setPlanning(false); await refocusAppToPlan(); return;
+          }
+          // The browser never finished. Also not evidence about their inbox.
+          if (/\[(browser-timeout|browser-crash|custom-browser-unavailable)\]/.test(raw)) {
+            browserBlocked = raw.includes('browser-crash')
+              ? 'The ADRIS browser could not start — check that Google Chrome is installed, then try again.'
+              : 'The ADRIS browser did not finish reading the page in time. LinkedIn may be showing a security check — look at the ADRIS window, then try again.';
+            break;
+          }
           const tj = raw.indexOf('THREAD_JSON:');
           if (tj >= 0) {
             try {
@@ -1002,6 +1018,18 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     } catch { /* browser optional — fall back to a manual paste */ }
 
     if (!thread.trim()) {
+      // NEVER report on an inbox we failed to open. "Couldn't find a recent reply from X" is a
+      // statement about their inbox, and it was being printed when the browser had timed out, been
+      // abandoned mid-command, or hit a security check — i.e. when nothing whatsoever was known
+      // about whether they replied. That is the difference between "they haven't replied" and "I
+      // couldn't look", and the user acted on the wrong one.
+      if (browserBlocked) {
+        setPlanNote(browserBlocked);
+        setPlanning(false);
+        setPlan({ intent: 'unclear', read: `I couldn't read your thread with ${contact.name || 'them'} — that is a browser problem, not a sign they didn't reply. Fix the above and try again, or paste the messages here.`, draftReply: '', attachSuggested: false });
+        await refocusAppToPlan();
+        return;
+      }
       // The person wasn't in the recent inbox (older thread, or they never replied). Say so plainly
       // and let the user paste the thread — the plan panel still appears.
       setPlanNote(mode === 'followup'

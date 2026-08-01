@@ -471,8 +471,31 @@ async function openLinkedInComposeBox(page) {
     : 'No Message button on this profile — you may not be connected to them yet.' };
 }
 
+/**
+ * A HUMAN CHECK is not a login page, and waiting it out is the wrong move.
+ *
+ * LinkedIn answers automated-looking traffic with /checkpoint/challengesV2 — a reCAPTCHA behind
+ * li.protechts.net. isAuthWall lumps it in with a login, so the caller then sat in
+ * pollForLoginCompletion for 30 seconds. Add that to a 25-second navigation and the command blows
+ * past Rust's 45-second cap, gets abandoned, and the user is told something untrue about their
+ * inbox. A CAPTCHA also takes longer than any poll window we could justify: the honest move is to
+ * bring the window forward, say what is being asked, and return at once so they can solve it and
+ * press the button again.
+ */
+var START_MS = Date.now();   // when this command began — see pollForLoginCompletion
+
+function isHumanCheck(url) {
+  return /\/checkpoint\/(challenge|challengesV2)|\/checkpoint\/rp\/|px-captcha|protechts\.net/i.test(url || '');
+}
+
 async function pollForLoginCompletion(page, maxWait) {
-  var deadline = Date.now() + maxWait;
+  // NEVER outlive the caller. Rust abandons this process at 45 seconds, and a command that has
+  // already spent 25 of them navigating has nowhere near `maxWait` left — it just gets killed, and
+  // the user is told something false about their inbox rather than being asked to sign in. Spend
+  // only what is actually left of a 38-second budget, with a floor so the poll is never pointless.
+  var spent = Date.now() - START_MS;
+  var budget = Math.max(5000, Math.min(maxWait, 38000 - spent));
+  var deadline = Date.now() + budget;
   while (Date.now() < deadline) {
     await new Promise(function(r) { setTimeout(r, 2500); });
     try {
@@ -1068,6 +1091,13 @@ async function main() {
     // makes the node path time out and fall back to the generic agent-browser.exe — that opens a
     // blank window and can't read LinkedIn, which is the "browser opens but nothing loads" bug).
     // Instead leave the window open on the login page and tell the user to sign in + rerun. Fast.
+    if (isHumanCheck(cFinal)) {
+      await showBanner(cPage, 'LinkedIn is asking you to confirm you are human. Solve it in THIS window, then run /scan again — nothing is lost.');
+      try { await cPage.bringToFront(); } catch (_) {}
+      writeState({ url: cFinal });
+      process.stdout.write('[HUMAN_CHECK_REQUIRED] LinkedIn is showing a security check. Solve it in the ADRIS browser window, then try again.');
+      return;
+    }
     if (isAuthWall(cFinal)) {
       await showBanner(cPage, 'Sign in to LinkedIn in THIS window, then run /scan again — it reads your connections automatically.');
       try { await cPage.bringToFront(); } catch (_) {}
@@ -1228,6 +1258,13 @@ async function main() {
     try { await mxPage.goto(inboxUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }); } catch (_) {}
     try { await mxPage.waitForLoadState('networkidle', { timeout: 2500 }); } catch (_) {}
     var mxFinal = mxPage.url();
+    if (isHumanCheck(mxFinal)) {
+      await showBanner(mxPage, 'LinkedIn is asking you to confirm you are human. Solve it in THIS window, then ask me to check your messages again — nothing is lost.');
+      try { await mxPage.bringToFront(); } catch (_) {}
+      writeState({ url: mxFinal });
+      process.stdout.write('[HUMAN_CHECK_REQUIRED] LinkedIn is showing a security check. Solve it in the ADRIS browser window, then try again.');
+      return;
+    }
     if (isAuthWall(mxFinal)) {
       await showBanner(mxPage, 'Sign in to LinkedIn in THIS window, then ask me to check your messages again.');
       try { await mxPage.bringToFront(); } catch (_) {}
@@ -1982,6 +2019,13 @@ async function main() {
     var rtPage = rtCtx.pages().at(-1) || await rtCtx.newPage();
     try { await rtPage.goto(rtUrl, { waitUntil: 'domcontentloaded', timeout: 25000 }); } catch (_) {}
     var rtFinal = rtPage.url();
+    if (isHumanCheck(rtFinal)) {
+      await showBanner(rtPage, 'LinkedIn is asking you to confirm you are human. Solve it in THIS window, then press the button in ADRIS again — nothing is lost.');
+      try { await rtPage.bringToFront(); } catch (_) {}
+      writeState({ url: rtFinal });
+      process.stdout.write('[HUMAN_CHECK_REQUIRED] LinkedIn is showing a security check at ' + rtFinal + '. Solve it in the ADRIS browser window, then try again.');
+      return;
+    }
     if (isAuthWall(rtFinal)) {
       var rtTok = await pollForLoginCompletion(rtPage, 30000);
       if (!rtTok) { writeState({ url: rtFinal }); process.stdout.write('[SIGN_IN_REQUIRED] Please sign in to LinkedIn in the ADRIS browser window that just opened, then try again.'); return; }

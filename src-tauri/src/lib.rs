@@ -3485,7 +3485,22 @@ async fn run_browser_persistent(app: tauri::AppHandle, args: String) -> Result<S
     // window and return junk, which is exactly the "browser opens but nothing loads / couldn't read
     // names" bug. So NEVER fall back to the exe for these; return a clear signal instead.
     let first_word = args.trim().split_whitespace().next().unwrap_or("");
-    let is_custom = matches!(first_word, "connections" | "logincheck" | "message" | "printpdf" | "deckshots" | "findprofile" | "messages" | "typemsg");
+    // WHICH COMMANDS THE GENERIC FALLBACK ACTUALLY UNDERSTANDS — everything else is ours.
+    //
+    // This was a hand-maintained list of OUR commands, and it had fallen seven behind: readthread,
+    // gmailthread, meetlink, whatsapp, gcalcheck, sentinvites and humancheck were all missing (and
+    // it listed "deckshots", which does not exist). A missing one is not a small bug: when the node
+    // script times out, the command falls through to the generic vercel agent-browser, which knows
+    // nothing about LinkedIn, opens its OWN window, and sits there on a blank new tab loading
+    // forever. That is exactly what "Scan their reply" looked like — readthread was one of the
+    // seven.
+    //
+    // Inverted, so it lists the GENERIC vocabulary instead. Anything not in it is ours by
+    // definition, and a custom command added later is protected automatically rather than working
+    // until the day something makes it slow.
+    let is_custom = !matches!(first_word,
+        "open" | "openmany" | "navigate" | "snapshot" | "click" | "fill" | "press"
+        | "get" | "screenshot" | "close" | "select" | "check" | "upload" | "install");
     if is_custom {
         browser_debug_log(&format!("custom cmd '{}' — NOT using generic exe fallback", first_word));
         return Ok("[custom-browser-unavailable] The adris browser engine didn't respond. Make sure Google Chrome is installed and try again.".to_string());

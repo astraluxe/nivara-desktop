@@ -46,8 +46,13 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.11.3',
+  version: '1.11.4',
   items: [
+    'Fixed "Scan their reply" opening a blank tab that just sat there loading. Seven of the app own LinkedIn and Gmail browser commands — including the one that reads a conversation — were missing from the list that stops them falling back to the generic browser engine. When a command ran long, it was handed to that engine instead, which knows nothing about LinkedIn, opens its own window and loads nothing. The list is now written the other way round: it names the few commands the generic engine understands, so every one of ours is protected automatically and a new one cannot quietly regress.',
+    'The app now recognises a LinkedIn security check. LinkedIn answers activity that looks automated with a "confirm you are human" page, and that page was being treated as an ordinary sign-in — so the app waited half a minute for a login that was never going to happen, blew its time budget, and got cut off. It now spots the check immediately, brings the window to the front and tells you to solve it, which takes seconds. Nothing is lost; press the button again afterwards.',
+    'The copilot no longer tells you someone did not reply when it never managed to look. "no recent reply from X in your inbox" was printed whenever reading the thread failed for ANY reason — a security check, a browser timeout, Chrome not starting. That is a statement about their inbox, made when nothing at all was known about it. Those three cases now say what actually happened and what to do about it.',
+    'Waiting for a sign-in now fits inside the time the app really has. A page that spent 25 seconds loading would still start a fresh 30-second wait, guaranteeing it was killed halfway through.',
+
     'The model list now shows EVERY model your key has, in one place, grouped by what is actually known about each: it answered when tested, it has not been tested yet, or it did not answer and here is why. Nothing is hidden any more. Before, you saw either the last scan results or — with no scan — six "smart" and four "fast" from the catalogue, so anything past the tenth, anything added since, and anything that was merely busy during the sweep was simply not there.',
     'Models that failed a test are no longer deleted from the list. They move to "did not answer", labelled rate-limited, too slow, or no access — and they stay clickable, because trying a rate-limited one again a minute later is exactly how you get it back.',
     'The model you are using is measured as soon as you open the list, if it has never been tested. It used to be able to sit there marked as unknown while you watched it working.',
