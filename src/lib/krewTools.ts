@@ -648,6 +648,13 @@ export const SYSTEM_TOOLS: ToolDef[] = [
 // (which is what happened when the boss handed the job to an Ops agent).
 export const LEAD_TOOLS: ToolDef[] = [
   {
+    name: 'enrich_social_profiles',
+    description: 'READ the real follower count from public Instagram and X profiles in a list, by OPENING each profile in the browser. Use this whenever a list has Instagram or X handles and the user wants follower numbers, or asks for creators above a size ("50k+ followers"). No API key and no paid service is needed — the app reads the number off the public profile page itself. The number written is the one that was actually on the page: if a profile is private, blocked, or the page did not load, the cell is left as "—" and the reason is reported. NEVER estimate a follower count yourself and never write "50k+" because the brief asked for 50k+ — call this instead. Pass the markdown table as "list".',
+    parameters: {
+      list: { type: 'string', description: 'The list as a markdown table, with an Instagram and/or X column of handles. Pass it verbatim.', required: true },
+    },
+  },
+  {
     name: 'enrich_lead_list',
     description: 'FILL IN the LinkedIn, phone, and email for the people ALREADY in a lead list. THIS IS THE TOOL for "add their LinkedIn", "get their LinkedIn", "add contact details", "phone/email/mobile/office contact", or "use Google Maps". For each row the app searches the person\'s LinkedIn (headless search + the real logged-in browser as a fallback so throttling never blanks a profile that exists), confirms it belongs to that person, then checks Google Maps + the company site for phone/email — filling a LinkedIn, Phone and Email column. IMPORTANT: operate ONLY on the rows in the given list — do NOT add, invent, or research NEW people/companies (the user wants THESE contacts, not more prospects). A "—" means none was found (never fabricated). Pass the markdown table as "list".',
     parameters: {
@@ -3531,6 +3538,91 @@ async function executeToolCore(
     for (const s of searches) parts.push(`\n## Web search: ${s.q}\n${s.text}`);
     parts.push(`\n---\nBuild the answer ONLY from the material above. Every claim about this person — role, employer, past companies, skills, what they posted — must trace to a line you can point at here. Where the material is silent (no recent posts, no career history, nothing about their current focus), SAY it is not available rather than filling it in from what such a person would typically be, and mark anything uncertain as needing confirmation. Cite the profile URL and search sources you used.`);
     return fenceUntrusted(`research on ${person} (LinkedIn profile + web search)`, parts.join('\n'));
+  }
+
+  // ─── Follower counts, READ rather than guessed ────────────────────────────────────────────
+  //
+  // A creator list is useless without sizes, and there is no free API for them. The answer is not
+  // to let the model fill the column in — asked for "50k+ creators" it will happily write "50k+"
+  // next to every name, which looks like data and is nothing of the kind. The answer is that the
+  // APP opens the public profile and reads the number off the page, exactly as the user would.
+  //
+  // Same principle as verify_lead_list and the Maps enrichment: when the app does the looking, the
+  // result cannot be fabricated, and when the looking fails the cell stays empty and says why.
+  if (toolName === 'enrich_social_profiles') {
+    const listText = str(args.list ?? args.content ?? args.table ?? args.rows);
+    if (!listText.trim()) return '[enrich_social_profiles needs "list": the markdown table with Instagram/X handles.]';
+
+    const lines = listText.split('\n');
+    const hIdx = lines.findIndex((l) => l.includes('|') && /instagram|\bx\b|twitter/i.test(l) && /name/i.test(l));
+    if (hIdx < 0) return '[No Instagram or X column found in that list — add one with the handles first.]';
+    const splitRow = (l: string) => {
+      let s = l.trim();
+      if (s.startsWith('|')) s = s.slice(1);
+      if (s.endsWith('|')) s = s.slice(0, -1);
+      return s.split('|').map((c) => c.trim());
+    };
+    const headers = splitRow(lines[hIdx]);
+    const igCol = headers.findIndex((h) => /instagram|insta|\big\b/i.test(h));
+    const xCol  = headers.findIndex((h) => /^x$|x handle|twitter/i.test(h));
+    let folCol  = headers.findIndex((h) => /follower/i.test(h));
+    if (folCol < 0) { headers.push('Followers'); folCol = headers.length - 1; }
+
+    /** The bare handle, however it was written. Mirrors the copilot's own normaliser. */
+    const bare = (raw: string) => {
+      let s = (raw || '').trim().replace(/^https?:\/\//i, '').replace(/^www\./i, '');
+      s = s.replace(/^(?:x\.com|twitter\.com|instagram\.com)\//i, '').split(/[?#]/)[0].replace(/\/+$/, '').replace(/^@/, '');
+      return /^[A-Za-z0-9._]{1,30}$/.test(s) ? s : '';
+    };
+    /** "1.2M followers" / "12,345 Followers" → a number. Null when the page did not say. */
+    const readFollowers = (pageText: string): number | null => {
+      const m = pageText.match(/([\d][\d.,]*)\s*([KkMm])?\s*followers\b/i);
+      if (!m) return null;
+      const n = parseFloat(m[1].replace(/,/g, ''));
+      if (!isFinite(n)) return null;
+      const mult = /k/i.test(m[2] || '') ? 1_000 : /m/i.test(m[2] || '') ? 1_000_000 : 1;
+      const v = Math.round(n * mult);
+      return v > 0 && v < 1_000_000_000 ? v : null;
+    };
+    const pretty = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${Math.round(n / 1_000)}K` : String(n));
+
+    const out: string[] = [];
+    let read = 0, missed = 0, checked = 0;
+    for (let i = 0; i < lines.length; i++) {
+      if (i <= hIdx || !lines[i].includes('|')) { out.push(lines[i]); continue; }
+      const cells = splitRow(lines[i]);
+      if (cells.every((c) => /^:?-{2,}:?$/.test(c) || c === '')) { out.push(lines[i]); continue; }
+      while (cells.length < headers.length) cells.push('—');
+      const ig = igCol >= 0 ? bare(cells[igCol]) : '';
+      const xh = xCol  >= 0 ? bare(cells[xCol])  : '';
+      const already = (cells[folCol] || '').replace(/[—-]/g, '').trim();
+      if (already || (!ig && !xh)) { out.push('| ' + cells.join(' | ') + ' |'); continue; }
+      checked++;
+      const url = ig ? `https://www.instagram.com/${ig}/` : `https://x.com/${xh}`;
+      let page = '';
+      try {
+        const nav = await invoke<string>('run_browser_persistent', { args: `open "${url}"` }).catch((e) => String(e));
+        if (!/\[LOGIN REQUIRED|SIGN_IN_REQUIRED|\[browser-timeout\]|\[browser-crash\]|\[agent-browser not installed\]/i.test(nav)) {
+          const isDone = nav.trim() === '(done)' || nav.trim() === '';
+          const raw = isDone ? await invoke<string>('run_browser_persistent', { args: 'get text body' }).catch(() => '') : nav;
+          page = cleanBrowserText(raw || '');
+        }
+      } catch { /* leave the cell empty — never fill it from nothing */ }
+      const n = page ? readFollowers(page) : null;
+      // The ONLY way a number gets written is that it was read off the page a moment ago.
+      if (n !== null) { cells[folCol] = pretty(n); read++; } else { cells[folCol] = '—'; missed++; }
+      out.push('| ' + cells.join(' | ') + ' |');
+    }
+    // Put the header back with the Followers column if it was added.
+    out[hIdx] = '| ' + headers.join(' | ') + ' |';
+    if (hIdx + 1 < out.length && /^\s*\|[\s:|-]+\|\s*$/.test(out[hIdx + 1])) {
+      out[hIdx + 1] = '| ' + headers.map(() => '---').join(' | ') + ' |';
+    }
+    const note = checked === 0
+      ? 'Every row already had a follower count, or had no handle to check.'
+      : `Opened ${checked} profile${checked === 1 ? '' : 's'}: read ${read} follower count${read === 1 ? '' : 's'} off the page`
+        + (missed ? `, and left ${missed} blank — those were private, blocked, or did not load. A blank means unknown, not zero.` : '.');
+    return `${out.join('\n')}\n\n${note}`;
   }
 
   if (toolName === 'enrich_lead_list') {

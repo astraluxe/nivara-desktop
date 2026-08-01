@@ -6299,7 +6299,7 @@ The prompt must be production-ready — specific enough for a motion designer to
         (cfg.sources || []).includes('x') || (cfg.sources || []).includes('instagram')
           ? '- Add an X and/or Instagram column with the bare handle (@name) when you actually saw one. A handle you did not see is a — , never a guess: a wrong handle sends a message to a stranger.'
           : '',
-        '- FOLLOWER COUNTS: only if the number is genuinely visible to you. Never estimate, never round a guess, never write "50k+" because the brief asked for 50k+. A blank means unknown, and unknown is an honest answer that the user can check. An invented number is one they will act on.',
+        '- FOLLOWER COUNTS: leave the column blank (—). Do NOT estimate, do not round a guess, and never write "50k+" because the brief asked for 50k+. The app fills this in afterwards by OPENING each public profile and reading the number off the page, which costs nothing and cannot be fabricated. A blank you can check beats a number you would act on.',
         '- Engagement rate, audience age and audience location are NOT knowable from a search. Leave them out entirely rather than inventing them — say so in one line under the table if the brief asked for them.',
       ].filter(Boolean).join('\n') : '';
 
@@ -6818,7 +6818,26 @@ PREFER people and companies that appear above: they are known to exist. You may 
         setBusy(false); return;
       }
       const kept2 = finalKept;
-      const finalMd = rowsToMarkdown(kept2);
+      let finalMd = rowsToMarkdown(kept2);
+
+      // ─── READ THE FOLLOWER COUNTS, FOR FREE, BEFORE SAVING ──────────────────────────────────
+      //
+      // A creator list without sizes is not usable, and the model is explicitly forbidden from
+      // filling that column in — so the app does it: open each public profile and read the number
+      // off the page. No API key, no paid service, nothing to sign up for; it works the same on a
+      // free NVIDIA key as on any plan, because it is the browser doing the reading rather than a
+      // model doing the guessing.
+      //
+      // Only for people runs that actually picked a social source. Failures are non-fatal: the
+      // list is already good, and a profile that would not load leaves a blank that says so.
+      if (peopleMode && (cfg.sources || []).some((s) => s === 'instagram' || s === 'x') && /instagram|\bx\b|twitter/i.test(finalMd)) {
+        try {
+          post({ role: 'assistant', content: `Reading follower counts from the public profiles — opening each one…` });
+          const enriched = await executeTool('enrich_social_profiles', { list: finalMd }, creds, requestTerminalApproval, agent.key, user?.id ?? '', `${sidRef.current ?? 'main'}-social`);
+          const tStart = enriched.indexOf('|');
+          if (tStart >= 0 && enriched.slice(tStart).includes('\n')) finalMd = enriched.slice(tStart).split('\n\n')[0].trim();
+        } catch { /* keep the list — a missing follower column is far better than losing the people */ }
+      }
 
       // 6) Save to Brain, then offer the one-click hand-off. Appending merges cell-by-cell into the
       //    node the user picked, so nothing already there is overwritten or lost.
