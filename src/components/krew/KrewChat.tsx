@@ -4392,19 +4392,34 @@ const [studioExtracting, setStudioExtracting] = useState(false);
         // tier is exactly what a multi-step agent run hammers, and a 429 used to match none of the
         // categories below, so it threw immediately and killed the whole task a few steps in.
         // Backoff and carry on: the limit is per-minute and clears on its own.
+        //
+        // AN OVERLOADED PROVIDER IS THE SAME KIND OF PROBLEM. A 529
+        // {"message":"Service temporarily overloaded","type":"Overloaded"} matched none of the
+        // categories here, so it fell through to the final throw and killed the task outright —
+        // and because the outreach copilot plans its replies through THIS function, that surfaced
+        // as "couldn't plan this one" AFTER the browser had already done the slow work of signing
+        // in and reading the whole thread. An overload clears on its own exactly like a rate limit
+        // does, so it gets the same wait rather than losing the task.
+        const isOverloaded = /\b(500|502|503|504|529)\b|overloaded|temporarily unavailable|service unavailable|bad gateway|gateway time-?out/i.test(msg);
         const isRateLimited = /\b429\b|too many requests|rate limit|rate-limit|quota exceeded/i.test(msg);
-        if (isRateLimited && !stopRef.current) {
+        const isBusy = isRateLimited || isOverloaded;
+        if (isBusy && !stopRef.current) {
           rateWaits++;
           if (rateWaits <= 6) {
             const waitMs = Math.min(3000 * 2 ** (rateWaits - 1), 30_000);
-            setAgentStep(`${provider || 'Your provider'} is rate-limiting (free tier) — waiting ${Math.round(waitMs / 1000)}s, then continuing…`);
-            emit('agent-progress', { text: `Rate limited by your provider — waiting ${Math.round(waitMs / 1000)}s and continuing (attempt ${rateWaits} of 6).` }).catch(() => {});
+            // An overload is the SERVICE being busy; a rate limit is YOUR key's allowance. Saying
+            // "rate-limiting" for the first sends the user off to check a quota that is perfectly fine.
+            const busyWord = isOverloaded ? 'is overloaded right now' : 'is rate-limiting (free tier)';
+            setAgentStep(`${provider || 'Your provider'} ${busyWord} — waiting ${Math.round(waitMs / 1000)}s, then continuing…`);
+            emit('agent-progress', { text: `Your provider ${busyWord} — waiting ${Math.round(waitMs / 1000)}s and continuing (attempt ${rateWaits} of 6).` }).catch(() => {});
             await new Promise((r) => setTimeout(r, waitMs));
             if (stopRef.current) throw e;
             attempt--;                 // a provider limit is not a failed attempt
             continue;
           }
-          throw new Error(`${provider || 'Your AI provider'} kept rate-limiting this key (free tiers allow only a few requests a minute). Wait a minute and try again, or switch the chat to adris.tech AI for this task.`);
+          throw new Error(isOverloaded
+            ? `${provider || 'Your AI provider'} stayed overloaded through six retries (about a minute and a half of waiting). That is their service being busy — not your key, your quota or your setup. Try again shortly, switch to a different model, or use adris.tech AI for this one.`
+            : `${provider || 'Your AI provider'} kept rate-limiting this key (free tiers allow only a few requests a minute). Wait a minute and try again, or switch the chat to adris.tech AI for this task.`);
         }
         // Order matters: the stall message itself contains the word "connection", so it has to be
         // recognised BEFORE the network patterns or it classifies as a drop and gets the banner again.

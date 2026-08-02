@@ -1,10 +1,10 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { brain } from '../../lib/knowledgeStore';
+import { brain, nodeToMarkdown } from '../../lib/knowledgeStore';
 import { todos } from '../../lib/todoStore';
 import { setAgentBrowserHold, bestProfileMatch } from '../../lib/krewTools';
 import { checkPendingConnections, runBrowserCmd, waitingLabel, type ReconcileResult } from '../../lib/outreachConnections';
-import { outreachStatusToLeadCell, setLeadConnStatus } from '../../lib/leadTable';
+import { outreachStatusToLeadCell, setLeadConnStatus, setLeadProfileUrl, normaliseLinkedInUrl, isCompanyLinkedInUrl } from '../../lib/leadTable';
 import {
   planReply, planFollowUp, verifyWork, refineMessage, applyPromiseAudit, parseMeetingTime,
   actionableIssues, madeProgress, MAX_FIX_ROUNDS, auditScheduling, parseCalendarBusy,
@@ -474,6 +474,9 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   const [search, setSearch] = useState('');   // jump-to-a-contact by name, instead of Prev/Next spam
   const [opening, setOpening] = useState(false);
   const [openNote, setOpenNote] = useState('');
+  // The LinkedIn box is a DRAFT until it validates — typing half a URL must not blank the saved one.
+  const [liDraft, setLiDraft] = useState('');
+  const [liNote, setLiNote] = useState('');
   // True once we've opened a chat for this session — the browser window is now the user's
   // workspace, so it must not be auto-closed under them by a background run finishing.
   const [browserOpen, setBrowserOpen] = useState(false);
@@ -715,6 +718,27 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       const after = setLeadConnStatus(before, c.name, cell);
       if (after !== before) brain.updateNode(node.id, { body: after });
     } catch { /* the campaign is still the source of truth — a failed write-back is not fatal */ }
+  }
+
+  /**
+   * Correct this person's profile link on the saved lead list too.
+   *
+   * Fixing it only on the contact fixes it only for THIS campaign: the list in the Brain keeps the
+   * wrong link, so the next campaign built from that list makes the same mistake again, and the
+   * user has to find the right profile a second time. Returns the list it wrote to, so the UI can
+   * say where the correction landed rather than claiming something invisible happened.
+   */
+  function writeLeadProfileUrl(c: OutreachContact, url: string): string {
+    if (c.source !== 'leads' || !c.leadList) return '';
+    try {
+      const node = brain.findExactByTitle(c.leadList) ?? brain.findByTitle(c.leadList);
+      if (!node?.body) return '';
+      const before = nodeToMarkdown(String(node.body));
+      const after = setLeadProfileUrl(before, c.name, url);
+      if (after === before) return '';
+      brain.updateNode(node.id, { body: after });
+      return node.title;
+    } catch { return ''; }
   }
 
   // ─── Today's meeting → a reminder they will actually get ───────────────────────────────────
@@ -1339,6 +1363,40 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   const msg = fillTokens(cur.linkedin_message || '', cur);
   const hasProfile = !!(cur.linkedin_url && /linkedin\.com\/in\//i.test(cur.linkedin_url));
 
+  // Follow the selected contact. Without this the box keeps showing the PREVIOUS person's link,
+  // and a blur would then write that person's profile onto this one.
+  useEffect(() => {
+    setLiDraft(cur.linkedin_url || '');
+    setLiNote('');
+  }, [idx, cur.linkedin_url]);
+
+  /**
+   * Take a profile link the user typed, check it, and make it the saved one.
+   *
+   * Checked rather than trusted: a company page cannot be messaged, and a half-pasted link that
+   * merely contains "linkedin" would produce a contact that looks reachable and is not. Anything
+   * that isn't a personal /in/ profile is refused with the reason, and nothing is overwritten.
+   */
+  function saveLinkedInUrl(raw: string) {
+    const typed = (raw || '').trim();
+    if (!typed) { setLiNote(''); return; }
+    const clean = normaliseLinkedInUrl(typed);
+    if (!clean) {
+      setLiNote(isCompanyLinkedInUrl(typed)
+        ? 'That is a company page — you can\'t message a person through it. Open the company page, click the person, and copy the link from their profile (it has /in/ in it).'
+        : 'That doesn\'t look like a profile link. It should contain linkedin.com/in/…');
+      return;
+    }
+    if (clean === (cur.linkedin_url || '')) { setLiNote('✓ Already saved.'); return; }
+    setContacts((prev) => prev.map((c, i) => (i === idx ? { ...c, linkedin_url: clean } : c)));
+    setLiDraft(clean);
+    // And correct the list this contact came from, so the next campaign doesn't repeat the mistake.
+    const listTitle = writeLeadProfileUrl(cur, clean);
+    setLiNote(listTitle
+      ? `✓ Saved — and corrected on your "${listTitle}" list too.`
+      : '✓ Saved for this campaign.');
+  }
+
   // One click: open this person's LinkedIn chat box AND type the drafted message straight into it
   // (via `typemsg` — the same trusted per-character typing the inbox "Reply on LinkedIn" button
   // uses). The user reviews the pre-filled box and presses Send — nothing is auto-SENT, so the
@@ -1758,6 +1816,35 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
               )}
             </div>
           )}
+
+          {/* ── LinkedIn profile link ─────────────────────────────────────────────────────────
+              The lead search finds the wrong profile sometimes — a namesake, or nothing at all —
+              and when it does, the user is the one who ends up finding the right page. Until now
+              there was nowhere to put it: the URL was only ever written by the automatic search, so
+              a correct link the user had in their hand could not be given to the app. This is that
+              box, the same shape as the X and Instagram ones.
+
+              It writes to BOTH places on purpose. Saving only to the contact fixes this campaign
+              and leaves the saved lead list still wrong, so the next campaign built from that list
+              repeats the mistake and the user has to find the profile all over again. */}
+          <div className="pt-1 border-t border-nv-border">
+            <div className="flex items-center justify-between mb-1 gap-2">
+              <div className="text-[10px] text-nv-faint uppercase tracking-wide shrink-0">LinkedIn</div>
+              <input
+                value={liDraft}
+                onChange={(e) => { setLiDraft(e.target.value); setLiNote(''); }}
+                onBlur={() => saveLinkedInUrl(liDraft)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveLinkedInUrl(liDraft); } }}
+                placeholder="linkedin.com/in/their-profile"
+                className="flex-1 min-w-0 text-[11px] bg-nv-bg border border-nv-border rounded-md px-2 py-1 focus:outline-none focus:border-accent/40 select-text"
+              />
+            </div>
+            {liNote
+              ? <p className={`text-[9.5px] ${liNote.startsWith('✓') ? 'text-emerald-600' : 'text-amber-600'}`}>{liNote}</p>
+              : hasProfile
+                ? <p className="text-[9.5px] text-nv-faint">Used for the chat button above. Paste a different link to correct it.</p>
+                : <p className="text-[9.5px] text-amber-600">No profile saved for {cur.name || 'them'} — paste theirs here and everything below will use it.</p>}
+          </div>
 
           {/* ── X and Instagram ──────────────────────────────────────────────────────────────
               Same shape as the LinkedIn action that already works: put the message on the

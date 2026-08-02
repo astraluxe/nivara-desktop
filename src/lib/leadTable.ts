@@ -189,7 +189,40 @@ export function leadConnStatusToOutreach(raw?: string): 'todo' | 'connect' | 'se
  * mergeLeadTables only emits columns that already carry data, so a freshly built list never has
  * one. (Writing into the last existing column instead would quietly overwrite someone's email.)
  */
-export function setLeadConnStatus(md: string, name: string, cell: string): string {
+/**
+ * Tidy a LinkedIn profile link a human pasted into something the app can rely on.
+ *
+ * People paste all sorts: with or without the scheme, with LinkedIn's tracking query on the end, a
+ * country subdomain, a trailing slash, or the whole thing wrapped in spaces. Those are all the same
+ * profile, and storing them verbatim means the same person later fails a simple equality check.
+ * Returns '' when it is not a personal profile, which the caller must treat as "don't save this"
+ * rather than "save a blank".
+ *
+ * A /company/ page is rejected deliberately: you cannot message a person through one, so accepting
+ * it would produce a contact that looks reachable and is not.
+ */
+export function normaliseLinkedInUrl(input: string): string {
+  const raw = (input || '').trim();
+  if (!raw) return '';
+  const m = raw.match(/(?:https?:\/\/)?(?:[a-z]{2,3}\.)?linkedin\.com\/in\/([A-Za-z0-9%._-]+)/i);
+  if (!m) return '';
+  const slug = m[1].replace(/\/+$/, '');
+  return slug ? `https://www.linkedin.com/in/${slug}` : '';
+}
+
+/** A LinkedIn link, but to a COMPANY rather than a person — worth saying so specifically. */
+export function isCompanyLinkedInUrl(input: string): boolean {
+  return /linkedin\.com\/company\//i.test(input || '');
+}
+
+/**
+ * Write one cell for one named person in a lead-list markdown table.
+ *
+ * Extracted from setLeadConnStatus so a second column — the profile link — can be corrected the
+ * same careful way: the person must actually be on the list, the column is APPENDED properly when
+ * it doesn't exist yet (header, separator and every row), and everyone else's rows are untouched.
+ */
+function setLeadCell(md: string, name: string, colMatch: RegExp, colLabel: string, cell: string): string {
   const lines = (md || '').split('\n');
   const headerIdx = lines.findIndex((l) => l.trim().startsWith('|'));
   if (headerIdx === -1 || !name) return md;
@@ -200,7 +233,7 @@ export function setLeadConnStatus(md: string, name: string, cell: string): strin
   const cols = splitTableRow(lines[headerIdx]);
   const nameCol = cols.findIndex((h) => /\bname\b/i.test(h));
   if (nameCol === -1) return md;
-  let statusCol = cols.findIndex((h) => /connection.?status/i.test(h));
+  let targetCol = cols.findIndex((h) => colMatch.test(h));
 
   const rowCells = (l: string) => splitTableRow(l);
   const join = (c: string[]) => '| ' + c.join(' | ') + ' |';
@@ -210,15 +243,15 @@ export function setLeadConnStatus(md: string, name: string, cell: string): strin
     && key(rowCells(l)[nameCol] || '') === target);
   if (!present) return md;
 
-  const appending = statusCol === -1;
+  const appending = targetCol === -1;
   const width = cols.length + (appending ? 1 : 0);
-  if (appending) statusCol = cols.length;
+  if (appending) targetCol = cols.length;
 
   return lines.map((line, i) => {
     if (!line.trim().startsWith('|')) return line;
     if (i === headerIdx) {
       const c = rowCells(line);
-      if (appending) c.push('Connection Status');
+      if (appending) c.push(colLabel);
       return join(c);
     }
     if (isSep(line)) {
@@ -229,9 +262,27 @@ export function setLeadConnStatus(md: string, name: string, cell: string): strin
     const c = rowCells(line);
     while (c.length < width) c.push('—');
     if (key(c[nameCol] || '') !== target) return join(c);
-    c[statusCol] = cell;
+    c[targetCol] = cell;
     return join(c);
   }).join('\n');
+}
+
+/**
+ * Correct the saved LinkedIn URL for one person on a lead list.
+ *
+ * A lead search gets a profile wrong now and then — a namesake, or nothing found at all — and the
+ * fix used to live only on the outreach contact. The list the user actually keeps still held the
+ * wrong link, so the next campaign built from it repeated the same mistake. Writing it back is what
+ * makes the correction stick.
+ */
+export function setLeadProfileUrl(md: string, name: string, url: string): string {
+  const clean = normaliseLinkedInUrl(url);
+  if (!clean) return md;
+  return setLeadCell(md, name, /linkedin/i, 'LinkedIn', clean);
+}
+
+export function setLeadConnStatus(md: string, name: string, cell: string): string {
+  return setLeadCell(md, name, /connection.?status|invite.?status|request.?status/i, 'Connection Status', cell);
 }
 
 // Words that mark a row as an ORGANISATION rather than a person.

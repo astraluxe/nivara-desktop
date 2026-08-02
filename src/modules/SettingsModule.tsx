@@ -46,8 +46,12 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.11.5',
+  version: '1.11.6',
   items: [
+    'The copilot now has a LinkedIn box, next to the X and Instagram ones. When the lead search finds the wrong profile — a namesake, or nothing at all — you can paste the right link yourself, which until now there was simply nowhere to do. It is checked before it is kept: a company page is refused (you cannot message a person through one) and so is anything that is not a real profile link, so a half-pasted URL can never replace a good one.',
+    'A link you fix is also corrected on the lead list it came from, and the app tells you which list it wrote to. Fixing it only on the campaign left the saved list still wrong, so the next campaign built from that list repeated the same mistake and you had to go and find the profile a second time.',
+    'An overloaded AI provider no longer loses your reply plan. A 529 "service temporarily overloaded" matched none of the retry rules on the path the copilot actually uses, so it failed outright — after the browser had already done the slow work of signing in and reading the whole thread. It now waits and retries exactly as a rate limit does, and if it still cannot get through it says the service is busy rather than blaming your key or your quota.',
+
     'An overloaded AI service no longer kills the job. A provider answering "service temporarily overloaded" was treated as a hard failure — it got one instant retry, which an overloaded service fails just as surely, and then you got a dead end with a raw error blob in it. Overloads and gateway errors now wait and retry the same way rate limits already did.',
     'And if it still cannot get through, it says so in words you can act on: the reply is already read, nothing is lost, press the button again in a few seconds. Genuine faults — an expired session, no key, a model that does not exist — still show the real error, because those are the ones you need the detail for.',
 
