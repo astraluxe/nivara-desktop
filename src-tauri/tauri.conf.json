@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "adris.tech",
-  "version": "1.11.6",
+  "version": "1.11.7",
   "identifier": "tech.nivara.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -46,7 +46,9 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -67,6 +69,8 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI5RDA0QjY1ODhDMDcxRDAKUldUUWNjQ0laVXZRdVdHR2UyU3huWjdnSjN0TzhQVWdXWVB0TnZrYzBNMUhMQlRQeHpGdGNSd3AK",
       "endpoints": [
+        "https://www.adris.tech/latest.json",
+        "https://raw.githubusercontent.com/astraluxe/nivara-desktop/master/latest.json",
         "https://github.com/astraluxe/nivara-desktop/releases/latest/download/latest.json"
       ],
       "dialog": true,

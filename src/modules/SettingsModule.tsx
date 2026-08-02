@@ -46,8 +46,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.11.6',
+  version: '1.11.7',
   items: [
+    'The update checker no longer blames your connection when your connection is fine. Some networks -- several Indian ISPs, plenty of office wifi and mobile hotspots -- block the GitHub servers that hold the files, specifically: the address resolves, the connection opens, and then the secure handshake is dropped. Every release file is served from there, so the app could not even read its own update manifest, and it told you to check an internet connection that was working perfectly. It now tests a site it knows is reachable first, and if that works it tells you what is actually blocked and offers the download page instead.',
+    'Updates are now checked from three places instead of one. The manifest is published to adris.tech and to the repository as well as the GitHub release, and the app tries them in order -- so a network that blocks one of them still finds an update.',
+
     'The copilot now has a LinkedIn box, next to the X and Instagram ones. When the lead search finds the wrong profile — a namesake, or nothing at all — you can paste the right link yourself, which until now there was simply nowhere to do. It is checked before it is kept: a company page is refused (you cannot message a person through one) and so is anything that is not a real profile link, so a half-pasted URL can never replace a good one.',
     'A link you fix is also corrected on the lead list it came from, and the app tells you which list it wrote to. Fixing it only on the campaign left the saved list still wrong, so the next campaign built from that list repeated the same mistake and you had to go and find the profile a second time.',
     'An overloaded AI provider no longer loses your reply plan. A 529 "service temporarily overloaded" matched none of the retry rules on the path the copilot actually uses, so it failed outright — after the browser had already done the slow work of signing in and reading the whole thread. It now waits and retries exactly as a rate limit does, and if it still cannot get through it says the service is busy rather than blaming your key or your quota.',
@@ -479,6 +482,26 @@ export default function SettingsModule() {
           setUpdateStatus('error');
         }
       } catch {
+        // WORK OUT WHICH FAILURE THIS IS BEFORE BLAMING THE USER'S CONNECTION.
+        //
+        // "Check your connection" was printed for every failure, and it is wrong in the case that
+        // actually happens. Measured on a real Indian ISP: github.com answers in 0.5s, and
+        // objects.githubusercontent.com and release-assets.githubusercontent.com — where every
+        // release file is served from — resolve to the SAME IPs and accept a TCP connection on 443,
+        // then never complete the TLS handshake. That is SNI-based filtering by the network, not a
+        // broken connection, and no amount of checking their wifi will fix it. Telling them to look
+        // at a connection that is demonstrably working is the least useful thing the app could say.
+        //
+        // So probe a site that is definitely reachable. If that works, the internet is fine and the
+        // problem is specific — say so, and give them the thing they can actually do.
+        let reachable = false;
+        try {
+          await fetch('https://www.adris.tech/', { method: 'HEAD', cache: 'no-store' });
+          reachable = true;
+        } catch { /* genuinely offline, or everything is blocked */ }
+        setUpdateErr(reachable
+          ? 'Your internet is working, but this network is blocking GitHub\'s download servers (githubusercontent.com) — some ISPs, mobile hotspots and office networks do this. Updates can\'t be fetched here. Download the latest version directly from adris.tech, or try another network or a VPN.'
+          : '');
         setUpdateStatus('error');
       }
     }
@@ -932,7 +955,19 @@ export default function SettingsModule() {
               <p className="text-[11px] text-nv-green mb-3">You're on the latest version{updateInfo.current ? ` (v${updateInfo.current})` : ''}.</p>
             )}
             {updateStatus === 'error' && (
-              <p className="text-[11px] text-nv-red mb-3">Could not check for updates. Check your connection.</p>
+              <div className="mb-3">
+                {/* The specific diagnosis when we have one — "check your connection" is only
+                    honest when the connection is actually the problem. */}
+                <p className="text-[11px] text-nv-red leading-relaxed">
+                  {updateErr || 'Could not check for updates. Check your connection.'}
+                </p>
+                {updateErr && (
+                  <button
+                    onClick={() => { import('@tauri-apps/plugin-shell').then(({ open }) => open('https://www.adris.tech/download.html')).catch(() => window.open('https://www.adris.tech/download.html', '_blank')); }}
+                    className="mt-1.5 text-[10px] px-2.5 py-1 rounded-lg border border-accent/50 text-accent hover:bg-accent/10 transition-fast"
+                  >Open the download page</button>
+                )}
+              </div>
             )}
             {updateStatus === 'installing' && (
               <div className="mb-3">

@@ -79,6 +79,40 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+# -- Mirror latest.json where blocked networks can still reach it ------------------------------
+#
+# Measured on a real Indian ISP: objects.githubusercontent.com and release-assets.githubusercontent.com
+# resolve to GitHub's normal CDN IPs and accept a TCP connection on 443, then never complete the TLS
+# handshake -- SNI-based filtering. Every release file is served from those two hosts, so the updater
+# could not even READ latest.json and reported "check your connection" at someone whose connection
+# was fine. github.com itself, raw.githubusercontent.com and www.adris.tech are all reachable, so
+# the manifest goes to those as well and the app tries them in order (see tauri.conf.json endpoints).
+#
+# The manifest is ~1 KB, so mirroring it costs nothing. The 24 MB installer is deliberately NOT
+# mirrored here -- that is a repo-size decision, not a script one.
+Write-Host ""
+Write-Host "Mirroring latest.json to the reachable hosts..." -ForegroundColor Cyan
+
+# 1. raw.githubusercontent.com -- commit it into this repo.
+git add latest.json 2>$null
+git commit -m "chore(release): latest.json for v$version" --only latest.json 2>$null | Out-Null
+if ($LASTEXITCODE -eq 0) { git push 2>$null | Out-Null }
+Write-Host "  raw.githubusercontent.com: committed" -ForegroundColor DarkGray
+
+# 2. www.adris.tech -- the website repo is the parent folder and auto-deploys from master.
+$siteRoot = Split-Path (Get-Location).Path -Parent
+if (Test-Path (Join-Path $siteRoot "vercel.json")) {
+    Copy-Item "latest.json" (Join-Path $siteRoot "latest.json") -Force
+    Push-Location $siteRoot
+    git add latest.json 2>$null
+    git commit -m "chore: update manifest for adris.tech v$version" --only latest.json 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) { git push 2>$null | Out-Null; Write-Host "  www.adris.tech: pushed (Vercel will deploy it)" -ForegroundColor DarkGray }
+    else { Write-Host "  www.adris.tech: unchanged" -ForegroundColor DarkGray }
+    Pop-Location
+} else {
+    Write-Host "  www.adris.tech: website repo not found next door -- skipped" -ForegroundColor Yellow
+}
+
 Write-Host ""
 Write-Host "Done! v$version is live with auto-update support." -ForegroundColor Green
 Write-Host "Users will see an update prompt on next launch." -ForegroundColor Green

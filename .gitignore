@@ -30,5 +30,8 @@ src-tauri/resources/mesh/*.exe
 # One-off patch scripts (already applied, kept locally for reference)
 fix_*.cjs
 
-# Build artifacts uploaded to GitHub releases
-latest.json
+# latest.json used to be ignored as "a build artifact uploaded to GitHub releases". It is now also
+# SERVED from this repo, via raw.githubusercontent.com, because the release CDN
+# (objects/release-assets.githubusercontent.com) is SNI-filtered on some ISPs — measured: same IPs,
+# TCP 443 connects, TLS never completes — which left the updater unable to read its own manifest.
+# raw.githubusercontent.com is reachable on those networks, so the manifest is committed on purpose.
