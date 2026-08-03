@@ -143,10 +143,23 @@ function SlashIcon({ name }: { name: string }) {
     autopilot:   <><circle cx="12" cy="12" r="8" /><path d="M12 8v4l3 2" /></>,
     skills:      <><path d="M12 3l2.5 5 5.5.8-4 3.9.9 5.5-4.9-2.6-4.9 2.6.9-5.5-4-3.9 5.5-.8z" /></>,
     'repair-table': <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 10h18M9 10v10" /><path d="M14.5 16.5l2 2 4-4" /></>,
+    // These three had no entry and fell through to a plain circle, which told the user nothing —
+    // three identical dots in a list whose whole job is to be scannable.
+    // A funnel is the one glyph everybody reads as "leads", and it doesn't collide with the
+    // magnifiers already used by /findleads, /scan and /research.
+    leads:       <><path d="M3.5 5h17l-6.5 7.5V20l-4-2.5v-5z" /></>,
+    // A wand: this rewrites a message you already have, rather than writing a new one (/post is
+    // the pencil, /draft the envelope).
+    refine:      <><path d="M4.5 19.5L15 9" /><path d="M16.5 3.5l1.6 3.4 3.4 1.6-3.4 1.6-1.6 3.4-1.6-3.4L11.5 8.5l3.4-1.6z" /><path d="M5 5v2.5M3.75 6.25h2.5" /></>,
+    // A chain link with a tick — repairing the profile links on a list, not making a connection
+    // (/connect is the plain link).
+    verifylinks: <><path d="M10.5 7.5H9a4.5 4.5 0 0 0 0 9h1.5" /><path d="M14 7.5h1a4.5 4.5 0 0 1 3.9 6.8" /><path d="M9 12h6" /><path d="M14.5 19l2 2 4-4.5" /></>,
   };
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-      {p[name] ?? <circle cx="12" cy="12" r="9" />}
+      {/* A command with no icon of its own gets a slash in a rounded box — still recognisably "a
+          command", where the old bare circle just looked like a missing asset. */}
+      {p[name] ?? <><rect x="3.5" y="3.5" width="17" height="17" rx="4" /><path d="M14 7.5l-4 9" /></>}
     </svg>
   );
 }
@@ -8130,11 +8143,11 @@ _None of them had everything you ticked, so I've saved them rather than lose the
       setOutreachPick({ step: 'source' });
       return;
     }
-    if (c.run === 'continue') { setInput(''); const saved = loadResumableCampaign() || loadSavedCampaign(); if (saved) { setOutreachCampaign(saved); } else addMsg({ role: 'assistant', content: 'No outreach in progress yet — use **/outreach** to draft messages and open the copilot.' }); return; }
+    if (c.run === 'continue') { setInput(''); const saved = loadResumableCampaign() || loadSavedCampaign(); if (saved) { setOutreachCampaign(saved); } else addMsgHere({ role: 'assistant', content: 'No outreach in progress yet — use **/outreach** to draft messages and open the copilot.' }); return; }
     if (c.run === 'verifylinks') { setInput(''); verifyOutreachLinks(); return; }
     // Opens the setup card instead of running anything — the whole point is to ask BEFORE spending
     // several minutes of browser time on the wrong kind of lead.
-    if (c.run === 'leads') { setInput(''); addMsg({ role: 'lead_setup', content: '' }); return; }
+    if (c.run === 'leads') { setInput(''); addMsgHere({ role: 'lead_setup', content: '' }); return; }
     if (c.run === 'refine') {
       // Drop the phrasing in (don't run yet) so the user can add HOW they want the messages —
       // "warmer", "lead with our local-first angle", "shorter" — then press Enter. send() catches it.
@@ -8150,12 +8163,12 @@ _None of them had everything you ticked, so I've saved them rather than lose the
         const next = { ...raw, [key]: !raw?.[key] };
         localStorage.setItem('nv-settings', JSON.stringify(next));
         const on = next[key] === true;
-        addMsg({ role: 'assistant', content: key === 'webAutopilot'
+        addMsgHere({ role: 'assistant', content: key === 'webAutopilot'
           ? (on
             ? 'Web Autopilot is now **on**. I can explore sites I have no specific tool for, attach local files to forms, and learn a reusable skill once you approve a task — I still never submit/send/pay/delete anything without asking first. Turn it off any time in Settings → Advanced, or say /autopilot again.'
             : 'Web Autopilot is now **off**. I\'ll stick to the sites and services I have specific tools for.')
           : `Setting "${key}" is now ${on ? 'on' : 'off'}.` });
-      } catch { addMsg({ role: 'assistant', content: "Couldn't update that setting — try Settings → Advanced instead." }); }
+      } catch { addMsgHere({ role: 'assistant', content: "Couldn't update that setting — try Settings → Advanced instead." }); }
       return;
     }
     if (c.run === 'scan') {
@@ -9843,6 +9856,23 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
     // in the one currently open. It is still saved to that conversation's history, so it is there
     // when the user goes back — the guard only decides what is DRAWN, never what is kept.
     if (!owns()) return;
+    setMessages((prev) => [...prev, msg]);
+  }
+
+  /**
+   * Draw something the user just asked for, in the chat they are looking at.
+   *
+   * owns() exists to stop a turn running in ANOTHER conversation painting into this one. That is
+   * right for anything a background turn produces, and wrong for anything the user triggers here
+   * and now: pressing /leads is not a background write, it is a direct request, and it happens in
+   * whichever chat is on screen by definition.
+   *
+   * Routing those through addMsg meant a turn still running in a previous chat silently swallowed
+   * them — open a new chat while something was working, type /leads, and NOTHING appeared, with no
+   * error and no card. Going back to the old chat made it work again, which is exactly what
+   * ownership was deciding. A user action is always owned by the chat it was typed into.
+   */
+  function addMsgHere(msg: DisplayMsg) {
     setMessages((prev) => [...prev, msg]);
   }
 

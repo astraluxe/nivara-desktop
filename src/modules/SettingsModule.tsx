@@ -46,8 +46,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.11.7',
+  version: '1.11.8',
   items: [
+    'Fixed slash commands doing nothing in a new chat. If a task was still running in the chat you came from, /leads (and a few others) silently produced no card at all -- no error, nothing. The guard that stops a background task painting its results into whichever chat you have since opened was also swallowing things YOU had just asked for. A command you type is always meant for the chat you typed it into, so it now draws there regardless of what else is still working elsewhere.',
+    'Every slash command now has its own icon. /leads, /refine and /verifylinks were falling back to a plain circle, which made three of them indistinguishable in a list whose whole job is to be scannable -- a funnel for finding leads, a wand for rewriting messages, and a chain link with a tick for repairing profile links.',
+
     'The update checker no longer blames your connection when your connection is fine. Some networks -- several Indian ISPs, plenty of office wifi and mobile hotspots -- block the GitHub servers that hold the files, specifically: the address resolves, the connection opens, and then the secure handshake is dropped. Every release file is served from there, so the app could not even read its own update manifest, and it told you to check an internet connection that was working perfectly. It now tests a site it knows is reachable first, and if that works it tells you what is actually blocked and offers the download page instead.',
     'Updates are now checked from three places instead of one. The manifest is published to adris.tech and to the repository as well as the GitHub release, and the app tries them in order -- so a network that blocks one of them still finds an update.',
 
