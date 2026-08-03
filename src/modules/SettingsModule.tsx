@@ -46,8 +46,12 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.11.8',
+  version: '1.11.9',
   items: [
+    'Fixed answers being DELETED the moment they finished. If a reply contained a table, a cleaner meant for lead lists could throw away everything around it and leave only the table -- so you watched several minutes of real work stream in and then vanish. It fired on ordinary business words like "ideal customer", "positioning", "go-to-market", "action plan" and "30 day", which meant asking for a sales strategy that happened to include a comparison table destroyed over half the answer.',
+    'Those cleaners now only run on an actual lead list -- a table with both a name and a LinkedIn column, which a real lead list always has and a comparison table never does. Everything else comes back exactly as written.',
+    'And they no longer delete anything even then. A lead table is moved to the top so the list is the first thing you see and the app can still read it, and every word around it is kept underneath. Reordering can be undone; deleting cannot.',
+
     'Fixed slash commands doing nothing in a new chat. If a task was still running in the chat you came from, /leads (and a few others) silently produced no card at all -- no error, nothing. The guard that stops a background task painting its results into whichever chat you have since opened was also swallowing things YOU had just asked for. A command you type is always meant for the chat you typed it into, so it now draws there regardless of what else is still working elsewhere.',
     'Every slash command now has its own icon. /leads, /refine and /verifylinks were falling back to a plain circle, which made three of them indistinguishable in a list whose whole job is to be scannable -- a funnel for finding leads, a wand for rewriting messages, and a chain link with a tick for repairing profile links.',
 

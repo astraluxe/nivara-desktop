@@ -13,7 +13,7 @@ import { StatusGlobe } from './StatusGlobe';
 import { runParallelResearch } from '../../lib/researchSources';
 import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, type KrewAgent } from '../../lib/krewAgents';
 import { useAuth } from '../../contexts/AuthContext';
-import { extractTableRows, hasPopulatedLeadTable, mergeLeadTables, parseLeadRows, rowsToMarkdown, leadConnStatusToOutreach, looksLikePersonLead, matchesSeniority, matchesSector, peopleSearchPhrases } from '../../lib/leadTable';
+import { extractTableRows, findLeadHeaderIndex, hasPopulatedLeadTable, mergeLeadTables, parseLeadRows, rowsToMarkdown, leadConnStatusToOutreach, looksLikePersonLead, matchesSeniority, matchesSector, peopleSearchPhrases } from '../../lib/leadTable';
 import { supabase } from '../../lib/supabase';
 import { getPlanConfig } from '../../lib/planConfig';
 import { parseDeckSpec, slidesNeedingImages, renderDeckHtml, extractDeckSpec, applyDeckEdits, type DeckSpec, type DeckSlide, type DeckPalette } from '../../lib/deck';
@@ -2272,9 +2272,22 @@ function extractVideoUrls(text: string): string[] {
 // Strategy-essay markers that must NEVER wrap a lead/contact table.
 const STRATEGY_RE = /research question|key findings|ideal customer|\bicp\b|acquisition channel|30[\s-]?day|go[\s-]?to[\s-]?market|\bgtm\b|what'?s working|positioning|action plan|b2b vs b2c|^#{1,3}\s*sources/im;
 
-// If a data table is wrapped in a strategy essay, strip the essay and keep ONLY the
-// table (+ a short lead-in). The model keeps ignoring the "table only" prompt rule,
-// so this guarantees a clean lead list.
+/**
+ * Bring a data table to the front of an answer that buried it in an essay — WITHOUT deleting the
+ * essay.
+ *
+ * This used to return the table and a one-line lead-in, and throw everything else away. That is
+ * defensible for a lead list, where the table IS the deliverable and the surrounding waffle is the
+ * model ignoring "table only". It is indefensible for anything else, and the trigger words —
+ * "ideal customer", "ICP", "positioning", "go-to-market", "30 day", "action plan" — are the exact
+ * vocabulary of a genuine sales-strategy document. Ask for one that happens to contain a
+ * comparison table and 56% of the answer was deleted the instant it finished streaming: the user
+ * watched several minutes of real work appear and then vanish, leaving a single table behind.
+ *
+ * Nothing is discarded now. The table is hoisted so the lead flow still finds it first and the
+ * parsers still read it, and every word around it is kept underneath. A reordering is recoverable;
+ * a deletion is not.
+ */
 function stripStrategyAroundTable(text: string): string {
   if (!STRATEGY_RE.test(text)) return text;
   const lines = text.split('\n');
@@ -2291,12 +2304,11 @@ function stripStrategyAroundTable(text: string): string {
     else if (lines[i].trim() === '') continue;
     else break;
   }
-  let intro = '';
-  for (let i = 0; i < start; i++) {
-    const t = lines[i].trim();
-    if (t && !t.startsWith('#') && !t.startsWith('|') && t.length < 160 && !STRATEGY_RE.test(t)) { intro = t; break; }
-  }
-  return (intro ? intro + '\n\n' : '') + lines.slice(start, end + 1).join('\n');
+  const table  = lines.slice(start, end + 1).join('\n').trim();
+  const before = lines.slice(0, start).join('\n').trim();
+  const after  = lines.slice(end + 1).join('\n').trim();
+  const rest   = [before, after].filter(Boolean).join('\n\n');
+  return rest ? `${table}\n\n${rest}` : table;
 }
 
 // Lead-table parse/merge helpers live in ../../lib/leadTable so they can be unit-tested directly.
@@ -9344,11 +9356,20 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
               // cleaners (stripStrategyAroundTable keeps ONLY a table and drops everything else;
               // repairLeadTable rewrites rows) — they mangle or delete the drafts. Just clean noise.
               const hasDrafts = /```(?:email|draft|message|outreach)/i.test(delegateCleanRaw);
+              // AND ONLY WHEN IT IS ACTUALLY A LEAD LIST. These cleaners are tuned to the
+              // Name/Company/LinkedIn schema -- repairLeadTable rewrites rows against it and
+              // dedupeLeadTables merges on names. Run against ANY other table they range from
+              // pointless to destructive, and the strategy trigger fires on ordinary business
+              // vocabulary, so a sales-strategy answer with a comparison table was being put
+              // through the lead machinery. findLeadHeaderIndex needs a header carrying BOTH a
+              // name and a LinkedIn column, which a real lead list always has and a comparison
+              // table never does.
+              const isLeadOutput = findLeadHeaderIndex(extractTableRows(delegateCleanRaw)) >= 0;
               // dedupeLeadTables FIRST — a model restart/continuation-disobedience can glue TWO
               // full table copies into one reply (e.g. "...row |and| Name | Company/Role |..." —
               // a second header appearing mid-text). Merge them into one clean table before the
               // single-table repairLeadTable pass runs on the result.
-              const delegateClean = hasDrafts
+              const delegateClean = (hasDrafts || !isLeadOutput)
                 ? cleanForRender(delegateCleanRaw)
                 : repairLeadTable(dedupeLeadTables(stripStrategyAroundTable(cleanForRender(delegateCleanRaw))));
               // When verify_lead_list ran, its table is the AUTHORITATIVE deliverable — always
@@ -9591,9 +9612,14 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                 }
                 const { cleanContent: wfAfterProp, proposal: wfProp } = extractProposal(wfAccum || wfFinal);
                 const { cleanContent: wfCleanRaw, choices: wfChoices } = extractChoices(wfAfterProp);
-                // Same deterministic lead-table safety net as the single-delegate path: merge any
-                // duplicated/restarted table into one clean copy, then repair cell-level breakage.
-                let wfClean = repairLeadTable(dedupeLeadTables(stripStrategyAroundTable(cleanForRender(wfCleanRaw))));
+                // Same deterministic lead-table safety net as the single-delegate path -- and the
+                // same guard: only when the output really is a lead list. A workflow step that
+                // returns a strategy write-up, a comparison table or a plan must come back
+                // untouched, because these cleaners only understand the Name/LinkedIn schema.
+                const wfIsLead = findLeadHeaderIndex(extractTableRows(wfCleanRaw)) >= 0;
+                let wfClean = wfIsLead
+                  ? repairLeadTable(dedupeLeadTables(stripStrategyAroundTable(cleanForRender(wfCleanRaw))))
+                  : cleanForRender(wfCleanRaw);
                 // AUTO-VERIFY BACKSTOP (same as the single-delegate path): this step wrote a lead
                 // table with a populated LinkedIn column but never actually called verify_lead_list
                 // — trust nothing it wrote itself, confirm it for real before it becomes the record.
