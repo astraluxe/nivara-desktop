@@ -46,8 +46,12 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.11.9',
+  version: '1.11.10',
   items: [
+    'Fixed a long answer losing everything written before it was continued. When a reply is too long for the model to finish in one go, the app asks it to carry on -- but the continuation was painted OVER what came before instead of after it. On a long brief you watched sections 1 to 5 arrive, disappear, and section 6 take their place. The model had written the whole thing; only the last piece was ever kept. It now appends, and the full answer is what gets saved too, not just the tail.',
+    'There is no cap on how much an agent can write. The only limit is the model finishing a single response, and that is now handled by continuing and joining the pieces together.',
+    'Repaired 18 broken patterns across three files where a word-boundary marker had been mangled into an invisible control character. Among them: the check that decides whether a provider error is worth retrying (the numeric codes 429/500/502/503/529 were never matching -- only the worded versions were), the check that decides whether a model is genuinely unavailable, and the phrase that spots you asking for a separate list in chat.',
+
     'Fixed answers being DELETED the moment they finished. If a reply contained a table, a cleaner meant for lead lists could throw away everything around it and leave only the table -- so you watched several minutes of real work stream in and then vanish. It fired on ordinary business words like "ideal customer", "positioning", "go-to-market", "action plan" and "30 day", which meant asking for a sales strategy that happened to include a comparison table destroyed over half the answer.',
     'Those cleaners now only run on an actual lead list -- a table with both a name and a LinkedIn column, which a real lead list always has and a comparison table never does. Everything else comes back exactly as written.',
     'And they no longer delete anything even then. A lead table is moved to the top so the list is the first thing you see and the app can still read it, and every word around it is kept underneath. Reordering can be undone; deleting cannot.',

@@ -94,8 +94,8 @@ function uuid() { return crypto.randomUUID(); }
  */
 export function isTransientAiError(msg: string): boolean {
   const m = (msg || '').toLowerCase();
-  return /429|too many requests|rate.?limit|quota exceeded/.test(m)
-      || /(500|502|503|504|529)|overloaded|temporarily unavailable|service unavailable|try again later|bad gateway|gateway time-?out/.test(m);
+  return /\b429\b|too many requests|rate.?limit|quota exceeded/.test(m)
+      || /\b(500|502|503|504|529)\b|overloaded|temporarily unavailable|service unavailable|try again later|bad gateway|gateway time-?out/.test(m);
 }
 
 export async function callAutomationAI(userMessage: string, systemPrompt: string): Promise<string> {

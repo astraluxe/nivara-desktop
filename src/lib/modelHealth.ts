@@ -257,9 +257,9 @@ export type ProbeFailure = 'ok' | 'rate_limit' | 'timeout' | 'dead' | 'unknown';
 
 export function classifyProbeFailure(msg: string): ProbeFailure {
   const m = (msg || '').toLowerCase();
-  if (/429|rate.?limit|too many requests|quota|capacity/.test(m)) return 'rate_limit';
+  if (/\b429\b|rate.?limit|too many requests|quota|capacity/.test(m)) return 'rate_limit';
   if (/timed? ?out|timeout|deadline|aborted/.test(m)) return 'timeout';
-  if (/(404|403|401)|not found|does not exist|no access|unauthorized|not authorized|invalid model|unknown model|decommissioned/.test(m)) return 'dead';
+  if (/\b(404|403|401)\b|not found|does not exist|no access|unauthorized|not authorized|invalid model|unknown model|decommissioned/.test(m)) return 'dead';
   return 'unknown';
 }
 

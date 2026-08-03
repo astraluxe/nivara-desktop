@@ -2364,8 +2364,8 @@ function saysContinueExistingList(text: string): boolean {
 function wantsBrandNewList(text: string): boolean {
   if (saysContinueExistingList(text)) return false;
   if (loadSettings().listMode === 'new') return true;      // the setting says every save is its own file
-  return /(new|separate|another|second|different|fresh|its own|it'?s own)[^.]{0,40}(list|file|note|table)/i.test(text)
-      || /(don'?t|do not) (add|append|merge|put)[^.]{0,40}(to|into)[^.]{0,30}(existing|old|current|that|the) (list|file|note)/i.test(text);
+  return /\b(new|separate|another|second|different|fresh|its own|it'?s own)\b[^.]{0,40}\b(list|file|note|table)\b/i.test(text)
+      || /\b(don'?t|do not) (add|append|merge|put)\b[^.]{0,40}\b(to|into)\b[^.]{0,30}\b(existing|old|current|that|the) (list|file|note)\b/i.test(text);
 }
 
 function computeSeparateListTitle(text: string): string {
@@ -8893,6 +8893,25 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
           return; // the try's finally still runs all the normal cleanup
         }
       }
+      // WHAT THE MODEL ALREADY WROTE INTO THE BUBBLE THAT IS STILL OPEN.
+      //
+      // A long answer hits the provider's output-token cap, `wasTruncated` fires, and the loop
+      // asks it to continue. That continuation is a NEW iteration, so stepText starts empty --
+      // and because the chunk handler paints stepText over the bubble, the continuation REPLACED
+      // everything written before it. On a brief long enough to need continuing (a seven-section
+      // strategy document), sections 1-5 streamed in, vanished, and section 6 appeared in their
+      // place. The model had written all of it; the screen only ever kept the last piece.
+      //
+      // Held outside the iteration so a continuation appends instead. Cleared whenever a genuinely
+      // NEW bubble is opened after a tool result, since that one starts empty on purpose.
+      let carried = '';
+      const joinCarried = (base: string, next: string) => {
+        if (!base) return next;
+        if (!next) return base;
+        // A cut mid-table must not gain a blank line, or the two halves render as two tables.
+        const sep = /\|\s*$/.test(base.trimEnd()) && /^\s*\|/.test(next.trimStart()) ? '\n' : '\n\n';
+        return base + sep + next;
+      };
       while (steps < MAX_STEPS && !stopRef.current) {
         steps++;
         setAgentStep(`Thinking… ${Math.round((steps / MAX_STEPS) * 100)}%`);
@@ -8938,7 +8957,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
                 return;
               }
               if (workRef.current) workRef.current = null;   // real prose now — the box gives way
-              updateLastMsg(displayText);
+              updateLastMsg(joinCarried(carried, displayText));
             },
           );
           fullResponse = _r.text;
@@ -8947,13 +8966,26 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
 
         if (stopRef.current) break;
 
-        // Auto-continue if Gemini hit its output token limit mid-response
+        // Auto-continue if the model hit its output token limit mid-response.
         if (wasTruncated && !fullResponse.includes('<tool_call>') && !fullResponse.includes('<tool_code>')) {
+          // Carry the visible prose forward. Without this the next iteration paints over it and
+          // the user loses everything written before the cut -- which is the whole answer, on any
+          // brief long enough to be truncated in the first place.
+          carried = joinCarried(carried, fullResponse
+            .replace(/<tool_call>[\s\S]*/g, '')
+            .replace(/<tool_code>[\s\S]*/g, '')
+            .replace(/CHOICES_BLOCK:[\s\S]*/g, '')
+            .trim());
+          updateLastMsg(carried);
           history.push({ role: 'assistant', content: fullResponse });
           history.push({ role: 'user', content: 'continue' });
           // Don't break — loop naturally continues to fetch the rest
           continue;
         }
+        // From here on this step's text is final, so fold the carried part back in: everything
+        // downstream (tool parsing, the saved message, the rendered answer) must see the WHOLE
+        // answer, not just the last continuation.
+        if (carried) fullResponse = joinCarried(carried, fullResponse);
 
         // Check for tool call — handle <tool_call> and <tool_code> (model uses both), plus unclosed tags
         const OPEN_TAGS  = ['<tool_call>', '<tool_code>'];
@@ -9768,7 +9800,9 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
         // Keep history bounded: first user message + last 8 entries (4 tool-call pairs)
         if (history.length > 9) history.splice(1, history.length - 9);
 
-        // Add next streaming placeholder
+        // Add next streaming placeholder — and forget the carried text, because this is a NEW
+        // bubble rather than a continuation of the one above.
+        carried = '';
         addMsg({ role: 'assistant', content: '', streaming: true });
       }
 
