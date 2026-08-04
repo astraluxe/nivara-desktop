@@ -46,8 +46,14 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.11.15',
+  version: '1.12.0',
   items: [
+    'Agents remember the file they were working in. Ask the marketing agent for a campaign brief and then say "add a section on pricing", and it now opens that brief and edits it instead of starting a new document. Each agent keeps its own current file, it survives across conversations, and anything older than a month is forgotten rather than wrongly treated as current.',
+    'When an agent gives you options, they now come scored: how much work it is (an hour through to weeks), how much it moves the needle, and how sure the agent is that it works for YOU specifically. One is marked Recommended, but only when it genuinely comes out ahead -- a badge on a three-way tie would mean nothing. A low confidence is shown honestly rather than hidden.',
+    'It learns which kind of option you actually take. Every choice records what you picked AND what you turned down, and future recommendations shift towards how you really decide -- so someone who consistently takes the quick win stops being pushed towards the big rebuild, and someone who takes the ambitious option stops being offered only safe ones. It needs a few decisions before it claims a pattern, and it says plainly that your history is a hint rather than an instruction.',
+    'Ask what is working in the market right now and agents go and look it up instead of answering from memory -- which channels are working, what people are doing to get clients, what has stopped working -- and they say when something is their judgement rather than something they read.',
+    'Every answer ends with what to do next: the two or three moves that would sensibly follow, most useful first.',
+
     'Every agent now works like an agent, not a chat window. The rules that make one plan, look things up, finish the job and only ask when it genuinely has to were given ONLY to the boss -- all fifty other agents got their persona, their tools, and no working method at all. That is most of what makes a specialist feel like it just replies. They now all get the same discipline: check your calendar, Brain and files BEFORE asking; ask at most two or three specific questions and only about decisions that are yours to make; never ask twice for something you already answered; then actually do the whole task with the tools rather than describing it; remember what matters for next time; and never claim something ran, sent or saved when it did not.',
     'Agents working inside a pipeline are still told the opposite -- never stop to ask -- because there is no one there to answer.',
 

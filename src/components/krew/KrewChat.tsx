@@ -25,6 +25,7 @@ import AgentStatus from './AgentStatus';
 import { type ConnectionMode, type Provider } from '../../lib/ai';
 import { isDeadModelError, repairDeadModel, blockModel, scanModelsIfStale, measuredMsFor } from '../../lib/modelHealth';
 import { noteActiveModel, bulkPlan } from '../../lib/contextBudget';
+import { normaliseScore, scoreValue, decisionBias, recordDecision, decisionStyleNote, workingFileNote, setWorkingFile, EFFORT_LABEL, IMPACT_LABEL } from '../../lib/agentBrain';
 import { slugLooksLikeName } from '../../lib/outreachConnections';
 import { auditPromises, cleanOutboundMessage, type PromiseIssue } from '../../lib/verify';
 import ConnectionBar from '../coder/ConnectionBar';
@@ -256,6 +257,13 @@ interface ChoiceItem {
   label:   string;
   preview: string;
   content: string;
+  /** How hard, how much it moves the needle, and how sure the agent is — see agentBrain.
+   *  Optional throughout: an agent that offers options without scoring them still works exactly
+   *  as it did, the card simply renders without the badges. */
+  effort?:     number;
+  impact?:     number;
+  confidence?: number;
+  why?:        string;
 }
 
 interface ChoiceSet {
@@ -3091,11 +3099,25 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
   );
 }
 
-function ChoicePicker({ choiceSet, onSelect, disabled, storageKey }: { choiceSet: ChoiceSet; onSelect: (content: string) => void; disabled?: boolean; storageKey?: string }) {
+function ChoicePicker({ choiceSet, onSelect, disabled, storageKey, agentKey }: { choiceSet: ChoiceSet; onSelect: (content: string) => void; disabled?: boolean; storageKey?: string; agentKey?: string }) {
   const savedPick                 = storageKey ? localStorage.getItem(storageKey) : null;
   const [picked, setPicked]       = useState<string | null>(savedPick);
   const [confirmed, setConfirmed] = useState(!!savedPick);
   const [copied, setCopied]       = useState(false);
+
+  // WHICH ONE TO RECOMMEND. Only when the options carry real scores, and only when one of them
+  // actually comes out ahead — a "Recommended" badge on a three-way tie is noise. The user's own
+  // past choices tilt the weighting (decisionBias), so someone who reliably takes the quick win
+  // gets effort weighted harder than someone who reliably takes the big swing.
+  const bestId = useMemo(() => {
+    const scored = choiceSet.choices.filter((c) => c.impact != null || c.effort != null);
+    if (scored.length < 2) return null;
+    const bias = decisionBias();
+    const ranked = scored
+      .map((c) => ({ id: c.id, v: scoreValue({ effort: c.effort, impact: c.impact, confidence: c.confidence }, bias) }))
+      .sort((a, b) => b.v - a.v);
+    return ranked[0].v - ranked[1].v > 0.25 ? ranked[0].id : null;
+  }, [choiceSet]);
 
   if (confirmed) {
     const choice = choiceSet.choices.find((c) => c.id === picked);
@@ -3142,7 +3164,32 @@ function ChoicePicker({ choiceSet, onSelect, disabled, storageKey }: { choiceSet
                 : 'border-nv-border hover:border-accent/40 text-nv-muted hover:text-nv-text'
             }`}
           >
-            <p className="text-[11px] font-semibold mb-0.5">{c.label}</p>
+            <span className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+              <span className="text-[11px] font-semibold">{c.label}</span>
+              {/* RECOMMENDED — computed from the scores, weighted by what this user has actually
+                  chosen before. Only ever shown when the options really were scored and one of
+                  them genuinely wins; a badge on every card would mean nothing. */}
+              {c.id === bestId && (
+                <span className="text-[8.5px] font-semibold px-1.5 py-px rounded-full bg-accent text-white">Recommended</span>
+              )}
+            </span>
+            {(c.effort != null || c.impact != null) && (
+              <span className="flex items-center gap-1 flex-wrap mb-1">
+                {c.effort != null && (
+                  <span className="text-[8.5px] px-1.5 py-px rounded-full border border-nv-border text-nv-faint"
+                    title={`Effort ${c.effort}/5`}>{EFFORT_LABEL[c.effort] || `Effort ${c.effort}/5`}</span>
+                )}
+                {c.impact != null && (
+                  <span className={`text-[8.5px] px-1.5 py-px rounded-full border ${c.impact >= 4 ? 'border-emerald-500/50 text-emerald-600 bg-emerald-500/10' : 'border-nv-border text-nv-faint'}`}
+                    title={`Impact ${c.impact}/5`}>{IMPACT_LABEL[c.impact] || `Impact ${c.impact}/5`}</span>
+                )}
+                {c.confidence != null && (
+                  <span className={`text-[8.5px] px-1.5 py-px rounded-full border ${c.confidence < 50 ? 'border-amber-500/50 text-amber-600 bg-amber-500/10' : 'border-nv-border text-nv-faint'}`}
+                    title="How sure the agent is this works for you specifically">{c.confidence}% sure</span>
+                )}
+              </span>
+            )}
+            {c.why && <p className="text-[9.5px] text-nv-muted mb-1 leading-snug">{c.why}</p>}
             <p className="text-[10px] text-nv-faint line-clamp-2 font-mono">{c.preview}</p>
           </button>
         ))}
@@ -3155,9 +3202,26 @@ function ChoicePicker({ choiceSet, onSelect, disabled, storageKey }: { choiceSet
           >Cancel</button>
           <button
             onClick={() => {
-              const content = choiceSet.choices.find((c) => c.id === picked)?.content ?? '';
+              const chosen = choiceSet.choices.find((c) => c.id === picked);
+              const content = chosen?.content ?? '';
               setConfirmed(true);
               if (storageKey && picked) localStorage.setItem(storageKey, picked);
+              // THE ONLY HONEST SIGNAL ABOUT HOW THIS PERSON WORKS is what they actually take when
+              // something else was on the table. Recorded with what they turned DOWN, because the
+              // contrast is what carries the information — and fed back into later recommendations
+              // via decisionBias/decisionStyleNote.
+              if (chosen) {
+                recordDecision({
+                  agentKey: agentKey || '',
+                  title: choiceSet.title,
+                  picked: chosen.label,
+                  pickedScore: normaliseScore({ effort: chosen.effort, impact: chosen.impact, confidence: chosen.confidence }),
+                  rejected: choiceSet.choices.filter((c) => c.id !== chosen.id).map((c) => ({
+                    label: c.label,
+                    score: normaliseScore({ effort: c.effort, impact: c.impact, confidence: c.confidence }),
+                  })),
+                });
+              }
               onSelect(content);
             }}
             className="text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-semibold"
@@ -3347,6 +3411,17 @@ function extractChoices(content: string): { cleanContent: string; choices: Choic
   if (!match) return { cleanContent: content, choices: null };
   try {
     const choices = JSON.parse(match[1].trim()) as ChoiceSet;
+    // Normalise the scores rather than trusting them. A model asked for 1-5 will occasionally
+    // answer 7, or "high", or omit one — and a card that renders "effort 7/5" reads as broken.
+    // normaliseScore clamps what is there and returns null when nothing usable was given, so an
+    // unscored option renders exactly as it always did.
+    if (Array.isArray(choices?.choices)) {
+      for (const c of choices.choices) {
+        const s = normaliseScore({ effort: c.effort, impact: c.impact, confidence: c.confidence, why: c.why });
+        if (s) { c.effort = s.effort; c.impact = s.impact; c.confidence = s.confidence; c.why = s.why; }
+        else { delete c.effort; delete c.impact; delete c.confidence; }
+      }
+    }
     const cleanContent = content.replace(/\n*CHOICES_BLOCK:[\s\S]*?END_CHOICES\n*/g, '\n').trim();
     return { cleanContent, choices };
   } catch {
@@ -8891,7 +8966,32 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
       '4. REMEMBER WHAT MATTERS. When you learn something durable about the user or their business',
       '   -- their product, their market, a preference, a decision -- save_memory it so the next',
       '   conversation starts from there instead of asking again.',
-      '5. SAY WHAT IS TRUE. Report what you actually did and actually found. Never claim a tool ran,',
+      '5. WHEN THEY ASK WHAT IS WORKING NOW, GO AND LOOK. Questions about what is currently working',
+      '   — which channels, which tactics, what people are doing to get clients or go viral, what has',
+      '   stopped working — cannot be answered from memory, because your memory is old. Search first,',
+      '   read what you find, and answer with what is happening now plus the date you saw it. Say',
+      '   plainly when something is your judgement rather than something you read.',
+      '6. GIVE THEM OPTIONS WITH THE TRADE-OFF ATTACHED, not a wall of advice. When there are',
+      '   genuinely 2-4 different directions, output a CHOICES_BLOCK and SCORE each one:',
+      '     effort     1-5  (1 = an hour, 5 = weeks of work)',
+      '     impact     1-5  (1 = marginal, 5 = changes the business)',
+      '     confidence 0-100 (how sure you are it works for THIS user, given what you know of them)',
+      '     why        one line on why it scores that way',
+      '   The scores go in the SAME object as the option, like this:',
+      '   CHOICES_BLOCK:',
+      '   {"title":"Three ways to get your first paying users","choices":[',
+      '     {"id":"a","label":"Founder-led outreach","preview":"30 hand-written DMs a week","content":"[the full plan]",',
+      '      "effort":2,"impact":4,"confidence":75,"why":"You already have the list and it needs no budget"},',
+      '     {"id":"b","label":"Paid ads","preview":"Test 3 angles at a small budget","content":"[the full plan]",',
+      '      "effort":4,"impact":3,"confidence":40,"why":"Costs money before it teaches you anything"}]}',
+      '   END_CHOICES',
+      '   Score honestly — a low confidence is far more useful than a confident guess, and the app',
+      '   shows the numbers to the user. Do NOT use this for email/message drafts (they get their own',
+      '   format), and do not manufacture options when there is really only one sensible move.',
+      '7. THINK ONE MOVE AHEAD. After delivering, add a short "Next" line with the 2-3 things that',
+      '   would sensibly follow, most useful first, each one concrete enough to act on. Not a menu of',
+      '   everything possible — what YOU would do next if this were your job.',
+      '8. SAY WHAT IS TRUE. Report what you actually did and actually found. Never claim a tool ran,',
       '   a file was written or a message was sent unless it was. If you could not verify something,',
       '   say so plainly rather than presenting a guess as a fact.',
     ].join('\n');
@@ -8899,7 +8999,10 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     const systemPrt  = assembleSystemPrompt(
       [agent.systemPrompt, '\n\n', buildKrewSystemPrompt(tools), bossPostfix, workingRules,
        searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective],
+      // The two things that make a turn a CONTINUATION rather than a fresh start: what this
+      // agent was last working in, and what this user actually chooses when offered options.
       [identityCtx, locationBlock, (agent.key === 'boss' ? '' : userBlock), connectedAppsBlock, mcpSummary,
+       workingFileNote(agent.key), decisionStyleNote(),
        skillsBlock, profileBlock, memBlock, tierDirective, dateBlock],
     );
 
@@ -9880,6 +9983,22 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
             if (tool === 'save_memory' || tool === 'forget_memory') {
               krewMemoryDb.getAll(agent.key).then(setAgentMemories).catch(() => {});
             }
+            // REMEMBER WHAT THIS AGENT IS WORKING IN. Whenever it writes a document or saves to the
+            // Brain, that becomes its current file — so "add a section on pricing" next turn edits
+            // the campaign brief it just made instead of starting a new one. Title-first because
+            // Brain nodes are found by title and paths move; the path rides along when there is one
+            // so the file can be re-opened.
+            if (tool === 'generate_document' || tool === 'save_to_brain' || tool === 'edit_brain') {
+              const title = String((args as Record<string, unknown>).title ?? (args as Record<string, unknown>).filename ?? '').trim();
+              const path = (toolResult.match(/[A-Za-z]:\\[^\s"']+\.(?:pdf|docx?|xlsx?|csv|md|txt)/) ?? [])[0];
+              if (title) {
+                setWorkingFile(agent.key, {
+                  title: title.replace(/\.(pdf|docx?|xlsx?|csv|md|txt)$/i, ''),
+                  kind: tool === 'generate_document' ? 'document' : 'note',
+                  path,
+                });
+              }
+            }
             if (tool.startsWith('browser_') && toolResult.includes('[agent-browser not installed]')) setBrowserNudge(true);
           }
         } catch (e) {
@@ -10714,6 +10833,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                   choiceSet={msg.choices}
                   disabled={busy}
                   storageKey={sidRef.current ? `nv-choice:${sidRef.current}:${i}` : undefined}
+                  agentKey={agent.key}
                   onSelect={(content) => {
                     // Content renders inside the card itself — only persist to DB
                     if (sidRef.current) krewDb.saveMessage(sidRef.current, 'assistant', content).catch(() => {});
