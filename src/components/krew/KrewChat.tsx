@@ -35,6 +35,8 @@ import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining }
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
 import { builtInSkillsBlock } from '../../lib/skillGraph';
 import SkillsPanel from './SkillsPanel';
+import PlanPanel from './PlanPanel';
+import { looksLikeActionPlan, parsePlanSteps, createPlan, savePlan, loadPlan } from '../../lib/planStore';
 import LeadSetupCard, { type LeadConfig } from './LeadSetupCard';
 import { loadUserLocation, locationLabel } from '../../lib/userLocation';
 import { identityBlock } from '../../lib/userIdentity';
@@ -3514,6 +3516,9 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
   const [showQuotaUpgrade,  setShowQuotaUpgrade]   = useState(false);
   const [monthlyUsed,       setMonthlyUsed]         = useState(0);
   const [outreachCampaign,  setOutreachCampaign]    = useState<OutreachCampaign | null>(null);
+  // The plan panel — same idea as the outreach copilot: a long piece of work needs its own column,
+  // not a chat bubble you scroll past. Opens itself if a plan is already running.
+  const [planOpen, setPlanOpen] = useState<boolean>(() => !!loadPlan());
   // When a "/" command needs a file (its value has a <file name> slot), we open a picker instead of
   // dumping raw "<file name>" text — the user clicks a real file from their Brain / attachments.
   // ── To-do panel ───────────────────────────────────────────────────────────
@@ -11077,6 +11082,25 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
               ) : (
                 <MessageBoundary key={i} raw={msg.content}>
                   <MessageRow msg={msg} agent={agent} />
+                  {/* A day-by-day plan is only worth anything once it becomes "what am I doing
+                      today". Offered under the answer that produced it, and only when the text
+                      really is a plan (three separate dated steps) — a button under every answer
+                      that mentions a day would just get ignored. */}
+                  {msg.role === 'assistant' && !msg.streaming && looksLikeActionPlan(msg.content) && (
+                    <div className="mt-1.5 flex items-center gap-2 flex-wrap">
+                      <button
+                        onClick={() => {
+                          const p = createPlan(msg.content);
+                          savePlan(p);
+                          setPlanOpen(true);
+                        }}
+                        className="text-[10.5px] px-2.5 py-1.5 rounded-lg bg-accent text-white font-medium hover:bg-accent-dim transition-fast"
+                      >Start this plan →</button>
+                      <span className="text-[9.5px] text-nv-faint">
+                        {parsePlanSteps(msg.content).length} dated steps · opens a panel and feeds your To-do
+                      </span>
+                    </div>
+                  )}
                 </MessageBoundary>
               )
             )}
@@ -11730,6 +11754,15 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
           currentPlan={profile?.plan ?? 'explore'}
           highlightPlan="solo"
           reason="You've used all your AI tasks for this period. Upgrade to keep going."
+        />
+      )}
+      {planOpen && (
+        <PlanPanel
+          onClose={() => setPlanOpen(false)}
+          /* A step goes back through the normal turn, so the agent does it with everything it has
+             — browser, files, calendar, connected apps — instead of describing it. */
+          onRunStep={(instruction) => { setPlanOpen(false); void send(instruction, { skipShortcuts: true }); }}
+          onSchedule={(instruction) => { setPlanOpen(false); void send(instruction, { skipShortcuts: true }); }}
         />
       )}
       {outreachCampaign && (

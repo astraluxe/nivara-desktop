@@ -46,8 +46,13 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.12.2',
+  version: '1.13.0',
   items: [
+    'A plan an agent writes can now be started. When an answer contains a real day-by-day plan, a Start this plan button appears under it -- and pressing it opens a panel beside the chat, the same way the outreach copilot does. Today sits at the top, because that is the only part that matters on any given morning; anything still open from earlier days is listed separately rather than quietly buried; and the whole plan is one click away underneath.',
+    'Each step has Do this with Krew, which hands that step back to the agent to actually carry out with the browser, your files, your calendar and your connected apps -- not to describe how you would do it.',
+    'Add to To-do puts the steps on your To-do with the right due date, so the daily list updates itself from the plan. Pressing it twice never duplicates anything. Put in calendar creates real events for the open steps.',
+    'The button only appears when the text genuinely is a plan -- three separate dated steps at minimum. An answer that happens to mention a day never sprouts one, because a button under every answer is a button you learn to ignore.',
+
     'Fixed <br> showing as literal text inside tables. A table row is a single line, so a line break inside a cell can only be written as <br> -- which is why models use it constantly for multi-line cells. It was being printed rather than rendered, so a good multi-column plan came out with <br> stamped through every cell. It now breaks the line as intended, in tables and in ordinary text.',
 
     'When a specialist agent uses a tool you now get the live panel with the clock, the same one lead searches use. It used to be a single italic line -- "Ava.PM is using web search..." -- that never changed no matter how long the tool ran. On a free key a search can take two minutes, and a line that has not moved for two minutes is indistinguishable from a frozen app. The seconds now tick visibly, and for the tools that are genuinely slow (anything that opens the browser or reads real pages) it says so, instead of leaving you to guess whether it died.',
