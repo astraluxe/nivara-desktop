@@ -1269,6 +1269,56 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     }
   }
 
+  /**
+   * Refine THE OUTREACH MESSAGE for the person on screen, from a plain-English instruction.
+   *
+   * refineMessage() has existed for a while, but it was only ever wired to the REPLY draft — the
+   * panel that appears after "Scan their reply". The message you are actually about to send had no
+   * way to be improved at all: you either accepted what was drafted, retyped it yourself, or went
+   * back to Krew chat and ran /refine over EVERY untouched contact just to fix one. That is why it
+   * looked missing from the copilot — the capability was there, the button was not.
+   *
+   * Writes straight onto the contact, so the auto-save effect persists it exactly like a manual
+   * edit does.
+   */
+  const [msgRefineInput, setMsgRefineInput] = useState('');
+  const [msgRefining, setMsgRefining] = useState(false);
+  const [msgRefineNote, setMsgRefineNote] = useState('');
+  const [msgUndo, setMsgUndo] = useState<string | null>(null);
+
+  async function refineOutreachMessage(instructionRaw: string) {
+    const instruction = instructionRaw.trim();
+    const current = (cur?.linkedin_message || '').trim();
+    if (!instruction || !cur) return;
+    if (!current) { setMsgRefineNote('There is no message to improve yet — type one first, or let Krew draft it.'); return; }
+    setMsgRefining(true); setMsgRefineNote('');
+    try {
+      const next = await refineMessage({
+        current,
+        instruction,
+        person: cur.name,
+        // Their headline is the only context that makes a first message personal; there is no
+        // thread yet, which is exactly what distinguishes this from refining a reply.
+        thread: cur.company ? `${cur.name || 'They'} — ${cur.company}` : '',
+        ownerContext: buildOwnerContext(),
+        aiCall,
+      });
+      if (next && next.trim() && next.trim() !== current) {
+        setMsgUndo(current);                       // one-press way back, in case it made it worse
+        const fixed = next.trim();
+        setContacts((prev) => prev.map((c, i) => (i === idx ? { ...c, linkedin_message: fixed } : c)));
+        setMsgRefineInput('');
+        setMsgRefineNote('');
+      } else if (next && next.trim() === current) {
+        setMsgRefineNote('The AI returned the same message — try being more specific about what to change.');
+      } else {
+        setMsgRefineNote('The AI returned nothing. Try rephrasing, or check the model on your key.');
+      }
+    } catch (e) {
+      setMsgRefineNote(`Couldn't refine: ${(e instanceof Error ? e.message : String(e)).slice(0, 160)}`);
+    } finally { setMsgRefining(false); }
+  }
+
   // Reshape the current draft from a plain-English instruction the user types ("say yes to the call
   // and suggest tomorrow", "make it shorter", "sound less salesy"), then re-verify the new draft.
   async function refineDraft() {
@@ -1369,6 +1419,14 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     setLiDraft(cur.linkedin_url || '');
     setLiNote('');
   }, [idx, cur.linkedin_url]);
+
+  // Moving to another person must not carry the last one's refine state across — an Undo that
+  // restores someone ELSE's message would be worse than no Undo at all.
+  useEffect(() => {
+    setMsgRefineInput('');
+    setMsgRefineNote('');
+    setMsgUndo(null);
+  }, [idx]);
 
   /**
    * Take a profile link the user typed, check it, and make it the saved one.
@@ -1790,6 +1848,53 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                 className="w-full text-xs bg-nv-bg border border-nv-border rounded-lg p-2.5 leading-relaxed resize-none focus:outline-none focus:border-accent/40 select-text"
                 placeholder="No message drafted for this contact yet — type one, or ask Krew to draft it."
               />
+              {/* ── Improve this one message with the AI ────────────────────────────────────
+                  The capability existed but had no button here, so fixing ONE message meant going
+                  back to Krew chat and running /refine across every untouched contact. Type what
+                  you want changed, or press a chip for the three things people always ask for. */}
+              <div className="mt-2 rounded-lg border border-nv-border bg-nv-bg/60 p-2">
+                <div className="flex items-center gap-1.5 flex-wrap mb-1.5">
+                  <span className="text-[9.5px] text-nv-faint uppercase tracking-wide shrink-0">Improve with AI</span>
+                  {([
+                    ['Shorter', 'Make it noticeably shorter — under 40 words, three sentences at most. Keep the specific detail, cut the setup.'],
+                    ['More personal', 'Make it more specific to this person — reference their actual company or role concretely, and drop anything that could be sent to anyone else.'],
+                    ['Less salesy', 'Remove any pitch, buzzwords and flattery. Make it sound like one human writing to another, with a low-pressure ask.'],
+                  ] as const).map(([label, prompt]) => (
+                    <button
+                      key={label}
+                      disabled={msgRefining || !msg.trim()}
+                      onClick={() => refineOutreachMessage(prompt)}
+                      className="text-[9.5px] px-1.5 py-0.5 rounded-full border border-nv-border text-nv-faint hover:text-nv-text hover:bg-nv-surface2 transition-fast disabled:opacity-40"
+                    >{label}</button>
+                  ))}
+                  {msgUndo !== null && !msgRefining && (
+                    <button
+                      onClick={() => {
+                        const back = msgUndo;
+                        setContacts((prev) => prev.map((c, i) => (i === idx ? { ...c, linkedin_message: back } : c)));
+                        setMsgUndo(null); setMsgRefineNote('');
+                      }}
+                      className="ml-auto text-[9.5px] px-1.5 py-0.5 rounded-full border border-amber-500/40 text-amber-600 hover:bg-amber-500/10 transition-fast"
+                    >Undo</button>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    value={msgRefineInput}
+                    onChange={(e) => { setMsgRefineInput(e.target.value); setMsgRefineNote(''); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && msgRefineInput.trim() && !msgRefining) refineOutreachMessage(msgRefineInput); }}
+                    disabled={msgRefining}
+                    placeholder={msgRefining ? 'Rewriting…' : 'Tell it what to change — "mention their Series A", "ask for 15 minutes"'}
+                    className="flex-1 min-w-0 text-[11px] bg-nv-bg border border-nv-border rounded-md px-2 py-1 focus:outline-none focus:border-accent/40 select-text disabled:opacity-60"
+                  />
+                  <button
+                    onClick={() => refineOutreachMessage(msgRefineInput)}
+                    disabled={msgRefining || !msgRefineInput.trim() || !msg.trim()}
+                    className="shrink-0 text-[10px] px-2.5 py-1 rounded-md bg-accent text-white font-medium hover:bg-accent-dim transition-fast disabled:opacity-40"
+                  >{msgRefining ? '…' : 'Rewrite'}</button>
+                </div>
+                {msgRefineNote && <p className="text-[9.5px] text-amber-600 mt-1 leading-snug">{msgRefineNote}</p>}
+              </div>
               <p className="text-[9.5px] text-nv-faint mt-1">
                 Not connected yet? Send a connection request with a short note first (free accounts can only
                 message 1st-degree connections). Mark <b>Connect requested</b> below, then come back once they accept.

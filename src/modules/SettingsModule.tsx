@@ -46,8 +46,12 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.11.11',
+  version: '1.11.12',
   items: [
+    'You can now improve a single outreach message right in the copilot. Under the message there is an Improve with AI box: type what you want changed -- "mention their Series A", "ask for 15 minutes", "warmer opening" -- and press Rewrite, or use the Shorter / More personal / Less salesy chips for the three things people always ask for. It rewrites just that one person message and saves it immediately.',
+    'There is an Undo next to it, so a rewrite you do not like is one click away from being back.',
+    'This was the gap behind "why can I not just fix this one message": the rewriting was already built and used for reply drafts, but the message you were actually about to send had no button anywhere. Fixing one message meant going back to Krew chat and running /refine across every untouched contact.',
+
     'Fixed a long answer repeating a chunk of itself. When the app asks a model to carry on past its output limit, the model often re-writes the last paragraph -- or restarts from an earlier heading -- before continuing. That was being pasted in on top of what you already had, so whole sections appeared twice. The overlap is now detected and only one copy kept.',
     'Fixed a code box that never closed swallowing the rest of an answer. If a reply opens a box and does not close it -- far more likely when the reply was cut off and continued -- everything after it rendered as one endless grey block. Unbalanced boxes are now closed automatically.',
     'Bulk jobs are sized to the model you are actually connected to, not just whether it is local. /refine was asking for 30 rewrites in a single answer on any cloud key -- including a free NVIDIA key driving a very large model, which cannot finish that in one go, so you waited the full timeout to be told nothing came back. It now works in small passes matched to your model capability, keeps whatever succeeded, and says so if a stronger model is available on the same key.',
