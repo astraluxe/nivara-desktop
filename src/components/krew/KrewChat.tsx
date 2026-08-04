@@ -10695,22 +10695,6 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
               Switch
             </span>
           )}
-          {/* THE PLAN, ALWAYS ONE CLICK AWAY. The panel could only be opened from the button under
-              the answer that created it — which scrolls away within a day, taking the plan with it.
-              This only appears once a plan exists, and shows how much is left so it is glanceable
-              without opening. */}
-          {!!activePlan && (
-            <button
-              onClick={(e) => { e.stopPropagation(); setPlanOpen((v) => !v); }}
-              title={`${activePlan.title} — ${planProgress(activePlan).done}/${planProgress(activePlan).total} steps done`}
-              className={`flex items-center gap-1 h-5 px-1.5 rounded transition-fast shrink-0 text-[9px] font-mono border ${planOpen ? 'text-accent bg-accent/10 border-accent/30' : 'text-nv-faint border-nv-border hover:text-nv-muted hover:bg-nv-surface'}`}
-            >
-              <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="2" y="3" width="12" height="11" rx="1.5"/><path d="M2 6h12M6 1v3M10 1v3"/><path d="M5.5 9.5l1.5 1.5 3-3"/>
-              </svg>
-              Plan {planProgress(activePlan).done}/{planProgress(activePlan).total}
-            </button>
-          )}
           <button
             onClick={(e) => { e.stopPropagation(); setShowSkills((v) => !v); }}
             title="Skill library — reusable abilities your agents can use"
@@ -10745,6 +10729,28 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
               <path d="M2.5 3.5h11v8h-6l-3 2.5v-2.5h-2z" />
             </svg>
             Copilot
+          </button>
+          {/* THE PLAN, ALWAYS ONE CLICK AWAY — same reasoning as the Copilot button above, which is
+              why it sits next to it. Deliberately visible even with NO plan running: hiding it
+              until a plan exists means the only way to find the feature is to already know it is
+              there. Pressing it with nothing running opens the panel's empty state, which explains
+              how to start one. Shows done/total once a plan IS running, so progress is glanceable
+              without opening anything. */}
+          <button
+            onClick={(e) => { e.stopPropagation(); setPlanOpen((v) => !v); }}
+            title={activePlan
+              ? `${activePlan.title} — ${planProgress(activePlan).done}/${planProgress(activePlan).total} steps done`
+              : 'Plan — turn an agent\'s day-by-day plan into dated steps, and work through it'}
+            className={`flex items-center gap-1 h-5 px-1.5 rounded transition-fast shrink-0 text-[9px] font-mono border ${
+              activePlan
+                ? `text-accent ${planOpen ? 'bg-accent/15 border-accent/50' : 'bg-accent/5 border-accent/30 hover:bg-accent/10 hover:border-accent/50'}`
+                : planOpen ? 'text-accent bg-accent/10 border-accent/30' : 'text-nv-faint border-nv-border hover:text-nv-muted hover:bg-nv-surface'
+            }`}
+          >
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="3" width="12" height="11" rx="1.5"/><path d="M2 6h12M6 1v3M10 1v3"/><path d="M5.5 9.5l1.5 1.5 3-3"/>
+            </svg>
+            Plan{activePlan ? ` ${planProgress(activePlan).done}/${planProgress(activePlan).total}` : ''}
           </button>
           {/* WHICH MODEL ACTUALLY ANSWERED. The connection popup shows what is CONFIGURED, which is
               not the same thing once a dead model has been swapped mid-task — so there was no way

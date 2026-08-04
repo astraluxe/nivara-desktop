@@ -34,12 +34,34 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
     return () => window.removeEventListener(PLAN_EVENT, on);
   }, []);
 
+  // NOT A DEAD END. The header button is visible with no plan running, so this screen is something
+  // people will walk into on purpose — it has to explain the feature AND offer the way in, rather
+  // than describing a button the user cannot see from here.
   if (!plan) {
     return (
-      <div className="w-[380px] shrink-0 border-l border-nv-border bg-nv-surface flex items-center justify-center p-6">
-        <p className="text-[11.5px] text-nv-muted text-center leading-relaxed">
-          No plan yet. When an agent writes a day-by-day plan, press <b>Start this plan</b> under its answer.
-        </p>
+      <div className="w-[380px] shrink-0 border-l border-nv-border bg-nv-surface flex flex-col min-h-0">
+        <div className="px-3.5 py-2.5 border-b border-nv-border shrink-0 flex items-start gap-2">
+          <div className="min-w-0 flex-1">
+            <p className="text-[12.5px] font-semibold text-nv-text leading-snug">Plan</p>
+            <p className="text-[10px] text-nv-faint mt-0.5">Nothing running yet</p>
+          </div>
+          <button onClick={onClose} className="text-[13px] leading-none px-1 text-nv-faint hover:text-nv-text transition-fast" aria-label="Close">×</button>
+        </div>
+        <div className="flex-1 overflow-y-auto min-h-0 p-4">
+          <p className="text-[11.5px] text-nv-muted leading-relaxed">
+            Ask an agent for a day-by-day plan and press <b>Start this plan</b> under its answer. From then on this
+            panel shows what today's job is, keeps your To-do updated by date, and logs what actually got done —
+            including anyone who asked for a meeting while you were in the copilot.
+          </p>
+          <button
+            onClick={() => onRunStep('Write me a day-by-day action plan I can actually work through. Ask me anything you need about my business, my goal and how much time I have each day before you write it. Lay it out as "Day 1: …", "Day 2: …" with one concrete action per day and how I know it is finished.')}
+            className="mt-3 w-full text-[11px] font-semibold px-3 py-2 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-fast"
+          >Ask for a plan →</button>
+          <p className="text-[10px] text-nv-faint leading-relaxed mt-3">
+            It will ask about your goal first rather than guessing — a plan built on the wrong assumption wastes
+            the whole month.
+          </p>
+        </div>
       </div>
     );
   }
