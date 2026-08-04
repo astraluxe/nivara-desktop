@@ -91,8 +91,25 @@ function normTitle(t: string): string {
 // Convert a node's stored body (HTML if the user edited it, else markdown) into
 // clean MARKDOWN — so when it's attached to Krew the TABLE survives (pipes intact)
 // instead of collapsing into a run-together blob.
+/**
+ * Is this body HTML the editor produced, or markdown that merely contains a tag?
+ *
+ * The old test counted <br>, <a>, <strong> and <em> as proof of HTML. But a markdown table cell
+ * CANNOT hold a newline, so <br> is the standard way to write a multi-line cell — and agents use it
+ * constantly. One <br> anywhere therefore sent an entire markdown document down the HTML path,
+ * where the pipe characters are just text: the DOM parser flattened every table into a single
+ * run-on line and the saved note became an unreadable blob. That is how a good strategy answer
+ * arrived in the Brain with its tables destroyed.
+ *
+ * Only BLOCK-level tags indicate a body the contentEditable editor actually wrote. Inline tags are
+ * legitimate inside markdown and are left for the renderer to deal with.
+ */
+function looksLikeEditorHtml(body: string): boolean {
+  return /<(table|p|h[1-6]|ul|ol|li|div)\b/i.test(body);
+}
+
 export function nodeToMarkdown(body: string): string {
-  if (!/<(table|p|h[1-6]|ul|ol|li|strong|em|br|a|div)\b/i.test(body)) return body.trim();
+  if (!looksLikeEditorHtml(body)) return body.trim();
   const mdNode = (node: Node): string => {
     if (node.nodeType === 3) return node.textContent || '';
     if (node.nodeType !== 1) return '';

@@ -1449,6 +1449,30 @@ const SLOW_TOOLS = new Set(['web_search','browser_navigate','browser_open','brow
   'research_companies','enrich_lead_list','verify_lead_list','enrich_social_profiles','scrape_structured',
   'linkedin_scan_connections','read_linkedin_messages','youtube_transcript','fetch_open_data','browser_snapshot']);
 
+/**
+ * The options an agent offered at the end of its answer.
+ *
+ * Agents routinely close with "Want me to: 1. Build the lead list 2. Draft the DM templates
+ * 3. Create the comparison page — pick one". That is a question with real choices, and the only
+ * way to answer it was to retype one of them. Pull them out so they can be one tap.
+ *
+ * Only looks at the TAIL of the answer, and only when it actually ends on a question, so the
+ * numbered steps inside a plan are never mistaken for a menu.
+ */
+function trailingOptions(text: string): string[] {
+  const tail = (text || '').slice(-900);
+  if (!/\?\s*$|pick one|which one|want me to|shall i|should i/i.test(tail)) return [];
+  const out: string[] = [];
+  for (const line of tail.split('\n')) {
+    const m = line.trim().match(/^(?:\*\*)?(\d)[.)]\s*\**\s*(.{6,120}?)\s*\**\s*$/);
+    if (m) {
+      const label = m[2].replace(/\*\*/g, '').replace(/\s*[—-]\s*`[^`]+`\s*$/, '').replace(/\?$/, '').trim();
+      if (label && !/^day/i.test(label)) out.push(label);
+    }
+  }
+  return out.length >= 2 && out.length <= 5 ? out : [];
+}
+
 function statusBlock(startedAt: number, headline: string, detail?: string, tone: 'work' | 'halt' | 'wait' = 'work'): string {
   return ['```status ' + startedAt + ' ' + tone, headline, ...(detail ? [detail] : []), '```'].join('\n');
 }
@@ -11086,6 +11110,23 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                       today". Offered under the answer that produced it, and only when the text
                       really is a plan (three separate dated steps) — a button under every answer
                       that mentions a day would just get ignored. */}
+                  {/* ANSWER THE AGENT WITHOUT RETYPING IT. When an answer ends by offering
+                      numbered options, each becomes a button that sends that choice straight back
+                      to the same agent, so the work continues instead of stalling on a question. */}
+                  {msg.role === 'assistant' && !msg.streaming && trailingOptions(msg.content).length > 0 && (
+                    <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[9.5px] text-nv-faint">Reply:</span>
+                      {trailingOptions(msg.content).map((opt, oi) => (
+                        <button
+                          key={oi}
+                          disabled={busy}
+                          onClick={() => void send(opt, { skipShortcuts: true })}
+                          title={opt}
+                          className="text-[10px] px-2 py-1 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-fast disabled:opacity-40 max-w-[240px] truncate"
+                        >{opt}</button>
+                      ))}
+                    </div>
+                  )}
                   {msg.role === 'assistant' && !msg.streaming && looksLikeActionPlan(msg.content) && (
                     <div className="mt-1.5 flex items-center gap-2 flex-wrap">
                       <button

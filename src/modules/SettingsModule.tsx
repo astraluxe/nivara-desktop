@@ -46,8 +46,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.13.0',
+  version: '1.13.1',
   items: [
+    'Fixed answers arriving in the Brain as one unreadable blob with the tables destroyed. A table cell cannot hold a line break, so <br> is the normal way to write a multi-line cell -- and the Brain treated a single <br> anywhere as proof the whole document was HTML, then flattened it. Any answer containing one lost every table, heading and line break on the way in. Only real editor output is treated as HTML now; markdown is stored exactly as written.',
+    'When an agent ends by offering numbered options -- "Want me to: 1. Build the lead list 2. Draft the DM templates 3. Create the comparison page" -- each one is now a button under the answer. Tapping it sends that choice back to the same agent and the work carries on, instead of you retyping it. It only appears when the answer genuinely ends on a question with two or more choices, so the numbered steps inside a plan never turn into a menu.',
+
     'A plan an agent writes can now be started. When an answer contains a real day-by-day plan, a Start this plan button appears under it -- and pressing it opens a panel beside the chat, the same way the outreach copilot does. Today sits at the top, because that is the only part that matters on any given morning; anything still open from earlier days is listed separately rather than quietly buried; and the whole plan is one click away underneath.',
     'Each step has Do this with Krew, which hands that step back to the agent to actually carry out with the browser, your files, your calendar and your connected apps -- not to describe how you would do it.',
     'Add to To-do puts the steps on your To-do with the right due date, so the daily list updates itself from the plan. Pressing it twice never duplicates anything. Put in calendar creates real events for the open steps.',
