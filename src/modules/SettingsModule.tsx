@@ -46,8 +46,12 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.13.3',
+  version: '1.13.4',
   items: [
+    'The SEO agent now works to a real method instead of giving generic tips. It ranks opportunities by what you can actually win rather than by search volume, and says out loud when it drops a big keyword you could never rank for. It groups keywords into PAGES rather than piles -- same intent together, different buyer stage split apart -- and flags when two of your own pages are competing for one term. It looks first at anything you already rank 5th to 20th for, because those are the fastest wins available.',
+    'It opens the actual pages in the browser before claiming anything about them, and will say it could not check something rather than assert it. If a site audit comes back broken it investigates instead of writing it up -- a dead domain with a live replacement changes the whole recommendation.',
+    'Every audit now ends with ONE thing you can do this week, with the exact wording to copy, derived from what it actually found rather than from a checklist. It re-reads its own draft before delivering and cuts anything it could not verify, any unexplained jargon, and any drama.',
+
     'Added OpenSEO to the one-click MCP list. It is an open-source SEO platform that ships an MCP server, so connecting it gives every agent real keyword research, rank tracking, backlink analysis and site audits -- your SEO agent stops guessing and starts reading actual data. You self-host it and bring a DataForSEO key, so it is listed as bring-your-own rather than pretending it is free.',
 
     'Outreach messages no longer invent when you are free. A draft went out offering "Wed 5 Aug 10am-12pm or Thu 6 Aug 2pm-4pm" -- times nothing had checked against anything, because your calendar is not read when first messages are written. That is a promise made in your name about your own diary: at best you get double-booked, at worst you look unreliable to the first person you ever contacted. Drafts now ask what suits them instead of asserting when you are free, and they cannot invent a duration, a timezone or a meeting link either.',
