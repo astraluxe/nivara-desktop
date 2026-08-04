@@ -1286,6 +1286,74 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   const [msgRefineNote, setMsgRefineNote] = useState('');
   const [msgUndo, setMsgUndo] = useState<string | null>(null);
 
+  /**
+   * Check THIS person's saved profile, and correct it if it belongs to somebody else.
+   *
+   * Lead searches get profiles wrong — a namesake, or a confident guess — and the only fix was to
+   * re-run a whole-list pass from the chat. That is minutes of browser work to check one row, so in
+   * practice nobody did it and wrong links stayed on the list until they messaged a stranger.
+   *
+   * Searches LinkedIn for the person by name plus their company, takes the best match, and compares
+   * it to what is saved. A mismatch is REPLACED, and the correction is written back to the lead
+   * list too, so the next campaign built from that list does not repeat it. When nothing can be
+   * confirmed the saved link is left alone and said so — a blank guess is not an improvement.
+   */
+  const [profVerifying, setProfVerifying] = useState(false);
+  const [verifyProfileNote, setVerifyProfileNote] = useState('');
+
+  async function verifyThisProfile() {
+    if (!cur || profVerifying) return;
+    const name = (cur.name || '').trim();
+    if (!name) { setVerifyProfileNote('This contact has no name, so there is nothing to search for.'); return; }
+    setProfVerifying(true);
+    setVerifyProfileNote('Opening LinkedIn and searching for them…');
+    setAgentBrowserHold(true);
+    setBrowserOpen(true);
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const raw = await invoke<string>('run_browser_persistent', {
+        args: `findprofile "${name.replace(/["\n\r]/g, ' ')}" ::: ${profileFilter(cur)}`,
+      });
+      if (raw.includes('SIGN_IN_REQUIRED') || raw.includes('[NEEDS_LOGIN]')) {
+        setVerifyProfileNote('Sign in to LinkedIn in the ADRIS browser window, then press Verify again.');
+        return;
+      }
+      if (raw.includes('HUMAN_CHECK_REQUIRED')) {
+        setVerifyProfileNote('LinkedIn is asking you to confirm the sign-in — check the ADRIS window (it may be waiting for you to tap Yes in the app), then press Verify again.');
+        return;
+      }
+      const pj = raw.indexOf('PROFILE_JSON:');
+      if (pj < 0) { setVerifyProfileNote("Couldn't read the search results. Try again in a moment."); return; }
+      const arr = JSON.parse(raw.slice(pj + 'PROFILE_JSON:'.length).trim());
+      const found = bestProfileUrl(Array.isArray(arr) ? arr : [], name);
+      const saved = normaliseLinkedInUrl(cur.linkedin_url || '');
+      if (!found) {
+        setVerifyProfileNote(saved
+          ? `No confident match for ${name}${cur.company ? ` at ${cur.company}` : ''}. The saved link is UNVERIFIED — check it yourself before messaging them.`
+          : `No confident match for ${name}. Nothing saved, so paste their profile above if you find it.`);
+        return;
+      }
+      const clean = normaliseLinkedInUrl(found) || found;
+      if (saved && clean === saved) {
+        setVerifyProfileNote(`✓ Verified — this really is ${name}${cur.company ? ` at ${cur.company}` : ''}.`);
+        return;
+      }
+      // Different person, or nothing saved before: take the confirmed one.
+      setContacts((prev) => prev.map((c, i) => (i === idx ? { ...c, linkedin_url: clean } : c)));
+      setLiDraft(clean);
+      const listTitle = writeLeadProfileUrl(cur, clean);
+      setVerifyProfileNote(saved
+        ? `Corrected — the saved link was somebody else. Now pointing at the confirmed profile.${listTitle ? ` Fixed on your "${listTitle}" list too.` : ''}`
+        : `Found and saved their profile.${listTitle ? ` Added to your "${listTitle}" list too.` : ''}`);
+    } catch (e) {
+      setVerifyProfileNote(`Couldn't check that profile: ${(e instanceof Error ? e.message : String(e)).slice(0, 140)}`);
+    } finally {
+      setProfVerifying(false);
+      setAgentBrowserHold(false);
+      setBrowserOpen(false);
+    }
+  }
+
   async function refineOutreachMessage(instructionRaw: string) {
     const instruction = instructionRaw.trim();
     const current = (cur?.linkedin_message || '').trim();
@@ -1426,6 +1494,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     setMsgRefineInput('');
     setMsgRefineNote('');
     setMsgUndo(null);
+    setVerifyProfileNote('');   // a verdict about one person must never linger over the next
   }, [idx]);
 
   /**
@@ -1943,12 +2012,23 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                 placeholder="linkedin.com/in/their-profile"
                 className="flex-1 min-w-0 text-[11px] bg-nv-bg border border-nv-border rounded-md px-2 py-1 focus:outline-none focus:border-accent/40 select-text"
               />
+              {/* CHECK THIS ONE PERSON. Re-running a whole-list verification from the chat is
+                  minutes of browser work to check a single row, so in practice nobody did it and
+                  wrong links stayed until someone got messaged by mistake. */}
+              <button
+                onClick={verifyThisProfile}
+                disabled={profVerifying || !(cur.name || '').trim()}
+                title={`Search LinkedIn for ${cur.name || 'them'} and confirm this link is really their profile`}
+                className="shrink-0 text-[10px] px-2 py-1 rounded-md border border-accent/40 text-accent hover:bg-accent/10 transition-fast disabled:opacity-40"
+              >{profVerifying ? 'Checking…' : 'Verify'}</button>
             </div>
-            {liNote
-              ? <p className={`text-[9.5px] ${liNote.startsWith('✓') ? 'text-emerald-600' : 'text-amber-600'}`}>{liNote}</p>
-              : hasProfile
-                ? <p className="text-[9.5px] text-nv-faint">Used for the chat button above. Paste a different link to correct it.</p>
-                : <p className="text-[9.5px] text-amber-600">No profile saved for {cur.name || 'them'} — paste theirs here and everything below will use it.</p>}
+            {verifyProfileNote
+              ? <p className={`text-[9.5px] leading-snug ${verifyProfileNote.startsWith('✓') ? 'text-emerald-600' : /Corrected|Found and saved/.test(verifyProfileNote) ? 'text-accent' : 'text-amber-600'}`}>{verifyProfileNote}</p>
+              : liNote
+                ? <p className={`text-[9.5px] ${liNote.startsWith('✓') ? 'text-emerald-600' : 'text-amber-600'}`}>{liNote}</p>
+                : hasProfile
+                  ? <p className="text-[9.5px] text-nv-faint">Used for the chat button above. Press <b>Verify</b> to confirm it is really them, or paste a different link.</p>
+                  : <p className="text-[9.5px] text-amber-600">No profile saved for {cur.name || 'them'} — press <b>Verify</b> to find it, or paste theirs here.</p>}
           </div>
 
           {/* ── X and Instagram ──────────────────────────────────────────────────────────────

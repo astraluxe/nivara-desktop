@@ -7604,7 +7604,17 @@ _None of them had everything you ticked, so I've saved them rather than lose the
    * Runs the same deterministic enrichment the lead flow uses, on the named list, and merges the
    * result back into that node cell-by-cell so nothing already correct is overwritten.
    */
-  async function fillMissingProfiles(listTitle: string) {
+  /**
+   * Fill in the blanks, or re-check EVERY row.
+   *
+   * `verifyAll` is the difference between "find the profiles we never found" and "open every saved
+   * profile and confirm it is really that person". The second is what a list full of wrong people
+   * needs, and it had no button anywhere -- it could only be reached by phrasing a chat message in
+   * a way that happened to match a regex ("re-verify all of them"), which nobody would guess.
+   * A link that turns out to belong to somebody else is CLEARED rather than kept, because opening
+   * a stranger's profile from your own lead list is worse than an empty cell.
+   */
+  async function fillMissingProfiles(listTitle: string, verifyAll = false) {
     if (busy) return;
     const node = brainStore.findByTitle(listTitle);
     if (!node) {
@@ -7612,7 +7622,9 @@ _None of them had everything you ticked, so I've saved them rather than lose the
       return;
     }
     const sid = await ensureSession('Fill missing profiles');
-    const shown = `Find the missing LinkedIn profiles for "${listTitle}"`;
+    const shown = verifyAll
+      ? `Re-check every LinkedIn profile on "${listTitle}" and correct the wrong ones`
+      : `Find the missing LinkedIn profiles for "${listTitle}"`;
     addMsg({ role: 'user', content: shown });
     if (sid) krewDb.saveMessage(sid, 'user', shown).catch(() => {});
 
@@ -7626,7 +7638,7 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     setBusy(true);
     resetLeadStop();
     const t0 = Date.now();
-    addMsg({ role: 'assistant', content: statusBlock(t0, `Filling in profiles for ${listTitle}`, 'Getting ready…'), streaming: true });
+    addMsg({ role: 'assistant', content: statusBlock(t0, `${verifyAll ? 'Re-checking every profile on' : 'Filling in profiles for'} ${listTitle}`, 'Getting ready…'), streaming: true });
     setAgentBrowserHold(true);
 
     let last = '';
@@ -7689,9 +7701,9 @@ _None of them had everything you ticked, so I've saved them rather than lose the
           }
         }
       }
-      if (wiped) updateLastMsg(statusBlock(t0, `Filling in profiles for ${listTitle}`,
+      if (wiped) updateLastMsg(statusBlock(t0, `${verifyAll ? 'Re-checking every profile on' : 'Filling in profiles for'} ${listTitle}`,
         `${wiped} saved link${wiped === 1 ? '' : 's'} pointed at the wrong person — clearing ${wiped === 1 ? 'it' : 'those'} and finding the right profile.`));
-      const out = await executeTool('enrich_lead_list', { list: listMd }, creds, requestTerminalApproval,
+      const out = await executeTool('enrich_lead_list', { list: listMd, forceConfirm: verifyAll }, creds, requestTerminalApproval,
         'research_agent', user?.id ?? '', `${sidRef.current ?? 'main'}-fill`);
       const tbl = out && out.indexOf('|') >= 0 ? out.slice(out.indexOf('|')) : '';
       if (tbl && extractTableRows(tbl).length > 2) {
@@ -7699,18 +7711,18 @@ _None of them had everything you ticked, so I've saved them rather than lose the
         const { rows } = parseLeadRows(tbl, 0);
         const withLink = rows.filter((r) => /linkedin\.com\/in\//i.test(r.cells['linkedin'] || '')).length;
         const stillMissing = rows.length - withLink;
-        const done = `Filled in **${listTitle}** — ${withLink} of ${rows.length} now have a LinkedIn profile`
+        const done = `${verifyAll ? 'Re-checked' : 'Filled in'} **${listTitle}** — ${withLink} of ${rows.length} now have a LinkedIn profile`
           + (stillMissing ? `, ${stillMissing} still without one (no real profile could be confirmed, so they were left blank rather than guessed).` : '.')
           + (wiped ? `\n\nI also found **${wiped}** saved link${wiped === 1 ? '' : 's'} pointing at somebody whose name didn't match the row — ${wiped === 1 ? 'that one was' : 'those were'} cleared and re-searched, so you won't open a stranger's profile from this list.` : '');
         setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: done, streaming: false }; return c; });
         if (sid) krewDb.saveMessage(sid, 'assistant', done).catch(() => {});
         addMsg({ role: 'lead_result', content: listTitle, leadCount: rows.length, leadTable: tbl, leadMissingLinks: stillMissing });
       } else {
-        const bad = `I couldn't fill anything in for **${listTitle}** this time — nothing was changed.`;
+        const bad = `I couldn't ${verifyAll ? 're-check' : 'fill anything in for'} **${listTitle}** this time — nothing was changed.`;
         setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: bad, streaming: false }; return c; });
       }
     } catch (e) {
-      const err = `Couldn't finish filling in the profiles: ${sanitiseError(e)}`;
+      const err = `Couldn't finish ${verifyAll ? 're-checking the profiles' : 'filling in the profiles'}: ${sanitiseError(e)}`;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: err, streaming: false }; return c; });
     } finally {
       clearInterval(hb); un();
@@ -10792,6 +10804,15 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                         className="text-[11px] font-semibold px-3 py-1.5 rounded-lg border border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10 transition-fast disabled:opacity-60"
                       >Add to the outreach in progress</button>
                     )}
+                    {/* RE-CHECK EVERY PROFILE, not just the blank ones. A list whose links point at
+                        the WRONG people is worse than one with gaps, and the only way to fix that was
+                        to phrase a chat message that happened to match a regex. */}
+                    <button
+                      disabled={busy}
+                      title="Open and confirm every saved profile on this list. Wrong ones are corrected; any that cannot be confirmed are cleared rather than left pointing at a stranger."
+                      onClick={() => fillMissingProfiles(msg.content, true)}
+                      className="text-[11px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast disabled:opacity-60"
+                    >Re-check every profile</button>
                     <button
                       disabled={busy}
                       onClick={() => { setInput(`Add more leads to "${msg.content}" — new people only, do not repeat anyone already there.`); }}

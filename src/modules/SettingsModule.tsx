@@ -46,8 +46,12 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.11.13',
+  version: '1.11.14',
   items: [
+    'There is now a Verify button next to each person LinkedIn link in the outreach copilot. It searches LinkedIn for that person by name and company, compares what it finds with what is saved, and tells you plainly: verified, or corrected because the saved link belonged to somebody else. A correction is written back to the lead list it came from as well, so the next campaign built from that list does not repeat the same mistake.',
+    'If nothing can be confirmed it says the link is unverified and LEAVES it alone rather than blanking it or guessing. A wrong link you know about is safer than a silent change.',
+    'The lead result card has a Re-check every profile button, which opens and confirms every saved profile on the list rather than only filling the blank ones. That whole-list pass already existed but could only be reached by phrasing a chat message in a way that happened to match a pattern, which nobody would guess.',
+
     'Fixed an agent stopping right after saying what it was about to do. If a specialist wrote something like "This is great data. Let me also search for more on that" and the next step came back empty -- a quiet model, a stalled stream -- that sentence was handed over as its finished answer, so the reply appeared to stop mid-thought. The app now recognises an announcement as not being an answer and makes the agent write up what it actually found before returning.',
     'This only triggers when real tool work has already run, and only when the visible text is short, so a genuine short answer is never thrown away and re-asked.',
 
