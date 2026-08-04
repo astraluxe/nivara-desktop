@@ -36,7 +36,8 @@ import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill
 import { builtInSkillsBlock } from '../../lib/skillGraph';
 import SkillsPanel from './SkillsPanel';
 import PlanPanel from './PlanPanel';
-import { looksLikeActionPlan, parsePlanSteps, createPlan, savePlan, loadPlan, planProgress, syncPlanToTodos, todayPlanNote, PLAN_EVENT, type ActionPlan } from '../../lib/planStore';
+import { looksLikeActionPlan, parsePlanSteps, createPlan, savePlan, loadPlan, planProgress, syncPlanToTodos, todayPlanNote, mergeIntoPlan, PLAN_EVENT, type ActionPlan } from '../../lib/planStore';
+import { availabilityNote, looksLikeAvailability, parseAvailability, saveAvailability, loadAvailability, describeAvailability } from '../../lib/availability';
 import LeadSetupCard, { type LeadConfig } from './LeadSetupCard';
 import { loadUserLocation, locationLabel } from '../../lib/userLocation';
 import { identityBlock } from '../../lib/userIdentity';
@@ -3301,6 +3302,19 @@ function CopyBtn({ text }: { text: string }) {
       }
     </button>
   );
+}
+
+/**
+ * Is this a finished answer the user can act on?
+ *
+ * 'delegation' counts. A specialist reached through the boss (research, strategy, SEO) writes its
+ * answer into a delegation bubble, not an assistant one — so checking only for 'assistant' meant
+ * the agents that produce the LONGEST answers were the ones whose plans and follow-up options got
+ * no buttons at all. A 30-day plan from the research agent sat there with no way to start it,
+ * because of where the text happened to be rendered.
+ */
+function answerish(msg: DisplayMsg): boolean {
+  return (msg.role === 'assistant' || msg.role === 'delegation') && !msg.streaming && !!msg.content.trim();
 }
 
 function MessageRow({ msg, agent }: { msg: DisplayMsg; agent: KrewAgent }) {
@@ -8498,6 +8512,20 @@ _${plan.advice}_` : ''}`;
     // had already written. A keyword shortcut must never outrank an explicit verb the user typed:
     // if they asked for a meeting booked, a person researched, or a document made, that goes to the
     // boss, which has the tools for it and can read the whole message.
+    // WORKING HOURS ARE WORTH CATCHING WITHOUT A MODEL. "I'm busy on weekdays 10 to 6" is a fact
+    // about the user, and blocking out every weekday in a calendar by hand is exactly the chore
+    // they asked not to do. Saved here, deterministically, so it lands the same on a free NVIDIA
+    // key or a local model as it does on the hosted one — a small model that ignores the
+    // set_availability tool would otherwise lose it entirely. The turn still continues to the
+    // agent afterwards: this records the fact, it does not swallow the message.
+    // Saved now so the fact is never lost, but the confirmation is held until AFTER the user's own
+    // message goes on screen — posting it here would show the answer above the question.
+    let availSaved = '';
+    if (!skipShortcuts && looksLikeAvailability(text)) {
+      const parsed = parseAvailability(text, loadAvailability());
+      if (parsed) { saveAvailability(parsed); availSaved = describeAvailability(parsed); }
+    }
+
     const asksSomethingElse = /\b(creat|book|schedul|set ?up|arrang|add|put)\w*\b[^.]{0,40}\b(meeting|event|invite|invitation|call|calendar)\b/i.test(text)
       || /\bcalendar\b/i.test(text)
       || /\b(research|find out|look ?up|dig|brief me|tell me about)\b/i.test(text)
@@ -8822,6 +8850,11 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     // Add user message to display (typed text + file names only)
     addMsg({ role: 'user', content: displayText });
     if (sid) krewDb.saveMessage(sid, 'user', displayText).catch(() => {});
+    if (availSaved) {
+      const note = `Noted — ${availSaved}. I'll use that whenever a time comes up, so you don't have to block it out day by day. Tell me if I've got it wrong.`;
+      addMsg({ role: 'assistant', content: note });
+      if (sid) krewDb.saveMessage(sid, 'assistant', note).catch(() => {});
+    }
 
     // ── PRESENTATION / PPT SHORT-CIRCUIT ──────────────────────────────────────
     // "make me a ppt / pitch deck / slides" → show the deck setup card (format +
@@ -9087,9 +9120,10 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
       // agent was last working in, and what this user actually chooses when offered options.
       [identityCtx, locationBlock, (agent.key === 'boss' ? '' : userBlock), connectedAppsBlock, mcpSummary,
        workingFileNote(agent.key), decisionStyleNote(),
-       // What today's job is, if a plan is running. Empty string when there is no plan, so this
-       // costs nothing for everyone else.
-       todayPlanNote(),
+       // What today's job is, if a plan is running, and when the user is actually free. Both are
+       // empty strings until the user has a plan / has told us their hours, so they cost nothing
+       // for everyone else.
+       todayPlanNote(), availabilityNote(),
        skillsBlock, profileBlock, memBlock, tierDirective, dateBlock],
     );
 
@@ -11235,7 +11269,7 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                   {/* ANSWER THE AGENT WITHOUT RETYPING IT. When an answer ends by offering
                       numbered options, each becomes a button that sends that choice straight back
                       to the same agent, so the work continues instead of stalling on a question. */}
-                  {msg.role === 'assistant' && !msg.streaming && trailingOptions(msg.content).length > 0 && (
+                  {answerish(msg) && trailingOptions(msg.content).length > 0 && (
                     <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
                       <span className="text-[9.5px] text-nv-faint">Reply:</span>
                       {trailingOptions(msg.content).map((opt, oi) => (
@@ -11249,16 +11283,40 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                       ))}
                     </div>
                   )}
-                  {msg.role === 'assistant' && !msg.streaming && looksLikeActionPlan(msg.content) && (
+                  {/* ONLY UNDER A REAL PLAN. This is gated on three separate dated steps, so it
+                      does not appear under ordinary answers — a button that shows up everywhere is
+                      a button nobody reads. When a plan is ALREADY running and the agent has
+                      reworked it, "Add to plan" merges the new steps in rather than replacing:
+                      starting over would wipe out everything the user has already ticked off. */}
+                  {answerish(msg) && looksLikeActionPlan(msg.content) && (
                     <div className="mt-1.5 flex items-center gap-2 flex-wrap">
-                      <button
-                        onClick={() => {
-                          const p = createPlan(msg.content);
-                          savePlan(p);
-                          setPlanOpen(true);
-                        }}
-                        className="text-[10.5px] px-2.5 py-1.5 rounded-lg bg-accent text-white font-medium hover:bg-accent-dim transition-fast"
-                      >Start this plan →</button>
+                      {activePlan ? (
+                        <>
+                          <button
+                            onClick={() => {
+                              const n = mergeIntoPlan(loadPlan()!, msg.content);
+                              setPlanOpen(true);
+                              addMsgHere({ role: 'assistant', content: n
+                                ? `Added ${n} new step${n === 1 ? '' : 's'} to **${activePlan.title}** — anything you had already ticked off stayed ticked.`
+                                : `Nothing new in there — every step is already in **${activePlan.title}**.` });
+                            }}
+                            className="text-[10.5px] px-2.5 py-1.5 rounded-lg bg-accent text-white font-medium hover:bg-accent-dim transition-fast"
+                          >Add to plan →</button>
+                          <button
+                            onClick={() => {
+                              if (!confirm(`Replace "${activePlan.title}"? Everything you've ticked off in it is lost.`)) return;
+                              savePlan(createPlan(msg.content));
+                              setPlanOpen(true);
+                            }}
+                            className="text-[10.5px] px-2.5 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:bg-nv-surface2 transition-fast"
+                          >Replace plan</button>
+                        </>
+                      ) : (
+                        <button
+                          onClick={() => { savePlan(createPlan(msg.content)); setPlanOpen(true); }}
+                          className="text-[10.5px] px-2.5 py-1.5 rounded-lg bg-accent text-white font-medium hover:bg-accent-dim transition-fast"
+                        >Start this plan →</button>
+                      )}
                       <span className="text-[9.5px] text-nv-faint">
                         {parsePlanSteps(msg.content).length} dated steps · opens a panel and feeds your To-do
                       </span>

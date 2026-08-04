@@ -5,6 +5,7 @@ import {
   notesForDay, currentDay,
 } from '../../lib/planStore';
 import { todos } from '../../lib/todoStore';
+import { loadAvailability, freeSlotsOn, to24h, describeAvailability, AVAIL_EVENT } from '../../lib/availability';
 
 // ─── The plan you actually work through ──────────────────────────────────────
 //
@@ -15,6 +16,12 @@ import { todos } from '../../lib/todoStore';
 
 function fmtDate(d: Date): string {
   return d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+}
+
+/** YYYY-MM-DD in the user's OWN timezone. toISOString() is UTC, so an evening in IST comes back as
+ *  the previous day — which would book every late step on the wrong date. */
+function localISO(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
@@ -28,10 +35,14 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
   const [showAll, setShowAll] = useState(false);
   const [note, setNote] = useState('');
 
+  const [avail, setAvail] = useState(() => loadAvailability());
+
   useEffect(() => {
     const on = () => setPlan(loadPlan());
+    const onAvail = () => setAvail(loadAvailability());
     window.addEventListener(PLAN_EVENT, on);
-    return () => window.removeEventListener(PLAN_EVENT, on);
+    window.addEventListener(AVAIL_EVENT, onAvail);
+    return () => { window.removeEventListener(PLAN_EVENT, on); window.removeEventListener(AVAIL_EVENT, onAvail); };
   }, []);
 
   // NOT A DEAD END. The header button is visible with no plan running, so this screen is something
@@ -165,6 +176,22 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
             : today.map((s) => <StepRow key={s.id} s={s} />)}
         </div>
 
+        {/* YOUR HOURS, SHOWN BACK TO YOU. Scheduling silently reads this, so it has to be visible
+            and correctable — a wrong line here moves every event the plan books. */}
+        <div className="px-1">
+          {avail && avail.updatedAt ? (
+            <p className="text-[9.5px] text-nv-faint leading-snug">
+              Scheduling around: <span className="text-nv-muted">{describeAvailability(avail)}</span>.
+              {' '}Say the correct hours in chat to change it.
+            </p>
+          ) : (
+            <button
+              onClick={() => onRunStep('Ask me when I am usually free and busy each week, then save it with set_availability so nothing gets booked over my working hours.')}
+              className="text-[9.5px] text-nv-faint hover:text-accent transition-fast text-left leading-snug"
+            >Tell me your working hours once → nothing gets booked over them again.</button>
+          )}
+        </div>
+
         {/* WHAT ACTUALLY HAPPENED. The copilot writes here as outreach goes out, so this is the
             one place that knows both what was planned and what was really done. Meetings float to
             the top because a request to meet decays fast if it sits unanswered. */}
@@ -223,11 +250,43 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
           onClick={() => {
             const open = plan.steps.filter((s) => !s.done).slice(0, 10);
             if (!open.length) { setNote('Nothing left to schedule.'); setTimeout(() => setNote(''), 3000); return; }
+            // Every step used to be pinned to 10:00 — which is inside most people's working
+            // block, so the plan booked itself straight over the day job. Place each one in a
+            // stretch the user is actually free, rolling forward past days they do not work.
+            const avail = loadAvailability();
+            const lines: string[] = [];
+            const bumped: string[] = [];
+            for (const s of open) {
+              const want = stepDate(plan, s);
+              let when = want;
+              let time = '10:00';
+              if (avail && avail.updatedAt) {
+                let found = false;
+                for (let i = 0; i < 14 && !found; i++) {
+                  const d = new Date(want);
+                  d.setDate(d.getDate() + i);
+                  const slots = freeSlotsOn(avail, d, 60);
+                  if (slots.length) { when = d; time = to24h(slots[0].start); found = true; }
+                }
+                if (!found) continue;                    // genuinely no room — say so rather than double-book
+                if (when.getTime() !== want.getTime()) bumped.push(s.action.slice(0, 40));
+              }
+              lines.push(`- ${localISO(when)} at ${time} — ${s.action}`);
+            }
+            if (!lines.length) {
+              setNote('Your saved hours leave no free 60-minute slot in the next two weeks. Update them and try again.');
+              setTimeout(() => setNote(''), 6000);
+              return;
+            }
             onSchedule(
-              'Put these plan steps in my calendar with create_calendar_event — one event each, 60 minutes, starting 10:00 on the date given:\n'
-              + open.map((s) => `- ${stepDate(plan, s).toISOString().slice(0, 10)} — ${s.action}`).join('\n')
+              'Put these plan steps in my calendar with create_calendar_event — one event each, 60 minutes, at exactly the date and time given. These times are already checked against my working hours, so use them as they are and do not pick your own:\n'
+              + lines.join('\n')
               + '\nCreate them, then tell me which ones you created.',
             );
+            if (bumped.length) {
+              setNote(`${bumped.length} step${bumped.length === 1 ? '' : 's'} moved to the next day you're free.`);
+              setTimeout(() => setNote(''), 5000);
+            }
           }}
           className="text-[10.5px] px-2.5 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:bg-nv-surface2 transition-fast"
         >Put in calendar</button>

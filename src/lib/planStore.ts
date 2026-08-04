@@ -242,6 +242,33 @@ export function todayView(plan: ActionPlan): { today: PlanStep[]; overdue: PlanS
   return { today, overdue };
 }
 
+/**
+ * Fold a revised plan back into the one already running.
+ *
+ * When an agent reworks a plan ("push the launch to week 3", "add a partner track"), starting over
+ * would throw away every step the user has already ticked off — so the sensible action is a merge,
+ * not a replace. Steps already present on the same day with the same action are left exactly as
+ * they are, including their done state; genuinely new ones are added. Returns how many were added.
+ */
+export function mergeIntoPlan(plan: ActionPlan, text: string): number {
+  const incoming = parsePlanSteps(text);
+  if (!incoming.length) return 0;
+  const key = (day: number, action: string) => `${day}|${action.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 60)}`;
+  const have = new Set(plan.steps.map((s) => key(s.day, s.action)));
+  let added = 0;
+  for (const s of incoming) {
+    if (have.has(key(s.day, s.action))) continue;
+    have.add(key(s.day, s.action));
+    plan.steps.push({ ...s, id: uid(), done: false });
+    added++;
+  }
+  if (added) {
+    plan.steps.sort((a, b) => a.day - b.day);
+    savePlan(plan);
+  }
+  return added;
+}
+
 /** Which plan day today is (1-based). 0 if the plan has not started yet. */
 export function currentDay(plan: ActionPlan): number {
   const start = new Date(plan.startDate + 'T00:00:00');

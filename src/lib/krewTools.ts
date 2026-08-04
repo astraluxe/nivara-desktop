@@ -5,6 +5,7 @@ import { isMcpTool, executeMcpTool } from './krewMcp';
 import { runParallelResearch } from './researchSources';
 import { loadUserLocation, saveUserLocation, locationLabel, userCity, countryCodeFor } from './userLocation';
 import { lastDeckPdfBase64 } from './deckStore';
+import { parseAvailability, saveAvailability, loadAvailability, describeAvailability, nextFreeSlots, fmtMins, to24h } from './availability';
 
 // ─── Email (MIME) helpers — used by gmail_send_email / gmail_send_bulk ─────────
 // Build a base64url-encoded RFC822 message, optionally multipart with one attachment.
@@ -589,6 +590,18 @@ export const SYSTEM_TOOLS: ToolDef[] = [
       guests:     { type: 'string', description: 'Comma-separated guest email addresses, if you genuinely have them. Leave empty otherwise — never invent one. With no guest, saving the event notifies nobody, so share the returned Meet link with them instead.', required: false },
       add_meet:   { type: 'boolean', description: 'Create a real Google Meet link and put it on the event. Default true — pass false only for something with no video call (a reminder, a personal block).', required: false },
     },
+  },
+  {
+    name: 'set_availability',
+    description: "REMEMBER WHEN THE USER IS FREE, as a recurring pattern. Call this the moment they say anything about their hours — \"I'm busy on weekdays from 10 to 6\", \"I don't work Sundays\", \"free after 7pm\". Saving it once means no agent ever has to guess a meeting time again, and the user does not have to block out every single day in their calendar by hand. Pass their words through verbatim in `said` — the parser reads them. This is a RECURRING pattern, not a calendar event: use create_calendar_event for a specific meeting or a one-off day away.",
+    parameters: {
+      said: { type: 'string', description: 'The user\'s own words about their hours, e.g. "busy on weekdays from 10am to 6pm, and I don\'t work Sundays". Pass what they actually said — do not tidy it into a format.', required: true },
+    },
+  },
+  {
+    name: 'get_availability',
+    description: "Read back the user's saved working hours and the next few times they are genuinely free. Call this BEFORE proposing any meeting time, so you offer real slots instead of inventing them. Returns nothing useful if they have never told us their hours — in that case ASK, then call set_availability.",
+    parameters: {},
   },
   {
     name: 'set_user_name',
@@ -1987,6 +2000,34 @@ async function executeToolCore(
   // OAuth. It exists because the app had NO calendar capability whatsoever, and the agent had been
   // telling people "I'll send over a calendar invite with a meeting link" — a promise nothing in
   // the system could keep, so the meeting simply never got booked.
+  if (toolName === 'set_availability') {
+    const said = str(args.said).trim();
+    if (!said) return '[set_availability needs "said" — the user\'s own words about their hours.]';
+    const parsed = parseAvailability(said, loadAvailability());
+    if (!parsed) {
+      // Refusing beats saving a guess: a wrong availability quietly moves every meeting the app
+      // ever proposes, and the user would have no idea why.
+      return `[Couldn't work out concrete hours from "${said.slice(0, 80)}". Ask them for the times plainly — e.g. "busy weekdays 10am to 6pm" or "I don't work Sundays" — then call set_availability again.]`;
+    }
+    saveAvailability(parsed);
+    return `Saved: ${describeAvailability(parsed)}. From now on propose times from this. Tell the user what you saved so they can correct it.`;
+  }
+
+  if (toolName === 'get_availability') {
+    const a = loadAvailability();
+    if (!a || !a.updatedAt) return "The user has never told us their working hours. ASK them (\"when are you usually free?\"), then call set_availability with their answer. Do NOT invent slots in the meantime.";
+    const slots = nextFreeSlots(a, 5, 30);
+    const lines = [`Saved availability: ${describeAvailability(a)} (${a.timezone}).`];
+    if (slots.length) {
+      lines.push('Genuinely open slots:');
+      for (const s of slots) lines.push(`- ${s.date.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })} at ${fmtMins(s.start)} (${to24h(s.start)})`);
+      lines.push('Offer these as options. This is a recurring pattern, not their live calendar, so a specific clash is still possible — do not say a time is confirmed until they pick one.');
+    } else {
+      lines.push('No open slots in the next three weeks under that pattern — tell the user, rather than proposing a time anyway.');
+    }
+    return lines.join('\n');
+  }
+
   if (toolName === 'create_calendar_event') {
     const title = str(args.title).trim();
     const date = str(args.date).trim();

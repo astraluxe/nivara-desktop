@@ -12,6 +12,7 @@ import {
 } from '../../lib/verify';
 import { listAttachableDocs, isAttachableFile, type GeneratedDoc } from '../../lib/docgen';
 import { addPlanNote, outreachTargetToday, loadPlan, currentDay, notesForDay } from '../../lib/planStore';
+import { availabilityNote, loadAvailability, nextFreeSlots, fmtMins } from '../../lib/availability';
 
 // Assemble what the strategist/verifier needs to know about the USER's side: their pitch and any
 // stated availability, pulled from the Brain (product notes, meeting notes) so the drafted reply is
@@ -37,7 +38,10 @@ function buildOwnerContext(): string {
           ...avail,
         ].join('\n')
       : '';
-    return [...product, availBlock].filter(Boolean).join('\n').slice(0, 3500);
+    // THE ONE AUTHORITATIVE THING ABOUT THE OWNER'S TIME. Brain notes that mention hours are
+    // guesswork; this is what the user actually told us their week looks like, so a proposed slot
+    // can be real instead of invented. Empty until they say it, which is why the notes above stay.
+    return [availabilityNote(), ...product, availBlock].filter(Boolean).join('\n').slice(0, 3500);
   } catch { return ''; }
 }
 
@@ -832,6 +836,14 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     const sent = notesForDay(plan, day).filter((n) => n.kind === 'outreach').length;
     return { target: t.count, who: t.who, day, sent };
   }, [contacts]);
+
+  /** Real slots to offer this person, or [] when the user has never told us their hours — in which
+   *  case the chips do not render at all rather than showing a guess. */
+  const meetingSlots = useMemo(() => {
+    const a = loadAvailability();
+    if (!a || !a.updatedAt) return [];
+    return nextFreeSlots(a, 3, 30);
+  }, [idx, plan]);
 
   /** People we're waiting on — what the "Check all pending" button acts on. */
   const pendingCount = useMemo(
@@ -2434,6 +2446,34 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                     {docs.length === 0 && !attachDoc && (
                       <p className="text-[9.5px] text-nv-faint leading-relaxed mt-1">Pick a file above, or ask Krew to "make a one-pager PDF about adris for them". A PDF you save in the Brain shows up here too. (Working notes like .md are never offered.)</p>
                     )}
+                  </div>
+                )}
+
+                {/* TIMES YOU CAN ACTUALLY OFFER, as one tap each.
+                    These are computed from the working hours the user told us — never invented,
+                    never a slot inside their busy block or on a day they do not work. Tapping one
+                    writes it into the draft, so the reply proposes a real time instead of the model
+                    picking a plausible-sounding one. Hidden entirely until they have told us their
+                    hours, because the honest alternative to a guess is nothing. */}
+                {plan.meeting && meetingSlots.length > 0 && (
+                  <div className="pt-1.5 border-t border-violet-500/15">
+                    <p className="text-[9.5px] text-nv-faint mb-1">Offer one of your genuinely free slots:</p>
+                    <div className="flex flex-wrap gap-1">
+                      {meetingSlots.map((s, si) => {
+                        const label = `${s.date.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })} at ${fmtMins(s.start)}`;
+                        return (
+                          <button
+                            key={si}
+                            onClick={() => {
+                              const line = `Would ${label} work for you?`;
+                              setDraftReply((d) => (d.trim() ? `${d.replace(/\s*$/, '')}\n\n${line}` : line));
+                            }}
+                            title="Adds this to your draft — it is checked against the hours you gave me"
+                            className="text-[9.5px] px-2 py-1 rounded-full border border-accent/40 text-accent hover:bg-accent/10 transition-fast"
+                          >{label}</button>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
 
