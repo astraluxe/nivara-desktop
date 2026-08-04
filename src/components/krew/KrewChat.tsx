@@ -7434,6 +7434,16 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     const sys = [
       'You write short, warm, genuinely PERSONALISED LinkedIn messages to the user\'s EXISTING 1st-degree connections (people who already accepted them).',
       'Rules for every message:',
+      // NEVER INVENT THE USER'S AVAILABILITY. A draft went out saying "I'm free Wed 5 Aug 10am-12pm
+      // or Thu 6 Aug 2pm-4pm IST" — times nobody had checked against anything. That is a promise
+      // made on the user's behalf about their own diary: at best they get double-booked, at worst
+      // they look unreliable to the first person they ever contacted. The calendar is not read on
+      // this path, so there is nothing here that could possibly know. Ask for a time instead of
+      // asserting one — it also reads better, because it puts the choice with the other person.
+      '- NEVER state when the sender is free, and never propose specific dates, days or time',
+      '  windows. You have not seen their calendar. Write "if useful, happy to find 15 minutes that',
+      '  suits you" or "what does your week look like?" — never "I am free Wednesday 10-12".',
+      '- Do not invent a duration, a timezone, or a meeting link either.',
       // SHORTER. 30-50 words was already the rule and drafts still ran long, because nothing said
       // what happens if they do. On LinkedIn a long first message is skimmed and dropped -- the
       // reply rate falls the further it scrolls -- so the ceiling is now stated as a hard one with

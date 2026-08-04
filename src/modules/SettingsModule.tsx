@@ -46,8 +46,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.13.1',
+  version: '1.13.2',
   items: [
+    'Outreach messages no longer invent when you are free. A draft went out offering "Wed 5 Aug 10am-12pm or Thu 6 Aug 2pm-4pm" -- times nothing had checked against anything, because your calendar is not read when first messages are written. That is a promise made in your name about your own diary: at best you get double-booked, at worst you look unreliable to the first person you ever contacted. Drafts now ask what suits them instead of asserting when you are free, and they cannot invent a duration, a timezone or a meeting link either.',
+    'The tappable meeting-time buttons have not been removed -- they appear after Scan their reply, where the times come from your real calendar. They were never part of the first message, which is exactly why that one had nothing behind it.',
+
     'Fixed answers arriving in the Brain as one unreadable blob with the tables destroyed. A table cell cannot hold a line break, so <br> is the normal way to write a multi-line cell -- and the Brain treated a single <br> anywhere as proof the whole document was HTML, then flattened it. Any answer containing one lost every table, heading and line break on the way in. Only real editor output is treated as HTML now; markdown is stored exactly as written.',
     'When an agent ends by offering numbered options -- "Want me to: 1. Build the lead list 2. Draft the DM templates 3. Create the comparison page" -- each one is now a button under the answer. Tapping it sends that choice back to the same agent and the work carries on, instead of you retyping it. It only appears when the answer genuinely ends on a question with two or more choices, so the numbered steps inside a plan never turn into a menu.',
 

@@ -910,7 +910,12 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
           instruction:
             `${c.name} has just ACCEPTED my connection request. Write the FIRST direct message to send them now — `
             + '30–50 words, warm and specific, referencing what they do. Thank them briefly for connecting, then ONE '
-            + 'low-pressure, specific opener. No pitch, no buzzwords, no placeholders.',
+            + 'low-pressure, specific opener. No pitch, no buzzwords, no placeholders. '
+            // Nothing on this path has read the user's calendar, so anything it says about their
+            // availability is invented — and it is a promise made in their name about their own
+            // diary. Ask for a time instead of asserting one.
+            + 'NEVER say when I am free and never propose a specific day, date or time window — you have not seen my '
+            + 'calendar. Ask what suits them instead. Do not invent a duration, timezone or meeting link.',
           ownerContext,
           aiCall,   // the Krew chat's AI source (BYOK/local/adris) — never a separate global one
         });
