@@ -9162,6 +9162,36 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
       // NEW bubble is opened after a tool result, since that one starts empty on purpose.
       let carried = '';
       /**
+       * Does this answer LOOK cut off, whatever the provider said?
+       *
+       * Truncation is only reported when a provider sends finish_reason:"length", and that is the
+       * one signal we do not always get: a free-tier stream that simply stops mid-word ends with a
+       * clean [DONE] and no flag at all. So a 30-day plan ended at "offer 10% discount for" and the
+       * app treated it as a finished answer, because as far as it knew, it was.
+       *
+       * Judge the text instead. A finished answer ends on punctuation, a closed table row, or a
+       * fence. Ending on a comma, a preposition, an open bracket or half a table row means the
+       * model stopped mid-thought and there is more to ask for. Deliberately conservative — a
+       * wrong "continue" costs one extra request, a missed one costs the user their answer.
+       */
+      const looksCutOff = (t: string): boolean => {
+        const s = (t || '').trimEnd();
+        if (s.length < 200) return false;                       // short replies end abruptly all the time
+        if (/<tool_call>|<tool_code>|CHOICES_BLOCK:/.test(s)) return false;
+        const lines = s.split('\n');
+        const last = (lines[lines.length - 1] || '').trim();
+        // Half a table row — the row opened and never closed.
+        if (last.startsWith('|') && !last.endsWith('|')) return true;
+        // An unterminated code fence means the answer stopped inside a block.
+        if ((s.match(/^ {0,3}```/gm) || []).length % 2 === 1) return true;
+        // Otherwise: finished prose ends on a terminator. Ending on a word, comma, or an open
+        // bracket does not. A closing pipe counts — an answer very often ends on the last complete
+        // row of a table, and re-asking there would append a duplicate row to a finished table.
+        return !/[.!?:;)\]}"'`’”…|]$/.test(s);
+      };
+      let autoContinues = 0;
+      const MAX_AUTO_CONTINUE = 4;   // bounded: a model that cannot finish must not loop forever
+      /**
        * Drop the overlap when a continuation restarts from partway back.
        *
        * Asked to "continue", models very often re-emit the last paragraph or two before carrying
@@ -9251,7 +9281,11 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
         if (stopRef.current) break;
 
         // Auto-continue if the model hit its output token limit mid-response.
-        if (wasTruncated && !fullResponse.includes('<tool_call>') && !fullResponse.includes('<tool_code>')) {
+        // The provider's flag OR the shape of the text — see looksCutOff. Bounded, so a model that
+        // genuinely cannot finish stops rather than looping.
+        if ((wasTruncated || (looksCutOff(fullResponse) && autoContinues < MAX_AUTO_CONTINUE))
+            && !fullResponse.includes('<tool_call>') && !fullResponse.includes('<tool_code>')) {
+          autoContinues++;
           // Carry the visible prose forward. Without this the next iteration paints over it and
           // the user loses everything written before the cut -- which is the whole answer, on any
           // brief long enough to be truncated in the first place.
@@ -9482,6 +9516,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
               // Mini ReAct loop — lets delegated agents call web_search and other tools
               const delegateMsgsHist = [{ role: 'user', content: delegateTask }];
               let delegateAccum = '';   // clean prose accumulated across turns
+              let dAutoContinues = 0;  // bounded, like the main loop
               let delegateFinalResp = '';
               // Some tools (verify_lead_list) ARE the deliverable — they return the finished
               // verified table. The model only needs to say "here it is", and often produces
@@ -9547,7 +9582,12 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
                 });
                 delegateFinalResp = delegateRaw;
                 // Auto-continue delegate response if truncated mid-prose
-                if (delegateTruncated && !delegateRaw.includes('<tool_call>') && !delegateRaw.includes('<tool_code>')) {
+                // Same judgement as the main loop: the provider's flag is not always sent, so a
+                // delegate whose stream simply stopped mid-row must still be asked to continue.
+                // This is the path a long strategy answer actually comes back on.
+                if ((delegateTruncated || (looksCutOff(delegateRaw) && dAutoContinues < 4))
+                    && !delegateRaw.includes('<tool_call>') && !delegateRaw.includes('<tool_code>')) {
+                  dAutoContinues++;
                   let proseSoFar = delegateRaw.replace(/<tool_call>[\s\S]*/g, '').replace(/<tool_code>[\s\S]*/g, '').replace(/CHOICES_BLOCK:[\s\S]*/g, '').trim();
                   // If we're inside an email/outreach draft, the cut is in prose, NOT a table —
                   // treating it as a table-continuation is what garbled the emails ("You10-minute…").

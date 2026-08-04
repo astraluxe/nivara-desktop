@@ -46,8 +46,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.13.5',
+  version: '1.13.6',
   items: [
+    'Long answers that stop mid-sentence now carry on by themselves. Continuing a cut-off answer only ever happened when the AI provider explicitly reported hitting its limit -- and a free key often does not report anything, it just stops. The app took that silence to mean the answer was finished, so a 30-day plan could end at "offer 10% discount for" and be presented as complete.',
+    'It now judges the text as well as the flag: an answer that ends on a comma, an open bracket, half a table row or inside an unclosed box is treated as cut off and continued. An answer that ends on a full stop, a question mark or a completed table row is left alone, so a finished reply is never re-asked and no duplicate rows appear. Capped at four continuations, so a model that genuinely cannot finish stops instead of looping.',
+
     'The Skills graph in Brain now shows the newer abilities too. Weighing up options (scoring 2-4 ways forward and marking the best) and Turning a plan into work (writing a day-by-day plan the app can schedule) were both working but missing from the graph, so the picture of what your agents can do was out of date. Both are there now with their connections drawn -- planning pulls in your To-do and calendar, because a plan that cannot be scheduled is just a document.',
     'Remembering now also says it keeps track of the file each agent was last working in.',
 
