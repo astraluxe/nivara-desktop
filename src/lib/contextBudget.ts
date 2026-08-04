@@ -111,3 +111,44 @@ export function fitSections(sections: string[], budget: number): string[] {
     return `…[earlier trimmed to fit this model's context]\n${src.slice(src.length - out[i])}`;
   });
 }
+
+// ─── How much bulk work one call may ask for ─────────────────────────────────
+//
+// Bulk loops (refining 30 messages, drafting a batch, filling a table) used to choose their batch
+// size from the CONNECTION type alone — "local model or not". That put a free NVIDIA key driving a
+// 550B model in the same bucket as the hosted service and asked it for thirty JSON objects in one
+// response. It truncates, the JSON will not parse, and the user waits the full timeout to be told
+// nothing came back.
+//
+// Size it by what the model can actually hold instead. The same measured context window the model
+// picker shows as High / Medium / Basic is the honest signal: a 1M-window model can take a big
+// batch, a 32k one cannot, and no amount of connection-type guessing knows the difference.
+export type BulkTier = 'high' | 'medium' | 'basic';
+
+export interface BulkPlan {
+  /** Most items to attempt in total. */
+  max: number;
+  /** Items per request — the number that actually decides whether the answer parses. */
+  batch: number;
+  tier: BulkTier;
+  /** Shown to the user when a bigger model on the SAME key would do this markedly better. */
+  advice: string;
+}
+
+export function bulkPlan(mode: string, opts: { hostedMax?: number } = {}): BulkPlan {
+  const hostedMax = opts.hostedMax ?? 30;
+  if (mode === 'local') {
+    return { max: 10, batch: 3, tier: 'basic',
+      advice: 'A downloaded model works through these slowly. A free NVIDIA or Groq key (Connect Apps) finishes the same job in a fraction of the time and costs no adris.tech tokens.' };
+  }
+  if (mode !== 'own_key') return { max: hostedMax, batch: hostedMax, tier: 'high', advice: '' };
+
+  const win = activeContextTokens();
+  if (win >= 200_000) return { max: hostedMax, batch: 12, tier: 'high', advice: '' };
+  if (win >= 32_000) {
+    return { max: 20, batch: 6, tier: 'medium',
+      advice: 'Your model has a mid-sized context window, so this runs a few at a time. Picking a High-capability model on the same key (Models → the connection bar) lets it do more per pass and finish sooner.' };
+  }
+  return { max: 12, batch: 3, tier: 'basic',
+    advice: 'Your model has a small context window, so this has to go a few at a time and can still struggle. On the same key there are High-capability models listed in the connection bar — switching to one of those is the single biggest speed-up available here, and costs nothing extra.' };
+}

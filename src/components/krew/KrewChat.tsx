@@ -24,7 +24,7 @@ import { type AutomationProposal } from './AutomationProposalModal';
 import AgentStatus from './AgentStatus';
 import { type ConnectionMode, type Provider } from '../../lib/ai';
 import { isDeadModelError, repairDeadModel, blockModel, scanModelsIfStale, measuredMsFor } from '../../lib/modelHealth';
-import { noteActiveModel } from '../../lib/contextBudget';
+import { noteActiveModel, bulkPlan } from '../../lib/contextBudget';
 import { slugLooksLikeName } from '../../lib/outreachConnections';
 import { auditPromises, cleanOutboundMessage, type PromiseIssue } from '../../lib/verify';
 import ConnectionBar from '../coder/ConnectionBar';
@@ -783,6 +783,18 @@ function TableBlock({ mdTable, headers, aligns, rows }: {
 // Convert any raw HTML <table> the model emitted into a markdown pipe table,
 // and strip stray <tool_call>/<tool_code> fragments that leaked into the text.
 function cleanForRender(text: string): string {
+  // ── CLOSE A BOX THE MODEL FORGOT TO CLOSE ──────────────────────────────────
+  // An odd number of ``` fences means everything after the last one renders as one endless
+  // code box, swallowing the rest of the answer -- the model knows how to open a box and not
+  // always when to leave it. A truncated-then-continued reply makes this far more likely,
+  // because the cut can land inside a fence. Balancing it costs nothing and the alternative is
+  // a wall of monospace where the user's actual answer should be. Done FIRST so every later
+  // pass sees well-formed markdown.
+  {
+    const fences = (text.match(/^ {0,3}```/gm) || []).length;
+    if (fences % 2 === 1) text = text.replace(/\s*$/, '') + '\n```';
+  }
+
   // ── Strip leaked tool-call / tool-result noise (streaming glitches mangle these) ──
   // 0) tool RESULT blocks the model echoed into its answer: <res>…</res>, <tool_result>…</tool_result>
   text = text.replace(/<(res|tool_result|results?)>[\s\S]*?<\/\1>/gi, '');
@@ -7288,7 +7300,14 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     const sys = [
       'You write short, warm, genuinely PERSONALISED LinkedIn messages to the user\'s EXISTING 1st-degree connections (people who already accepted them).',
       'Rules for every message:',
-      '- 30–50 words. Plain, human, specific. Never templated, never salesy, never a pitch dump.',
+      // SHORTER. 30-50 words was already the rule and drafts still ran long, because nothing said
+      // what happens if they do. On LinkedIn a long first message is skimmed and dropped -- the
+      // reply rate falls the further it scrolls -- so the ceiling is now stated as a hard one with
+      // the reason attached, which models follow far more reliably than a bare range.
+      '- 25–45 words, HARD CEILING 50. Three short sentences at most. Plain, human, specific.',
+      '- Long messages get skimmed and ignored on LinkedIn. If it does not fit in a phone notification',
+      '  preview, it is too long. Cut the setup, keep the specific bit, never pad to sound polite.',
+      '- Never templated, never salesy, never a pitch dump.',
       '- Greet by FIRST NAME ONLY — drop titles like Dr/Prof/Mr (write "Hi Sneha", not "Hi Dr").',
       '- Reference ONE concrete thing from THAT person\'s headline (their company, role, or what they build) — never paste the whole headline back at them.',
       '- Weave in what the user does ONLY where it fits naturally; the aim is to (re)start a real conversation, not to sell.',
@@ -7904,8 +7923,19 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     // does all 30 in ONE call. Only a LOCAL model needs small batches — it's slow and truncates a
     // big array — so it does 3 at a time, 10 per run.
     const local = mode === 'local';
-    const MAX = local ? 10 : 30;
-    const BATCH = local ? 3 : MAX;
+    // SIZE THE BATCH TO THE MODEL THAT HAS TO ANSWER IT.
+    //
+    // This asked for 30 rewrites in a single call on anything that was not a downloaded model --
+    // which includes a free BYOK key driving a 550B model. Thirty JSON objects is a long answer
+    // for any model and a very long one for that: it truncates, the JSON will not parse, and the
+    // user gets "the model didn't return usable rewrites in 75s" having waited the whole 75.
+    // Drafting already batches by connection type (8 on your own key, 3 local); refine was the
+    // one bulk loop that did not, so it is brought in line. Smaller batches also mean partial
+    // progress is SAVED as it goes rather than lost with the failed call.
+    // Sized by what the connected model can actually hold -- see bulkPlan.
+    const plan = bulkPlan(mode, { hostedMax: 30 });
+    const MAX = plan.max;
+    const BATCH = plan.batch;
     const slice = targets.slice(0, MAX);
 
     const sysBase = [
@@ -7930,7 +7960,9 @@ _None of them had everything you ticked, so I've saved them rather than lose the
 
     const startedAt = Date.now();
     const elapsed = () => Math.round((Date.now() - startedAt) / 1000);
-    addMsg({ role: 'assistant', content: `Refining ${slice.length} untouched message${slice.length === 1 ? '' : 's'} to be more personal${guidance ? ` — ${guidance}` : ''}…${local ? '\n\n_On a local model this runs at your machine\'s pace — you\'ll see it writing live below._' : ''}`, streaming: true });
+    addMsg({ role: 'assistant', content: `Refining ${slice.length} untouched message${slice.length === 1 ? '' : 's'} to be more personal${guidance ? ` — ${guidance}` : ''}, ${BATCH} at a time…${plan.advice ? `
+
+_${plan.advice}_` : ''}`, streaming: true });
     // A new user-initiated run must clear the Stop flag. It was only reset by the main chat
     // turn, so after ANY Stop press every one of these flows streamed straight back empty —
     // the stream resolves on the first chunk when stopRef is set, with no error — and stayed
@@ -8010,7 +8042,9 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     if (!refined) {
       const nores = stopped
         ? `Stopped before anything was refined — your messages are unchanged. ${local ? 'A local model is slow at this; a hosted model (or a smaller local one) would be much quicker.' : 'Try **/refine** again.'}`
-        : `I couldn't improve those just now — the model didn't return usable rewrites in ${elapsed()}s. Your existing messages are unchanged. Try **/refine** again${local ? ', or connect a FREE fast cloud key — **Connect Apps → NVIDIA or Groq** (no adris.tech tokens used) — since a 14B on CPU is slow and can garble the JSON' : ''}.`;
+        : `I couldn't improve those just now — the model didn't return usable rewrites in ${elapsed()}s. Your existing messages are unchanged, and anything that DID come back has been kept. Try **/refine** again.${plan.advice ? `
+
+_${plan.advice}_` : ''}`;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: nores, streaming: false }; return c; });
       if (sid) krewDb.saveMessage(sid, 'assistant', nores).catch(() => {});
       setBusy(false); setAgentStep(null); setAgentTool(null);
@@ -8905,9 +8939,37 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
       // Held outside the iteration so a continuation appends instead. Cleared whenever a genuinely
       // NEW bubble is opened after a tool result, since that one starts empty on purpose.
       let carried = '';
+      /**
+       * Drop the overlap when a continuation restarts from partway back.
+       *
+       * Asked to "continue", models very often re-emit the last paragraph or two before carrying
+       * on -- and some restart from a section heading several screens back. Joining blindly showed
+       * the user the same block of text twice, which is what turned a clean answer into a
+       * duplicated mess. Find the longest run that is both a tail of what we have and a head of
+       * what just arrived, and keep only one copy of it.
+       */
+      const trimOverlap = (base: string, next: string): string => {
+        const max = Math.min(base.length, next.length, 4000);
+        for (let n = max; n >= 40; n--) {
+          if (base.endsWith(next.slice(0, n))) return next.slice(n);
+        }
+        // No clean seam: the continuation may have restarted from an earlier HEADING instead.
+        // If its first heading line already appears in what we have, cut everything up to there.
+        const head = next.split('\n').find((l) => /^#{1,6}\s|^\*\*[^*]+\*\*\s*$/.test(l.trim()));
+        if (head && head.trim().length > 8 && base.includes(head.trim())) {
+          const i = base.lastIndexOf(head.trim());
+          const tailOfBase = base.slice(i);
+          if (next.startsWith(tailOfBase.slice(0, Math.min(200, tailOfBase.length)))) {
+            return next.slice(Math.min(tailOfBase.length, next.length));
+          }
+        }
+        return next;
+      };
       const joinCarried = (base: string, next: string) => {
         if (!base) return next;
         if (!next) return base;
+        next = trimOverlap(base, next);
+        if (!next.trim()) return base;
         // A cut mid-table must not gain a blank line, or the two halves render as two tables.
         const sep = /\|\s*$/.test(base.trimEnd()) && /^\s*\|/.test(next.trimStart()) ? '\n' : '\n\n';
         return base + sep + next;

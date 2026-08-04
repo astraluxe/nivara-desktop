@@ -37,9 +37,25 @@ function nowBlock(): string {
   });
   const tomorrow = new Date(d.getTime() + 86_400_000)
     .toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  // SPELL THE WEEKS OUT. "Next week" was being answered with times in the CURRENT week, and worse,
+  // with a line telling the person they had asked for something else ("you asked for next week, but
+  // let me offer this week") — which reads as not listening. The model had the date and no anchor
+  // for where one week ends and the next begins, so it was guessing. Give it both ranges as dates
+  // and there is nothing left to guess.
+  const day = (dt: Date) => dt.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+  const dow = (d.getDay() + 6) % 7;                       // 0 = Monday
+  const thisMon = new Date(d); thisMon.setDate(d.getDate() - dow); thisMon.setHours(0, 0, 0, 0);
+  const thisSun = new Date(thisMon); thisSun.setDate(thisMon.getDate() + 6);
+  const nextMon = new Date(thisMon); nextMon.setDate(thisMon.getDate() + 7);
+  const nextSun = new Date(nextMon); nextSun.setDate(nextMon.getDate() + 6);
   return [
     `RIGHT NOW IT IS: ${stamp} (${Intl.DateTimeFormat().resolvedOptions().timeZone || 'local time'}).`,
     `"Tomorrow" therefore means ${tomorrow}.`,
+    `THIS WEEK runs ${day(thisMon)} – ${day(thisSun)}. NEXT WEEK runs ${day(nextMon)} – ${day(nextSun)}.`,
+    'So "next week" means a date inside that second range, and "this week" a date inside the first.',
+    'Offer times in the range they actually asked for. Never answer a request for one week with times',
+    'in the other, and never tell someone what they asked for — just propose slots that fit it. If the',
+    'week they want is nearly over, offer the days that are left in it rather than silently moving them.',
     'Any date or event EARLIER than right now has already happened — it is history, it can never be a',
     'clash with a future time, and it must never be described as an upcoming or confirmed commitment.',
   ].join('\n');
