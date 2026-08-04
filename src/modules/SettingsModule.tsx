@@ -46,8 +46,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.13.6',
+  version: '1.13.7',
   items: [
+    'A specialist that goes quiet now gets asked again before you are told it failed. "Research Agent finished without producing anything" was a dead end -- it asked YOU to resend, on a task the app could simply retry. The cause is usually the size of the brief rather than the model: a specialist is handed a persona, a page of working rules, the whole tool schema and the accumulated context, and a small or free model answers with nothing at all. Asked the short way -- just the task, no scaffolding, no tools -- the same model usually answers fine. The lead search has recovered like this for a while; the specialists never did.',
+    'That completes the recovery ladder: if a specialist does tool work but writes nothing, it is made to write up what it found; if it only says what it is about to do, same; if it stops mid-answer, it carries on; and only if a plain re-ask also comes back empty do you get told, honestly, that the model went quiet.',
+
     'Long answers that stop mid-sentence now carry on by themselves. Continuing a cut-off answer only ever happened when the AI provider explicitly reported hitting its limit -- and a free key often does not report anything, it just stops. The app took that silence to mean the answer was finished, so a 30-day plan could end at "offer 10% discount for" and be presented as complete.',
     'It now judges the text as well as the flag: an answer that ends on a comma, an open bracket, half a table row or inside an unclosed box is treated as cut off and continued. An answer that ends on a full stop, a question mark or a completed table row is left alone, so a finished reply is never re-asked and no duplicate rows appear. Capped at four continuations, so a model that genuinely cannot finish stops instead of looping.',
 

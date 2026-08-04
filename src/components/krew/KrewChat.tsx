@@ -9836,6 +9836,38 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
               } else {
                 toolResult = finalDelegateOut;
               }
+              // ONE LAST CHANCE BEFORE TELLING THE USER IT FAILED.
+              //
+              // A specialist going quiet on a long brief is usually the BRIEF, not the model. The
+              // delegate is handed a persona, a page of working rules, a full tool schema, the
+              // pipeline rule and the accumulated context — and a small or free-tier model answers
+              // with nothing at all. Asked the short way, with just the task, the same model
+              // usually answers fine. The lead finder has done exactly this for a while and it is
+              // the difference between a dead end and a result; the delegate path never did, so a
+              // quiet model surfaced as "Research Agent finished without producing anything".
+              //
+              // No tools on the retry, deliberately: whatever tool work was going to happen has
+              // already had its chance, and asking again for a plain written answer is the thing
+              // most likely to succeed.
+              if (!finalDelegateOut.trim() && !delegateChoices && !delegateProposal && !stopRef.current) {
+                setAgentStep(`${agentHandle(targetAgent)} · asking the short way…`);
+                updateLastMsg(statusBlock(Date.now(), `${agentHandle(targetAgent)} went quiet — asking again, simply`,
+                  'Same task, without the extra instructions a small model can choke on.'));
+                try {
+                  const retry = await streamTurnWithRetry(
+                    [{ role: 'user', content: delegateTask }],
+                    `You are ${targetAgent.humanName}, ${targetAgent.role}. ${targetAgent.description}\n\n`
+                    + 'Answer the request directly and completely, in plain markdown. Do NOT call any tools. '
+                    + 'Do not describe what you are about to do — produce the deliverable itself. Never reply with nothing.',
+                    () => {},
+                  );
+                  const rt = cleanForRender((retry.text || '')
+                    .replace(/<tool_call>[\s\S]*/g, '')
+                    .replace(/<tool_code>[\s\S]*/g, '')
+                    .trim());
+                  if (rt) finalDelegateOut = rt;
+                } catch { /* the honest failure message below is the fallback */ }
+              }
               const bubbleContent = finalDelegateOut.trim() ||
                 (delegateChoices ? `Here are ${delegateChoices.choices.length} variants — pick the one you want:` :
                  delegateProposal ? 'Automation plan ready — review the card below.'
