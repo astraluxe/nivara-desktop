@@ -1467,7 +1467,7 @@ function trailingOptions(text: string): string[] {
     const m = line.trim().match(/^(?:\*\*)?(\d)[.)]\s*\**\s*(.{6,120}?)\s*\**\s*$/);
     if (m) {
       const label = m[2].replace(/\*\*/g, '').replace(/\s*[—-]\s*`[^`]+`\s*$/, '').replace(/\?$/, '').trim();
-      if (label && !/^day/i.test(label)) out.push(label);
+      if (label && !/^day\b/i.test(label)) out.push(label);
     }
   }
   return out.length >= 2 && out.length <= 5 ? out : [];
