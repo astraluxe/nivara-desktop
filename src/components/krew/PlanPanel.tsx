@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   type ActionPlan, type PlanStep,
   loadPlan, savePlan, clearPlan, stepDate, isSameDay, todayView, planProgress, PLAN_EVENT,
+  notesForDay, currentDay,
 } from '../../lib/planStore';
 import { todos } from '../../lib/todoStore';
 
@@ -45,6 +46,10 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
 
   const { today, overdue } = todayView(plan);
   const prog = planProgress(plan);
+  // Meetings first, then newest — a meeting request buried under twelve "messaged X" lines is a
+  // meeting request the user misses.
+  const log = notesForDay(plan, currentDay(plan))
+    .sort((a, b) => (a.kind === 'meeting' ? 0 : 1) - (b.kind === 'meeting' ? 0 : 1) || b.at - a.at);
 
   const update = (fn: (p: ActionPlan) => void) => {
     const next: ActionPlan = JSON.parse(JSON.stringify(plan));
@@ -137,6 +142,29 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
             ? <p className="text-[10.5px] text-nv-faint px-1">Nothing scheduled for today. {prog.done === prog.total ? 'The whole plan is done.' : 'Pull something forward from below if you have time.'}</p>
             : today.map((s) => <StepRow key={s.id} s={s} />)}
         </div>
+
+        {/* WHAT ACTUALLY HAPPENED. The copilot writes here as outreach goes out, so this is the
+            one place that knows both what was planned and what was really done. Meetings float to
+            the top because a request to meet decays fast if it sits unanswered. */}
+        {log.length > 0 && (
+          <div>
+            <p className="text-[9.5px] uppercase tracking-wide text-nv-faint mb-1 px-1">Today's log · {log.length}</p>
+            {log.map((n) => (
+              <div key={n.id} className={`flex items-start gap-2 px-2.5 py-1.5 rounded-lg mb-0.5 ${n.kind === 'meeting' ? 'bg-teal-600/10 border border-teal-600/30' : 'border border-transparent'}`}>
+                <span className={`text-[9px] font-mono mt-px shrink-0 ${n.kind === 'meeting' ? 'text-teal-600' : 'text-nv-faint'}`}>
+                  {n.kind === 'meeting' ? '★' : n.kind === 'outreach' ? '→' : '·'}
+                </span>
+                <p className="text-[10.5px] text-nv-text leading-snug min-w-0 flex-1">
+                  {n.kind === 'meeting' && n.who ? <strong>{n.who} </strong> : null}
+                  {n.text}
+                </p>
+                <span className="text-[9px] text-nv-faint shrink-0 mt-px">
+                  {new Date(n.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
 
         {overdue.length > 0 && (
           <div>

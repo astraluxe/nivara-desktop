@@ -132,24 +132,81 @@ export function fenceUntrusted(source: string, body: string): string {
 // different matchers would mean three different ideas of who a person is.
 const NAME_HONORIFICS = new Set(['dr', 'mr', 'mrs', 'ms', 'miss', 'mx', 'prof', 'professor', 'sri', 'shri', 'smt', 'er', 'ca', 'adv', 'advocate', 'capt', 'col', 'gen', 'rev', 'sir', 'hon']);
 export interface ProfileHit { name?: string; headline?: string; url?: string; degree?: string }
-/** The best-matching profile record, or null when nothing matches confidently. */
-export function bestProfileMatch(results: ProfileHit[], contactName: string): ProfileHit | null {
-  const toks = (s: string) => (s || '').toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim().split(' ').filter((t) => t && !NAME_HONORIFICS.has(t));
+const nameToks = (s: string) => (s || '').toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim().split(' ').filter((t) => t && !NAME_HONORIFICS.has(t));
+
+/**
+ * Do two name tokens refer to the same name?
+ *
+ * Exact, or one is a short form of the other: "Phani"/"Phanindra", "Sid"/"Siddharth",
+ * "Abhi"/"Abhishek". Requires the short form to be at least 4 characters and a true prefix, which
+ * is tight enough that "Ram" does not swallow "Ramesh" (3 chars) and "Anil" never matches "Anita"
+ * (not a prefix). A single letter is treated as an initial and matches the same first letter, so
+ * "R Sharma" lines up with "Rajesh Sharma".
+ */
+function sameNameToken(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (a.length === 1 || b.length === 1) return a[0] === b[0];
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  return short.length >= 4 && long.startsWith(short);
+}
+
+/**
+ * The best-matching profile record, or null when nothing matches confidently.
+ *
+ * `hint` is the company/city filter the search was narrowed by. It is what makes this trustworthy
+ * rather than merely strict: the previous version demanded that one name be a token-subset of the
+ * other, so a real person whose profile reads "Phani Sama · Founder, redBus" was rejected for a
+ * lead named "Phanindra Sama at redBus" — the surname, the company and the city all agreed and it
+ * still said "no confident match". Refusing a correct answer is not caution; it teaches the user
+ * the verifier cannot be relied on, which is worse than not having it.
+ *
+ * So there are now two ways to be confident, and both need real agreement:
+ *   • the names line up token-for-token (allowing short forms and initials), or
+ *   • the surname lines up AND the headline independently confirms the company.
+ * Anything less still returns null — a wrong link is worse than an unverified one.
+ */
+export function bestProfileMatch(results: ProfileHit[], contactName: string, hint?: string): ProfileHit | null {
+  const toks = nameToks;
   const cTokens = toks(contactName);
   if (!cTokens.length) return null;
-  const cSet = new Set(cTokens);
+  // Words from the company/city hint worth corroborating against, minus anything too generic to
+  // mean much on a LinkedIn headline.
+  const STOP = new Set(['the', 'and', 'ltd', 'limited', 'pvt', 'private', 'inc', 'llp', 'co', 'company', 'group', 'india', 'technologies', 'technology', 'solutions', 'services', 'systems', 'labs', 'global']);
+  const hintWords = (hint || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((w) => w.length >= 3 && !STOP.has(w));
+
   let best: ProfileHit | null = null;
   let bestScore = -1;
   for (const r of results || []) {
     if (!r?.url || !/linkedin\.com\/in\//i.test(r.url)) continue;
     const rTokens = toks(r.name || '');
     if (!rTokens.length) continue;
-    const rSet = new Set(rTokens);
-    const cInR = cTokens.every((t) => rSet.has(t));
-    const rInC = rTokens.every((t) => cSet.has(t));
-    if (!cInR && !rInC) continue;
-    const overlap = cTokens.filter((t) => rSet.has(t)).length;
-    const score = overlap + (r.degree === '1st' ? 0.5 : 0); // prefer a 1st-degree connection on ties
+
+    // Every token on the shorter name has a partner on the longer one — the strong signal.
+    const covered = (from: string[], to: string[]) => from.every((t) => to.some((u) => sameNameToken(t, u)));
+    const namesAgree = covered(cTokens, rTokens) || covered(rTokens, cTokens);
+
+    // Surnames are the stable part of an Indian name; given names get shortened constantly.
+    const surnameAgrees = sameNameToken(cTokens[cTokens.length - 1], rTokens[rTokens.length - 1]);
+    // The company can only CORROBORATE a name, never replace one. Without this, "Rakesh Sama,
+    // Engineer at redBus" would be accepted for "Phanindra Sama at redBus" — a colleague with the
+    // same surname, which is precisely the message-a-stranger mistake this function exists to
+    // prevent. Sharing the first three letters is loose enough for transliteration variants
+    // ("Phanindra"/"Phaneendra", "Sanjeev"/"Sanjiv") and tight enough to exclude a different name.
+    const cGiven = cTokens[0], rGiven = rTokens[0];
+    const givenNamesCompatible = sameNameToken(cGiven, rGiven)
+      || (cGiven.length >= 3 && rGiven.length >= 3 && cGiven.slice(0, 3) === rGiven.slice(0, 3));
+    // Does the profile's OWN headline mention the company we were told? That is independent
+    // evidence, not a restatement of the search we just ran.
+    const hay = `${r.headline || ''}`.toLowerCase();
+    const hintHits = hintWords.filter((w) => hay.includes(w)).length;
+
+    if (!namesAgree && !(surnameAgrees && givenNamesCompatible && hintHits > 0)) continue;
+
+    const overlap = cTokens.filter((t) => rTokens.some((u) => sameNameToken(t, u))).length;
+    const score = overlap
+      + (namesAgree ? 1 : 0)          // a full name agreement beats a surname-plus-company match
+      + Math.min(hintHits, 2) * 0.75  // corroborated by their headline
+      + (r.degree === '1st' ? 0.5 : 0); // prefer a 1st-degree connection on ties
     if (score > bestScore) { bestScore = score; best = { ...r, url: r.url.split('?')[0] }; }
   }
   return best;
@@ -3480,7 +3537,9 @@ async function executeToolCore(
       if (pj < 0) continue;
       let results: ProfileHit[] = [];
       try { const a = JSON.parse(raw.slice(pj + 'PROFILE_JSON:'.length).trim()); if (Array.isArray(a)) results = a; } catch { /* malformed → treat as no results */ }
-      hit = bestProfileMatch(results, person);
+      // `org` is the company we were told — passing it lets a short-form given name be
+      // confirmed by the headline instead of thrown away.
+      hit = bestProfileMatch(results, person, org);
       if (hit) break;
     }
 

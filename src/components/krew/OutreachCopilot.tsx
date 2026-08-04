@@ -11,6 +11,7 @@ import {
   type ReplyPlan, type VerifyResult,
 } from '../../lib/verify';
 import { listAttachableDocs, isAttachableFile, type GeneratedDoc } from '../../lib/docgen';
+import { addPlanNote, outreachTargetToday, loadPlan, currentDay, notesForDay } from '../../lib/planStore';
 
 // Assemble what the strategist/verifier needs to know about the USER's side: their pitch and any
 // stated availability, pulled from the Brain (product notes, meeting notes) so the drafted reply is
@@ -225,8 +226,8 @@ function profileUrl(c: OutreachContact): string {
  *  when nothing matches confidently (so we never point a button at a stranger who merely shares a
  *  surname). The matching rule itself lives in krewTools as bestProfileMatch — the copilot's
  *  self-heal, /verifylinks and research_person all go through that one rule. */
-export function bestProfileUrl(results: Array<{ name?: string; url?: string; degree?: string }>, contactName: string): string {
-  return bestProfileMatch(results, contactName)?.url || '';
+export function bestProfileUrl(results: Array<{ name?: string; headline?: string; url?: string; degree?: string }>, contactName: string, hint?: string): string {
+  return bestProfileMatch(results, contactName, hint)?.url || '';
 }
 /**
  * How can THIS person actually be reached?
@@ -804,7 +805,33 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     // — read what they actually said and plan the next move. Auto-runs the scan (if not already done
     // for this person) so the flow never dead-ends at "Replied".
     if (s === 'replied' && !(plan && planIdx === idx)) { scanReplyAndPlan(); }
+    // Tell the action plan what just happened. Fire-and-forget by design (addPlanNote swallows its
+    // own errors and no-ops when no plan is running) so outreach behaves exactly as before for a
+    // user who has never made a plan.
+    const name = c?.name || 'this contact';
+    if (s === 'sent' || s === 'connect') {
+      addPlanNote({ kind: 'outreach', who: name, text: `${s === 'sent' ? 'Messaged' : 'Sent a request to'} ${name}` });
+    } else if (s === 'meeting') {
+      addPlanNote({ kind: 'meeting', who: name, text: `Meeting booked with ${name}` });
+    }
   }
+
+  /**
+   * Today's outreach quota according to the running action plan, and how much of it is done.
+   *
+   * `sent` is counted from the plan's OWN log rather than from contact statuses, because the log is
+   * per-day: a list where 40 people are marked "sent" over three weeks must not read as 40 sent
+   * today. Recomputed whenever a status changes, which is exactly when a note gets written.
+   */
+  const planQuota = useMemo(() => {
+    const plan = loadPlan();
+    if (!plan) return null;
+    const t = outreachTargetToday(plan);
+    if (!t) return null;
+    const day = currentDay(plan);
+    const sent = notesForDay(plan, day).filter((n) => n.kind === 'outreach').length;
+    return { target: t.count, who: t.who, day, sent };
+  }, [contacts]);
 
   /** People we're waiting on — what the "Check all pending" button acts on. */
   const pendingCount = useMemo(
@@ -991,7 +1018,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
             setPlanning(false); await refocusAppToPlan(); return;
           }
           const pj = fp.indexOf('PROFILE_JSON:');
-          if (pj >= 0) { const arr = JSON.parse(fp.slice(pj + 'PROFILE_JSON:'.length).trim()); targetUrl = bestProfileUrl(Array.isArray(arr) ? arr : [], contact.name); }
+          if (pj >= 0) { const arr = JSON.parse(fp.slice(pj + 'PROFILE_JSON:'.length).trim()); targetUrl = bestProfileUrl(Array.isArray(arr) ? arr : [], contact.name, profileFilter(contact)); }
         } catch { /* fall through to the paste box */ }
         if (targetUrl) setContacts((prev) => prev.map((c, i) => (i === idx ? { ...c, linkedin_url: targetUrl } : c)));
       }
@@ -1111,6 +1138,15 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       }
       setPlan(p);
       setDraftReply(p.draftReply || '');
+      // A meeting request is the one reply that must survive this panel being closed. Log it to the
+      // action plan so Krew chat raises it tomorrow even if the copilot is long gone.
+      if (p.intent === 'wants_meeting' && !p.degraded) {
+        addPlanNote({
+          kind: 'meeting',
+          who: contact.name || 'A contact',
+          text: `asked to meet — ${(p.read || '').slice(0, 140)}`,
+        });
+      }
       // Stop the elapsed ticker BEFORE writing the result, or its next repaint (within a second)
       // would overwrite "✓ your draft is ready" with a stale "planning… · 96s".
       stageRef.current = '';
@@ -1330,7 +1366,9 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       const pj = raw.indexOf('PROFILE_JSON:');
       if (pj < 0) { setVerifyProfileNote("Couldn't read the search results. Try again in a moment."); return; }
       const arr = JSON.parse(raw.slice(pj + 'PROFILE_JSON:'.length).trim());
-      const found = bestProfileUrl(Array.isArray(arr) ? arr : [], name);
+      // Same company/city filter the search was narrowed by — it doubles as corroboration when
+      // the profile carries a short form of the name ("Phani" for "Phanindra").
+      const found = bestProfileUrl(Array.isArray(arr) ? arr : [], name, profileFilter(cur));
       const saved = normaliseLinkedInUrl(cur.linkedin_url || '');
       if (!found) {
         setVerifyProfileNote(saved
@@ -1452,7 +1490,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
         try {
           const raw = await invoke<string>('run_browser_persistent', { args: `findprofile "${(contact.name || '').replace(/["\n\r]/g, ' ').trim()}" ::: ${profileFilter(contact)}` });
           const pj = raw.indexOf('PROFILE_JSON:');
-          if (pj >= 0) { const arr = JSON.parse(raw.slice(pj + 'PROFILE_JSON:'.length).trim()); targetUrl = bestProfileUrl(Array.isArray(arr) ? arr : [], contact.name); }
+          if (pj >= 0) { const arr = JSON.parse(raw.slice(pj + 'PROFILE_JSON:'.length).trim()); targetUrl = bestProfileUrl(Array.isArray(arr) ? arr : [], contact.name, profileFilter(contact)); }
         } catch { /* fall through */ }
       }
       if (!targetUrl) { setOpenNote('Their reply is copied — open their chat and paste it (Ctrl+V).'); setOpening(false); return; }
@@ -1639,6 +1677,33 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
         {/* Filter — see everyone at a given stage (who replied, who's been messaged) and jump back to
             any of them to continue. Tapping a chip lists those contacts; tapping a name jumps there. */}
         <div className="px-4 py-2 border-b border-nv-border shrink-0">
+          {/* TODAY'S QUOTA, STRAIGHT FROM THE PLAN. Without this the two halves disagree: the plan
+              says "message 15 today", the copilot shows 60 people, and the user either burns the
+              whole list on day one or stops at an arbitrary number. Only renders when today's plan
+              step is genuinely an outreach instruction with a number in it. */}
+          {planQuota && (
+            <div className="mb-1.5 flex items-center gap-2 rounded-lg border border-accent/30 bg-accent/[0.07] px-2.5 py-1.5">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="text-accent shrink-0">
+                <rect x="2" y="3" width="12" height="11" rx="1.5"/><path d="M2 6h12M6 1v3M10 1v3"/>
+              </svg>
+              <div className="min-w-0 flex-1">
+                <div className="text-[10px] font-semibold text-nv-text truncate">
+                  Plan · day {planQuota.day}: {planQuota.target} {planQuota.who || 'people'}
+                </div>
+                <div className="text-[9px] text-nv-faint">
+                  {planQuota.sent >= planQuota.target
+                    ? `Today's target is done — ${planQuota.sent} reached. Anything more is a bonus.`
+                    : `${planQuota.sent} reached so far · ${planQuota.target - planQuota.sent} to go today.`}
+                </div>
+              </div>
+              <div className="h-1 w-14 rounded-full bg-nv-border overflow-hidden shrink-0">
+                <div
+                  className="h-full bg-accent transition-all"
+                  style={{ width: `${Math.min(100, Math.round((planQuota.sent / Math.max(1, planQuota.target)) * 100))}%` }}
+                />
+              </div>
+            </div>
+          )}
           {/* Where each person came from. Leads need a connection request first; connections can be
               messaged today — so being able to see one group at a time is the difference between a
               workable list and a confusing one. */}

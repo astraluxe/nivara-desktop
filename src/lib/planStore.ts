@@ -9,6 +9,8 @@
 // have found a plan when the text really is one (several numbered days with actions attached), so
 // an ordinary answer that happens to mention "day 2" never sprouts a button.
 
+import { todos } from './todoStore';
+
 export interface PlanStep {
   id: string;
   /** 1-based day number as written in the plan. */
@@ -31,6 +33,27 @@ export interface ActionPlan {
   steps: PlanStep[];
   /** The answer it came from, so the panel can show the reasoning behind a step. */
   source: string;
+  /** The running log — see PlanNote. Optional so plans saved before this existed still load. */
+  notes?: PlanNote[];
+}
+
+/**
+ * Anything that happened while working the plan and is worth remembering tomorrow.
+ *
+ * The plan is where the user looks to find out where things stand, so the copilot writes back into
+ * it: how many people were messaged today, and — the one that actually matters — who asked for a
+ * meeting. That used to live only in the copilot, which is a per-campaign panel the user closes;
+ * a meeting request found on Tuesday was invisible by Thursday.
+ */
+export interface PlanNote {
+  id: string;
+  /** Plan day it belongs to. */
+  day: number;
+  at: number;
+  kind: 'outreach' | 'meeting' | 'reply' | 'note';
+  text: string;
+  /** Who it concerns, when it is about a person. */
+  who?: string;
 }
 
 const KEY = 'nv-action-plan-v1';
@@ -217,6 +240,123 @@ export function todayView(plan: ActionPlan): { today: PlanStep[]; overdue: PlanS
     else if (d < now) overdue.push(s);
   }
   return { today, overdue };
+}
+
+/** Which plan day today is (1-based). 0 if the plan has not started yet. */
+export function currentDay(plan: ActionPlan): number {
+  const start = new Date(plan.startDate + 'T00:00:00');
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.floor((today.getTime() - start.getTime()) / 86400000) + 1;
+}
+
+/**
+ * Record something into the plan's log. Never throws and never blocks the caller — the copilot
+ * calls this in the middle of sending messages, and a failed note must not cost a real send.
+ * Deduped on (kind, who, text) within the same day so a re-scan of the same reply logs once.
+ */
+export function addPlanNote(n: Omit<PlanNote, 'id' | 'at' | 'day'> & { day?: number }): void {
+  try {
+    const plan = loadPlan();
+    if (!plan) return;                       // no plan running — nothing to attach to, that's fine
+    const day = n.day ?? currentDay(plan);
+    const notes = plan.notes || [];
+    const dup = notes.some((x) => x.day === day && x.kind === n.kind && x.who === n.who && x.text === n.text);
+    if (dup) return;
+    plan.notes = [...notes, { id: uid(), at: Date.now(), day, kind: n.kind, text: n.text, who: n.who }].slice(-300);
+    savePlan(plan);
+  } catch { /* the plan log is a convenience; it must never break outreach */ }
+}
+
+export function notesForDay(plan: ActionPlan, day: number): PlanNote[] {
+  return (plan.notes || []).filter((n) => n.day === day).sort((a, b) => b.at - a.at);
+}
+
+/**
+ * Read today's outreach quota out of the plan: "Day 3: message 15 founders on LinkedIn" → 15.
+ *
+ * This is what keeps the two halves honest with each other. The copilot asks the plan how many
+ * people today calls for instead of the user guessing, and the plan can show how many actually
+ * went out. Returns null when today's steps are not about outreach, which is most days.
+ */
+export function outreachTargetToday(plan?: ActionPlan | null): { count: number; step: PlanStep; who: string } | null {
+  const p = plan ?? loadPlan();
+  if (!p) return null;
+  const { today, overdue } = todayView(p);
+  for (const s of [...today, ...overdue]) {
+    const a = s.action;
+    // Must actually be an outreach instruction, not just any sentence with a number in it.
+    if (!/\b(messag|dm|outreach|reach out|connect with|invite|follow[- ]?up|email)\w*\b/i.test(a)) continue;
+    const m = a.match(/\b(\d{1,3})\b/);
+    if (!m) continue;
+    const count = parseInt(m[1], 10);
+    if (!count || count > 500) continue;
+    // Whatever the plan says to target — "15 D2C founders in Pune" → "D2C founders in Pune".
+    const who = a.slice(a.indexOf(m[1]) + m[1].length).replace(/^\s*(people|persons|contacts)?\s*/i, '').trim();
+    return { count, step: s, who: who.replace(/\s+(on|via|through)\s+(linkedin|email|twitter|x)\b.*$/i, '').trim() };
+  }
+  return null;
+}
+
+/**
+ * Put today's steps (and anything still open from earlier) on the To-do list, automatically.
+ *
+ * Called on launch and whenever the plan changes, so the user never has to open the panel to find
+ * out what today is. Safe to call as often as you like: `todos.add` refuses a duplicate sourceKey,
+ * so a task the user already ticked off does not come back, and today's task is not re-added the
+ * second time the app opens. Returns how many were genuinely new — for callers that want to say so.
+ */
+export function syncPlanToTodos(plan: ActionPlan): number {
+  const { today, overdue } = todayView(plan);
+  let added = 0;
+  // Check the sourceKey OURSELVES rather than leaning on todos.add's de-duplication. Two reasons:
+  // add() de-dupes on normalised text and lets a task recur once its completion is over a day old
+  // — right for a repeating chore, wrong for a plan step, which would otherwise re-appear every
+  // morning until the user also ticked it in the plan. And add() returns the EXISTING item when it
+  // de-dupes, so counting its truthy result would report work that was already there as new.
+  const existing = new Set(todos.all().map((t) => t.sourceKey).filter(Boolean) as string[]);
+  for (const s of [...overdue, ...today]) {
+    const sourceKey = `plan:${plan.id}:${s.id}`;
+    if (existing.has(sourceKey)) continue;
+    const made = todos.add(s.action, { dueAt: stepDate(plan, s).getTime(), priority: 'med', sourceKey });
+    if (made) { existing.add(sourceKey); added++; }
+  }
+  return added;
+}
+
+/**
+ * What the agent is told about the plan. Kept short on purpose — this rides on EVERY turn, and a
+ * 30-day plan pasted into the prompt would eat the budget on free keys for no benefit. Today and
+ * overdue are the only steps that can be acted on right now.
+ */
+export function todayPlanNote(): string {
+  const plan = loadPlan();
+  if (!plan) return '';
+  const { today, overdue } = todayView(plan);
+  if (!today.length && !overdue.length) return '';
+  const { done, total } = planProgress(plan);
+  const lines = [
+    `ACTIVE PLAN — "${plan.title}" (${done}/${total} steps done). Today is day ${Math.floor((Date.now() - new Date(plan.startDate + 'T00:00:00').getTime()) / 86400000) + 1}.`,
+  ];
+  if (today.length) lines.push(`Due today: ${today.map((s) => s.action).join(' | ')}`);
+  if (overdue.length) lines.push(`Still open from earlier: ${overdue.slice(0, 4).map((s) => s.action).join(' | ')}`);
+  // What already happened today, so the agent does not tell the user to do something they finished
+  // an hour ago in the copilot — and so a meeting request is never dropped on the floor.
+  const log = notesForDay(plan, currentDay(plan));
+  const meetings = log.filter((n) => n.kind === 'meeting');
+  const outreach = log.filter((n) => n.kind === 'outreach');
+  if (outreach.length) lines.push(`Already done today: ${outreach.slice(0, 3).map((n) => n.text).join(' | ')}`);
+  if (meetings.length) {
+    lines.push(
+      `NEEDS A REPLY — asked for a meeting: ${meetings.slice(0, 3).map((n) => `${n.who || 'someone'} (${n.text})`).join(' | ')}.`,
+      'Bring these up yourself. Do not state a meeting time you were not given — offer to check the calendar or ask the user for their slots.',
+    );
+  }
+  lines.push(
+    'If the user asks what to do today, what is next, or asks for help with the plan, use these — do not invent different steps.',
+    'Help them FINISH the step (draft it, research it, open the browser, make the file), do not just restate it. When a step is done, say so plainly so they can tick it off.',
+  );
+  return lines.join('\n');
 }
 
 export function planProgress(plan: ActionPlan): { done: number; total: number; pct: number } {

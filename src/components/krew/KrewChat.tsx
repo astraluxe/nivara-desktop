@@ -36,7 +36,7 @@ import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill
 import { builtInSkillsBlock } from '../../lib/skillGraph';
 import SkillsPanel from './SkillsPanel';
 import PlanPanel from './PlanPanel';
-import { looksLikeActionPlan, parsePlanSteps, createPlan, savePlan, loadPlan } from '../../lib/planStore';
+import { looksLikeActionPlan, parsePlanSteps, createPlan, savePlan, loadPlan, planProgress, syncPlanToTodos, todayPlanNote, PLAN_EVENT, type ActionPlan } from '../../lib/planStore';
 import LeadSetupCard, { type LeadConfig } from './LeadSetupCard';
 import { loadUserLocation, locationLabel } from '../../lib/userLocation';
 import { identityBlock } from '../../lib/userIdentity';
@@ -3543,6 +3543,21 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
   // The plan panel — same idea as the outreach copilot: a long piece of work needs its own column,
   // not a chat bubble you scroll past. Opens itself if a plan is already running.
   const [planOpen, setPlanOpen] = useState<boolean>(() => !!loadPlan());
+  // Mirrored here (not just inside the panel) because the header button and the agent's own prompt
+  // both need to know today's step while the panel is closed.
+  const [activePlan, setActivePlan] = useState<ActionPlan | null>(() => loadPlan());
+  useEffect(() => {
+    const refresh = () => setActivePlan(loadPlan());
+    window.addEventListener(PLAN_EVENT, refresh);
+    return () => window.removeEventListener(PLAN_EVENT, refresh);
+  }, []);
+  // A 30-day plan is worthless if the user has to open a panel to remember today exists. Once a day
+  // (and on every launch) today's steps land in the To-do list on their own. syncPlanToTodos is
+  // idempotent on sourceKey, so re-running it never duplicates a task the user already ticked off.
+  useEffect(() => {
+    if (!activePlan) return;
+    syncPlanToTodos(activePlan);
+  }, [activePlan?.id, activePlan?.startDate]);
   // When a "/" command needs a file (its value has a <file name> slot), we open a picker instead of
   // dumping raw "<file name>" text — the user clicks a real file from their Brain / attachments.
   // ── To-do panel ───────────────────────────────────────────────────────────
@@ -9072,6 +9087,9 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
       // agent was last working in, and what this user actually chooses when offered options.
       [identityCtx, locationBlock, (agent.key === 'boss' ? '' : userBlock), connectedAppsBlock, mcpSummary,
        workingFileNote(agent.key), decisionStyleNote(),
+       // What today's job is, if a plan is running. Empty string when there is no plan, so this
+       // costs nothing for everyone else.
+       todayPlanNote(),
        skillsBlock, profileBlock, memBlock, tierDirective, dateBlock],
     );
 
@@ -10676,6 +10694,22 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
             <span className="text-[9px] font-mono text-nv-faint bg-nv-surface border border-nv-border rounded px-1.5 py-0.5 shrink-0">
               Switch
             </span>
+          )}
+          {/* THE PLAN, ALWAYS ONE CLICK AWAY. The panel could only be opened from the button under
+              the answer that created it — which scrolls away within a day, taking the plan with it.
+              This only appears once a plan exists, and shows how much is left so it is glanceable
+              without opening. */}
+          {!!activePlan && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setPlanOpen((v) => !v); }}
+              title={`${activePlan.title} — ${planProgress(activePlan).done}/${planProgress(activePlan).total} steps done`}
+              className={`flex items-center gap-1 h-5 px-1.5 rounded transition-fast shrink-0 text-[9px] font-mono border ${planOpen ? 'text-accent bg-accent/10 border-accent/30' : 'text-nv-faint border-nv-border hover:text-nv-muted hover:bg-nv-surface'}`}
+            >
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="3" width="12" height="11" rx="1.5"/><path d="M2 6h12M6 1v3M10 1v3"/><path d="M5.5 9.5l1.5 1.5 3-3"/>
+              </svg>
+              Plan {planProgress(activePlan).done}/{planProgress(activePlan).total}
+            </button>
           )}
           <button
             onClick={(e) => { e.stopPropagation(); setShowSkills((v) => !v); }}

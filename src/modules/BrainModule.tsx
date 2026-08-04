@@ -43,6 +43,12 @@ function escHtml(s: string): string {
 }
 function inlineHtml(s: string): string {
   return escHtml(s)
+    // A table row IS one line, so <br> is the only way to write a multi-line cell — and agents use
+    // it for every bulleted cell they produce. escHtml turns it into visible "&lt;br&gt;", which is
+    // why a perfectly good table arrived in the Brain with the tag printed through every cell and
+    // the bullets run together. Escape everything first (so nothing else can inject markup), then
+    // put back the ONE tag that belongs here.
+    .replace(/&lt;br\s*\/?&gt;/gi, '<br />')
     .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
