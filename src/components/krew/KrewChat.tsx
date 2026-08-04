@@ -8858,8 +8858,46 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     // being pasted into a question about a lead list.
     const skillsBlock = builtInSkillsBlock(text, tools.map((t) => t.name))
                       + getActiveSkillsContext(agent.key, text);
+    // ── HOW EVERY AGENT WORKS, not just the boss ────────────────────────────────────────────
+    //
+    // The plan-decide-act discipline lived entirely in bossPostfix, which is applied only when
+    // agent.key === 'boss'. Every one of the other fifty agents -- the ones you talk to directly in
+    // the office -- was given its persona, its tools, and no working method at all. So a specialist
+    // asked something vague either guessed, or asked for things already sitting in the user's own
+    // calendar, Brain or files. The behaviour the user notices as "it just replies" is mostly this:
+    // no instruction to finish the job, look things up first, or come back with a real deliverable.
+    //
+    // Deliberately NOT given to the boss (it routes rather than executes) and NOT to a delegate
+    // inside a pipeline (pipelineRule already forbids asking, because there is no user there to
+    // answer). This is for an agent talking to a human.
+    const workingRules = agent.key === 'boss' ? '' : [
+      '',
+      '## HOW YOU WORK',
+      'You are not a chat window. You are expected to finish the job, not describe it.',
+      '',
+      '1. LOOK IT UP BEFORE YOU ASK. Never ask for anything already sitting in their own calendar,',
+      '   inbox, connections, Brain or attached files. "Research the person I am meeting tomorrow" is',
+      '   not vague: read the calendar, take the name from the event, research THAT person, come back',
+      '   with the briefing. Asking them to repeat what they already gave you is the most annoying',
+      '   thing you can do. recall_from_brain and recall_memory cost nothing -- use them first.',
+      '2. ASK ONLY WHAT ONLY THEY CAN ANSWER. If the brief genuinely lacks a decision that is theirs',
+      '   -- which audience, which tone, which of two directions -- ask 2-3 short, specific questions',
+      '   in plain text and stop. Never ask more than three, never ask what you could look up, and',
+      '   never ask a vague "could you tell me more". If they already answered it earlier in this',
+      '   conversation, that IS the answer; do not ask twice.',
+      '3. THEN DO THE WHOLE THING. Use your tools rather than talking about using them. If a step',
+      '   fails, say what failed and carry on with the rest -- a partial result with an honest note',
+      '   beats an apology. Never end a turn having only announced what you are about to do.',
+      '4. REMEMBER WHAT MATTERS. When you learn something durable about the user or their business',
+      '   -- their product, their market, a preference, a decision -- save_memory it so the next',
+      '   conversation starts from there instead of asking again.',
+      '5. SAY WHAT IS TRUE. Report what you actually did and actually found. Never claim a tool ran,',
+      '   a file was written or a message was sent unless it was. If you could not verify something,',
+      '   say so plainly rather than presenting a guess as a fact.',
+    ].join('\n');
+
     const systemPrt  = assembleSystemPrompt(
-      [agent.systemPrompt, '\n\n', buildKrewSystemPrompt(tools), bossPostfix,
+      [agent.systemPrompt, '\n\n', buildKrewSystemPrompt(tools), bossPostfix, workingRules,
        searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective],
       [identityCtx, locationBlock, (agent.key === 'boss' ? '' : userBlock), connectedAppsBlock, mcpSummary,
        skillsBlock, profileBlock, memBlock, tierDirective, dateBlock],

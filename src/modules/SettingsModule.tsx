@@ -46,8 +46,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.11.14',
+  version: '1.11.15',
   items: [
+    'Every agent now works like an agent, not a chat window. The rules that make one plan, look things up, finish the job and only ask when it genuinely has to were given ONLY to the boss -- all fifty other agents got their persona, their tools, and no working method at all. That is most of what makes a specialist feel like it just replies. They now all get the same discipline: check your calendar, Brain and files BEFORE asking; ask at most two or three specific questions and only about decisions that are yours to make; never ask twice for something you already answered; then actually do the whole task with the tools rather than describing it; remember what matters for next time; and never claim something ran, sent or saved when it did not.',
+    'Agents working inside a pipeline are still told the opposite -- never stop to ask -- because there is no one there to answer.',
+
     'There is now a Verify button next to each person LinkedIn link in the outreach copilot. It searches LinkedIn for that person by name and company, compares what it finds with what is saved, and tells you plainly: verified, or corrected because the saved link belonged to somebody else. A correction is written back to the lead list it came from as well, so the next campaign built from that list does not repeat the same mistake.',
     'If nothing can be confirmed it says the link is unverified and LEAVES it alone rather than blanking it or guessing. A wrong link you know about is safer than a silent change.',
     'The lead result card has a Re-check every profile button, which opens and confirms every saved profile on the list rather than only filling the blank ones. That whole-list pass already existed but could only be reached by phrasing a chat message in a way that happened to match a pattern, which nobody would guess.',
