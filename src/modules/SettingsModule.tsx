@@ -46,8 +46,10 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.12.1',
+  version: '1.12.2',
   items: [
+    'Fixed <br> showing as literal text inside tables. A table row is a single line, so a line break inside a cell can only be written as <br> -- which is why models use it constantly for multi-line cells. It was being printed rather than rendered, so a good multi-column plan came out with <br> stamped through every cell. It now breaks the line as intended, in tables and in ordinary text.',
+
     'When a specialist agent uses a tool you now get the live panel with the clock, the same one lead searches use. It used to be a single italic line -- "Ava.PM is using web search..." -- that never changed no matter how long the tool ran. On a free key a search can take two minutes, and a line that has not moved for two minutes is indistinguishable from a frozen app. The seconds now tick visibly, and for the tools that are genuinely slow (anything that opens the browser or reads real pages) it says so, instead of leaving you to guess whether it died.',
 
     'Agents remember the file they were working in. Ask the marketing agent for a campaign brief and then say "add a section on pricing", and it now opens that brief and edits it instead of starting a new document. Each agent keeps its own current file, it survives across conversations, and anything older than a month is forgotten rather than wrongly treated as current.',

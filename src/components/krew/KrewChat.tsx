@@ -610,7 +610,30 @@ async function copyToClipboard(text: string): Promise<boolean> {
   } catch { return false; }
 }
 
+/**
+ * Render inline markdown, honouring <br> as a real line break.
+ *
+ * A markdown table cell cannot contain a newline — the row IS a line — so <br> is the only way to
+ * write a multi-line cell, and models use it constantly for exactly that. We rendered it as literal
+ * text, so a perfectly good strategy table came out with "<br>" printed through every cell.
+ *
+ * Splitting here rather than in the table code means it works in ordinary prose too, and the inline
+ * parser below still sees clean text on each side of the break.
+ */
 function renderInline(text: string): React.ReactNode[] {
+  if (/<br\s*\/?>/i.test(text)) {
+    const parts = text.split(/<br\s*\/?>/i);
+    const out: React.ReactNode[] = [];
+    parts.forEach((part, i) => {
+      if (i > 0) out.push(<br key={`br-${i}`} />);
+      out.push(...renderInlineParts(part));
+    });
+    return out;
+  }
+  return renderInlineParts(text);
+}
+
+function renderInlineParts(text: string): React.ReactNode[] {
   const result: React.ReactNode[] = [];
   // Groups: 1=bold, 2=italic, 3=link-text, 4=link-url, 5=bare-url
   const re = /\*\*(.+?)\*\*|\*(.+?)\*|\[([^\]]+)\]\((https?:\/\/[^)]+)\)|(https?:\/\/[^\s"'<>)\]]+)/g;
