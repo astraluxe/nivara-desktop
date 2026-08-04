@@ -46,8 +46,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.13.4',
+  version: '1.13.5',
   items: [
+    'The Skills graph in Brain now shows the newer abilities too. Weighing up options (scoring 2-4 ways forward and marking the best) and Turning a plan into work (writing a day-by-day plan the app can schedule) were both working but missing from the graph, so the picture of what your agents can do was out of date. Both are there now with their connections drawn -- planning pulls in your To-do and calendar, because a plan that cannot be scheduled is just a document.',
+    'Remembering now also says it keeps track of the file each agent was last working in.',
+
     'The SEO agent now works to a real method instead of giving generic tips. It ranks opportunities by what you can actually win rather than by search volume, and says out loud when it drops a big keyword you could never rank for. It groups keywords into PAGES rather than piles -- same intent together, different buyer stage split apart -- and flags when two of your own pages are competing for one term. It looks first at anything you already rank 5th to 20th for, because those are the fastest wins available.',
     'It opens the actual pages in the browser before claiming anything about them, and will say it could not check something rather than assert it. If a site audit comes back broken it investigates instead of writing it up -- a dead domain with a live replacement changes the whole recommendation.',
     'Every audit now ends with ONE thing you can do this week, with the exact wording to copy, derived from what it actually found rather than from a checklist. It re-reads its own draft before delivering and cuts anything it could not verify, any unexplained jargon, and any drama.',
