@@ -424,6 +424,12 @@ const MCP_PRESETS: McpPreset[] = [
   { name: 'Hugging Face',  url: 'https://huggingface.co/mcp',    desc: 'Search AI models, datasets & spaces',        auth: 'optional' },
   { name: 'Context7',      url: 'https://mcp.context7.com/mcp',  desc: 'Up-to-date docs for any code library',       auth: 'optional' },
   { name: 'Higgsfield AI', url: 'https://mcp.higgsfield.ai/mcp', desc: '30+ video models — Veo, Sora, Kling…',        auth: 'token' },
+  // OpenSEO (MIT, github.com/every-app/open-seo) ships an MCP server, which is why it belongs here
+  // rather than in the codebase: connecting it hands every agent real keyword, rank, backlink and
+  // site-audit data with no code of ours to maintain. It is SELF-HOSTED — the URL is wherever the
+  // user runs it — and its data comes from DataForSEO, which is paid and needs the user's own key,
+  // so this is listed honestly as bring-your-own rather than as a free feature.
+  { name: 'OpenSEO',       url: 'http://localhost:3000/mcp',     desc: 'Keyword research, rank tracking, backlinks, site audits — self-host it, then point this at your instance (needs a DataForSEO key)', auth: 'optional' },
 ];
 
 function McpSection() {
