@@ -9275,6 +9275,27 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
               // than on a natural final answer — used to force a wrap-up so the delegate never
               // returns empty after doing real browser/search work.
               let cutOffMidWork = false;
+              /**
+               * Is this only the agent SAYING what it is about to do?
+               *
+               * "This is great data. Let me also search for more specific information about..." is
+               * an announcement, not an answer. When the next step then came back empty -- a quiet
+               * model, a stalled stream -- the loop broke with that sentence as the accumulated
+               * result, and it was delivered to the user as the agent's reply. From their side the
+               * response simply stopped mid-thought.
+               *
+               * The existing guard only caught a COMPLETELY empty accumulation, so one stray
+               * sentence was enough to slip past it. Requires anyToolRan, so there is real work to
+               * summarise, and a generous length ceiling, because a genuine deliverable after tool
+               * use is never three lines long.
+               */
+              const isJustAnAnnouncement = (t: string): boolean => {
+                const v = (t || '').trim();
+                if (!v) return true;
+                if (v.length > 600) return false;
+                return /\b(let me|i'?ll|i will|i am going to|i'?m going to|now i|next,? i|let'?s)\b[^.]{0,80}\b(search|look|check|find|dig|gather|research|verify|scan|pull|browse|fetch|review|compile)/i.test(v)
+                    || /(\.\.\.|:|…)$/.test(v);
+              };
               // Separate from cutOffMidWork (which resets every iteration): true for the rest of
               // this delegation once ANY tool call has actually executed. A stream hiccup or a
               // model that just stops can make the LAST turn's text empty even though real search
@@ -9355,7 +9376,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
                   // model still ended up with nothing accumulated (stream hiccup / empty reply),
                   // treat it the same as running out of budget mid-work: force the wrap-up below
                   // instead of silently falling through to a dead-end message.
-                  if (anyToolRan && !delegateAccum.trim()) cutOffMidWork = true;
+                  if (anyToolRan && isJustAnAnnouncement(delegateAccum)) cutOffMidWork = true;
                   break;
                 }
                 // Parse tool call

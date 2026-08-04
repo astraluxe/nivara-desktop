@@ -46,8 +46,11 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.11.12',
+  version: '1.11.13',
   items: [
+    'Fixed an agent stopping right after saying what it was about to do. If a specialist wrote something like "This is great data. Let me also search for more on that" and the next step came back empty -- a quiet model, a stalled stream -- that sentence was handed over as its finished answer, so the reply appeared to stop mid-thought. The app now recognises an announcement as not being an answer and makes the agent write up what it actually found before returning.',
+    'This only triggers when real tool work has already run, and only when the visible text is short, so a genuine short answer is never thrown away and re-asked.',
+
     'You can now improve a single outreach message right in the copilot. Under the message there is an Improve with AI box: type what you want changed -- "mention their Series A", "ask for 15 minutes", "warmer opening" -- and press Rewrite, or use the Shorter / More personal / Less salesy chips for the three things people always ask for. It rewrites just that one person message and saves it immediately.',
     'There is an Undo next to it, so a rewrite you do not like is one click away from being back.',
     'This was the gap behind "why can I not just fix this one message": the rewriting was already built and used for reply drafts, but the message you were actually about to send had no button anywhere. Fixing one message meant going back to Krew chat and running /refine across every untouched contact.',
