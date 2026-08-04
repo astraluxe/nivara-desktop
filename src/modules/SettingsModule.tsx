@@ -46,8 +46,10 @@ function saveSettings(s: NvSettings) {
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.12.0',
+  version: '1.12.1',
   items: [
+    'When a specialist agent uses a tool you now get the live panel with the clock, the same one lead searches use. It used to be a single italic line -- "Ava.PM is using web search..." -- that never changed no matter how long the tool ran. On a free key a search can take two minutes, and a line that has not moved for two minutes is indistinguishable from a frozen app. The seconds now tick visibly, and for the tools that are genuinely slow (anything that opens the browser or reads real pages) it says so, instead of leaving you to guess whether it died.',
+
     'Agents remember the file they were working in. Ask the marketing agent for a campaign brief and then say "add a section on pricing", and it now opens that brief and edits it instead of starting a new document. Each agent keeps its own current file, it survives across conversations, and anything older than a month is forgotten rather than wrongly treated as current.',
     'When an agent gives you options, they now come scored: how much work it is (an hour through to weeks), how much it moves the needle, and how sure the agent is that it works for YOU specifically. One is marked Recommended, but only when it genuinely comes out ahead -- a badge on a three-way tie would mean nothing. A low confidence is shown honestly rather than hidden.',
     'It learns which kind of option you actually take. Every choice records what you picked AND what you turned down, and future recommendations shift towards how you really decide -- so someone who consistently takes the quick win stops being pushed towards the big rebuild, and someone who takes the ambitious option stops being offered only safe ones. It needs a few decisions before it claims a pattern, and it says plainly that your history is a hint rather than an instruction.',

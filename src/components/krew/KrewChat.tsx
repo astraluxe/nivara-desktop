@@ -1417,6 +1417,13 @@ function StatusBlock({ startedAt, headline, detail, tone }: {
 
 /** Build the ```status fence a run writes. `startedAt` is the run's own t0, so the clock is the
  *  true elapsed time of the whole run rather than of the last repaint. */
+// Tools that genuinely take a while — they open a browser, read real pages, or work through a
+// list one item at a time. Naming them lets the status panel say WHY it is slow instead of
+// leaving the user to guess whether it has hung.
+const SLOW_TOOLS = new Set(['web_search','browser_navigate','browser_open','browser_search','research_person',
+  'research_companies','enrich_lead_list','verify_lead_list','enrich_social_profiles','scrape_structured',
+  'linkedin_scan_connections','read_linkedin_messages','youtube_transcript','fetch_open_data','browser_snapshot']);
+
 function statusBlock(startedAt: number, headline: string, detail?: string, tone: 'work' | 'halt' | 'wait' = 'work'): string {
   return ['```status ' + startedAt + ' ' + tone, headline, ...(detail ? [detail] : []), '```'].join('\n');
 }
@@ -9577,7 +9584,21 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
                 const toolDisplayName = dTool.replace(/_/g, ' ');
                 const agentDisplayName = agentHandle(targetAgent);
                 setAgentStep(`${agentDisplayName} · ${toolDisplayName}…`);
-                updateLastMsg((delegateAccum || '') + `\n\n*${agentDisplayName} is using ${toolDisplayName}…*`);
+                // A LIVE PANEL, NOT A FROZEN LINE.
+                //
+                // This was one italic sentence — "Ava.PM is using web search…" — with no clock and
+                // no change of any kind while the tool ran. On a free key a search can take two
+                // minutes, and a line that has not moved for two minutes is indistinguishable from
+                // a hung app; there is no way to tell working from dead. statusBlock renders the
+                // panel that counts up on its own (the same one lead searches use), so the seconds
+                // visibly tick and the user can see it is alive. It is replaced by the real text
+                // the moment any arrives.
+                const dToolT0 = Date.now();
+                updateLastMsg((delegateAccum ? delegateAccum + '\n\n' : '')
+                  + statusBlock(dToolT0, `${agentDisplayName} is using ${toolDisplayName}`,
+                      SLOW_TOOLS.has(dTool)
+                        ? 'This one opens the browser and reads pages, so it can take a minute or two on a free key.'
+                        : 'Waiting for it to come back.'));
                 anyToolRan = true;
                 let dResult = '';
                 try {
