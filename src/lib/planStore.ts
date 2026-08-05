@@ -250,23 +250,49 @@ export function todayView(plan: ActionPlan): { today: PlanStep[]; overdue: PlanS
  * not a replace. Steps already present on the same day with the same action are left exactly as
  * they are, including their done state; genuinely new ones are added. Returns how many were added.
  */
-export function mergeIntoPlan(plan: ActionPlan, text: string): number {
+export function mergeIntoPlan(plan: ActionPlan, text: string): { added: number; updated: number; kept: number } {
   const incoming = parsePlanSteps(text);
-  if (!incoming.length) return 0;
-  const key = (day: number, action: string) => `${day}|${action.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 60)}`;
-  const have = new Set(plan.steps.map((s) => key(s.day, s.action)));
-  let added = 0;
+  if (!incoming.length) return { added: 0, updated: 0, kept: plan.steps.length };
+  const norm = (a: string) => a.toLowerCase().replace(/\s+/g, ' ').trim();
+  let added = 0, updated = 0;
+  // Tracked separately from `updated`: filling in a missing "done when" is worth PERSISTING but is
+  // not a change the user needs to be told about, and it must not be reported as a reworded step.
+  let enriched = false;
+
   for (const s of incoming) {
-    if (have.has(key(s.day, s.action))) continue;
-    have.add(key(s.day, s.action));
+    const sameDay = plan.steps.filter((x) => x.day === s.day);
+    const identical = sameDay.find((x) => norm(x.action) === norm(s.action));
+    if (identical) {
+      // Unchanged. Leave it completely alone — including its tick and the date it was ticked.
+      // A "done when" the new plan spells out more clearly is still worth taking.
+      if (s.doneWhen && !identical.doneWhen) { identical.doneWhen = s.doneWhen; enriched = true; }
+      continue;
+    }
+    // A REWORDED STEP IS A REVISION, NOT A NEW ONE. If that day has an open step and the new plan
+    // gives exactly one action for the same day, the user asked for a refinement — so rewrite the
+    // step in place rather than leaving the old wording sitting next to the new one, which is how
+    // a "refined" plan ends up with two contradictory instructions for the same morning.
+    const openSameDay = sameDay.filter((x) => !x.done);
+    const oneEach = openSameDay.length === 1 && incoming.filter((x) => x.day === s.day).length === 1;
+    if (oneEach) {
+      openSameDay[0].action = s.action;
+      if (s.doneWhen) openSameDay[0].doneWhen = s.doneWhen;
+      if (s.week != null) openSameDay[0].week = s.week;
+      updated++;
+      continue;
+    }
     plan.steps.push({ ...s, id: uid(), done: false });
     added++;
   }
-  if (added) {
+
+  // Steps the new plan dropped are KEPT when they are already done (that work really happened) and
+  // when they are open (silently deleting someone's plan is not a refinement — they can tick or
+  // drop it themselves). Nothing is ever removed here.
+  if (added || updated || enriched) {
     plan.steps.sort((a, b) => a.day - b.day);
     savePlan(plan);
   }
-  return added;
+  return { added, updated, kept: plan.steps.length };
 }
 
 /** Which plan day today is (1-based). 0 if the plan has not started yet. */

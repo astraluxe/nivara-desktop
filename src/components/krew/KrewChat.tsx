@@ -3313,6 +3313,30 @@ function CopyBtn({ text }: { text: string }) {
  * no buttons at all. A 30-day plan from the research agent sat there with no way to start it,
  * because of where the text happened to be rendered.
  */
+/**
+ * What to say to get the REST of a cut-off answer.
+ *
+ * "continue" on its own is a weak instruction: models answer it with a fresh preamble, a summary of
+ * what they just wrote, or by restarting the section — all of which arrive as duplicate text that
+ * then has to be trimmed away, wasting the very tokens the continuation was for. Quoting the exact
+ * tail leaves no room for interpretation, and naming the table case matters because a half-written
+ * row is the most common place a long answer stops.
+ */
+function continueInstruction(sofar: string): string {
+  const tail = (sofar || '').trimEnd().slice(-160);
+  const lastLine = (sofar || '').trimEnd().split('\n').pop() || '';
+  const inTable = lastLine.trim().startsWith('|');
+  return [
+    'Your last message was cut off mid-way. Carry straight on from exactly where it stopped.',
+    `It ended with: "…${tail}"`,
+    'Do NOT repeat anything you already wrote, do not summarise it, do not start again, and do not open with a preamble like "continuing" — write only the missing text, beginning with the very next character.',
+    inTable
+      ? 'You stopped in the middle of a table row: finish that row (including the closing |) and then carry on with the rest of the table and everything after it.'
+      : 'Keep the same formatting and heading structure you were already using.',
+    'Complete the whole thing, including every remaining section.',
+  ].join(' ');
+}
+
 function answerish(msg: DisplayMsg): boolean {
   return (msg.role === 'assistant' || msg.role === 'delegation') && !msg.streaming && !!msg.content.trim();
 }
@@ -9242,7 +9266,20 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
         return !/[.!?:;)\]}"'`’”…|]$/.test(s);
       };
       let autoContinues = 0;
-      const MAX_AUTO_CONTINUE = 4;   // bounded: a model that cannot finish must not loop forever
+      /**
+       * How many times we will ask for the rest.
+       *
+       * This used to be 4, which quietly imposed a length limit on the answer: a free-tier model
+       * emitting ~800 tokens a turn cannot finish a 4,000-word go-to-market strategy in five
+       * pieces, so the last table row was left half-written and the user got a plan that stopped at
+       * Day 12. The ceiling is high now because the REAL protection is progress, not a count — the
+       * loop below stops the moment a continuation stops adding anything. A model that is genuinely
+       * stuck exits after one wasted round-trip; a model that is steadily working through a long
+       * document is allowed to finish it.
+       */
+      const MAX_AUTO_CONTINUE = 16;
+      /** Length of the answer at the last continuation, to notice when we stop making progress. */
+      let lastCarriedLen = -1;
       /**
        * Drop the overlap when a continuation restarts from partway back.
        *
@@ -9335,7 +9372,10 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
         // Auto-continue if the model hit its output token limit mid-response.
         // The provider's flag OR the shape of the text — see looksCutOff. Bounded, so a model that
         // genuinely cannot finish stops rather than looping.
-        if ((wasTruncated || (looksCutOff(fullResponse) && autoContinues < MAX_AUTO_CONTINUE))
+        // The count now gates the PROVIDER FLAG too. It used to apply only to the shape check, so
+        // a provider that kept reporting "length" could loop without limit while a free model that
+        // reports nothing was cut off at four.
+        if ((wasTruncated || looksCutOff(fullResponse)) && autoContinues < MAX_AUTO_CONTINUE
             && !fullResponse.includes('<tool_call>') && !fullResponse.includes('<tool_code>')) {
           autoContinues++;
           // Carry the visible prose forward. Without this the next iteration paints over it and
@@ -9346,9 +9386,20 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
             .replace(/<tool_code>[\s\S]*/g, '')
             .replace(/CHOICES_BLOCK:[\s\S]*/g, '')
             .trim());
+          // STOP WHEN IT STOPS HELPING. A model that answers "continue" with an apology, or repeats
+          // what it already said (trimOverlap eats it), adds nothing — and asking sixteen times
+          // would burn the user's quota to produce the same truncated answer. Progress is what
+          // earns another round, which is what makes a high ceiling safe.
+          if (carried.length <= lastCarriedLen + 20) {
+            updateLastMsg(carried);
+            break;
+          }
+          lastCarriedLen = carried.length;
           updateLastMsg(carried);
           history.push({ role: 'assistant', content: fullResponse });
-          history.push({ role: 'user', content: 'continue' });
+          // Be specific about what "continue" means. A bare "continue" invites a summary or a
+          // fresh preamble; naming the exact cut point gets the missing text and nothing else.
+          history.push({ role: 'user', content: continueInstruction(fullResponse) });
           // Don't break — loop naturally continues to fetch the rest
           continue;
         }
@@ -9637,34 +9688,50 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
                 // Same judgement as the main loop: the provider's flag is not always sent, so a
                 // delegate whose stream simply stopped mid-row must still be asked to continue.
                 // This is the path a long strategy answer actually comes back on.
-                if ((delegateTruncated || (looksCutOff(delegateRaw) && dAutoContinues < 4))
+                if ((delegateTruncated || looksCutOff(delegateRaw)) && dAutoContinues < 16
                     && !delegateRaw.includes('<tool_call>') && !delegateRaw.includes('<tool_code>')) {
                   dAutoContinues++;
+                  const accumBefore = delegateAccum.length;
                   let proseSoFar = delegateRaw.replace(/<tool_call>[\s\S]*/g, '').replace(/<tool_code>[\s\S]*/g, '').replace(/CHOICES_BLOCK:[\s\S]*/g, '').trim();
                   // If we're inside an email/outreach draft, the cut is in prose, NOT a table —
                   // treating it as a table-continuation is what garbled the emails ("You10-minute…").
                   const inDraft = /```(?:email|draft|message|outreach)/i.test(proseSoFar);
+                  // Count the columns from the ACTUAL header, and use it to decide whether this is
+                  // even a LEAD table. It matters: the rows-only continuation below is written for
+                  // a lead list, and applying it to a strategy answer told the model to emit
+                  // nothing but 6-cell rows — which both mangles a 4-column "Day | Action | Owner |
+                  // Deliverable" table and throws away every prose section that was still to come.
+                  // A 30-day plan cut off at Day 12 could never recover from that instruction.
+                  const hdr = proseSoFar.split('\n').find((l) => /\|/.test(l) && /name|company|contact/i.test(l));
+                  const isLeadTable = !!hdr;
                   // If cut off mid-table, DROP the last (incomplete) row so we never keep a
                   // half-written cell like "…king-stubb-&-", and ask for clean continuation rows.
-                  const midTable = !inDraft && /\|[^\n]*\|/.test(proseSoFar);
+                  const midTable = !inDraft && isLeadTable && /\|[^\n]*\|/.test(proseSoFar);
                   if (midTable) {
                     const ls = proseSoFar.split('\n');
                     if (ls.length && !ls[ls.length - 1].trim().endsWith('|')) ls.pop();
                     proseSoFar = ls.join('\n');
                   }
-                  // Count the columns from the ACTUAL header so the continuation matches
-                  // (the table may have 6 columns, or 7 when an Email column was added) —
-                  // hardcoding 6 made the model emit 6-cell rows into a 7-col table → shifted
-                  // cells (emails landing in the LinkedIn column).
-                  const hdr = proseSoFar.split('\n').find((l) => /\|/.test(l) && /name|company|contact/i.test(l));
+                  // Columns come from the ACTUAL header so the continuation matches (a lead table
+                  // may have 6, or 7 once an Email column was added) — hardcoding 6 made the model
+                  // emit 6-cell rows into a 7-col table, shifting emails into the LinkedIn column.
                   const colN = hdr ? hdr.split('|').filter((c) => c.trim()).length : 6;
                   delegateMsgsHist.push({ role: 'assistant', content: delegateRaw });
                   delegateMsgsHist.push({ role: 'user', content: midTable
                     ? `Continue the table. Output ONLY the remaining rows as complete pipe rows with EXACTLY ${colN} cells each (matching the header columns), one row per line, every cell filled. Keep each link COMPLETE on one line and put each value in its OWN column (a LinkedIn URL only in the LinkedIn column, an email only in the Email column). Do NOT repeat earlier rows, do NOT output a header or separator row, and write NO text before or after the rows.`
                     : inDraft
                     ? 'Continue EXACTLY where you left off and finish the message — do NOT restart it or repeat earlier text. Stay inside the same ```email block and close it with ``` when the message is complete. Then write any remaining messages, each in its own ```email fence.'
-                    : 'continue' });
+                    : continueInstruction(proseSoFar) });
                   if (proseSoFar) delegateAccum = joinAccum(delegateAccum, proseSoFar);
+                  // Same progress rule as the main loop: another round has to be earned by adding
+                  // something. This is what makes a ceiling of 16 safe rather than 16 wasted calls.
+                  if (delegateAccum.length <= accumBefore + 20) { cutOffMidWork = false; break; }
+                  // A continuation is not a WORK step, so it must not eat the delegate's step
+                  // budget. DELEGATE_MAX exists to bound tool use; letting "finish your sentence"
+                  // consume it meant a long answer ran out of steps before it ran out of text —
+                  // which is the actual reason a 30-day plan stopped at Day 12. Safe because
+                  // dAutoContinues (16) and the progress check above both still bound this loop.
+                  ds--;
                   continue;
                 }
                 // Extract prose before any tool call tag
@@ -11294,14 +11361,18 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
                         <>
                           <button
                             onClick={() => {
-                              const n = mergeIntoPlan(loadPlan()!, msg.content);
+                              const r = mergeIntoPlan(loadPlan()!, msg.content);
                               setPlanOpen(true);
-                              addMsgHere({ role: 'assistant', content: n
-                                ? `Added ${n} new step${n === 1 ? '' : 's'} to **${activePlan.title}** — anything you had already ticked off stayed ticked.`
-                                : `Nothing new in there — every step is already in **${activePlan.title}**.` });
+                              const bits = [
+                                r.updated ? `reworded ${r.updated} step${r.updated === 1 ? '' : 's'}` : '',
+                                r.added ? `added ${r.added} new one${r.added === 1 ? '' : 's'}` : '',
+                              ].filter(Boolean);
+                              addMsgHere({ role: 'assistant', content: bits.length
+                                ? `Refined **${activePlan.title}** — ${bits.join(' and ')}. Everything you'd already ticked off stayed ticked, and nothing was deleted.`
+                                : `Nothing to change — **${activePlan.title}** already says all of that.` });
                             }}
                             className="text-[10.5px] px-2.5 py-1.5 rounded-lg bg-accent text-white font-medium hover:bg-accent-dim transition-fast"
-                          >Add to plan →</button>
+                          >Refine plan →</button>
                           <button
                             onClick={() => {
                               if (!confirm(`Replace "${activePlan.title}"? Everything you've ticked off in it is lost.`)) return;
