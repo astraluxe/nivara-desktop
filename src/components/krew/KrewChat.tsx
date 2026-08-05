@@ -9911,8 +9911,36 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
               if (cutOffMidWork && !stopRef.current) {
                 setAgentStep(`${agentHandle(targetAgent)} · finishing up…`);
                 delegateMsgsHist.push({ role: 'user', content: 'STOP using tools now. From everything you have already found this run, output the COMPLETE final result to the user right now — the full table (and any drafts requested), formatted cleanly. Do NOT call any more tools, do NOT say the data was slow, and do NOT return an empty reply. If some rows are thin, include what you have and note it in one line.' });
+                const strip = (t: string) => (t || '')
+                  .replace(/<tool_call>[\s\S]*/g, '').replace(/<tool_code>[\s\S]*/g, '')
+                  .replace(/CHOICES_BLOCK:[\s\S]*/g, '').trim();
                 const wrap = await streamTurnWithRetry(delegateMsgsHist, delegateSystem, () => {}).catch(() => ({ text: '', truncated: false }));
-                const wrapClean = (wrap.text || '').replace(/<tool_call>[\s\S]*/g, '').replace(/<tool_code>[\s\S]*/g, '').replace(/CHOICES_BLOCK:[\s\S]*/g, '').trim();
+                let wrapClean = strip(wrap.text);
+                let wrapRaw = wrap.text || '';
+                let wrapTrunc = wrap.truncated;
+
+                // THE WRAP-UP CAN BE CUT OFF TOO -- and this was the one place that never checked.
+                // It is asked for the COMPLETE final result, which on a long brief is the biggest
+                // single response of the whole run, so it is the MOST likely to hit the output
+                // limit, not the least. Being a single un-continued call, it stopped mid-sentence
+                // and the boss then wrote its summary over the top, which is exactly the "it
+                // stopped half way and then arjun.boss answered" the user keeps hitting.
+                // Same rules as the main loop: keep asking while it keeps adding, stop the moment
+                // it does not.
+                for (let w = 0; w < 12 && !stopRef.current && (wrapTrunc || looksCutOff(wrapClean)); w++) {
+                  const before = wrapClean.length;
+                  setAgentStep(`${agentHandle(targetAgent)} · finishing up (${w + 2})…`);
+                  delegateMsgsHist.push({ role: 'assistant', content: wrapRaw });
+                  delegateMsgsHist.push({ role: 'user', content: continueInstruction(wrapClean) });
+                  const more = await streamTurnWithRetry(delegateMsgsHist, delegateSystem, () => {})
+                    .catch(() => ({ text: '', truncated: false }));
+                  const moreClean = strip(more.text);
+                  if (!moreClean) break;
+                  wrapClean = joinCarried(wrapClean, trimOverlap(wrapClean, moreClean));
+                  wrapRaw = more.text || '';
+                  wrapTrunc = more.truncated;
+                  if (wrapClean.length <= before + 20) break;   // no progress -> stop asking
+                }
                 if (wrapClean) delegateAccum = delegateAccum ? delegateAccum + '\n\n' + wrapClean : wrapClean;
               }
               const { cleanContent: afterPropExtract, proposal: delegateProposal } = extractProposal(delegateAccum || delegateFinalResp);
@@ -10010,6 +10038,21 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
 - If they ask to ACT on these (draft/write messages, outreach, emails, pick some) → delegate to cold_outreach/email_marketer WITH the list above.
 - If they ask for the list AGAIN, for MORE, a different city/sector, or say it was blank/didn't show → delegate to research_agent again (re-run it; never refuse with "I already gave it" and never reply with nothing).
 - ALWAYS respond with something visible. Never send an empty reply.]`;
+              } else if (finalDelegateOut.trim().length > 700) {
+                // A LONG ANSWER IS THE DELIVERABLE. DON'T LET THE BOSS REWRITE IT.
+                //
+                // Only lead tables got this protection. Everything else -- a 30-day plan, a GTM
+                // strategy, a research brief -- was handed back in full, so the boss produced its
+                // own shorter version on top of work the user could already see. That reads as the
+                // long answer having been cut off and replaced, which is precisely the complaint:
+                // "it stopped mid-way and then arjun.boss came and wrote".
+                //
+                // The full text is already on screen in the delegation bubble. The boss only needs
+                // to know it landed, so it can route the NEXT message.
+                toolResult = `[${agentHandle(targetAgent)} produced the full answer for THIS request and it is ALREADY displayed to the user above, in full.
+Do NOT repeat it, summarise it, shorten it, re-format it or "improve" it — the user can see it. Rewriting it would replace their deliverable with a worse copy.
+For your reply RIGHT NOW: at most ONE short sentence pointing at what they can do next, or say nothing at all.
+Everything you need for follow-ups is in that answer above; read it there rather than asking them to repeat themselves.]`;
               } else {
                 toolResult = finalDelegateOut;
               }
