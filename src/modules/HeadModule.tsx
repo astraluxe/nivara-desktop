@@ -224,6 +224,8 @@ export default function HeadModule() {
   const [stats, setStats] = useState<PlatformStats | null>(null);
   /** The pilot grants surface — same table the website admin's Pilot tab writes to. */
   const [showPilot, setShowPilot] = useState(false);
+  /** The stats block is collapsible so the panel below it is actually reachable. */
+  const [showStats, setShowStats] = useState(true);
   const [userQuery, setUserQuery] = useState('');
 
   async function load() {
@@ -276,9 +278,29 @@ export default function HeadModule() {
         </button>
       </div>
 
-      {/* Platform overview */}
+      {/* Platform overview — COLLAPSIBLE, and closed automatically while Pilot is open.
+          The stats block is tall (users, revenue, top users, nearing-limit lists), and it sits
+          ABOVE the tab row, so everything below it was pushed off the bottom of the window and
+          could not be read or scrolled to. A dashboard whose lower half is unreachable is not a
+          dashboard. */}
       {stats && (
-        <div className="px-4 py-3 border-b border-nv-border shrink-0 bg-nv-surface/40 space-y-3">
+        <div className="px-4 py-2 border-b border-nv-border shrink-0 flex items-center gap-2">
+          <button
+            onClick={() => setShowStats((v) => !v)}
+            className="flex items-center gap-1.5 text-[10px] font-mono text-nv-faint hover:text-nv-text transition-fast"
+          >
+            <span className={`transition-transform ${showStats ? 'rotate-90' : ''}`}>&#9656;</span>
+            Platform overview
+          </button>
+          {!showStats && (
+            <span className="text-[9.5px] font-mono text-nv-faint truncate">
+              {stats.userCount} users &middot; {stats.activeThisMonth} active this month
+            </span>
+          )}
+        </div>
+      )}
+      {stats && showStats && (
+        <div className="px-4 py-3 border-b border-nv-border shrink-0 bg-nv-surface/40 space-y-3 max-h-[45vh] overflow-y-auto">
           <div className="flex flex-wrap gap-2">
             <Stat label="Users"          value={String(stats.userCount)}              hint={stats.newThisWeek > 0 ? `+${stats.newThisWeek} this week` : 'no signups this week'} />
             <Stat label="Active"         value={String(stats.activeThisMonth)}    hint="used AI this month" />
@@ -378,7 +400,7 @@ export default function HeadModule() {
             rather than another faint grey word, because sitting in a row of filters at 10px it read
             as a label and was missed entirely. */}
         <button
-          onClick={() => setShowPilot((v) => !v)}
+          onClick={() => setShowPilot((v) => { const next = !v; if (next) setShowStats(false); return next; })}
           title="Grant a paid plan to an email — works even before they have an account"
           className={`ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10.5px] font-medium border transition-fast ${
             showPilot
