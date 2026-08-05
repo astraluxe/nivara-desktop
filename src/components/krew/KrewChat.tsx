@@ -10668,7 +10668,17 @@ Everything you need for follow-ups is in that answer above; read it there rather
     // The turn DID do something visible (ran a tool, opened the browser, produced a table/deck/cards)
     // but just didn't add a closing sentence. Do NOT re-answer that with a tool-free completion — it
     // would wrongly reply as if nothing happened (e.g. "I can't open browsers"). Leave it be.
-    if (after.some((m) => m.role === 'tool_result' || m.role === 'proposal' || m.role === 'choices' || m.role === 'deck_result' || m.role === 'deck_setup' || m.role === 'social_schedule' || m.role === 'lead_setup' || m.role === 'lead_result')) return;
+    // A CARD IS A DELIVERABLE. A TOOL RESULT IS NOT.
+    //
+    // This used to bail on ANY tool_result, which is how a turn could run recall_from_brain, find
+    // things, and then die in complete silence: the search produced a tool_result bubble, the
+    // recovery treated that as "output was produced", and the user was left with working notes and
+    // no answer. A card (a table, a deck, choices, a proposal) really is the deliverable and must
+    // not be re-answered. A bare tool result is the agent's own scratch work.
+    if (after.some((m) => m.role === 'proposal' || m.role === 'choices' || m.role === 'deck_result' || m.role === 'deck_setup' || m.role === 'social_schedule' || m.role === 'lead_setup' || m.role === 'lead_result')) return;
+    // Did it get as far as running tools? Then the retry has to be told so, or it answers as if
+    // nothing happened ("I can't access your Brain") having just read the user's Brain.
+    const didWork = after.some((m) => m.role === 'tool_result' || m.role === 'tool_call');
     // From here: a genuinely EMPTY turn — the model produced no text and ran nothing. This is the
     // "free model got lost in the tools and went silent" case a plain retry fixes.
     const userReq = (msgs[lastUserIdx]?.content || '')
@@ -10685,7 +10695,11 @@ Everything you need for follow-ups is in that answer above; read it there rather
     try {
       setAgentStep('Writing the answer…');
       addMsg({ role: 'assistant', content: '', streaming: true });
-      const directSys = "You are a knowledgeable expert assistant. Write a complete, well-structured answer to the user's request below, following any format they asked for. Answer directly — do NOT use any tools, do NOT delegate, do NOT output tool calls, JSON, or <tool_call> tags. Just write the full answer as text.";
+      const directSys = didWork
+        // It already searched and read things this turn; it simply never wrote the answer. Say so,
+        // or it will apologise for being unable to do what it just did.
+        ? "You are a knowledgeable expert assistant. You ALREADY looked things up for this request in the user's own notes and tools during this turn — you simply never wrote the final answer. Write it now, in full, using what you found and what you know. Do NOT say you are unable to access their files or tools, do NOT apologise, and do NOT ask to start over. Do NOT use any tools, do NOT delegate, do NOT output tool calls, JSON, or <tool_call> tags — just write the complete answer as text, following any format they asked for."
+        : "You are a knowledgeable expert assistant. Write a complete, well-structured answer to the user's request below, following any format they asked for. Answer directly — do NOT use any tools, do NOT delegate, do NOT output tool calls, JSON, or <tool_call> tags. Just write the full answer as text.";
       const { text } = await streamTurnWithRetry(
         [{ role: 'user', content: userReq }],
         directSys,
