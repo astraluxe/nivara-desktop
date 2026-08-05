@@ -8771,7 +8771,17 @@ _${plan.advice}_` : ''}`;
       localStorage.setItem(monthKey, String(used + 1));
     }
     // Survival tier — sheds non-essential work as the budget runs low.
-    const tierDirective = tokenTierDirective(computeTokenTier(monthlyUsed, tokenCap));
+    //
+    // ONLY WHEN IT IS OUR BUDGET BEING SPENT. This was applied unconditionally, so a user on their
+    // own NVIDIA key or a local model — spending none of our tokens — could still be told "do the
+    // minimum needed, use at most ONE tool call, do not start any large or multi-step job", purely
+    // because a hosted counter they are not touching sat near its cap. That is the truncation
+    // itself, injected as an instruction: the model was being ordered to cut the work short and
+    // then blamed for stopping half way. On BYOK and local there is no budget to survive, so there
+    // is nothing to shed.
+    const tierDirective = mode === 'nivara'
+      ? tokenTierDirective(computeTokenTier(monthlyUsed, tokenCap))
+      : '';
     // Tell every agent what TODAY is, so searches use the current year (it was defaulting to 2024).
     const _now = new Date();
     const _year = _now.getFullYear();
