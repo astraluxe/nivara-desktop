@@ -5,28 +5,33 @@ import { listen } from "@tauri-apps/api/event";
 const DNS_MODES = [
   {
     id:    "swift",
+    tag:   { text: "Opens everything", tone: "good" },
     label: "Swift",
-    desc:  "Best all-round pick. Fastest response times with zero browsing logs — your ISP cannot see what sites you visit.",
+    desc:  "Best all-round pick. Fastest response times with zero browsing logs — your ISP cannot see what sites you visit. Does not filter anything, so nothing is blocked.",
   },
   {
     id:    "block",
+    tag:   { text: "Opens everything · blocks ads", tone: "good" },
     label: "Block",
-    desc:  "Heaviest ad and tracker blocking available. Strips ads from every app and browser on your device, not just Chrome.",
+    desc:  "Blocks ads and trackers across every app and browser, not just Chrome — and nothing else. It filters ad and tracker domains only: it does not block sites by category, and does not use threat or content lists, so the pages you actually want stay reachable. This is the one to use if you want ads gone without anything being kept from you.",
   },
   {
     id:    "guard",
+    tag:   { text: "Can block some sites", tone: "warn" },
     label: "Guard",
-    desc:  "Built to stop threats. Phishing links, malware domains, and spyware are blocked before they ever reach your device.",
+    desc:  "Built to stop threats. Phishing links, malware domains, and spyware are blocked before they ever reach your device. Threat lists carry false positives, so a legitimate or newly registered site is sometimes blocked too — switch to Swift or Core to check.",
   },
   {
     id:    "core",
+    tag:   { text: "Opens everything", tone: "good" },
     label: "Core",
-    desc:  "Rock-solid reliability. If you just want fast, stable internet with no filtering or extras, this is the one.",
+    desc:  "Rock-solid reliability. If you just want fast, stable internet with NO filtering — nothing blocked, every site reachable — this is the one.",
   },
   {
     id:    "family",
+    tag:   { text: "Blocks the most sites", tone: "warn" },
     label: "Family",
-    desc:  "Filters out adult content and unsafe sites automatically. Good choice for shared devices or kids on the same network.",
+    desc:  "Filters out adult content and unsafe sites automatically. Good choice for shared devices or kids on the same network — but it is the strictest filter here, so expect it to block sites you did not intend.",
   },
 ];
 
@@ -502,8 +507,18 @@ export default function VaultModule() {
                     active ? "bg-accent/8" : "hover:bg-nv-surface2"
                   }`}
                 >
-                  <div>
-                    <p className="text-nv-text text-sm font-medium">{dns.label}</p>
+                  <div className="pr-3">
+                    {/* THE ONE-LINE VERDICT. Nobody reads five paragraphs to pick a radio button,
+                        and the thing people actually need to know is whether this mode can stop a
+                        site loading. Green = it cannot; amber = it can. */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-nv-text text-sm font-medium">{dns.label}</p>
+                      <span className={`text-[9.5px] font-medium px-1.5 py-0.5 rounded-full border ${
+                        dns.tag.tone === "good"
+                          ? "text-emerald-600 border-emerald-500/40 bg-emerald-500/10"
+                          : "text-amber-600 border-amber-500/40 bg-amber-500/10"
+                      }`}>{dns.tag.text}</span>
+                    </div>
                     <p className="text-nv-muted text-xs">{dns.desc}</p>
                   </div>
                   <button
