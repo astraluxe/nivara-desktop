@@ -179,14 +179,17 @@ export function auditPromises(draft: string, done: OutwardAction = {}): PromiseI
     });
   }
 
-  // 3. Attachments. LinkedIn DMs cannot carry files at all, and no channel here attaches anything
-  //    automatically — so "please find attached" is always a promise the reader will find broken.
+  // 3. Attachments. `attachmentReady` now means the file was genuinely STAGED onto the message —
+  //    not merely chosen in the panel. That distinction matters in both directions: a draft saying
+  //    "attached is the one-pager" is correct once the file is really on the message and must not
+  //    be flagged, but choosing a file and failing to attach it is exactly when the warning is
+  //    needed most. Only the confirmed case suppresses this.
   const ATTACHED = /\b(?:please find attached|i(?:'ve| have)\s+attached|attached (?:is|are|you'll find)|enclosed (?:is|are)|see the attached)\b/i;
   if (!done.attachmentReady && ATTACHED.test(text)) {
     issues.push({
       claim: sentenceWith(text, ATTACHED),
-      problem: 'This says something is attached. Nothing is attached to this message — and a LinkedIn message cannot carry a file at all.',
-      fix: 'Offer to email it instead, or paste a link to it.',
+      problem: 'This says something is attached, but no file has been put on this message.',
+      fix: 'Attach the file before sending, or offer to email it / paste a link instead.',
     });
   }
 

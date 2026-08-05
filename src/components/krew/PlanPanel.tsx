@@ -5,6 +5,7 @@ import {
   notesForDay, currentDay,
 } from '../../lib/planStore';
 import { todos } from '../../lib/todoStore';
+import PlanCalendar from './PlanCalendar';
 import { loadAvailability, freeSlotsOn, to24h, describeAvailability, AVAIL_EVENT } from '../../lib/availability';
 
 // ─── The plan you actually work through ──────────────────────────────────────
@@ -36,6 +37,7 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
   const [note, setNote] = useState('');
   /** Which step has its detail open. One at a time — the panel is 380px wide. */
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [view, setView] = useState<'list' | 'month'>('list');
 
   const [avail, setAvail] = useState(() => loadAvailability());
 
@@ -229,8 +231,27 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
         <div className="mt-2 h-1.5 rounded-full bg-nv-bg overflow-hidden">
           <div className="h-full bg-accent transition-all" style={{ width: `${prog.pct}%` }} />
         </div>
+        {/* TWO WAYS TO READ THE SAME PLAN. The list answers "what now"; the month answers "what
+            does this actually look like" — whether day 9 lands on a day off, whether three heavy
+            steps stacked onto one Wednesday. You need both, but not at once. */}
+        <div className="mt-2 flex gap-1">
+          {(['list', 'month'] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              className={`text-[9.5px] px-2 py-0.5 rounded-full border transition-fast ${
+                view === v ? 'border-accent bg-accent text-white' : 'border-nv-border text-nv-faint hover:bg-nv-surface2'
+              }`}
+            >{v === 'list' ? 'Today & steps' : 'Month'}</button>
+          ))}
+        </div>
       </div>
 
+      {view === 'month' ? (
+        <div className="flex-1 overflow-y-auto min-h-0 p-2.5">
+          <PlanCalendar plan={plan} avail={avail} onRunStep={onRunStep} />
+        </div>
+      ) : (
       <div className="flex-1 overflow-y-auto min-h-0 p-2.5 space-y-3">
         {/* TODAY — the only part that matters this morning. */}
         <div>
@@ -304,6 +325,7 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
           ))}
         </div>
       </div>
+      )}
 
       {note && <p className="px-3 py-1.5 text-[10px] text-accent border-t border-nv-border shrink-0">{note}</p>}
 

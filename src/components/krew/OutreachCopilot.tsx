@@ -498,6 +498,8 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   const [verifying, setVerifying] = useState(false);
   const [docs, setDocs] = useState<GeneratedDoc[]>([]);
   const [attachDoc, setAttachDoc] = useState<GeneratedDoc | null>(null);
+  /** True only once the file has actually been staged into the compose box. */
+  const [attachConfirmed, setAttachConfirmed] = useState(false);
   // ── Making the meeting real ──
   // The copilot could read a calendar and it could put "Meeting: Friday 6 PM" on screen, but it had
   // no way to CREATE anything — so a reply saying "I've sent the calendar invite" was a promise the
@@ -1247,7 +1249,10 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       calendarCreated: !!meetingMade,
       meetLink: meetLink || undefined,
       guestsInvited: !!meetingGuests,
-      attachmentReady: !!attachDoc,
+      // CONFIRMED, not merely chosen. Picking a file in the panel does not put it on the
+      // message; only a successful upload does. Reporting the choice as readiness told the
+      // verifier a file was there when the user still had to attach it by hand.
+      attachmentReady: attachConfirmed,
     };
   }
 
@@ -1507,15 +1512,44 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       }
       if (!targetUrl) { setOpenNote('Their reply is copied — open their chat and paste it (Ctrl+V).'); setOpening(false); return; }
       const res = await invoke<string>('run_browser_persistent', { args: `typemsg ${targetUrl} ::: ${text}` });
-      if (typeof res === 'string' && res.includes('MESSAGE_DRAFTED')) setOpenNote('Typed your reply into their chat — review it and press Enter/Send.' + (attachDoc ? ` Attach ${attachDoc.filename} using LinkedIn's paperclip before sending.` : ''));
-      else setOpenNote('Their reply is copied — click Message and paste (Ctrl+V).' + (attachDoc ? ` Attach ${attachDoc.filename} before sending.` : ''));
+      const drafted = typeof res === 'string' && res.includes('MESSAGE_DRAFTED');
+
+      // ACTUALLY ATTACH THE FILE. Picking a file in this panel only ever produced a reminder to go
+      // and attach it yourself — so the one step most likely to be forgotten was the one left
+      // manual, and a message promising a one-pager went out with nothing on it. The chat box has a
+      // real <input type="file">; stage the file into it and let the user press Send.
+      let attached = false;
+      if (drafted && attachDoc?.path) {
+        try {
+          const up = await invoke<string>('run_browser_persistent', {
+            // LinkedIn's messaging composer keeps its file input hidden behind the paperclip; the
+            // input itself is present in the DOM either way, so target it directly rather than
+            // clicking through an icon whose markup changes with every redesign.
+            args: `upload input[type=file] ::: ${attachDoc.path}`,
+          });
+          attached = typeof up === 'string' && !/\[|error|not found|failed/i.test(up);
+        } catch { attached = false; }
+        setAttachConfirmed(attached);
+      }
+
+      if (drafted) {
+        setOpenNote('Typed your reply into their chat — review it and press Enter/Send.'
+          + (attachDoc ? (attached
+            ? ` ${attachDoc.filename} is attached — check it shows in the box before you send.`
+            // Never claim it worked when it did not: the user would send an empty-handed message
+            // believing the file was on it.
+            : ` I couldn't attach ${attachDoc.filename} automatically — use LinkedIn's paperclip before sending.`) : ''));
+      } else {
+        setOpenNote('Their reply is copied — click Message and paste (Ctrl+V).' + (attachDoc ? ` Attach ${attachDoc.filename} before sending.` : ''));
+      }
     } catch {
       setOpenNote('Their reply is copied — open their chat and paste it.');
     } finally { setOpening(false); }
   }
 
   // Open the folder holding the file to attach, so the user can drag/attach it into the LinkedIn or
-  // Gmail compose box (neither lets us attach programmatically from here). Opening the parent folder
+  // Gmail compose box by hand - a fallback for when the automatic attach cannot find the file input,
+  // and a way to check the file is the right one before sending. Opening the parent folder
   // (not the file) avoids launching the PDF in a viewer when they just want to grab it.
   async function revealAttachment(d: GeneratedDoc) {
     const folder = d.path.replace(/[\\/][^\\/]*$/, '') || d.path;
@@ -2398,7 +2432,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                     {docs.length > 0 && (
                       <div className="flex flex-wrap gap-1.5">
                         {docs.slice(0, 8).map((d) => (
-                          <button key={d.id} onClick={() => setAttachDoc(attachDoc?.id === d.id ? null : d)}
+                          <button key={d.id} onClick={() => { setAttachDoc(attachDoc?.id === d.id ? null : d); setAttachConfirmed(false); }}
                             className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${attachDoc?.id === d.id ? 'border-accent/60 text-accent bg-accent/10' : 'border-nv-border text-nv-faint hover:bg-nv-surface2'}`}
                             title={`${d.summary || ''} · ${d.filename}`}>
                             {attachDoc?.id === d.id ? '✓ ' : ''}{d.filename}

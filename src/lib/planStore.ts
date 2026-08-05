@@ -88,6 +88,12 @@ function clean(s: string): string {
     .replace(/\*(.+?)\*/g, '$1')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    // A heading like "**Day 1 (Mon) — Write the positioning**" is split by the day pattern, which
+    // takes the opening ** with it and strands the closing pair on the end of the action. The
+    // paired-** rule above cannot match a lone one, so it survived into the step text and every
+    // task read "…positioning**".
+    .replace(/\*+\s*$/, '')
+    .replace(/^\s*\*+/, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -144,8 +150,14 @@ export function parsePlanSteps(text: string): PlanStep[] {
       continue;
     }
 
-    // "Day 3: post video #2" / "- Day 12 — comment on 15 posts"
-    const bullet = line.match(/^[-•*]?\s*\**day\s*(\d{1,2})(?:\s*[-–—]\s*\d{1,2})?\**\s*[:—–-]\s*(.+)$/i);
+    // "Day 3: post video #2" / "- Day 12 — comment on 15 posts" /
+    // "**Day 1 (Mon) — Write the positioning**" / "### Day 4 (Wed, after 1pm): send batch 2"
+    //
+    // The bracketed part matters: agents habitually annotate a day with its weekday or a time
+    // window, and requiring the dash to follow the NUMBER meant an entire 30-day plan written as
+    // "**Day 1 (Mon) — …**" parsed to zero steps, so no button appeared under it at all. Leading
+    // #'s are allowed for the same reason — a plan whose days are headings is still a plan.
+    const bullet = line.match(/^(?:#{1,6}\s*)?[-•*]?\s*\**day\s*(\d{1,2})(?:\s*[-–—]\s*\d{1,2})?\s*(?:\([^)]*\))?\s*\**\s*[:—–-]\s*(.+)$/i);
     if (bullet) {
       const day = Number(bullet[1]);
       const action = clean(bullet[2]);
