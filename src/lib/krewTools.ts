@@ -354,6 +354,14 @@ export function markBrowserPrewarmed(): void { _browserPrewarmed = true; }
 // whatever they've filled so far (instead of running the whole list regardless).
 let _leadStopRequested = false;
 /** UI calls this from stop() so a running enrich/verify pass halts at the next batch boundary. */
+// A HARD STOP FOR EVERY TOOL, not just lead runs. Checked at the single point all tools pass
+// through, so pressing Stop cannot be outrun by work that was already queued up.
+let _toolStopRequested = false;
+export function requestToolStop(): void { _toolStopRequested = true; }
+/** Cleared at the start of each new send, so Stop never leaks into the next message. */
+export function resetToolStop(): void { _toolStopRequested = false; }
+export function isToolStopRequested(): boolean { return _toolStopRequested; }
+
 export function requestLeadStop(): void { _leadStopRequested = true; }
 /** Clear the stop flag at the start of a new send. */
 export function resetLeadStop(): void { _leadStopRequested = false; }
@@ -591,7 +599,7 @@ export const SYSTEM_TOOLS: ToolDef[] = [
       duration_minutes: { type: 'number', description: 'Length in minutes. Default 30.', required: false },
       details:    { type: 'string', description: 'Notes/agenda for the event body — e.g. what was agreed in the thread.', required: false },
       guests:     { type: 'string', description: 'Comma-separated guest email addresses, if you genuinely have them. Leave empty otherwise — never invent one. With no guest, saving the event notifies nobody, so share the returned Meet link with them instead.', required: false },
-      add_meet:   { type: 'boolean', description: 'Create a real Google Meet link and put it on the event. Default true — pass false only for something with no video call (a reminder, a personal block).', required: false },
+      add_meet:   { type: 'boolean', description: 'Create a real Google Meet link and put it on the event. Leave this UNSET and it is decided by whether there are guests — a call with someone gets a Meet room, a block in your own day (a plan step, a reminder, focus time) does not. Pass true to force a room onto a guest-less event, or false to keep one off a meeting that happens in person.', required: false },
     },
   },
   {
@@ -1926,6 +1934,18 @@ export async function executeTool(
   userId = '',
   sessionId = 'default',
 ): Promise<string> {
+  // STOP HAS TO MEAN STOP.
+  //
+  // Pressing Stop set a flag the agent loop checks BETWEEN steps, so anything already queued kept
+  // going: "put these 10 plan steps in my calendar" carried on opening Google Calendar tab after
+  // tab while the UI sat there looking idle, because Stop had already cleared the busy state.
+  // Every tool in the app funnels through here, so refusing at this one point halts a run
+  // immediately -- no browser trip, no calendar event, no API call -- wherever the loop happens to
+  // be. The message reads as a normal tool result, so the model reports the stop instead of
+  // treating it as an error worth retrying.
+  if (isToolStopRequested()) {
+    return '[Stopped by the user. Do NOT retry this or any remaining steps — acknowledge that you stopped, say briefly what had already been done, and wait for their next instruction.]';
+  }
   const result = await executeToolCore(toolName, args, creds, onTerminalApprovalNeeded, agentKey, userId, sessionId);
   if (shouldAutoSaveToolResult(toolName) && result && result.length > 80 && !result.startsWith('[') && !result.startsWith('Error')) {
     import('./knowledgeStore').then(({ brain }) => {
@@ -2104,7 +2124,16 @@ async function executeToolCore(
     // and there is a link to send the other person. Google Calendar's TEMPLATE URL cannot add Meet
     // by itself, so we create the room first and write it into the event.
     let meetUrl = '';
-    if (args.add_meet !== false) {
+    // A MEETING NEEDS A ROOM. A BLOCK IN YOUR OWN DAY DOES NOT.
+    //
+    // This defaulted to true for everything, so scheduling ten plan steps -- "write the cheat
+    // sheet", "record a 90-second demo" -- minted ten Google Meet rooms for things nobody else is
+    // attending, and made each one a slow browser round-trip on top. Guests are the signal: if
+    // there is somebody to meet, create the room; if it is your own work block, don't. An explicit
+    // add_meet still wins either way.
+    const hasGuests = !!str(args.guests).trim();
+    const wantsMeet = args.add_meet === true || (args.add_meet !== false && hasGuests);
+    if (wantsMeet) {
       const mraw = await withBrowserLock(() => invoke<string>('run_browser_persistent', { args: 'meetlink' }).catch((e) => String(e)));
       const mi = mraw.indexOf('MEET_URL:');
       if (mi >= 0) meetUrl = mraw.slice(mi + 'MEET_URL:'.length).trim().split(/\s/)[0];

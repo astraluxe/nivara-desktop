@@ -7,7 +7,7 @@ import type { Node, Edge } from '@xyflow/react';
 import { krewDb, credentialStore, krewMemoryDb, type KrewMemory } from '../../lib/krewDb';
 import { listMcpServers, mcpToolDefs } from '../../lib/krewMcp';
 import { brain as brainStore, nodeToMarkdown, requestBrainFocus } from '../../lib/knowledgeStore';
-import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, LEAD_TOOLS, getAutopilotTools, buildKrewSystemPrompt, executeTool, needsCompression, resetBrowserRunState, closeAgentBrowserIfActive, setAgentBrowserHold, requestLeadStop, resetLeadStop, isLeadStopRequested, KREW_PROFILE_KEY, type ToolDef } from '../../lib/krewTools';
+import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, LEAD_TOOLS, getAutopilotTools, buildKrewSystemPrompt, executeTool, needsCompression, resetBrowserRunState, closeAgentBrowserIfActive, setAgentBrowserHold, requestLeadStop, resetLeadStop, isLeadStopRequested, requestToolStop, resetToolStop, KREW_PROFILE_KEY, type ToolDef } from '../../lib/krewTools';
 import { TaskProgress, type TaskPhase } from './TaskProgress';
 import { StatusGlobe } from './StatusGlobe';
 import { runParallelResearch } from '../../lib/researchSources';
@@ -4802,6 +4802,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     if (!requestCtx) return;
     setBusy(true);
     stopRef.current = false;
+    resetToolStop();   // a new run: tools are allowed again
     const sid = sidRef.current;
     // Make sure the managed AI key is loaded BEFORE we stream — otherwise the whole deck runs
     // on the edge fallback, which (a) can't generate images (the "blue empty box") and (b)
@@ -5361,6 +5362,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     if (!base) return;
     setBusy(true);
     stopRef.current = false;
+    resetToolStop();   // a new run: tools are allowed again
     const sid = sidRef.current;
     addMsg({ role: 'delegation', toolName: 'deck_maker', content: 'Updating your deck…', streaming: true });
     const setStatus = (t: string) => setMessages((prev) => {
@@ -5572,7 +5574,9 @@ The prompt must be production-ready — specific enough for a motion designer to
     // broken until the user happened to send a normal message. That is what "the model didn't
     // return usable rewrites in 0s" was: not the model, a stale Stop.
     stopRef.current = false;
+    resetToolStop();   // a new run: tools are allowed again
     resetLeadStop();
+    resetToolStop();
     setBusy(true); setBrowserActive(true);
     const scanT0 = Date.now();
     const unlisten = await listen('agent-progress', (e) => {
@@ -5678,7 +5682,9 @@ The prompt must be production-ready — specific enough for a motion designer to
     // broken until the user happened to send a normal message. That is what "the model didn't
     // return usable rewrites in 0s" was: not the model, a stale Stop.
     stopRef.current = false;
+    resetToolStop();   // a new run: tools are allowed again
     resetLeadStop();
+    resetToolStop();
     setBusy(true); setBrowserActive(true);
     const inboxT0 = Date.now();
     const unlisten = await listen('agent-progress', (e) => {
@@ -6239,7 +6245,9 @@ The prompt must be production-ready — specific enough for a motion designer to
     // broken until the user happened to send a normal message. That is what "the model didn't
     // return usable rewrites in 0s" was: not the model, a stale Stop.
     stopRef.current = false;
+    resetToolStop();   // a new run: tools are allowed again
     resetLeadStop();
+    resetToolStop();
     setBusy(true); setBrowserActive(true);
     try {
       let res = await executeTool('draft_linkedin_reply', { profile_url: url, message: reply }, creds, requestTerminalApproval, agent.key, user?.id ?? '', `${sidRef.current ?? 'main'}-lisend`);
@@ -6476,9 +6484,12 @@ The prompt must be production-ready — specific enough for a motion designer to
     // broken until the user happened to send a normal message. That is what "the model didn't
     // return usable rewrites in 0s" was: not the model, a stale Stop.
     stopRef.current = false;
+    resetToolStop();   // a new run: tools are allowed again
     resetLeadStop();
+    resetToolStop();
     setBusy(true);
-    resetLeadStop();          // clear any Stop left over from a previous run
+    resetLeadStop();
+    resetToolStop();          // clear any Stop left over from a previous run
     // The run's start time. Progress panels count up from this themselves (see StatusBlock), so
     // there is no longer a secs() helper baking a frozen number into the message text.
     const t0 = Date.now();
@@ -7493,7 +7504,9 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     // broken until the user happened to send a normal message. That is what "the model didn't
     // return usable rewrites in 0s" was: not the model, a stale Stop.
     stopRef.current = false;
+    resetToolStop();   // a new run: tools are allowed again
     resetLeadStop();
+    resetToolStop();
     setBusy(true);
     // Real name for the sign-off, taken from the signed-in account.
     const senderName = [profile?.first_name, profile?.last_name].filter(Boolean).join(' ').trim()
@@ -7845,9 +7858,12 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     // broken until the user happened to send a normal message. That is what "the model didn't
     // return usable rewrites in 0s" was: not the model, a stale Stop.
     stopRef.current = false;
+    resetToolStop();   // a new run: tools are allowed again
     resetLeadStop();
+    resetToolStop();
     setBusy(true);
     resetLeadStop();
+    resetToolStop();
     const t0 = Date.now();
     addMsg({ role: 'assistant', content: statusBlock(t0, `${verifyAll ? 'Re-checking every profile on' : 'Filling in profiles for'} ${listTitle}`, 'Getting ready…'), streaming: true });
     setAgentBrowserHold(true);
@@ -8006,7 +8022,9 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     // broken until the user happened to send a normal message. That is what "the model didn't
     // return usable rewrites in 0s" was: not the model, a stale Stop.
     stopRef.current = false;
+    resetToolStop();   // a new run: tools are allowed again
     resetLeadStop();
+    resetToolStop();
     setBusy(true); setBrowserActive(true);
     const nameNorm = (s: string) => (s || '').toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
     let fixed = 0; let cleared = 0; const failed: string[] = []; let signInHit = false;
@@ -8192,7 +8210,9 @@ _${plan.advice}_` : ''}`, streaming: true });
     // broken until the user happened to send a normal message. That is what "the model didn't
     // return usable rewrites in 0s" was: not the model, a stale Stop.
     stopRef.current = false;
+    resetToolStop();   // a new run: tools are allowed again
     resetLeadStop();
+    resetToolStop();
     setBusy(true);
 
     // Apply refinements onto a working copy of the campaign, saving after each batch so partial
@@ -8774,7 +8794,9 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     setInput('');
     setBusy(true);
     stopRef.current = false;
-    resetLeadStop(); // clear any prior Stop so this run's lead pass can proceed
+    resetToolStop();   // a new run: tools are allowed again
+    resetLeadStop();
+    resetToolStop(); // clear any prior Stop so this run's lead pass can proceed
     resetBrowserRunState(); // start tracking browser use for this run (auto-close at end)
 
     // Suggest connecting Brave Search for reliable verification (keyless engines rate-limit and
@@ -10463,6 +10485,10 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
   function stop() {
     stopRef.current = true;
     requestLeadStop(); // halt a running enrich/verify pass at the next batch boundary
+    // Refuse every FURTHER tool call outright. Without this, work already queued kept running
+    // after Stop -- ten calendar events still opened ten browser tabs -- while the UI below had
+    // already gone back to idle, so the app looked broken and there was nothing left to press.
+    requestToolStop();
     // Finalise EVERY streaming bubble (delegation/workflow popups included), not just the last one
     setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
     setBusy(false);
