@@ -446,6 +446,8 @@ export default function SettingsModule() {
   const { session } = useAuth();
   const uid = session?.user?.id;
   const [settings, setSettings] = useState<NvSettings>(loadSettings);
+  /** Result of the browser check — plain text, shown as-is so nothing is lost in formatting. */
+  const [browserTest, setBrowserTest] = useState('');
   const [appVersion, setAppVersion]   = useState<string>('');
   const [clearNote, setClearNote]     = useState('');   // confirmation for the "clear local data" buttons
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('idle');
@@ -662,6 +664,40 @@ export default function SettingsModule() {
       </div>
 
       <div className="p-6 max-w-xl">
+
+        {/* BROWSER CHECK, FIRST THING ON THE PAGE.
+            "The browser doesn't open" was for a long time the only information anyone had, including
+            whoever had to fix it. This runs the real chain in the real order — runtime, script,
+            driver, Chrome, then actually opening a page — and names the step that failed instead of
+            confirming the symptom. It is at the top because someone whose browser is broken should
+            not have to go looking for it. */}
+        <div className="mb-6 rounded-xl border border-nv-border bg-nv-surface p-4">
+          <div className="flex items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-[12.5px] font-semibold text-nv-text">Browser check</p>
+              <p className="text-[11px] text-nv-muted mt-0.5 leading-relaxed">
+                Agents use a real Chrome window to read pages, fill forms and scan LinkedIn. Run this if
+                anything that opens a browser isn't working — it will install whatever is missing and tell
+                you exactly what went wrong if it can't.
+              </p>
+            </div>
+            <button
+              onClick={async () => {
+                setBrowserTest('Checking…');
+                try {
+                  const { invoke } = await import('@tauri-apps/api/core');
+                  setBrowserTest(await invoke<string>('browser_diagnose'));
+                } catch (e) {
+                  setBrowserTest(`Couldn't run the check: ${e instanceof Error ? e.message : String(e)}`);
+                }
+              }}
+              className="shrink-0 h-8 px-3 rounded-lg bg-accent text-white text-[12px] font-medium hover:bg-accent-dim transition-fast"
+            >Test browser</button>
+          </div>
+          {browserTest && (
+            <pre className="mt-3 p-2.5 rounded-lg bg-nv-bg border border-nv-border text-[10.5px] leading-relaxed text-nv-text whitespace-pre-wrap font-mono max-h-72 overflow-y-auto">{browserTest}</pre>
+          )}
+        </div>
 
         {/* Automation */}
         <Section title="Automation">

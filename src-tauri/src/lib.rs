@@ -3085,6 +3085,115 @@ fn get_playwright_script_path(app: &tauri::AppHandle) -> std::path::PathBuf {
     get_playwright_dir(app).join("agent-browser.js")
 }
 
+/// Check every link in the browser chain and report which one is broken.
+///
+/// Written because "the browser doesn't open" was, for weeks, the only information anyone had —
+/// including the person who wrote the code. Each step is checked in the order the real launch path
+/// uses them, and each reports what was actually found rather than a pass/fail, so the answer
+/// names the cause instead of confirming the symptom. Safe to run any time; it opens a real page
+/// and closes nothing the user was using.
+#[tauri::command]
+async fn browser_diagnose(app: tauri::AppHandle) -> Result<String, String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut fatal: Option<String> = None;
+
+    // 1. A Node runtime — ours, or the machine's.
+    let node_bin = match bundled_node_path(&app) {
+        Some(p) => { out.push(format!("✓ Node: using the copy adris.tech installed\n   {}", p.display())); p.to_string_lossy().into_owned() }
+        None => {
+            let sys = resolve_node_exe();
+            let ok = {
+                #[cfg(target_os = "windows")]
+                { use std::os::windows::process::CommandExt; std::process::Command::new(&sys).arg("--version").creation_flags(0x08000000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false) }
+                #[cfg(not(target_os = "windows"))]
+                { std::process::Command::new(&sys).arg("--version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false) }
+            };
+            if ok { out.push(format!("✓ Node: found on this machine\n   {sys}")); sys }
+            else {
+                out.push("… Node: not found — downloading adris.tech's own copy (about 30 MB, one time)".into());
+                match provision_node(&app).await {
+                    Ok(p) => { out.push(format!("✓ Node: installed\n   {}", p.display())); p.to_string_lossy().into_owned() }
+                    Err(e) => {
+                        out.push(format!("✗ Node: could not be installed — {e}"));
+                        fatal = Some("The browser needs a small runtime that adris.tech installs itself. That download failed — usually no internet at that moment, or security software blocking it. Check your connection and press Test again.".into());
+                        String::new()
+                    }
+                }
+            }
+        }
+    };
+
+    // 2. The script and its one dependency.
+    if fatal.is_none() {
+        let script = get_playwright_script_path(&app);
+        out.push(if script.is_file() { format!("✓ Browser script: ready\n   {}", script.display()) }
+                 else { format!("✗ Browser script: missing at {}", script.display()) });
+        let pw = get_playwright_dir(&app).join("node_modules").join("playwright-core");
+        if pw.exists() { out.push("✓ Browser driver: installed".into()); }
+        else {
+            out.push("✗ Browser driver (playwright-core): not installed".into());
+            fatal = Some("The browser driver isn't installed yet. It downloads on first use — open any page with an agent once, or press Test again while online.".into());
+        }
+    }
+
+    // 3. Chrome itself — the thing the driver actually steers.
+    #[cfg(target_os = "windows")]
+    if fatal.is_none() {
+        let mut found = None;
+        for base in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+            if let Ok(b) = std::env::var(base) {
+                let c = std::path::PathBuf::from(b).join("Google").join("Chrome").join("Application").join("chrome.exe");
+                if c.is_file() { found = Some(c); break; }
+            }
+        }
+        match found {
+            Some(c) => out.push(format!("✓ Chrome: found\n   {}", c.display())),
+            None => {
+                out.push("✗ Chrome: not found in the usual places".into());
+                fatal = Some("Google Chrome isn't installed where adris.tech looks for it. Install Chrome and press Test again — adris.tech drives your real Chrome rather than shipping its own.".into());
+            }
+        }
+    }
+
+    // 4. The real thing: open a page and read it back. Everything above can look right and this
+    //    still fail, which is exactly the case that used to be invisible.
+    if fatal.is_none() && !node_bin.is_empty() {
+        let script = get_playwright_script_path(&app);
+        let cmd = format!("navigate \"https://example.com\"");
+        let res = {
+            #[cfg(target_os = "windows")]
+            { use std::os::windows::process::CommandExt;
+              std::process::Command::new(&node_bin).arg(&script).args(cmd.split(' ').collect::<Vec<_>>())
+                .creation_flags(0x08000000).output() }
+            #[cfg(not(target_os = "windows"))]
+            { std::process::Command::new(&node_bin).arg(&script).args(cmd.split(' ').collect::<Vec<_>>()).output() }
+        };
+        match res {
+            Ok(o) => {
+                let so = String::from_utf8_lossy(&o.stdout);
+                let se = String::from_utf8_lossy(&o.stderr);
+                if so.to_lowercase().contains("example domain") || so.len() > 200 {
+                    out.push(format!("✓ Opened a real page and read it back ({} characters)", so.len()));
+                    out.push("\nEverything works. The browser is ready.".into());
+                } else {
+                    out.push(format!("✗ The browser ran but returned nothing usable.\n   output: {}\n   errors: {}",
+                        so.chars().take(300).collect::<String>(), se.chars().take(300).collect::<String>()));
+                    fatal = Some("The browser started but could not read a page. Security software blocking Chrome's automation port (9223) is the usual cause.".into());
+                }
+            }
+            Err(e) => {
+                out.push(format!("✗ Could not run the browser script — {e}"));
+                fatal = Some(format!("Could not start the browser process: {e}"));
+            }
+        }
+    }
+
+    if let Some(f) = fatal { out.push(format!("\nWhat to do:\n{f}")); }
+    out.push(format!("\nFull log: {}\\browser-debug.log",
+        app.path().app_local_data_dir().map(|p| p.display().to_string()).unwrap_or_default()));
+    Ok(out.join("\n"))
+}
+
 // ── agent-browser: silent background setup ────────────────────────────────────
 #[tauri::command]
 async fn setup_agent_browser(app: tauri::AppHandle) -> Result<(), String> {
@@ -7075,6 +7184,7 @@ pub fn run() {
             krew_web_search,
             krew_execute_command,
             setup_agent_browser,
+            browser_diagnose,
             run_agent_browser,
             run_agent_browser_session,
             run_browser_persistent,
