@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
+import PilotGrants from '../components/head/PilotGrants';
 import { getMonthlyUsage } from '../lib/tokenTracker';
 
 interface FeedbackRow {
@@ -221,6 +222,8 @@ export default function HeadModule() {
   const [tokenUsed, setTokenUsed] = useState<number | null>(null);
 
   const [stats, setStats] = useState<PlatformStats | null>(null);
+  /** The pilot grants surface — same table the website admin's Pilot tab writes to. */
+  const [showPilot, setShowPilot] = useState(false);
   const [userQuery, setUserQuery] = useState('');
 
   async function load() {
@@ -355,7 +358,8 @@ export default function HeadModule() {
         </div>
       )}
 
-      {/* Filter tabs */}
+      {/* Filter tabs — plus Pilot, which is a different SURFACE rather than a filter over the same
+          rows, so it takes over the panel below instead of narrowing the feedback list. */}
       <div className="flex gap-1 px-4 py-2 border-b border-nv-border shrink-0">
         {(['all', 'suggestion', 'error'] as const).map(f => (
           <button
@@ -370,9 +374,20 @@ export default function HeadModule() {
             {f === 'all' ? 'All' : f === 'suggestion' ? 'Suggestions' : 'Error Reports'}
           </button>
         ))}
+        <button
+          onClick={() => setShowPilot((v) => !v)}
+          title="Grant a paid plan to an email — works even before they have an account"
+          className={`ml-auto px-2.5 py-1 rounded-md text-[10px] font-mono transition-fast ${
+            showPilot ? 'bg-accent/15 text-accent' : 'text-nv-faint hover:text-nv-muted'
+          }`}
+        >Pilot</button>
       </div>
 
-      {/* Content */}
+
+
+      {/* Content — Pilot REPLACES the feedback list rather than stacking under it, so the panel
+          shows one thing at a time and the scroll position is not shared between two surfaces. */}
+      {showPilot ? <PilotGrants /> : (
       <div className="flex-1 overflow-y-auto p-4">
         {error && (
           <div className="text-[11px] text-red-400 font-mono bg-red-400/10 border border-red-400/20 rounded-lg px-3 py-2 mb-4">
@@ -422,6 +437,7 @@ export default function HeadModule() {
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }
