@@ -105,6 +105,26 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
   const [elapsed, setElapsed] = useState(0);
   /** Set while we are waiting out a provider rate limit, so the user sees WHY it is slow. */
   const [rateWait, setRateWait] = useState<{ attempt: number; max: number; waitMs: number } | null>(null);
+  /** Which AI will actually answer. Guard never showed this, so a user on "own key + NVIDIA" had no
+   *  way to see WHICH model — and some free models are far too slow, or cannot return the JSON a
+   *  scan needs at all. */
+  const [aiLabel, setAiLabel] = useState<string>('');
+  const [aiMode, setAiMode] = useState<string>('nivara');
+  useEffect(() => {
+    let alive = true;
+    resolveAiSource().then((r) => {
+      if (!alive) return;
+      setAiMode(r.mode);
+      setAiLabel(
+        r.mode === 'nivara' ? 'adris.tech AI'
+        : r.mode === 'local' ? `Local · ${r.localModel || 'model'}`
+        : `${r.provider || 'own key'} · ${(r.modelName || 'model').split('/').pop()}`,
+      );
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [scanning]);
+  /** How long the last scan took, so the advice below is based on what actually happened. */
+  const [lastTookMs, setLastTook] = useState<number | null>(null);
   useEffect(() => {
     if (!scanning) { setElapsed(0); return; }
     const t0 = Date.now();
@@ -170,6 +190,7 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
     try {
       // Scan the ENTIRE document in bounded chunks (handles 200+ page agreements),
       // then merge + dedupe findings. The chunk cap bounds token spend per scan.
+      const t0 = Date.now();
       const scanSource = (await resolveAiSource()).mode;
       const parsed = await scanLargeDocument(
         contractText,
@@ -193,6 +214,7 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
         maxChunksFor(scanSource),
       );
 
+      setLastTook(Date.now() - t0);
       const topSev = parsed.findings.find(f => f.severity === 'high') ? 'high'
         : parsed.findings.find(f => f.severity === 'med') ? 'med' : 'low';
       await guardDb.log('contract_scan', topSev,
@@ -227,7 +249,16 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
       <div className="flex flex-col w-[380px] shrink-0 border-r border-nv-border overflow-hidden">
         <div className="px-4 py-3 border-b border-nv-border bg-nv-surface shrink-0">
           <p className="text-[10px] font-mono text-nv-faint tracking-widest uppercase">Contract Input</p>
-          <p className="text-[11px] text-nv-muted mt-0.5">Paste text or upload a PDF / TXT — scanned & multi-language docs supported</p>
+          <p className="text-[11px] text-nv-muted mt-0.5">Paste text or upload a PDF / TXT — scanned &amp; multi-language docs supported</p>
+          {/* WHICH AI IS ANSWERING. Krew shows this; Guard did not, so "own key + NVIDIA" gave no
+              clue which MODEL — and some free models take 26s a call or cannot return the JSON a
+              scan needs at all, which looks exactly like the scanner being broken. */}
+          {aiLabel && (
+            <span className="inline-flex items-center gap-1 mt-1.5 text-[9.5px] font-mono px-1.5 py-0.5 rounded-full border border-nv-border text-nv-faint">
+              <span className={`w-1 h-1 rounded-full ${aiMode === 'nivara' ? 'bg-nv-green' : 'bg-amber-400'}`} />
+              {aiLabel}
+            </span>
+          )}
         </div>
 
         {/* Drop zone */}
@@ -411,6 +442,23 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
               <p className="text-[9px] font-mono text-nv-faint tracking-widest uppercase mb-3">Risk Assessment</p>
               <RiskMeter score={result.risk_score} />
               <p className="text-[12px] text-nv-muted leading-relaxed mt-3">{result.summary}</p>
+              {/* ADVICE FROM WHAT ACTUALLY HAPPENED, not a standing nag. Only shown after a scan on
+                  the user's own key that genuinely took a long time — a fast free key is a perfectly
+                  good setup and should be left alone. Free tiers meter tokens per minute, so a long
+                  document is mostly spent waiting out rate limits rather than thinking. */}
+              {aiMode !== 'nivara' && lastTookMs !== null && lastTookMs > 90_000 && (
+                <div className="mt-3 p-2.5 rounded-lg border border-amber-500/30 bg-amber-500/[0.07]">
+                  <p className="text-[11px] text-nv-text leading-relaxed">
+                    That took {Math.round(lastTookMs / 1000)}s on <span className="font-mono">{aiLabel}</span>.
+                    Free keys cap how much you can send per minute, so most of that was waiting rather than reading.
+                  </p>
+                  <p className="text-[10.5px] text-nv-muted leading-relaxed mt-1">
+                    The same scan on <b>adris.tech AI</b> usually finishes in seconds. If document scanning is
+                    something you do often, switching the source in Settings is the single biggest speed-up —
+                    everything else can stay on your own key.
+                  </p>
+                </div>
+              )}
               <p className="text-[10px] font-mono text-nv-faint mt-2">
                 {result.truncated
                   ? `⚠ Large document — scanned the first ${result.chunksScanned} of ${result.chunksTotal} sections (~${result.chunksScanned * 18} pages). Split the file to scan the rest.`

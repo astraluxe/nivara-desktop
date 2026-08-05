@@ -157,7 +157,19 @@ export async function extractDocument(
   }
 
   if (!name.endsWith('.pdf')) {
-    throw new GuardExtractError('Unsupported format. Upload a .pdf or .txt file, or paste text directly.', 'unsupported');
+    // Say what to DO about it. A Word file dropped here used to fall through to the PDF parser and
+    // fail with something about an invalid PDF structure, which tells the user nothing — and Word
+    // is the second most likely thing anyone has a contract or tender in.
+    const office = /\.(docx?|odt|rtf|pages)$/.test(name);
+    const sheet  = /\.(xlsx?|csv|ods)$/.test(name);
+    throw new GuardExtractError(
+      office
+        ? 'Word documents aren\'t read directly yet. In Word choose File → Save As → PDF (or Print → Save as PDF) and upload that — or just paste the text below.'
+        : sheet
+        ? 'Spreadsheets aren\'t contracts, so they aren\'t read here. Export the relevant sheet as a PDF, or paste the text below.'
+        : 'Unsupported format. Upload a .pdf or .txt file, or paste the text directly below.',
+      'unsupported',
+    );
   }
 
   onProgress?.({ phase: 'reading', current: 0, total: 1, ocr: false });
