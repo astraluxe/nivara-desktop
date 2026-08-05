@@ -374,13 +374,23 @@ export default function HeadModule() {
             {f === 'all' ? 'All' : f === 'suggestion' ? 'Suggestions' : 'Error Reports'}
           </button>
         ))}
+        {/* Not a filter over the same rows — a different surface. Styled as a real, visible control
+            rather than another faint grey word, because sitting in a row of filters at 10px it read
+            as a label and was missed entirely. */}
         <button
           onClick={() => setShowPilot((v) => !v)}
           title="Grant a paid plan to an email — works even before they have an account"
-          className={`ml-auto px-2.5 py-1 rounded-md text-[10px] font-mono transition-fast ${
-            showPilot ? 'bg-accent/15 text-accent' : 'text-nv-faint hover:text-nv-muted'
+          className={`ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10.5px] font-medium border transition-fast ${
+            showPilot
+              ? 'bg-accent text-white border-accent'
+              : 'text-accent border-accent/40 bg-accent/5 hover:bg-accent/10'
           }`}
-        >Pilot</button>
+        >
+          <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M8 1.5l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.2l-3.8 2.1.7-4.3-3.1-3 4.3-.6z" />
+          </svg>
+          {showPilot ? 'Close pilot' : 'Pilot plans'}
+        </button>
       </div>
 
 
