@@ -39,6 +39,7 @@ import PlanPanel from './PlanPanel';
 import { looksLikeActionPlan, parsePlanSteps, createPlan, savePlan, loadPlan, planProgress, syncPlanToTodos, todayPlanNote, mergeIntoPlan, PLAN_EVENT, type ActionPlan } from '../../lib/planStore';
 import { availabilityNote, looksLikeAvailability, parseAvailability, saveAvailability, loadAvailability, describeAvailability } from '../../lib/availability';
 import { workStateNote } from '../../lib/workState';
+import { isPowerCommand, commandBudget, recordCommandRun, exhaustedMessage, COMMAND_QUOTA_EVENT } from '../../lib/commandQuota';
 import LeadSetupCard, { type LeadConfig } from './LeadSetupCard';
 import { loadUserLocation, locationLabel } from '../../lib/userLocation';
 import { identityBlock } from '../../lib/userIdentity';
@@ -3585,6 +3586,18 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
   // Mirrored here (not just inside the panel) because the header button and the agent's own prompt
   // both need to know today's step while the panel is closed.
   const [activePlan, setActivePlan] = useState<ActionPlan | null>(() => loadPlan());
+  // Only present while a cap actually applies — null on every paid plan, so the header stays clean
+  // for anyone who has already bought.
+  const [trialLeft, setTrialLeft] = useState<{ remaining: number; exhausted: boolean } | null>(null);
+  useEffect(() => {
+    const refresh = () => {
+      const b = commandBudget(profile?.plan ?? 'explore');
+      setTrialLeft(b.cap == null ? null : { remaining: b.remaining ?? 0, exhausted: b.exhausted });
+    };
+    refresh();
+    window.addEventListener(COMMAND_QUOTA_EVENT, refresh);
+    return () => window.removeEventListener(COMMAND_QUOTA_EVENT, refresh);
+  }, [profile?.plan]);
   useEffect(() => {
     const refresh = () => setActivePlan(loadPlan());
     window.addEventListener(PLAN_EVENT, refresh);
@@ -8389,6 +8402,26 @@ _${plan.advice}_` : ''}`;
     setSlashOpen(false);
     setSlashIdx(0);
     if (c.run === 'nav') { emit('nv-navigate', { module: c.value }).catch(() => {}); setInput(''); return; }
+
+    // THE TRIAL GATE. Only the heavy commands are counted — each drives a full browser session on
+    // the user's behalf, which is the product doing work rather than answering a question. Checked
+    // BEFORE anything runs so a blocked command costs nothing, and counted here rather than deeper
+    // in so every entry point to the same command shares one meter.
+    //
+    // Metering these in tokens never worked: a free user on their own NVIDIA key spends none of
+    // ours, so nothing ever capped them. This is what makes "bring your own key and try the whole
+    // thing" a real offer instead of an unlimited one.
+    if (isPowerCommand(c.run) || isPowerCommand(c.cmd)) {
+      const budget = commandBudget(profile?.plan ?? 'explore');
+      if (budget.exhausted) {
+        setInput('');
+        addMsgHere({ role: 'assistant', content: exhaustedMessage(c.cmd, budget.cap ?? 0) });
+        setShowQuotaUpgrade(true);
+        return;
+      }
+      recordCommandRun(c.cmd);
+    }
+
     if (c.run === 'research') { setInput(''); onOpenResearch?.(''); return; }   // open the Research workspace
     if (c.run === 'agents')   { setInput(''); onBrowseAgents?.(); return; }      // open the agent grid
     if (c.run === 'outreach') {
@@ -10834,6 +10867,25 @@ ROUTING FOR THE USER'S NEXT MESSAGE (read their intent fresh each time):
             </svg>
             Copilot
           </button>
+          {/* WHAT'S LEFT OF THE TRIAL, BEFORE YOU HIT IT. A cap the user only discovers by running
+              into it reads as the app breaking. Shown only while a cap applies, so paying users
+              never see it, and it turns into a live "upgrade" affordance once it runs out. */}
+          {trialLeft && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setShowQuotaUpgrade(true); }}
+              title="Power commands — /leads, /outreach, /scan, /enrich, /verify, /research — are limited on the free plan. Everything else is unlimited on your own key."
+              className={`flex items-center gap-1 h-5 px-1.5 rounded transition-fast shrink-0 text-[9px] font-mono border ${
+                trialLeft.exhausted
+                  ? 'text-amber-600 border-amber-500/50 bg-amber-500/10 hover:bg-amber-500/20'
+                  : 'text-nv-faint border-nv-border hover:text-nv-muted hover:bg-nv-surface'
+              }`}
+            >
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="8" cy="8" r="6.5" /><path d="M8 4.5V8l2.5 1.5" />
+              </svg>
+              {trialLeft.exhausted ? 'Trial used' : `${trialLeft.remaining} left`}
+            </button>
+          )}
           {/* THE PLAN, ALWAYS ONE CLICK AWAY — same reasoning as the Copilot button above, which is
               why it sits next to it. Deliberately visible even with NO plan running: hiding it
               until a plan exists means the only way to find the feature is to already know it is

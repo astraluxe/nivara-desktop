@@ -18,6 +18,14 @@ export interface PlanConfig {
   voiceToCode:      boolean;
   cloudAutomations: number;        // monthly cloud automation run quota
   advancedSearches: number | null; // monthly "Advanced" (browser verify/enrich) task quota; null = unlimited
+  // POWER COMMANDS ON A TRIAL. The heavy slash commands -- /leads, /outreach, /scan, /enrich,
+  // /verify, /research -- are the ones worth paying for: each drives a long browser session and
+  // is the actual product, not a chat reply. Metering them in TOKENS never bounded a trial,
+  // because a free user on their own NVIDIA key spends none of ours; they could run lead-gen
+  // forever for free. This is a straight run count, charged whatever the AI source, so
+  // "bring your own key and try the whole thing" stays true without being unlimited.
+  // null = unlimited.
+  powerCommands: number | null;
   advancedDeck:     boolean;       // Advanced PPT maker (AI-image slides). Basic deck is available to all.
   socialScheduling: boolean;       // Schedule/publish social posts. Drafting is free for all; scheduling is paid.
   // AI images generated on OUR key, per billing period. null = unlimited.
@@ -58,6 +66,7 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     voiceToCode:      false,
     cloudAutomations: 0,
     advancedSearches: 5,
+    powerCommands:    15,     // a real trial of the heavy commands, on any key
     advancedDeck:     false,
     socialScheduling: false,
     researchParallelism: 5,
@@ -77,6 +86,7 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     voiceToCode:      false,
     cloudAutomations: 0,
     advancedSearches: 5,
+    powerCommands:    15,     // a real trial of the heavy commands, on any key
     advancedDeck:     false,
     socialScheduling: false,
     researchParallelism: 5,
@@ -96,6 +106,7 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     voiceToCode:      false,
     cloudAutomations: 500,
     advancedSearches: null,   // paid → unlimited Advanced (the upgrade incentive for Free users)
+    powerCommands:    null,
     advancedDeck:     true,
     socialScheduling: true,
     researchParallelism: 15,
@@ -115,6 +126,7 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     voiceToCode:      true,
     cloudAutomations: 5_000,
     advancedSearches: null,   // paid → unlimited Advanced
+    powerCommands:    null,
     advancedDeck:     true,
     socialScheduling: true,
     researchParallelism: 40,
@@ -134,6 +146,7 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     voiceToCode:      true,
     cloudAutomations: 999_999,
     advancedSearches: null,
+    powerCommands:    null,
     advancedDeck:     true,
     socialScheduling: true,
     researchParallelism: 100,
@@ -153,6 +166,7 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
     voiceToCode:      true,
     cloudAutomations: 999_999,
     advancedSearches: null,
+    powerCommands:    null,
     advancedDeck:     true,
     socialScheduling: true,
     researchParallelism: 200,

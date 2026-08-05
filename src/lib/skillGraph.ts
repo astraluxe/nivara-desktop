@@ -139,10 +139,10 @@ export const SKILL_GRAPH: SkillDef[] = [
     name: 'Turning a plan into work',
     area: 'work',
     blurb: 'Writes a day-by-day plan the app can schedule — steps land on the To-do and the calendar on the right dates.',
-    tools: ['create_todo', 'create_calendar_event', 'get_availability'],
+    tools: ['create_todo', 'create_calendar_event', 'get_availability', 'read_my_work'],
     triggers: /\b(plan|roadmap|30[\s-]?day|action plan|week (1|one)|day by day|schedule (the|my|this)|what should i do (first|next)|launch plan|go.?to.?market|gtm)\b/i,
     needs: ['todo', 'calendar', 'availability'],
-    guide: 'Plans: write them day by day, one clear action per day, with a "done when" the user can check. The app turns that into dated steps they tick off, so a vague "week 1: marketing" cannot be scheduled but "Day 2: record three 60-second demo videos" can. Keep rest days in — a plan that hides its own slack is lying about the workload.',
+    guide: 'Plans: CALL read_my_work FIRST — a plan that tells the user to build a lead list they already have, or to message people they already messaged, will be followed, and they will do the work twice. Write them day by day, one clear action per day, with a "done when" the user can check. The app turns that into dated steps they tick off, so a vague "week 1: marketing" cannot be scheduled but "Day 2: record three 60-second demo videos" can. Keep rest days in — a plan that hides its own slack is lying about the workload.',
   },
   {
     id: 'documents',

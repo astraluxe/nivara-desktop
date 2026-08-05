@@ -6,6 +6,9 @@ import { runParallelResearch } from './researchSources';
 import { loadUserLocation, saveUserLocation, locationLabel, userCity, countryCodeFor } from './userLocation';
 import { lastDeckPdfBase64 } from './deckStore';
 import { parseAvailability, saveAvailability, loadAvailability, describeAvailability, nextFreeSlots, fmtMins, to24h } from './availability';
+import { availabilityNote } from './availability';
+import { workStateNote } from './workState';
+import { todayPlanNote } from './planStore';
 
 // ─── Email (MIME) helpers — used by gmail_send_email / gmail_send_bulk ─────────
 // Build a base64url-encoded RFC822 message, optionally multipart with one attachment.
@@ -597,6 +600,11 @@ export const SYSTEM_TOOLS: ToolDef[] = [
     parameters: {
       said: { type: 'string', description: 'The user\'s own words about their hours, e.g. "busy on weekdays from 10am to 6pm, and I don\'t work Sundays". Pass what they actually said — do not tidy it into a format.', required: true },
     },
+  },
+  {
+    name: 'read_my_work',
+    description: "READ WHAT THE USER ALREADY HAS INSIDE ADRIS — their running action plan (with today's steps and what is already ticked off), their outreach campaign and how far each person got, the lead lists sitting in their Brain, and their saved working hours. Call this BEFORE writing or revising any plan, before saying a task still needs doing, and any time you are about to assume the user is starting from scratch. It is also how you VERIFY a claim about their own work instead of guessing — 'you have already messaged 12 of them' should come from here, not from memory. Costs nothing and needs no browser.",
+    parameters: {},
   },
   {
     name: 'get_availability',
@@ -2000,6 +2008,18 @@ async function executeToolCore(
   // OAuth. It exists because the app had NO calendar capability whatsoever, and the agent had been
   // telling people "I'll send over a calendar invite with a meeting link" — a promise nothing in
   // the system could keep, so the meeting simply never got booked.
+  if (toolName === 'read_my_work') {
+    // Everything the app already knows about this user's own work, in one read. The three notes
+    // are the same ones injected into the system prompt — exposing them as a tool as well means an
+    // agent can go and CHECK mid-task rather than reasoning from whatever was true when the turn
+    // started, which is what stops it asserting that finished work still needs doing.
+    const parts = [workStateNote(), todayPlanNote(), availabilityNote()].filter(Boolean);
+    if (!parts.length) {
+      return 'Nothing recorded yet: no action plan running, no outreach campaign, no lead lists in the Brain, and no working hours saved. Treat this user as starting fresh — and if you are about to write a plan, ask them what they have already tried first.';
+    }
+    return parts.join('\n\n');
+  }
+
   if (toolName === 'set_availability') {
     const said = str(args.said).trim();
     if (!said) return '[set_availability needs "said" — the user\'s own words about their hours.]';
