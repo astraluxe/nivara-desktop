@@ -2983,6 +2983,97 @@ fn get_agent_browser_local_path(app: &tauri::AppHandle) -> std::path::PathBuf {
     data_dir.join("tools").join(bin_name)
 }
 
+// ── The Node runtime the agent browser needs ─────────────────────────────────
+//
+// THE BUG THIS EXISTS TO KILL: the agent browser runs `node agent-browser.js`, and the app used to
+// hope Node was already on the machine. A developer has it, so it worked perfectly in testing and
+// silently did nothing for real users — the status said "opening browser" and no window ever came.
+// Chrome being installed did not help: nothing ever got far enough to launch it. That takes /scan,
+// /leads, /enrich, /verify, outreach, Web Autopilot and calendar events down with it.
+//
+// So the app now PROVISIONS its own Node instead of requiring one. The official Windows zip also
+// contains npm, which is the second thing that was assumed and often missing. Downloaded once into
+// app-data, reused forever, invisible to the user. A machine that already has Node still uses it —
+// this is a floor, not a replacement.
+fn get_node_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
+    app.path().app_local_data_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .join("tools").join("node")
+}
+
+/// Path to OUR provisioned node.exe, if it is there.
+fn bundled_node_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    let dir = get_node_dir(app);
+    #[cfg(target_os = "windows")]
+    let exe = dir.join("node.exe");
+    #[cfg(not(target_os = "windows"))]
+    let exe = dir.join("bin").join("node");
+    if exe.is_file() { Some(exe) } else { None }
+}
+
+/// npm from the same provisioned copy. Bare `npm` is a shell shim that a GUI-launched app often
+/// cannot see even when Node itself is installed, which is its own separate silent failure.
+fn bundled_npm_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    let dir = get_node_dir(app);
+    #[cfg(target_os = "windows")]
+    let cmd = dir.join("npm.cmd");
+    #[cfg(not(target_os = "windows"))]
+    let cmd = dir.join("bin").join("npm");
+    if cmd.is_file() { Some(cmd) } else { None }
+}
+
+/// Download and unpack Node into app-data. Returns the node binary path.
+///
+/// Only called when no usable Node exists. Everything is best-effort and reported honestly by the
+/// caller — a failure here must read as "couldn't set the browser up, here is why", never as a
+/// browser that quietly does nothing.
+async fn provision_node(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    if let Some(p) = bundled_node_path(app) { return Ok(p); }
+    let dir = get_node_dir(app);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+
+    // LTS, pinned. An unpinned "latest" would change under the user without warning.
+    #[cfg(target_os = "windows")]
+    let (url, is_zip) = ("https://nodejs.org/dist/v20.18.1/node-v20.18.1-win-x64.zip", true);
+    #[cfg(target_os = "macos")]
+    let (url, is_zip) = ("https://nodejs.org/dist/v20.18.1/node-v20.18.1-darwin-x64.tar.gz", false);
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let (url, is_zip) = ("https://nodejs.org/dist/v20.18.1/node-v20.18.1-linux-x64.tar.gz", false);
+
+    let bytes = reqwest::get(url).await
+        .map_err(|e| format!("download failed: {e}"))?
+        .bytes().await
+        .map_err(|e| format!("download failed: {e}"))?;
+
+    if is_zip {
+        let reader = std::io::Cursor::new(bytes);
+        let mut zip = zip::ZipArchive::new(reader).map_err(|e| format!("bad archive: {e}"))?;
+        for i in 0..zip.len() {
+            let mut f = zip.by_index(i).map_err(|e| format!("bad archive entry: {e}"))?;
+            let name = f.name().to_string();
+            // The zip nests everything under node-vX-win-x64/ — strip that so node.exe lands at
+            // the top of our folder and the paths above stay simple.
+            let rel = match name.split_once('/') { Some((_, r)) => r, None => continue };
+            if rel.is_empty() { continue; }
+            let out = dir.join(rel);
+            if f.is_dir() { let _ = std::fs::create_dir_all(&out); continue; }
+            if let Some(parent) = out.parent() { let _ = std::fs::create_dir_all(parent); }
+            let mut dest = std::fs::File::create(&out).map_err(|e| format!("write {}: {e}", out.display()))?;
+            std::io::copy(&mut f, &mut dest).map_err(|e| format!("extract {}: {e}", out.display()))?;
+        }
+    } else {
+        // tar.gz on unix — shell out to tar, which is present on both macOS and Linux.
+        let tmp = dir.join("node.tar.gz");
+        std::fs::write(&tmp, &bytes).map_err(|e| format!("write temp: {e}"))?;
+        let _ = std::process::Command::new("tar")
+            .args(["-xzf", &tmp.to_string_lossy(), "-C", &dir.to_string_lossy(), "--strip-components=1"])
+            .status();
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    bundled_node_path(app).ok_or_else(|| "Node was downloaded but the binary was not where expected.".to_string())
+}
+
 // ── Option B: Node.js + playwright-core (system Chrome, no download needed) ──
 fn get_playwright_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
     let data_dir = app.path().app_local_data_dir()
@@ -3059,13 +3150,31 @@ async fn setup_agent_browser(app: tauri::AppHandle) -> Result<(), String> {
             // Re-write if the embedded version differs from what's on disk
             std::fs::read_to_string(&script_path).map(|s| s != script_src).unwrap_or(true)
         };
-        let node_bin = resolve_node_exe();
-        let node_ok = {
+        // Prefer a Node we provisioned ourselves; otherwise whatever the machine has.
+        let mut node_bin = bundled_node_path(&app)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(resolve_node_exe);
+        let mut node_ok = {
             #[cfg(target_os = "windows")]
             { use std::os::windows::process::CommandExt; std::process::Command::new(&node_bin).arg("--version").creation_flags(0x08000000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false) }
             #[cfg(not(target_os = "windows"))]
             { std::process::Command::new(&node_bin).arg("--version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false) }
         };
+
+        // NOTHING USABLE ON THIS MACHINE -> INSTALL IT, don't give up. This is the whole fix:
+        // previously node_ok == false meant the entire browser path was skipped in silence, which
+        // is why the feature worked for a developer and did nothing at all for everyone else.
+        if !node_ok {
+            browser_debug_log("no usable node found - provisioning one");
+            match provision_node(&app).await {
+                Ok(p) => {
+                    node_bin = p.to_string_lossy().into_owned();
+                    node_ok = true;
+                    browser_debug_log(&format!("provisioned node at {}", node_bin));
+                }
+                Err(e) => browser_debug_log(&format!("node provisioning failed: {e}")),
+            }
+        }
 
         if node_ok {
             let playwright_dir = get_playwright_dir(&app);
@@ -3088,9 +3197,26 @@ async fn setup_agent_browser(app: tauri::AppHandle) -> Result<(), String> {
             if !already_installed {
                 let dir_str = playwright_dir.to_string_lossy().to_string();
                 #[cfg(target_os = "windows")]
-                { use std::os::windows::process::CommandExt; let _ = std::process::Command::new("cmd").args(["/C", &format!("npm install --prefix \"{}\" playwright-core@1.48.0 --save-exact", dir_str)]).creation_flags(0x08000000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
+                {
+                    use std::os::windows::process::CommandExt;
+                    // Prefer OUR npm. Bare `npm` is a shell shim a GUI-launched app frequently
+                    // cannot resolve even on machines that DO have Node — a second silent failure
+                    // sitting behind the first one.
+                    let npm = bundled_npm_path(&app).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "npm".to_string());
+                    let out = std::process::Command::new("cmd")
+                        .args(["/C", &format!("\"{}\" install --prefix \"{}\" playwright-core@1.48.0 --save-exact", npm, dir_str)])
+                        .creation_flags(0x08000000)
+                        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+                    browser_debug_log(&format!("playwright-core install via {} -> {:?}", npm, out.map(|s| s.success())));
+                }
                 #[cfg(not(target_os = "windows"))]
-                { let _ = std::process::Command::new("sh").args(["-c", &format!("npm install --prefix '{}' playwright-core@1.48.0 --save-exact", dir_str)]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status(); }
+                {
+                    let npm = bundled_npm_path(&app).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "npm".to_string());
+                    let out = std::process::Command::new("sh")
+                        .args(["-c", &format!("'{}' install --prefix '{}' playwright-core@1.48.0 --save-exact", npm, dir_str)])
+                        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+                    browser_debug_log(&format!("playwright-core install via {} -> {:?}", npm, out.map(|s| s.success())));
+                }
             }
         }
 
@@ -3138,7 +3264,7 @@ async fn run_agent_browser(app: tauri::AppHandle, args: String) -> Result<String
         if let Some(r) = run_cmd(&format!("\"{}\"", local_bin.display())) { return Ok(r); }
     }
 
-    Ok("[agent-browser not installed]".to_string())
+    Ok("[agent-browser not installed] The browser could not be set up on this machine. adris.tech installs its own copy the first time it is needed, so this usually means it could not reach the internet at that moment, or security software blocked the download. Check your connection and try again — the details are in browser-debug.log in the adris.tech app-data folder.".to_string())
 }
 
 // ── Open a URL in the user's actual Chrome/default browser (with their profile & sessions) ──
@@ -3289,7 +3415,7 @@ async fn run_agent_browser_session(app: tauri::AppHandle, session_id: String, ar
         }
     }
 
-    Ok("[agent-browser not installed]".to_string())
+    Ok("[agent-browser not installed] The browser could not be set up on this machine. adris.tech installs its own copy the first time it is needed, so this usually means it could not reach the internet at that moment, or security software blocked the download. Check your connection and try again — the details are in browser-debug.log in the adris.tech app-data folder.".to_string())
 }
 
 // ── agent-browser with persistent profile (sessions saved across tasks — user logs in once) ──
@@ -3522,7 +3648,7 @@ async fn run_browser_persistent(app: tauri::AppHandle, args: String) -> Result<S
     }
 
     browser_debug_log("agent-browser NOT INSTALLED — no path worked");
-    Ok("[agent-browser not installed]".to_string())
+    Ok("[agent-browser not installed] The browser could not be set up on this machine. adris.tech installs its own copy the first time it is needed, so this usually means it could not reach the internet at that moment, or security software blocked the download. Check your connection and try again — the details are in browser-debug.log in the adris.tech app-data folder.".to_string())
 }
 
 // ── Fetch a public web page and return readable text (no browser needed) ─────
