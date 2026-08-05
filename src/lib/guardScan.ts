@@ -26,6 +26,24 @@ export interface GuardScanResult {
 // Worst case ≈ 14 × ~12k tokens ≈ 168k tokens (~4% of a Solo plan's 4M/month),
 // so even a maxed-out scan leaves plenty of budget for the rest of the month.
 export const GUARD_CHUNK_CHARS = 45000;
+
+/**
+ * How big a slice this AI source can actually swallow in one request.
+ *
+ * 45,000 characters is roughly 11,000 tokens. That is comfortable on a hosted key and impossible
+ * on a free one: NVIDIA and Groq free tiers meter TOKENS PER MINUTE, so an 11k-token request is
+ * either rejected outright or queued behind its own rate limit -- which is why a tender PDF sat on
+ * "Analyzing contract..." for five minutes and produced nothing. The document was never too big;
+ * each individual bite was.
+ *
+ * Smaller slices mean more requests, and that is the right trade here: many small calls that
+ * finish beat one large call that never returns.
+ */
+export function chunkCharsFor(source: 'nivara' | 'own_key' | 'local' | string): number {
+  if (source === 'own_key') return 12000;   // ~3k tokens -- fits a free-tier per-minute budget
+  if (source === 'local')   return 8000;    // local context windows are smaller again (often 8k total)
+  return GUARD_CHUNK_CHARS;
+}
 export const GUARD_MAX_CHUNKS  = 14;
 const CHARS_PER_PAGE = 2500;     // rough average for a dense legal page
 const CHARS_PER_TOKEN = 4;       // rough English heuristic
@@ -78,10 +96,15 @@ export async function scanLargeDocument(
   systemPrompt: string,
   buildUserMessage: (chunk: string, index: number, count: number) => string,
   onProgress?: (current: number, total: number) => void,
+  /** Slice size for THIS run — see chunkCharsFor. Defaults to the hosted size. */
+  chunkChars: number = GUARD_CHUNK_CHARS,
 ): Promise<GuardScanResult> {
   const text = fullText.trim();
-  const totalChunks = Math.max(1, Math.ceil(text.length / GUARD_CHUNK_CHARS));
-  const count = Math.min(totalChunks, GUARD_MAX_CHUNKS);
+  const totalChunks = Math.max(1, Math.ceil(text.length / chunkChars));
+  // A smaller slice needs proportionally more of them, or a free key would scan a quarter of the
+  // document and silently call it done.
+  const maxChunks = Math.max(GUARD_MAX_CHUNKS, Math.ceil((GUARD_MAX_CHUNKS * GUARD_CHUNK_CHARS) / chunkChars));
+  const count = Math.min(totalChunks, maxChunks);
 
   const findings: GuardFinding[] = [];
   const summaries: string[] = [];
@@ -90,7 +113,7 @@ export async function scanLargeDocument(
 
   for (let i = 0; i < count; i++) {
     onProgress?.(i + 1, count);
-    const chunk = text.slice(i * GUARD_CHUNK_CHARS, (i + 1) * GUARD_CHUNK_CHARS);
+    const chunk = text.slice(i * chunkChars, (i + 1) * chunkChars);
     let raw: string;
     try {
       raw = await callAutomationAI(buildUserMessage(chunk, i, count), systemPrompt);

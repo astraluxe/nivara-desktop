@@ -1,6 +1,7 @@
-﻿import { useState, useRef } from 'react';
+﻿import { useState, useRef, useEffect } from 'react';
 import { guardDb } from '../../lib/guardDb';
-import { scanLargeDocument, estimateScan, type GuardScanResult } from '../../lib/guardScan';
+import { scanLargeDocument, estimateScan, chunkCharsFor, type GuardScanResult } from '../../lib/guardScan';
+import { resolveAiSource } from '../../lib/aiSource';
 import { extractDocument, GuardExtractError, type ExtractProgress } from '../../lib/guardOcr';
 
 type ScanResult = GuardScanResult;
@@ -58,7 +59,15 @@ Return ONLY a valid JSON object:
   ]
 }
 
-Check for: auto-renewal traps, uncapped liability, one-sided termination, unusual IP assignment, non-compete clauses, payment term risks, missing GDPR/DPDP data protection clauses, data residency gaps.
+FIRST work out WHAT KIND of document this is, and say so in the first sentence of the summary. It is not always a signed contract — people scan tenders and RFPs, MoUs, purchase orders, quotations, NDAs, terms of service, employment offers and government notices. Judging a tender by contract criteria produces a useless report: it has no indemnity clause to find, and the things that actually decide whether to bid go unmentioned.
+
+Then check what matters FOR THAT KIND:
+- Contract / agreement / NDA: auto-renewal traps, uncapped liability, one-sided termination, unusual IP assignment, non-compete clauses, payment term risks, missing GDPR/DPDP data protection clauses, data residency gaps.
+- Tender / RFP / bid document: eligibility and qualification criteria (and whether a small firm can realistically meet them), EMD / security deposit / bank guarantee amounts, submission deadline and format, evaluation method, penalty and liquidated-damages clauses, payment schedule and retention, disqualification triggers, and any clause that quietly favours a large incumbent.
+- Purchase order / quotation / invoice: price, taxes, delivery obligations, acceptance terms, penalties for delay, what happens if the buyer cancels.
+- Employment offer: notice period, non-compete, IP ownership, variable pay conditions, clawbacks.
+
+Judge it on its own terms and use the document's own vocabulary. A "finding" is anything that costs the reader money, time, rights or the ability to walk away — not only a legal clause. If the document is genuinely low-risk, say so with a low score rather than inventing problems.
 Respond ONLY with raw JSON. No markdown, no extra text.`;
 
 function RiskMeter({ score }: { score: number }) {
@@ -92,6 +101,14 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
   const [extractProg, setExtractProg] = useState<ExtractProgress | null>(null);
   const [ocrNote, setOcrNote] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
+  /** Seconds since the scan began — the difference between "working" and "stuck". */
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!scanning) { setElapsed(0); return; }
+    const t0 = Date.now();
+    const id = setInterval(() => setElapsed(Math.floor((Date.now() - t0) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [scanning]);
 
   const est = text.trim().length >= 100 ? estimateScan(text) : null;
 
@@ -153,11 +170,18 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
       const parsed = await scanLargeDocument(
         contractText,
         SYSTEM_PROMPT,
+        // "Contract" was doing real damage here: a tender, an RFP, an MoU or a purchase order got
+        // analysed as though it were a signed agreement, so the model hunted for indemnity clauses
+        // in a document that has none and found nothing worth saying. Let it identify the document
+        // first and judge it on the terms that matter for that kind of document.
         (chunk, i, count) =>
           count > 1
-            ? `Analyze section ${i + 1} of ${count} of this contract. Report only issues found in THIS section:\n\n${chunk}`
-            : `Analyze this contract:\n\n${chunk}`,
+            ? `Analyze section ${i + 1} of ${count} of this document. It may be a contract, a tender/RFP, an MoU, a purchase order, a quotation or terms of service — work out which from the text itself and judge it by what matters for THAT kind of document. Report only issues found in THIS section:\n\n${chunk}`
+            : `Analyze this document. It may be a contract, a tender/RFP, an MoU, a purchase order, a quotation or terms of service — say which it is, then assess it on the terms that matter for that kind (for a tender: eligibility, EMD/security deposit, deadlines, penalties, payment terms and disqualification triggers):\n\n${chunk}`,
         (cur, total) => setProgress({ cur, total }),
+        // Slice size matched to the AI source. On a free key an 11k-token request is throttled
+        // rather than answered, which is what left this on "Analyzing…" with nothing to show.
+        chunkCharsFor((await resolveAiSource()).mode),
       );
 
       const topSev = parsed.findings.find(f => f.severity === 'high') ? 'high'
@@ -339,9 +363,21 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
               </div>
             </div>
             <p className="text-sm font-medium text-nv-text">
-              {progress && progress.total > 1 ? `Analyzing section ${progress.cur} of ${progress.total}…` : 'Analyzing contract…'}
+              {progress && progress.total > 1 ? `Reading section ${progress.cur} of ${progress.total}…` : 'Reading the document…'}
             </p>
-            <p className="text-xs text-nv-faint">Checking for risks, liability clauses, and compliance gaps</p>
+            {/* A SILENT SPINNER IS INDISTINGUISHABLE FROM A HANG. On a free key each section is a
+                separate request that can take a while, so say how long it has been going and what
+                is actually happening -- otherwise the only way to find out is to give up. */}
+            <p className="text-xs text-nv-faint">
+              Working out what kind of document this is, then checking the terms that matter for it
+              {elapsed >= 5 ? ` · ${elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`} elapsed` : ''}
+            </p>
+            {elapsed >= 45 && (
+              <p className="text-[11px] text-nv-muted max-w-sm text-center leading-relaxed">
+                Still going. Long documents on a free key are read in small pieces to stay inside its
+                per-minute limit, so this can take a few minutes — each section is a separate request.
+              </p>
+            )}
             {progress && progress.total > 1 && (
               <div className="w-44 h-1 rounded-full bg-nv-surface2 overflow-hidden mt-1">
                 <div className="h-full rounded-full bg-accent transition-all duration-300" style={{ width: `${Math.round((progress.cur / progress.total) * 100)}%` }} />
