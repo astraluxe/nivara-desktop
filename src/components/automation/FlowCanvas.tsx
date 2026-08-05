@@ -205,9 +205,19 @@ const H = { width: 9, height: 9, background: '#7C5CFF', border: '2px solid var(-
 // ─── Shared delete button ──────────────────────────────────────────────────
 function NodeDeleteBtn({ id }: { id: string }) {
   return (
+    // WHY THIS NEEDS `nodrag`, AND WHY IT FIRES ON CLICK.
+    //
+    // React Flow drags nodes with d3-drag, which listens on POINTERDOWN at the node level. A
+    // mousedown handler here therefore ran after the drag had already begun: the press was read as
+    // "start moving this node", the × never completed, and the only way left to remove a block was
+    // selecting it and hitting Delete on the keyboard. The `nodrag` class is React Flow's own
+    // opt-out and is what actually stops that; stopping propagation alone does not, because the
+    // pointer listener sits above this element rather than below it.
     <button
-      onMouseDown={e => { e.stopPropagation(); gDeleteNode?.(id); }}
-      className="ml-auto text-nv-faint hover:text-nv-red text-[13px] leading-none transition-fast px-0.5"
+      onPointerDown={e => e.stopPropagation()}
+      onMouseDown={e => e.stopPropagation()}
+      onClick={e => { e.stopPropagation(); gDeleteNode?.(id); }}
+      className="nodrag nopan ml-auto text-nv-faint hover:text-nv-red text-[13px] leading-none transition-fast px-1 cursor-pointer"
       title="Delete node"
     >×</button>
   );
