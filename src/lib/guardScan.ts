@@ -38,6 +38,11 @@ export const GUARD_CHUNK_CHARS = 45000;
  *
  * Smaller slices mean more requests, and that is the right trade here: many small calls that
  * finish beat one large call that never returns.
+ *
+ * NOTE: a big CONTEXT WINDOW does not lift this. A model advertising 1M context can hold a whole
+ * document in one prompt, but the free tier still meters how many tokens you may send PER MINUTE —
+ * those are different limits, and it is the per-minute one that stalls a scan. Slice size is set
+ * by the rate limit, not by what the model could theoretically read.
  */
 export function chunkCharsFor(source: 'nivara' | 'own_key' | 'local' | string): number {
   if (source === 'own_key') return 12000;   // ~3k tokens -- fits a free-tier per-minute budget
@@ -45,6 +50,19 @@ export function chunkCharsFor(source: 'nivara' | 'own_key' | 'local' | string): 
   return GUARD_CHUNK_CHARS;
 }
 export const GUARD_MAX_CHUNKS  = 14;
+
+/**
+ * How many slices we are willing to send — i.e. whether a long document gets scanned in FULL.
+ *
+ * The 14-chunk ceiling exists to bound spend on OUR key: a 300-page agreement could otherwise eat
+ * a month's allowance in one scan. That reasoning does not apply to a user's own key or a local
+ * model, where the tokens are theirs and free — and silently stopping a quarter of the way into
+ * their tender is a much worse outcome than a slow scan. So on BYOK and local there is no cap
+ * beyond a sanity bound that stops a runaway (2,000 slices is several thousand pages).
+ */
+export function maxChunksFor(source: 'nivara' | 'own_key' | 'local' | string): number {
+  return source === 'own_key' || source === 'local' ? 2000 : GUARD_MAX_CHUNKS;
+}
 const CHARS_PER_PAGE = 2500;     // rough average for a dense legal page
 const CHARS_PER_TOKEN = 4;       // rough English heuristic
 
@@ -96,14 +114,15 @@ export async function scanLargeDocument(
   systemPrompt: string,
   buildUserMessage: (chunk: string, index: number, count: number) => string,
   onProgress?: (current: number, total: number) => void,
+  /** Told when a rate limit forces a wait, so the UI can show it rather than look frozen. */
+  onRetry?: (info: { attempt: number; max: number; waitMs: number }) => void,
   /** Slice size for THIS run — see chunkCharsFor. Defaults to the hosted size. */
   chunkChars: number = GUARD_CHUNK_CHARS,
+  /** How many slices are allowed — see maxChunksFor. Defaults to the hosted cap. */
+  maxChunks: number = GUARD_MAX_CHUNKS,
 ): Promise<GuardScanResult> {
   const text = fullText.trim();
   const totalChunks = Math.max(1, Math.ceil(text.length / chunkChars));
-  // A smaller slice needs proportionally more of them, or a free key would scan a quarter of the
-  // document and silently call it done.
-  const maxChunks = Math.max(GUARD_MAX_CHUNKS, Math.ceil((GUARD_MAX_CHUNKS * GUARD_CHUNK_CHARS) / chunkChars));
   const count = Math.min(totalChunks, maxChunks);
 
   const findings: GuardFinding[] = [];
@@ -116,7 +135,7 @@ export async function scanLargeDocument(
     const chunk = text.slice(i * chunkChars, (i + 1) * chunkChars);
     let raw: string;
     try {
-      raw = await callAutomationAI(buildUserMessage(chunk, i, count), systemPrompt);
+      raw = await callAutomationAI(buildUserMessage(chunk, i, count), systemPrompt, (info) => onRetry?.(info));
     } catch (e) {
       // Surface a hard failure on the first chunk; tolerate later-chunk hiccups.
       if (i === 0) throw e;

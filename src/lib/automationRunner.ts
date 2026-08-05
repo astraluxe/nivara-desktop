@@ -98,7 +98,10 @@ export function isTransientAiError(msg: string): boolean {
       || /\b(500|502|503|504|529)\b|overloaded|temporarily unavailable|service unavailable|try again later|bad gateway|gateway time-?out/.test(m);
 }
 
-export async function callAutomationAI(userMessage: string, systemPrompt: string): Promise<string> {
+/** Told when a rate limit forces a wait, so a caller can SHOW it instead of looking frozen. */
+export type AiRetryNotice = (info: { attempt: number; max: number; waitMs: number; reason: string }) => void;
+
+export async function callAutomationAI(userMessage: string, systemPrompt: string, onRetry?: AiRetryNotice): Promise<string> {
   // Free BYOK tiers rate-limit hard (a real NVIDIA key returned 429 on 9 of 14 quick requests), and
   // background work — a Guard scan chunking a codebase, an automation looping rows — is exactly the
   // pattern that trips it. Wait the limit out instead of failing the run.
@@ -110,7 +113,13 @@ export async function callAutomationAI(userMessage: string, systemPrompt: string
       const m = e instanceof Error ? e.message : String(e);
       if (!isTransientAiError(m) || rateWaits >= 5) break;
       rateWaits++;
-      await new Promise((r) => setTimeout(r, Math.min(3000 * 2 ** (rateWaits - 1), 30_000)));
+      const waitMs = Math.min(3000 * 2 ** (rateWaits - 1), 30_000);
+      // 3s + 6s + 12s + 24s + 30s is 75 seconds of waiting before we even give up, and a free
+      // NVIDIA key really does 429 most requests. Silently, that reads as a hang -- a small
+      // document "taking five minutes" was mostly this. Tell the caller so the user can see the
+      // app is waiting out a rate limit rather than stuck.
+      onRetry?.({ attempt: rateWaits, max: 5, waitMs, reason: m.slice(0, 120) });
+      await new Promise((r) => setTimeout(r, waitMs));
     }
   }
   try {

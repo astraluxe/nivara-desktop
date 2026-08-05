@@ -1,6 +1,6 @@
 ﻿import { useState, useRef, useEffect } from 'react';
 import { guardDb } from '../../lib/guardDb';
-import { scanLargeDocument, estimateScan, chunkCharsFor, type GuardScanResult } from '../../lib/guardScan';
+import { scanLargeDocument, estimateScan, chunkCharsFor, maxChunksFor, type GuardScanResult } from '../../lib/guardScan';
 import { resolveAiSource } from '../../lib/aiSource';
 import { extractDocument, GuardExtractError, type ExtractProgress } from '../../lib/guardOcr';
 
@@ -103,6 +103,8 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
   const fileRef = useRef<HTMLInputElement>(null);
   /** Seconds since the scan began — the difference between "working" and "stuck". */
   const [elapsed, setElapsed] = useState(0);
+  /** Set while we are waiting out a provider rate limit, so the user sees WHY it is slow. */
+  const [rateWait, setRateWait] = useState<{ attempt: number; max: number; waitMs: number } | null>(null);
   useEffect(() => {
     if (!scanning) { setElapsed(0); return; }
     const t0 = Date.now();
@@ -164,9 +166,11 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
     setResult(null);
     setScanning(true);
     setProgress(null);
+    setRateWait(null);
     try {
       // Scan the ENTIRE document in bounded chunks (handles 200+ page agreements),
       // then merge + dedupe findings. The chunk cap bounds token spend per scan.
+      const scanSource = (await resolveAiSource()).mode;
       const parsed = await scanLargeDocument(
         contractText,
         SYSTEM_PROMPT,
@@ -179,9 +183,14 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
             ? `Analyze section ${i + 1} of ${count} of this document. It may be a contract, a tender/RFP, an MoU, a purchase order, a quotation or terms of service — work out which from the text itself and judge it by what matters for THAT kind of document. Report only issues found in THIS section:\n\n${chunk}`
             : `Analyze this document. It may be a contract, a tender/RFP, an MoU, a purchase order, a quotation or terms of service — say which it is, then assess it on the terms that matter for that kind (for a tender: eligibility, EMD/security deposit, deadlines, penalties, payment terms and disqualification triggers):\n\n${chunk}`,
         (cur, total) => setProgress({ cur, total }),
+        // Rate-limit waits are the single biggest reason a small document appears to hang.
+        (info) => setRateWait(info),
         // Slice size matched to the AI source. On a free key an 11k-token request is throttled
         // rather than answered, which is what left this on "Analyzing…" with nothing to show.
-        chunkCharsFor((await resolveAiSource()).mode),
+        chunkCharsFor(scanSource),
+        // On the user's own key the tokens are theirs — scan the WHOLE document rather than
+        // stopping partway and calling it done.
+        maxChunksFor(scanSource),
       );
 
       const topSev = parsed.findings.find(f => f.severity === 'high') ? 'high'
@@ -372,6 +381,16 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
               Working out what kind of document this is, then checking the terms that matter for it
               {elapsed >= 5 ? ` · ${elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`} elapsed` : ''}
             </p>
+            {/* THE REAL REASON IT IS SLOW, MOST OF THE TIME. A free NVIDIA/Groq key rate-limits
+                hard, and the retry backoff (3s, 6s, 12s, 24s, 30s) means over a minute of waiting
+                on ONE small chunk. Unsaid, that is indistinguishable from a crash. */}
+            {rateWait && (
+              <p className="text-[11px] text-amber-600 max-w-sm text-center leading-relaxed">
+                Your AI provider is rate-limiting (free keys cap how much you can send per minute).
+                Waiting {Math.round(rateWait.waitMs / 1000)}s, then retrying — attempt {rateWait.attempt} of {rateWait.max}.
+                Nothing is stuck.
+              </p>
+            )}
             {elapsed >= 45 && (
               <p className="text-[11px] text-nv-muted max-w-sm text-center leading-relaxed">
                 Still going. Long documents on a free key are read in small pieces to stay inside its
