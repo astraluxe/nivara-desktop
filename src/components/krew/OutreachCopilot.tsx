@@ -1521,11 +1521,20 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       let attached = false;
       if (drafted && attachDoc?.path) {
         try {
+          // WHICH file input matters. Checked against live LinkedIn: the composer renders TWO
+          // hidden inputs — the first accepts image/* only, the second accepts documents
+          // (image/*,.ai,.psd,.pdf,.doc,.docx,.ppt,…). A bare `input[type=file]` selector picks
+          // the FIRST, so a PDF one-pager — the whole point of this feature — would be pushed into
+          // an images-only field. Target the document input by what it accepts, which is stable
+          // across redesigns in a way class names and the paperclip icon are not.
+          const isImage = /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(attachDoc.filename || attachDoc.path);
+          // Single quotes inside the attribute selector, and a SPACE before the path: the browser
+          // script splits `upload <selector> <path>` on whitespace, so the ` ::: ` separator the
+          // other commands use would have been swallowed into the file path and every upload would
+          // have failed with "file not found".
+          const selector = isImage ? 'input[type=file]' : "input[type=file][accept*='.pdf']";
           const up = await invoke<string>('run_browser_persistent', {
-            // LinkedIn's messaging composer keeps its file input hidden behind the paperclip; the
-            // input itself is present in the DOM either way, so target it directly rather than
-            // clicking through an icon whose markup changes with every redesign.
-            args: `upload input[type=file] ::: ${attachDoc.path}`,
+            args: `upload ${selector} ${attachDoc.path}`,
           });
           attached = typeof up === 'string' && !/\[|error|not found|failed/i.test(up);
         } catch { attached = false; }

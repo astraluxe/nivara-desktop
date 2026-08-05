@@ -14,6 +14,7 @@ const SECTIONS: { id: string; label: string }[] = [
   { id: 'autopilot',  label: 'Web Autopilot' },
   { id: 'brain',      label: 'Brain — shared memory' },
   { id: 'todo',       label: 'To-do' },
+  { id: 'plan',       label: 'Plan — your month, in play' },
   { id: 'linkedin',   label: 'Worked example: LinkedIn outreach' },
   { id: 'models',     label: 'Models — running AI locally' },
   { id: 'coder',      label: 'Coder' },
@@ -422,6 +423,43 @@ export default function InfoModule() {
             Krew may also offer a <span className="text-nv-text">Next up</span> card in the chat after
             finishing something — one obvious follow-on step you can accept with a click, or ignore
             entirely and type whatever you actually want instead.
+          </P>
+
+          <H id="plan">Plan &mdash; your month, in play</H>
+          <P>
+            When an agent writes a day-by-day plan, a <span className="text-nv-text">Start this plan</span> button
+            appears under that answer. Press it and the plan stops being text you scroll past: it becomes dated
+            steps you tick off, opened any time from the <span className="text-nv-text">Plan</span> button at the
+            top of the chat.
+          </P>
+          <P>
+            Today&rsquo;s steps land on your To-do automatically, on the right date, every time you open the app &mdash;
+            you never have to go looking for them. Krew knows what today&rsquo;s step is and helps you finish it rather
+            than restating it, and each step opens to show the detail from the answer it came from, so
+            &ldquo;rewrite the homepage using the pillars above&rdquo; still knows what the pillars were.
+          </P>
+          <P>
+            Switch to <span className="text-nv-text">Month</span> for the whole plan as a calendar. Days you don&rsquo;t
+            work are dimmed, each date shows a dot per open step, and tapping one tells you what it really holds &mdash;
+            your free hours, the steps due, other dated tasks, and anything the copilot logged that day including
+            meeting links.
+          </P>
+          <Example title="Telling it when you are free">
+            Say <K>I&rsquo;m busy on weekdays from 10 to 6 and I don&rsquo;t work Sundays</K> once, in chat. That is
+            remembered as a recurring pattern &mdash; so nothing gets scheduled over your working hours, the copilot
+            offers only meeting slots you can actually make, and you never have to block out a single day by hand.
+            Recurring blocks work too: <K>busy every Monday 9 to 11</K>.
+          </Example>
+          <P>
+            The plan and outreach stay in step with each other. If today&rsquo;s step says to message fifteen people,
+            the copilot shows that target and counts what has really gone out today. When someone asks to meet, it
+            is written into the plan&rsquo;s log &mdash; so it is still in front of you two days later, rather than
+            lost in a panel you closed.
+          </P>
+          <P>
+            A revised plan does not throw away your progress. With a plan already running you get
+            <span className="text-nv-text"> Refine plan</span>, which rewrites the steps that changed, adds what is new,
+            and leaves everything you have already ticked off exactly as it is.
           </P>
 
           <H id="linkedin">Worked example: LinkedIn outreach</H>
