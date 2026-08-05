@@ -38,6 +38,7 @@ import SkillsPanel from './SkillsPanel';
 import PlanPanel from './PlanPanel';
 import { looksLikeActionPlan, parsePlanSteps, createPlan, savePlan, loadPlan, planProgress, syncPlanToTodos, todayPlanNote, mergeIntoPlan, PLAN_EVENT, type ActionPlan } from '../../lib/planStore';
 import { availabilityNote, looksLikeAvailability, parseAvailability, saveAvailability, loadAvailability, describeAvailability } from '../../lib/availability';
+import { workStateNote } from '../../lib/workState';
 import LeadSetupCard, { type LeadConfig } from './LeadSetupCard';
 import { loadUserLocation, locationLabel } from '../../lib/userLocation';
 import { identityBlock } from '../../lib/userIdentity';
@@ -9148,6 +9149,8 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
        // empty strings until the user has a plan / has told us their hours, so they cost nothing
        // for everyone else.
        todayPlanNote(), availabilityNote(),
+       // What they have ALREADY done, so a plan builds on it instead of starting from zero.
+       workStateNote(),
        skillsBlock, profileBlock, memBlock, tierDirective, dateBlock],
     );
 

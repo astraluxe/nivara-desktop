@@ -34,6 +34,8 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
   const [plan, setPlan] = useState<ActionPlan | null>(() => loadPlan());
   const [showAll, setShowAll] = useState(false);
   const [note, setNote] = useState('');
+  /** Which step has its detail open. One at a time — the panel is 380px wide. */
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   const [avail, setAvail] = useState(() => loadAvailability());
 
@@ -50,7 +52,11 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
   // than describing a button the user cannot see from here.
   if (!plan) {
     return (
-      <div className="w-[380px] shrink-0 border-l border-nv-border bg-nv-surface flex flex-col min-h-0">
+      <div className="fixed inset-0 z-[60] flex items-stretch justify-end bg-black/60 backdrop-blur-md" onClick={onClose}>
+      <div
+        className="w-full max-w-md h-full bg-nv-surface border-l border-nv-border shadow-2xl flex flex-col animate-[slidein_.18s_ease-out] min-h-0"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="px-3.5 py-2.5 border-b border-nv-border shrink-0 flex items-start gap-2">
           <div className="min-w-0 flex-1">
             <p className="text-[12.5px] font-semibold text-nv-text leading-snug">Plan</p>
@@ -73,6 +79,7 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
             the whole month.
           </p>
         </div>
+      </div>
       </div>
     );
   }
@@ -112,6 +119,38 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
     setTimeout(() => setNote(''), 3500);
   };
 
+  /**
+   * The part of the original answer this step came from.
+   *
+   * Steps are parsed down to one line, which throws away the paragraph or table row that explained
+   * them. The whole answer is kept on the plan, so find the line the step was taken from and hand
+   * back what surrounds it — the deliverable column, the owner, the note in brackets. Falls back to
+   * nothing rather than showing an unrelated chunk of text.
+   */
+  const stepContext = (s: PlanStep): string => {
+    const src = plan.source || '';
+    if (!src) return '';
+    const needle = s.action.toLowerCase().slice(0, 30);
+    const lines = src.split('\n');
+    const i = lines.findIndex((l) => l.toLowerCase().includes(needle));
+    if (i < 0) return '';
+    const row = lines[i].trim();
+    // A table row carries its own detail in the other cells — show them as labelled pairs, using
+    // the table's real header so "Deliverable" says Deliverable and not "column 4".
+    if (row.startsWith('|')) {
+      const cells = row.split('|').map((c) => c.trim()).filter((c, ci, arr) => !(ci === 0 && !c) && !(ci === arr.length - 1 && !c));
+      const hdrLine = lines.slice(0, i).reverse().find((l) => l.trim().startsWith('|') && /day|action|task/i.test(l));
+      const hdr = hdrLine ? hdrLine.split('|').map((c) => c.trim()).filter(Boolean) : [];
+      const out = cells
+        .map((c, ci) => ({ k: hdr[ci] || '', v: c.replace(/\*\*/g, '').replace(/<br\s*\/?>/gi, ' · ').trim() }))
+        .filter((x) => x.v && !/^\d{1,2}(-\d{1,2})?$/.test(x.v) && x.v.toLowerCase() !== needle.slice(0, x.v.length).toLowerCase())
+        .map((x) => (x.k ? `${x.k}: ${x.v}` : x.v));
+      return out.join('\n');
+    }
+    // Prose: the line plus whatever immediately follows it, which is usually the explanation.
+    return lines.slice(i, i + 4).join('\n').trim().slice(0, 600);
+  };
+
   const StepRow = ({ s, dim }: { s: PlanStep; dim?: boolean }) => {
     const d = stepDate(plan, s);
     const isToday = isSameDay(d, new Date());
@@ -130,12 +169,35 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
             <span className="text-[9px] font-mono text-nv-faint">Day {s.day} · {fmtDate(d)}</span>
             {s.doneWhen && <span className="text-[9px] text-nv-faint">· done when: {s.doneWhen}</span>}
           </div>
-          {!s.done && (
-            <button
-              onClick={() => onRunStep(`Help me do this step from my plan, and actually do the parts you can: "${s.action}".${s.doneWhen ? ` It counts as finished when: ${s.doneWhen}.` : ''} Use your tools — browser, files, calendar, connected apps — rather than just telling me how.`)}
-              className="mt-1 text-[9.5px] px-1.5 py-0.5 rounded-md border border-accent/40 text-accent hover:bg-accent/10 transition-fast"
-            >Do this with Krew →</button>
+          {/* THE DETAIL BEHIND THE TASK. "Rewrite homepage with new positioning (use pillars
+              above)" is unusable on its own — the pillars ARE the task, and they were in the answer
+              this step came from. The plan already keeps that answer, so the reasoning is one tap
+              away instead of lost in a chat scroll. */}
+          {expanded === s.id && (
+            <div className="mt-1.5 p-2 rounded-lg bg-nv-bg border border-nv-border">
+              {stepContext(s) ? (
+                <p className="text-[10px] text-nv-muted leading-relaxed whitespace-pre-wrap">{stepContext(s)}</p>
+              ) : (
+                <p className="text-[10px] text-nv-faint leading-relaxed">No extra detail was written for this one. Ask Krew below and it will work out the specifics from the rest of the plan.</p>
+              )}
+              <button
+                onClick={() => onRunStep(`About this step in my plan: "${s.action}". Explain exactly what it means for MY situation and what "good" looks like — check what I have already done before you answer (my lead lists, my outreach progress, my Brain notes) rather than assuming I am starting fresh. Then offer to do the parts you can.`)}
+                className="mt-1.5 text-[9.5px] px-1.5 py-0.5 rounded-md border border-nv-border text-nv-muted hover:bg-nv-surface2 transition-fast"
+              >Ask Krew about this →</button>
+            </div>
           )}
+          <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+            {!s.done && (
+              <button
+                onClick={() => onRunStep(`Help me do this step from my plan, and actually do the parts you can: "${s.action}".${s.doneWhen ? ` It counts as finished when: ${s.doneWhen}.` : ''} Check what I have ALREADY done first — my outreach list, my lead lists in the Brain, my LinkedIn — and pick up from there instead of starting over. Use your tools (browser, files, calendar, connected apps) rather than just telling me how.`)}
+                className="text-[9.5px] px-1.5 py-0.5 rounded-md border border-accent/40 text-accent hover:bg-accent/10 transition-fast"
+              >Do this with Krew →</button>
+            )}
+            <button
+              onClick={() => setExpanded((v) => (v === s.id ? null : s.id))}
+              className="text-[9.5px] px-1.5 py-0.5 rounded-md border border-nv-border text-nv-faint hover:text-nv-text hover:bg-nv-surface2 transition-fast"
+            >{expanded === s.id ? 'Hide detail' : 'Details'}</button>
+          </div>
         </div>
       </div>
     );
@@ -149,7 +211,11 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
   }
 
   return (
-    <div className="w-[380px] shrink-0 border-l border-nv-border bg-nv-surface flex flex-col min-h-0">
+    <div className="fixed inset-0 z-[60] flex items-stretch justify-end bg-black/60 backdrop-blur-md" onClick={onClose}>
+      <div
+        className="w-full max-w-md h-full bg-nv-surface border-l border-nv-border shadow-2xl flex flex-col animate-[slidein_.18s_ease-out] min-h-0"
+        onClick={(e) => e.stopPropagation()}
+      >
       <div className="px-3.5 py-2.5 border-b border-nv-border shrink-0">
         <div className="flex items-start gap-2">
           <div className="min-w-0 flex-1">
@@ -294,6 +360,7 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
           onClick={() => { if (confirm('Drop this plan? Your To-do items stay.')) { clearPlan(); setPlan(null); onClose(); } }}
           className="ml-auto text-[10.5px] px-2 py-1.5 rounded-lg text-nv-faint hover:text-nv-text transition-fast"
         >Drop plan</button>
+      </div>
       </div>
     </div>
   );
