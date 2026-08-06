@@ -25,12 +25,19 @@ function localISO(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
+export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil }: {
   onClose: () => void;
   /** Hand a step to Krew so it can actually DO it — with the browser, the apps, the lot. */
   onRunStep: (instruction: string) => void;
   /** Ask Krew to put a set of steps in the real calendar. */
   onSchedule: (instruction: string) => void;
+  /**
+   * Convene the council DIRECTLY — not by sending a chat message that asks an agent to do it.
+   * That indirection is what put an ops agent in front of the plan: it read a message full of
+   * steps, decided this was work to delegate, and wrote its own five-voice review because it could
+   * not run the tool. A button has to do the thing it says.
+   */
+  onCouncil: (question: string) => void;
 }) {
   const [plan, setPlan] = useState<ActionPlan | null>(() => loadPlan());
   const [showAll, setShowAll] = useState(false);
@@ -309,9 +316,21 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
             className="flex-1 text-[10px] px-2 py-1 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-fast font-medium"
           >✎ Refine this plan</button>
           <button
-            onClick={() => onRunStep(
-              `Use council_review on my current plan before I commit more time to it. The question: "Is this the right plan for what I am trying to do, and what would you change?"\n\nTHE PLAN — ${plan.title}:\n${plan.steps.map((s) => `Day ${s.day}: ${s.action}${s.doneWhen ? ` (done when: ${s.doneWhen})` : ''}${s.done ? ' [DONE]' : ''}`).join('\n')}`,
-            )}
+            onClick={() => {
+              // Finished and unfinished work go in SEPARATELY and labelled. Handing the council one
+              // undifferentiated list is how it starts rewriting days that are already behind you.
+              const done = plan.steps.filter((x) => x.done).map((x) => `- Day ${x.day}: ${x.action}`).join('\n');
+              const todo = plan.steps.filter((x) => !x.done).map((x) => `- Day ${x.day}: ${x.action}`).join('\n');
+              onCouncil(
+                'Is this the right plan for what I am trying to do, and what would you change?\n\n'
+                + `THE PLAN — ${plan.title}\n\n`
+                + 'ALREADY FINISHED (do not re-plan, repeat or move these):\n'
+                + (done || '- (nothing yet)')
+                + '\n\nSTILL TO DO (only these may be re-planned):\n'
+                + (todo || '- (nothing left)'),
+              );
+              onClose();
+            }}
             className="flex-1 text-[10px] px-2 py-1 rounded-lg border transition-fast font-medium"
             style={{ borderColor: '#e8a33d66', color: '#e8a33d' }}
           >⚖ Ask the council</button>

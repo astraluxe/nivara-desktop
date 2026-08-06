@@ -10370,7 +10370,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
                     toolDeliverable = (tblStart >= 0 ? dResult.slice(tblStart) : dResult).trim();
                   }
                 } catch (e) { dResult = `Error: ${e}`; }
-                if (stopRef.current) break;   // user stopped while the tool was running — don't re-show the indicator
+                if (superseded()) break;   // user stopped while the tool was running — don't re-show the indicator
                 setAgentStep(`${agentDisplayName} · thinking…`);
                 // verify_lead_list's full table is shown to the user directly, so the model only
                 // needs a short ack — feeding it the whole (truncated) table made it try to
@@ -10619,7 +10619,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
               // progress bar always stays aligned even when a step is skipped.
               for (let phIdx = 0; phIdx < wfDelegations.length; phIdx++) {
                 const del = wfDelegations[phIdx];
-                if (stopRef.current) break;
+                if (superseded()) break;
                 const wfKey  = String(del.agent_key ?? '');
                 const wfRawTask = String(del.task ?? '');
                 // Mark current phase as running
@@ -10658,7 +10658,9 @@ Everything you need for follow-ups is in that answer above; read it there rather
                 // real tool but whose LAST turn came back empty (stream hiccup, model just stops)
                 // must still get the wrap-up chance, not silently become "(no response)".
                 let wfAnyToolRan = false;
-                for (let ds = 0; ds < 8 && !stopRef.current; ds++) {
+                // superseded(), not stopRef alone — a delegate that keeps running after Stop is
+                // exactly how a specialist came back talking after the user ended the turn.
+                for (let ds = 0; ds < 8 && !superseded(); ds++) {
                   wfCutOff = false;
                   let stepTxt = '';
                   const { text: wfRaw, truncated: wfTrunc } = await streamTurnWithRetry(wfHist, wfSys, (chunk) => {
@@ -10717,7 +10719,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
                   setAgentStep(`${agentHandle(wfAgent)} · ${dTool.replace(/_/g,' ')}…`); updateLastMsg((wfAccum || '') + `\n\n*${agentHandle(wfAgent)} is using ${dTool.replace(/_/g,' ')}…*`);
                   wfAnyToolRan = true;
                   let dRes = ''; try { dRes = await executeTool(dTool, dArgs, creds, requestTerminalApproval, wfKey, user?.id ?? '', `${sidRef.current ?? 'main'}-${wfKey}`); if (dTool.startsWith('browser_') && dRes.includes('[agent-browser not installed')) setBrowserNudge(true); } catch (e) { dRes = `Error: ${e}`; }
-                  if (stopRef.current) break;   // user stopped mid-tool — don't re-show the indicator
+                  if (superseded()) break;   // user stopped mid-tool — don't re-show the indicator
                   const cappedWfRes = dRes.length > 3000 ? dRes.slice(0, 3000) + '\n…[truncated for context]' : dRes;
                   setAgentStep(`${agentHandle(wfAgent)} · thinking…`); wfHist.push({ role: 'assistant', content: wfFinal }); wfHist.push({ role: 'user', content: `<tool_result>${cappedWfRes}</tool_result>` });
                   // Keep context bounded: preserve initial task + last 6 messages
@@ -10797,62 +10799,8 @@ Everything you need for follow-ups is in that answer above; read it there rather
               delegationKey = 'plan_workflow';
             }
           } else if (tool === 'council_review') {
-            // ── THE COUNCIL ────────────────────────────────────────────────────────────────────
-            //
-            // Five voices, run in sequence, each given ONLY the question and its own mandate —
-            // deliberately not each other's answers. Showing them the earlier replies is what
-            // makes five advisers collapse into one: the second agrees with the first, the third
-            // splits the difference, and by the fifth there is a consensus that nobody argued for.
-            // Independence is the entire product here, so they are kept apart and the
-            // disagreement is left visible rather than smoothed into a summary.
-            const wanted = String(args.voices ?? '').split(',').map((v) => v.trim().toLowerCase()).filter(Boolean);
-            const councilKeys = ['council_contrarian', 'council_first_principles', 'council_expansionist', 'council_outsider', 'council_executor']
-              .filter((k) => !wanted.length || wanted.some((w) => k.includes(w.replace(/[^a-z_]/g, ''))));
-            const question = String(args.question ?? '').trim();
-            const heard: Array<{ agent: KrewAgent; text: string }> = [];
-            setTaskPhases(councilKeys.map((k, i) => ({ id: String(i), label: AGENT_BY_KEY[k]?.name ?? k, status: 'pending' as const })));
-            for (let ci = 0; ci < councilKeys.length; ci++) {
-              if (stopRef.current) break;
-              const member = AGENT_BY_KEY[councilKeys[ci]];
-              if (!member) continue;
-              setTaskPhases((prev) => prev.map((p, i) => (i === ci ? { ...p, status: 'running' as const } : p)));
-              setAgentStep(`${agentHandle(member)} is thinking…`);
-              // The EXECUTOR is the one exception: its whole job is to turn the others into
-              // Monday morning, so it is the only member that hears them.
-              const isExecutor = member.key === 'council_executor';
-              const priors = isExecutor && heard.length
-                ? `\n\nWHAT THE REST OF THE COUNCIL SAID:\n${heard.map((h) => `### ${h.agent.name} (${h.agent.humanName})\n${h.text.slice(0, 1400)}`).join('\n\n')}`
-                : '';
-              let text = '';
-              try {
-                ({ text } = await streamTurnWithRetry(
-                  [{ role: 'user', content: `THE DECISION IN FRONT OF THE COUNCIL:\n${question}${priors}\n\nGive your view, in character, following your rules. Be brief and specific.` }],
-                  // The briefing is what turns "define your conversion metric" into "Day 4: run
-                  // /outreach on the vendor list". Without it, five advisers give five versions of
-                  // advice the user then has to translate into this app themselves — which is the
-                  // work they asked the council to do.
-                  member.systemPrompt + councilContext(true),
-                  () => {},
-                ));
-              } catch (e) {
-                text = `(${member.humanName} could not answer this time: ${(e instanceof Error ? e.message : String(e)).slice(0, 120)})`;
-              }
-              const clean = (text || '').replace(/<tool_call>[\s\S]*/g, '').trim();
-              if (clean) heard.push({ agent: member, text: clean });
-              setTaskPhases((prev) => prev.map((p, i) => (i === ci ? { ...p, status: 'done' as const } : p)));
-            }
-            if (!heard.length) {
-              toolResult = 'The council could not be reached this time — no member returned an answer. Nothing was decided.';
-            } else {
-              // Rendered as a card so the five voices stay visually separate. A wall of text would
-              // read as one opinion, which is the opposite of the point.
-              addMsg({ role: 'council', content: question, council: heard.map((h) => ({ key: h.agent.key, name: h.agent.name, human: h.agent.humanName, text: h.text })) });
-              if (sid) krewDb.saveMessage(sid, 'tool_result', JSON.stringify(heard.map((h) => ({ name: h.agent.name, text: h.text }))), 'council_review').catch(() => {});
-              toolResult = `The council has answered — ${heard.length} voices, already shown to the user in full.\n\n`
-                + heard.map((h) => `${h.agent.name} (${h.agent.humanName}): ${h.text.slice(0, 700)}`).join('\n\n')
-                + `\n\nDo NOT repeat what they said — the user can read it. Add only what YOU conclude: where they genuinely disagree, and what you would do. Two short paragraphs at most.`;
-            }
-            setTaskPhases([]);
+            // Same code path as the Plan panel's button — see runCouncil().
+            toolResult = await runCouncil(String(args.question ?? '').trim(), String(args.voices ?? ''));
           } else if (tool === 'research_companies') {
             const rawQueries = String(args.queries ?? '');
             const queries    = rawQueries.split(';').map((q) => q.trim()).filter(Boolean);
@@ -11131,6 +11079,69 @@ Everything you need for follow-ups is in that answer above; read it there rather
     } catch { /* learning is a bonus — it must never break a turn that otherwise finished */ }
   }
 
+  /**
+   * Run the council: five independent voices over one question.
+   *
+   * A FUNCTION, not a prompt. The Plan panel's "Ask the council" button used to send a chat
+   * message asking the boss to please call the council_review tool — and the boss, reading a
+   * message full of plan steps, delegated the whole thing to an ops agent, which could not run the
+   * tool and so wrote its own five-voice review from scratch. Confident, plausible, and not the
+   * council. A button whose behaviour depends on a model routing correctly is not a button.
+   *
+   * Now both entry points — the button and the tool — land here, so there is exactly one council
+   * and no routing between the click and the answer.
+   */
+  async function runCouncil(question: string, voices = ''): Promise<string> {
+    if (!question.trim()) return 'Nothing was put to the council.';
+    const myGen = runGenRef.current;
+    const gone = () => stopRef.current || runGenRef.current !== myGen;
+    const wanted = voices.split(',').map((v) => v.trim().toLowerCase()).filter(Boolean);
+    const councilKeys = ['council_contrarian', 'council_first_principles', 'council_expansionist', 'council_outsider', 'council_executor']
+      .filter((k) => !wanted.length || wanted.some((w) => k.includes(w.replace(/[^a-z_]/g, ''))));
+    const heard: Array<{ agent: KrewAgent; text: string }> = [];
+    setTaskPhases(councilKeys.map((k, i) => ({ id: String(i), label: AGENT_BY_KEY[k]?.name ?? k, status: 'pending' as const })));
+    for (let ci = 0; ci < councilKeys.length; ci++) {
+      if (gone()) break;
+      const member = AGENT_BY_KEY[councilKeys[ci]];
+      if (!member) continue;
+      setTaskPhases((prev) => prev.map((p, i) => (i === ci ? { ...p, status: 'running' as const } : p)));
+      setAgentStep(`${agentHandle(member)} is thinking…`);
+      // The EXECUTOR is the one exception: its whole job is to turn the others into Monday
+      // morning, so it is the only member that hears them.
+      const isExecutor = member.key === 'council_executor';
+      const priors = isExecutor && heard.length
+        ? '\n\nWHAT THE REST OF THE COUNCIL SAID:\n'
+          + heard.map((h) => `### ${h.agent.name} (${h.agent.humanName})\n${h.text.slice(0, 1400)}`).join('\n\n')
+        : '';
+      let text = '';
+      try {
+        ({ text } = await streamTurnWithRetry(
+          [{ role: 'user', content: `THE DECISION IN FRONT OF THE COUNCIL:\n${question}${priors}\n\nGive your view, in character, following your rules. Be brief and specific.` }],
+          member.systemPrompt + councilContext(true),
+          () => {},
+        ));
+      } catch (e) {
+        text = `(${member.humanName} could not answer this time: ${(e instanceof Error ? e.message : String(e)).slice(0, 120)})`;
+      }
+      if (gone()) break;
+      const clean = (text || '').replace(/<tool_call>[\s\S]*/g, '').trim();
+      if (clean) heard.push({ agent: member, text: clean });
+      setTaskPhases((prev) => prev.map((p, i) => (i === ci ? { ...p, status: 'done' as const } : p)));
+    }
+    setTaskPhases([]);
+    setAgentStep(null);
+    if (gone()) return 'The council was stopped part-way through. Nothing was decided.';
+    if (!heard.length) return 'The council could not be reached this time — no member returned an answer. Nothing was decided.';
+    // Rendered as a card so the five voices stay visually separate. A wall of text would read as
+    // one opinion, which is the opposite of the point.
+    addMsg({ role: 'council', content: question, council: heard.map((h) => ({ key: h.agent.key, name: h.agent.name, human: h.agent.humanName, text: h.text })) });
+    const sid = sidRef.current;
+    if (sid) krewDb.saveMessage(sid, 'tool_result', JSON.stringify(heard.map((h) => ({ name: h.agent.name, text: h.text }))), 'council_review').catch(() => {});
+    return `The council has answered — ${heard.length} voices, already shown to the user in full.\n\n`
+      + heard.map((h) => `${h.agent.name} (${h.agent.humanName}): ${h.text.slice(0, 700)}`).join('\n\n')
+      + '\n\nDo NOT repeat what they said — the user can read it. Add only what YOU conclude: where they genuinely disagree, and what you would do. Two short paragraphs at most.';
+  }
+
   function stop() {
     stopRef.current = true;
     runGenRef.current += 1;   // everything already running is now superseded — see runGenRef
@@ -11145,6 +11156,11 @@ Everything you need for follow-ups is in that answer above; read it there rather
     setAgentStep(null);
     setAgentTool(null);
     setReconnecting(null);
+    // The step ladder ("Vikram is thinking…", "Step 2 of 4") is its own piece of state and kept
+    // showing after Stop — which is the "boss is still thinking" the user was looking at even
+    // though nothing was running any more. Clear it here too, so stopping LOOKS stopped.
+    setTaskPhases([]);
+    hideWork();
   }
 
   // ── Message helpers ───────────────────────────────────────────────────────
@@ -12918,6 +12934,17 @@ Everything you need for follow-ups is in that answer above; read it there rather
              — browser, files, calendar, connected apps — instead of describing it. */
           onRunStep={(instruction) => { setPlanOpen(false); void send(instruction, { skipShortcuts: true }); }}
           onSchedule={(instruction) => { setPlanOpen(false); void send(instruction, { skipShortcuts: true }); }}
+          /* Straight to the council — no chat message, no routing, no chance of an ops agent
+             deciding this is work to delegate and writing its own review instead. */
+          onCouncil={(question) => {
+            setPlanOpen(false);
+            addMsg({ role: 'user', content: 'Put my plan in front of the council.' });
+            setBusy(true);
+            stopRef.current = false;
+            void runCouncil(question)
+              .catch((e) => { addMsg({ role: 'assistant', content: `The council could not be reached: ${e instanceof Error ? e.message : String(e)}` }); })
+              .finally(() => { setBusy(false); setAgentStep(null); });
+          }}
         />
       )}
       {outreachCampaign && (
