@@ -7504,7 +7504,15 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     // Split the attachments: connections list(s) (people to reach) vs the context doc (what the
     // user does). MULTIPLE connection files may be attached — merge them all. The context doc is
     // what feeds the drafter — NEVER a connections list.
-    const attachedConn = attachedFiles.filter((f) => f.content && looksLikeConnectionsFile(f));
+    // A FILE THE USER PICKED IS NEVER PUT THROUGH THE "is this a people list?" TEST.
+    //
+    // That test is a guess, and a guess in this position can only do harm: when it says no, the
+    // file the user explicitly chose is discarded. Before sourceOnly that meant silently drafting
+    // for somebody else's list; after it, "I don't have anyone to reach out to yet" about a file
+    // full of names, emails and phone numbers the user is looking at. Both are the app arguing
+    // with an instruction. The test still guards files that merely happen to be attached — there,
+    // guessing wrong is cheap.
+    const attachedConn = attachedFiles.filter((f) => f.content && (sourceOnly || looksLikeConnectionsFile(f)));
     if (!attachedConn.length && focusedFile && looksLikeConnectionsFile(focusedFile)) attachedConn.push({ name: focusedFile.name, content: focusedFile.content });
     const refFile = attachedFiles.find((f) => f.content && !looksLikeConnectionsFile(f) && /\.(md|markdown|txt|pdf|docx?)$/i.test(f.name))
       || attachedFiles.find((f) => f.content && !looksLikeConnectionsFile(f))
@@ -7652,6 +7660,28 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     const leadsFound = sourceOnly && !onlyLeadList ? [] : loadLeadListContacts(onlyLeadList);
     leadsFound.forEach((l) => add({ ...l, source: 'leads' }));
     if (!contacts.length) {
+      // NEVER SAY "you have nobody" ABOUT A FILE THE USER JUST HANDED OVER.
+      //
+      // "Run /scan to pull in your connections" is advice for someone with an empty app. Said to
+      // someone looking at 672 rows of suppliers with emails and phone numbers, it is simply
+      // wrong, and it hides the only thing worth knowing: what the app actually managed to read.
+      // So when a file was picked, report the file — its size, whether a table was found at all,
+      // the columns it has, and the first line — which is enough to see the real problem.
+      const picked = attachedFiles.find((f) => f.content);
+      if (picked) {
+        const t = parseAnyTable(picked.content);
+        const firstLine = picked.content.split('\n').map((l) => l.trim()).filter(Boolean)[0] || '';
+        const detail = t
+          ? `I read a table with **${t.rows.length} rows** and these columns: ${t.headers.join(' · ')}.\n\n`
+            + `But none of the rows gave me a usable contact — every one was missing a name I could use, or had no email, phone or profile at all.`
+            + `${t.rows.length ? `\n\nThe first row reads: ${t.rows[0].slice(0, 6).map((c) => c || '—').join(' · ')}` : ''}`
+          : `I couldn't find a table in it at all (${Math.round(picked.content.length / 1024)} KB of text). The first line reads:\n\n> ${firstLine.slice(0, 200)}`;
+        const msg = `I opened **${picked.name}** but couldn't build a contact list from it.\n\n${detail}\n\n`
+          + `Tell me which column holds the name and which holds the email and I'll use those — or open the file in the Brain and check the columns are separated properly.`;
+        addMsg({ role: 'assistant', content: msg });
+        if (sid) krewDb.saveMessage(sid, 'assistant', msg).catch(() => {});
+        return;
+      }
       const noConn = 'I don\'t have anyone to reach out to yet. Run **/scan** to pull in your LinkedIn connections, ask me to **build a lead list** for the people you want to reach, or attach a list — then ask me to draft outreach.';
       addMsg({ role: 'assistant', content: noConn });
       if (sid) krewDb.saveMessage(sid, 'assistant', noConn).catch(() => {});

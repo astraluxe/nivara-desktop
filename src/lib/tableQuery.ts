@@ -67,8 +67,17 @@ function pickHeaderRow(rows: string[][]): number {
   return best;
 }
 
-/** Split a delimited line, honouring "quoted, fields" — CSV's one genuinely fiddly rule. */
+/**
+ * Split a delimited line, honouring "quoted, fields" — CSV's one genuinely fiddly rule.
+ *
+ * The special delimiter '  ' means RUNS OF WHITESPACE (two or more spaces, or a tab). Pasted
+ * spreadsheet data arrives that way constantly: the tabs survive a copy out of Excel but not
+ * always the trip through an HTML editor, where they land as aligned runs of spaces. Without this
+ * mode such a file parses as zero tables and the app reports it has nothing to work with — while
+ * the user is looking at a perfectly good list of columns.
+ */
 function splitDelimited(line: string, delim: string): string[] {
+  if (delim === '  ') return line.split(/\t| {2,}| {2,}/).map((c) => c.trim()).filter((c, i, a) => !(c === '' && (i === 0 || i === a.length - 1)));
   const out: string[] = [];
   let cur = '', inQ = false;
   for (let i = 0; i < line.length; i++) {
@@ -93,17 +102,32 @@ function splitDelimited(line: string, delim: string): string[] {
 function parseDelimited(src: string): Table | null {
   const lines = src.split(/\r?\n/).map((l) => l.trimEnd()).filter((l) => l.trim());
   if (lines.length < 2) return null;
-  const sample = lines.slice(0, 30);
+  const sample = lines.slice(0, 40);
   let bestDelim = '', bestScore = 0, bestWidth = 0;
-  for (const d of ['\t', ',', ';', '|']) {
-    const widths = sample.map((l) => splitDelimited(l, d).length);
-    const mode = widths.sort((a, b) => widths.filter((w) => w === b).length - widths.filter((w) => w === a).length)[0];
-    if (!mode || mode < 2) continue;
+  // '  ' (runs of whitespace) is tried LAST, so a genuine tab or comma file is never reinterpreted
+  // by it — it exists only for pasted data whose tabs became aligned spaces.
+  for (const d of ['\t', ',', ';', '|', '  ']) {
+    const widths = sample.map((l) => splitDelimited(l, d).length).filter((w) => w >= 2);
+    if (!widths.length) continue;
+    // The most common column count, counted with a map. The previous version called
+    // widths.sort() with a comparator that READ `widths` while sort was mutating it, so the
+    // "mode" was whatever the sort happened to leave in slot 0 — sometimes right, sometimes 1,
+    // and a mode of 1 rejected the entire table.
+    const freq = new Map<number, number>();
+    for (const w of widths) freq.set(w, (freq.get(w) ?? 0) + 1);
+    let mode = 0, modeCount = 0;
+    for (const [w, c] of freq) if (c > modeCount || (c === modeCount && w > mode)) { mode = w; modeCount = c; }
+    if (mode < 2) continue;
     const agree = sample.filter((l) => Math.abs(splitDelimited(l, d).length - mode) <= 1).length;
     const score = agree * mode;
     if (score > bestScore) { bestScore = score; bestDelim = d; bestWidth = mode; }
   }
-  if (!bestDelim || bestWidth < 2 || bestScore < sample.length) return null;
+  if (!bestDelim || bestWidth < 2) return null;
+  // Half the sampled lines must agree on the shape. The old bar compared agree×width against the
+  // line count, so a 13-column table cleared it on three good rows while a 2-column one failed
+  // with thirty — it was measuring width, not consistency.
+  const agreeing = sample.filter((l) => Math.abs(splitDelimited(l, bestDelim).length - bestWidth) <= 1).length;
+  if (agreeing < Math.max(2, Math.ceil(sample.length / 2))) return null;
   const rows = lines.map((l) => splitDelimited(l, bestDelim));
   const h = pickHeaderRow(rows);
   const headers = rows[h].map((c, i) => c || `Column ${i + 1}`);
