@@ -36,6 +36,84 @@ const isSepRow = (l: string) => /^\|?[\s:|-]+\|?$/.test(l.trim()) && l.includes(
  * headers rather than mapping onto a lead schema — a vendor master has GST numbers and payment
  * terms, and forcing it through a "Name / LinkedIn / Email" canon is how those columns disappear.
  */
+/**
+ * Which line is the HEADER?
+ *
+ * Almost no real export starts with its header. A vendor master opens with a title row
+ * ("VENDOR MASTER DATA"), an export date, a blank line, sometimes a company logo cell — and only
+ * then the columns. Taking row 0 makes "VENDOR MASTER DATA" the one and only column name and every
+ * subsequent row a single ragged cell, which reads as "this file has no usable data".
+ *
+ * The header is the first row that looks like LABELS rather than VALUES: several non-empty cells,
+ * mostly short, mostly non-numeric, and no cell that is obviously data (an email, a long address).
+ * Only the first few rows are considered — a header is never on line 40.
+ */
+function pickHeaderRow(rows: string[][]): number {
+  let best = 0, bestScore = -1;
+  for (let i = 0; i < Math.min(rows.length, 8); i++) {
+    const r = rows[i].map((c) => (c || '').trim());
+    const filled = r.filter(Boolean);
+    if (filled.length < 2) continue;
+    // A row where most cells are numbers, or that contains an email, is data.
+    const numeric = filled.filter((c) => /^[\d.,%₹$\s-]+$/.test(c)).length;
+    const dataish = filled.some((c) => c.includes('@') || c.length > 60);
+    if (dataish) continue;
+    const shortish = filled.filter((c) => c.length <= 40).length;
+    // More filled cells is better; numeric cells count against; a later row is slightly worse, so
+    // a genuine tie goes to the earliest candidate.
+    const score = filled.length * 3 + shortish - numeric * 4 - i;
+    if (score > bestScore) { bestScore = score; best = i; }
+  }
+  return best;
+}
+
+/** Split a delimited line, honouring "quoted, fields" — CSV's one genuinely fiddly rule. */
+function splitDelimited(line: string, delim: string): string[] {
+  const out: string[] = [];
+  let cur = '', inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQ && line[i + 1] === '"') { cur += '"'; i++; }   // "" is an escaped quote
+      else inQ = !inQ;
+    } else if (ch === delim && !inQ) { out.push(cur); cur = ''; }
+    else cur += ch;
+  }
+  out.push(cur);
+  return out.map((c) => c.trim());
+}
+
+/**
+ * Read a CSV / TSV / semicolon-separated body — the shapes an export actually arrives in.
+ *
+ * The delimiter is chosen by consistency, not by counting: the right one produces the SAME number
+ * of columns on most lines. Counting alone picks the comma for a file full of "Bengaluru, Karnataka"
+ * addresses and shreds every row.
+ */
+function parseDelimited(src: string): Table | null {
+  const lines = src.split(/\r?\n/).map((l) => l.trimEnd()).filter((l) => l.trim());
+  if (lines.length < 2) return null;
+  const sample = lines.slice(0, 30);
+  let bestDelim = '', bestScore = 0, bestWidth = 0;
+  for (const d of ['\t', ',', ';', '|']) {
+    const widths = sample.map((l) => splitDelimited(l, d).length);
+    const mode = widths.sort((a, b) => widths.filter((w) => w === b).length - widths.filter((w) => w === a).length)[0];
+    if (!mode || mode < 2) continue;
+    const agree = sample.filter((l) => Math.abs(splitDelimited(l, d).length - mode) <= 1).length;
+    const score = agree * mode;
+    if (score > bestScore) { bestScore = score; bestDelim = d; bestWidth = mode; }
+  }
+  if (!bestDelim || bestWidth < 2 || bestScore < sample.length) return null;
+  const rows = lines.map((l) => splitDelimited(l, bestDelim));
+  const h = pickHeaderRow(rows);
+  const headers = rows[h].map((c, i) => c || `Column ${i + 1}`);
+  const width = headers.length;
+  const body = rows.slice(h + 1)
+    .map((r) => (r.length >= width ? r.slice(0, width) : [...r, ...Array(width - r.length).fill('')]))
+    .filter((r) => r.some((c) => c && c !== '—' && c !== '-'));
+  return body.length ? { headers, rows: body } : null;
+}
+
 export function parseAnyTable(text: string): Table | null {
   const src = String(text || '');
   if (!src.trim()) return null;
@@ -53,23 +131,89 @@ export function parseAnyTable(text: string): Table | null {
       if (cells.length) parsed.push(cells);
     }
     if (parsed.length >= 2) {
-      const headers = parsed[0];
-      return { headers, rows: parsed.slice(1).filter((r) => r.some((c) => c)) };
+      const h = pickHeaderRow(parsed);
+      const headers = parsed[h].map((c, i) => c || `Column ${i + 1}`);
+      const width = headers.length;
+      const rows = parsed.slice(h + 1)
+        .map((r) => (r.length >= width ? r.slice(0, width) : [...r, ...Array(width - r.length).fill('')]))
+        .filter((r) => r.some((c) => c));
+      if (rows.length) return { headers, rows };
     }
   }
 
   const lines = src.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('|'));
   const body = lines.filter((l) => !isSepRow(l));
-  if (body.length < 2) return null;
-  const headers = splitRow(body[0]);
-  const width = headers.length;
-  const rows = body.slice(1)
-    .map(splitRow)
-    // Ragged rows are normal in a hand-edited sheet; pad rather than drop, or a row with one
-    // missing trailing cell vanishes from every answer.
-    .map((r) => (r.length >= width ? r.slice(0, width) : [...r, ...Array(width - r.length).fill('')]))
-    .filter((r) => r.some((c) => c && c !== '—' && c !== '-'));
-  return rows.length ? { headers, rows } : null;
+  if (body.length >= 2) {
+    const cells = body.map(splitRow);
+    const h = pickHeaderRow(cells);
+    const headers = cells[h].map((c, i) => c || `Column ${i + 1}`);
+    const width = headers.length;
+    const rows = cells.slice(h + 1)
+      // Ragged rows are normal in a hand-edited sheet; pad rather than drop, or a row with one
+      // missing trailing cell vanishes from every answer.
+      .map((r) => (r.length >= width ? r.slice(0, width) : [...r, ...Array(width - r.length).fill('')]))
+      .filter((r) => r.some((c) => c && c !== '—' && c !== '-'));
+    if (rows.length) return { headers, rows };
+  }
+
+  // No pipes and no HTML — a CSV/TSV export pasted or imported as-is. Every company stores this
+  // differently, and refusing everything that is not a markdown table is why a perfectly good
+  // spreadsheet read as "no data".
+  return parseDelimited(src);
+}
+
+// ─── What a column MEANS, whatever it is called ───────────────────────────────
+//
+// The same field is written a dozen ways across exports: SUPPLIER_NAME, Vendor Name, Party,
+// Account, Firm; EMAIL, E-Mail, Mail ID, Email Address, Contact Email. Matching on one spelling is
+// how a file "has no email column" while plainly having one. These are the aliases actually seen in
+// the wild, ordered so the most specific wins.
+export type CanonField = 'name' | 'person' | 'company' | 'email' | 'phone' | 'city' | 'country' | 'website' | 'title' | 'linkedin' | 'status' | 'id';
+
+const FIELD_ALIASES: Record<CanonField, RegExp> = {
+  // A row's own label. Kept separate from `person` and `company` because a vendor sheet has ONE
+  // name column and it is the organisation.
+  name:     /^(?:supplier|vendor|party|account|customer|client|firm|business|entity|org(?:anisation|anization)?|company|contact|full)?[\s_-]*name$|^name$|^supplier$|^vendor$|^party$|^account$/i,
+  person:   /(?:contact|owner|founder|director|poc|point.of.contact|attention|attn|person|representative|rep)[\s_-]*(?:name|person)?$|^(?:first|last|full)[\s_-]*name$/i,
+  company:  /(?:company|organisation|organization|firm|business|employer|account)[\s_-]*(?:name)?$/i,
+  email:    /e[\s_-]*mail|^mail([\s_-]*id)?$|email[\s_-]*(?:id|address)/i,
+  phone:    /phone|mobile|contact[\s_-]*(?:no|number)|whats[\s_-]*app|tel(?:ephone)?|cell/i,
+  city:     /city|town|district|location|locality|place/i,
+  country:  /country|nation|region|state|province/i,
+  website:  /website|web[\s_-]*site|url|domain|site$/i,
+  title:    /designation|job[\s_-]*title|^title$|role|position|department/i,
+  linkedin: /linked[\s_-]*in|^li[\s_-]*url$|profile[\s_-]*(?:url|link)/i,
+  status:   /status|stage|outcome|disposition/i,
+  id:       /^(?:sl|sr|s)[\s.#_-]*(?:no|num)?$|^id$|.*[\s_-]id$|code$|gst|pan(?:no)?$/i,
+};
+
+/**
+ * Map a table's real headers onto the fields we know how to use.
+ *
+ * Returns column INDEXES, -1 when the field is genuinely absent. `id`-looking columns are excluded
+ * from being read as a name, because "SUPPLIER_ID" contains neither more nor less "name" than
+ * "SUPPLIER_NAME" to a naive matcher and picking it gives every contact a code for a name.
+ */
+export function mapFields(headers: string[]): Record<CanonField, number> {
+  const out = {} as Record<CanonField, number>;
+  const taken = new Set<number>();
+  // Order matters: the most specific patterns claim their column first.
+  const order: CanonField[] = ['linkedin', 'email', 'phone', 'website', 'title', 'status', 'person', 'company', 'name', 'city', 'country', 'id'];
+  for (const f of order) {
+    const re = FIELD_ALIASES[f];
+    let idx = -1;
+    for (let i = 0; i < headers.length; i++) {
+      if (taken.has(i)) continue;
+      const h = (headers[i] || '').trim();
+      if (!h || !re.test(h)) continue;
+      // Never let an identifier column masquerade as a name.
+      if ((f === 'name' || f === 'person' || f === 'company') && FIELD_ALIASES.id.test(h)) continue;
+      idx = i; break;
+    }
+    out[f] = idx;
+    if (idx >= 0) taken.add(idx);
+  }
+  return out;
 }
 
 /** Compare header names the way a person would: case, spaces and punctuation are not identity. */
@@ -243,6 +387,30 @@ export function queryTable(table: Table, conditions: Condition[], columns?: stri
     matched: kept.length,
     unknownColumns: [...new Set(unknownColumns)],
   };
+}
+
+/**
+ * Is this the name of an ORGANISATION or of a PERSON?
+ *
+ * It decides how the contact gets approached, so it has to be right more often than a guess: a
+ * company gets an email to whoever answers, a person gets a message written to them by name. Legal
+ * suffixes and trade words are decisive; beyond that, people have two or three capitalised words
+ * and no digits, while organisations run long or contain a word no human is called.
+ */
+export function looksLikeCompanyName(raw?: string): boolean {
+  const s = String(raw || '').trim();
+  if (!s) return false;
+  const low = s.toLowerCase();
+  // Decisive: a legal form or a corporate suffix.
+  if (/\b(pvt|private|ltd|limited|llp|llc|inc|incorporated|corp|corporation|co|company|gmbh|s\.?a\.?|b\.?v\.?|plc|sdn|bhd|pte)\b\.?/.test(low)) return true;
+  // Decisive: a trade or sector word. No person is called "Industries".
+  if (/\b(industries|industry|enterprises|enterprise|technologies|technology|solutions|systems|services|traders|trading|engineering|engineers|associates|consultancy|consultants|agencies|agency|group|holdings|ventures|labs|laboratories|works|manufacturing|exports|imports|logistics|motors|foods|steel|textiles|pharma|healthcare|hospital|hotels|constructions?|infra|electricals?|electronics|automation|instruments|tools|packaging|chemicals|polymers|furniture|stationery|security|marketing|media|studio|academy|institute|university|college|school|bank|federation|society|corporation|council|centre|center)\b/.test(low)) return true;
+  if (/[&@]|\band\b\s+\w+\s+(?:co|sons|bros|brothers)\b/.test(low)) return true;
+  if (/\d/.test(s)) return true;                                  // "3D Engineering", "AV 24 Traders"
+  const words = s.split(/\s+/).filter(Boolean);
+  if (words.length >= 5) return true;                             // people rarely have five names
+  // ALL CAPS on its own is not evidence — plenty of exports upper-case everything, people included.
+  return false;
 }
 
 /** Render a table back to markdown. */

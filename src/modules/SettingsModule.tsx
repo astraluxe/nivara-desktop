@@ -430,9 +430,18 @@ function Toggle({ on, onChange, label, desc }: { on: boolean; onChange: (v: bool
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+/**
+ * `wide` = this section spans both columns on a large window.
+ *
+ * The page used to be a single 36rem column, so on any normal monitor two thirds of it was empty
+ * and the settings themselves ran a long way down — everything below "Interface" needed scrolling
+ * past for no reason. Two columns puts roughly half of that back on screen. Sections that contain
+ * wide content of their own (a diagnostic log, a form row of three inputs) keep the full width,
+ * because squeezing those into half is worse than the empty space was.
+ */
+function Section({ title, children, wide = false }: { title: string; children: React.ReactNode; wide?: boolean }) {
   return (
-    <div className="bg-nv-surface border border-nv-border rounded-xl p-5 mb-4">
+    <div className={`bg-nv-surface border border-nv-border rounded-xl p-5 self-start ${wide ? 'lg:col-span-2' : ''}`}>
       <p className="nv-eyebrow text-nv-muted mb-3">{title}</p>
       {children}
     </div>
@@ -663,7 +672,11 @@ export default function SettingsModule() {
         <p className="text-[11px] text-nv-muted mt-0.5">Preferences stored locally on this device.</p>
       </div>
 
-      <div className="p-6 max-w-xl">
+      {/* Two columns from `lg` up, one below it — so a narrow window is exactly as it was, and a
+          normal one stops wasting two thirds of itself. `items-start` keeps each card its own
+          height instead of stretching every card in a row to match the tallest. The page still
+          scrolls normally; this only changes how much of it you can see at once. */}
+      <div className="p-6 max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
 
         {/* BROWSER CHECK, FIRST THING ON THE PAGE.
             "The browser doesn't open" was for a long time the only information anyone had, including
@@ -671,7 +684,7 @@ export default function SettingsModule() {
             driver, Chrome, then actually opening a page — and names the step that failed instead of
             confirming the symptom. It is at the top because someone whose browser is broken should
             not have to go looking for it. */}
-        <div className="mb-6 rounded-xl border border-nv-border bg-nv-surface p-4">
+        <div className="lg:col-span-2 rounded-xl border border-nv-border bg-nv-surface p-4">
           <div className="flex items-start gap-3">
             <div className="min-w-0 flex-1">
               <p className="text-[12.5px] font-semibold text-nv-text">Browser check</p>
@@ -700,7 +713,7 @@ export default function SettingsModule() {
         </div>
 
         {/* Automation */}
-        <Section title="Automation">
+        <Section title="Automation" wide>
           <Toggle
             on={settings.automationAutoRun}
             onChange={(v) => update('automationAutoRun', v)}
@@ -777,7 +790,7 @@ export default function SettingsModule() {
         {/* WHO the user is. Without this the agents cannot tell the user apart from the people they
             meet — a meeting titled "Amogh x Keshav" was researched as if Amogh were the prospect,
             and the user received a briefing about themselves. */}
-        <Section title="Your name">
+        <Section title="Your name" wide>
           <p className="text-[11px] text-nv-muted leading-relaxed mb-3">
             Who Krew is working for. Calendar invites, email threads and attendee lists all contain
             your own name next to the other person&rsquo;s — this is how the agents tell which one is
@@ -825,7 +838,7 @@ export default function SettingsModule() {
         </Section>
 
         {/* Where the user is — drives every location-dependent search */}
-        <Section title="Location">
+        <Section title="Location" wide>
           <p className="text-[11px] text-nv-muted leading-relaxed mb-3">
             Where you are, and the market Krew searches. Leads, customers, local businesses and
             events all come from here. If it isn&rsquo;t set, Krew asks you the first time a task
@@ -969,7 +982,7 @@ export default function SettingsModule() {
         </Section>
 
         {/* Voice */}
-        <Section title="Voice — Whisper">
+        <Section title="Voice — Whisper" wide>
           {voiceStatus === 'checking' && (
             <p className="text-[11px] text-nv-muted">Checking…</p>
           )}
@@ -1012,7 +1025,7 @@ export default function SettingsModule() {
         </Section>
 
         {/* About */}
-        <Section title="About adris.tech">
+        <Section title="About adris.tech" wide>
           <div className="space-y-1.5 mb-4">
             <div className="flex justify-between text-[11px]">
               <span className="text-nv-muted">Version</span>

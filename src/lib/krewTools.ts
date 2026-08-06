@@ -686,6 +686,20 @@ export const SYSTEM_TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'adapt_skill',
+    description: "Adjust how ONE of the app's built-in skills is carried out, so it fits how THIS user actually works (their role, their market, their way of doing things). Use it when you have learned something durable — \"they only sell to manufacturers\", \"they are a student with no budget\", \"they always want the table before the prose\" — not for a one-off preference this turn. It only changes the wording of the guidance; a skill's tools and when it applies never change, the original is kept, and the user can undo it in the Brain's Skills screen. Call list_skills first if you are unsure of the id.",
+    parameters: {
+      skill_id: { type: 'string', description: 'Exact skill id, e.g. "leads", "outreach", "spreadsheet", "brain". Use list_skills to see them.', required: true },
+      guide:    { type: 'string', description: 'The replacement guidance, 25-900 characters. Write it as instructions to whoever does this work next — keep what still applies from the original and add what is specific to this user.', required: true },
+      reason:   { type: 'string', description: 'One line on what you learned that prompted this. Shown to the user.', required: true },
+    },
+  },
+  {
+    name: 'list_skills',
+    description: "List the app's built-in skills with their ids, what each one does, and whether it has already been adapted for this user. Cheap — call it before adapt_skill rather than guessing an id.",
+    parameters: {},
+  },
+  {
     name: 'query_table',
     description: 'Read ONLY the rows you need out of a big table/spreadsheet saved in the Brain (a vendor master, a lead list, an export — thousands of rows). Call it with no "where" FIRST to see the columns, the row count and a few sample rows; then call it again with a filter to get exactly the rows that matter. Always use this instead of recalling the whole file: recall_from_brain truncates a big sheet to its first few rows, and reading all of it wastes the user\'s tokens on data the request never mentioned.',
     parameters: {
@@ -2307,6 +2321,29 @@ async function executeToolCore(
     const ct = str(args.connect_to);
     if (ct) { const t = brain.findByTitle(ct); if (t) brain.link(t.id, node.id, 'related'); }
     return `${append ? 'Updated' : 'Saved'} "${node.title}" in the Brain${ct ? ` and linked it to "${ct}"` : ''}. It is visible in the Brain screen and recallable by any agent.`;
+  }
+  if (toolName === 'list_skills') {
+    const { SKILL_GRAPH, skillAdaptations } = await import('./skillGraph');
+    const ad = skillAdaptations();
+    return 'Built-in skills (use the id with adapt_skill):\n'
+      + SKILL_GRAPH.map((s) => `- ${s.id} — ${s.name}: ${s.blurb}${ad[s.id] ? '  [already adapted for this user]' : ''}`).join('\n');
+  }
+  if (toolName === 'adapt_skill') {
+    const { adaptSkill, SKILL_GRAPH } = await import('./skillGraph');
+    const { roleGuess } = await import('./userRole');
+    const id = str(args.skill_id).trim();
+    const guide = str(args.guide).trim();
+    const reason = str(args.reason).trim();
+    if (!SKILL_GRAPH.some((s) => s.id === id)) {
+      return `There is no skill with id "${id}". The ids are: ${SKILL_GRAPH.map((s) => s.id).join(', ')}. Call list_skills to see what each one does.`;
+    }
+    // The length bounds are enforced in adaptSkill itself — this reports WHICH bound failed, so a
+    // retry is informed rather than a second guess.
+    if (guide.length < 25) return '[adapt_skill needs real guidance (at least 25 characters) — nothing was changed.]';
+    if (guide.length > 900) return '[adapt_skill guidance must be under 900 characters; this block goes into every relevant prompt. Nothing was changed — send a shorter version.]';
+    const a = adaptSkill(id, guide, reason, roleGuess().role);
+    if (!a) return '[adapt_skill could not store that — nothing was changed.]';
+    return `Adapted the "${id}" skill for this user. The original is kept and the user can undo it in Brain → Skills. Reason recorded: ${reason || '(none given)'}.`;
   }
   if (toolName === 'query_table') {
     const { brain, nodeToMarkdown } = await import('./knowledgeStore');

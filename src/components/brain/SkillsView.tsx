@@ -2,8 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   SKILL_GRAPH, skillEdges, skillUsage, selectSkills, isSkillOff, setSkillOff,
   SKILLS_EVENT, learnedSkills, matchLearned, forgetSkill,
+  skillAdaptations, resetSkill,
   type SkillDef, type SkillArea, type LearnedSkill,
 } from '../../lib/skillGraph';
+import { roleGuess, ROLE_LABEL, setUserRole } from '../../lib/userRole';
 import { SKILLS_REGISTRY, isSkillInstalled, getActiveSkillIds } from '../../lib/skills';
 
 // ─── The Skills graph ─────────────────────────────────────────────────────────
@@ -96,6 +98,8 @@ export default function SkillsView() {
   // Skills the app worked out for itself. Re-read on every SKILLS_EVENT, so one appears here the
   // moment a task finishes rather than after a restart.
   const learned = useMemo(() => learnedSkills(), [tick]);
+  const adaptations = useMemo(() => skillAdaptations(), [tick]);
+  const role = useMemo(() => roleGuess(), [tick]);
   const areaCount = useMemo(() => new Set(SKILL_GRAPH.map((s) => s.area)).size, []);
   const probeLearnedIds = useMemo(
     () => new Set(probe.trim() ? matchLearned(probe, 3).map((s) => s.id) : []),
@@ -266,7 +270,14 @@ export default function SkillsView() {
         {selLearned ? (
           <LearnedDetail skill={selLearned} onForget={() => { forgetSkill(selLearned.id); setSelectedLearned(null); setTick((t) => t + 1); }} />
         ) : sel ? (
-          <SkillDetail skill={sel} usage={usage[sel.id]} off={off.has(sel.id)} onToggle={() => setSkillOff(sel.id, !off.has(sel.id))} />
+          <SkillDetail
+            skill={sel}
+            usage={usage[sel.id]}
+            off={off.has(sel.id)}
+            onToggle={() => setSkillOff(sel.id, !off.has(sel.id))}
+            adapted={adaptations[sel.id]}
+            onReset={() => { resetSkill(sel.id); setTick((t) => t + 1); }}
+          />
         ) : (
           <div className="p-4">
             <h3 className="text-[13px] font-bold mb-1.5" style={{ color: 'var(--nv-text)' }}>What your agents can do</h3>
@@ -279,6 +290,37 @@ export default function SkillsView() {
               Type a request in the box above to see exactly which ones it would attach. Click a skill for what
               it does and which tools sit behind it.
             </p>
+
+            {/* WHO IT THINKS YOU ARE. Inferred from your own words, shown plainly with the phrases
+                that led there, and correctable — an assumption you cannot see is one you cannot
+                fix, and this one changes the answer to almost every request. */}
+            <h4 className="text-[10px] font-bold uppercase tracking-wide mb-1.5" style={{ color: 'var(--nv-faint)' }}>Who it thinks you are</h4>
+            <div className="mb-4 rounded-lg px-2.5 py-2" style={{ background: 'var(--nv-bg)', border: '1px solid var(--nv-border)' }}>
+              {role.role ? (
+                <>
+                  <p className="text-[11.5px] font-semibold" style={{ color: 'var(--nv-text)' }}>
+                    {ROLE_LABEL[role.role as keyof typeof ROLE_LABEL]}
+                    <span className="font-normal" style={{ color: 'var(--nv-faint)' }}>
+                      {role.stated ? ' — you said so' : ` — guessed, ${Math.round(role.confidence * 100)}% sure`}
+                    </span>
+                  </p>
+                  {role.evidence.length > 0 && (
+                    <p className="text-[10px] mt-1 leading-relaxed" style={{ color: 'var(--nv-faint)' }}>
+                      From: {role.evidence.slice(0, 3).map((e) => `“${e}”`).join(', ')}
+                    </p>
+                  )}
+                  <button onClick={() => { setUserRole(''); setTick((t) => t + 1); }}
+                    className="mt-1.5 text-[10.5px] hover:underline" style={{ color: 'var(--nv-muted)' }}>
+                    That's wrong — forget it
+                  </button>
+                </>
+              ) : (
+                <p className="text-[10.5px] leading-relaxed" style={{ color: 'var(--nv-faint)' }}>
+                  Not sure yet. Tell an agent what you do (“I'm a founder”, “I run marketing”) and every
+                  answer starts allowing for it. Nothing is ever blocked because of this — it changes emphasis, not access.
+                </p>
+              )}
+            </div>
 
             <h4 className="text-[10px] font-bold uppercase tracking-wide mb-1.5" style={{ color: 'var(--nv-faint)' }}>Learned by itself</h4>
             {learned.length === 0 ? (
@@ -374,8 +416,9 @@ function LearnedDetail({ skill, onForget }: { skill: LearnedSkill; onForget: () 
   );
 }
 
-function SkillDetail({ skill, usage, off, onToggle }: {
+function SkillDetail({ skill, usage, off, onToggle, adapted, onReset }: {
   skill: SkillDef; usage?: { count: number; last: number }; off: boolean; onToggle: () => void;
+  adapted?: { guide: string; reason: string; role?: string; at: number }; onReset: () => void;
 }) {
   const needs = skill.needs.map((id) => SKILL_GRAPH.find((s) => s.id === id)).filter(Boolean) as SkillDef[];
   const neededBy = SKILL_GRAPH.filter((s) => s.needs.includes(skill.id));
@@ -388,9 +431,35 @@ function SkillDetail({ skill, usage, off, onToggle }: {
       <p className="text-[10px] uppercase tracking-wide mb-2.5 pl-[18px]" style={{ color: 'var(--nv-faint)' }}>{AREA_LABEL[skill.area]}</p>
       <p className="text-[11.5px] leading-relaxed mb-3" style={{ color: 'var(--nv-muted)' }}>{skill.blurb}</p>
 
-      <h4 className="text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: 'var(--nv-faint)' }}>What it tells the agent</h4>
+      {/* ADAPTED FOR YOU. The original is never edited — it sits right below, and one click puts
+          it back. An adaptation you cannot see or undo is not something anyone should trust an
+          agent to make. */}
+      {adapted && (
+        <div className="mb-3 rounded-lg overflow-hidden" style={{ border: '1px solid #34D39955', background: '#34D39914' }}>
+          <div className="px-2.5 pt-2 pb-1.5">
+            <div className="flex items-center gap-1.5 mb-1">
+              <span className="w-1.5 h-1.5 rounded-full" style={{ background: '#34D399' }} />
+              <span className="text-[10px] font-bold uppercase tracking-wide" style={{ color: '#34D399' }}>Adapted for how you work</span>
+            </div>
+            <p className="text-[11px] leading-relaxed" style={{ color: 'var(--nv-text)' }}>{adapted.guide}</p>
+            {adapted.reason && (
+              <p className="text-[10px] mt-1.5 leading-relaxed" style={{ color: 'var(--nv-faint)' }}>
+                Why: {adapted.reason} · {new Date(adapted.at).toLocaleDateString()}
+              </p>
+            )}
+          </div>
+          <button onClick={onReset} className="w-full text-[10.5px] px-2.5 py-1.5 text-left hover:opacity-80 transition-fast"
+            style={{ borderTop: '1px solid var(--nv-border)', color: 'var(--nv-muted)' }}>
+            ↩ Put the original back
+          </button>
+        </div>
+      )}
+
+      <h4 className="text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: 'var(--nv-faint)' }}>
+        {adapted ? 'The original (kept, and still here)' : 'What it tells the agent'}
+      </h4>
       <p className="text-[11px] leading-relaxed mb-3 px-2.5 py-2 rounded-lg"
-        style={{ color: 'var(--nv-text)', background: 'var(--nv-bg)', border: '1px solid var(--nv-border)' }}>{skill.guide}</p>
+        style={{ color: adapted ? 'var(--nv-faint)' : 'var(--nv-text)', background: 'var(--nv-bg)', border: '1px solid var(--nv-border)' }}>{skill.guide}</p>
 
       {needs.length > 0 && (
         <>

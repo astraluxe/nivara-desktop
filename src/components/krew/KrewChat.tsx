@@ -34,7 +34,8 @@ import { getImageBudget, unitsForModel } from '../../lib/imageQuota';
 import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining } from '../../lib/tokenTier';
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
 import { builtInSkillsBlock, learnSkill } from '../../lib/skillGraph';
-import { parseAnyTable } from '../../lib/tableQuery';
+import { parseAnyTable, mapFields, looksLikeCompanyName } from '../../lib/tableQuery';
+import { observeForRole, roleBlock } from '../../lib/userRole';
 import SkillsPanel from './SkillsPanel';
 import PlanPanel from './PlanPanel';
 import { looksLikeActionPlan, parsePlanSteps, createPlan, savePlan, loadPlan, planProgress, syncPlanToTodos, todayPlanNote, mergeIntoPlan, PLAN_EVENT, type ActionPlan } from '../../lib/planStore';
@@ -6423,37 +6424,62 @@ The prompt must be production-ready — specific enough for a motion designer to
    * the file's own column names (they vary per export) and takes EVERY address in the email cell,
    * since a supplier row routinely lists three.
    */
-  function parseGenericContactRows(text: string): { name: string; headline: string; url: string; email?: string; emails?: string[] }[] {
+  type GenericRow = {
+    name: string; headline: string; url: string; email?: string; emails?: string[];
+    entityKind?: OutreachContact['entityKind']; company?: string; phone?: string; website?: string;
+  };
+  /** What happened to every row, so the campaign can SAY where its number came from. */
+  type IntakeStats = { total: number; kept: number; noContact: number; duplicate: number; companies: number; people: number; name?: string };
+  const lastIntakeRef = useRef<IntakeStats | null>(null);
+
+  function parseGenericContactRows(text: string): GenericRow[] {
     const t = parseAnyTable(text);
     if (!t) return [];
-    const col = (re: RegExp) => t.headers.findIndex((h) => re.test(h));
-    const iName = col(/^(?:supplier|vendor|company|customer|client|contact|person|account)?[\s_-]*name$|name/i);
-    const iEmail = col(/e-?mail/i);
-    const iPhone = col(/mobile|phone|contact\s*no/i);
-    const iCity = col(/city|location|town|address\s*3/i);
-    const iCountry = col(/country|region/i);
-    const iLinked = col(/linkedin/i);
+    const f = mapFields(t.headers);
+    // A row's identity: a person column if the sheet has one, otherwise the general name column,
+    // otherwise the company. A supplier master has only the last two; a CRM export has all three.
+    const iName = f.person >= 0 ? f.person : f.name >= 0 ? f.name : f.company;
     if (iName < 0) return [];
-    const out: { name: string; headline: string; url: string; email?: string; emails?: string[] }[] = [];
+    const cell = (r: string[], i: number) => (i >= 0 ? (r[i] || '').trim() : '');
+    const out: GenericRow[] = [];
     const seen = new Set<string>();
+    const stats: IntakeStats = { total: t.rows.length, kept: 0, noContact: 0, duplicate: 0, companies: 0, people: 0 };
     for (const r of t.rows) {
-      const name = (r[iName] || '').trim();
-      if (!name || name === '—') continue;
-      const key = name.toLowerCase();
-      if (seen.has(key)) continue;            // the same supplier appears twice in most exports
-      seen.add(key);
-      const emails = iEmail >= 0 ? splitEmails(r[iEmail]) : [];
-      const li = iLinked >= 0 ? (r[iLinked] || '') : '';
+      const name = cell(r, iName);
+      if (!name || name === '—') { stats.noContact++; continue; }
+      const emails = splitEmails(cell(r, f.email));
+      const phone = cell(r, f.phone);
+      const li = cell(r, f.linkedin);
       const m = /(https?:\/\/[^\s)\]]*linkedin\.com\/in\/[^\s)\]]+)/i.exec(li);
+      // NO WAY TO REACH THEM IS NOT A CONTACT. A supplier master carries hundreds of rows with a
+      // name and nothing else; drafting for those inflates the campaign with people who can never
+      // be messaged, and the count stops meaning anything. Counted and reported, never silent.
+      if (!emails.length && !m && !phone) { stats.noContact++; continue; }
+      const key = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (seen.has(key)) { stats.duplicate++; continue; }   // most exports list a supplier twice
+      seen.add(key);
+      // A person column present AND filled means the row names a human even when the sheet is
+      // otherwise about companies — that person is who to write to.
+      const company = f.company >= 0 ? cell(r, f.company) : (f.person >= 0 && f.name >= 0 ? cell(r, f.name) : '');
+      const isCompany = f.person >= 0 && cell(r, f.person)
+        ? false
+        : looksLikeCompanyName(name);
+      if (isCompany) stats.companies++; else stats.people++;
+      stats.kept++;
       out.push({
         name,
-        headline: [iCity >= 0 ? r[iCity] : '', iCountry >= 0 ? r[iCountry] : '', iPhone >= 0 ? r[iPhone] : '']
-          .map((s) => (s || '').trim()).filter((s) => s && s !== '—').join(' · ').slice(0, 120),
+        company: company || (isCompany ? name : ''),
+        headline: [company && company !== name ? company : '', cell(r, f.title), cell(r, f.city), cell(r, f.country)]
+          .map((s) => s.trim()).filter((s) => s && s !== '—').join(' · ').slice(0, 140),
         url: m ? m[1] : '',
         email: emails[0],
         emails,
+        phone,
+        website: cell(r, f.website),
+        entityKind: isCompany ? 'company' : 'person',
       });
     }
+    lastIntakeRef.current = stats;
     return out;
   }
   // A cell that is a saved outreach status label → the OutreachStatus it maps to (else undefined).
@@ -7478,7 +7504,7 @@ _None of them had everything you ticked, so I've saved them rather than lose the
       || (focusedFile && !looksLikeConnectionsFile(focusedFile) ? { name: focusedFile.name, content: focusedFile.content } : undefined);
 
     // Build the contact list (name + headline + profile URL + any saved status).
-    type ParsedContact = { name: string; headline: string; url: string; email?: string; emails?: string[]; status?: OutreachContact['status']; source?: OutreachContact['source']; leadList?: string };
+    type ParsedContact = { name: string; headline: string; url: string; email?: string; emails?: string[]; status?: OutreachContact['status']; source?: OutreachContact['source']; leadList?: string; entityKind?: OutreachContact['entityKind']; company?: string; phone?: string; website?: string };
     const contacts: ParsedContact[] = [];
     const seen = new Set<string>();
     const add = (c: ParsedContact) => {
@@ -7555,7 +7581,11 @@ _None of them had everything you ticked, so I've saved them rather than lose the
         // app's own parsers — its columns are not the ones they look for. Read it as the
         // ordinary table it is rather than treating the file as empty.
         if (rows.length) rows.forEach((c) => add({ ...c, source: 'connections' }));
-        else parseGenericContactRows(f.content).forEach((c) => add({ ...c, source: 'leads' }));
+        else {
+          const generic = parseGenericContactRows(f.content);
+          if (lastIntakeRef.current) lastIntakeRef.current.name = f.name;
+          generic.forEach((c) => add({ ...c, source: 'leads' }));
+        }
       });
       // If ALL they gave us was progress, top the roster up from the saved connections so anyone
       // added by a later scan is included. Existing people keep the status just parsed above,
@@ -7686,8 +7716,12 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     // allows DMs to 1st-degree connections. Writing them a 40-word message would produce something
     // the user can never send, so they get a connection NOTE instead (LinkedIn's 300-char limit)
     // and the real message is written later, the moment a check confirms they accepted.
-    const needsNote = (c: ParsedContact) => c.source === 'leads';
-    const pickConn = pick.filter((c) => !needsNote(c));
+    // An ORGANISATION cannot be sent a LinkedIn connection request and must not be written to by
+    // first name. Companies go down their own path: a real email, addressed to the business.
+    const isCompany = (c: ParsedContact) => c.entityKind === 'company';
+    const needsNote = (c: ParsedContact) => c.source === 'leads' && !isCompany(c);
+    const pickCos = pick.filter(isCompany);
+    const pickConn = pick.filter((c) => !needsNote(c) && !isCompany(c));
     const pickLeads = pick.filter(needsNote);
     const more = needsDraft.length - pick.length;
     addMsg({ role: 'assistant', content: `${alreadyDone > 0 ? `Continuing your outreach — ${alreadyDone} already sent, ` : ''}${alreadyDrafted > 0 ? `${alreadyDrafted} already written (keeping those), ` : ''}writing ${pick.length} new message${pick.length === 1 ? '' : 's'}${more > 0 ? ` — ${more} still without one after this` : ''} and opening the copilot…`, streaming: true });
@@ -7854,6 +7888,65 @@ _None of them had everything you ticked, so I've saved them rather than lose the
           });
         }
       }
+      // ── Third pass: EMAILS TO COMPANIES ──────────────────────────────────────────────────────
+      // A supplier master is a list of organisations. Neither prompt above fits: one greets an
+      // existing connection, the other asks a stranger to connect on LinkedIn, and both open "Hi
+      // <first name>" — addressed to a company that reads as a mail merge nobody checked. This
+      // writes a real email to a business, with a subject, and no assumption about who opens it.
+      const emailByName: Record<string, { subject: string; body: string }> = {};
+      if (pickCos.length) {
+        const sysCo = [
+          'You write short, specific first-contact EMAILS to a BUSINESS (an organisation, not a named person).',
+          'Rules for every email:',
+          '- You do NOT know who will read it. Open with "Hello" or "Hi there" — NEVER "Hi <company name>", never a first name, never "Dear Sir/Madam".',
+          '- 60–110 words. A subject line of at most 8 words that says what this is, not "Quick question".',
+          '- Say who the sender is and why they are writing to THIS business specifically — use its sector, city or what it supplies.',
+          '- ONE clear, low-friction ask: a reply, or pointing you to the right person. Never a hard pitch, never a demand for a call.',
+          '- No buzzwords, no flattery, no "I hope this email finds you well", no emojis, no bracketed placeholders.',
+          senderName ? `- Sign off with the sender's REAL name: ${senderName}.` : '- End with the message itself; do NOT invent a signature.',
+          'Return ONLY a valid JSON array: [{"name":"<exact company name as given>","subject":"<subject>","message":"<the email body>"}] — one object per company, EXACT names, nothing else.',
+        ].join('\n');
+        for (let i = 0; i < pickCos.length; i += B) {
+          if (stopRef.current) break;
+          const batch = pickCos.slice(i, i + B);
+          const range = `${i + 1}–${Math.min(i + batch.length, pickCos.length)} of ${pickCos.length}`;
+          let chars = 0;
+          const tick = () => updateLastMsg(statusBlock(draftStart, `Writing company emails ${range}`,
+            chars ? `~${Math.round(chars / 5)} words written so far` : 'Working…'));
+          tick();
+          const hb = setInterval(tick, 1000);
+          const usr = `WHY I'M REACHING OUT:\n${goal || 'Open a conversation about working together.'}\n\nWHAT I DO / WHAT I'M BUILDING:\n${productCtx || '(not specified — keep it about them)'}\n\nWrite one email for EACH of these ${batch.length} businesses. Return the JSON array of exactly ${batch.length} objects:\n${batch.map((c) => `- ${c.name} — ${c.headline || '(no details)'}`).join('\n')}`;
+          let text = '';
+          try { ({ text } = await streamTurnWithRetry([{ role: 'user', content: usr }], sysCo, (t) => { chars += t.length; })); }
+          catch (e) {
+            clearInterval(hb);
+            const em = e instanceof Error ? e.message : String(e);
+            if (/\b429\b|rate.?limit|too many requests|quota/i.test(em) && !stopRef.current) {
+              await new Promise((r) => setTimeout(r, 20000));
+              i -= B;
+            }
+            continue;
+          }
+          finally { clearInterval(hb); }
+          // parseNameMessagePairs keeps any extra keys, so the subject rides along with the body.
+          const pairs = parseNameMessagePairs(text) as Array<{ name: string; message: string; subject?: string }>;
+          batch.forEach((c, j) => {
+            const hit = pairs.find((p) => norm(p.name) === norm(c.name)) || (pairs.length === batch.length ? pairs[j] : undefined);
+            if (hit?.message) {
+              emailByName[norm(c.name)] = {
+                subject: cleanOutboundMessage(hit.subject || `Working with ${c.name}`).slice(0, 90),
+                body: cleanOutboundMessage(hit.message),
+              };
+            }
+          });
+        }
+      }
+      const fallbackEmail = (c: ParsedContact) => ({
+        subject: `Introduction — ${senderName || 'a quick hello'}`,
+        body: `Hello,\n\nI came across ${c.name}${c.headline ? ` (${c.headline.split(' · ')[0]})` : ''} and wanted to get in touch.\n\n${(productCtx || '').split(/[.!?]/).slice(0, 2).join('. ').trim() || 'I work in a related space'}. If this is relevant to you, I would value a short reply — and if I have the wrong inbox, pointing me to the right person would help a lot.\n\n${senderName ? `Thanks,\n${senderName}` : 'Thanks'}`,
+      });
+      const emailFor = (c: ParsedContact) => emailByName[norm(c.name)] || fallbackEmail(c);
+
       const fallbackNote = (c: { name: string; headline: string }) => {
         const first = firstNameOf(c.name);
         const hook = headlineHook(c.headline);
@@ -7886,6 +7979,11 @@ _None of them had everything you ticked, so I've saved them rather than lose the
           email: c.email || priorC?.email,
           emails: [...new Set([...(c.emails || []), ...(priorC?.emails || []), c.email || '', priorC?.email || ''])]
             .filter((e) => e.includes('@')),
+          // Whether this row is an organisation or a human decides the whole approach — see
+          // OutreachContact.entityKind. Carried on every rebuild so it survives a second run.
+          entityKind: c.entityKind ?? priorC?.entityKind,
+          phone: c.phone ?? priorC?.phone,
+          website: c.website ?? priorC?.website,
           leadList: c.leadList ?? priorC?.leadList,
           connect_note: priorC?.connect_note,
           requestedAt: priorC?.requestedAt,
@@ -7893,6 +7991,17 @@ _None of them had everything you ticked, so I've saved them rather than lose the
         };
         if (isDone(c.name)) {
           built.push({ ...meta, name: c.name, company: c.headline || priorC?.company, linkedin_url: c.url || priorC?.linkedin_url, linkedin_message: priorC?.linkedin_message || '', status: st });
+          usedNames.add(k);
+        } else if (pickSet.has(k) && isCompany(c)) {
+          // A business: an email with a subject, and never a connection note.
+          const e = priorC?.email_body ? { subject: priorC.email_subject || '', body: priorC.email_body } : emailFor(c);
+          built.push({
+            ...meta, name: c.name, company: c.company || c.headline || priorC?.company,
+            linkedin_url: c.url || priorC?.linkedin_url,
+            email_subject: e.subject, email_body: e.body,
+            linkedin_message: priorC?.linkedin_message || '',
+            status: st,
+          });
           usedNames.add(k);
         } else if (pickSet.has(k)) {
           built.push({
@@ -7950,13 +8059,23 @@ _None of them had everything you ticked, so I've saved them rather than lose the
       // Say what is actually waiting for them. "0 messages to send" was true of the new drafts and
       // completely wrong as a summary — there were dozens already written and ready, and the user
       // reasonably read it as the run having done nothing.
-      const ready = campaign.contacts.filter((c) => !isDoneStatus(c.status) && (c.linkedin_message?.trim() || c.connect_note?.trim())).length;
+      const ready = campaign.contacts.filter((c) => !isDoneStatus(c.status) && (c.linkedin_message?.trim() || c.connect_note?.trim() || c.email_body?.trim())).length;
+      // SAY WHERE THE NUMBER CAME FROM. "547 contacts" from a 672-row sheet is unexplainable from
+      // the outside, and an unexplained number is one the user cannot trust or correct. The funnel
+      // is one line and it makes every drop visible.
+      const st = lastIntakeRef.current;
+      const funnel = st && st.total
+        ? `\n\nFrom **${st.name ?? 'your list'}**: ${st.total} rows → **${st.kept} contactable**`
+          + `${st.noContact ? ` · ${st.noContact} skipped (no email, phone or profile)` : ''}`
+          + `${st.duplicate ? ` · ${st.duplicate} duplicates merged` : ''}`
+          + `${st.companies && st.people ? ` · ${st.companies} companies, ${st.people} people` : st.companies ? ` · all ${st.companies} are companies (emailed, not connection requests)` : ''}`
+        : '';
       const head = pick.length > 0
         ? `Opened the outreach copilot — ${pick.length} newly written, ${ready} ready to send in total`
         : ready > 0
           ? `Opened the outreach copilot — ${ready} message${ready === 1 ? '' : 's'} already written and ready to send (nothing new needed writing)`
           : 'Opened the outreach copilot';
-      const done = `${head}${alreadyDone > 0 ? ` — ${alreadyDone} already done are kept with their status` : ''}${more > 0 ? `; ${more} more still to write (say "draft outreach for all" to include them)` : ''}. For each: tap **Copy message & open chat**, paste (Ctrl+V) and send, then mark it. Every message is editable before you send.`;
+      const done = `${head}${alreadyDone > 0 ? ` — ${alreadyDone} already done are kept with their status` : ''}${more > 0 ? `; ${more} more still to write (say "draft outreach for all" to include them)` : ''}. For each: tap **Copy message & open chat**, paste (Ctrl+V) and send, then mark it. Every message is editable before you send.${funnel}`;
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: done, streaming: false }; return c; });
       if (sid) krewDb.saveMessage(sid, 'assistant', done).catch(() => {});
       setAttachedFiles([]);
@@ -9390,7 +9509,12 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     // now takes the request text too, so an installed SKILL.md — several thousand characters each —
     // rides along only when it is relevant, instead of the Postgres, Remotion and Azure guides all
     // being pasted into a question about a lead list.
-    const skillsBlock = builtInSkillsBlock(text, tools.map((t) => t.name))
+    // WHO IS ASKING. Working this out from the user's own words costs nothing and changes the
+    // answer to almost every request — "find me leads" means enterprise accounts to a salesperson
+    // and hiring managers to a recruiter. Observed first so this turn's message counts toward it.
+    observeForRole(text);
+    const skillsBlock = roleBlock()
+                      + builtInSkillsBlock(text, tools.map((t) => t.name))
                       + getActiveSkillsContext(agent.key, text);
     // ── HOW EVERY AGENT WORKS, not just the boss ────────────────────────────────────────────
     //

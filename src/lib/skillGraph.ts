@@ -442,6 +442,82 @@ export function recordLearnedUse(ids: string[]): void {
   if (touched) writeLearned(list);
 }
 
+// ─── Adapting a built-in skill to THIS user ───────────────────────────────────
+//
+// The nineteen skills above are written for everybody, which means they are written for nobody in
+// particular. "Finding leads" should mean something different to a solo founder hunting first
+// customers, a marketer building a campaign list, and a student looking for internships — and the
+// app already learns which of those the user is. Letting the guidance follow that is the
+// difference between advice and generic advice.
+//
+// THE SAFETY PROPERTY IS THE WHOLE DESIGN: SKILL_GRAPH is never mutated. It is a module constant
+// read by every agent in the app, and an agent rewriting a shared object at runtime would change
+// behaviour underneath every other agent mid-task, with no way back. Adaptations are an OVERLAY
+// stored separately and applied at read time. So:
+//   - the original text is always intact and always one click away (resetSkill),
+//   - only the human-language `guide` can change — never a skill's tools, triggers or needs, so
+//     the graph's shape and the tool checks behave exactly as before,
+//   - a corrupt or over-long overlay is ignored rather than propagated,
+//   - and nothing an agent writes can remove a skill or make one apply where it did not.
+const ADAPT_KEY = 'nv-skill-adaptations-v1';
+
+export interface SkillAdaptation {
+  id: string;
+  /** The replacement guidance. Always additive in spirit: it says how THIS user wants it done. */
+  guide: string;
+  /** Why, in one line — shown to the user so an adaptation is never a mystery. */
+  reason: string;
+  /** The role that prompted it, when there was one. */
+  role?: string;
+  at: number;
+}
+
+export function skillAdaptations(): Record<string, SkillAdaptation> {
+  try {
+    const r = JSON.parse(localStorage.getItem(ADAPT_KEY) ?? '{}');
+    return (r && typeof r === 'object' && !Array.isArray(r)) ? r as Record<string, SkillAdaptation> : {};
+  } catch { return {}; }
+}
+
+function writeAdaptations(m: Record<string, SkillAdaptation>): void {
+  try { localStorage.setItem(ADAPT_KEY, JSON.stringify(m)); } catch { /* quota */ }
+  try { window.dispatchEvent(new Event(SKILLS_EVENT)); } catch { /* no window */ }
+}
+
+/**
+ * Adapt one built-in skill's guidance. Returns null (changing nothing) when the request is not
+ * something we are willing to store — an unknown skill, an empty guide, or one long enough to be a
+ * runaway generation rather than an instruction.
+ */
+export function adaptSkill(id: string, guide: string, reason: string, role = ''): SkillAdaptation | null {
+  const base = SKILL_GRAPH.find((s) => s.id === id);
+  if (!base) return null;
+  const g = String(guide || '').replace(/\s+/g, ' ').trim();
+  if (g.length < 25 || g.length > 900) return null;
+  const a: SkillAdaptation = { id, guide: g, reason: String(reason || '').slice(0, 200), role: role || undefined, at: Date.now() };
+  const m = skillAdaptations();
+  m[id] = a;
+  writeAdaptations(m);
+  return a;
+}
+
+/** Put a skill back exactly as it ships. The original was never altered, so this cannot fail. */
+export function resetSkill(id: string): void {
+  const m = skillAdaptations();
+  if (!m[id]) return;
+  delete m[id];
+  writeAdaptations(m);
+}
+
+export function resetAllSkills(): void { writeAdaptations({}); }
+
+/** The skill as the user should see it now: the original, with any adaptation applied. */
+export function effectiveSkill(s: SkillDef): SkillDef {
+  const a = skillAdaptations()[s.id];
+  // ONLY the guide is overlaid. tools/triggers/needs come from the original, every time.
+  return a ? { ...s, guide: a.guide } : s;
+}
+
 // ─── What the user has switched off ───────────────────────────────────────────
 const OFF_KEY = 'nv-skills-off-v1';
 
@@ -543,7 +619,10 @@ export function builtInSkillsBlock(request: string, availableTools?: string[]): 
     );
   }
   if (picks.length) {
-    parts.push('\n\n## How you do this here\n' + picks.map((p) => `**${p.skill.name}** — ${p.skill.guide}`).join('\n') + '\n');
+    // effectiveSkill applies the user's adaptations at READ time — the shared graph itself is
+    // untouched, so every other agent still sees the original unless it reads it the same way.
+    parts.push('\n\n## How you do this here\n'
+      + picks.map((p) => { const s = effectiveSkill(p.skill); return `**${s.name}** — ${s.guide}`; }).join('\n') + '\n');
   }
   return parts.join('');
 }

@@ -159,6 +159,19 @@ export interface OutreachContact {
   requestedAt?: number;
   /** Set when a check confirmed they accepted — drives the one-time auto-draft of the real message. */
   acceptedAt?: number;
+  /**
+   * A PERSON or an ORGANISATION.
+   *
+   * They need opposite treatment and the panel used to assume everyone was a person. You cannot
+   * send a LinkedIn connection request to "XEROX INDIA LIMITED", and a message opening "Hi Xerox,
+   * great to be connected" is the kind of thing that ends a conversation before it starts. A
+   * company is emailed — warmly, but written to an organisation — and offered a "find a person
+   * there" step; a person is messaged by name on LinkedIn as before.
+   */
+  entityKind?: 'person' | 'company';
+  /** Phone, when the sheet had one. Not used to send anything — shown so the user can call. */
+  phone?: string;
+  website?: string;
   /** Brain lead-list note this person came from, so their Connection Status can be written back. */
   leadList?: string;
   /** LinkedIn's own age for a still-pending request ("1 week ago"). Covers invites the user sent
@@ -450,6 +463,10 @@ export function bareHandle(raw?: string): string {
  * deliberate, since automated DMs are what gets a real account restricted.
  */
 export function contactChannel(c: OutreachContact): ContactChannel {
+  // A COMPANY is emailed. Even where a company page URL exists there is no inbox behind it, and a
+  // "message" to an organisation on LinkedIn goes nowhere — so email wins for a business whenever
+  // there is one, regardless of what else is on the row.
+  if (c.entityKind === 'company' && (c.email || '').includes('@')) return 'email';
   if (c.linkedin_url && /linkedin\.com\/in\//i.test(c.linkedin_url)) return 'linkedin';
   if ((c.email || '').includes('@')) return 'email';
   if (bareHandle(c.x_handle)) return 'x';
@@ -855,8 +872,66 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   // Someone off a lead list who hasn't accepted yet cannot be messaged on LinkedIn at all, so the
   // card shows the connection-request step instead of a message they'd have no way to send. Once
   // any check (or the user) marks them accepted/sent/replied, they behave like any other contact.
-  const needsConnect = !!cur && cur.source === 'leads'
+  // A company is never sent a connection request — there is nobody on the other end of one.
+  const needsConnect = !!cur && cur.source === 'leads' && cur.entityKind !== 'company'
     && !(cur.status === 'accepted' || cur.status === 'sent' || cur.status === 'replied' || cur.status === 'skip');
+  const isCompanyRow = cur?.entityKind === 'company';
+
+  // ── Find a real person at this company ──────────────────────────────────────────────────────
+  //
+  // A supplier list gets you as far as info@. The conversation that actually goes somewhere is with
+  // the founder or the head of the function — and finding them is a search the app can do far
+  // faster than the user can. This looks them up on LinkedIn by company name, and on a confident
+  // match turns the row into a PERSON: named, with a profile, ready for a connection note like any
+  // other lead. The company row keeps its email either way, so nothing is lost if the search fails.
+  const [findingPerson, setFindingPerson] = useState(false);
+  const [personNote, setPersonNote] = useState('');
+  async function findAPersonThere() {
+    const c = contacts[idx];
+    if (!c) return;
+    setFindingPerson(true);
+    setPersonNote('Looking for someone to talk to there…');
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      setAgentBrowserHold(true); setBrowserOpen(true);
+      const company = (c.company || c.name || '').replace(/["\n\r]/g, ' ').trim();
+      const raw = await invoke<string>('run_browser_persistent', {
+        args: `findprofile "founder OR director OR owner ${company}" ::: ${company}`,
+      }).catch((e) => String(e));
+      if (raw.includes('SIGN_IN_REQUIRED') || raw.includes('[NEEDS_LOGIN]')) {
+        setPersonNote('Sign in to LinkedIn in the ADRIS browser window, then try again.');
+        return;
+      }
+      const pj = raw.indexOf('PROFILE_JSON:');
+      if (pj < 0) { setPersonNote(`Couldn't search LinkedIn just now — the email to ${c.name} still works.`); return; }
+      const arr = JSON.parse(raw.slice(pj + 'PROFILE_JSON:'.length).trim()) as Array<{ name?: string; headline?: string; url?: string }>;
+      // Only accept a hit whose headline actually names this company. A confident-looking stranger
+      // is worse than no result: the user would message them believing they work there.
+      const key = normCompany(company);
+      const hit = (Array.isArray(arr) ? arr : []).find((p) => p?.url && p?.name && normCompany(p.headline || '').includes(key.slice(0, 8)));
+      if (!hit) {
+        setPersonNote(`No one at ${c.name} came up whose profile confirms they work there, so I have not guessed. The email is still the way in.`);
+        return;
+      }
+      setContacts((prev) => prev.map((x, i) => (i === idx ? {
+        ...x,
+        name: String(hit.name),
+        company: c.company || c.name,
+        entityKind: 'person',
+        linkedin_url: String(hit.url),
+        // The email drafted for the company does not fit a named person; clear it so the panel
+        // asks for a fresh message rather than sending a business letter to an individual.
+        email_body: '', email_subject: '',
+        linkedin_message: '',
+        status: 'todo',
+      } : x)));
+      setPersonNote(`Found ${hit.name}${hit.headline ? ` — ${hit.headline.slice(0, 60)}` : ''}. Use "Refine" below to write them a message, or Copy & open chat.`);
+    } catch (e) {
+      setPersonNote(`Couldn't run the search: ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}`);
+    } finally {
+      setFindingPerson(false);
+    }
+  }
 
   // When the parent opens a DIFFERENT campaign object (resume, /verifylinks re-open, a fresh draft),
   // resync the local contacts + jump to the first to-do. The prop reference only changes when
@@ -2318,6 +2393,33 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
             {cur.company && <div className="text-xs text-nv-faint">{cur.company}</div>}
           </div>
 
+          {/* ── This row is a BUSINESS ────────────────────────────────────────────────────────
+              Everything below assumes a person: a first name, a profile, a connection request. A
+              supplier list is none of those, and pretending otherwise produced messages that could
+              not be sent to inboxes that do not exist. Here the email IS the outreach — and the
+              next useful move, finding a human at that company, is one button rather than an
+              afternoon of searching. */}
+          {isCompanyRow && (
+            <div className="rounded-xl border border-sky-500/35 bg-sky-500/[0.07] p-3 space-y-2">
+              <div className="flex items-center gap-1.5">
+                <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 text-sky-600 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 21h18M5 21V7l7-4 7 4v14M9 9h.01M9 13h.01M9 17h.01M15 9h.01M15 13h.01M15 17h.01"/>
+                </svg>
+                <span className="text-[11px] font-semibold text-sky-600">This is a company, not a person</span>
+              </div>
+              <p className="text-[10.5px] text-nv-muted leading-relaxed">
+                So it gets an <b className="text-nv-text">email written to the business</b> — no first name, no LinkedIn
+                connection request (there is nobody on the other end of one). The draft is below and editable.
+              </p>
+              <button
+                onClick={findAPersonThere}
+                disabled={findingPerson}
+                className="w-full text-[11px] font-semibold px-3 py-1.5 rounded-lg border border-sky-500/50 text-sky-600 hover:bg-sky-500/10 transition-fast disabled:opacity-60"
+              >{findingPerson ? 'Searching LinkedIn…' : 'Find someone there to talk to →'}</button>
+              {personNote && <p className="text-[10px] text-nv-faint leading-relaxed">{personNote}</p>}
+            </div>
+          )}
+
           {/* ── Not connected yet ────────────────────────────────────────────────────────────
               A free LinkedIn account cannot message anyone who isn't a 1st-degree connection, so
               for these people the connection request IS the step — showing them a full message
@@ -2371,7 +2473,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
           {/* Copy the message AND open the chat box in one click.
               Hidden while a connection request is still outstanding: LinkedIn has no chat box to
               open for a non-connection, so this button could only ever fail for them. */}
-          {(channel === 'linkedin' || channel === 'both') && !needsConnect && (
+          {(channel === 'linkedin' || channel === 'both') && !needsConnect && !isCompanyRow && (
             <div className="space-y-1.5">
               <button
                 onClick={copyAndOpenChat}
@@ -2406,7 +2508,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
           )}
 
           {/* The message to paste. Only once they can actually receive it. */}
-          {(channel === 'linkedin' || channel === 'both') && !needsConnect && (
+          {(channel === 'linkedin' || channel === 'both') && !needsConnect && !isCompanyRow && (
             <div>
               <div className="flex items-center justify-between mb-1">
                 <div className="text-[10px] text-nv-faint uppercase tracking-wide">LinkedIn message</div>
