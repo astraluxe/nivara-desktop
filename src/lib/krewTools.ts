@@ -686,6 +686,14 @@ export const SYSTEM_TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'open_content_studio',
+    description: "Open a FREE web tool that makes marketing content — on-brand campaign images and ads (Pomelli), or briefing docs, FAQs and podcast-style audio from the user's own documents (NotebookLM). Use it when the user wants real creative assets rather than words on a page: this app cannot generate images or audio itself, and these tools are free and already signed in inside the ADRIS browser. Call with no arguments first to see what is available and whether it works in the user's country.",
+    parameters: {
+      studio: { type: 'string', description: 'Which one: "pomelli" or "notebooklm". Leave EMPTY to list what suits the brief and what each needs.', required: false },
+      brief:  { type: 'string', description: 'What the user actually wants made, in their words. Used to pick the right tool and to tell the user what to expect.', required: false },
+    },
+  },
+  {
     name: 'adapt_skill',
     description: "Adjust how ONE of the app's built-in skills is carried out, so it fits how THIS user actually works (their role, their market, their way of doing things). Use it when you have learned something durable — \"they only sell to manufacturers\", \"they are a student with no budget\", \"they always want the table before the prose\" — not for a one-off preference this turn. It only changes the wording of the guidance; a skill's tools and when it applies never change, the original is kept, and the user can undo it in the Brain's Skills screen. Call list_skills first if you are unsure of the id.",
     parameters: {
@@ -2321,6 +2329,53 @@ async function executeToolCore(
     const ct = str(args.connect_to);
     if (ct) { const t = brain.findByTitle(ct); if (t) brain.link(t.id, node.id, 'related'); }
     return `${append ? 'Updated' : 'Saved'} "${node.title}" in the Brain${ct ? ` and linked it to "${ct}"` : ''}. It is visible in the Brain screen and recallable by any agent.`;
+  }
+  if (toolName === 'open_content_studio') {
+    const { pickStudios, studioById, studioBriefing } = await import('./contentStudios');
+    const brief = str(args.brief).trim();
+    const wanted = str(args.studio).trim().toLowerCase();
+    let where = '';
+    try { where = locationLabel(loadUserLocation()) || ''; } catch { /* no location saved yet */ }
+
+    // NO ARGUMENT = show what exists. Deliberately the default: an agent that picks a tool before
+    // knowing whether the user's country can use it will announce work it cannot do.
+    if (!wanted) {
+      const picks = pickStudios(brief || 'marketing content', where);
+      return 'Free content tools you can drive in the ADRIS browser:\n\n'
+        + picks.map((p) => studioBriefing(p)).join('\n\n')
+        + '\n\nCall open_content_studio again with studio="pomelli" or "notebooklm" to open one. '
+        + 'Only offer the user a tool that is available where they are.';
+    }
+
+    const studio = studioById(wanted);
+    if (!studio) return `No such studio "${wanted}". The options are: pomelli, notebooklm.`;
+    const pick = pickStudios(brief || studio.makes, where).find((p) => p.studio.id === studio.id)
+      ?? { studio, availableHere: true, why: '' };
+    if (!pick.availableHere) {
+      // Refuse rather than open it. Opening a page that will not serve this user, and then
+      // narrating progress, is the exact failure the promise rules exist to prevent.
+      return `${studio.name} is NOT available in ${where || 'the user\'s country'} — it only works in ${(studio.countries as string[]).join(', ')}. `
+        + `Do NOT open it and do NOT tell the user their campaign is being generated. `
+        + `Say plainly that this tool is region-locked, and offer what you CAN do: write the copy and the plan yourself, or use NotebookLM (available everywhere) if the job suits it.`;
+    }
+
+    let opened = '';
+    try {
+      opened = await invoke<string>('run_browser_persistent', { args: `open ${studio.url}` });
+    } catch (e) { opened = String(e); }
+    if (/SIGN_IN_REQUIRED|NEEDS_LOGIN/.test(opened)) {
+      return `Opened ${studio.name}, but it wants a sign-in. Tell the user to sign in to Google in the ADRIS browser window, then say "carry on".`;
+    }
+    if (/\[(browser-timeout|browser-crash|custom-browser-unavailable)\]/.test(opened)) {
+      return `The ADRIS browser could not open ${studio.name}. Check Settings → Browser check. Nothing has been generated.`;
+    }
+    return `${studio.name} is now open in the ADRIS browser at ${studio.url}.\n\n${studioBriefing(pick)}\n\n`
+      + `NOW: use browser_snapshot to see the page, then browser_click / browser_fill to work it — do not guess at buttons you have not looked at. `
+      + `${studio.needs}\n\n`
+      + `WHEN IT HAS MADE SOMETHING: the user downloads it from the tool (it lands in their Downloads folder) — say where it is rather than claiming you saved it. `
+      + `Save the COPY and the plan with save_to_brain so the work survives. `
+      + `And once a run has worked end to end, write the steps down with save_to_brain kind "skill" titled "Skill: ${studio.name}" so the next campaign does not start from scratch.\n\n`
+      + `NEVER say an asset exists until you have seen it on the page. This tool is free and in beta; if it fails or hits a limit, say so.`;
   }
   if (toolName === 'list_skills') {
     const { SKILL_GRAPH, skillAdaptations } = await import('./skillGraph');

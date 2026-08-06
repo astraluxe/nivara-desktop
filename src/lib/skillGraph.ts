@@ -115,6 +115,16 @@ export const SKILL_GRAPH: SkillDef[] = [
     guide: 'Memory: recall_from_brain BEFORE researching something the user may already have saved — it costs nothing and beats re-fetching. Save anything the user will want again (lists, drafts, decisions) with a title they would search for.',
   },
   {
+    id: 'content-studios',
+    name: 'Making real creative',
+    area: 'make',
+    blurb: 'Drives free web tools — Pomelli for on-brand campaign images and ads, NotebookLM for briefings and podcast audio.',
+    tools: ['open_content_studio'],
+    triggers: /\b(campaign|creative|ad(vert)?s?\b|social (post|content)|brand (kit|book|assets)|image|visual|banner|poster|video|reel|podcast|audio (overview|summary)|briefing (doc|note)|study guide|mind map|marketing (asset|material|content))\b/i,
+    needs: ['browser', 'brain'],
+    guide: 'Real creative: this app cannot generate images, video or audio itself — but Pomelli (on-brand campaign images and ads, built from the user\'s own website) and NotebookLM (briefings, FAQs and podcast-style audio from their own documents) are free and open in the ADRIS browser, already signed in. Call open_content_studio with NO argument first: it says which suits the brief and — the part that matters — whether it works in the user\'s country, because Pomelli is US/Canada/Australia/NZ only. Never announce that a campaign is being generated on a tool the user cannot reach. Work the page with browser_snapshot then click/fill rather than guessing at buttons, say where a download landed instead of claiming you saved it, and once a run works end to end write the steps down as a Brain skill so the next one is quick.',
+  },
+  {
     id: 'spreadsheet',
     name: 'Working a spreadsheet',
     area: 'knowledge',
