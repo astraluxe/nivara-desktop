@@ -3719,6 +3719,9 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
   const [outreachPick, setOutreachPick] = useState<OutreachPick | null>(null);
   // True when the copilot should open on the "all campaigns" index rather than straight into one.
   const [outreachIndexOpen, setOutreachIndexOpen] = useState(false);
+  // Which message's "Replace plan" is armed. window.confirm is swallowed in this webview, so the
+  // second press has to live in the UI — see the button.
+  const [replaceArmed, setReplaceArmed] = useState<number | null>(null);
   const [destName, setDestName] = useState('');
   // What this particular campaign is FOR. Several campaigns can run at once over overlapping
   // people — "book demos with ops heads" and "invite to the beta" want completely different
@@ -12175,14 +12178,31 @@ Everything you need for follow-ups is in that answer above; read it there rather
                             }}
                             className="text-[10.5px] px-2.5 py-1.5 rounded-lg bg-accent text-white font-medium hover:bg-accent-dim transition-fast"
                           >Refine plan →</button>
-                          <button
-                            onClick={() => {
-                              if (!confirm(`Replace "${activePlan.title}"? Everything you've ticked off in it is lost.`)) return;
-                              savePlan(createPlan(msg.content));
-                              setPlanOpen(true);
-                            }}
-                            className="text-[10.5px] px-2.5 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:bg-nv-surface2 transition-fast"
-                          >Replace plan</button>
+                          {/* REPLACE WAS DOING NOTHING AT ALL.
+                              It was guarded by window.confirm, which this webview swallows — it
+                              returns undefined without ever showing a dialog, so `!confirm(...)`
+                              was always true and the handler returned on the first line. The
+                              button looked live and did nothing, every time. Two clicks inline
+                              instead: it cannot be suppressed, and replacing a plan really does
+                              throw away every tick, so it should take a deliberate second press. */}
+                          {replaceArmed === i ? (
+                            <>
+                              <span className="text-[10px] text-nv-faint">Replace? Everything ticked off is lost.</span>
+                              <button
+                                onClick={() => { savePlan(createPlan(msg.content)); setPlanOpen(true); setReplaceArmed(null); }}
+                                className="text-[10.5px] px-2.5 py-1.5 rounded-lg bg-red-600 text-white font-medium hover:bg-red-500 transition-fast"
+                              >Yes, replace</button>
+                              <button
+                                onClick={() => setReplaceArmed(null)}
+                                className="text-[10.5px] px-2.5 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:bg-nv-surface2 transition-fast"
+                              >Keep mine</button>
+                            </>
+                          ) : (
+                            <button
+                              onClick={() => setReplaceArmed(i)}
+                              className="text-[10.5px] px-2.5 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:bg-nv-surface2 transition-fast"
+                            >Replace plan</button>
+                          )}
                         </>
                       ) : (
                         <button
@@ -12316,14 +12336,14 @@ Everything you need for follow-ups is in that answer above; read it there rather
           {/* Search-mode toggle — Fast (headless, cheap) vs Advanced (opens the real
               browser the user can watch, verifies every LinkedIn, drops what it can't confirm). */}
           <div className="flex items-center gap-2 mb-1.5">
-            <div className={`inline-flex rounded-lg border border-nv-border overflow-hidden text-[10px] font-mono ${busy ? 'opacity-50' : ''}`}
+            <div className={`inline-flex rounded-lg border border-nv-border/70 overflow-hidden text-[10px] font-medium h-[26px] ${busy ? 'opacity-50' : ''}`}
                  title={busy ? "Can't switch modes while a task is running — stop it first." : undefined}>
               <button
                 type="button"
                 disabled={busy}
                 onClick={() => { if (!busy) setSearchMode('fast'); }}
                 title="Fast — quick & cheap. Uses headless search, fewer tokens, no browser window."
-                className={`px-2.5 py-1 flex items-center gap-1 transition-fast ${busy ? 'cursor-not-allowed' : ''} ${searchMode === 'fast' ? 'bg-accent text-white' : 'text-nv-faint hover:text-nv-text'}`}
+                className={`px-2.5 flex items-center gap-1.5 transition-fast ${busy ? 'cursor-not-allowed' : ''} ${searchMode === 'fast' ? 'bg-accent text-white' : 'text-nv-faint hover:text-nv-text hover:bg-nv-surface2'}`}
               >
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L3 14h7l-1 8 10-12h-7z"/></svg>
                 Fast
@@ -12333,7 +12353,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
                 disabled={busy}
                 onClick={() => { if (!busy) setSearchMode('advanced'); }}
                 title="Advanced — slower & costs more tokens, but opens the real browser you can watch, verifies each LinkedIn, and drops links it can't confirm."
-                className={`px-2.5 py-1 flex items-center gap-1 transition-fast ${busy ? 'cursor-not-allowed' : ''} ${searchMode === 'advanced' ? 'bg-accent text-white' : 'text-nv-faint hover:text-nv-text'}`}
+                className={`px-2.5 flex items-center gap-1.5 transition-fast ${busy ? 'cursor-not-allowed' : ''} ${searchMode === 'advanced' ? 'bg-accent text-white' : 'text-nv-faint hover:text-nv-text hover:bg-nv-surface2'}`}
               >
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
                 Advanced
@@ -12349,12 +12369,12 @@ Everything you need for follow-ups is in that answer above; read it there rather
               title={voiceStatus === 'recording' ? 'Stop recording' : voiceStatus === 'transcribing' ? 'Transcribing…' : 'Voice input · Builder+ plan'}
               onClick={handleMicClick}
               disabled={voiceStatus === 'transcribing'}
-              className={`w-7 h-7 flex items-center justify-center rounded-lg border transition-fast shrink-0 mb-0.5 ${
+              className={`w-[30px] h-[30px] flex items-center justify-center rounded-lg border transition-fast shrink-0 mb-0.5 ${
                 voiceStatus === 'recording'
                   ? 'border-red-500/60 bg-red-500/10 text-red-400 animate-pulse'
                   : voiceStatus === 'transcribing'
-                  ? 'border-nv-border opacity-50 text-nv-faint cursor-not-allowed'
-                  : 'border-nv-border text-nv-faint hover:text-accent hover:border-accent'
+                  ? 'border-nv-border/70 opacity-50 text-nv-faint cursor-not-allowed'
+                  : 'border-nv-border/70 text-nv-faint hover:text-accent hover:border-accent/50 hover:bg-nv-surface2'
               }`}
             >
               {voiceStatus === 'recording' ? (
@@ -12467,8 +12487,8 @@ Everything you need for follow-ups is in that answer above; read it there rather
               type="button"
               onClick={() => document.getElementById('krew-file-attach')?.click()}
               title="Attach a file from your computer"
-              className="w-7 h-7 flex items-center justify-center rounded-lg border border-nv-border
-                text-nv-faint hover:text-nv-text hover:border-accent transition-fast shrink-0 mb-0.5"
+              className="w-[30px] h-[30px] flex items-center justify-center rounded-lg border border-nv-border/70
+                text-nv-faint hover:text-nv-text hover:border-accent/50 hover:bg-nv-surface2 transition-fast shrink-0 mb-0.5"
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
@@ -12480,7 +12500,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
                 type="button"
                 onClick={() => setShowBrainPick((v) => !v)}
                 title="Attach a saved item from your Brain"
-                className={`w-7 h-7 flex items-center justify-center rounded-lg border transition-fast ${showBrainPick ? 'text-accent border-accent/40 bg-accent/8' : 'border-nv-border text-nv-faint hover:text-nv-text hover:border-accent'}`}
+                className={`w-[30px] h-[30px] flex items-center justify-center rounded-lg border transition-fast ${showBrainPick ? 'text-accent border-accent/50 bg-accent/12 shadow-[0_0_0_1px_rgba(124,92,255,.12)]' : 'border-nv-border/70 text-nv-faint hover:text-nv-text hover:border-accent/50 hover:bg-nv-surface2'}`}
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M12 5a2.5 2.5 0 0 0-5 0 2.4 2.4 0 0 0-2 4 2.4 2.4 0 0 0 .5 4A2.4 2.4 0 0 0 7.5 17 2.3 2.3 0 0 0 12 17V5z"/>

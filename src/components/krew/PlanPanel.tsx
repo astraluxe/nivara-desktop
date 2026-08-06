@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   type ActionPlan, type PlanStep,
   loadPlan, savePlan, clearPlan, stepDate, isSameDay, todayView, planProgress, PLAN_EVENT,
-  notesForDay, currentDay,
+  notesForDay, currentDay, setStepNote, rescheduleOpenSteps,
 } from '../../lib/planStore';
 import { todos } from '../../lib/todoStore';
 import PlanCalendar from './PlanCalendar';
@@ -34,6 +34,10 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
 }) {
   const [plan, setPlan] = useState<ActionPlan | null>(() => loadPlan());
   const [showAll, setShowAll] = useState(false);
+  // Which step's note box is open, and its unsaved text. One at a time: two open editors is how a
+  // note gets written against the wrong task.
+  const [noteFor, setNoteFor] = useState<string | null>(null);
+  const [noteDraft, setNoteDraft] = useState('');
   const [note, setNote] = useState('');
   /** Which step has its detail open. One at a time — the panel is 380px wide. */
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -199,7 +203,53 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
               onClick={() => setExpanded((v) => (v === s.id ? null : s.id))}
               className="text-[9.5px] px-1.5 py-0.5 rounded-md border border-nv-border text-nv-faint hover:text-nv-text hover:bg-nv-surface2 transition-fast"
             >{expanded === s.id ? 'Hide detail' : 'Details'}</button>
+            {/* YOUR OWN NOTE ON THIS TASK. What you tried, who you spoke to, what to remember —
+                kept on the step, so it follows the task if the day moves and is still there when
+                you come back to it a week later. Available on done steps too: what happened is
+                usually worth writing down precisely when it is finished. */}
+            <button
+              onClick={() => { setNoteFor((v) => (v === s.id ? null : s.id)); setNoteDraft(s.note ?? ''); }}
+              className={`text-[9.5px] px-1.5 py-0.5 rounded-md border transition-fast ${
+                s.note ? 'border-accent/40 text-accent bg-accent/[0.07]' : 'border-nv-border text-nv-faint hover:text-nv-text hover:bg-nv-surface2'
+              }`}
+            >{s.note ? '✎ Note' : '+ Note'}</button>
           </div>
+          {s.note && noteFor !== s.id && (
+            <p className="mt-1 text-[10px] text-nv-muted leading-relaxed whitespace-pre-wrap border-l-2 border-accent/30 pl-2">{s.note}</p>
+          )}
+          {noteFor === s.id && (
+            <div className="mt-1.5">
+              <textarea
+                autoFocus
+                value={noteDraft}
+                onChange={(e) => setNoteDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') { e.preventDefault(); setNoteFor(null); }
+                  // Ctrl/Cmd+Enter saves — a note is often several lines, so plain Enter must not.
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); setStepNote(s.id, noteDraft); setNoteFor(null); setPlan(loadPlan()); }
+                }}
+                placeholder="What happened, what to remember, who to chase…"
+                rows={3}
+                className="w-full rounded-lg px-2 py-1.5 text-[11px] bg-nv-bg border border-nv-border focus:border-accent outline-none text-nv-text resize-y"
+              />
+              <div className="flex gap-1.5 mt-1">
+                <button
+                  onClick={() => { setStepNote(s.id, noteDraft); setNoteFor(null); setPlan(loadPlan()); }}
+                  className="text-[9.5px] px-2 py-0.5 rounded-md bg-accent text-white hover:bg-accent-dim transition-fast"
+                >Save note</button>
+                <button
+                  onClick={() => setNoteFor(null)}
+                  className="text-[9.5px] px-2 py-0.5 rounded-md border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
+                >Cancel</button>
+                {s.note && (
+                  <button
+                    onClick={() => { setStepNote(s.id, ''); setNoteFor(null); setPlan(loadPlan()); }}
+                    className="text-[9.5px] px-2 py-0.5 rounded-md border border-nv-border text-nv-faint hover:text-red-500 transition-fast ml-auto"
+                  >Delete</button>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -266,6 +316,27 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
             style={{ borderColor: '#e8a33d66', color: '#e8a33d' }}
           >⚖ Ask the council</button>
         </div>
+        {/* FIT THE REMAINING WORK TO THE DAYS YOU ACTUALLY HAVE.
+            A plan written as Day 1…Day 30 has no idea which of those is a Sunday, or that four days
+            already slipped — so the calendar stacks work on days off and grows a pile of overdue
+            steps nobody will catch up on. This moves ONLY the open ones onto days you work, keeping
+            their order. Finished steps are never touched: they are a record of what really happened
+            on a real day, and rewriting that would make the plan lie about the past. */}
+        {prog.done < prog.total && (
+          <button
+            onClick={() => {
+              const next: ActionPlan = JSON.parse(JSON.stringify(plan));
+              const r = rescheduleOpenSteps(next);
+              setPlan(loadPlan());
+              setNote(r.moved
+                ? `Moved ${r.moved} unfinished step${r.moved === 1 ? '' : 's'} onto days you work — now running day ${r.firstDay}–${r.lastDay}. Your ${r.skippedDone} finished step${r.skippedDone === 1 ? '' : 's'} stayed exactly where they were.`
+                : 'Everything unfinished is already on a day you work — nothing moved.');
+              setTimeout(() => setNote(''), 6000);
+            }}
+            className="mt-1.5 w-full text-[10px] px-2 py-1 rounded-lg border border-nv-border text-nv-faint hover:text-nv-text hover:bg-nv-surface2 transition-fast"
+            title={avail ? 'Reschedules only unfinished steps around your working days' : 'Tell Krew your working hours first and this will also skip your days off'}
+          >⇄ Refit the unfinished work to my available days</button>
+        )}
       </div>
 
       {view === 'month' ? (

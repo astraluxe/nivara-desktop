@@ -939,8 +939,16 @@ export default function ModelsModule() {
     setDownloading(prev => { const n = { ...prev }; delete n[modelId]; return n; });
   }
 
+  // Two-press delete — window.confirm is swallowed here (the same reason the note above gives for
+  // alert), so the old guard made this button a no-op: press Delete, nothing happens, no reason.
+  const [delArmed, setDelArmed] = useState<string | null>(null);
   async function handleDelete(modelId: string) {
-    if (!confirm('Delete this model from your machine?')) return;
+    if (delArmed !== modelId) {
+      setDelArmed(modelId);
+      setTimeout(() => setDelArmed((cur) => (cur === modelId ? null : cur)), 4000);
+      return;
+    }
+    setDelArmed(null);
     await invoke('models_delete', { modelId }).catch(() => {});
     refreshInstalled();
   }
@@ -1474,9 +1482,14 @@ export default function ModelsModule() {
                       </button>
                       <button
                         onClick={() => handleDelete(m.id)}
-                        className="text-[11px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:border-red-500/40 hover:text-red-400 transition-fast"
+                        title={delArmed === m.id ? 'Press again to delete this model from disk' : 'Delete this model from your machine'}
+                        className={`text-[11px] px-3 py-1.5 rounded-lg border transition-fast ${
+                          delArmed === m.id
+                            ? 'border-red-500 bg-red-500/15 text-red-400 font-medium'
+                            : 'border-nv-border text-nv-faint hover:border-red-500/40 hover:text-red-400'
+                        }`}
                       >
-                        Delete
+                        {delArmed === m.id ? 'Press again to delete' : 'Delete'}
                       </button>
                     </div>
                   </div>

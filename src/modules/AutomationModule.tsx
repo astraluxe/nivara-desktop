@@ -1792,9 +1792,11 @@ function WorkflowBuilder({
 
 // ─── Automation Card ──────────────────────────────────────────────────────────
 
-function AutomationCard({ automation, onToggle, onCloudToggle, onEdit, onDelete, onRunNow, onDiscuss, running }: {
+function AutomationCard({ automation, onToggle, onCloudToggle, onEdit, onDelete, onRunNow, onDiscuss, running, armed }: {
   automation: Automation; onToggle: () => void; onCloudToggle: () => void; onEdit: () => void;
   onDelete: () => void; onRunNow: () => void; onDiscuss: () => void; running: boolean;
+  /** True once Delete has been pressed once — the second press is the one that deletes. */
+  armed?: boolean;
 }) {
   const isCanvas = automation.trigger_type === 'canvas_flow';
   let cfg: TriggerConfig = {} as TriggerConfig;
@@ -1891,7 +1893,8 @@ function AutomationCard({ automation, onToggle, onCloudToggle, onEdit, onDelete,
           <svg viewBox="0 0 12 12" fill="none" className="w-3 h-3"><path d="M1 8V3a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H7L4 11V9H2a1 1 0 0 1-1-1z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/></svg>
           Discuss
         </button>
-        <button onClick={onDelete} className="px-2.5 py-1 rounded-md text-nv-faint hover:text-nv-red hover:bg-nv-red/10 text-xs font-mono transition-fast ml-auto">Delete</button>
+        <button onClick={onDelete} title={armed ? 'Press again to delete this automation' : 'Delete this automation'}
+          className={`px-2.5 py-1 rounded-md text-xs font-mono transition-fast ml-auto ${armed ? 'text-nv-red bg-nv-red/15 font-semibold' : 'text-nv-faint hover:text-nv-red hover:bg-nv-red/10'}`}>{armed ? 'Press again' : 'Delete'}</button>
       </div>
     </div>
   );
@@ -2551,8 +2554,18 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
     loadAutomations();
   }
 
+  // Two-press delete. window.confirm is swallowed in this webview — it returns undefined without
+  // ever showing a dialog, so `!confirm(...)` was always true and this returned on its first line:
+  // the Delete button looked live and did nothing at all. `delArmed` holds the id awaiting the
+  // second press, and clears itself so it can never sit armed indefinitely.
+  const [delArmed, setDelArmed] = useState<string | null>(null);
   async function handleDelete(id: string) {
-    if (!confirm('Delete this automation?')) return;
+    if (delArmed !== id) {
+      setDelArmed(id);
+      setTimeout(() => setDelArmed((cur) => (cur === id ? null : cur)), 4000);
+      return;
+    }
+    setDelArmed(null);
     await invoke('automation_delete', { id }); loadAutomations();
   }
 
@@ -2666,7 +2679,7 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
                       setTimeout(() => canvasRef.current?.applyFlow(flow.nodes, flow.edges), 120);
                     }}
                     onDiscuss={() => { setDiscussTarget(a); setTab('canvas'); }}
-                    onDelete={() => handleDelete(a.id)} onRunNow={() => handleRunNow(a)} running={runningId === a.id} />
+                    onDelete={() => handleDelete(a.id)} onRunNow={() => handleRunNow(a)} running={runningId === a.id} armed={delArmed === a.id} />
                 ))}
               </div>
             )}

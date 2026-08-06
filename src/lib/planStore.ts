@@ -10,6 +10,7 @@
 // an ordinary answer that happens to mention "day 2" never sprouts a button.
 
 import { todos } from './todoStore';
+import { loadAvailability, isOffDay } from './availability';
 
 export interface PlanStep {
   id: string;
@@ -22,6 +23,12 @@ export interface PlanStep {
   doneWhen?: string;
   done: boolean;
   doneAt?: number;
+  /**
+   * The user's own note against this task — what they tried, who they spoke to, what to remember
+   * next time. Kept ON the step rather than in the plan-wide log so it stays attached to the thing
+   * it is about, and survives the step being moved to another day.
+   */
+  note?: string;
 }
 
 export interface ActionPlan {
@@ -305,6 +312,82 @@ export function mergeIntoPlan(plan: ActionPlan, text: string): { added: number; 
     savePlan(plan);
   }
   return { added, updated, kept: plan.steps.length };
+}
+
+/** Write (or clear) the user's note on one step. */
+export function setStepNote(stepId: string, note: string): void {
+  const plan = loadPlan();
+  if (!plan) return;
+  const step = plan.steps.find((s) => s.id === stepId);
+  if (!step) return;
+  const t = note.trim();
+  if (t) step.note = t.slice(0, 2000); else delete step.note;
+  savePlan(plan);
+}
+
+// ─── Moving open work to when the user is actually free ───────────────────────
+//
+// A plan is written as "Day 1…Day 30" with no idea whether day 6 is a Sunday, whether the user
+// works weekends, or whether four days have already slipped. So the calendar shows work stacked on
+// days off and a pile of overdue steps that will never be caught up, and the plan slowly becomes
+// something the user ignores rather than follows.
+//
+// THE ONE INVARIANT: a DONE step is never touched. Not moved, not renumbered, not removed, not
+// re-added. Work that really happened on a real day is a record, and rewriting it would make the
+// plan lie about the past — which is worse than a badly scheduled future. Everything here operates
+// strictly on `!step.done`.
+
+export interface RescheduleResult { moved: number; firstDay: number; lastDay: number; skippedDone: number }
+
+/**
+ * Push OPEN steps forward onto days the user actually works, keeping their order.
+ *
+ * Overdue steps come first (they are the ones being ignored), then the rest in their existing
+ * sequence. Density is preserved: however many steps a day carried before, it carries after.
+ */
+export function rescheduleOpenSteps(plan: ActionPlan, opts?: { perDay?: number; from?: Date }): RescheduleResult {
+  const done = plan.steps.filter((s) => s.done);
+  const open = plan.steps.filter((s) => !s.done);
+  if (!open.length) return { moved: 0, firstDay: 0, lastDay: 0, skippedDone: done.length };
+
+  // Days off come from the user's own stated working hours. Absent, every day is workable —
+  // never a made-up assumption about weekends.
+  const avail = (() => { try { return loadAvailability(); } catch { return null; } })();
+
+  const start = new Date(plan.startDate + 'T00:00:00');
+  const today = opts?.from ? new Date(opts.from) : new Date();
+  today.setHours(0, 0, 0, 0);
+  // Day numbers are 1-based offsets from startDate, so today's day number is the floor of the gap.
+  const dayOfDate = (d: Date) => Math.floor((d.getTime() - start.getTime()) / 86_400_000) + 1;
+  const dateOfDay = (n: number) => { const d = new Date(start); d.setDate(d.getDate() + (n - 1)); return d; };
+
+  // Never schedule onto a day already occupied by finished work — that day is spent.
+  const doneDays = new Set(done.map((s) => s.day));
+  const perDay = Math.max(1, opts?.perDay ?? Math.max(1, Math.round(open.length / Math.max(1, new Set(open.map((s) => s.day)).size))));
+
+  // Start from today (or the plan start, if it has not begun), never in the past.
+  let cursor = Math.max(1, dayOfDate(today));
+  let placedToday = 0;
+  const isWorkable = (n: number) => {
+    if (doneDays.has(n)) return false;
+    if (!avail) return true;
+    try { return !isOffDay(avail, dateOfDay(n)); } catch { return true; }
+  };
+  while (!isWorkable(cursor)) cursor++;
+
+  // Overdue first — those are the ones actually being dropped — then the rest in order.
+  const overdue = open.filter((s) => s.day < cursor).sort((a, b) => a.day - b.day);
+  const ahead = open.filter((s) => s.day >= cursor).sort((a, b) => a.day - b.day);
+  let moved = 0, firstDay = cursor, lastDay = cursor;
+  for (const s of [...overdue, ...ahead]) {
+    if (placedToday >= perDay) { cursor++; placedToday = 0; while (!isWorkable(cursor)) cursor++; }
+    if (s.day !== cursor) { s.day = cursor; moved++; }
+    placedToday++;
+    lastDay = cursor;
+  }
+  plan.steps.sort((a, b) => a.day - b.day);
+  savePlan(plan);
+  return { moved, firstDay, lastDay, skippedDone: done.length };
 }
 
 /** Which plan day today is (1-based). 0 if the plan has not started yet. */
