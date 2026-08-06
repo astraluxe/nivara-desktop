@@ -19,6 +19,18 @@ export interface BrainNode {
   body: string;          // the content/summary agents can recall
   filePath?: string;     // for attached files (path saved + connected to its data)
   ref?: string;          // user's free-text reference note about this node
+  /**
+   * The COMPLETE content, kept aside while the note is narrowed to a filtered subset.
+   *
+   * Filtering a big sheet used to produce a second note, which is the wrong shape for the problem:
+   * the user wants THIS list to show the rows that matter, not a growing pile of near-duplicates
+   * they then have to keep straight. So `body` becomes the filtered rows — which is what every
+   * agent reads, and the whole point — and the original is parked here so "show all rows" is
+   * always one click away and nothing is ever actually lost.
+   */
+  fullBody?: string;
+  /** One line describing the active filter, for the banner ("Country: INDIA · 672 of 4,000"). */
+  viewNote?: string;
   x: number; y: number;  // graph position
   createdAt: number;
   updatedAt: number;

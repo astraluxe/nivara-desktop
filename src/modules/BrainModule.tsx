@@ -1391,20 +1391,45 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
    * two are linked so the view says where it came from.
    */
   const [viewMsg, setViewMsg] = useState('');
-  const saveFilteredView = () => {
+  const [narrowed, setNarrowed] = useState<string>(node.viewNote || '');
+
+  /**
+   * Narrow THIS note to the rows currently showing.
+   *
+   * Not a new note — that was the wrong shape for the problem. Filtering a 4,000-row sheet to the
+   * 672 that matter should make THIS list show those 672, so everything that reads it (an agent
+   * recalling it, an outreach run built from it, the chat) sees the rows that matter and nothing
+   * else. The full sheet is parked on the node and restored by one button, so narrowing is a view,
+   * never a deletion.
+   */
+  const applyFilterToNote = () => {
     if (!anyFilterActive()) return;
     const md = (nodeToMarkdown(exportHtmlForChat()) || '').trim();
     const rows = md.split('\n').filter((l) => l.trim().startsWith('|') && !/^\|?[\s:|-]+\|?$/.test(l.trim())).length - 1;
-    if (rows < 1) { setViewMsg('Nothing is showing — the filter matched no rows, so there is nothing to save.'); return; }
-    const desc = describeActiveFilter();
-    const base = `${title.trim() || node.title} — ${desc || 'filtered'}`.slice(0, 90);
-    let name = base;
-    for (let i = 2; i < 50 && brain.findExactByTitle(name); i++) name = `${base} (${i})`;
-    const body = `_Filtered view of **${title.trim() || node.title}** — ${desc || 'filtered'}. ${rows} of the original rows. This is the whole of this note: read it as it stands, there is nothing omitted._\n\n${md}`;
-    const created = brain.addNode({ title: name, kind: 'list', body: body.slice(0, 200000) });
-    brain.link(node.id, created.id, 'filtered view of this');
-    setViewMsg(`Saved “${name}” — ${rows} row${rows === 1 ? '' : 's'}. Agents reading it get only these.`);
+    if (rows < 1) { setViewMsg('Nothing is showing — the filter matched no rows, so there is nothing to narrow to.'); return; }
+    const desc = describeActiveFilter() || 'filtered';
+    // Only capture the original ONCE: narrowing an already-narrowed note must not overwrite the
+    // full sheet with a subset, which would make "show all rows" a lie.
+    const fresh = brain.all().nodes.find((n) => n.id === node.id);
+    const full = fresh?.fullBody || fresh?.body || node.body;
+    const totalRows = (nodeToMarkdown(full).match(/\n/g) || []).length;
+    const note = `${desc} · ${rows} rows showing`;
+    brain.updateNode(node.id, { body: md.slice(0, 200000), fullBody: full, viewNote: note });
+    setNarrowed(note);
+    setViewMsg(`This list now shows ${rows} of ${totalRows} rows. Agents reading it get only these.`);
     setTimeout(() => setViewMsg(''), 7000);
+  };
+
+  /** Put the whole sheet back. */
+  const showAllRows = () => {
+    const fresh = brain.all().nodes.find((n) => n.id === node.id);
+    if (!fresh?.fullBody) { setNarrowed(''); return; }
+    brain.updateNode(node.id, { body: fresh.fullBody, fullBody: undefined, viewNote: undefined });
+    setNarrowed('');
+    setViewMsg('All rows are back.');
+    // The editor holds the narrowed DOM; re-render it from the restored body.
+    if (editorRef.current) editorRef.current.innerHTML = looksLikeHtml(fresh.fullBody) ? cleanBody(fresh.fullBody) : mdToHtml(fresh.fullBody);
+    setTimeout(() => { enhanceTables(); setViewMsg(''); }, 0);
   };
   // For a PDF/deck/image the editor isn't rendered, so readBody() would return '' and WIPE the
   // stored body — skip the body write there (title/ref/kind still save). A LARGE table is shown
@@ -1641,10 +1666,17 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
               and the 40 rows you found were gone. Saved, they become the thing agents read, which
               is the whole point: a request about Bengaluru vendors should cost 40 rows, not 4,000. */}
           {hasTable && filterOn && (
-            <button onClick={saveFilteredView} title="Keep the rows showing right now as their own Brain note, linked to this file"
+            <button onClick={applyFilterToNote} title="Make this list show only the rows currently visible. The full sheet is kept and one click brings it back."
               className="ml-1 text-[10.5px] px-2.5 py-1 rounded-md font-medium text-white transition-fast hover:opacity-90"
               style={{ background: '#7C5CFF' }}>
-              ⭳ Save this view
+              ⇩ Show only these rows
+            </button>
+          )}
+          {narrowed && (
+            <button onClick={showAllRows} title="Restore every row of the original sheet"
+              className="ml-1 text-[10.5px] px-2.5 py-1 rounded-md transition-fast"
+              style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-muted)' }}>
+              ↩ Show all rows <span style={{ color: 'var(--nv-faint)' }}>({narrowed})</span>
             </button>
           )}
           {viewMsg

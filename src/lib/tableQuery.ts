@@ -413,6 +413,52 @@ export function looksLikeCompanyName(raw?: string): boolean {
   return false;
 }
 
+/**
+ * Is this cell an IDENTIFIER rather than a name?
+ *
+ * "1074", "IN00110430", "29AESPJ2945M1ZV", "45681" — serial numbers, supplier codes, GST numbers
+ * and Excel date serials. A contact called "1074" is not a contact, and an outreach list full of
+ * them is unusable: the user cannot tell who anybody is, and no message can be written to them.
+ * This is the last line of defence for when a column was picked wrongly.
+ */
+export function looksLikeIdentifier(raw?: string): boolean {
+  const s = String(raw || '').trim();
+  if (!s) return true;
+  if (/^[\d\s.,/-]+$/.test(s)) return true;                 // all digits and punctuation
+  const letters = (s.match(/[A-Za-z]/g) || []).length;
+  const digits = (s.match(/\d/g) || []).length;
+  if (!letters) return true;
+  // A code: no spaces, mostly not letters, and long enough to be an id rather than an initialism.
+  if (!/\s/.test(s) && digits >= 3 && s.length >= 6 && digits >= letters / 2) return true;
+  // GST / PAN shapes: a long unbroken run of upper-case letters and digits.
+  if (/^[A-Z0-9]{10,}$/.test(s) && digits >= 2) return true;
+  return false;
+}
+
+/** Words that only ever appear in a HEADER, so a row of them is not a contact. */
+const HEADER_WORDS = /\b(sl|sr|no|id|name|email|mail|mobile|phone|address|country|city|state|gst|pan|date|status|company|supplier|vendor|creation|exp|dt)\b/gi;
+
+/**
+ * Did a header row leak through as data?
+ *
+ * When the header is not detected, row 0 becomes a contact named "SL# SUPPLIER_ID SUPPLIER_NAME
+ * CREATION_DATE …". It looks absurd in the list and it is the clearest possible signal the parse
+ * went wrong, so it is caught explicitly rather than left for the user to notice.
+ */
+export function looksLikeHeaderRow(raw?: string): boolean {
+  const s = String(raw || '').trim();
+  if (!s || s.length < 8) return false;
+  // UNDERSCORES MUST BECOME SPACES FIRST. An underscore is a word character, so `\bname\b` does
+  // not match inside "SUPPLIER_NAME" — the same quirk that made the original people-list test
+  // reject the vendor sheet. Un-normalised, this detector saw five header words in a row of
+  // fifteen and concluded it was data.
+  const flat = s.replace(/[_]+/g, ' ');
+  const words = flat.split(/[\s,|]+/).filter(Boolean);
+  if (words.length < 3) return false;
+  const hits = (flat.match(HEADER_WORDS) || []).length;
+  return hits >= 3 && hits >= words.length / 2;
+}
+
 /** Render a table back to markdown. */
 export function tableToMarkdown(t: Table): string {
   const head = `| ${t.headers.join(' | ')} |`;

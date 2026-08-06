@@ -34,7 +34,7 @@ import { getImageBudget, unitsForModel } from '../../lib/imageQuota';
 import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining } from '../../lib/tokenTier';
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
 import { builtInSkillsBlock, learnSkill } from '../../lib/skillGraph';
-import { parseAnyTable, mapFields, looksLikeCompanyName } from '../../lib/tableQuery';
+import { parseAnyTable, mapFields, looksLikeCompanyName, looksLikeIdentifier, looksLikeHeaderRow } from '../../lib/tableQuery';
 import { observeForRole, roleBlock } from '../../lib/userRole';
 import SkillsPanel from './SkillsPanel';
 import PlanPanel from './PlanPanel';
@@ -6447,6 +6447,10 @@ The prompt must be production-ready — specific enough for a motion designer to
     for (const r of t.rows) {
       const name = cell(r, iName);
       if (!name || name === '—') { stats.noContact++; continue; }
+      // A CONTACT MUST HAVE A NAME. "1074", "IN00110430" and a header row that leaked through as
+      // data are all things the user cannot write a message to and cannot recognise in a list —
+      // and a campaign full of them is worse than no campaign, because it looks finished.
+      if (looksLikeIdentifier(name) || looksLikeHeaderRow(name)) { stats.noContact++; continue; }
       const emails = splitEmails(cell(r, f.email));
       const phone = cell(r, f.phone);
       const li = cell(r, f.linkedin);
@@ -6539,6 +6543,9 @@ The prompt must be production-ready — specific enough for a motion designer to
       if (!name || /^(name|role|company|headline|profile|status)$/i.test(name)) continue;
       if (name.endsWith(':')) continue;                             // "Best-fit connections for X:"
       if (name.split(/\s+/).length > 6) continue;                   // a sentence, not a person
+      // The same two guards as the structured parser. This tolerant splitter takes cell 0 as the
+      // name, so on a sheet whose first column is "SL#" it produced contacts called "1074".
+      if (looksLikeIdentifier(name) || looksLikeHeaderRow(name)) continue;
       // Addresses are pulled OUT of the row rather than swept into the headline. The campaign's
       // own progress note carries an Email column now, so re-attaching it has to bring the
       // addresses back with it — otherwise a re-run rebuilds the campaign with every email lost,
@@ -7576,15 +7583,28 @@ _None of them had everything you ticked, so I've saved them rather than lose the
           });
           return;
         }
-        const rows = parseContactRows(f.content);
-        // A real imported sheet (SUPPLIER_NAME / EMAIL / MOBILE) yields nothing from the
-        // app's own parsers — its columns are not the ones they look for. Read it as the
-        // ordinary table it is rather than treating the file as empty.
-        if (rows.length) rows.forEach((c) => add({ ...c, source: 'connections' }));
-        else {
-          const generic = parseGenericContactRows(f.content);
-          if (lastIntakeRef.current) lastIntakeRef.current.name = f.name;
+        // ── WHICH PARSER IS ACTUALLY RIGHT FOR THIS FILE ────────────────────────────────────
+        //
+        // parseContactRows is tolerant by design: it splits on tabs or runs of spaces and takes
+        // the FIRST cell as the name. On a vendor sheet whose first column is "SL#" that produces
+        // contacts called "1074" and "769", with the entire rest of the row jammed into the company
+        // field — and because it returned rows, the structured parser that would have read the real
+        // SUPPLIER_NAME column was never tried. The user got a campaign where nobody had a name.
+        //
+        // So run both and keep whichever produced usable NAMES. That is the only thing that
+        // matters here, and it is measurable: a name with letters in it that is not an id and not
+        // the header row leaking through as data.
+        const usable = (rs: Array<{ name: string }>) =>
+          rs.filter((r) => r.name && !looksLikeIdentifier(r.name) && !looksLikeHeaderRow(r.name)).length;
+        const legacy = parseContactRows(f.content);
+        const generic = parseGenericContactRows(f.content);
+        const genericStats = lastIntakeRef.current;
+        if (usable(generic) > usable(legacy)) {
+          if (genericStats) genericStats.name = f.name;
           generic.forEach((c) => add({ ...c, source: 'leads' }));
+        } else {
+          lastIntakeRef.current = null;   // the generic funnel does not describe what we used
+          legacy.forEach((c) => add({ ...c, source: 'connections' }));
         }
       });
       // If ALL they gave us was progress, top the roster up from the saved connections so anyone
