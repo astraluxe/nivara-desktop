@@ -7467,10 +7467,23 @@ _None of them had everything you ticked, so I've saved them rather than lose the
    *   people-list test was dropped silently and 547 people from an unrelated campaign were drafted
    *   instead — the user asked for one list and got somebody else's.
    */
-  async function launchOutreachFromConnections(max = 50, focus = '', userText = '', destTitle = '', onlyLeadList = '', sourceOnly = false) {
+  async function launchOutreachFromConnections(max = 50, focus = '', userText = '', destTitle = '', onlyLeadList = '', sourceOnly = false, sourceFile?: { name: string; content: string; fromBrain?: boolean }) {
     if (busy) return;
     const sid = await ensureSession('LinkedIn outreach');
-    const chips = attachedFiles.map((f) => `[[file]] ${f.name}`).join('\n');
+    // ── THE FILE COMES IN AS AN ARGUMENT, NOT THROUGH REACT STATE ──────────────────────────────
+    //
+    // This is the actual cause of "I don't have anyone to reach out to yet" on a file plainly full
+    // of names and email addresses — and of the earlier run that drafted 547 people from an
+    // unrelated campaign. /outreach used to call setAttachedFiles(...) and then, on a setTimeout,
+    // call THIS function. But this function is a closure created during the render that was
+    // current when the picker was open: `attachedFiles` inside it is the array from THAT render,
+    // and no amount of waiting changes a variable already captured. So the picked list was
+    // frequently invisible here — and every symptom followed from that one fact, which is why
+    // fixing the parsers never fixed the bug.
+    //
+    // Passed as an argument, the file cannot be stale and cannot be lost.
+    const files = sourceFile ? [{ name: sourceFile.name, content: sourceFile.content, fromBrain: sourceFile.fromBrain }] : attachedFiles;
+    const chips = files.map((f) => `[[file]] ${f.name}`).join('\n');
     const shownUser = (userText || (focus ? `Draft outreach for my LinkedIn connections — ${focus}` : 'Draft outreach for my LinkedIn connections and open the copilot')) + (chips ? `\n${chips}` : '');
     addMsg({ role: 'user', content: shownUser });
     if (sid) krewDb.saveMessage(sid, 'user', shownUser).catch(() => {});
@@ -7485,10 +7498,10 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     // full of names, emails and phone numbers the user is looking at. Both are the app arguing
     // with an instruction. The test still guards files that merely happen to be attached — there,
     // guessing wrong is cheap.
-    const attachedConn = attachedFiles.filter((f) => f.content && (sourceOnly || looksLikeConnectionsFile(f)));
+    const attachedConn = files.filter((f) => f.content && (sourceOnly || looksLikeConnectionsFile(f)));
     if (!attachedConn.length && focusedFile && looksLikeConnectionsFile(focusedFile)) attachedConn.push({ name: focusedFile.name, content: focusedFile.content });
-    const refFile = attachedFiles.find((f) => f.content && !looksLikeConnectionsFile(f) && /\.(md|markdown|txt|pdf|docx?)$/i.test(f.name))
-      || attachedFiles.find((f) => f.content && !looksLikeConnectionsFile(f))
+    const refFile = files.find((f) => f.content && !looksLikeConnectionsFile(f) && /\.(md|markdown|txt|pdf|docx?)$/i.test(f.name))
+      || files.find((f) => f.content && !looksLikeConnectionsFile(f))
       || (focusedFile && !looksLikeConnectionsFile(focusedFile) ? { name: focusedFile.name, content: focusedFile.content } : undefined);
 
     // Build the contact list (name + headline + profile URL + any saved status).
@@ -7640,7 +7653,7 @@ _None of them had everything you ticked, so I've saved them rather than lose the
       // wrong, and it hides the only thing worth knowing: what the app actually managed to read.
       // So when a file was picked, report the file — its size, whether a table was found at all,
       // the columns it has, and the first line — which is enough to see the real problem.
-      const picked = attachedFiles.find((f) => f.content);
+      const picked = files.find((f) => f.content);
       if (picked) {
         // The extractor already worked out WHY, in plain English. Repeat it rather than guessing
         // a second time — a wrong diagnosis wastes more of the user's time than no diagnosis.
@@ -8069,7 +8082,16 @@ _None of them had everything you ticked, so I've saved them rather than lose the
         // An explicit destination chosen in the /outreach picker always wins — the user has said
         // in so many words where this campaign belongs, so nothing inferred may override it.
         title: campaignTitle,
-        channel: 'linkedin',
+        // THE CHANNEL FOLLOWS THE PEOPLE, not a default. Hard-coding 'linkedin' meant a list of
+        // suppliers with nothing but email addresses opened a LinkedIn-shaped panel, and the
+        // message box — gated on the campaign channel — never appeared for any of them.
+        channel: (() => {
+          const all = [...carriedPrior, ...built];
+          const withLi = all.filter((c) => c.linkedin_url && /linkedin\.com\/in\//i.test(c.linkedin_url)).length;
+          const withMail = all.filter((c) => (c.email || '').includes('@') || (c.emails || []).length).length;
+          if (withLi && withMail) return 'both';
+          return withLi ? 'linkedin' : withMail ? 'email' : 'linkedin';
+        })(),
         contacts: [...carriedPrior, ...built],
         // What this campaign is FOR, kept with it. The goal was previously a sentence in one chat
         // message that scrolled away; now re-opening, resuming or extending the campaign all draft
@@ -8741,18 +8763,19 @@ _${plan.advice}_` : ''}`;
     setOutreachPick(null);
     setDestName('');
     setDestPurpose('');
-    // The launcher reads the people from the attachments, so hand it exactly the one list the user
-    // picked — no guessing from scan history, no merging in a file they didn't choose.
+    // Still set for the UI (the chip under the input), but the launcher no longer depends on it —
+    // it receives the file as an argument. Going through state was the bug: the launcher is a
+    // closure from the render that was current when the picker opened, so it read an `attachedFiles`
+    // that had not been updated and never would be, however long the setTimeout waited.
     setAttachedFiles([{ name: source.name, content: source.content, fromBrain: source.fromBrain }]);
-    setTimeout(() => {
-      // The purpose goes in as the drafting GOAL as well as being stored on the campaign, so the
-      // run no longer stops to ask "what are you reaching out for?" when the user has just said.
-      launchOutreachFromConnections(
-        50, purpose.trim(),
-        `Draft outreach from ${source.name} → saving to "${title}"${purpose.trim() ? ` — ${purpose.trim()}` : ''}`,
-        title, '', true,   // sourceOnly: this file is the whole population
-      );
-    }, 0);
+    // The purpose goes in as the drafting GOAL as well as being stored on the campaign, so the run
+    // no longer stops to ask "what are you reaching out for?" when the user has just said.
+    void launchOutreachFromConnections(
+      50, purpose.trim(),
+      `Draft outreach from ${source.name} → saving to "${title}"${purpose.trim() ? ` — ${purpose.trim()}` : ''}`,
+      title, '', true,          // sourceOnly: this file is the whole population
+      { name: source.name, content: source.content, fromBrain: source.fromBrain },
+    );
   }
 
   /**

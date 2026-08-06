@@ -460,7 +460,7 @@ export function looksLikeCompanyName(raw?: string): boolean {
   // Decisive: a legal form or a corporate suffix.
   if (/\b(pvt|private|ltd|limited|llp|llc|inc|incorporated|corp|corporation|co|company|gmbh|s\.?a\.?|b\.?v\.?|plc|sdn|bhd|pte)\b\.?/.test(low)) return true;
   // Decisive: a trade or sector word. No person is called "Industries".
-  if (/\b(industries|industry|enterprises|enterprise|technologies|technology|solutions|systems|services|traders|trading|engineering|engineers|associates|consultancy|consultants|agencies|agency|group|holdings|ventures|labs|laboratories|works|manufacturing|exports|imports|logistics|motors|foods|steel|textiles|pharma|healthcare|hospital|hotels|constructions?|infra|electricals?|electronics|automation|instruments|tools|packaging|chemicals|polymers|furniture|stationery|security|marketing|media|studio|academy|institute|university|college|school|bank|federation|society|corporation|council|centre|center)\b/.test(low)) return true;
+  if (/\b(industries|industry|enterprises|enterprise|technologies|technology|solutions|systems|services|traders|trading|engineering|engineers|associates|consultancy|consultants|agencies|agency|group|holdings|ventures|labs|laboratories|works|manufacturing|exports|imports|logistics|motors|foods|steel|textiles|pharma|healthcare|hospital|hotels|constructions?|infra|electricals?|electronics|automation|instruments|tools|packaging|chemicals|polymers|furniture|stationery|security|marketing|media|studio|academy|institute|university|college|school|bank|federation|society|corporation|council|centre|center|retail|stores|store|mart|supplies|suppliers|distributors|traders|equipments?|machinery|components|products|fabrication|engg|udyog|impex|international|global|overseas|company)\b/.test(low)) return true;
   if (/[&@]|\band\b\s+\w+\s+(?:co|sons|bros|brothers)\b/.test(low)) return true;
   if (/\d/.test(s)) return true;                                  // "3D Engineering", "AV 24 Traders"
   const words = s.split(/\s+/).filter(Boolean);
@@ -631,6 +631,11 @@ export function extractContacts(text: string, requireContact = true): ExtractRes
     return { contacts: [], stats, headers: table.headers, problem: `No column looks like a name. Columns found: ${table.headers.join(', ')}.` };
   }
   const cell = (r: string[], i: number) => (i >= 0 ? (r[i] || '').trim() : '');
+  // Does the name column's own heading say these rows are organisations? Underscores normalised
+  // first, for the same reason as everywhere else in this file.
+  const nameHeader = (table.headers[iName] || '').replace(/[_]+/g, ' ');
+  const nameColumnMeansCompany = iName === f.company
+    || /\b(supplier|vendor|company|firm|business|party|account|organisation|organization|entity|dealer|distributor|manufacturer|client|customer)\b/i.test(nameHeader);
   const out: ExtractedContact[] = [];
   const seen = new Set<string>();
   for (const r of table.rows) {
@@ -649,8 +654,16 @@ export function extractContacts(text: string, requireContact = true): ExtractRes
     if (seen.has(key)) { stats.duplicate++; continue; }   // most exports list a supplier twice
     seen.add(key);
     const company = f.company >= 0 ? cell(r, f.company) : (f.person >= 0 && f.name >= 0 ? cell(r, f.name) : '');
-    // A filled person column means the row names a human even on an otherwise company-shaped sheet.
-    const isCompany = f.person >= 0 && cell(r, f.person) ? false : looksLikeCompanyName(name);
+    // WHAT THE COLUMN IS CALLED BEATS GUESSING AT THE VALUE.
+    //
+    // A column headed SUPPLIER_NAME / Vendor / Party / Company contains organisations — every row,
+    // by definition. Judging each value on its wording instead gets the obvious ones right and
+    // then calls "Yellow Retail" a person, so that row alone is addressed "Hi Yellow" and sent a
+    // LinkedIn connection request. A filled person column still wins, because a sheet that names
+    // an actual human in a row is telling us something more specific than its own title.
+    const isCompany = f.person >= 0 && cell(r, f.person)
+      ? false
+      : (nameColumnMeansCompany || looksLikeCompanyName(name));
     if (isCompany) stats.companies++; else stats.people++;
     stats.kept++;
     out.push({

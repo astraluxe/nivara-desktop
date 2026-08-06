@@ -872,8 +872,15 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   // Someone off a lead list who hasn't accepted yet cannot be messaged on LinkedIn at all, so the
   // card shows the connection-request step instead of a message they'd have no way to send. Once
   // any check (or the user) marks them accepted/sent/replied, they behave like any other contact.
-  // A company is never sent a connection request — there is nobody on the other end of one.
+  // A connection request is only meaningful for a PERSON we can actually reach on LinkedIn.
+  //
+  // A company has nobody on the other end of one. And someone whose row carries an email address
+  // and no profile is reachable today, by email — showing them a "send a connection request first"
+  // card blocks the one channel that works and makes the whole list look like it needs LinkedIn.
+  // Outreach is email, LinkedIn, X and Instagram; only this step was ever LinkedIn-only.
+  const curHasProfile = !!cur?.linkedin_url && /linkedin\.com\/in\//i.test(cur.linkedin_url);
   const needsConnect = !!cur && cur.source === 'leads' && cur.entityKind !== 'company'
+    && (curHasProfile || (!emailsOf(cur).length && !bareHandle(cur.x_handle) && !bareHandle(cur.instagram_handle)))
     && !(cur.status === 'accepted' || cur.status === 'sent' || cur.status === 'replied' || cur.status === 'skip');
   const isCompanyRow = cur?.entityKind === 'company';
 
