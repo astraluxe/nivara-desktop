@@ -1091,6 +1091,8 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
   // Table filter (Excel-style): a text search across rows PLUS per-column value pickers.
   const [tableFilter, setTableFilter] = useState('');
   const [hasTable, setHasTable] = useState(false);
+  const [filterOn, setFilterOn] = useState(false);   // any filter active → offer to save the view
+  const [confirmDel, setConfirmDel] = useState(false);
   const textFilterRef = useRef('');
   const colFiltersRef = useRef<Map<number, Set<string>>>(new Map()); // colIndex → allowed values (absent = all)
   const filterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1208,6 +1210,10 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
     const root = editorRef.current; if (!root) return;
     const q = textFilterRef.current.trim().toLowerCase();
     const cf = colFiltersRef.current;
+    // The filters live in refs (they are read inside DOM handlers and must not re-render a 15k-cell
+    // table on every keystroke). This one boolean is mirrored into state so the "Save this view"
+    // button can appear the moment a filter is on — the only thing about the filter React needs.
+    setFilterOn(cf.size > 0 || !!q);
     root.querySelectorAll('table').forEach((table) => {
       const body = (table as HTMLTableElement).tBodies[0]; if (!body) return;
       const rows = body.rows;
@@ -1354,6 +1360,52 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
     return clone.innerHTML;
   };
   const anyFilterActive = () => colFiltersRef.current.size > 0 || !!textFilterRef.current.trim();
+
+  /** The active filter in words — "Location: Bengaluru, Pune · matching “gst”". Used to name the
+   *  saved view, so a month later it still says what it is instead of "Copy (3)". */
+  const describeActiveFilter = (): string => {
+    const parts: string[] = [];
+    const table = editorRef.current?.querySelector('table');
+    const heads = table ? Array.from(table.rows[0]?.cells ?? []).map((c) => (c.textContent || '').replace(/[▾⇅]/g, '').trim()) : [];
+    for (const [idx, vals] of colFiltersRef.current) {
+      const name = heads[idx] || `Column ${idx + 1}`;
+      const list = [...vals];
+      parts.push(`${name}: ${list.slice(0, 3).join(', ')}${list.length > 3 ? ` +${list.length - 3}` : ''}`);
+    }
+    const q = textFilterRef.current.trim();
+    if (q) parts.push(`matching “${q}”`);
+    return parts.join(' · ');
+  };
+
+  /**
+   * Keep the rows currently on screen as their own Brain note.
+   *
+   * The filter was a VIEWING aid: narrow a 4,000-row vendor master to the 40 in Bengaluru, and the
+   * moment the panel closed those 40 were gone — the only way to act on them was to send them to
+   * the chat there and then. Saving them makes the narrowed set a thing in its own right: an agent
+   * asked about it reads 40 rows, not 4,000, which is both cheaper and more accurate, because a
+   * truncated read of the big file silently answers from whatever happened to be in the first
+   * 1,800 characters.
+   *
+   * A NEW note, never a change to the original — the full sheet stays exactly as it was, and the
+   * two are linked so the view says where it came from.
+   */
+  const [viewMsg, setViewMsg] = useState('');
+  const saveFilteredView = () => {
+    if (!anyFilterActive()) return;
+    const md = (nodeToMarkdown(exportHtmlForChat()) || '').trim();
+    const rows = md.split('\n').filter((l) => l.trim().startsWith('|') && !/^\|?[\s:|-]+\|?$/.test(l.trim())).length - 1;
+    if (rows < 1) { setViewMsg('Nothing is showing — the filter matched no rows, so there is nothing to save.'); return; }
+    const desc = describeActiveFilter();
+    const base = `${title.trim() || node.title} — ${desc || 'filtered'}`.slice(0, 90);
+    let name = base;
+    for (let i = 2; i < 50 && brain.findExactByTitle(name); i++) name = `${base} (${i})`;
+    const body = `_Filtered view of **${title.trim() || node.title}** — ${desc || 'filtered'}. ${rows} of the original rows. This is the whole of this note: read it as it stands, there is nothing omitted._\n\n${md}`;
+    const created = brain.addNode({ title: name, kind: 'list', body: body.slice(0, 200000) });
+    brain.link(node.id, created.id, 'filtered view of this');
+    setViewMsg(`Saved “${name}” — ${rows} row${rows === 1 ? '' : 's'}. Agents reading it get only these.`);
+    setTimeout(() => setViewMsg(''), 7000);
+  };
   // For a PDF/deck/image the editor isn't rendered, so readBody() would return '' and WIPE the
   // stored body — skip the body write there (title/ref/kind still save). A LARGE table is shown
   // read-only, so filter/sort are view-only and never persisted (cloning a 15k-cell DOM on every
@@ -1585,7 +1637,19 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
               className="ml-2 w-44 rounded-md px-2.5 py-1 text-[10.5px] outline-none focus:border-accent"
               style={{ background: 'var(--nv-surface)', border: '1px solid var(--nv-border)', color: 'var(--nv-text)' }} />
           )}
-          <span className="text-[9px] ml-2" style={{ color: 'var(--nv-faint)' }}>{hasTable ? (largeBody ? 'big table — read-only · ▾ filter a column · ⇅ sort · drag a cell edge to resize' : 'filter rows · ▾ filter a column · ⇅ sort · drag a cell edge to resize') : "tip: drag a cell's right/bottom edge to resize"}</span>
+          {/* KEEP WHAT YOU FILTERED. Narrowing the sheet was throwaway until now — close the panel
+              and the 40 rows you found were gone. Saved, they become the thing agents read, which
+              is the whole point: a request about Bengaluru vendors should cost 40 rows, not 4,000. */}
+          {hasTable && filterOn && (
+            <button onClick={saveFilteredView} title="Keep the rows showing right now as their own Brain note, linked to this file"
+              className="ml-1 text-[10.5px] px-2.5 py-1 rounded-md font-medium text-white transition-fast hover:opacity-90"
+              style={{ background: '#7C5CFF' }}>
+              ⭳ Save this view
+            </button>
+          )}
+          {viewMsg
+            ? <span className="text-[9.5px] ml-2" style={{ color: '#34D399' }}>{viewMsg}</span>
+            : <span className="text-[9px] ml-2" style={{ color: 'var(--nv-faint)' }}>{hasTable ? (largeBody ? 'big table — read-only · ▾ filter a column · ⇅ sort · drag a cell edge to resize' : 'filter rows · ▾ filter a column · ⇅ sort · drag a cell edge to resize') : "tip: drag a cell's right/bottom edge to resize"}</span>}
         </div>
         )}
 
@@ -1714,8 +1778,25 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
               Attach to chat once
             </button>
-            <button onClick={() => { if (confirm('Delete this item from the Brain?')) { brain.deleteNode(node.id); onClose(); } }}
-              className="text-[11px] px-3 py-1.5 rounded-lg" style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-muted)' }}>Delete</button>
+            {/* DELETE, WITHOUT window.confirm.
+                confirm() is swallowed in this webview exactly as alert() is — it returns without
+                ever showing a dialog, so the button did nothing at all and a big imported
+                spreadsheet looked like something the Brain would not let you remove. Two clicks in
+                the panel itself: it cannot be suppressed, and it still can't happen by accident. */}
+            {confirmDel ? (
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10.5px] flex-1" style={{ color: 'var(--nv-muted)' }}>Delete “{title.trim() || node.title}”?</span>
+                {/* The unmount flush that runs next calls updateNode, which is a no-op once the
+                    node is gone — so closing straight after deleting cannot resurrect it. */}
+                <button onClick={() => { brain.deleteNode(node.id); onClose(); }}
+                  className="text-[11px] px-3 py-1.5 rounded-lg font-medium text-white" style={{ background: '#DC2626' }}>Delete</button>
+                <button onClick={() => setConfirmDel(false)}
+                  className="text-[11px] px-3 py-1.5 rounded-lg" style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-muted)' }}>Keep</button>
+              </div>
+            ) : (
+              <button onClick={() => setConfirmDel(true)}
+                className="text-[11px] px-3 py-1.5 rounded-lg" style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-muted)' }}>Delete</button>
+            )}
           </div>
         </div>
       </div>

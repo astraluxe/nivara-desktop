@@ -686,6 +686,16 @@ export const SYSTEM_TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'query_table',
+    description: 'Read ONLY the rows you need out of a big table/spreadsheet saved in the Brain (a vendor master, a lead list, an export — thousands of rows). Call it with no "where" FIRST to see the columns, the row count and a few sample rows; then call it again with a filter to get exactly the rows that matter. Always use this instead of recalling the whole file: recall_from_brain truncates a big sheet to its first few rows, and reading all of it wastes the user\'s tokens on data the request never mentioned.',
+    parameters: {
+      title:   { type: 'string', description: 'Title of the Brain note holding the table (e.g. "Vendor master 1"). A close match is fine.', required: true },
+      where:   { type: 'string', description: 'Filter, ANDed, e.g. "Location contains Bengaluru; Employees > 50" or "City is Pune". Operators: contains, is, is not, >, <, >=, <=, starts with, ends with, is empty, is not empty, in (a|b|c). A bare word searches every column. Leave EMPTY to just see the columns and sample rows.', required: false },
+      columns: { type: 'string', description: 'Comma-separated columns to return, e.g. "Company, Email, City". Omit for all of them. Narrowing columns saves as many tokens as narrowing rows.', required: false },
+      limit:   { type: 'number', description: 'Maximum rows to return. Default 200.', required: false },
+    },
+  },
+  {
     name: 'edit_brain',
     description: 'Edit an EXISTING Brain note in place — add info, replace its content, or remove specific lines/rows/tables from it. Use this (not save_to_brain) to keep ONE note updated when the user wants to change something already in the Brain, so you never make a duplicate copy.',
     parameters: {
@@ -2297,6 +2307,44 @@ async function executeToolCore(
     const ct = str(args.connect_to);
     if (ct) { const t = brain.findByTitle(ct); if (t) brain.link(t.id, node.id, 'related'); }
     return `${append ? 'Updated' : 'Saved'} "${node.title}" in the Brain${ct ? ` and linked it to "${ct}"` : ''}. It is visible in the Brain screen and recallable by any agent.`;
+  }
+  if (toolName === 'query_table') {
+    const { brain, nodeToMarkdown } = await import('./knowledgeStore');
+    const { parseAnyTable, parseConditions, queryTable, tableToMarkdown, describeTable } = await import('./tableQuery');
+    const title = str(args.title).trim();
+    const node = brain.findExactByTitle(title) ?? brain.findByTitle(title);
+    if (!node) {
+      // Name the tables that DO exist. "Not found" alone sends the model guessing at titles, and a
+      // second wrong guess costs another round trip.
+      const tables = brain.all().nodes
+        .filter((n) => /\|/.test(n.body || '') || /<t[dh][\s>]/i.test(n.body || ''))
+        .map((n) => n.title).slice(0, 12);
+      return `No Brain note titled "${title}". ${tables.length ? `Tables you do have: ${tables.join(', ')}.` : 'There are no tables saved in the Brain yet.'}`;
+    }
+    const table = parseAnyTable(nodeToMarkdown(node.body || '') || node.body || '');
+    if (!table) return `"${node.title}" has no table in it — it is a note, not a spreadsheet. Use recall_from_brain to read it.`;
+
+    const where = str(args.where).trim();
+    const columns = str(args.columns).split(',').map((c) => c.trim()).filter(Boolean);
+    const limit = Math.max(1, Math.min(500, Number(args.limit) || 200));
+
+    // NO FILTER = "show me the shape". This is the cheap first call that makes the second one
+    // exact: a few hundred tokens of columns and samples, instead of the whole sheet.
+    if (!where) {
+      return `"${node.title}" — ${describeTable(table)}\n\nCall query_table again with a "where" filter to get just the rows you need.`;
+    }
+
+    const res = queryTable(table, parseConditions(where), columns, limit);
+    if (res.unknownColumns.length) {
+      return `"${node.title}" has no column called ${res.unknownColumns.map((c) => `"${c}"`).join(', ')}. Its columns are: ${table.headers.join(', ')}. Nothing was filtered — call again with a real column name.`;
+    }
+    if (!res.matched) {
+      return `No rows in "${node.title}" match ${where}. The sheet has ${res.total} rows; its columns are: ${table.headers.join(', ')}. Check the spelling of the value, or widen the filter — do NOT report this as the sheet being empty.`;
+    }
+    const shown = res.table.rows.length;
+    return `${res.matched} of ${res.total} rows in "${node.title}" match ${where}`
+      + `${shown < res.matched ? ` (showing the first ${shown} — raise "limit" for more)` : ''}:\n\n`
+      + tableToMarkdown(res.table);
   }
   if (toolName === 'edit_brain') {
     const { brain, nodeToMarkdown } = await import('./knowledgeStore');
