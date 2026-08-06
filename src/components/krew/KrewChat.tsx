@@ -7,7 +7,7 @@ import type { Node, Edge } from '@xyflow/react';
 import { krewDb, credentialStore, krewMemoryDb, type KrewMemory } from '../../lib/krewDb';
 import { listMcpServers, mcpToolDefs } from '../../lib/krewMcp';
 import { brain as brainStore, nodeToMarkdown, requestBrainFocus } from '../../lib/knowledgeStore';
-import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, LEAD_TOOLS, getAutopilotTools, buildKrewSystemPrompt, executeTool, needsCompression, resetBrowserRunState, closeAgentBrowserIfActive, setAgentBrowserHold, requestLeadStop, resetLeadStop, isLeadStopRequested, requestToolStop, resetToolStop, KREW_PROFILE_KEY, type ToolDef } from '../../lib/krewTools';
+import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, LEAD_TOOLS, getAutopilotTools, buildKrewSystemPrompt, executeTool, needsCompression, resetBrowserRunState, closeAgentBrowserIfActive, setAgentBrowserHold, requestLeadStop, resetLeadStop, isLeadStopRequested, requestToolStop, resetToolStop, KREW_PROFILE_KEY, setBrainSaveFallback, type ToolDef } from '../../lib/krewTools';
 import { TaskProgress, type TaskPhase } from './TaskProgress';
 import { StatusGlobe } from './StatusGlobe';
 import { runParallelResearch } from '../../lib/researchSources';
@@ -33,7 +33,7 @@ import { getMonthlyUsage } from '../../lib/tokenTracker';
 import { getImageBudget, unitsForModel } from '../../lib/imageQuota';
 import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining } from '../../lib/tokenTier';
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
-import { builtInSkillsBlock } from '../../lib/skillGraph';
+import { builtInSkillsBlock, learnSkill } from '../../lib/skillGraph';
 import SkillsPanel from './SkillsPanel';
 import PlanPanel from './PlanPanel';
 import { looksLikeActionPlan, parsePlanSteps, createPlan, savePlan, loadPlan, planProgress, syncPlanToTodos, todayPlanNote, mergeIntoPlan, PLAN_EVENT, type ActionPlan } from '../../lib/planStore';
@@ -43,7 +43,7 @@ import { isPowerCommand, commandBudget, recordCommandRun, exhaustedMessage, COMM
 import LeadSetupCard, { type LeadConfig } from './LeadSetupCard';
 import { loadUserLocation, locationLabel } from '../../lib/userLocation';
 import { identityBlock } from '../../lib/userIdentity';
-import OutreachCopilot, { type OutreachCampaign, type OutreachContact, loadSavedCampaign, loadResumableCampaign, loadCampaignByTitle, saveCampaign, bestProfileUrl } from './OutreachCopilot';
+import OutreachCopilot, { type OutreachCampaign, type OutreachContact, loadSavedCampaign, loadResumableCampaign, loadCampaignByTitle, saveCampaign, bestProfileUrl, splitEmails, listCampaigns, campaignProgress } from './OutreachCopilot';
 import TodoPanel from './TodoPanel';
 import Icon, { type IconName } from '../Icon';
 import { loadSettings } from '../../modules/SettingsModule';
@@ -552,8 +552,45 @@ function ToolCallBubble({ name, args }: { name: string; args: string }) {
 }
 
 function ToolResultBubble({ name, content }: { name: string; content: string }) {
-  const [open, setOpen] = useState(false);
+  // A RESULT THAT IS A TABLE IS THE ANSWER, not debug output. Collapsed behind a "▼" with a
+  // 120-character preview, a 30-row lead table looked to the user like nothing had been produced —
+  // the message above said "here's your list" and the list was invisible. Tables open by default
+  // and render as tables; everything else keeps the compact, collapsed treatment it should have.
+  const tableLines = content.split('\n').filter((l) => l.trim().startsWith('|') && !/^\|?[\s:|-]+\|?$/.test(l.trim()));
+  const isTable = tableLines.length >= 3;
+  const [open, setOpen] = useState(isTable);
   const preview = content.slice(0, 120).replace(/\n/g, ' ');
+  if (isTable) {
+    return (
+      <div className="my-1.5 ml-2 rounded-xl border border-nv-border bg-nv-bg overflow-hidden">
+        <button onClick={() => setOpen((o) => !o)} className="w-full text-left px-3 py-1.5 text-[10px] text-nv-faint font-mono hover:text-nv-muted">
+          {name} · {tableLines.length - 1} rows {open ? '▲' : '▼'}
+        </button>
+        {open && (
+          <div className="max-h-72 overflow-auto border-t border-nv-border">
+            <table className="w-full text-[10px] border-collapse">
+              <tbody>
+                {tableLines.slice(0, 120).map((line, ri) => {
+                  const cells = line.split('|').map((c) => c.trim()).filter((_, ci, a) => ci > 0 && ci < a.length - 1);
+                  return (
+                    <tr key={ri} className={ri === 0 ? 'bg-nv-surface2 font-semibold' : 'border-t border-nv-border'}>
+                      {cells.map((c, ci) => (
+                        <td key={ci} className="px-1.5 py-1 align-top text-nv-muted max-w-[150px] truncate" title={c}>
+                          {/https?:\/\//.test(c)
+                            ? <a href={c} onClick={(ev) => { ev.preventDefault(); openLink(c); }} className="text-accent hover:underline">link</a>
+                            : c}
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+  }
   return (
     <div className="flex items-start gap-2 my-1 ml-2">
       <div className="w-4 h-4 rounded bg-nv-green/15 flex items-center justify-center shrink-0 mt-0.5">
@@ -1039,6 +1076,26 @@ type FastBossResult =
   | { type: 'reply';    text: string }
   | { type: 'delegate'; agentKey: string; task: string };
 
+/**
+ * Is the user asking for ONE specific written thing?
+ *
+ * "Write a LinkedIn post about X" is a request for a LinkedIn post. It is not a request for a
+ * positioning strategy that happens to contain one, and it is not an invitation to decide the user
+ * really needed a 30-day plan. Every fast-path below hands its agent a template that expands the
+ * ask into a full strategy deliverable — useful when someone asks "how do I sell this", ruinous
+ * when they asked for a paragraph — so a named artifact takes precedence over all of them.
+ */
+export function namedArtifact(text: string): string {
+  const t = text.trim();
+  // The ask has to START with the writing verb (allowing a short lead-in like "can you"), or the
+  // rule would fire on "give me a GTM strategy and write a post at the end", where the strategy
+  // genuinely is the deliverable.
+  const m = /^(?:please\s+|can\s+you\s+|could\s+you\s+|i\s+need\s+(?:you\s+to\s+)?|help\s+me\s+)?(?:write|draft|create|make|compose|give\s+me)\s+(?:me\s+)?(?:an?\s+|the\s+|some\s+)?([a-z/\s-]{0,24}?)\b(post|caption|tweet|thread|dm|message|email|headline|tagline|one[\s-]?pager|blurb|bio|comment|reply|newsletter|script|ad\s+copy)\b/i.exec(t);
+  if (!m) return '';
+  const platform = (m[1] || '').trim();
+  return `${platform ? platform + ' ' : ''}${m[2]}`.replace(/\s+/g, ' ').trim();
+}
+
 function classifyBossMessage(text: string): FastBossResult | null {
   const trimmed = text.trim();
 
@@ -1046,6 +1103,12 @@ function classifyBossMessage(text: string): FastBossResult | null {
   if (/^(hi+|hey+|hello+|howdy|hiya|sup|what'?s up|greetings|good\s*(morning|afternoon|evening|day))[!.,?🙂]*\s*$/i.test(trimmed)) {
     return { type: 'reply', text: "Hey! What would you like to work on today?" };
   }
+
+  // A NAMED ARTIFACT BEATS EVERY CATEGORY BELOW. Each fast-path expands its match into a
+  // multi-section strategy brief; asked for a post about how we differ from Claude, the competitor
+  // and GTM patterns both match on the topic, and the user gets a document instead of a post.
+  // Falling through to the normal boss loop means the request is answered as written.
+  if (namedArtifact(trimmed)) return null;
 
   // Email READING tasks → ops_agent (not compose/send/reply tasks)
   const isEmailRead  = /\b(read|check|fetch|show|get|see|view|open|list|browse)\b[^.]*\bemail|\bemail[^.]*\b(brief|summary|digest|update|recent|latest|last|unread|inbox)\b|\binbox\b|\blast\s+\d+\s+email|recent.*email/i.test(trimmed);
@@ -3649,7 +3712,13 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
   // got filed under one contact's name — so both are now chosen explicitly, once, up front.
   type OutreachPick = { step: 'source' | 'dest'; source?: { name: string; content: string; fromBrain: boolean } };
   const [outreachPick, setOutreachPick] = useState<OutreachPick | null>(null);
+  // True when the copilot should open on the "all campaigns" index rather than straight into one.
+  const [outreachIndexOpen, setOutreachIndexOpen] = useState(false);
   const [destName, setDestName] = useState('');
+  // What this particular campaign is FOR. Several campaigns can run at once over overlapping
+  // people — "book demos with ops heads" and "invite to the beta" want completely different
+  // messages — so the purpose belongs to the campaign, asked once here, not re-asked per run.
+  const [destPurpose, setDestPurpose] = useState('');
   const DEST_PREF_KEY = 'nv-outreach-dest-pref';
   const [filePickerCmd,     setFilePickerCmd]        = useState<SlashCmd | null>(null);
   const [filePickerQuery,   setFilePickerQuery]      = useState('');
@@ -3834,6 +3903,12 @@ const [studioExtracting, setStudioExtracting] = useState(false);
   // content, zero AI involvement) instead of a fresh agent call trying to reconstruct "this" from
   // a compact name-only summary and saving something thin or empty.
   const lastAutoSavedListTitleRef = useRef<string>('');
+  // Everything the model has WRITTEN this turn — the safety net behind save_to_brain, so a call
+  // that passes "full details in previous messages" as its body stores the details instead.
+  const turnProseRef = useRef<string>('');
+  // The tools this turn actually ran, in order. Read once at the end to write down the route that
+  // worked, so the same kind of request costs less next time.
+  const turnToolsRef = useRef<Array<{ tool: string; args: Record<string, unknown> }>>([]);
   const [showSkills, setShowSkills] = useState(false);
   const [showBrainPick, setShowBrainPick] = useState(false);
   const [recSkill, setRecSkill] = useState<SkillRegistryEntry | null>(null);
@@ -3988,8 +4063,16 @@ const [studioExtracting, setStudioExtracting] = useState(false);
    * still useful because the copilot can scan a thread and draft from it on its own.
    */
   function openCopilot() {
+    // Several campaigns → land on the index. The button says "outreach", not "the campaign I have
+    // decided you meant", and picking for the user is what made a second campaign invisible.
+    const all = listCampaigns();
+    if (all.length > 1) {
+      setOutreachIndexOpen(true);
+      setOutreachCampaign(loadResumableCampaign() || all[0]);
+      return;
+    }
     const resumable = loadResumableCampaign() || loadSavedCampaign();
-    if (resumable?.contacts?.length) { setOutreachCampaign(resumable); return; }
+    if (resumable?.contacts?.length) { setOutreachIndexOpen(false); setOutreachCampaign(resumable); return; }
     let contacts: OutreachContact[] = [];
     try {
       const saved: { name?: string; headline?: string; url?: string }[] =
@@ -5523,12 +5606,25 @@ The prompt must be production-ready — specific enough for a motion designer to
         : "Done — here's your list with the missing LinkedIn (plus any phone/email I could confirm) filled in. A blank cell means I couldn't confirm it rather than guess it. It's saved to your Tech lead list — want another pass at the ones still blank?";
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: lead, streaming: false }; return c; });
       if (sid) krewDb.saveMessage(sid, 'assistant', lead).catch(() => {});
-      addMsg({ role: 'tool_result', content: fullTable, toolName: 'enrich_lead_list' });
-      if (sid) krewDb.saveMessage(sid, 'tool_result', fullTable, 'enrich_lead_list').catch(() => {});
       // Save the merged full list back into the Brain lead list. This path only ever runs to
       // fill/verify an EXISTING list, so it always counts as a continuation (merge, not new file).
       const brainTitles = attachedTitlesRef.current.length ? attachedTitlesRef.current : [lastAttachedTitleRef.current];
-      autoSaveLeadTableToBrain(fullTable, brainTitles, '', 'verify enrich update this list');
+      const savedTo = await autoSaveLeadTableToBrain(fullTable, brainTitles, '', 'verify enrich update this list');
+      // SHOW THE TABLE. This used to post a raw `tool_result`, which renders as a collapsed
+      // "enrich_lead_list result ▼" strip with a 120-character preview — so the message said "here's
+      // your list" and the list was nowhere on screen, behind a toggle nobody knew to press. The
+      // lead card is the same thing the guided flow produces: the rows, the count, the name of the
+      // note it went to, and the buttons for what comes next.
+      const rows = parseLeadRows(fullTable, 0).rows;
+      const stillMissing = rows.filter((r) => !r.cells.linkedin).length;
+      addMsg({
+        role: 'lead_result',
+        content: savedTo?.title || brainTitles.find(Boolean) || 'your lead list',
+        leadCount: rows.length,
+        leadTable: fullTable,
+        leadMissingLinks: stillMissing,
+      });
+      if (sid) krewDb.saveMessage(sid, 'tool_result', fullTable, 'enrich_lead_list').catch(() => {});
       return true;
     } catch {
       setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c.pop(); return c; });
@@ -6322,8 +6418,8 @@ The prompt must be production-ready — specific enough for a motion designer to
   // Robust contact parser: handles pipe tables (Brain notes) AND tab / multi-space columns
   // (a pasted or exported "Name  Role  Profile" list). Name = first cell, URL = any /in/ link on
   // the row, headline = the remaining non-link cells, status = a trailing status-label cell if any.
-  function parseContactRows(text: string): { name: string; headline: string; url: string; status?: OutreachContact['status'] }[] {
-    const out: { name: string; headline: string; url: string; status?: OutreachContact['status'] }[] = [];
+  function parseContactRows(text: string): { name: string; headline: string; url: string; email?: string; emails?: string[]; status?: OutreachContact['status'] }[] {
+    const out: { name: string; headline: string; url: string; email?: string; emails?: string[]; status?: OutreachContact['status'] }[] = [];
     for (const line of text.split('\n')) {
       const t = line.trim();
       if (!t || /^\|?\s*:?-{2,}/.test(t)) continue; // blank or table separator row
@@ -6359,10 +6455,15 @@ The prompt must be production-ready — specific enough for a motion designer to
       if (!name || /^(name|role|company|headline|profile|status)$/i.test(name)) continue;
       if (name.endsWith(':')) continue;                             // "Best-fit connections for X:"
       if (name.split(/\s+/).length > 6) continue;                   // a sentence, not a person
+      // Addresses are pulled OUT of the row rather than swept into the headline. The campaign's
+      // own progress note carries an Email column now, so re-attaching it has to bring the
+      // addresses back with it — otherwise a re-run rebuilds the campaign with every email lost,
+      // and "acme@x.com" ends up printed inside the person's company description.
+      const emails = splitEmails(cells.slice(1).filter((c) => c.includes('@')).join(' '));
       const headline = cells.slice(1)
-        .filter((c) => !/linkedin\.com/i.test(c) && c !== '—' && c !== '-')
+        .filter((c) => !/linkedin\.com/i.test(c) && !c.includes('@') && c !== '—' && c !== '-')
         .join(' ').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/\s+/g, ' ').trim();
-      out.push({ name, headline, url, status });
+      out.push({ name, headline, url, email: emails[0], emails, status });
     }
     return out;
   }
@@ -6416,8 +6517,8 @@ The prompt must be production-ready — specific enough for a motion designer to
   // through connect-request-first rather than straight to a message. Their saved "Connection
   // Status" cell comes with them, which is what makes progress survive re-running /verify or
   // /enrich on the same list (that column is already merge-protected in leadTable.ts).
-  function loadLeadListContacts(onlyTitle = ''): Array<{ name: string; headline: string; url: string; email: string; status?: OutreachContact['status']; leadList: string }> {
-    const out: Array<{ name: string; headline: string; url: string; email: string; status?: OutreachContact['status']; leadList: string }> = [];
+  function loadLeadListContacts(onlyTitle = ''): Array<{ name: string; headline: string; url: string; email: string; emails: string[]; status?: OutreachContact['status']; leadList: string }> {
+    const out: Array<{ name: string; headline: string; url: string; email: string; emails: string[]; status?: OutreachContact['status']; leadList: string }> = [];
     try {
       const norm = (t: string) => t.trim().toLowerCase();
       const nodes = brainStore.all().nodes.filter((n) => {
@@ -6446,13 +6547,17 @@ The prompt must be production-ready — specific enough for a motion designer to
           if (li && /linkedin\.com\/company\//i.test(li)) continue;
           if (!looksLikePersonLead(name, r.cells['company'] || '')) continue;
           const urlMatch = /(https?:\/\/[^\s)\]]*linkedin\.com\/in\/[^\s)\]]+)/i.exec(li);
+          // The Email column was being read and then thrown away here, so a lead with an email but
+          // no profile reached outreach with no way to contact them at all. It is also routinely
+          // several addresses in one cell ("ceo@x.com, info@x.com") — keeping only the text up to
+          // the first comma produced an address that does not exist.
+          const emails = splitEmails(r.cells['email']);
           out.push({
             name,
             headline: [r.cells['company'], r.cells['sector'], r.cells['city']].filter(Boolean).join(' · '),
             url: urlMatch ? urlMatch[1] : '',
-            // The Email column was being read and then thrown away here, so a lead with an email
-            // but no profile reached outreach with no way to contact them at all.
-            email: (r.cells['email'] || '').replace(/^\[|\]$/g, '').trim(),
+            email: emails[0] || (r.cells['email'] || '').replace(/^\[|\]$/g, '').trim(),
+            emails,
             status: leadConnStatusToOutreach(r.cells['conn_status']),
             leadList: n.title,
           });
@@ -7308,7 +7413,7 @@ _None of them had everything you ticked, so I've saved them rather than lose the
       || (focusedFile && !looksLikeConnectionsFile(focusedFile) ? { name: focusedFile.name, content: focusedFile.content } : undefined);
 
     // Build the contact list (name + headline + profile URL + any saved status).
-    type ParsedContact = { name: string; headline: string; url: string; email?: string; status?: OutreachContact['status']; source?: OutreachContact['source']; leadList?: string };
+    type ParsedContact = { name: string; headline: string; url: string; email?: string; emails?: string[]; status?: OutreachContact['status']; source?: OutreachContact['source']; leadList?: string };
     const contacts: ParsedContact[] = [];
     const seen = new Set<string>();
     const add = (c: ParsedContact) => {
@@ -7321,7 +7426,12 @@ _None of them had everything you ticked, so I've saved them rather than lose the
       if (ex) {
         if (!ex.status && c.status) ex.status = c.status;
         if (!ex.url && c.url) ex.url = c.url;
-        if (!ex.email && c.email) ex.email = c.email;
+        // UNION the addresses rather than "first one wins". The same person appears on a lead list
+        // and again on the campaign's own progress note, each carrying a different address — taking
+        // whichever was parsed first is how a reply arrives at an address the campaign never knew.
+        const merged = [...new Set([...(ex.emails || []), ...(c.emails || []), ex.email || '', c.email || ''])]
+          .filter((e) => e.includes('@'));
+        if (merged.length) { ex.emails = merged; ex.email = ex.email || merged[0]; }
         if (c.headline && c.headline.length > ex.headline.length) ex.headline = c.headline;
         // Someone on a lead list who ALSO shows up in the connections scan is a connection —
         // they need no connection request, so 'connections' always wins the merge.
@@ -7361,10 +7471,13 @@ _None of them had everything you ticked, so I've saved them rather than lose the
             if (!nm || (li && /linkedin\.com\/company\//i.test(li))) return;
             if (!looksLikePersonLead(nm, r.cells['company'] || '')) return;
             const m = /(https?:\/\/[^\s)\]]*linkedin\.com\/in\/[^\s)\]]+)/i.exec(li);
+            const rowEmails = splitEmails(r.cells['email']);
             add({
               name: nm,
               headline: [r.cells['company'], r.cells['sector'], r.cells['city']].filter(Boolean).join(' · '),
               url: m ? m[1] : '',
+              email: rowEmails[0],
+              emails: rowEmails,
               status: leadConnStatusToOutreach(r.cells['conn_status']),
               source: 'leads',
               leadList: f.name,
@@ -7426,7 +7539,12 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     // productCtx = the attached/saved doc describing what they do. If we have NEITHER, we can't
     // write anything personal or purposeful, so ASK rather than send generic "great to be connected"
     // filler to 50 people (which reads as spam and burns the connections).
-    const goal = focus.trim();
+    // The campaign this run belongs to, resolved BEFORE the goal so its stored purpose can serve as
+    // the goal. Without that, adding people to an existing campaign asked "what are you reaching out
+    // for?" all over again — and any answer other than the original one drafts a second batch of
+    // messages pursuing a different aim than the first.
+    const priorCamp = (destTitle ? loadCampaignByTitle(destTitle) : null) || loadResumableCampaign() || loadSavedCampaign();
+    const goal = focus.trim() || (priorCamp?.purpose || '').trim();
     let productCtx = '';
     if (refFile?.content) productCtx = refFile.content.trim();
     if (!productCtx) { try { const p = brainStore.findByTitle('PRODUCT') || brainStore.search('product').find((n) => /product/i.test(n.title)); if (p?.body) productCtx = nodeToMarkdown(p.body).trim(); } catch { /* ignore */ } }
@@ -7448,7 +7566,7 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     // When the user PICKED a destination, resume THAT campaign — not whichever has the most left.
     // Otherwise choosing an older campaign to add to would silently inherit a different one's
     // statuses and re-draft people already messaged there.
-    const prior = (destTitle ? loadCampaignByTitle(destTitle) : null) || loadResumableCampaign() || loadSavedCampaign();
+    const prior = priorCamp;
     const carryOver = !!prior && loadSettings().listMode !== 'new';
     const mergePrior = carryOver && !!prior && attachedConn.length === 0; // an attached list is authoritative
     const priorByName = new Map<string, OutreachContact>();
@@ -7688,8 +7806,11 @@ _None of them had everything you ticked, so I've saved them rather than lose the
         const meta = {
           source: c.source ?? priorC?.source,
           // Carried so a lead with an email but no LinkedIn profile still has a way to be
-          // reached — the copilot offers Gmail for exactly those people.
+          // reached — the copilot offers Gmail for exactly those people. Every address is kept,
+          // not just the primary, so a reply from a colleague's mailbox is still recognised.
           email: c.email || priorC?.email,
+          emails: [...new Set([...(c.emails || []), ...(priorC?.emails || []), c.email || '', priorC?.email || ''])]
+            .filter((e) => e.includes('@')),
           leadList: c.leadList ?? priorC?.leadList,
           connect_note: priorC?.connect_note,
           requestedAt: priorC?.requestedAt,
@@ -7723,6 +7844,14 @@ _None of them had everything you ticked, so I've saved them rather than lose the
       // Reuse the attached note's own title so re-attaching "LinkedIn outreach — 18/7/2026" updates
       // THAT campaign (same Brain note + resume slot) instead of spawning a fresh dated one.
       const attachedTitle = attachedConn.map((f) => f.name).find((n) => /outreach/i.test(n));
+      const campaignTitle = destTitle
+        || attachedTitle
+        || (carryOver && prior && prior.contacts.length > 1 ? prior.title : `LinkedIn outreach — ${new Date().toLocaleDateString()}`);
+      // Only inherit purpose/source/age from the previous campaign when this run really IS that
+      // campaign. `prior` can be a DIFFERENT campaign (the one with the most left to do) picked up
+      // as a source of statuses — inheriting its purpose would file this brand-new campaign under
+      // someone else's goal and have the drafter write toward it.
+      const samePrior = prior && (prior.title || '').trim() === campaignTitle.trim() ? prior : undefined;
       const campaign: OutreachCampaign = {
         // Only inherit the previous campaign's name if that campaign was a REAL multi-person one.
         // A single-person side errand (replying to one contact, scheduling a call) also saves a
@@ -7731,11 +7860,16 @@ _None of them had everything you ticked, so I've saved them rather than lose the
         // name. A 1-contact prior is never a campaign name worth keeping.
         // An explicit destination chosen in the /outreach picker always wins — the user has said
         // in so many words where this campaign belongs, so nothing inferred may override it.
-        title: destTitle
-          || attachedTitle
-          || (carryOver && prior && prior.contacts.length > 1 ? prior.title : `LinkedIn outreach — ${new Date().toLocaleDateString()}`),
+        title: campaignTitle,
         channel: 'linkedin',
         contacts: [...carriedPrior, ...built],
+        // What this campaign is FOR, kept with it. The goal was previously a sentence in one chat
+        // message that scrolled away; now re-opening, resuming or extending the campaign all draft
+        // against the same aim, and the index can say what each campaign is rather than just when
+        // it was made.
+        purpose: goal || samePrior?.purpose,
+        sourceList: attachedConn.map((f) => f.name)[0] || onlyLeadList || samePrior?.sourceList,
+        createdAt: samePrior?.createdAt,
       };
       setOutreachCampaign(campaign); // opens the popup deterministically, positioned on the first to-do
       // Say what is actually waiting for them. "0 messages to send" was true of the new drafts and
@@ -8382,18 +8516,44 @@ _${plan.advice}_` : ''}`;
     } catch { return []; }
   }
 
-  /** Step 2 of /outreach — run it with the chosen source list and destination note. */
-  function startOutreachWith(source: { name: string; content: string; fromBrain: boolean }, dest: string) {
+  /** Step 2 of /outreach — run it with the chosen source list, destination note and purpose. */
+  function startOutreachWith(source: { name: string; content: string; fromBrain: boolean }, dest: string, purpose = '') {
     const title = dest.trim();
     try { localStorage.setItem(DEST_PREF_KEY, title); } catch { /* preference is optional */ }
     setOutreachPick(null);
     setDestName('');
+    setDestPurpose('');
     // The launcher reads the people from the attachments, so hand it exactly the one list the user
     // picked — no guessing from scan history, no merging in a file they didn't choose.
     setAttachedFiles([{ name: source.name, content: source.content, fromBrain: source.fromBrain }]);
     setTimeout(() => {
-      launchOutreachFromConnections(50, '', `Draft outreach from ${source.name} → saving to "${title}"`, title);
+      // The purpose goes in as the drafting GOAL as well as being stored on the campaign, so the
+      // run no longer stops to ask "what are you reaching out for?" when the user has just said.
+      launchOutreachFromConnections(
+        50, purpose.trim(),
+        `Draft outreach from ${source.name} → saving to "${title}"${purpose.trim() ? ` — ${purpose.trim()}` : ''}`,
+        title,
+      );
     }, 0);
+  }
+
+  /**
+   * A default name for a NEW campaign that says which number it is and where its people came from.
+   *
+   * "LinkedIn outreach — 7/8/2026" is unusable once there are three of them: two campaigns started
+   * the same day are indistinguishable, and nothing on the name says who is in them or what for.
+   */
+  function suggestCampaignName(sourceName = ''): string {
+    const existing = listCampaigns();
+    let n = existing.length + 1;
+    const src = (sourceName || '').replace(/\.(md|markdown|txt|csv|json)$/i, '').trim().slice(0, 40);
+    const taken = new Set(existing.map((c) => (c.title || '').trim().toLowerCase()));
+    for (let i = 0; i < 60; i++) {
+      const t = `Outreach ${n}${src ? ` — ${src}` : ` — ${new Date().toLocaleDateString()}`}`;
+      if (!taken.has(t.toLowerCase())) return t;
+      n++;
+    }
+    return `Outreach — ${new Date().toLocaleDateString()} ${Date.now() % 1000}`;
   }
 
   // Apply a picked file to the pending /command: fill the phrasing with the real file name and
@@ -8452,7 +8612,23 @@ _${plan.advice}_` : ''}`;
       setOutreachPick({ step: 'source' });
       return;
     }
-    if (c.run === 'continue') { setInput(''); const saved = loadResumableCampaign() || loadSavedCampaign(); if (saved) { setOutreachCampaign(saved); } else addMsgHere({ role: 'assistant', content: 'No outreach in progress yet — use **/outreach** to draft messages and open the copilot.' }); return; }
+    if (c.run === 'continue') {
+      setInput('');
+      // With more than one campaign running, "continue" is a QUESTION — which one? Guessing (the
+      // biggest, or the most recent) is how the user ended up adding people to a campaign they
+      // thought they had finished. One campaign → open it; several → show the index and let them
+      // say. The index carries the progress numbers, so the choice is an informed one.
+      const all = listCampaigns();
+      if (all.length > 1) {
+        setOutreachIndexOpen(true);
+        setOutreachCampaign(loadResumableCampaign() || all[0]);
+        return;
+      }
+      const saved = all[0] || loadResumableCampaign() || loadSavedCampaign();
+      if (saved) { setOutreachIndexOpen(false); setOutreachCampaign(saved); }
+      else addMsgHere({ role: 'assistant', content: 'No outreach in progress yet — use **/outreach** to draft messages and open the copilot.' });
+      return;
+    }
     if (c.run === 'verifylinks') { setInput(''); verifyOutreachLinks(); return; }
     // Opens the setup card instead of running anything — the whole point is to ask BEFORE spending
     // several minutes of browser time on the wrong kind of lead.
@@ -9249,7 +9425,15 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     addMsg({ role: 'assistant', content: '', streaming: true });
 
     // Fast-path: skip boss LLM for recognisable patterns (saves ~5s per turn)
-    const fastBoss = agent.key === 'boss' ? classifyBossMessage(apiText) : null;
+    // CLASSIFY WHAT THE USER SAID, NOT WHAT THEY ATTACHED.
+    //
+    // This read apiText — the message with every attached file's full content pasted in front of
+    // it. So "Write a LinkedIn post about why we're not Claude" with a positioning document
+    // attached matched the GTM pattern on the DOCUMENT's words (ICP, B2B, positioning) and was
+    // delegated as "deliver a go-to-market strategy". The user asked for one post and received a
+    // five-section strategy document. An attachment is material to work FROM; it is never the
+    // request.
+    const fastBoss = agent.key === 'boss' ? classifyBossMessage(text) : null;
 
     // Focus mode: snapshot Brain node IDs now so that anything the team SAVES during this
     // run (lead list, outreach notes, contacts — via auto-save OR the agent's own
@@ -9389,6 +9573,12 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
         const sep = /\|\s*$/.test(base.trimEnd()) && /^\s*\|/.test(next.trimStart()) ? '\n' : '\n\n';
         return base + sep + next;
       };
+      // Everything the model has actually WRITTEN this turn, accumulated across steps. It is what
+      // save_to_brain falls back to when a call arrives with a pointer for a body ("full details in
+      // previous messages") — the content is right here, and the alternative is losing it. Reset per
+      // turn so one turn's deliverable can never be saved under a later, unrelated turn's title.
+      turnProseRef.current = '';
+      turnToolsRef.current = [];
       while (steps < MAX_STEPS && !stopRef.current) {
         steps++;
         setAgentStep(`Thinking… ${Math.round((steps / MAX_STEPS) * 100)}%`);
@@ -9552,6 +9742,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
           .replace(/CHOICES_BLOCK:[\s\S]*/g, '')
           .trim();
         if (proseBeforeTool) {
+          turnProseRef.current = [turnProseRef.current, proseBeforeTool].filter(Boolean).join('\n\n').slice(-24000);
           setMessages((prev) => {
             const copy = [...prev];
             if (copy.length) copy[copy.length - 1] = { ...copy[copy.length - 1], content: proseBeforeTool, streaming: false };
@@ -9604,6 +9795,10 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
           : rootParams;
         setAgentStep(`${agentHandle(agent)} · ${browserActionLabel(tool, args) ?? tool.replace(/_/g, ' ')}…`);
         setAgentTool(tool);
+        // Hand the turn's real output to the tool layer, so a save_to_brain call whose body is a
+        // pointer rather than the content can store what was actually written instead of a stub.
+        setBrainSaveFallback(turnProseRef.current);
+        turnToolsRef.current.push({ tool, args });
 
         // Show tool call bubble (hidden for delegation — DelegationBubble handles it)
         if (tool !== 'delegate_to_agent') {
@@ -10400,6 +10595,12 @@ Everything you need for follow-ups is in that answer above; read it there rather
         // The tool is done, so its live box has nothing left to describe — take it away before the
         // result lands, so the box never sits above a finished answer still claiming to be working.
         hideWork();
+        // A DELEGATE'S OUTPUT IS ALSO "what was written this turn". When the boss hands the research
+        // to a specialist, the 30 blocks come back through here — and it is the boss that then calls
+        // save_to_brain. Without this the fallback would only ever hold the boss's own framing prose.
+        if (isDelegation && toolResult.trim().length > 400) {
+          turnProseRef.current = [turnProseRef.current, toolResult].filter(Boolean).join('\n\n').slice(-24000);
+        }
         // Show result bubble (skip for delegation — it already has its own bubble)
         if (!isDelegation && tool === 'suggest_next_task' && toolResult.includes('NEXTTASK_JSON:')) {
           try {
@@ -10526,6 +10727,8 @@ Everything you need for follow-ups is in that answer above; read it there rather
       setBrowserActive(false); // run over — clear the "browser in use" banner
       // Refresh the shared profile in case an agent learned something this run.
       reloadProfile();
+      // Write down HOW this got done, so the next one like it doesn't have to be worked out again.
+      captureLearnedSkill(text);
       // Token usage: the App-level `nivara-tokens` listener (App.tsx) already wrote each turn's
       // usage to token_usage LIVE as it streamed — and image generation is billed the same way.
       // We deliberately do NOT flush pending_usage here: that flush wrote the SAME tokens a
@@ -10540,6 +10743,67 @@ Everything you need for follow-ups is in that answer above; read it there rather
         if (firstChoice) firstChoice.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }, 80);
     }
+  }
+
+  /**
+   * Teach the app what it just did.
+   *
+   * Two kinds of thing get written down, and NEITHER costs a model call — that matters, because a
+   * learning step that spends tokens to save tokens is not obviously worth having:
+   *
+   *   A RULE — the user said "always", "from now on", "next time". That is a standing instruction
+   *   and it was previously honoured for exactly one message before scrolling out of context. The
+   *   user then repeats it, indefinitely.
+   *
+   *   A RECIPE — a task that took several tools to complete. What is saved is the route that
+   *   worked (which tools, in which order, against which file/list). Next time a similar request
+   *   arrives, that route is in the prompt, so the model follows it instead of paying to
+   *   rediscover it. This is the part that makes the same job cheaper and faster the second time.
+   *
+   * Nothing here is a promise the recipe is right — it is a hint, the prompt says to ignore it when
+   * it does not fit, and the user can see and delete every one of them in the Brain.
+   */
+  function captureLearnedSkill(request: string) {
+    const req = (request || '').split('\n').filter((l) => !/^(\[\[(file|image|ref)\]\]|📎|🖼|🔗)\s/.test(l.trim())).join(' ').trim();
+    if (req.length < 12) return;
+    try {
+      // ── A standing instruction ────────────────────────────────────────────────────────────
+      const rule = /\b(?:always|from now on|every time|next time|by default|remember that|never)\b[^.!?\n]{6,180}/i.exec(req);
+      if (rule) {
+        learnSkill({
+          name: `Rule: ${rule[0].replace(/\s+/g, ' ').trim().slice(0, 48)}`,
+          guide: `The user asked for this to hold every time: "${rule[0].replace(/\s+/g, ' ').trim()}". Apply it without being reminded.`,
+          from: req,
+          kind: 'rule',
+        });
+      }
+      // ── A route that worked ───────────────────────────────────────────────────────────────
+      const used = turnToolsRef.current;
+      // One tool is not a recipe — it is a tool call, and the model picks those correctly already.
+      // Two or more in sequence is where the exploring (and the token spend) actually happens.
+      if (used.length < 2) return;
+      // Only when it got somewhere. A turn that failed teaches the wrong route.
+      if (stopRef.current) return;
+      const seq = used.map((u) => u.tool).filter((t, i, a) => t !== a[i - 1]);
+      if (seq.length < 2) return;
+      // The concrete things this ran against — a file, a list, a note title. Without them the
+      // recipe is a shape with no anchors and helps far less.
+      const anchors = [...new Set(used.flatMap((u) => [
+        String(u.args.title ?? ''), String(u.args.list_title ?? ''), String(u.args.filename ?? ''), String(u.args.query ?? ''),
+      ]).map((s) => s.trim()).filter((s) => s && s.length < 60))].slice(0, 3);
+      const name = req.replace(/\s+/g, ' ').slice(0, 46);
+      learnSkill({
+        name,
+        guide: [
+          `When the user asks for something like "${req.replace(/\s+/g, ' ').slice(0, 120)}", this worked:`,
+          `run ${seq.slice(0, 6).join(' → ')}.`,
+          anchors.length ? `It was against: ${anchors.join('; ')}.` : '',
+          'Go straight there rather than exploring; adapt the values to what they are asking for now.',
+        ].filter(Boolean).join(' '),
+        from: req,
+        kind: 'recipe',
+      });
+    } catch { /* learning is a bonus — it must never break a turn that otherwise finished */ }
   }
 
   function stop() {
@@ -11945,7 +12209,9 @@ Everything you need for follow-ups is in that answer above; read it there rather
               const { files, total } = pickerFiles(filePickerQuery);
               const dests = outreachDestinations();
               const pref = (() => { try { return localStorage.getItem(DEST_PREF_KEY) || ''; } catch { return ''; } })();
-              const close = () => { setOutreachPick(null); setDestName(''); setFilePickerQuery(''); };
+              const running = listCampaigns();
+              const suggested = suggestCampaignName(outreachPick.source?.name || '');
+              const close = () => { setOutreachPick(null); setDestName(''); setDestPurpose(''); setFilePickerQuery(''); };
               const isSource = outreachPick.step === 'source';
               return (
                 <div className="absolute bottom-full left-0 mb-2 w-[440px] rounded-xl border border-accent/40 bg-nv-surface shadow-xl z-40 py-1 flex flex-col max-h-[440px]">
@@ -11996,10 +12262,34 @@ Everything you need for follow-ups is in that answer above; read it there rather
                   ) : (
                     <>
                       <p className="px-3 pb-1.5 text-[10.5px] text-nv-faint leading-relaxed shrink-0">
-                        Messaging <span className="text-nv-muted">{outreachPick.source?.name}</span>. Add this campaign to an existing note, or start a new one.
+                        Messaging <span className="text-nv-muted">{outreachPick.source?.name}</span>. Continue a campaign that's already running, or start a new one below.
                       </p>
                       <div className="flex-1 overflow-y-auto min-h-0">
-                        {dests.map((d) => (
+                        {/* Running campaigns come FIRST and carry their progress, so "add these to
+                            the one I'm half way through" is a decision made with the numbers in
+                            front of you rather than by recognising a title. */}
+                        {running.map((c) => {
+                          const p = campaignProgress(c);
+                          return (
+                            <button
+                              key={`camp-${c.title}`}
+                              onClick={() => outreachPick.source && startOutreachWith(outreachPick.source, c.title, c.purpose || '')}
+                              className="w-full text-left flex items-start gap-2.5 px-3 py-1.5 text-nv-muted hover:bg-nv-surface2/60 hover:text-nv-text transition-fast"
+                            >
+                              <Icon name="send" size={13} className="text-accent mt-0.5" />
+                              <span className="flex-1 min-w-0">
+                                <span className="block text-[12px] leading-snug break-words">{c.title}</span>
+                                <span className="block text-[9.5px] text-nv-faint">
+                                  {p.done}/{p.total} done · {p.remaining} left{c.purpose ? ` · ${c.purpose.slice(0, 44)}` : ''}
+                                </span>
+                              </span>
+                              {c.title === pref && <span className="text-[8px] font-mono text-accent border border-accent/40 rounded px-1 shrink-0 mt-0.5">last used</span>}
+                            </button>
+                          );
+                        })}
+                        {/* Older campaign NOTES with no live campaign behind them — still a valid
+                            place to file this run, just with no progress to show. */}
+                        {dests.filter((d) => !running.some((c) => c.title === d)).map((d) => (
                           <button
                             key={d}
                             onClick={() => outreachPick.source && startOutreachWith(outreachPick.source, d)}
@@ -12010,28 +12300,43 @@ Everything you need for follow-ups is in that answer above; read it there rather
                             {d === pref && <span className="text-[8px] font-mono text-accent border border-accent/40 rounded px-1 shrink-0 mt-0.5">last used</span>}
                           </button>
                         ))}
-                        {dests.length === 0 && (
+                        {dests.length === 0 && running.length === 0 && (
                           <div className="px-3 py-2 text-[11px] text-nv-faint">No campaigns yet — name a new one below.</div>
                         )}
                       </div>
-                      <div className="px-2 pt-1.5 pb-1 border-t border-nv-border/50 mt-1 shrink-0 flex items-center gap-1.5">
+                      <div className="px-2 pt-1.5 pb-1 border-t border-nv-border/50 mt-1 shrink-0 space-y-1.5">
                         <input
                           autoFocus
                           value={destName}
                           onChange={(e) => setDestName(e.target.value)}
                           onKeyDown={(e) => {
                             if (e.key === 'Escape') { e.preventDefault(); close(); }
-                            if (e.key === 'Enter' && destName.trim() && outreachPick.source) { e.preventDefault(); startOutreachWith(outreachPick.source, destName); }
+                            if (e.key === 'Enter' && outreachPick.source) { e.preventDefault(); startOutreachWith(outreachPick.source, destName.trim() || suggested, destPurpose); }
                           }}
-                          placeholder={`New campaign — e.g. LinkedIn outreach — ${new Date().toLocaleDateString()}`}
-                          className="flex-1 bg-nv-surface2 border border-nv-border focus:border-accent rounded-lg px-2.5 py-1.5 text-[11.5px] text-nv-text placeholder:text-nv-faint outline-none transition-fast"
+                          placeholder={`New campaign — ${suggested}`}
+                          className="w-full bg-nv-surface2 border border-nv-border focus:border-accent rounded-lg px-2.5 py-1.5 text-[11.5px] text-nv-text placeholder:text-nv-faint outline-none transition-fast"
                         />
-                        <button
-                          onClick={() => outreachPick.source && startOutreachWith(outreachPick.source, destName.trim() || `LinkedIn outreach — ${new Date().toLocaleDateString()}`)}
-                          className="shrink-0 text-[11px] px-2.5 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-medium"
-                        >
-                          Start
-                        </button>
+                        {/* THE PURPOSE. Without it the run stops and asks "what are you reaching out
+                            for?" in the chat, and the answer is then lost with that message — so
+                            every later batch on the same campaign had to be told again. */}
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            value={destPurpose}
+                            onChange={(e) => setDestPurpose(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Escape') { e.preventDefault(); close(); }
+                              if (e.key === 'Enter' && outreachPick.source) { e.preventDefault(); startOutreachWith(outreachPick.source, destName.trim() || suggested, destPurpose); }
+                            }}
+                            placeholder="What's it for? e.g. book 15-min demos with ops heads"
+                            className="flex-1 bg-nv-surface2 border border-nv-border focus:border-accent rounded-lg px-2.5 py-1.5 text-[11.5px] text-nv-text placeholder:text-nv-faint outline-none transition-fast"
+                          />
+                          <button
+                            onClick={() => outreachPick.source && startOutreachWith(outreachPick.source, destName.trim() || suggested, destPurpose)}
+                            className="shrink-0 text-[11px] px-2.5 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-medium"
+                          >
+                            Start
+                          </button>
+                        </div>
                       </div>
                       <button onClick={() => { setFilePickerQuery(''); setOutreachPick({ step: 'source' }); }} className="px-3 pb-1 text-left text-[10px] text-nv-faint hover:text-accent shrink-0">← back to choosing the list</button>
                     </>
@@ -12215,7 +12520,10 @@ Everything you need for follow-ups is in that answer above; read it there rather
       {outreachCampaign && (
         <OutreachCopilot
           campaign={outreachCampaign}
-          onClose={() => setOutreachCampaign(null)}
+          onClose={() => { setOutreachCampaign(null); setOutreachIndexOpen(false); }}
+          startOnIndex={outreachIndexOpen}
+          onOpenCampaign={(c) => { setOutreachIndexOpen(false); setOutreachCampaign(c); }}
+          onNewCampaign={() => { setOutreachIndexOpen(false); setOutreachPick({ step: 'source' }); }}
           googleToken={creds.google?.access_token ?? ''}
           /* Give the copilot the SAME AI path this chat uses, so reply planning/verification run on
              the user's chosen source (BYOK / local / adris.tech) — not a separate global setting that

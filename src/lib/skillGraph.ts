@@ -295,6 +295,143 @@ export function skillEdges(): SkillEdge[] {
   return out;
 }
 
+// ─── Skills the app teaches ITSELF ────────────────────────────────────────────
+//
+// The graph above is what was BUILT IN — nineteen capabilities somebody sat down and wrote. That
+// ceiling is the problem: every time the user needs something slightly different ("filter this
+// spreadsheet by the Location column", "the vendor file's headers are on row 3"), the model works
+// it out from scratch, spends the tokens working it out, and has forgotten by the next message. The
+// user then explains it again. And again.
+//
+// A learned skill is that working-out, written down the first time it succeeds. It costs nothing to
+// create — it is assembled from what actually happened, not from an extra model call — and on the
+// next similar request it goes into the prompt as a short recipe, so the model follows the route
+// instead of re-deriving it. That is the token saving: exploration happens once per kind of task
+// rather than once per message.
+//
+// They live in the Brain as well as here, so the user can SEE what the app has picked up, correct
+// a recipe that is wrong, and delete one that has gone stale.
+const LEARNED_KEY = 'nv-learned-skills-v1';
+
+export interface LearnedSkill {
+  id: string;
+  /** Short human name — what the user sees in the graph. */
+  name: string;
+  /** The recipe injected into the prompt when this skill matches. */
+  guide: string;
+  /** Lower-cased words from the original request; a request sharing enough of them matches. */
+  triggerWords: string[];
+  /** 'recipe' = derived from a task that worked. 'rule' = the user stated a standing instruction. */
+  kind: 'recipe' | 'rule';
+  createdAt: number;
+  updatedAt: number;
+  uses: number;
+}
+
+export function learnedSkills(): LearnedSkill[] {
+  try {
+    const r = JSON.parse(localStorage.getItem(LEARNED_KEY) ?? '[]');
+    return Array.isArray(r) ? (r as LearnedSkill[]).filter((s) => s && s.id && s.guide) : [];
+  } catch { return []; }
+}
+
+function writeLearned(list: LearnedSkill[]): void {
+  // Newest and most-used first, capped — an unbounded store would eventually be a prompt-selection
+  // problem of its own, and a recipe nobody has needed in months is not worth keeping.
+  const keep = [...list]
+    .sort((a, b) => (b.uses - a.uses) || (b.updatedAt - a.updatedAt))
+    .slice(0, 60);
+  try { localStorage.setItem(LEARNED_KEY, JSON.stringify(keep)); } catch { /* quota */ }
+  try { window.dispatchEvent(new Event(SKILLS_EVENT)); } catch { /* no window */ }
+}
+
+/** Content words of a request — what a later request has to share to count as "the same kind". */
+const SKILL_STOPWORDS = new Set(['the', 'a', 'an', 'and', 'or', 'of', 'for', 'to', 'with', 'from', 'that', 'this', 'my', 'our', 'your', 'it', 'is', 'are', 'be', 'on', 'in', 'as', 'at', 'by', 'can', 'you', 'please', 'me', 'i', 'do', 'does', 'get', 'give', 'make', 'want', 'need', 'all', 'any', 'some', 'then', 'so', 'if', 'not', 'but', 'was', 'were', 'has', 'have', 'had', 'will', 'would', 'should', 'could', 'just', 'now', 'also', 'them', 'they', 'we', 'us', 'his', 'her', 'its', 'up', 'out', 'about', 'into', 'over', 'more', 'one', 'two', 'new', 'old']);
+export function skillWords(text: string): string[] {
+  return [...new Set(
+    String(text || '').toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length >= 3 && !SKILL_STOPWORDS.has(w)),
+  )].slice(0, 14);
+}
+
+function slugOfName(name: string): string {
+  return 'learned:' + name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 48);
+}
+
+/**
+ * Write down something the app has just worked out.
+ *
+ * Merges by name: doing the same kind of task a second time SHARPENS the existing recipe (its
+ * trigger words widen to cover both phrasings) instead of creating a near-duplicate that competes
+ * with it for a place in the prompt.
+ */
+export function learnSkill(input: { name: string; guide: string; from: string; kind?: 'recipe' | 'rule' }): LearnedSkill | null {
+  const name = (input.name || '').trim().slice(0, 60);
+  const guide = (input.guide || '').trim().slice(0, 1200);
+  if (!name || guide.length < 20) return null;
+  const id = slugOfName(name);
+  const list = learnedSkills();
+  const now = Date.now();
+  const words = [...new Set([...skillWords(input.from), ...skillWords(name)])].slice(0, 18);
+  const ex = list.find((s) => s.id === id);
+  const skill: LearnedSkill = ex
+    ? { ...ex, guide, triggerWords: [...new Set([...ex.triggerWords, ...words])].slice(0, 24), updatedAt: now }
+    : { id, name, guide, triggerWords: words, kind: input.kind ?? 'recipe', createdAt: now, updatedAt: now, uses: 0 };
+  writeLearned([skill, ...list.filter((s) => s.id !== id)]);
+  // Mirror into the Brain so it is visible, editable and deletable where the user already looks
+  // for what the app knows. Failure here is not fatal — the skill still works from localStorage.
+  import('./knowledgeStore').then(({ brain }) => {
+    brain.addNode({
+      title: `Skill: ${name}`,
+      kind: 'skill',
+      body: `${skill.kind === 'rule' ? 'A standing instruction from the user.' : 'Learned from a task that worked — followed instead of working it out again.'}\n\nWHEN: ${skill.triggerWords.slice(0, 10).join(', ')}\n\n${guide}`,
+    });
+  }).catch(() => { /* Brain optional */ });
+  return skill;
+}
+
+export function forgetSkill(id: string): void {
+  const gone = learnedSkills().find((x) => x.id === id);
+  writeLearned(learnedSkills().filter((s) => s.id !== id));
+  if (!gone) return;
+  // Take the Brain note with it — a skill the user deleted must not still be sitting in the graph
+  // looking like something the app will do.
+  import('./knowledgeStore').then(({ brain }) => {
+    const node = brain.all().nodes.find((n) => n.kind === 'skill' && n.title.trim().toLowerCase() === `skill: ${gone.name}`.toLowerCase());
+    if (node) brain.deleteNode(node.id);
+  }).catch(() => { /* Brain optional */ });
+}
+
+/**
+ * Which learned skills apply to this request.
+ *
+ * Deliberately a share-of-words test rather than a regex: a learned skill is built from one real
+ * request, and the next phrasing of the same job will differ. Two content words in common (or half
+ * the recipe's vocabulary, whichever is smaller) is enough — a miss costs the model a re-derivation
+ * it was doing anyway, while a stricter rule would mean nothing ever matched and the whole store
+ * would be dead weight.
+ */
+export function matchLearned(request: string, max = 3): LearnedSkill[] {
+  const words = new Set(skillWords(request));
+  if (!words.size) return [];
+  const scored = learnedSkills().map((s) => {
+    const hits = s.triggerWords.filter((w) => words.has(w)).length;
+    return { s, hits };
+  }).filter(({ s, hits }) => hits >= Math.min(2, Math.max(1, Math.ceil(s.triggerWords.length / 2))));
+  return scored.sort((a, b) => (b.hits - a.hits) || (b.s.uses - a.s.uses)).slice(0, max).map((x) => x.s);
+}
+
+/** Count a learned skill as used, so the graph can show which ones are actually earning their place. */
+export function recordLearnedUse(ids: string[]): void {
+  if (!ids.length) return;
+  const list = learnedSkills();
+  let touched = false;
+  for (const s of list) if (ids.includes(s.id)) { s.uses += 1; s.updatedAt = Date.now(); touched = true; }
+  if (touched) writeLearned(list);
+}
+
 // ─── What the user has switched off ───────────────────────────────────────────
 const OFF_KEY = 'nv-skills-off-v1';
 
@@ -380,8 +517,23 @@ export function selectSkills(request: string, availableTools?: string[], max = 6
 /** The block injected into the system prompt — only the selected skills, nothing else. */
 export function builtInSkillsBlock(request: string, availableTools?: string[]): string {
   const picks = selectSkills(request, availableTools);
-  if (!picks.length) return '';
-  return '\n\n## How you do this here\n'
-    + picks.map((p) => `**${p.skill.name}** — ${p.skill.guide}`).join('\n')
-    + '\n';
+  // WHAT THIS APP HAS LEARNT FROM THIS USER, ahead of the built-ins. A recipe assembled from a task
+  // that already worked is worth more than a general guide, and it is the whole point of learning
+  // them: the model follows a known route instead of paying to rediscover it. Three at most — this
+  // block exists to SAVE tokens, and a wall of past recipes would spend more than it saves.
+  const learned = matchLearned(request, 3);
+  if (learned.length) recordLearnedUse(learned.map((s) => s.id));
+  if (!picks.length && !learned.length) return '';
+  const parts: string[] = [];
+  if (learned.length) {
+    parts.push(
+      '\n\n## You have done this before — follow these, do not work it out again\n'
+      + learned.map((s) => `**${s.name}**${s.kind === 'rule' ? ' (the user asked for this every time)' : ''} — ${s.guide}`).join('\n')
+      + '\nIf one of these no longer fits what the user is asking for, ignore it and say so briefly rather than forcing it.\n',
+    );
+  }
+  if (picks.length) {
+    parts.push('\n\n## How you do this here\n' + picks.map((p) => `**${p.skill.name}** — ${p.skill.guide}`).join('\n') + '\n');
+  }
+  return parts.join('');
 }

@@ -130,6 +130,17 @@ export interface OutreachContact {
   company?: string;
   linkedin_url?: string;
   email?: string;
+  /**
+   * EVERY address known for this person/company, not just the first one.
+   *
+   * A company row routinely carries several addresses — the person, a shared info@, an assistant —
+   * and only one of them survived into the campaign. That is where replies go missing: the reply
+   * comes back from the assistant's address, the copilot searches Gmail for the address it kept,
+   * finds nothing, and reports "no reply" about a mailbox that has one sitting in it. `email`
+   * stays the primary (everything already written against it keeps working); this is the full set,
+   * and emailsOf() below is what any new code should read.
+   */
+  emails?: string[];
   /** X/Twitter handle — stored bare or as a URL; bareHandle() normalises either. */
   x_handle?: string;
   /** Instagram handle — same. Used for influencer outreach, where there is no LinkedIn. */
@@ -161,6 +172,18 @@ export interface OutreachCampaign {
   channel?: 'linkedin' | 'email' | 'both';
   deckAttached?: boolean;
   updatedAt?: number;
+  /**
+   * What THIS campaign is for, in the user's own words ("get 5 beta testers", "book demos with
+   * ops heads"). Two campaigns over the same people can have opposite purposes, and until this
+   * existed the goal lived only in the chat message that started the run — so re-opening a
+   * campaign a week later, or adding people to it, asked for the goal all over again and drafted
+   * against a different one. Stored with the campaign, it also gives the index something to show
+   * beyond a date.
+   */
+  purpose?: string;
+  /** The list the people came from — the "file in" of a run, shown on the index. */
+  sourceList?: string;
+  createdAt?: number;
 }
 
 const LS_KEY = 'nv-outreach-v1';
@@ -175,6 +198,136 @@ const OUTREACH_TODO_KEY = 'outreach:current';
 /** People not yet handled (anything other than sent/accepted/replied/skip). */
 function remainingOf(c: OutreachCampaign): number {
   return c.contacts.filter((x) => !(x.status === 'sent' || x.status === 'accepted' || x.status === 'replied' || x.status === 'skip')).length;
+}
+
+export interface CampaignProgress {
+  total: number; done: number; remaining: number;
+  sent: number; accepted: number; replied: number; meeting: number; skip: number;
+  /** 0–100, for the bar on the index. */
+  pct: number;
+}
+
+/** How far along one campaign is. One definition of "done", used by the index, the To-do card and
+ *  the header — three places that used to each count it slightly differently. */
+export function campaignProgress(c: OutreachCampaign): CampaignProgress {
+  const list = c?.contacts || [];
+  const by = (s: OutreachStatus) => list.filter((x) => (x.status || 'todo') === s).length;
+  const remaining = remainingOf(c);
+  const total = list.length;
+  const done = total - remaining;
+  return {
+    total, done, remaining,
+    sent: by('sent'), accepted: by('accepted'), replied: by('replied'), meeting: by('meeting') + by('met'), skip: by('skip'),
+    pct: total ? Math.round((done / total) * 100) : 0,
+  };
+}
+
+/**
+ * Every campaign the user has, newest activity first.
+ *
+ * Campaigns were always stored (the archive has existed since a 1-person reply draft was found to
+ * be clobbering a 35-person run) but there was no way to SEE them: the only entry points were
+ * "resume the biggest one" and "resume the last one". So running a second outreach for a different
+ * purpose meant losing sight of the first, and nobody could answer "how far through each am I?".
+ * This is the list behind that answer.
+ */
+export function listCampaigns(): OutreachCampaign[] {
+  const byTitle = new Map<string, OutreachCampaign>();
+  const consider = (c: OutreachCampaign | null) => {
+    if (!c || !Array.isArray(c.contacts) || !c.contacts.length) return;
+    const k = (c.title || '').trim();
+    if (!k) return;
+    const ex = byTitle.get(k);
+    // The current slot and the archive hold the same campaign at different moments; keep the newer.
+    if (!ex || (c.updatedAt || 0) >= (ex.updatedAt || 0)) byTitle.set(k, c);
+  };
+  try { consider(loadSavedCampaign()); } catch { /* storage optional */ }
+  try { for (const c of Object.values(loadCampaignArchive())) consider(c); } catch { /* storage optional */ }
+  return [...byTitle.values()].sort((a, b) => {
+    // Unfinished work first — that is what someone opening this screen is looking for — then by
+    // how recently it was touched.
+    const ra = remainingOf(a) > 0 ? 1 : 0;
+    const rb = remainingOf(b) > 0 ? 1 : 0;
+    if (ra !== rb) return rb - ra;
+    return (b.updatedAt || 0) - (a.updatedAt || 0);
+  });
+}
+
+/**
+ * Forget a campaign completely: the archive, the "current" slot if it is this one, and the To-do
+ * card. The Brain note is deliberately LEFT ALONE — it is the user's record of who was contacted,
+ * and deleting a finished campaign from this screen must not quietly destroy that history.
+ */
+export function deleteCampaign(title: string): boolean {
+  const want = (title || '').trim();
+  if (!want) return false;
+  let changed = false;
+  try {
+    const arch = loadCampaignArchive();
+    if (arch[want]) { delete arch[want]; saveCampaignArchive(arch); changed = true; }
+    const cur = loadSavedCampaign();
+    if (cur && (cur.title || '').trim() === want) { localStorage.removeItem(LS_KEY); changed = true; }
+  } catch { /* storage optional */ }
+  try {
+    const best = loadResumableCampaign();
+    if (!best) todos.removeBySource(OUTREACH_TODO_KEY);
+    else {
+      const p = campaignProgress(best);
+      todos.upsertResume(
+        OUTREACH_TODO_KEY,
+        `${best.title} — ${p.remaining} still to message (${p.done}/${p.total} done)`,
+        { kind: 'outreach', label: best.title },
+        { done: false },
+      );
+    }
+  } catch { /* To-do optional */ }
+  return changed;
+}
+
+/** Every address known for this contact, primary first, de-duplicated and lower-cased. */
+export function emailsOf(c: OutreachContact | undefined | null): string[] {
+  const out: string[] = [];
+  const push = (raw?: string) => {
+    const e = String(raw || '').trim().replace(/^<|>$/g, '').toLowerCase();
+    if (!e.includes('@') || /\s/.test(e)) return;
+    if (!out.includes(e)) out.push(e);
+  };
+  push(c?.email);
+  for (const e of c?.emails || []) push(e);
+  return out;
+}
+
+/** Split an email CELL — lead lists write several addresses into one cell, separated by anything. */
+export function splitEmails(cell?: string): string[] {
+  return String(cell || '')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .split(/[,;/|\s]+/)
+    .map((s) => s.replace(/^[[(<]+|[\])>.]+$/g, '').trim().toLowerCase())
+    .filter((s) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s))
+    .filter((s, i, a) => a.indexOf(s) === i);
+}
+
+/** Company names as written vary ("Acme Pvt Ltd", "Acme"); compare on the meaningful part only. */
+export function normCompany(raw?: string): string {
+  return String(raw || '')
+    .toLowerCase()
+    .split(/\s*[/|·—–]\s*/)[0]
+    .replace(/\b(pvt|private|ltd|limited|llp|inc|incorporated|corp|corporation|co|company|technologies|technology|solutions|industries|group|enterprises|india)\b/g, ' ')
+    .replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Other people in this campaign at the SAME company.
+ *
+ * "If a company is on outreach, read the emails that have come" — a reply from a company rarely
+ * arrives from the one person who was written to. Knowing the colleagues lets the reply scan look
+ * at their addresses too, instead of declaring silence because the one mailbox it checked was
+ * quiet.
+ */
+export function companyPeers(all: OutreachContact[], c: OutreachContact): OutreachContact[] {
+  const key = normCompany(c?.company);
+  if (!key || key.length < 3) return [];
+  return (all || []).filter((x) => x !== c && normCompany(x.company) === key);
 }
 function loadCampaignArchive(): Record<string, OutreachCampaign> {
   try {
@@ -340,7 +493,7 @@ function fillTokens(t: string, c: OutreachContact): string {
 
 /** Persist the live campaign so the copilot survives reloads and the Brain shows progress. */
 export function saveCampaign(camp: OutreachCampaign) {
-  const stamped = { ...camp, updatedAt: Date.now() };
+  const stamped = { ...camp, updatedAt: Date.now(), createdAt: camp.createdAt || Date.now() };
   try { localStorage.setItem(LS_KEY, JSON.stringify(stamped)); } catch { /* quota */ }
   // Archive by title so this campaign is always recoverable even after a different (e.g. a 1-person
   // reply) campaign is opened and overwrites the "current" slot.
@@ -350,11 +503,18 @@ export function saveCampaign(camp: OutreachCampaign) {
   // place rather than piling up a new node every status change.
   try {
     const done = camp.contacts.filter((c) => c.status === 'sent' || c.status === 'accepted' || c.status === 'replied').length;
+    // Every address, not just the primary — the note is the record someone reads later to work out
+    // who was contacted where, and a company with three addresses showed only one of them.
     const rows = camp.contacts.map((c) =>
-      `| ${c.name || '—'} | ${c.company || '—'} | ${STATUS_META[c.status || 'todo'].label} |`).join('\n');
+      `| ${c.name || '—'} | ${c.company || '—'} | ${emailsOf(c).join(', ') || '—'} | ${STATUS_META[c.status || 'todo'].label} |`).join('\n');
+    const head = [
+      `Outreach progress — ${done}/${camp.contacts.length} contacted.`,
+      camp.purpose ? `Purpose: ${camp.purpose}` : '',
+      camp.sourceList ? `Built from: ${camp.sourceList}` : '',
+    ].filter(Boolean).join('\n');
     const body =
-      `Outreach progress — ${done}/${camp.contacts.length} contacted.\n\n` +
-      `| Name | Company | Status |\n| --- | --- | --- |\n${rows}\n`;
+      `${head}\n\n` +
+      `| Name | Company | Email | Status |\n| --- | --- | --- | --- |\n${rows}\n`;
     brain.addNode({ title: camp.title, kind: 'outreach', body });
   } catch { /* Brain optional */ }
   // Mirror progress onto the To-do panel so "where did I leave off" survives closing the popup,
@@ -470,10 +630,33 @@ function firstUndoneIdx(arr: OutreachContact[]): number {
   return i >= 0 ? i : 0;
 }
 
-export default function OutreachCopilot({ campaign, onClose, googleToken = '', aiCall }: { campaign: OutreachCampaign; onClose: () => void; googleToken?: string; aiCall?: (user: string, system: string) => Promise<string> }) {
+export default function OutreachCopilot({ campaign, onClose, googleToken = '', aiCall, onOpenCampaign, onNewCampaign, startOnIndex = false }: {
+  campaign: OutreachCampaign;
+  onClose: () => void;
+  googleToken?: string;
+  aiCall?: (user: string, system: string) => Promise<string>;
+  /** Switch the copilot to another campaign from the index. The parent owns which campaign is
+   *  open, so it has to be told — otherwise the index could list them but never open one. */
+  onOpenCampaign?: (c: OutreachCampaign) => void;
+  /** "Start another outreach" — hands back to /outreach's own picker rather than half-inventing
+   *  a second way to choose a list. */
+  onNewCampaign?: () => void;
+  startOnIndex?: boolean;
+}) {
   const [contacts, setContacts] = useState<OutreachContact[]>(
     campaign.contacts.map((c) => ({ ...c, status: c.status || 'todo' })));
   const [idx, setIdx] = useState(() => firstUndoneIdx(campaign.contacts));
+  // ── Which campaign am I working, and what else is running? ─────────────────────────────────
+  // The copilot was hard-wired to exactly one campaign — whichever the parent last set. You could
+  // not see that a second one existed, how far through it you were, or get back to it without
+  // going through the chat. This view flips the panel between "the campaign" and "all campaigns".
+  const [view, setView] = useState<'index' | 'one'>(startOnIndex ? 'index' : 'one');
+  const [renamingTitle, setRenamingTitle] = useState<string | null>(null);
+  const [renameText, setRenameText] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  // Bumped after a rename/delete so the index re-reads localStorage — the campaign store is not
+  // React state, so nothing else would tell this component the list changed.
+  const [indexTick, setIndexTick] = useState(0);
   const [copied, setCopied] = useState<'msg' | 'email' | 'note' | 'x' | 'ig' | null>(null);
   const [whyOpen, setWhyOpen] = useState(false);
   const [search, setSearch] = useState('');   // jump-to-a-contact by name, instead of Prev/Next spam
@@ -679,10 +862,15 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   // resync the local contacts + jump to the first to-do. The prop reference only changes when
   // setOutreachCampaign is called with a new object — normal auto-saves don't touch it — so this
   // never fights the user's edits, it just refreshes when a genuinely new/updated campaign arrives.
+  const firstSyncRef = useRef(true);
   useEffect(() => {
     const next = campaign.contacts.map((c) => ({ ...c, status: c.status || 'todo' }));
     setContacts(next);
     setIdx(firstUndoneIdx(next));
+    // A genuinely new campaign arriving means the user chose one — show it. On the FIRST run this
+    // effect is just mount, and forcing 'one' there would slam the index shut the instant it opened.
+    if (firstSyncRef.current) firstSyncRef.current = false;
+    else setView('one');
   }, [campaign]);
 
   // Auto-save the campaign (with live statuses) whenever it changes.
@@ -696,6 +884,21 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     const by = (s: OutreachStatus) => contacts.filter((c) => c.status === s).length;
     return { sent: by('sent'), accepted: by('accepted'), replied: by('replied'), connect: by('connect'), skip: by('skip') };
   }, [contacts]);
+
+  /**
+   * Every campaign, with THIS one's live contacts folded in.
+   *
+   * The panel's edits live in React state and only reach storage on the next auto-save, so reading
+   * the store alone would show the open campaign one step behind — you mark someone Sent, open the
+   * index, and it still says the old number.
+   */
+  const allCampaigns = useMemo(() => {
+    const list = listCampaigns();
+    const here = (campaign.title || '').trim();
+    const merged = list.map((c) => ((c.title || '').trim() === here ? { ...c, ...campaign, contacts } : c));
+    if (here && !merged.some((c) => (c.title || '').trim() === here)) merged.unshift({ ...campaign, contacts });
+    return merged;
+  }, [contacts, campaign, indexTick]);
 
   // Search results: contacts whose name (or company) contains the query — carrying their real index
   // so a click jumps straight there. Capped so a big list stays a short, clickable menu.
@@ -988,22 +1191,47 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       // strategist, the verifier, the draft box, the slot suggestions — works on plain thread text
       // and never cared which channel it came from, so this is the only branch needed. Looking for
       // a LinkedIn chat with someone who was emailed could only ever come back empty.
-      if (contactChannel(contact) === 'email' && contact.email) {
-        setPlanNote('Reading your email conversation…');
-        const gm = await invoke<string>('run_browser_persistent', { args: `gmailthread ${contact.email}` }).catch((e) => String(e));
-        if (gm.includes('SIGN_IN_REQUIRED') || gm.includes('[NEEDS_LOGIN]')) {
-          setPlanNote('Sign in to Gmail in the ADRIS browser window, then click "Scan their reply" again.');
-          setPlanning(false); await refocusAppToPlan(); return;
-        }
-        const gj = gm.indexOf('GMAIL_JSON:');
-        if (gj >= 0) {
+      // ONE COMPANY, SEVERAL MAILBOXES. A reply from a company rarely comes back from the exact
+      // address that was written to — it arrives from the founder's personal address, an
+      // assistant, or a shared inbox. Checking only the primary and then reporting "no reply" is
+      // a statement about ONE mailbox dressed up as a statement about the company, and the user
+      // acts on it by following up someone who has already answered.
+      //
+      // So: every address on this contact first, then every address of their colleagues in this
+      // campaign. Stop at the first real conversation. Capped at 5 searches — each is a Gmail page
+      // load, and an unbounded loop over a big company would sit there for minutes.
+      const addrQueue: Array<{ addr: string; who: string }> = [
+        ...emailsOf(contact).map((addr) => ({ addr, who: contact.name || 'THEM' })),
+        ...companyPeers(contacts, contact).flatMap((p) => emailsOf(p).map((addr) => ({ addr, who: p.name || 'THEM' }))),
+      ].filter((v, i, a) => a.findIndex((x) => x.addr === v.addr) === i).slice(0, 5);
+
+      if (!thread.trim() && addrQueue.length && (contactChannel(contact) === 'email' || emailsOf(contact).length > 0)) {
+        for (let ai = 0; ai < addrQueue.length && !thread.trim(); ai++) {
+          const { addr, who } = addrQueue[ai];
+          setPlanNote(addrQueue.length > 1
+            ? `Reading your email conversation (${ai + 1} of ${addrQueue.length}: ${addr})…`
+            : 'Reading your email conversation…');
+          const gm = await invoke<string>('run_browser_persistent', { args: `gmailthread ${addr}` }).catch((e) => String(e));
+          if (gm.includes('SIGN_IN_REQUIRED') || gm.includes('[NEEDS_LOGIN]')) {
+            setPlanNote('Sign in to Gmail in the ADRIS browser window, then click "Scan their reply" again.');
+            setPlanning(false); await refocusAppToPlan(); return;
+          }
+          const gj = gm.indexOf('GMAIL_JSON:');
+          if (gj < 0) continue;
           try {
             const obj = JSON.parse(gm.slice(gj + 'GMAIL_JSON:'.length).trim()) as { subject?: string; messages?: Array<{ isYou?: boolean; text?: string }> };
             if (obj.messages?.length) {
+              // Say WHOSE mailbox this came out of. When the reply came from a colleague, a draft
+              // written as though the original recipient wrote it is addressed to the wrong person.
+              const from = who !== (contact.name || 'THEM') ? `${who} <${addr}>` : who;
               thread = (obj.subject ? `SUBJECT: ${obj.subject}\n` : '')
-                + obj.messages.map((m) => `${m.isYou ? 'YOU' : (contact.name || 'THEM')}: ${m.text || ''}`).join('\n');
+                + `[this conversation is with ${from}]\n`
+                + obj.messages.map((m) => `${m.isYou ? 'YOU' : from}: ${m.text || ''}`).join('\n');
+              if (who !== (contact.name || 'THEM')) {
+                setCheckNote(`The reply came from ${who} (${addr}) at the same company, not ${contact.name}.`);
+              }
             }
-          } catch { /* fall through to the paste box */ }
+          } catch { /* try the next address, then the paste box */ }
         }
       }
 
@@ -1684,6 +1912,148 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     }
   }
 
+  /** Commit an inline rename from the index. */
+  function commitRename(from: string) {
+    const to = renameText.trim();
+    setRenamingTitle(null);
+    if (!to || to === from) return;
+    renameCampaign(from, to);
+    setIndexTick((t) => t + 1);
+    // Renaming the campaign that is OPEN has to move the panel with it, or the next auto-save
+    // writes the old title straight back and the rename silently undoes itself.
+    if ((campaign.title || '').trim() === from) onOpenCampaign?.({ ...campaign, contacts, title: to });
+  }
+
+  // ─── The index: every outreach, how far each has got ───────────────────────────────────────
+  if (view === 'index') {
+    return (
+      <div className="fixed inset-0 z-[60] flex items-stretch justify-end bg-black/60 backdrop-blur-md" onClick={onClose}>
+        <div
+          className="w-full max-w-md h-full bg-nv-surface border-l border-nv-border shadow-2xl flex flex-col animate-[slidein_.18s_ease-out]"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="px-4 py-3 border-b border-nv-border flex items-center gap-2 shrink-0">
+            <svg viewBox="0 0 24 24" className="w-4 h-4 text-accent shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 6h16M4 12h16M4 18h10" />
+            </svg>
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-semibold truncate">Your outreach</div>
+              <div className="text-[10px] text-nv-faint truncate">
+                {allCampaigns.length} campaign{allCampaigns.length === 1 ? '' : 's'} · pick one to carry on
+              </div>
+            </div>
+            <button onClick={onClose} className="text-nv-faint hover:text-nv-text p-1 rounded" title="Close">
+              <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            {allCampaigns.length === 0 && (
+              <div className="text-[11.5px] text-nv-faint leading-relaxed px-1 py-4">
+                No outreach yet. Run <b className="text-nv-text">/outreach</b> in the chat: pick the list of people,
+                name the campaign and say what it's for, and it appears here.
+              </div>
+            )}
+            {allCampaigns.map((c) => {
+              const p = campaignProgress(c);
+              const isOpen = (c.title || '').trim() === (campaign.title || '').trim();
+              const renaming = renamingTitle === c.title;
+              return (
+                <div
+                  key={c.title}
+                  className={`rounded-xl border overflow-hidden ${isOpen ? 'border-accent/50 bg-accent/[0.05]' : 'border-nv-border bg-nv-bg'}`}
+                >
+                  <div className="px-3 pt-2.5 pb-2">
+                    {renaming ? (
+                      <input
+                        autoFocus
+                        value={renameText}
+                        onChange={(e) => setRenameText(e.target.value)}
+                        onBlur={() => commitRename(c.title)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') { e.preventDefault(); commitRename(c.title); }
+                          if (e.key === 'Escape') { e.preventDefault(); setRenamingTitle(null); }
+                        }}
+                        className="w-full bg-nv-surface2 border border-accent rounded-lg px-2 py-1 text-[12px] text-nv-text outline-none"
+                      />
+                    ) : (
+                      <div className="flex items-start gap-2">
+                        <button onClick={() => { onOpenCampaign?.(c); setView('one'); }} className="min-w-0 flex-1 text-left">
+                          <div className="text-[12px] font-semibold text-nv-text leading-snug break-words">{c.title}</div>
+                          {c.purpose && <div className="text-[10px] text-nv-muted leading-snug mt-0.5">{c.purpose}</div>}
+                        </button>
+                        {isOpen && <span className="shrink-0 text-[8.5px] font-mono text-accent border border-accent/40 rounded px-1 mt-0.5">open</span>}
+                      </div>
+                    )}
+
+                    {/* The number the whole screen exists for. */}
+                    <div className="mt-2 flex items-center gap-2">
+                      <div className="h-1.5 flex-1 rounded-full bg-nv-border overflow-hidden">
+                        <div className="h-full bg-accent transition-all" style={{ width: `${p.pct}%` }} />
+                      </div>
+                      <span className="shrink-0 text-[10px] font-semibold text-nv-text">{p.pct}%</span>
+                    </div>
+                    <div className="mt-1 text-[9.5px] text-nv-faint">
+                      {p.done}/{p.total} done · {p.remaining} to go
+                      {p.replied > 0 && <> · <span className="text-violet-600 font-semibold">{p.replied} replied</span></>}
+                      {p.meeting > 0 && <> · <span className="text-teal-600 font-semibold">{p.meeting} meeting{p.meeting === 1 ? '' : 's'}</span></>}
+                    </div>
+                    {(c.sourceList || c.updatedAt) && (
+                      <div className="mt-0.5 text-[9px] text-nv-faint truncate">
+                        {c.sourceList ? `From ${c.sourceList}` : ''}
+                        {c.sourceList && c.updatedAt ? ' · ' : ''}
+                        {c.updatedAt ? `last touched ${new Date(c.updatedAt).toLocaleDateString()}` : ''}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="px-3 pb-2.5 flex flex-wrap items-center gap-1.5">
+                    <button
+                      onClick={() => { onOpenCampaign?.(c); setView('one'); }}
+                      className="text-[10.5px] font-semibold px-2.5 py-1 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast"
+                    >{p.remaining > 0 ? 'Continue →' : 'Open →'}</button>
+                    <button
+                      onClick={() => { setRenamingTitle(c.title); setRenameText(c.title); }}
+                      className="text-[10.5px] px-2.5 py-1 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
+                    >Rename</button>
+                    {confirmDelete === c.title ? (
+                      <>
+                        <span className="text-[10px] text-nv-faint">Remove from this list?</span>
+                        <button
+                          onClick={() => { deleteCampaign(c.title); setConfirmDelete(null); setIndexTick((t) => t + 1); if (isOpen) onClose(); }}
+                          className="text-[10.5px] font-semibold px-2 py-1 rounded-lg bg-red-600 text-white hover:bg-red-500 transition-fast"
+                        >Yes, remove</button>
+                        <button onClick={() => setConfirmDelete(null)} className="text-[10.5px] px-2 py-1 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast">Keep</button>
+                      </>
+                    ) : (
+                      <button
+                        title="Takes it off this list. The Brain note recording who was contacted is kept."
+                        onClick={() => setConfirmDelete(c.title)}
+                        className="text-[10.5px] px-2.5 py-1 rounded-lg border border-nv-border text-nv-faint hover:text-red-500 hover:border-red-500/40 transition-fast"
+                      >Remove</button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="px-3 py-2.5 border-t border-nv-border shrink-0 flex items-center gap-2">
+            {onNewCampaign && (
+              <button
+                onClick={() => { onNewCampaign(); onClose(); }}
+                className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast"
+              >+ Start another outreach</button>
+            )}
+            <span className="text-[9.5px] text-nv-faint leading-snug">
+              Each campaign keeps its own people, messages and progress.
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="fixed inset-0 z-[60] flex items-stretch justify-end bg-black/60 backdrop-blur-md" onClick={onClose}>
       <div
@@ -1692,10 +2062,22 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       >
         {/* Header */}
         <div className="px-4 py-3 border-b border-nv-border flex items-center gap-2 shrink-0">
-          <svg viewBox="0 0 24 24" className="w-4 h-4 text-accent shrink-0" fill="currentColor"><path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.14 1.45-2.14 2.94v5.67H9.34V9h3.42v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28zM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13zM7.12 20.45H3.56V9h3.56v11.45z"/></svg>
+          {/* Back to the index. With several campaigns running, the panel has to say WHICH one you
+              are looking at and give you a way to the others — otherwise the only route between
+              them is through the chat, and the header's "Outreach copilot" is the same either way. */}
+          <button
+            onClick={() => setView('index')}
+            title="All your outreach campaigns"
+            className="shrink-0 flex items-center gap-1 text-nv-faint hover:text-accent p-1 rounded transition-fast"
+          >
+            <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+            <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+          </button>
           <div className="min-w-0 flex-1">
-            <div className="text-xs font-semibold truncate">Outreach copilot</div>
-            <div className="text-[10px] text-nv-faint truncate">{contacts.length} contacts · auto-typed, you review &amp; send</div>
+            <div className="text-xs font-semibold truncate" title={campaign.title}>{campaign.title || 'Outreach copilot'}</div>
+            <div className="text-[10px] text-nv-faint truncate">
+              {campaign.purpose ? `${campaign.purpose} · ` : ''}{contacts.length} contacts · you review &amp; send
+            </div>
           </div>
           <button onClick={onClose} className="text-nv-faint hover:text-nv-text p-1 rounded" title="Close">
             <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
@@ -2099,22 +2481,55 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
           {/* Email secondary action */}
           {/* Shown whenever this person has an email — previously gated on the campaign-wide
               channel, so an address found during enrichment sat in the record unusable. */}
-          {!!cur.email && (
-            <div className="pt-1 border-t border-nv-border">
-              <div className="flex items-center justify-between mb-1">
-                <div className="text-[10px] text-nv-faint uppercase tracking-wide">Email · {cur.email}</div>
-                <button onClick={() => doCopy('email')} className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${copied === 'email' ? 'border-emerald-400/50 text-emerald-600 bg-emerald-400/10' : 'border-nv-border text-nv-faint hover:bg-nv-surface2'}`}>
-                  {copied === 'email' ? '✓ Copied' : 'Copy email'}
-                </button>
+          {!!emailsOf(cur).length && (() => {
+            const addrs = emailsOf(cur);
+            const peers = companyPeers(contacts, cur);
+            const peerAddrs = peers.flatMap((p) => emailsOf(p).map((a) => ({ a, name: p.name })));
+            return (
+              <div className="pt-1 border-t border-nv-border">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-[10px] text-nv-faint uppercase tracking-wide">
+                    Email{addrs.length > 1 ? ` · ${addrs.length} addresses` : ` · ${addrs[0]}`}
+                  </div>
+                  <button onClick={() => doCopy('email')} className={`text-[10px] px-2 py-1 rounded-md border transition-fast ${copied === 'email' ? 'border-emerald-400/50 text-emerald-600 bg-emerald-400/10' : 'border-nv-border text-nv-faint hover:bg-nv-surface2'}`}>
+                    {copied === 'email' ? '✓ Copied' : 'Copy email'}
+                  </button>
+                </div>
+                {/* One row per address. A company row carries several — the person, a shared
+                    inbox, an assistant — and collapsing them to "the email" meant the other two
+                    were stored and never usable. Each opens a compose window with the same
+                    drafted message, addressed to that mailbox. */}
+                {addrs.length > 1 ? (
+                  <div className="space-y-1">
+                    {addrs.map((a) => (
+                      <button
+                        key={a}
+                        onClick={() => openLink(gmailComposeUrl({ ...cur, email: a }))}
+                        className="w-full flex items-center gap-2 text-[11px] px-2.5 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
+                      >
+                        <span className="min-w-0 flex-1 truncate text-left select-text">{a}</span>
+                        <span className="shrink-0 text-accent text-[10px]">Compose →</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <button onClick={() => openLink(gmailComposeUrl(cur))} className="w-full text-[11px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast">
+                    Open in Gmail compose
+                  </button>
+                )}
+                {peerAddrs.length > 0 && (
+                  <p className="text-[9.5px] text-nv-faint mt-1 leading-snug">
+                    Also at {cur.company?.split(/\s*[/|·—–,]\s*/)[0] || 'this company'}:{' '}
+                    {peerAddrs.slice(0, 3).map((p) => `${p.name} (${p.a})`).join(', ')}
+                    {peerAddrs.length > 3 ? ` +${peerAddrs.length - 3} more` : ''}. Scanning a reply checks these too.
+                  </p>
+                )}
+                {campaign.deckAttached && (
+                  <p className="text-[9.5px] text-nv-faint mt-1">Tip: to auto-attach the deck PDF to every email, tell Krew "email these contacts with the deck attached" — it sends + attaches for you and reports who got it.</p>
+                )}
               </div>
-              <button onClick={() => openLink(gmailComposeUrl(cur))} className="w-full text-[11px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast">
-                Open in Gmail compose
-              </button>
-              {campaign.deckAttached && (
-                <p className="text-[9.5px] text-nv-faint mt-1">Tip: to auto-attach the deck PDF to every email, tell Krew "email these contacts with the deck attached" — it sends + attaches for you and reports who got it.</p>
-              )}
-            </div>
-          )}
+            );
+          })()}
 
           {/* ── LinkedIn profile link ─────────────────────────────────────────────────────────
               The lead search finds the wrong profile sometimes — a namesake, or nothing at all —

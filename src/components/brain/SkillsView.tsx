@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   SKILL_GRAPH, skillEdges, skillUsage, selectSkills, isSkillOff, setSkillOff,
-  SKILLS_EVENT, type SkillDef, type SkillArea,
+  SKILLS_EVENT, learnedSkills, matchLearned, forgetSkill,
+  type SkillDef, type SkillArea, type LearnedSkill,
 } from '../../lib/skillGraph';
 import { SKILLS_REGISTRY, isSkillInstalled, getActiveSkillIds } from '../../lib/skills';
 
@@ -52,6 +53,7 @@ function layout(): Record<string, { x: number; y: number }> {
 
 export default function SkillsView() {
   const [selected, setSelected] = useState<string | null>(null);
+  const [selectedLearned, setSelectedLearned] = useState<string | null>(null);
   const [probe, setProbe] = useState('');
   const [tick, setTick] = useState(0);          // re-read localStorage after a toggle
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -90,6 +92,16 @@ export default function SkillsView() {
 
   const sel = SKILL_GRAPH.find((s) => s.id === selected) ?? null;
   const totalUses = Object.values(usage).reduce((a, b) => a + b.count, 0);
+
+  // Skills the app worked out for itself. Re-read on every SKILLS_EVENT, so one appears here the
+  // moment a task finishes rather than after a restart.
+  const learned = useMemo(() => learnedSkills(), [tick]);
+  const areaCount = useMemo(() => new Set(SKILL_GRAPH.map((s) => s.area)).size, []);
+  const probeLearnedIds = useMemo(
+    () => new Set(probe.trim() ? matchLearned(probe, 3).map((s) => s.id) : []),
+    [probe, tick],
+  );
+  const selLearned = learned.find((s) => s.id === selectedLearned) ?? null;
 
   function onWheel(e: React.WheelEvent) {
     e.preventDefault();
@@ -198,6 +210,40 @@ export default function SkillsView() {
                 </button>
               );
             })}
+
+            {/* ── What the app taught ITSELF ──────────────────────────────────────────────────
+                Its own column, to the right of the built-ins, because these are a different kind
+                of thing: nobody wrote them, they were picked up from work that actually happened
+                here. Showing them in the same picture is the point — the user can see the app
+                getting better at their particular job, and delete anything it got wrong. */}
+            {learned.map((s, i) => {
+              const p = { x: 40 + areaCount * (NODE_W + 58), y: 60 + i * (NODE_H + 34) };
+              const lit = probeLearnedIds.has(s.id);
+              return (
+                <button
+                  key={s.id}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={() => setSelectedLearned(s.id === selectedLearned ? null : s.id)}
+                  className="absolute text-left rounded-xl px-2.5 py-2 transition-fast"
+                  style={{
+                    left: p.x, top: p.y, width: NODE_W, minHeight: NODE_H,
+                    background: 'var(--nv-surface)',
+                    border: `1.5px dashed ${lit ? '#7C5CFF' : selectedLearned === s.id ? '#34D399' : 'var(--nv-border)'}`,
+                    boxShadow: lit ? '0 0 0 3px rgba(124,92,255,.22), 0 6px 20px rgba(124,92,255,.35)' : '0 2px 8px rgba(0,0,0,.16)',
+                    opacity: picked && !lit ? 0.3 : 1,
+                  }}
+                  title={s.guide}
+                >
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: '#34D399' }} />
+                    <span className="text-[11px] font-semibold leading-tight line-clamp-2" style={{ color: 'var(--nv-text)' }}>{s.name}</span>
+                  </span>
+                  <span className="block text-[9px] mt-0.5 pl-3.5" style={{ color: 'var(--nv-faint)' }}>
+                    learned {s.kind === 'rule' ? '· rule' : ''}{s.uses > 0 ? ` · used ${s.uses}×` : ''}
+                  </span>
+                </button>
+              );
+            })}
           </div>
 
           <div className="absolute left-4 bottom-4 flex items-center gap-3 text-[10px] px-2.5 py-1 rounded-lg pointer-events-none"
@@ -217,7 +263,9 @@ export default function SkillsView() {
 
       {/* Detail panel */}
       <div className="w-80 shrink-0 flex flex-col overflow-y-auto" style={{ borderLeft: '1px solid var(--nv-border)', background: 'var(--nv-surface)' }}>
-        {sel ? (
+        {selLearned ? (
+          <LearnedDetail skill={selLearned} onForget={() => { forgetSkill(selLearned.id); setSelectedLearned(null); setTick((t) => t + 1); }} />
+        ) : sel ? (
           <SkillDetail skill={sel} usage={usage[sel.id]} off={off.has(sel.id)} onToggle={() => setSkillOff(sel.id, !off.has(sel.id))} />
         ) : (
           <div className="p-4">
@@ -231,6 +279,29 @@ export default function SkillsView() {
               Type a request in the box above to see exactly which ones it would attach. Click a skill for what
               it does and which tools sit behind it.
             </p>
+
+            <h4 className="text-[10px] font-bold uppercase tracking-wide mb-1.5" style={{ color: 'var(--nv-faint)' }}>Learned by itself</h4>
+            {learned.length === 0 ? (
+              <p className="text-[10.5px] leading-relaxed mb-4" style={{ color: 'var(--nv-faint)' }}>
+                Nothing yet. When a task takes several steps to get right, the route that worked is written down
+                here — and followed next time instead of being worked out again, which is fewer tokens and a
+                faster answer. Saying “always do X” records a rule the same way.
+              </p>
+            ) : (
+              <ul className="flex flex-col gap-1 mb-4">
+                {learned.slice(0, 8).map((s) => (
+                  <li key={s.id}>
+                    <button onClick={() => setSelectedLearned(s.id)} className="text-left text-[10.5px] leading-snug hover:underline" style={{ color: 'var(--nv-muted)' }}>
+                      <b style={{ color: 'var(--nv-text)' }}>{s.name}</b>
+                      {s.uses > 0 ? ` — reused ${s.uses}×` : ' — not needed again yet'}
+                    </button>
+                  </li>
+                ))}
+                {learned.length > 8 && (
+                  <li className="text-[10px]" style={{ color: 'var(--nv-faint)' }}>+{learned.length - 8} more in the graph</li>
+                )}
+              </ul>
+            )}
 
             <h4 className="text-[10px] font-bold uppercase tracking-wide mb-1.5" style={{ color: 'var(--nv-faint)' }}>Installed skill files</h4>
             {installed.length === 0 ? (
@@ -251,6 +322,54 @@ export default function SkillsView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/** A skill nobody wrote: what it is, what triggers it, and a way to delete it if it is wrong. */
+function LearnedDetail({ skill, onForget }: { skill: LearnedSkill; onForget: () => void }) {
+  const [confirm, setConfirm] = useState(false);
+  return (
+    <div className="p-4">
+      <div className="flex items-start gap-2 mb-1">
+        <span className="w-2.5 h-2.5 rounded-full mt-1 shrink-0" style={{ background: '#34D399' }} />
+        <h3 className="text-[13.5px] font-bold leading-tight" style={{ color: 'var(--nv-text)' }}>{skill.name}</h3>
+      </div>
+      <p className="text-[10px] uppercase tracking-wide mb-2.5 pl-[18px]" style={{ color: 'var(--nv-faint)' }}>
+        {skill.kind === 'rule' ? 'A rule you gave' : 'Worked out from a task that succeeded'}
+      </p>
+
+      <h4 className="text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: 'var(--nv-faint)' }}>What it tells the agent</h4>
+      <p className="text-[11px] leading-relaxed mb-3 px-2.5 py-2 rounded-lg"
+        style={{ color: 'var(--nv-text)', background: 'var(--nv-bg)', border: '1px solid var(--nv-border)' }}>{skill.guide}</p>
+
+      <h4 className="text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: 'var(--nv-faint)' }}>Recognised by</h4>
+      <div className="flex flex-wrap gap-1 mb-3">
+        {skill.triggerWords.slice(0, 14).map((w) => (
+          <span key={w} className="text-[9.5px] font-mono px-1.5 py-0.5 rounded-md"
+            style={{ background: 'var(--nv-bg)', border: '1px solid var(--nv-border)', color: 'var(--nv-muted)' }}>{w}</span>
+        ))}
+      </div>
+
+      <p className="text-[10.5px] mb-3" style={{ color: 'var(--nv-faint)' }}>
+        Learned {new Date(skill.createdAt).toLocaleDateString()} ·{' '}
+        {skill.uses ? `reused ${skill.uses} time${skill.uses === 1 ? '' : 's'}` : 'not needed again yet'}
+      </p>
+
+      {confirm ? (
+        <div className="flex gap-1.5">
+          <button onClick={onForget} className="flex-1 text-[11px] px-3 py-1.5 rounded-lg font-medium" style={{ background: '#DC2626', color: '#fff' }}>Forget it</button>
+          <button onClick={() => setConfirm(false)} className="flex-1 text-[11px] px-3 py-1.5 rounded-lg" style={{ background: 'var(--nv-bg)', border: '1px solid var(--nv-border)', color: 'var(--nv-muted)' }}>Keep</button>
+        </div>
+      ) : (
+        <button onClick={() => setConfirm(true)} className="w-full text-[11px] px-3 py-1.5 rounded-lg" style={{ background: 'var(--nv-bg)', border: '1px solid var(--nv-border)', color: 'var(--nv-muted)' }}>
+          Forget this skill
+        </button>
+      )}
+      <p className="text-[10px] mt-1.5 leading-relaxed" style={{ color: 'var(--nv-faint)' }}>
+        If a recipe is wrong or out of date, forget it — the agent goes back to working it out fresh. It is a
+        hint, never an override: when it does not fit what you are asking for, it is ignored.
+      </p>
     </div>
   );
 }

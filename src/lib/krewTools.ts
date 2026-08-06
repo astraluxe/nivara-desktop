@@ -33,6 +33,45 @@ const fillTemplate = (t: string, name?: string, company?: string) => (t || '').r
 /** Shared cross-agent profile scope — facts every Krew agent reads about the user/business. */
 export const KREW_PROFILE_KEY = '__krew_profile__';
 
+// ─── "Save the thing, not a note about the thing" ─────────────────────────────
+//
+// The chat's current full output, parked here so save_to_brain can fall back to it when a model
+// passes a pointer ("full details in previous messages") as the body. Deliberately a module
+// variable rather than a tool argument: every caller of executeTool would otherwise have to be
+// changed to thread it through, and the value is only ever read microseconds later, in the same
+// turn, by a tool the same turn invoked.
+let brainSaveFallback = '';
+/** Called by the chat before running a turn's tools, with whatever the model has actually written. */
+export function setBrainSaveFallback(text: string): void {
+  brainSaveFallback = String(text || '').trim();
+}
+export function getBrainSaveFallback(): string { return brainSaveFallback; }
+
+/**
+ * Does this body REFER to the content instead of being it?
+ *
+ * The failure is specific and repeatable: asked to save a long deliverable, a model writes a
+ * one-line summary with a pointer to the conversation. It is not a truncation (the JSON is
+ * well-formed) and not empty, so every existing guard passes it. The user finds a Brain note that
+ * says the work exists somewhere else.
+ *
+ * Only fires on SHORT bodies — a long note that happens to say "as described above" in its third
+ * paragraph is a real note with a cross-reference in it, and must be saved untouched.
+ */
+export function isPlaceholderBody(body: string): boolean {
+  const b = String(body || '').trim();
+  if (b.length > 700) return false;                 // long enough to be the content itself
+  // Real content, however short: a table, a bulleted list of several items, fenced code.
+  const rows = b.split('\n').filter((l) => l.trim().startsWith('|')).length;
+  if (rows >= 3 || /```/.test(b)) return false;
+  const bullets = b.split('\n').filter((l) => /^\s*(?:[-*•]|\d+[.)])\s+\S/.test(l)).length;
+  if (bullets >= 4) return false;
+  return /\b(?:full |complete |the )?(?:details?|list|content|data|table|information|results?)\b[^.]{0,40}\b(?:in|from|see|are in|is in|above|below|earlier|previous)\b/i.test(b)
+    || /\b(?:see|refer to|as (?:described|shown|listed|detailed|mentioned))\b[^.]{0,30}\b(?:above|below|earlier|previous|chat|conversation|message)/i.test(b)
+    || /\bprevious (?:message|messages|response|responses|chat|turn)\b/i.test(b)
+    || /\b(?:test save|placeholder|to be (?:filled|added)|tbd|content omitted|truncated for brevity)\b/i.test(b);
+}
+
 // ─── Browser text cleaner ─────────────────────────────────────────────────────
 // Strips JSON-LD, ads, cookie banners, nav noise, and low-density junk lines.
 // Technique: Firecrawl pattern exclusion + Crawl4AI text-density scoring.
@@ -1652,6 +1691,12 @@ For live figures: use the right tool once, then answer — never loop.
 - Be concise but thorough
 - All data you access stays on the user's machine — privacy is guaranteed
 
+## Deliver what was asked for — the exact shape, no bigger
+- **The user names the deliverable. You produce THAT.** "Write a LinkedIn post" means one LinkedIn post — not a positioning strategy, not an ICP table, not a 30-day plan with the post as step 6. "Draft an email" means the email. "Give me a caption" means the caption. Answering a small ask with a big document is not thoroughness, it is ignoring the request: the user now has to find their one paragraph inside five sections they did not want, and they paid tokens for all of it.
+- **An ATTACHED FILE is material to work FROM, never the request itself.** If someone attaches a positioning doc and asks for a post, the post is the job and the doc is the source. Do not adopt the attachment's structure, scope or headings as the shape of your answer.
+- **Do not delegate a one-artifact request to a strategy agent.** Write it yourself. Delegation is for work that genuinely needs research or a specialist — not for turning three sentences into a report.
+- If you honestly believe a bigger piece of work is needed, DELIVER THE THING ASKED FOR FIRST, then offer the rest in one line: "Want the full positioning brief behind this?" The user decides.
+
 ## Brain — shared knowledge (use it to save the user tokens)
 There is a persistent shared Brain (a visual knowledge graph the user can see). Treat it as the team's shared memory:
 - BEFORE re-researching or re-asking for something that may already exist (a company list, an outreach draft, a contact, an attached file's content) → call recall_from_brain and reuse it.
@@ -2190,6 +2235,45 @@ async function executeToolCore(
     if (body.length < 10) return `[save_to_brain needs real "body" content (got almost nothing — the call may have been cut off) — nothing was saved. Retry with the full content.]`;
     let finalTitle = title;
     let finalBody = body;
+    // ── A NOTE THAT POINTS AT THE CONTENT IS NOT THE CONTENT ──────────────────────────────────
+    //
+    // The user asked for 30 researched companies in a new list. What landed in the Brain was:
+    // "Test save - Non-Tech Target List with 30 Indian companies. Full details in previous
+    // messages." — 130 characters, so it cleared the length check above, and the actual 30 blocks
+    // (which the model HAD written, in the chat) were never stored. The chat then scrolls away and
+    // the work is gone.
+    //
+    // A body that refers to where the content is, instead of containing it, is always a mistake.
+    // Detected here rather than trusted to prompt wording, because the model believed it had saved
+    // the list — it said so.
+    if (isPlaceholderBody(finalBody)) {
+      // The turn's real output is sitting right there. Save THAT under the title the user asked
+      // for, rather than failing and hoping a retry does better (a retry that re-emits 30 blocks
+      // costs the user the whole generation again, and may truncate a second time).
+      const real = getBrainSaveFallback();
+      if (real && real.length > finalBody.length * 2 && real.length >= 400) {
+        finalBody = real;
+      } else {
+        return `[save_to_brain refused: the "body" you passed is a pointer ("${finalBody.slice(0, 60)}…"), not the content. A Brain note must CONTAIN the material — the chat it refers to is not stored. Nothing was saved. Call it again with the full text/table/blocks in "body".]`;
+      }
+    }
+    // ── NEVER SHRINK A NOTE TO A FRACTION OF ITSELF BY ACCIDENT ───────────────────────────────
+    //
+    // addNode de-dupes on the title, so a save with an existing title OVERWRITES. Combined with a
+    // truncated or partial body that turns a 30-company list into a 3-company one, silently. When
+    // the caller has not said "append" and the incoming body is a small fraction of what is
+    // already stored, the safe reading is "this is a different, new thing" — so it gets its own
+    // note instead of destroying the old one.
+    if (!append) {
+      const existing = brain.findExactByTitle(finalTitle);
+      const existingLen = (existing?.body || '').length;
+      if (existing && existingLen > 800 && finalBody.length < existingLen * 0.5) {
+        for (let i = 2; i < 50; i++) {
+          const t = `${finalTitle} (${i})`;
+          if (!brain.findExactByTitle(t)) { finalTitle = t; break; }
+        }
+      }
+    }
     // Only redirect into an EXISTING same-shaped list when the caller explicitly asked to
     // append/continue (append: true) — otherwise an explicit title the model chose (e.g. for a
     // brand-new, unrelated table) must never get silently rerouted into an old "Lead list" node
