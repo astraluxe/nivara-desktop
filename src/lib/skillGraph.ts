@@ -125,6 +125,16 @@ export const SKILL_GRAPH: SkillDef[] = [
     guide: 'Real creative: this app cannot generate images, video or audio itself — but Pomelli (on-brand campaign images and ads, built from the user\'s own website) and NotebookLM (briefings, FAQs, mind maps, and podcast-style AUDIO or VIDEO overviews from their own documents) are free and open in the ADRIS browser, already signed in. Call open_content_studio with NO argument first to see which suits the brief and what each needs. Region locks are a WARNING, not a verdict: Pomelli is officially US/Canada/Australia/NZ, but this app ships Vault (a DNS switch) and users reach it through that — so open it, look at the page, and report what the page actually says instead of predicting. Work the interface with browser_snapshot then click/fill rather than guessing at buttons; never say an asset exists before seeing it; say where a download landed rather than claiming you saved it; and once a run works end to end write the steps down as a Brain skill so the next one is quick.',
   },
   {
+    id: 'council',
+    name: 'Asking the council',
+    area: 'knowledge',
+    blurb: 'Five advisers who deliberately disagree — pressure-tests a decision before you commit to it.',
+    tools: ['council_review'],
+    triggers: /\b(should i|shall i|what do you think|advise|advice|decide|decision|is this (a )?(good|right)|worth (it|doing)|pros and cons|second opinion|review (my|the) plan|sanity check|council|board of|before i (sign|commit|launch|raise|hire|quit|spend))\b/i,
+    needs: [],
+    guide: 'The council: five advisers with opposed mandates — the Contrarian (what kills this), First Principles (are we solving the right problem), the Expansionist (where is the upside), the Outsider (what is confusing to someone who knows nothing) and the Executor (what happens Monday). Call council_review for decisions with real consequences: a plan before committing, a contract before signing, a pivot, a price, a big spend. It is five model calls, so it is NOT for ordinary tasks. Their disagreement is the product — never average them into one bland answer, and after they speak add only what YOU conclude and what you would do.',
+  },
+  {
     id: 'spreadsheet',
     name: 'Working a spreadsheet',
     area: 'knowledge',

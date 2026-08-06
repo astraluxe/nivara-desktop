@@ -25,6 +25,9 @@ const DEPT_META: Record<KrewCategory, { color: string; tagline: string; icon: st
   Engineer:  { color: '#10b0c9', tagline: 'Code & debugging',     icon: 'code' },
   PM:        { color: '#6c63f5', tagline: 'Research & planning',  icon: 'clipboard' },
   Ops:       { color: '#9b6cf5', tagline: 'Automation control',   icon: 'zap' },
+  // The council is not a department that DOES work — it is the one you take a decision to. Amber
+  // rather than another cool colour, so it reads as a different kind of thing on the floor plan.
+  Council:   { color: '#e8a33d', tagline: 'Five ways to be wrong', icon: 'council' },
 };
 
 // ─── SVG icon paths ───────────────────────────────────────────────────────────
@@ -38,6 +41,8 @@ const ICON_PATHS: Record<string, string> = {
   code:      'm16 18 6-6-6-6 M8 6l-6 6 6 6',
   clipboard: 'M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2 M9 2h6v4H9z',
   zap:       'M13 2 3 14h9l-1 8 10-12h-9l1-8z',
+  // Five seats around a table — the council, drawn as what it is.
+  council:   'M12 3a2 2 0 1 1 0 4 2 2 0 0 1 0-4z M5 7a2 2 0 1 1 0 4 2 2 0 0 1 0-4z M19 7a2 2 0 1 1 0 4 2 2 0 0 1 0-4z M7.5 17a2 2 0 1 1 0 4 2 2 0 0 1 0-4z M16.5 17a2 2 0 1 1 0 4 2 2 0 0 1 0-4z M12 9v6',
 };
 
 function SvgIcon({ name, size = 18 }: { name: string; size?: number }) {

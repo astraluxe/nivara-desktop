@@ -245,6 +245,27 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule }: {
             >{v === 'list' ? 'Today & steps' : 'Month'}</button>
           ))}
         </div>
+        {/* ── IMPROVE THE PLAN YOU HAVE ─────────────────────────────────────────────────────
+            Until now a plan could only be replaced. Both of these change it IN PLACE:
+            "Refine" asks the agents to improve what is here — the merge keeps everything already
+            ticked off — and "Ask the council" puts it in front of five advisers who disagree with
+            each other, which is a different and more useful thing than one more opinion.
+            Neither deletes a step; that is what makes them safe to press. */}
+        <div className="mt-2 flex gap-1.5">
+          <button
+            onClick={() => onRunStep(
+              `Refine my existing plan "${plan.title}" — do NOT start a new one. Read the steps below, then give me an improved version of the SAME plan: sharpen anything vague, add what is missing, drop what is busywork, and keep the dates realistic. Return it as a dated step list so I can merge it in.\n\n${plan.steps.map((s) => `Day ${s.day}: ${s.action}${s.doneWhen ? ` (done when: ${s.doneWhen})` : ''}${s.done ? ' [DONE]' : ''}`).join('\n')}`,
+            )}
+            className="flex-1 text-[10px] px-2 py-1 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-fast font-medium"
+          >✎ Refine this plan</button>
+          <button
+            onClick={() => onRunStep(
+              `Use council_review on my current plan before I commit more time to it. The question: "Is this the right plan for what I am trying to do, and what would you change?"\n\nTHE PLAN — ${plan.title}:\n${plan.steps.map((s) => `Day ${s.day}: ${s.action}${s.doneWhen ? ` (done when: ${s.doneWhen})` : ''}${s.done ? ' [DONE]' : ''}`).join('\n')}`,
+            )}
+            className="flex-1 text-[10px] px-2 py-1 rounded-lg border transition-fast font-medium"
+            style={{ borderColor: '#e8a33d66', color: '#e8a33d' }}
+          >⚖ Ask the council</button>
+        </div>
       </div>
 
       {view === 'month' ? (

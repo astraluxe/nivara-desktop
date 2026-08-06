@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
+import { targetRoles } from '../../lib/targetRoles';
 import { listen } from '@tauri-apps/api/event';
 import { brain, nodeToMarkdown } from '../../lib/knowledgeStore';
 import { todos } from '../../lib/todoStore';
@@ -893,6 +894,17 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   // other lead. The company row keeps its email either way, so nothing is lost if the search fails.
   const [findingPerson, setFindingPerson] = useState(false);
   const [personNote, setPersonNote] = useState('');
+  /** The roles the search will ask for — shown and editable BEFORE it runs. */
+  const [roleInput, setRoleInput] = useState('');
+  const roleGuess = useMemo(() => {
+    const c = contacts[idx];
+    if (!c) return null;
+    return targetRoles(c.company || c.name || '', campaign.purpose || '');
+  }, [contacts, idx, campaign.purpose]);
+  // Reset the box to the fresh guess whenever the contact changes, so it never carries one
+  // company's roles over to the next.
+  useEffect(() => { setRoleInput(roleGuess ? roleGuess.roles.join(', ') : ''); setPersonNote(''); }, [idx, roleGuess?.roles.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+
   async function findAPersonThere() {
     const c = contacts[idx];
     if (!c) return;
@@ -902,8 +914,11 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       const { invoke } = await import('@tauri-apps/api/core');
       setAgentBrowserHold(true); setBrowserOpen(true);
       const company = (c.company || c.name || '').replace(/["\n\r]/g, ' ').trim();
+      // The roles come from the box, so whatever the user corrected is what gets searched.
+      const roles = roleInput.split(',').map((r) => r.trim()).filter(Boolean);
+      const query = roles.length ? `(${roles.map((r) => `"${r}"`).join(' OR ')}) "${company}"` : `"${company}"`;
       const raw = await invoke<string>('run_browser_persistent', {
-        args: `findprofile "founder OR director OR owner ${company}" ::: ${company}`,
+        args: `findprofile "${query.replace(/"/g, '\\"')}" ::: ${company}`,
       }).catch((e) => String(e));
       if (raw.includes('SIGN_IN_REQUIRED') || raw.includes('[NEEDS_LOGIN]')) {
         setPersonNote('Sign in to LinkedIn in the ADRIS browser window, then try again.');
@@ -2418,6 +2433,25 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                 So it gets an <b className="text-nv-text">email written to the business</b> — no first name, no LinkedIn
                 connection request (there is nobody on the other end of one). The draft is below and editable.
               </p>
+              {/* WHO TO ASK FOR, SHOWN BEFORE THE SEARCH RUNS.
+                  This used to search "founder OR director OR owner <company>" every time. At a
+                  company the size of a national oil corporation there IS no founder, and a board
+                  director will never read a cold message — so the search returned whoever ranked.
+                  The roles are now worked out from how big the company looks and what this
+                  campaign is for, and they sit in a box you can correct, because the person who
+                  knows the industry is you. */}
+              {roleGuess && (
+                <div className="rounded-lg border border-nv-border bg-nv-bg px-2.5 py-2 space-y-1.5">
+                  <div className="text-[9.5px] text-nv-faint uppercase tracking-wide">Look for</div>
+                  <input
+                    value={roleInput}
+                    onChange={(e) => setRoleInput(e.target.value)}
+                    placeholder="head of procurement, purchase manager"
+                    className="w-full bg-nv-surface border border-nv-border focus:border-accent rounded-md px-2 py-1 text-[11px] text-nv-text outline-none transition-fast"
+                  />
+                  <p className="text-[9.5px] text-nv-faint leading-relaxed">{roleGuess.why}</p>
+                </div>
+              )}
               <button
                 onClick={findAPersonThere}
                 disabled={findingPerson}

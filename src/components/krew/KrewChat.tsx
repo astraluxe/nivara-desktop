@@ -279,13 +279,15 @@ interface ChoiceSet {
 }
 
 interface DisplayMsg {
-  role:      'user' | 'assistant' | 'tool_call' | 'tool_result' | 'delegation' | 'proposal' | 'choices' | 'deck_setup' | 'deck_result' | 'social_schedule' | 'next_task' | 'lead_setup' | 'lead_result' | 'avail_confirm';
+  role:      'user' | 'assistant' | 'tool_call' | 'tool_result' | 'delegation' | 'proposal' | 'choices' | 'deck_setup' | 'deck_result' | 'social_schedule' | 'next_task' | 'lead_setup' | 'lead_result' | 'avail_confirm' | 'council';
   leadCount?: number;
   leadTable?: string;
   /** How many rows came back without a usable LinkedIn URL. Drives the warning on the result
    *  card — it used to be a line of italic prose that scrolled away and told the user to run a
    *  command that does not even act on lead lists. */
   leadMissingLinks?: number;
+  /** The five council voices, kept separate on purpose — see the council_review dispatch. */
+  council?: Array<{ key: string; name: string; human: string; text: string }>;
   /** A time the OTHER person proposed, waiting on a yes/no from the user before anything is booked.
    *  Typing out "yes I'm free" was the only way to answer, so the flow usually just stopped there. */
   avail?: { who: string; when: string; prompt: string };
@@ -10774,6 +10776,59 @@ Everything you need for follow-ups is in that answer above; read it there rather
               toolResult = wfResults.map((r, i) => { const cap = r.length > 800 ? r.slice(0, 800) + '…' : r; return `[${wfDelegations[i]?.agent_key ?? `Step ${i + 1}`}]\n${cap}`; }).join('\n\n---\n\n');
               delegationKey = 'plan_workflow';
             }
+          } else if (tool === 'council_review') {
+            // ── THE COUNCIL ────────────────────────────────────────────────────────────────────
+            //
+            // Five voices, run in sequence, each given ONLY the question and its own mandate —
+            // deliberately not each other's answers. Showing them the earlier replies is what
+            // makes five advisers collapse into one: the second agrees with the first, the third
+            // splits the difference, and by the fifth there is a consensus that nobody argued for.
+            // Independence is the entire product here, so they are kept apart and the
+            // disagreement is left visible rather than smoothed into a summary.
+            const wanted = String(args.voices ?? '').split(',').map((v) => v.trim().toLowerCase()).filter(Boolean);
+            const councilKeys = ['council_contrarian', 'council_first_principles', 'council_expansionist', 'council_outsider', 'council_executor']
+              .filter((k) => !wanted.length || wanted.some((w) => k.includes(w.replace(/[^a-z_]/g, ''))));
+            const question = String(args.question ?? '').trim();
+            const heard: Array<{ agent: KrewAgent; text: string }> = [];
+            setTaskPhases(councilKeys.map((k, i) => ({ id: String(i), label: AGENT_BY_KEY[k]?.name ?? k, status: 'pending' as const })));
+            for (let ci = 0; ci < councilKeys.length; ci++) {
+              if (stopRef.current) break;
+              const member = AGENT_BY_KEY[councilKeys[ci]];
+              if (!member) continue;
+              setTaskPhases((prev) => prev.map((p, i) => (i === ci ? { ...p, status: 'running' as const } : p)));
+              setAgentStep(`${agentHandle(member)} is thinking…`);
+              // The EXECUTOR is the one exception: its whole job is to turn the others into
+              // Monday morning, so it is the only member that hears them.
+              const isExecutor = member.key === 'council_executor';
+              const priors = isExecutor && heard.length
+                ? `\n\nWHAT THE REST OF THE COUNCIL SAID:\n${heard.map((h) => `### ${h.agent.name} (${h.agent.humanName})\n${h.text.slice(0, 1400)}`).join('\n\n')}`
+                : '';
+              let text = '';
+              try {
+                ({ text } = await streamTurnWithRetry(
+                  [{ role: 'user', content: `THE DECISION IN FRONT OF THE COUNCIL:\n${question}${priors}\n\nGive your view, in character, following your rules. Be brief and specific.` }],
+                  member.systemPrompt,
+                  () => {},
+                ));
+              } catch (e) {
+                text = `(${member.humanName} could not answer this time: ${(e instanceof Error ? e.message : String(e)).slice(0, 120)})`;
+              }
+              const clean = (text || '').replace(/<tool_call>[\s\S]*/g, '').trim();
+              if (clean) heard.push({ agent: member, text: clean });
+              setTaskPhases((prev) => prev.map((p, i) => (i === ci ? { ...p, status: 'done' as const } : p)));
+            }
+            if (!heard.length) {
+              toolResult = 'The council could not be reached this time — no member returned an answer. Nothing was decided.';
+            } else {
+              // Rendered as a card so the five voices stay visually separate. A wall of text would
+              // read as one opinion, which is the opposite of the point.
+              addMsg({ role: 'council', content: question, council: heard.map((h) => ({ key: h.agent.key, name: h.agent.name, human: h.agent.humanName, text: h.text })) });
+              if (sid) krewDb.saveMessage(sid, 'tool_result', JSON.stringify(heard.map((h) => ({ name: h.agent.name, text: h.text }))), 'council_review').catch(() => {});
+              toolResult = `The council has answered — ${heard.length} voices, already shown to the user in full.\n\n`
+                + heard.map((h) => `${h.agent.name} (${h.agent.humanName}): ${h.text.slice(0, 700)}`).join('\n\n')
+                + `\n\nDo NOT repeat what they said — the user can read it. Add only what YOU conclude: where they genuinely disagree, and what you would do. Two short paragraphs at most.`;
+            }
+            setTaskPhases([]);
           } else if (tool === 'research_companies') {
             const rawQueries = String(args.queries ?? '');
             const queries    = rawQueries.split(';').map((q) => q.trim()).filter(Boolean);
@@ -11438,14 +11493,14 @@ Everything you need for follow-ups is in that answer above; read it there rather
             <p className="text-[10px] text-nv-faint truncate">{agent.description}</p>
           </div>
           {onBrowseAgents && (
-            <span className="text-[9px] font-mono text-nv-faint bg-nv-surface border border-nv-border rounded px-1.5 py-0.5 shrink-0">
+            <span className="text-[9.5px] font-medium text-nv-faint bg-nv-surface border border-nv-border rounded-md px-2 py-[3px] shrink-0 group-hover:text-nv-muted group-hover:border-nv-border transition-fast">
               Switch
             </span>
           )}
           <button
             onClick={(e) => { e.stopPropagation(); setShowSkills((v) => !v); }}
             title="Skill library — reusable abilities your agents can use"
-            className={`flex items-center gap-1 h-5 px-1.5 rounded transition-fast shrink-0 text-[9px] font-mono border ${showSkills ? 'text-accent bg-accent/10 border-accent/30' : 'text-nv-faint border-nv-border hover:text-nv-muted hover:bg-nv-surface'}`}
+            className={`flex items-center gap-1.5 h-[26px] px-2.5 rounded-lg transition-fast shrink-0 text-[10px] font-medium border ${showSkills ? 'text-accent bg-accent/12 border-accent/40 shadow-[0_0_0_1px_rgba(124,92,255,.12)]' : 'text-nv-faint border-nv-border/70 hover:text-nv-text hover:bg-nv-surface2 hover:border-nv-border'}`}
           >
             <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
               <path d="M8 1l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 10.7l-3.8 2.1.7-4.3-3.1-3 4.3-.6z"/>
@@ -11457,7 +11512,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
             title="To-do — your tasks, and anything you left unfinished"
             /* Purple in BOTH states — this is where unfinished work is waiting, so it should read
                as a live thing at a glance rather than greying out whenever the panel is closed. */
-            className={`flex items-center gap-1 h-5 px-1.5 rounded transition-fast shrink-0 text-[9px] font-mono border text-accent ${showTodos ? 'bg-accent/15 border-accent/50' : 'bg-accent/5 border-accent/30 hover:bg-accent/10 hover:border-accent/50'}`}
+            className={`flex items-center gap-1.5 h-[26px] px-2.5 rounded-lg transition-fast shrink-0 text-[10px] font-medium border text-accent ${showTodos ? 'bg-accent/15 border-accent/50 shadow-[0_0_0_1px_rgba(124,92,255,.15)]' : 'bg-accent/[0.07] border-accent/30 hover:bg-accent/12 hover:border-accent/50'}`}
           >
             <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
               <path d="M2 4.5l1.5 1.5L6 3.5M2 11.5L3.5 13 6 10.5M8.5 4.5H14M8.5 11.5H14" />
@@ -11470,7 +11525,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
           <button
             onClick={(e) => { e.stopPropagation(); openCopilot(); }}
             title="Copilot — read a thread, draft a reply, and have it checked before you send"
-            className="flex items-center gap-1 h-5 px-1.5 rounded transition-fast shrink-0 text-[9px] font-mono border text-accent bg-accent/5 border-accent/30 hover:bg-accent/10 hover:border-accent/50"
+            className="flex items-center gap-1.5 h-[26px] px-2.5 rounded-lg transition-fast shrink-0 text-[10px] font-medium border text-accent bg-accent/[0.07] border-accent/30 hover:bg-accent/12 hover:border-accent/50"
           >
             <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
               <path d="M2.5 3.5h11v8h-6l-3 2.5v-2.5h-2z" />
@@ -11484,10 +11539,10 @@ Everything you need for follow-ups is in that answer above; read it there rather
             <button
               onClick={(e) => { e.stopPropagation(); setShowQuotaUpgrade(true); }}
               title="Power commands — /leads, /outreach, /scan, /enrich, /verify, /research — are limited on the free plan. Everything else is unlimited on your own key."
-              className={`flex items-center gap-1 h-5 px-1.5 rounded transition-fast shrink-0 text-[9px] font-mono border ${
+              className={`flex items-center gap-1.5 h-[26px] px-2.5 rounded-lg transition-fast shrink-0 text-[10px] font-medium border ${
                 trialLeft.exhausted
                   ? 'text-amber-600 border-amber-500/50 bg-amber-500/10 hover:bg-amber-500/20'
-                  : 'text-nv-faint border-nv-border hover:text-nv-muted hover:bg-nv-surface'
+                  : 'text-nv-faint border-nv-border/70 hover:text-nv-text hover:bg-nv-surface2'
               }`}
             >
               <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
@@ -11507,10 +11562,10 @@ Everything you need for follow-ups is in that answer above; read it there rather
             title={activePlan
               ? `${activePlan.title} — ${planProgress(activePlan).done}/${planProgress(activePlan).total} steps done`
               : 'Plan — turn an agent\'s day-by-day plan into dated steps, and work through it'}
-            className={`flex items-center gap-1 h-5 px-1.5 rounded transition-fast shrink-0 text-[9px] font-mono border ${
+            className={`flex items-center gap-1.5 h-[26px] px-2.5 rounded-lg transition-fast shrink-0 text-[10px] font-medium border ${
               activePlan
-                ? `text-accent ${planOpen ? 'bg-accent/15 border-accent/50' : 'bg-accent/5 border-accent/30 hover:bg-accent/10 hover:border-accent/50'}`
-                : planOpen ? 'text-accent bg-accent/10 border-accent/30' : 'text-nv-faint border-nv-border hover:text-nv-muted hover:bg-nv-surface'
+                ? `text-accent ${planOpen ? 'bg-accent/15 border-accent/50 shadow-[0_0_0_1px_rgba(124,92,255,.15)]' : 'bg-accent/[0.07] border-accent/30 hover:bg-accent/12 hover:border-accent/50'}`
+                : planOpen ? 'text-accent bg-accent/12 border-accent/40' : 'text-nv-faint border-nv-border/70 hover:text-nv-text hover:bg-nv-surface2'
             }`}
           >
             <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
@@ -11832,6 +11887,31 @@ Everything you need for follow-ups is in that answer above; read it there rather
                   onCancel={() => setMessages((prev) => prev.filter((m) => m !== msg))}
                   onGenerate={(cfg) => runLeadGeneration(cfg)}
                 />
+              ) : msg.role === 'council' && msg.council ? (
+                /* Five separate cards, not one block of prose. The disagreement between them is
+                   the thing worth reading, and it disappears the moment they are merged. */
+                <div key={i} className="mx-1 my-1.5 space-y-1.5">
+                  <div className="flex items-center gap-1.5 px-1">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#e8a33d" strokeWidth="1.8" strokeLinecap="round">
+                      <circle cx="12" cy="5" r="2" /><circle cx="5" cy="9" r="2" /><circle cx="19" cy="9" r="2" /><circle cx="7.5" cy="19" r="2" /><circle cx="16.5" cy="19" r="2" />
+                    </svg>
+                    <span className="text-[11px] font-semibold" style={{ color: '#e8a33d' }}>Your council · {msg.council.length} views</span>
+                    <span className="text-[9.5px] text-nv-faint truncate">on: {msg.content.slice(0, 70)}</span>
+                  </div>
+                  {msg.council.map((v) => (
+                    <details key={v.key} open className="rounded-xl border overflow-hidden" style={{ borderColor: '#e8a33d40', background: '#e8a33d0a' }}>
+                      <summary className="cursor-pointer select-none px-3 py-2 flex items-center gap-2">
+                        <span className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0" style={{ background: '#e8a33d25', color: '#e8a33d' }}>
+                          {v.human.slice(0, 2).toUpperCase()}
+                        </span>
+                        <span className="text-[11.5px] font-semibold text-nv-text">{v.name}</span>
+                        <span className="text-[10px] text-nv-faint">{v.human}</span>
+                      </summary>
+                      <div className="px-3 pb-2.5 pt-0.5 text-[11.5px] leading-relaxed text-nv-muted whitespace-pre-wrap">{v.text}</div>
+                    </details>
+                  ))}
+                  <p className="px-1 text-[9.5px] text-nv-faint">They are meant to disagree — where they do is usually the real decision.</p>
+                </div>
               ) : msg.role === 'lead_result' ? (
                 /* The whole point of the guided flow: the list is done, so the next step is one
                    button rather than remembering which command to type and which file to attach. */

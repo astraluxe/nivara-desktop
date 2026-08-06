@@ -686,6 +686,22 @@ export const SYSTEM_TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'extract_contacts',
+    description: "Read a saved list in the Brain as CONTACTS — names, emails, phones, LinkedIn — whatever shape the file is in (CSV, tab-separated, a pasted spreadsheet, a markdown table, headers in another language, no header row at all). Use it when the user says outreach could not read their list, or before building a campaign from an unfamiliar file, so you can SEE what came out and tell them exactly which column was read as what.",
+    parameters: {
+      title: { type: 'string', description: 'Title of the Brain note holding the list.', required: true },
+      limit: { type: 'number', description: 'How many contacts to show back. Default 15 — enough to check it read correctly.', required: false },
+    },
+  },
+  {
+    name: 'council_review',
+    description: "Put a decision, plan or document in front of the user's COUNCIL — five advisers who deliberately disagree: the Contrarian (what kills this), First Principles (are we solving the right problem), the Expansionist (where is the upside), the Outsider (what is confusing to someone who knows nothing) and the Executor (what happens Monday). Use it for anything with real consequences: a plan before committing to it, a contract before signing, a pivot, a pricing change, a big spend, or when the user asks for advice on a decision. NOT for ordinary tasks — this is five model calls, so it is for choices worth thinking about.",
+    parameters: {
+      question: { type: 'string', description: 'The decision or plan to review, stated plainly. Include the real context: what the user is trying to achieve, what they have, and what they are considering.', required: true },
+      voices:   { type: 'string', description: 'Optional comma-separated subset: contrarian, first_principles, expansionist, outsider, executor. Default is all five.', required: false },
+    },
+  },
+  {
     name: 'open_content_studio',
     description: "Open a FREE web tool that makes marketing content — on-brand campaign images and ads (Pomelli), or briefing docs, FAQs and podcast-style audio from the user's own documents (NotebookLM). Use it when the user wants real creative assets rather than words on a page: this app cannot generate images or audio itself, and these tools are free and already signed in inside the ADRIS browser. Call with no arguments first to see what is available and whether it works in the user's country.",
     parameters: {
@@ -2329,6 +2345,32 @@ async function executeToolCore(
     const ct = str(args.connect_to);
     if (ct) { const t = brain.findByTitle(ct); if (t) brain.link(t.id, node.id, 'related'); }
     return `${append ? 'Updated' : 'Saved'} "${node.title}" in the Brain${ct ? ` and linked it to "${ct}"` : ''}. It is visible in the Brain screen and recallable by any agent.`;
+  }
+  if (toolName === 'extract_contacts') {
+    const { brain, nodeToMarkdown } = await import('./knowledgeStore');
+    const { extractContacts } = await import('./tableQuery');
+    const title = str(args.title).trim();
+    const node = brain.findExactByTitle(title) ?? brain.findByTitle(title);
+    if (!node) return `No Brain note titled "${title}".`;
+    const res = extractContacts(nodeToMarkdown(node.body || '') || node.body || '');
+    const limit = Math.max(1, Math.min(100, Number(args.limit) || 15));
+    if (!res.contacts.length) {
+      // The reason, not a shrug — the same diagnosis the outreach screen gives, so an agent asked
+      // "why can't it read my list" can answer instead of guessing.
+      return `Could not build contacts from "${node.title}".\n\n${res.problem}\n\n`
+        + (res.headers.length ? `Columns it found: ${res.headers.join(' · ')}.\n\n` : '')
+        + `Tell the user which column holds the name and which holds the email, or use query_table to look at the rows directly.`;
+    }
+    const s = res.stats;
+    return `"${node.title}" → **${s.kept} contacts** from ${s.total} rows`
+      + `${s.noContact ? ` · ${s.noContact} skipped (no email, phone or profile)` : ''}`
+      + `${s.noName ? ` · ${s.noName} skipped (no usable name)` : ''}`
+      + `${s.duplicate ? ` · ${s.duplicate} duplicates merged` : ''}`
+      + ` · ${s.companies} companies, ${s.people} people.\n\nColumns read: ${res.headers.join(' · ')}\n\n`
+      + '| Name | Company | Email | Phone | LinkedIn |\n| --- | --- | --- | --- | --- |\n'
+      + res.contacts.slice(0, limit).map((c) => `| ${c.name} | ${c.company || '—'} | ${c.emails.join(', ') || '—'} | ${c.phone || '—'} | ${c.url ? 'yes' : '—'} |`).join('\n')
+      + (res.contacts.length > limit ? `\n\n…and ${res.contacts.length - limit} more.` : '')
+      + `\n\nIf a column was read wrongly, say so — do not build outreach on a list whose names are codes.`;
   }
   if (toolName === 'open_content_studio') {
     const { pickStudios, studioById, studioBriefing } = await import('./contentStudios');
