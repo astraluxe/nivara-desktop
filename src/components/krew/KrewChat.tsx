@@ -4013,6 +4013,35 @@ const [studioExtracting, setStudioExtracting] = useState(false);
             return { role: 'choices' as const, content: '', choices };
           } catch { return null; }
         }
+        // The council is stored as a tool_result under 'council_review'. Rebuilt as the card rather
+        // than left as a JSON blob — five voices flattened into one grey code block is exactly the
+        // "one opinion" the separate cards exist to prevent, and it is the part of the
+        // conversation most worth coming back to.
+        if (r.tool_name === 'council_review') {
+          try {
+            const parsed = JSON.parse(r.content) as
+              | Array<{ key?: string; name: string; human?: string; text: string }>
+              | { question?: string; voices?: Array<{ key?: string; name: string; human?: string; text: string }> };
+            // Two shapes: the current { question, voices } and the bare array saved by the first
+            // build that shipped the council. Both must reopen, or a user who already used it
+            // loses that conversation on this update.
+            const saved = Array.isArray(parsed) ? parsed : (parsed?.voices ?? []);
+            const question = Array.isArray(parsed) ? '' : (parsed?.question ?? '');
+            if (!saved.length) return null;
+            return {
+              role: 'council' as const,
+              content: question,
+              council: saved.map((v, i) => ({
+                key: v.key || `saved-${i}`,
+                name: v.name,
+                // Older rows saved only name+text; fall back to initials from the name so the
+                // avatar never renders blank on a reopened chat.
+                human: v.human || v.name.replace(/^The\s+/i, '').slice(0, 2),
+                text: v.text,
+              })),
+            };
+          } catch { return null; }
+        }
         // Next-task suggestion cards are stored as a plain tool_result (tool_name 'suggest_next_task')
         // with the marker prefix used everywhere else in this codebase for structured tool output.
         if (r.tool_name === 'suggest_next_task') {
@@ -11136,7 +11165,14 @@ Everything you need for follow-ups is in that answer above; read it there rather
     // one opinion, which is the opposite of the point.
     addMsg({ role: 'council', content: question, council: heard.map((h) => ({ key: h.agent.key, name: h.agent.name, human: h.agent.humanName, text: h.text })) });
     const sid = sidRef.current;
-    if (sid) krewDb.saveMessage(sid, 'tool_result', JSON.stringify(heard.map((h) => ({ name: h.agent.name, text: h.text }))), 'council_review').catch(() => {});
+    // Saved with the question and each member's key/handle, so reopening the chat rebuilds the
+    // card exactly — not a shrunken version of it.
+    if (sid) {
+      krewDb.saveMessage(sid, 'tool_result', JSON.stringify({
+        question,
+        voices: heard.map((h) => ({ key: h.agent.key, name: h.agent.name, human: h.agent.humanName, text: h.text })),
+      }), 'council_review').catch(() => {});
+    }
     return `The council has answered — ${heard.length} voices, already shown to the user in full.\n\n`
       + heard.map((h) => `${h.agent.name} (${h.agent.humanName}): ${h.text.slice(0, 700)}`).join('\n\n')
       + '\n\nDo NOT repeat what they said — the user can read it. Add only what YOU conclude: where they genuinely disagree, and what you would do. Two short paragraphs at most.';
@@ -11948,7 +11984,12 @@ Everything you need for follow-ups is in that answer above; read it there rather
                         <span className="text-[11.5px] font-semibold text-nv-text">{v.name}</span>
                         <span className="text-[10px] text-nv-faint">{v.human}</span>
                       </summary>
-                      <div className="px-3 pb-2.5 pt-0.5 text-[11.5px] leading-relaxed text-nv-muted whitespace-pre-wrap">{v.text}</div>
+                      {/* Through the SAME markdown renderer every other answer uses. Council
+                          members write in headings, bold and tables like any other agent, and
+                          dumping the raw string here left "### What Works Well" and "**Verdict**"
+                          on screen as literal characters — the one place in the app where markup
+                          leaked through to the user. */}
+                      <div className="px-3 pb-2.5 pt-0.5 text-[11.5px] leading-relaxed text-nv-muted">{renderMarkdown(v.text)}</div>
                     </details>
                   ))}
                   {/* THE COUNCIL HAS TO END IN SOMETHING YOU CAN DO.
@@ -11958,7 +11999,10 @@ Everything you need for follow-ups is in that answer above; read it there rather
                       ticked, so pressing it can add work but never lose any. */}
                   <div className="flex flex-wrap gap-1.5 px-1 pt-0.5">
                     {(() => {
-                      const dev = msg.council.find((v) => v.key === 'council_executor');
+                      // By key OR by name: a council saved before the key was stored comes back
+                      // with a placeholder key, and the button that turns advice into work is the
+                      // last thing that should quietly disappear on a reopened chat.
+                      const dev = msg.council.find((v) => v.key === 'council_executor' || /executor/i.test(v.name));
                       if (!dev) return null;
                       return (
                         <button
@@ -12938,12 +12982,37 @@ Everything you need for follow-ups is in that answer above; read it there rather
              deciding this is work to delegate and writing its own review instead. */
           onCouncil={(question) => {
             setPlanOpen(false);
-            addMsg({ role: 'user', content: 'Put my plan in front of the council.' });
             setBusy(true);
             stopRef.current = false;
-            void runCouncil(question)
-              .catch((e) => { addMsg({ role: 'assistant', content: `The council could not be reached: ${e instanceof Error ? e.message : String(e)}` }); })
-              .finally(() => { setBusy(false); setAgentStep(null); });
+            // A SESSION FIRST, or none of this is saved.
+            //
+            // This path bypasses send(), which is where every other turn gets its conversation
+            // created — so the council ran, filled the screen, and vanished on reload: no chat in
+            // the sidebar, nothing in the history, five model calls of real work gone. The
+            // question and the verdict are both written to the same session as ordinary messages.
+            void (async () => {
+              const sid = await ensureSession('Council review').catch(() => null);
+              const ask = 'Put my plan in front of the council.';
+              addMsg({ role: 'user', content: ask });
+              if (sid) krewDb.saveMessage(sid, 'user', ask).catch(() => {});
+              try {
+                const verdict = await runCouncil(question);
+                // The boss's own closing line, saved as the assistant turn so the conversation
+                // reads properly when it is reopened.
+                const closing = verdict.startsWith('The council has answered')
+                  ? 'The council has answered — their five views are above.'
+                  : verdict;
+                addMsg({ role: 'assistant', content: closing });
+                if (sid) krewDb.saveMessage(sid, 'assistant', closing).catch(() => {});
+              } catch (e) {
+                const msg = `The council could not be reached: ${e instanceof Error ? e.message : String(e)}`;
+                addMsg({ role: 'assistant', content: msg });
+                if (sid) krewDb.saveMessage(sid, 'assistant', msg).catch(() => {});
+              } finally {
+                setBusy(false);
+                setAgentStep(null);
+              }
+            })();
           }}
         />
       )}
