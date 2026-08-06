@@ -2351,12 +2351,23 @@ async function executeToolCore(
     if (!studio) return `No such studio "${wanted}". The options are: pomelli, notebooklm.`;
     const pick = pickStudios(brief || studio.makes, where).find((p) => p.studio.id === studio.id)
       ?? { studio, availableHere: true, why: '' };
+    // ── REGION LOCKS ARE A WARNING, NOT A VERDICT ─────────────────────────────────────────────
+    //
+    // The first version of this refused outright when a tool was not offered in the user's
+    // country. That was wrong in a way worth remembering: THIS APP SHIPS A DNS SWITCHER. A user
+    // with Vault on routinely reaches services their country is not on the list for, and the
+    // refusal blocked something they were already doing successfully — the app arguing with a
+    // person about what they can see on their own screen.
+    //
+    // What is genuinely useful is to say what the publisher's list says and let the attempt
+    // happen, because the page itself is the only authority on whether it works today. So: check
+    // Vault, tell the truth, open it anyway.
+    let vaultOn = false;
     if (!pick.availableHere) {
-      // Refuse rather than open it. Opening a page that will not serve this user, and then
-      // narrating progress, is the exact failure the promise rules exist to prevent.
-      return `${studio.name} is NOT available in ${where || 'the user\'s country'} — it only works in ${(studio.countries as string[]).join(', ')}. `
-        + `Do NOT open it and do NOT tell the user their campaign is being generated. `
-        + `Say plainly that this tool is region-locked, and offer what you CAN do: write the copy and the plan yourself, or use NotebookLM (available everywhere) if the job suits it.`;
+      try {
+        const v = await invoke<{ enabled: boolean; mode: string }>('vault_status');
+        vaultOn = !!v?.enabled;
+      } catch { /* vault unavailable — treat as off */ }
     }
 
     let opened = '';
@@ -2369,7 +2380,14 @@ async function executeToolCore(
     if (/\[(browser-timeout|browser-crash|custom-browser-unavailable)\]/.test(opened)) {
       return `The ADRIS browser could not open ${studio.name}. Check Settings → Browser check. Nothing has been generated.`;
     }
-    return `${studio.name} is now open in the ADRIS browser at ${studio.url}.\n\n${studioBriefing(pick)}\n\n`
+    // What to say about the region, given what we actually know.
+    const regionNote = pick.availableHere
+      ? ''
+      : vaultOn
+        ? `\n\nNOTE: ${studio.name}'s published list of countries does not include ${where || 'this region'} — but Vault (the app's DNS switch) is ON, which is how the user already reaches it. Carry on, and if the page refuses or shows a "not available" message, say exactly that rather than inventing a reason.`
+        : `\n\nNOTE: ${studio.name}'s published list is ${(studio.countries as string[]).join(', ')}, which does not include ${where || 'this region'} — so it MAY refuse. The user can turn on **Vault** in the app (it switches DNS and is how this is usually reached from India). Look at the page before promising anything: if it loads and works, carry on; if it blocks, tell the user and suggest Vault.`;
+
+    return `${studio.name} is now open in the ADRIS browser at ${studio.url}.\n\n${studioBriefing(pick)}${regionNote}\n\n`
       + `NOW: use browser_snapshot to see the page, then browser_click / browser_fill to work it — do not guess at buttons you have not looked at. `
       + `${studio.needs}\n\n`
       + `WHEN IT HAS MADE SOMETHING: the user downloads it from the tool (it lands in their Downloads folder) — say where it is rather than claiming you saved it. `

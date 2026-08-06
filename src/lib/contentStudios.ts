@@ -55,13 +55,13 @@ export const CONTENT_STUDIOS: ContentStudio[] = [
     id: 'notebooklm',
     name: 'NotebookLM (Gemini Notebook)',
     url: 'https://notebooklm.google.com',
-    makes: 'Turning documents the user already has into briefing docs, study guides, FAQs, mind maps and podcast-style audio overviews.',
-    outputs: 'Text reports you can copy out, and an audio overview you can download as a file.',
+    makes: 'Turning documents the user already has into briefing docs, study guides, FAQs, mind maps, and podcast-style AUDIO or VIDEO overviews.',
+    outputs: 'Text reports you can copy out, plus audio and video overviews you can download as files.',
     countries: 'all',
     needs: 'A Google account, and at least one source uploaded (a PDF, a doc, a link or pasted text).',
-    limits: 'Free tier: around 50 chats a day and about 3 audio overviews a day — so treat an audio overview as something to spend deliberately, not to retry casually.',
-    useWhen: /\b(podcast|audio (overview|summary)|briefing (doc|note)|study guide|mind map|faq|summar(y|ise|ize) (this|these|the) (doc|report|pdf|file)|explainer)\b/i,
-    notes: 'It only works from SOURCES. Upload or paste the material first — asking it about something it has not been given produces nothing useful.',
+    limits: 'Free tier: around 50 chats a day, and a small daily allowance of audio/video overviews (roughly three) — so generate one deliberately rather than retrying casually.',
+    useWhen: /\b(podcast|audio (overview|summary)|video (overview|summary|explainer)?|briefing (doc|note)|study guide|mind map|faq|summar(y|ise|ize) (this|these|the) (doc|report|pdf|file)|explainer|walkthrough)\b/i,
+    notes: 'It only works from SOURCES. Upload or paste the material first — asking it about something it has not been given produces nothing useful. A VIDEO overview is the same idea as the audio one with visuals, and is the closest thing to a generated explainer video available free.',
   },
 ];
 
@@ -109,11 +109,15 @@ export function pickStudios(brief: string, location = ''): StudioPick[] {
     return {
       studio,
       availableHere,
+      // Worded as what the PUBLISHER says, not as a verdict on what the user can do. This app
+      // ships a DNS switch (Vault) and people reach these tools through it every day — a flat
+      // "not available to you" would be the app contradicting something already working on the
+      // user's screen.
       why: studio.countries === 'all'
         ? 'Available everywhere.'
         : availableHere
-          ? `Available in ${code || 'your region'}.`
-          : `NOT available in ${code} — it only works in ${(studio.countries as string[]).join(', ')}.`,
+          ? `Listed as available in ${code || 'your region'}.`
+          : `Officially listed for ${(studio.countries as string[]).join(', ')} only — not ${code}. It may still open with Vault (the app's DNS switch) on; check the page rather than assuming either way.`,
     };
   });
 }
