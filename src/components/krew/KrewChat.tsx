@@ -36,6 +36,7 @@ import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill
 import { builtInSkillsBlock, learnSkill } from '../../lib/skillGraph';
 import { parseAnyTable, looksLikeIdentifier, looksLikeHeaderRow, extractContacts } from '../../lib/tableQuery';
 import { observeForRole, roleBlock } from '../../lib/userRole';
+import { councilContext } from '../../lib/councilContext';
 import SkillsPanel from './SkillsPanel';
 import PlanPanel from './PlanPanel';
 import { looksLikeActionPlan, parsePlanSteps, createPlan, savePlan, loadPlan, planProgress, syncPlanToTodos, todayPlanNote, mergeIntoPlan, PLAN_EVENT, type ActionPlan } from '../../lib/planStore';
@@ -3923,6 +3924,15 @@ const [studioExtracting, setStudioExtracting] = useState(false);
   } | null>(null);
 
   const stopRef            = useRef(false);
+  // ── STOP HAS TO BE FINAL ────────────────────────────────────────────────────────────────────
+  //
+  // stopRef alone was not enough. Several flows legitimately reset it to false when they begin
+  // (a fresh /outreach or /leads run must not inherit a stale Stop), and a long turn can be
+  // several nested loops deep — so a reset in one place could let an already-stopped boss loop
+  // carry on and start narrating again, which is what "I pressed stop and Arjun came back and
+  // started thinking" is. This counter only ever increases: Stop bumps it, and any loop that
+  // started under an older number knows it has been superseded and must produce nothing further.
+  const runGenRef = useRef(0);
   // Mirrors `busy` for the global 'agent-progress' listener, which is registered once on mount and
   // would otherwise close over a stale `busy`.
   const busyRef            = useRef(false);
@@ -9692,6 +9702,11 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
       try { const { brain } = await import('../../lib/knowledgeStore'); preNodeIds = new Set(brain.all().nodes.map((n) => n.id)); } catch { /* ignore */ }
     }
 
+    // The generation this whole run belongs to. Stop bumps runGenRef, so every check against
+    // myGen below fails from that moment on — including in the finally block, where the
+    // empty-turn recovery lives. See runGenRef.
+    const myGen = runGenRef.current;
+    const superseded = () => stopRef.current || runGenRef.current !== myGen;
     try {
       // ── Proactive chunking for BYOK/local, pure multi-section WRITING tasks ──
       // A free model asked to write a big multi-section answer in one shot gets throttled mid-stream
@@ -9827,7 +9842,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
       // turn so one turn's deliverable can never be saved under a later, unrelated turn's title.
       turnProseRef.current = '';
       turnToolsRef.current = [];
-      while (steps < MAX_STEPS && !stopRef.current) {
+      while (steps < MAX_STEPS && !superseded()) {
         steps++;
         setAgentStep(`Thinking… ${Math.round((steps / MAX_STEPS) * 100)}%`);
         setAgentTool(null);
@@ -10041,6 +10056,8 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
         const args: Record<string, unknown> = (parsed!.args && typeof parsed!.args === 'object')
           ? { ...rootParams, ...(parsed!.args as Record<string, unknown>) }
           : rootParams;
+        // A run the user has stopped must not start a NEW tool, however far through it was.
+        if (superseded()) break;
         setAgentStep(`${agentHandle(agent)} · ${browserActionLabel(tool, args) ?? tool.replace(/_/g, ' ')}…`);
         setAgentTool(tool);
         // Hand the turn's real output to the tool layer, so a save_to_brain call whose body is a
@@ -10807,7 +10824,11 @@ Everything you need for follow-ups is in that answer above; read it there rather
               try {
                 ({ text } = await streamTurnWithRetry(
                   [{ role: 'user', content: `THE DECISION IN FRONT OF THE COUNCIL:\n${question}${priors}\n\nGive your view, in character, following your rules. Be brief and specific.` }],
-                  member.systemPrompt,
+                  // The briefing is what turns "define your conversion metric" into "Day 4: run
+                  // /outreach on the vendor list". Without it, five advisers give five versions of
+                  // advice the user then has to translate into this app themselves — which is the
+                  // work they asked the council to do.
+                  member.systemPrompt + councilContext(true),
                   () => {},
                 ));
               } catch (e) {
@@ -11000,7 +11021,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
       // would strip the last message of whichever chat they opened, and recoverEmptyTurn would
       // judge "did this turn produce output?" against somebody else's history and re-ask the model.
       // The turn's real output is already saved, so going back shows it either way.
-      if (!stopRef.current && stillHere) {
+      if (!stopRef.current && runGenRef.current === myGen && stillHere) {
         setMessages((prev) => {
           const copy = [...prev];
           while (copy.length && copy[copy.length - 1].streaming && !copy[copy.length - 1].content.trim() && copy[copy.length - 1].role === 'assistant') copy.pop();
@@ -11109,6 +11130,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
 
   function stop() {
     stopRef.current = true;
+    runGenRef.current += 1;   // everything already running is now superseded — see runGenRef
     requestLeadStop(); // halt a running enrich/verify pass at the next batch boundary
     // Refuse every FURTHER tool call outright. Without this, work already queued kept running
     // after Stop -- ten calendar events still opened ten browser tabs -- while the UI below had
@@ -11910,6 +11932,41 @@ Everything you need for follow-ups is in that answer above; read it there rather
                       <div className="px-3 pb-2.5 pt-0.5 text-[11.5px] leading-relaxed text-nv-muted whitespace-pre-wrap">{v.text}</div>
                     </details>
                   ))}
+                  {/* THE COUNCIL HAS TO END IN SOMETHING YOU CAN DO.
+                      Five good opinions the user then has to turn into work themselves is most of
+                      the job left undone. The Executor already speaks in ordered steps, so this
+                      merges them into the plan that exists — the merge keeps everything already
+                      ticked, so pressing it can add work but never lose any. */}
+                  <div className="flex flex-wrap gap-1.5 px-1 pt-0.5">
+                    {(() => {
+                      const dev = msg.council.find((v) => v.key === 'council_executor');
+                      if (!dev) return null;
+                      return (
+                        <button
+                          onClick={() => {
+                            const existing = loadPlan();
+                            if (existing) {
+                              const r = mergeIntoPlan(existing, dev.text);
+                              setPlanOpen(true);
+                              const bits = [r.added ? `${r.added} step${r.added === 1 ? '' : 's'} added` : '', r.updated ? `${r.updated} sharpened` : ''].filter(Boolean);
+                              addMsg({ role: 'assistant', content: bits.length
+                                ? `Added the Executor's steps to **${existing.title}** — ${bits.join(' and ')}. Nothing you had ticked off changed.`
+                                : `**${existing.title}** already covers what the Executor suggested — nothing to add.` });
+                            } else {
+                              savePlan(createPlan(dev.text));
+                              setPlanOpen(true);
+                            }
+                          }}
+                          className="text-[10px] font-medium px-2.5 py-1 rounded-lg border transition-fast"
+                          style={{ borderColor: '#e8a33d66', color: '#e8a33d' }}
+                        >＋ Add the Executor's steps to my plan</button>
+                      );
+                    })()}
+                    <button
+                      onClick={() => setInput('Take what the council just said and give me the ONE thing to do first, today, with what I already have.')}
+                      className="text-[10px] px-2.5 py-1 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
+                    >What do I do first?</button>
+                  </div>
                   <p className="px-1 text-[9.5px] text-nv-faint">They are meant to disagree — where they do is usually the real decision.</p>
                 </div>
               ) : msg.role === 'lead_result' ? (

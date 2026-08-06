@@ -694,14 +694,6 @@ export const SYSTEM_TOOLS: ToolDef[] = [
     },
   },
   {
-    name: 'council_review',
-    description: "Put a decision, plan or document in front of the user's COUNCIL — five advisers who deliberately disagree: the Contrarian (what kills this), First Principles (are we solving the right problem), the Expansionist (where is the upside), the Outsider (what is confusing to someone who knows nothing) and the Executor (what happens Monday). Use it for anything with real consequences: a plan before committing to it, a contract before signing, a pivot, a pricing change, a big spend, or when the user asks for advice on a decision. NOT for ordinary tasks — this is five model calls, so it is for choices worth thinking about.",
-    parameters: {
-      question: { type: 'string', description: 'The decision or plan to review, stated plainly. Include the real context: what the user is trying to achieve, what they have, and what they are considering.', required: true },
-      voices:   { type: 'string', description: 'Optional comma-separated subset: contrarian, first_principles, expansionist, outsider, executor. Default is all five.', required: false },
-    },
-  },
-  {
     name: 'open_content_studio',
     description: "Open a FREE web tool that makes marketing content — on-brand campaign images and ads (Pomelli), or briefing docs, FAQs and podcast-style audio from the user's own documents (NotebookLM). Use it when the user wants real creative assets rather than words on a page: this app cannot generate images or audio itself, and these tools are free and already signed in inside the ADRIS browser. Call with no arguments first to see what is available and whether it works in the user's country.",
     parameters: {
@@ -1099,6 +1091,19 @@ export function getAutopilotTools(): ToolDef[] {
 // ─── Boss-only delegation tool ────────────────────────────────────────────────
 
 export const BOSS_TOOLS: ToolDef[] = [
+  // Only the BOSS gets this. The council is orchestration — five model calls run by the chat
+  // loop itself — and that loop is the only place it is implemented. Offering it to every
+  // delegate meant a specialist could see the tool, call it, get back "unknown tool" from
+  // executeTool, and then improvise a five-voice review out of its own head: confident,
+  // plausible, and not the council at all.
+  {
+    name: 'council_review',
+    description: "Put a decision, plan or document in front of the user's COUNCIL — five advisers who deliberately disagree: the Contrarian (what kills this), First Principles (are we solving the right problem), the Expansionist (where is the upside), the Outsider (what is confusing to someone who knows nothing) and the Executor (what happens Monday). Use it for anything with real consequences: a plan before committing to it, a contract before signing, a pivot, a pricing change, a big spend, or when the user asks for advice on a decision. NOT for ordinary tasks — this is five model calls, so it is for choices worth thinking about.",
+    parameters: {
+      question: { type: 'string', description: 'The decision or plan to review, stated plainly. Include the real context: what the user is trying to achieve, what they have, and what they are considering.', required: true },
+      voices:   { type: 'string', description: 'Optional comma-separated subset: contrarian, first_principles, expansionist, outsider, executor. Default is all five.', required: false },
+    },
+  },
   {
     name: 'delegate_to_agent',
     description: 'Delegate a task to ONE specialist agent. Use this when the request clearly maps to a single specialist. Valid agent_key values:\n- caption_writer → social media captions (LinkedIn, Instagram, Twitter)\n- email_marketer → email campaigns, drip sequences, subject lines\n- cold_outreach → cold email/DM templates for sales prospecting\n- blog_writer → blog posts and articles\n- content_planner → content strategy, content calendars, growth content planning, organic marketing plan\n- seo_agent → SEO copy, keywords, meta descriptions\n- ad_copywriter → ad copy, paid acquisition strategy (Facebook, Google, LinkedIn ads)\n- social_scheduler → posting schedules and platform strategy\n- researcher → market research, growth strategy research, user acquisition research, competitor analysis, data gathering\n- competitor_watcher → deep competitor breakdowns, what competitors are doing for marketing, pricing and differentiation analysis\n- product_describer → product descriptions and landing page copy\n- coder → code writing, scripts, technical implementation\n- bug_hunter → debugging and error fixing\n- docs_writer → documentation and READMEs\n- data_analyst → data analysis and insights\n- proposal_writer → business proposals and pitches\n- cfo → ALL financial work: pricing strategy, revenue modelling, P&L, unit economics, affiliate commission structures, cost analysis, financial projections, profit breakdowns, budget planning — the dedicated CFO agent\n- translator → language translation\n- ops_agent → automation setup, listing automations, running/pausing automations, workflow management\n- automation_strategist → designing complex multi-step automation workflows\n- visual_creator → HTML/CSS visual assets: social banners, animated graphics, thumbnails, promo cards\n- research_agent → find companies, startup lists, market research, ICP research, lead generation',
