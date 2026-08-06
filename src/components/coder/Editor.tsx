@@ -6,6 +6,9 @@ interface Props {
   content: string;
   onChange: (val: string) => void;
   isDark: boolean;
+  /** Line to jump to and highlight — set when a Find-in-Files hit is opened, so the match is on
+   *  screen instead of the file merely being open at line 1. */
+  gotoLine?: number;
 }
 
 const EXT_LANG: Record<string, string> = {
@@ -23,7 +26,7 @@ function langFromPath(p: string | null) {
   return EXT_LANG[p.split('.').pop()?.toLowerCase() ?? ''] ?? 'plaintext';
 }
 
-export default function Editor({ path, content, onChange, isDark }: Props) {
+export default function Editor({ path, content, onChange, isDark, gotoLine }: Props) {
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
 
   const handleMount: OnMount = (editor) => {
@@ -44,6 +47,16 @@ export default function Editor({ path, content, onChange, isDark }: Props) {
     ed.setValue(content);
     if (pos) ed.setPosition(pos);
   }, [content]);
+
+  // Reveal the searched-for line once the file's content has actually loaded — jumping before that
+  // scrolls an empty buffer and lands nowhere.
+  useEffect(() => {
+    const ed = editorRef.current;
+    if (!ed || !gotoLine || !content) return;
+    ed.revealLineInCenter(gotoLine);
+    ed.setPosition({ lineNumber: gotoLine, column: 1 });
+    ed.focus();
+  }, [gotoLine, path, content]);
 
   if (!path) {
     return (

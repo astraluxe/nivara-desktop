@@ -107,15 +107,27 @@ export async function streamAI(opts: StreamOptions): Promise<() => void> {
 
   function cleanup() { u1(); u2(); u3(); }
 
+  // AN EMPTY STRING IS NOT "NOT SET" — and `??` does not think it is.
+  //
+  // This is the whole of the Coder's "Error: builder error". baseUrl is a text input that starts
+  // as '' and only ever fills in for a Custom provider. `opts.baseUrl ?? null` passes that '' straight
+  // through, so Rust receives Some("") and its `unwrap_or_else(pick the provider's endpoint)` never
+  // fires — the provider's real URL is skipped and the request is POSTed to "". reqwest cannot build
+  // a request for an empty URL and returns an error whose entire text is "builder error", which
+  // names neither the field nor the cause. Every own-key chat in the Coder failed this way, on any
+  // provider, however good the key.
+  const blankToNull = (v?: string) => (v && v.trim() ? v.trim() : null);
   invoke('ai_stream', {
     callId,
     mode: opts.mode,
     messages: opts.messages,
-    apiKey: opts.apiKey ?? null,
+    // Trimmed too: a key pasted from a website usually arrives with a trailing newline, and a
+    // newline in an Authorization header is itself a builder error.
+    apiKey: blankToNull(opts.apiKey),
     provider: opts.provider ?? 'openai',
-    localModel: opts.localModel ?? 'llama3',
-    modelName: opts.modelName ?? null,
-    baseUrl: opts.baseUrl ?? null,
+    localModel: blankToNull(opts.localModel) ?? 'llama3',
+    modelName: blankToNull(opts.modelName),
+    baseUrl: blankToNull(opts.baseUrl),
     sessionToken: opts.sessionToken ?? null,
   }).catch((e: unknown) => {
     opts.onError(String(e));

@@ -324,7 +324,130 @@ fn read_file(path: String) -> Result<String, String> {
 
 #[tauri::command]
 fn write_file(path: String, content: String) -> Result<(), String> {
+    // Writing into a folder that does not exist yet is an ordinary thing to ask for ("put it in
+    // src/utils/"). Without this it failed with a bare OS error and the file simply never appeared.
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        if !parent.as_os_str().is_empty() { let _ = std::fs::create_dir_all(parent); }
+    }
     std::fs::write(&path, content).map_err(|e| e.to_string())
+}
+
+// ─── Creating, renaming and deleting in the Coder's file tree ─────────────────
+//
+// The tree could open a folder and read files and that was all — there was no way to make a new
+// file anywhere in the app. "Create merkletree.js and write the simulation in it" was therefore
+// impossible by hand AND impossible for the assistant, which can only write to a path that exists.
+//
+// REFUSES TO OVERWRITE. Creating is not the same act as saving: a "new file" that silently
+// replaced an existing one would destroy work with no undo and no warning.
+#[tauri::command]
+fn create_path(path: String, is_dir: bool) -> Result<String, String> {
+    let p = std::path::Path::new(&path);
+    if p.exists() { return Err(format!("“{}” already exists.", p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(path.clone()))); }
+    if is_dir {
+        std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
+    } else {
+        if let Some(parent) = p.parent() {
+            if !parent.as_os_str().is_empty() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+        }
+        std::fs::write(p, "").map_err(|e| e.to_string())?;
+    }
+    Ok(path)
+}
+
+#[tauri::command]
+fn rename_path(from: String, to: String) -> Result<String, String> {
+    let dst = std::path::Path::new(&to);
+    // Same reasoning as create_path: a rename onto an existing name is a silent deletion of it.
+    if dst.exists() { return Err(format!("“{}” already exists.", dst.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(to.clone()))); }
+    std::fs::rename(&from, &to).map_err(|e| e.to_string())?;
+    Ok(to)
+}
+
+// Folders that are always noise in a code project: huge, generated, and never what anyone is
+// looking for. Walking them is most of what makes a naive project search feel broken.
+const SKIP_DIRS: &[&str] = &["node_modules", "target", ".git", "dist", "build", ".next", "out",
+                             "vendor", "__pycache__", ".venv", "venv", ".cache", "coverage", ".idea", ".vscode"];
+
+fn walk_files(root: &std::path::Path, out: &mut Vec<String>, cap: usize, depth: usize) {
+    if out.len() >= cap || depth > 12 { return; }
+    let Ok(rd) = std::fs::read_dir(root) else { return };
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    for e in rd.flatten() {
+        if out.len() >= cap { return; }
+        let name = e.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') { continue; }
+        let p = e.path();
+        if p.is_dir() {
+            if SKIP_DIRS.contains(&name.as_str()) { continue; }
+            dirs.push(p);
+        } else {
+            out.push(p.to_string_lossy().to_string());
+        }
+    }
+    // Files at this level before descending, so a shallow, obvious file always beats a deep one
+    // when the cap bites.
+    for d in dirs { walk_files(&d, out, cap, depth + 1); }
+}
+
+/// Every file under the project, for Quick Open (Ctrl+P). Capped — an index is only useful if
+/// building it is instant, and nobody Ctrl+P's their way through 200,000 paths.
+#[tauri::command]
+fn list_files_recursive(path: String, max: Option<usize>) -> Result<Vec<String>, String> {
+    let cap = max.unwrap_or(20_000).min(60_000);
+    let mut out = Vec::new();
+    walk_files(std::path::Path::new(&path), &mut out, cap, 0);
+    Ok(out)
+}
+
+#[derive(Serialize)]
+struct SearchHit { path: String, line: u32, text: String }
+
+/// Find in Files. Done in Rust rather than by reading every file through the frontend: the whole
+/// point is that it comes back fast enough to type into, and shipping a megabyte of source across
+/// the IPC bridge per keystroke would not.
+///
+/// Binary and very large files are skipped — a match inside a 40 MB bundle is not a search result
+/// anyone wants, and rendering one wedges the panel.
+#[tauri::command]
+fn search_in_files(path: String, query: String, case_sensitive: Option<bool>, max: Option<usize>) -> Result<Vec<SearchHit>, String> {
+    let q = query.trim().to_string();
+    if q.is_empty() { return Ok(Vec::new()); }
+    let cs = case_sensitive.unwrap_or(false);
+    let needle = if cs { q.clone() } else { q.to_lowercase() };
+    let cap = max.unwrap_or(300).min(2000);
+
+    let mut files = Vec::new();
+    walk_files(std::path::Path::new(&path), &mut files, 20_000, 0);
+
+    let mut hits = Vec::new();
+    for f in files {
+        if hits.len() >= cap { break; }
+        let Ok(meta) = std::fs::metadata(&f) else { continue };
+        if meta.len() > 2_000_000 { continue; }
+        let Ok(content) = std::fs::read_to_string(&f) else { continue };   // non-UTF8 = binary, skip
+        for (i, line) in content.lines().enumerate() {
+            if hits.len() >= cap { break; }
+            let hay = if cs { line.to_string() } else { line.to_lowercase() };
+            if hay.contains(&needle) {
+                hits.push(SearchHit {
+                    path: f.clone(),
+                    line: (i + 1) as u32,
+                    // Trimmed and capped: a minified line would otherwise be one result 200 KB wide.
+                    text: line.trim().chars().take(200).collect(),
+                });
+            }
+        }
+    }
+    Ok(hits)
+}
+
+#[tauri::command]
+fn delete_path(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() { return Ok(()); }              // already gone is the outcome that was wanted
+    if p.is_dir() { std::fs::remove_dir_all(p).map_err(|e| e.to_string()) }
+    else { std::fs::remove_file(p).map_err(|e| e.to_string()) }
 }
 
 // Read any file as base64 — used by the Brain's PDF viewer (pdf.js needs the raw bytes) and
@@ -923,6 +1046,12 @@ async fn ai_stream(
 
             } else {
                 // ── OpenAI-compatible (OpenAI, Groq, Mistral, Perplexity, Together, DeepSeek, Custom) ──
+                // A BLANK base_url means "use the provider's own endpoint", not "post to nothing".
+                // The Coder sent Some("") for every non-custom provider, which won the unwrap_or_else
+                // and left the request pointing at an empty URL — reqwest then failed with the
+                // bare words "builder error", which say nothing about what was wrong. Filtered here
+                // as well as in the caller, so no future caller can reintroduce it.
+                let base_url = base_url.filter(|u| !u.trim().is_empty());
                 let endpoint = base_url.unwrap_or_else(|| match prov.as_str() {
                     "openai"     => "https://api.openai.com/v1/chat/completions",
                     "groq"       => "https://api.groq.com/openai/v1/chat/completions",
@@ -944,12 +1073,27 @@ async fn ai_stream(
                 let body = serde_json::json!({
                     "model": model, "messages": messages, "stream": true,
                 });
+                // A key pasted from a provider's website routinely carries a trailing newline, and a
+                // newline is not legal in a header value — reqwest reports that as "builder error"
+                // too. Trim before it ever reaches the header.
+                let key = key.trim().to_string();
+                if key.is_empty() {
+                    emit_error(format!("No API key set for {}. Open the connection bar above and paste your key.", prov));
+                    return Ok(());
+                }
                 let resp = reqwest::Client::new()
                     .post(&endpoint)
                     .header(header::AUTHORIZATION, format!("Bearer {}", key))
                     .header(header::CONTENT_TYPE, "application/json")
                     .json(&body).send().await
-                    .map_err(|e| { let s = e.to_string(); emit_error(s.clone()); s })?;
+                    .map_err(|e| {
+                        // "builder error" on its own tells the user nothing they can act on. Say
+                        // which URL and which provider, and what to check.
+                        let s = if e.is_builder() {
+                            format!("Couldn't build the request to {} ({}). Check the API key has no stray spaces or line breaks, and that the base URL is a full https:// address.", prov, endpoint)
+                        } else { e.to_string() };
+                        emit_error(s.clone()); s
+                    })?;
 
                 // Check for non-2xx before streaming
                 let status = resp.status();
@@ -7136,6 +7280,11 @@ pub fn run() {
             list_dir,
             read_file,
             write_file,
+            create_path,
+            rename_path,
+            delete_path,
+            list_files_recursive,
+            search_in_files,
             open_folder_dialog,
             scan_folder_for_compliance,
             // AI — Coder

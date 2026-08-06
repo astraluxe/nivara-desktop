@@ -34,6 +34,7 @@ import { getImageBudget, unitsForModel } from '../../lib/imageQuota';
 import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining } from '../../lib/tokenTier';
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
 import { builtInSkillsBlock, learnSkill } from '../../lib/skillGraph';
+import { parseAnyTable } from '../../lib/tableQuery';
 import SkillsPanel from './SkillsPanel';
 import PlanPanel from './PlanPanel';
 import { looksLikeActionPlan, parsePlanSteps, createPlan, savePlan, loadPlan, planProgress, syncPlanToTodos, todayPlanNote, mergeIntoPlan, PLAN_EVENT, type ActionPlan } from '../../lib/planStore';
@@ -6396,7 +6397,64 @@ The prompt must be production-ready — specific enough for a motion designer to
     if (links >= 3) return true;
     // A Name | … | (Company/Headline/Profile/Status) table — includes the outreach-progress mirror
     // (Name | Company | Status), so re-attaching that note is recognised as a people list.
-    return /\bname\b[^\n]{0,40}\b(role|company|headline|profile|status)\b/i.test(b.slice(0, 400));
+    if (/\bname\b[^\n]{0,40}\b(role|company|headline|profile|status)\b/i.test(b.slice(0, 400))) return true;
+    // ── ANY TABLE OF PEOPLE OR COMPANIES YOU CAN CONTACT ──────────────────────────────────────
+    //
+    // The tests above all assume a table this app built. A real imported sheet does not look like
+    // that: a vendor master's columns are SUPPLIER_NAME / EMAIL / MOBILE, it has no LinkedIn at all,
+    // and `\bname\b` does not match inside "SUPPLIER_NAME" because an underscore is a word
+    // character. So a 672-row list of contactable suppliers was judged "not a people list", the
+    // file the user had just chosen was DISCARDED, and outreach fell through to its no-file branch
+    // and drafted for 547 people from an unrelated campaign. Nothing said so.
+    //
+    // The honest test is: does this table have something to call a contact by, and a way to reach
+    // them? Anything that does is a list you can run outreach on.
+    const t = parseAnyTable(b);
+    if (!t || t.rows.length < 1) return false;
+    const hasName = t.headers.some((h) => /name|supplier|vendor|company|contact|person|firm|organisation|organization/i.test(h));
+    const hasReach = t.headers.some((h) => /e-?mail|mobile|phone|contact\s*no|linkedin/i.test(h));
+    return hasName && hasReach;
+  }
+
+  /**
+   * Read an ordinary imported sheet as outreach contacts.
+   *
+   * Used when the chosen file is a real spreadsheet rather than something this app produced. Keeps
+   * the file's own column names (they vary per export) and takes EVERY address in the email cell,
+   * since a supplier row routinely lists three.
+   */
+  function parseGenericContactRows(text: string): { name: string; headline: string; url: string; email?: string; emails?: string[] }[] {
+    const t = parseAnyTable(text);
+    if (!t) return [];
+    const col = (re: RegExp) => t.headers.findIndex((h) => re.test(h));
+    const iName = col(/^(?:supplier|vendor|company|customer|client|contact|person|account)?[\s_-]*name$|name/i);
+    const iEmail = col(/e-?mail/i);
+    const iPhone = col(/mobile|phone|contact\s*no/i);
+    const iCity = col(/city|location|town|address\s*3/i);
+    const iCountry = col(/country|region/i);
+    const iLinked = col(/linkedin/i);
+    if (iName < 0) return [];
+    const out: { name: string; headline: string; url: string; email?: string; emails?: string[] }[] = [];
+    const seen = new Set<string>();
+    for (const r of t.rows) {
+      const name = (r[iName] || '').trim();
+      if (!name || name === '—') continue;
+      const key = name.toLowerCase();
+      if (seen.has(key)) continue;            // the same supplier appears twice in most exports
+      seen.add(key);
+      const emails = iEmail >= 0 ? splitEmails(r[iEmail]) : [];
+      const li = iLinked >= 0 ? (r[iLinked] || '') : '';
+      const m = /(https?:\/\/[^\s)\]]*linkedin\.com\/in\/[^\s)\]]+)/i.exec(li);
+      out.push({
+        name,
+        headline: [iCity >= 0 ? r[iCity] : '', iCountry >= 0 ? r[iCountry] : '', iPhone >= 0 ? r[iPhone] : '']
+          .map((s) => (s || '').trim()).filter((s) => s && s !== '—').join(' · ').slice(0, 120),
+        url: m ? m[1] : '',
+        email: emails[0],
+        emails,
+      });
+    }
+    return out;
   }
   // A cell that is a saved outreach status label → the OutreachStatus it maps to (else undefined).
   // Lets parseContactRows read the Status column of the outreach-progress note so re-attaching it
@@ -7396,7 +7454,14 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     }
   }
 
-  async function launchOutreachFromConnections(max = 50, focus = '', userText = '', destTitle = '', onlyLeadList = '') {
+  /**
+   * @param sourceOnly The user PICKED this list in /outreach. It is then the entire population:
+   *   no topping up from the scan history, no lead lists swept in, and no contacts carried over
+   *   from another campaign. Without it, a chosen file that failed the (previously too narrow)
+   *   people-list test was dropped silently and 547 people from an unrelated campaign were drafted
+   *   instead — the user asked for one list and got somebody else's.
+   */
+  async function launchOutreachFromConnections(max = 50, focus = '', userText = '', destTitle = '', onlyLeadList = '', sourceOnly = false) {
     if (busy) return;
     const sid = await ensureSession('LinkedIn outreach');
     const chips = attachedFiles.map((f) => `[[file]] ${f.name}`).join('\n');
@@ -7485,12 +7550,18 @@ _None of them had everything you ticked, so I've saved them rather than lose the
           });
           return;
         }
-        parseContactRows(f.content).forEach((c) => add({ ...c, source: 'connections' }));
+        const rows = parseContactRows(f.content);
+        // A real imported sheet (SUPPLIER_NAME / EMAIL / MOBILE) yields nothing from the
+        // app's own parsers — its columns are not the ones they look for. Read it as the
+        // ordinary table it is rather than treating the file as empty.
+        if (rows.length) rows.forEach((c) => add({ ...c, source: 'connections' }));
+        else parseGenericContactRows(f.content).forEach((c) => add({ ...c, source: 'leads' }));
       });
       // If ALL they gave us was progress, top the roster up from the saved connections so anyone
       // added by a later scan is included. Existing people keep the status just parsed above,
       // because add() only fills gaps on a duplicate rather than overwriting.
-      if (attachedConn.every(isProgressFile)) {
+      // Never top a PICKED list up from elsewhere — see sourceOnly on the signature.
+      if (!sourceOnly && attachedConn.every(isProgressFile)) {
         try {
           const arr = JSON.parse(localStorage.getItem('nv-li-connections') || '[]');
           if (Array.isArray(arr)) arr.filter((c) => c?.name).forEach((c) => add({ name: String(c.name), headline: String(c.headline || ''), url: String(c.url || '') }));
@@ -7498,7 +7569,7 @@ _None of them had everything you ticked, so I've saved them rather than lose the
         const node = brainStore.all().nodes.find((n) => n.title.trim().toLowerCase() === 'linkedin connections');
         if (node) parseContactRows(nodeToMarkdown(node.body || '')).forEach(add);
       }
-    } else if (!onlyLeadList) {
+    } else if (!onlyLeadList && !sourceOnly) {
       // No file attached → use the scan's saved JSON, then the Brain note.
       // Skipped entirely when the caller named one lead list: "send THESE 25 to outreach" must not
       // quietly drag in 400 existing connections alongside them.
@@ -7526,7 +7597,9 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     // When the caller named ONE list (the "Send to outreach" button on a finished lead list),
     // only that list is pulled in — and connections are skipped entirely, because the user asked
     // for those leads, not their whole network.
-    const leadsFound = loadLeadListContacts(onlyLeadList);
+    // A PICKED list means those people. Sweeping every saved lead list in alongside them is how a
+    // 22-person run becomes a 500-person one made mostly of strangers.
+    const leadsFound = sourceOnly && !onlyLeadList ? [] : loadLeadListContacts(onlyLeadList);
     leadsFound.forEach((l) => add({ ...l, source: 'leads' }));
     if (!contacts.length) {
       const noConn = 'I don\'t have anyone to reach out to yet. Run **/scan** to pull in your LinkedIn connections, ask me to **build a lead list** for the people you want to reach, or attach a list — then ask me to draft outreach.';
@@ -7568,7 +7641,9 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     // statuses and re-draft people already messaged there.
     const prior = priorCamp;
     const carryOver = !!prior && loadSettings().listMode !== 'new';
-    const mergePrior = carryOver && !!prior && attachedConn.length === 0; // an attached list is authoritative
+    // An attached list is authoritative; a list the user PICKED doubly so. carriedPrior is what
+    // actually put another campaign's 547 contacts into this one.
+    const mergePrior = !sourceOnly && carryOver && !!prior && attachedConn.length === 0;
     const priorByName = new Map<string, OutreachContact>();
     if (prior) for (const c of prior.contacts) priorByName.set(nrm(c.name), c);
     const isDoneStatus = (s?: OutreachContact['status']) => s === 'sent' || s === 'accepted' || s === 'replied' || s === 'meeting' || s === 'met' || s === 'skip';
@@ -8532,7 +8607,7 @@ _${plan.advice}_` : ''}`;
       launchOutreachFromConnections(
         50, purpose.trim(),
         `Draft outreach from ${source.name} → saving to "${title}"${purpose.trim() ? ` — ${purpose.trim()}` : ''}`,
-        title,
+        title, '', true,   // sourceOnly: this file is the whole population
       );
     }, 0);
   }

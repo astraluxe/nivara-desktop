@@ -5,6 +5,7 @@ import FileTree from '../components/coder/FileTree';
 import Editor from '../components/coder/Editor';
 import TerminalPanel, { type TerminalHandle } from '../components/coder/Terminal';
 import AIChat from '../components/coder/AIChat';
+import QuickOpen, { type PaletteMode } from '../components/coder/QuickOpen';
 import { useResize } from '../hooks/useResize';
 
 interface FileEntry { name: string; path: string; is_dir: boolean; }
@@ -129,14 +130,56 @@ export default function CoderModule() {
       .catch(() => setFileContent(''));
   }, [openFile]);
 
+  // ── Open editors, as tabs ────────────────────────────────────────────────────
+  // One file at a time is the single biggest thing that made this not feel like an editor: opening
+  // a second file lost the first, and going back meant finding it in the tree again. The tab strip
+  // is just the list of paths you have open; `openFile` stays the one source of truth for which is
+  // showing, so nothing downstream (the AI chat's "current file", protect, revert) changes at all.
+  const [openTabs, setOpenTabs] = useState<string[]>(() => (saved.openFile ? [saved.openFile] : []));
+  useEffect(() => {
+    if (!openFile) return;
+    setOpenTabs((t) => (t.includes(openFile) ? t : [...t, openFile]));
+  }, [openFile]);
+  const closeTab = useCallback((path: string) => {
+    setOpenTabs((t) => {
+      const next = t.filter((p) => p !== path);
+      // Closing the file you are looking at lands you on its neighbour, not on a blank editor.
+      if (path === openFile) {
+        const i = t.indexOf(path);
+        setOpenFile(next[Math.min(i, next.length - 1)] ?? null);
+      }
+      return next;
+    });
+  }, [openFile]);
+
+  // ── Quick Open / Find in Files ───────────────────────────────────────────────
+  const [palette, setPalette] = useState<PaletteMode | null>(null);
+  const [gotoLine, setGotoLine] = useState<number | undefined>(undefined);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); setChatOpen((v) => !v); }
-      if ((e.ctrlKey || e.metaKey) && e.key === '`') { e.preventDefault(); setTerminalOpen((v) => !v); }
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      const k = e.key.toLowerCase();
+      if (k === 'k') { e.preventDefault(); setChatOpen((v) => !v); }
+      else if (e.key === '`') { e.preventDefault(); setTerminalOpen((v) => !v); }
+      // Ctrl+Shift+F before Ctrl+P/F so the shifted one is not swallowed by the plain one.
+      else if (e.shiftKey && k === 'f') { e.preventDefault(); setPalette('search'); }
+      else if (!e.shiftKey && k === 'p') { e.preventDefault(); setPalette('files'); }
+      else if (!e.shiftKey && k === 'w' && openFile) { e.preventDefault(); closeTab(openFile); }
+      else if (!e.shiftKey && k === 's') {
+        // Edits already write through on every change, so there is nothing to flush — but Ctrl+S is
+        // muscle memory, and a browser "save page" dialog appearing over the editor is alarming.
+        // Swallow it and show that the file is safe.
+        e.preventDefault();
+        setSavedFlash(true);
+        setTimeout(() => setSavedFlash(false), 1200);
+      }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, []);
+  }, [openFile, closeTab]);
+  const [savedFlash, setSavedFlash] = useState(false);
 
   function handleFileChange(content: string) {
     setFileContent(content);
@@ -274,6 +317,32 @@ export default function CoderModule() {
 
         {/* Centre: Editor + Terminal stacked */}
         <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+          {/* Open editors. Middle-click closes, as everywhere else. */}
+          {openTabs.length > 0 && (
+            <div className="flex items-stretch h-7 shrink-0 border-b border-nv-border bg-nv-surface overflow-x-auto">
+              {openTabs.map((p) => {
+                const active = samePath(p, openFile);
+                return (
+                  <div
+                    key={p}
+                    onClick={() => setOpenFile(p)}
+                    onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); closeTab(p); } }}
+                    title={p}
+                    className={`group flex items-center gap-1.5 pl-2.5 pr-1.5 cursor-pointer border-r border-nv-border text-[11px] whitespace-nowrap transition-fast
+                      ${active ? 'bg-nv-bg text-nv-text border-b-[1.5px] border-b-accent' : 'text-nv-faint hover:text-nv-muted hover:bg-nv-surface2'}`}
+                  >
+                    <span className="truncate max-w-[160px]">{p.split(/[/\\]/).pop()}</span>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); closeTab(p); }}
+                      title="Close (Ctrl+W)"
+                      className="text-[11px] leading-none px-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-red-400 transition-fast"
+                    >×</button>
+                  </div>
+                );
+              })}
+              {savedFlash && <span className="self-center ml-2 text-[10px] text-emerald-500 shrink-0">✓ saved</span>}
+            </div>
+          )}
           {/* Editor */}
           <div className="flex-1 overflow-hidden min-h-0">
             <Editor
@@ -281,6 +350,7 @@ export default function CoderModule() {
               content={fileContent}
               onChange={handleFileChange}
               isDark={true}
+              gotoLine={gotoLine}
             />
           </div>
 
@@ -401,6 +471,17 @@ export default function CoderModule() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Ctrl+P / Ctrl+Shift+F. Opening a hit adds it to the tabs like any other file; the line
+          number rides along so a search result lands where the match actually is. */}
+      {palette && projectPath && (
+        <QuickOpen
+          mode={palette}
+          projectPath={projectPath}
+          onClose={() => setPalette(null)}
+          onOpen={(p, line) => { setOpenFile(p); setGotoLine(line); }}
+        />
       )}
     </div>
   );
