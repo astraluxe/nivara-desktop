@@ -36,7 +36,10 @@ import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill
 import { builtInSkillsBlock, learnSkill } from '../../lib/skillGraph';
 import { parseAnyTable, looksLikeIdentifier, looksLikeHeaderRow, extractContacts } from '../../lib/tableQuery';
 import { observeForRole, roleBlock } from '../../lib/userRole';
-import { councilContext } from '../../lib/councilContext';
+import {
+  councilContext, addCouncilFact, loadCouncilFacts, clearCouncilFacts, type CouncilFact,
+  COUNCIL_KEYS, firstSentences, looksLikeCorrection, pickCouncilTargets,
+} from '../../lib/councilContext';
 import SkillsPanel from './SkillsPanel';
 import PlanPanel from './PlanPanel';
 import { looksLikeActionPlan, parsePlanSteps, createPlan, savePlan, loadPlan, planProgress, syncPlanToTodos, todayPlanNote, mergeIntoPlan, PLAN_EVENT, type ActionPlan } from '../../lib/planStore';
@@ -280,15 +283,29 @@ interface ChoiceSet {
 }
 
 interface DisplayMsg {
-  role:      'user' | 'assistant' | 'tool_call' | 'tool_result' | 'delegation' | 'proposal' | 'choices' | 'deck_setup' | 'deck_result' | 'social_schedule' | 'next_task' | 'lead_setup' | 'lead_result' | 'avail_confirm' | 'council';
+  role:      'user' | 'assistant' | 'tool_call' | 'tool_result' | 'delegation' | 'proposal' | 'choices' | 'deck_setup' | 'deck_result' | 'social_schedule' | 'next_task' | 'lead_setup' | 'lead_result' | 'avail_confirm' | 'council' | 'council_setup';
   leadCount?: number;
   leadTable?: string;
   /** How many rows came back without a usable LinkedIn URL. Drives the warning on the result
    *  card — it used to be a line of italic prose that scrolled away and told the user to run a
    *  command that does not even act on lead lists. */
   leadMissingLinks?: number;
-  /** The five council voices, kept separate on purpose — see the council_review dispatch. */
-  council?: Array<{ key: string; name: string; human: string; text: string }>;
+  /** The five council voices, kept separate on purpose — see the council_review dispatch.
+   *
+   *  `status` is what makes a council look like it is WORKING. Every other agent in this app
+   *  narrates itself — "reading the file", "step 2 of 4" — and the council alone went silent for
+   *  several minutes behind a single spinner, with no way to tell a slow model from a dead one. The
+   *  roster is now drawn the moment it starts, each member carrying their own state, and their
+   *  answer streams into the card as it is written. */
+  council?: Array<{ key: string; name: string; human: string; text: string; status?: 'waiting' | 'thinking' | 'done'; reply?: string }>;
+  /** True while the council is still sitting — drives the header line and the live cursor. */
+  councilLive?: boolean;
+  /** What the council is doing RIGHT NOW ("Round 2 — they are answering each other"). */
+  councilStage?: string;
+  /** Who asked, on a follow-up card, so the thread reads as a conversation rather than a repeat. */
+  councilFollowUp?: string;
+  /** The cost/BYOK notice shown before a council runs on adris.tech credit. */
+  councilSetup?: { question: string; source: string };
   /** A time the OTHER person proposed, waiting on a yes/no from the user before anything is booked.
    *  Typing out "yes I'm free" was the only way to answer, so the flow usually just stopped there. */
   avail?: { who: string; when: string; prompt: string };
@@ -300,6 +317,85 @@ interface DisplayMsg {
   deckSpec?: DeckSpec;
   deckHtml?: string;
   nextTask?: { suggestion: string; prompt: string; useNivara?: boolean };
+}
+
+/**
+ * What a council is about to cost, shown BEFORE it costs it.
+ *
+ * Only ever appears on adris.tech credit, because that is the only place where the user is spending
+ * something finite that they did not choose to spend on this. On their own key or a local model the
+ * capacity is theirs, they already know what it costs them, and an interruption would be nagging.
+ *
+ * The depth choice is here rather than in settings because this is the moment the question is
+ * actually live: a quick answer and a full debate cost roughly twice as different, and nobody can
+ * make that trade-off sensibly a week in advance in a settings panel.
+ */
+function CouncilCostNotice({ hasOwnKey, onRun, onCancel }: {
+  hasOwnKey: boolean;
+  onRun: (debate: boolean, useOwnKey: boolean) => void;
+  onCancel: () => void;
+}) {
+  const [debate, setDebate] = useState(true);
+  const calls = debate ? 9 : 5;
+  return (
+    <div className="mx-1 my-1.5 rounded-xl border overflow-hidden" style={{ borderColor: '#e8a33d50', background: '#e8a33d0a' }}>
+      <div className="px-3.5 py-2.5">
+        <div className="flex items-center gap-1.5">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#e8a33d" strokeWidth="1.8" strokeLinecap="round">
+            <circle cx="12" cy="5" r="2" /><circle cx="5" cy="9" r="2" /><circle cx="19" cy="9" r="2" /><circle cx="7.5" cy="19" r="2" /><circle cx="16.5" cy="19" r="2" />
+          </svg>
+          <span className="text-[12px] font-semibold" style={{ color: '#e8a33d' }}>The council is expensive to run</span>
+        </div>
+        <p className="text-[11px] text-nv-muted leading-relaxed mt-1.5">
+          Five advisers each write a full answer, and in a debate they also read and answer each other before
+          the Executor writes the plan. That is <b className="text-nv-text">{calls} model calls</b> for one question —
+          roughly {calls}× a normal reply, on the longest prompt this app sends.
+        </p>
+        <p className="text-[11px] text-nv-muted leading-relaxed mt-1.5">
+          You are running on <b className="text-nv-text">adris.tech AI</b>, so this comes out of your monthly tasks.
+          {hasOwnKey
+            ? ' Your own key has no such limit — the council is exactly the kind of thing worth pointing at it.'
+            : ' Connecting your own API key or a local model in the connection menu means the council costs you nothing here.'}
+        </p>
+
+        <div className="mt-2.5 space-y-1">
+          {([[true, 'Full debate', 'They answer each other, then the Executor writes one plan that folds in every view. 9 calls.'],
+             [false, 'Quick', 'Five separate views and a plan, with no back-and-forth between them. 5 calls.']] as const).map(([val, label, blurb]) => (
+            <button
+              key={label}
+              onClick={() => setDebate(val)}
+              className="w-full text-left px-2.5 py-1.5 rounded-lg border transition-fast"
+              style={{ borderColor: debate === val ? '#e8a33d80' : 'var(--nv-border)', background: debate === val ? '#e8a33d14' : 'transparent' }}
+            >
+              <span className="text-[11px] font-medium" style={{ color: debate === val ? '#e8a33d' : undefined }}>
+                {debate === val ? '● ' : '○ '}{label}
+              </span>
+              <span className="block text-[10px] text-nv-faint leading-snug mt-0.5 pl-3.5">{blurb}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap gap-1.5 mt-2.5">
+          {hasOwnKey && (
+            <button
+              onClick={() => onRun(debate, true)}
+              className="text-[10.5px] font-medium px-2.5 py-1 rounded-lg text-white transition-fast"
+              style={{ background: '#e8a33d' }}
+            >Run it on my own key</button>
+          )}
+          <button
+            onClick={() => onRun(debate, false)}
+            className="text-[10.5px] font-medium px-2.5 py-1 rounded-lg border transition-fast"
+            style={{ borderColor: '#e8a33d66', color: '#e8a33d' }}
+          >{hasOwnKey ? 'Use adris.tech anyway' : 'Run it on adris.tech'}</button>
+          <button
+            onClick={onCancel}
+            className="text-[10.5px] px-2.5 py-1 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
+          >Not now</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // Split a long multi-section WRITING request into its parts, so a free/own-key model (with a tight
@@ -3886,6 +3982,10 @@ const [studioExtracting, setStudioExtracting] = useState(false);
   }
   const [attachedFiles, setAttachedFiles] = useState<{ name: string; content: string; isImage?: boolean; mimeType?: string; fromBrain?: boolean }[]>([]);
   const [taskPhases,    setTaskPhases]    = useState<TaskPhase[]>([]);
+  /** Set while the composer is pointed at the council rather than the boss — see the chip above it. */
+  const [councilTalk,   setCouncilTalk]   = useState<{ question: string } | null>(null);
+  /** Corrections the council has been given, mirrored into state so the chip can show and clear them. */
+  const [councilMemory, setCouncilMemory] = useState<CouncilFact[]>(() => { try { return loadCouncilFacts(); } catch { return []; } });
   const [connectRec,    setConnectRec]    = useState<string[]>([]);
   const [braveNudge, setBraveNudge] = useState(false);
   const [nvidiaNudge, setNvidiaNudge] = useState(false);
@@ -4003,6 +4103,9 @@ const [studioExtracting, setStudioExtracting] = useState(false);
       return;
     }
     setMessages([]);
+    // Leaving this armed would point the next message you type in a DIFFERENT chat at a council
+    // that is not on screen. The card's own "Reply to the council" button re-arms it deliberately.
+    setCouncilTalk(null);
     if (!sessionId) return;
     krewDb.getMessages(sessionId).then((rows) => {
       const rawMsgs: (DisplayMsg | null)[] = rows.map((r): DisplayMsg | null => {
@@ -4019,18 +4122,22 @@ const [studioExtracting, setStudioExtracting] = useState(false);
         // conversation most worth coming back to.
         if (r.tool_name === 'council_review') {
           try {
+            type SavedVoice = { key?: string; name: string; human?: string; text: string; reply?: string };
             const parsed = JSON.parse(r.content) as
-              | Array<{ key?: string; name: string; human?: string; text: string }>
-              | { question?: string; voices?: Array<{ key?: string; name: string; human?: string; text: string }> };
-            // Two shapes: the current { question, voices } and the bare array saved by the first
-            // build that shipped the council. Both must reopen, or a user who already used it
-            // loses that conversation on this update.
+              | SavedVoice[]
+              | { question?: string; followUp?: string; voices?: SavedVoice[] };
+            // Three shapes now: the current { question, followUp, voices }, the { question, voices }
+            // that preceded it, and the bare array saved by the first build that shipped the
+            // council. All must reopen, or a user who already used it loses that conversation on
+            // this update.
             const saved = Array.isArray(parsed) ? parsed : (parsed?.voices ?? []);
             const question = Array.isArray(parsed) ? '' : (parsed?.question ?? '');
+            const followUp = Array.isArray(parsed) ? undefined : parsed?.followUp;
             if (!saved.length) return null;
             return {
               role: 'council' as const,
               content: question,
+              councilFollowUp: followUp,
               council: saved.map((v, i) => ({
                 key: v.key || `saved-${i}`,
                 name: v.name,
@@ -4038,6 +4145,10 @@ const [studioExtracting, setStudioExtracting] = useState(false);
                 // avatar never renders blank on a reopened chat.
                 human: v.human || v.name.replace(/^The\s+/i, '').slice(0, 2),
                 text: v.text,
+                reply: v.reply,
+                // Never 'waiting' or 'thinking' on a reopened chat — a saved answer is finished by
+                // definition, and a stale spinner on history is a lie about what is running.
+                status: 'done' as const,
               })),
             };
           } catch { return null; }
@@ -8983,6 +9094,19 @@ _${plan.advice}_` : ''}`;
     const text = (override ?? input).trim();
     if ((!text && attachedFiles.length === 0) || busy) return;
 
+    // THE COUNCIL IS STILL LISTENING.
+    //
+    // Five advisers who answer once and cannot then be told "that list isn't my suppliers, I bought
+    // that data" are worse than one colleague who can. While the chip above the composer is up,
+    // what you type goes back to them — and the chip is the whole point: it is always visible, it
+    // says who is listening, and it has an ✕, so this can never quietly swallow a message meant for
+    // the boss. Slash commands and attachments leave the thread by themselves, because those are
+    // unambiguously work for the app rather than a word to the council.
+    if (councilTalk && !skipShortcuts && text && !text.startsWith('/') && attachedFiles.length === 0) {
+      void runCouncilFollowUp(text);
+      return;
+    }
+
     // Is this an INSTRUCTION, or a document that happens to contain instruction-shaped words?
     //
     // The deterministic routes below match on keywords anywhere in the message. That is fine for
@@ -11120,62 +11244,350 @@ Everything you need for follow-ups is in that answer above; read it there rather
    * Now both entry points — the button and the tool — land here, so there is exactly one council
    * and no routing between the click and the answer.
    */
-  async function runCouncil(question: string, voices = ''): Promise<string> {
+  async function runCouncil(question: string, voices = '', opts?: { debate?: boolean }): Promise<string> {
     if (!question.trim()) return 'Nothing was put to the council.';
     const myGen = runGenRef.current;
     const gone = () => stopRef.current || runGenRef.current !== myGen;
     const wanted = voices.split(',').map((v) => v.trim().toLowerCase()).filter(Boolean);
-    const councilKeys = ['council_contrarian', 'council_first_principles', 'council_expansionist', 'council_outsider', 'council_executor']
+    const councilKeys = COUNCIL_KEYS
       .filter((k) => !wanted.length || wanted.some((w) => k.includes(w.replace(/[^a-z_]/g, ''))));
-    const heard: Array<{ agent: KrewAgent; text: string }> = [];
-    setTaskPhases(councilKeys.map((k, i) => ({ id: String(i), label: AGENT_BY_KEY[k]?.name ?? k, status: 'pending' as const })));
-    for (let ci = 0; ci < councilKeys.length; ci++) {
-      if (gone()) break;
-      const member = AGENT_BY_KEY[councilKeys[ci]];
-      if (!member) continue;
-      setTaskPhases((prev) => prev.map((p, i) => (i === ci ? { ...p, status: 'running' as const } : p)));
-      setAgentStep(`${agentHandle(member)} is thinking…`);
-      // The EXECUTOR is the one exception: its whole job is to turn the others into Monday
-      // morning, so it is the only member that hears them.
-      const isExecutor = member.key === 'council_executor';
-      const priors = isExecutor && heard.length
-        ? '\n\nWHAT THE REST OF THE COUNCIL SAID:\n'
-          + heard.map((h) => `### ${h.agent.name} (${h.agent.humanName})\n${h.text.slice(0, 1400)}`).join('\n\n')
-        : '';
-      let text = '';
+    const members = councilKeys.map((k) => AGENT_BY_KEY[k]).filter(Boolean) as KrewAgent[];
+    if (!members.length) return 'No council member matched that.';
+    const debate = opts?.debate !== false;
+    const speakers = members.filter((m) => m.key !== 'council_executor');
+    const executor = members.find((m) => m.key === 'council_executor') ?? null;
+
+    // THE ROSTER GOES UP BEFORE ANYONE SPEAKS.
+    //
+    // Every other agent in this app narrates itself while it works. The council alone went quiet
+    // behind one spinner for minutes at a time, which is indistinguishable from a hang — the user
+    // could not tell a slow model from a dead one, and had nothing to look at while paying for five
+    // full-length answers. Now all five appear immediately, greyed and waiting, and each one fills
+    // in as it is written.
+    const live: NonNullable<DisplayMsg['council']> = members.map((m) => ({
+      key: m.key, name: m.name, human: m.humanName, text: '', status: 'waiting' as const,
+    }));
+    addMsg({ role: 'council', content: question, council: live.map((v) => ({ ...v })), councilLive: true, councilStage: 'Opening views — each answers on their own, without hearing the others.' });
+    const paint = (stage?: string) => updateCouncilCard((m) => ({
+      ...m, council: live.map((v) => ({ ...v })), ...(stage !== undefined ? { councilStage: stage } : {}),
+    }));
+
+    setTaskPhases(members.map((m, i) => ({ id: String(i), label: m.name, status: 'pending' as const })));
+    const phase = (i: number, status: 'running' | 'done') =>
+      setTaskPhases((prev) => prev.map((p, j) => (j === i ? { ...p, status } : p)));
+
+    /** One member, one question — streamed straight into their card. */
+    const ask = async (member: KrewAgent, prompt: string, slot: number, onText: (t: string) => void) => {
+      let acc = '';
+      let last = 0;
       try {
-        ({ text } = await streamTurnWithRetry(
-          [{ role: 'user', content: `THE DECISION IN FRONT OF THE COUNCIL:\n${question}${priors}\n\nGive your view, in character, following your rules. Be brief and specific.` }],
+        const { text } = await streamTurnWithRetry(
+          [{ role: 'user', content: prompt }],
           member.systemPrompt + councilContext(true),
-          () => {},
-        ));
+          (t) => {
+            acc += t;
+            // Repainting five markdown-rendered cards on every token is real work, and the answer
+            // arrives faster than anyone reads. Four times a second is plenty to look alive.
+            const now = Date.now();
+            if (now - last < 250) return;
+            last = now;
+            onText(acc.replace(/<tool_call>[\s\S]*/g, ''));
+            paint();
+          },
+        );
+        acc = text || acc;
       } catch (e) {
-        text = `(${member.humanName} could not answer this time: ${(e instanceof Error ? e.message : String(e)).slice(0, 120)})`;
+        acc = `_${member.humanName} could not answer this time — ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}_`;
       }
+      const clean = acc.replace(/<tool_call>[\s\S]*/g, '').trim();
+      onText(clean);
+      live[slot].status = 'done';
+      paint();
+      return clean;
+    };
+
+    // ── Round 1: opening views, each in isolation ────────────────────────────
+    for (const member of speakers) {
       if (gone()) break;
-      const clean = (text || '').replace(/<tool_call>[\s\S]*/g, '').trim();
-      if (clean) heard.push({ agent: member, text: clean });
-      setTaskPhases((prev) => prev.map((p, i) => (i === ci ? { ...p, status: 'done' as const } : p)));
+      const slot = live.findIndex((v) => v.key === member.key);
+      live[slot].status = 'thinking';
+      phase(slot, 'running');
+      setAgentStep(`${agentHandle(member)} is writing their view — ${slot + 1} of ${members.length}`);
+      paint();
+      await ask(member, `THE DECISION IN FRONT OF THE COUNCIL:\n${question}\n\nGive your view, in character, following your rules. Be brief and specific.`,
+        slot, (t) => { live[slot].text = t; });
+      phase(slot, 'done');
     }
+
+    // ── Round 2: they answer each other ──────────────────────────────────────
+    //
+    // Five opinions written in five sealed rooms is a survey, not a council. Where two of them
+    // genuinely disagree is the most valuable thing on the screen, and it can only surface if they
+    // have read each other. Kept deliberately SHORT — this round exists to concede, sharpen or hold
+    // ground in a few lines, not to write the answer twice, and every line here is a line the user
+    // pays for.
+    const answered = () => speakers.filter((m) => (live.find((v) => v.key === m.key)?.text || '').length > 40);
+    if (debate && !gone() && answered().length >= 2) {
+      const roster = answered();
+      updateCouncilCard((m) => ({ ...m, councilStage: 'Round 2 — they have read each other and are answering back.' }));
+      for (const member of roster) {
+        if (gone()) break;
+        const slot = live.findIndex((v) => v.key === member.key);
+        live[slot].status = 'thinking';
+        paint();
+        setAgentStep(`${agentHandle(member)} is answering the others`);
+        const others = roster.filter((o) => o.key !== member.key)
+          .map((o) => `### ${o.name} (${o.humanName})\n${(live.find((v) => v.key === o.key)?.text || '').slice(0, 900)}`).join('\n\n');
+        await ask(member,
+          `You already gave your view on this:\n${question}\n\nHERE IS WHAT THE REST OF THE COUNCIL SAID:\n${others}\n\n`
+          + 'Now answer THEM, not the user. In 80 words or fewer, and in character:\n'
+          + '1. What you concede — name the person and the point.\n'
+          + '2. Where you still disagree, and why they are wrong.\n'
+          + '3. The ONE thing from your view that must survive into the final plan.\n'
+          + 'No preamble, no restating your original view.',
+          slot, (t) => { live[slot].reply = t; });
+      }
+    }
+
+    // ── Round 3: the Executor writes the plan the whole council can live with ─
+    if (executor && !gone()) {
+      const slot = live.findIndex((v) => v.key === executor.key);
+      live[slot].status = 'thinking';
+      phase(slot, 'running');
+      updateCouncilCard((m) => ({ ...m, councilStage: `${executor.humanName} is turning all of it into one plan.` }));
+      setAgentStep(`${agentHandle(executor)} is writing the final plan`);
+      paint();
+      const transcript = speakers.map((o) => {
+        const v = live.find((x) => x.key === o.key);
+        if (!v?.text) return '';
+        return `### ${o.name} (${o.humanName})\n${v.text.slice(0, 1400)}`
+          + (v.reply ? `\n**After hearing the others, ${o.humanName} added:** ${v.reply.slice(0, 500)}` : '');
+      }).filter(Boolean).join('\n\n');
+      await ask(executor,
+        `THE DECISION IN FRONT OF THE COUNCIL:\n${question}\n\n`
+        + (transcript ? `THE FULL COUNCIL TRANSCRIPT — opening views and what each said after reading the others:\n${transcript}\n\n` : '')
+        + 'You speak LAST, and the plan you write is the one the user acts on. It is not your view alone — it is the council\'s.\n'
+        + 'Before the plan, open with **What the council agreed** (3–5 bullets) and **Where they still split** (the real disagreements, named — do not smooth them over; say which way you came down and why).\n'
+        + 'Then give the plan. Every substantive point any member raised must be either FOLDED IN — naming who raised it — or explicitly rejected in one line with the reason. Do not silently drop anyone.\n'
+        + 'Give the steps as "Day N: action" lines so they can go straight into the plan panel, re-planning ONLY the unfinished ones.',
+        slot, (t) => { live[slot].text = t; });
+      phase(slot, 'done');
+    }
+
     setTaskPhases([]);
     setAgentStep(null);
-    if (gone()) return 'The council was stopped part-way through. Nothing was decided.';
+    const heard = live.filter((v) => (v.text || '').trim().length > 0);
+    // A council stopped half-way still shows what it managed to say — those answers were paid for,
+    // and throwing them away is the one thing worse than not having asked.
+    updateCouncilCard((m) => ({
+      ...m,
+      council: live.map((v) => ({ ...v, status: 'done' as const })).filter((v) => (v.text || '').trim()),
+      councilLive: false,
+      councilStage: gone() ? 'Stopped part-way — what they had already said is kept below.' : undefined,
+    }));
     if (!heard.length) return 'The council could not be reached this time — no member returned an answer. Nothing was decided.';
-    // Rendered as a card so the five voices stay visually separate. A wall of text would read as
-    // one opinion, which is the opposite of the point.
-    addMsg({ role: 'council', content: question, council: heard.map((h) => ({ key: h.agent.key, name: h.agent.name, human: h.agent.humanName, text: h.text })) });
-    const sid = sidRef.current;
-    // Saved with the question and each member's key/handle, so reopening the chat rebuilds the
-    // card exactly — not a shrunken version of it.
-    if (sid) {
-      krewDb.saveMessage(sid, 'tool_result', JSON.stringify({
-        question,
-        voices: heard.map((h) => ({ key: h.agent.key, name: h.agent.name, human: h.agent.humanName, text: h.text })),
-      }), 'council_review').catch(() => {});
-    }
+    saveCouncilCard(question, heard);
+    // From here the user can just type at them — see the composer chip.
+    if (!gone()) setCouncilTalk({ question });
+    if (gone()) return 'The council was stopped part-way through. What they had already said is on screen.';
     return `The council has answered — ${heard.length} voices, already shown to the user in full.\n\n`
-      + heard.map((h) => `${h.agent.name} (${h.agent.humanName}): ${h.text.slice(0, 700)}`).join('\n\n')
+      + heard.map((h) => `${h.name} (${h.human}): ${h.text.slice(0, 700)}`).join('\n\n')
       + '\n\nDo NOT repeat what they said — the user can read it. Add only what YOU conclude: where they genuinely disagree, and what you would do. Two short paragraphs at most.';
+  }
+
+  /** Is there a usable own-key credential to point the council at, rather than adris.tech credit? */
+  function hasOwnKey(): boolean {
+    if (apiKey.trim()) return true;
+    const src = Object.keys(credsRef.current).length ? credsRef.current : creds;
+    return ['nvidia', 'groq', 'gemini', 'openai', 'claude'].some((s) => !!src[s]?.api_key);
+  }
+
+  /**
+   * Convene the council in its own saved conversation.
+   *
+   * A SESSION FIRST, or none of this is saved. This path bypasses send(), which is where every
+   * other turn gets its conversation created — so the council ran, filled the screen, and vanished
+   * on reload: no chat in the sidebar, nothing in the history, five model calls of real work gone.
+   */
+  function startCouncil(question: string, opts?: { debate?: boolean }) {
+    setBusy(true);
+    stopRef.current = false;
+    void (async () => {
+      const sid = await ensureSession('Council review').catch(() => null);
+      const ask = 'Put my plan in front of the council.';
+      addMsgHere({ role: 'user', content: ask });
+      if (sid) krewDb.saveMessage(sid, 'user', ask).catch(() => {});
+      try {
+        const verdict = await runCouncil(question, '', opts);
+        // The boss's own closing line, saved as the assistant turn so the conversation reads
+        // properly when it is reopened.
+        const closing = verdict.startsWith('The council has answered')
+          ? 'The council has answered — their views are above. Reply here and they will take it into account.'
+          : verdict;
+        addMsg({ role: 'assistant', content: closing });
+        if (sid) krewDb.saveMessage(sid, 'assistant', closing).catch(() => {});
+      } catch (e) {
+        const m = `The council could not be reached: ${e instanceof Error ? e.message : String(e)}`;
+        addMsg({ role: 'assistant', content: m });
+        if (sid) krewDb.saveMessage(sid, 'assistant', m).catch(() => {});
+      } finally {
+        setBusy(false);
+        setAgentStep(null);
+        setTaskPhases([]);
+      }
+    })();
+  }
+
+  /** Write into the council card currently being filled in. Only one sits at a time. */
+  function updateCouncilCard(mut: (m: DisplayMsg) => DisplayMsg) {
+    if (!owns()) return;
+    setMessages((prev) => {
+      for (let i = prev.length - 1; i >= 0; i--) {
+        if (prev[i].role === 'council' && prev[i].councilLive) {
+          const copy = [...prev];
+          copy[i] = mut(prev[i]);
+          return copy;
+        }
+      }
+      return prev;
+    });
+  }
+
+  /** Persist a council card so reopening the chat rebuilds it, rather than a shrunken version. */
+  function saveCouncilCard(question: string, voices: NonNullable<DisplayMsg['council']>, followUp?: string) {
+    const sid = sidRef.current;
+    if (!sid) return;
+    krewDb.saveMessage(sid, 'tool_result', JSON.stringify({
+      question,
+      followUp,
+      voices: voices.map((v) => ({ key: v.key, name: v.name, human: v.human, text: v.text, reply: v.reply })),
+    }), 'council_review').catch(() => {});
+  }
+
+  /**
+   * Keep talking to the council in the same chat.
+   *
+   * A council that answers once and then cannot be corrected is a worse adviser than a colleague,
+   * because a colleague can be told "that list isn't my suppliers, I bought that data" and will
+   * revise everything downstream of it. Without this, the user's only options were to accept a
+   * plan built on a wrong assumption or to pay for the whole council again from scratch.
+   *
+   * Addressing one member by name reaches only them — that is one model call, and it is how you ask
+   * a follow-up cheaply. Anything else goes to everyone who spoke, briefly, and the Executor
+   * re-issues the plan with the correction in it.
+   */
+  async function runCouncilFollowUp(text: string) {
+    const thread = councilTalk;
+    if (!thread) return;
+    const prior = lastCouncilVoices();
+    if (!prior.length) { setCouncilTalk(null); void send(text); return; }
+
+    setBusy(true);
+    stopRef.current = false;
+    const myGen = runGenRef.current;
+    const gone = () => stopRef.current || runGenRef.current !== myGen;
+    addMsgHere({ role: 'user', content: text });
+    setInput('');
+    const sid = await ensureSession('Council review').catch(() => null);
+    if (sid) krewDb.saveMessage(sid, 'user', text).catch(() => {});
+
+    // A correction is worth more than this one answer — it is how the council reads the same lists
+    // next week. Recorded outside the Brain on purpose: the user asked not to have a new note
+    // appear every time something is learned.
+    const remembered = looksLikeCorrection(text) ? text : '';
+    if (remembered) {
+      try { addCouncilFact(remembered); setCouncilMemory(loadCouncilFacts()); } catch { /* never block the answer */ }
+    }
+
+    // Named? Then only they answer. "Vikram, what about X" costs one call, not five.
+    const targets = pickCouncilTargets(text, prior);
+    const executorKey = 'council_executor';
+    const wantExecutor = targets.some((t) => t.key === executorKey) || targets.length === prior.length;
+
+    const live: NonNullable<DisplayMsg['council']> = targets.map((v) => ({ ...v, text: '', reply: undefined, status: 'waiting' as const }));
+    addMsg({
+      role: 'council', content: thread.question, councilFollowUp: text,
+      council: live.map((v) => ({ ...v })), councilLive: true,
+      councilStage: targets.length === 1 ? `${targets[0].human} is answering you.` : 'The council is taking your point.',
+    });
+    const paint = () => updateCouncilCard((m) => ({ ...m, council: live.map((v) => ({ ...v })) }));
+    setTaskPhases(targets.map((t, i) => ({ id: String(i), label: t.name, status: 'pending' as const })));
+
+    // Each member is reminded of THEIR OWN previous answer only, plus one line of everyone else's.
+    // Re-sending the full transcript to all five is how a follow-up ends up costing more than the
+    // council did.
+    const gist = prior.map((v) => `- ${v.name} (${v.human}) argued: ${firstSentences(v.text, 220)}`).join('\n');
+
+    for (let i = 0; i < live.length; i++) {
+      if (gone()) break;
+      const member = AGENT_BY_KEY[live[i].key];
+      const isExec = live[i].key === executorKey;
+      if (!member) { live[i].status = 'done'; continue; }
+      live[i].status = 'thinking';
+      setTaskPhases((prev) => prev.map((p, j) => (j === i ? { ...p, status: 'running' as const } : p)));
+      setAgentStep(`${agentHandle(member)} is answering you`);
+      paint();
+      const mine = prior.find((v) => v.key === live[i].key)?.text || '';
+      const others = wantExecutor && isExec
+        ? `\n\nWHAT THE REST OF THE COUNCIL SAID, and what they are now revising:\n`
+          + live.filter((v) => v.key !== executorKey && v.text).map((v) => `### ${v.name}\n${v.text.slice(0, 700)}`).join('\n\n')
+        : '';
+      const prompt = isExec
+        ? `THE ORIGINAL QUESTION:\n${thread.question}\n\nYOUR PREVIOUS PLAN:\n${mine.slice(0, 1800)}\n\n`
+          + `THE USER HAS NOW TOLD THE COUNCIL:\n"${text}"${others}\n\n`
+          + 'Re-issue the plan with this taken into account. Say in one line at the top what changed and why. '
+          + 'Keep everything the correction does not touch — do not rewrite the whole thing for the sake of it. '
+          + 'Steps as "Day N: action" lines, unfinished work only.'
+        : `THE ORIGINAL QUESTION:\n${thread.question}\n\nWHAT YOU SAID:\n${mine.slice(0, 1400)}\n\n`
+          + `WHAT THE REST OF THE COUNCIL SAID:\n${gist}\n\n`
+          + `THE USER HAS NOW TOLD THE COUNCIL:\n"${text}"\n\n`
+          + 'Answer them directly, in character, in 120 words or fewer. If this changes your view, say exactly what changes — '
+          + 'and if it kills an argument you made, say so plainly rather than defending it. If it changes nothing, say that in one line and why.';
+      let acc = '';
+      let last = 0;
+      try {
+        const { text: out } = await streamTurnWithRetry(
+          [{ role: 'user', content: prompt }],
+          member.systemPrompt + councilContext(true),
+          (t) => {
+            acc += t;
+            const now = Date.now();
+            if (now - last < 250) return;
+            last = now;
+            live[i].text = acc.replace(/<tool_call>[\s\S]*/g, '');
+            paint();
+          },
+        );
+        acc = out || acc;
+      } catch (e) {
+        acc = `_${member.humanName} could not answer this time — ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}_`;
+      }
+      live[i].text = acc.replace(/<tool_call>[\s\S]*/g, '').trim();
+      live[i].status = 'done';
+      setTaskPhases((prev) => prev.map((p, j) => (j === i ? { ...p, status: 'done' as const } : p)));
+      paint();
+    }
+
+    setTaskPhases([]);
+    setAgentStep(null);
+    const heard = live.filter((v) => (v.text || '').trim());
+    updateCouncilCard((m) => ({
+      ...m,
+      council: heard.map((v) => ({ ...v, status: 'done' as const })),
+      councilLive: false,
+      councilStage: remembered ? 'Noted — the council will remember this next time.' : undefined,
+    }));
+    if (heard.length) saveCouncilCard(thread.question, heard, text);
+    setBusy(false);
+  }
+
+  /** The voices of the most recent council card on screen. */
+  function lastCouncilVoices(): NonNullable<DisplayMsg['council']> {
+    for (let i = messagesRef.current.length - 1; i >= 0; i--) {
+      const m = messagesRef.current[i];
+      if (m.role === 'council' && m.council?.length) return m.council;
+    }
+    return [];
   }
 
   function stop() {
@@ -11964,32 +12376,84 @@ Everything you need for follow-ups is in that answer above; read it there rather
                   onCancel={() => setMessages((prev) => prev.filter((m) => m !== msg))}
                   onGenerate={(cfg) => runLeadGeneration(cfg)}
                 />
+              ) : msg.role === 'council_setup' && msg.councilSetup ? (
+                /* WHAT THIS IS ABOUT TO COST, before it costs it.
+                   A council is five to nine full-length answers on the largest prompt in the app —
+                   an order of magnitude more than a normal question. On adris.tech credit that is a
+                   visible bite out of the month's allowance, and finding that out afterwards is the
+                   kind of surprise that makes a good feature feel like a trap. On the user's own
+                   key or a local model it is their own capacity, so this never appears there. */
+                <CouncilCostNotice
+                  key={i}
+                  hasOwnKey={hasOwnKey()}
+                  onRun={(debate, useOwnKey) => {
+                    setMessages((prev) => prev.filter((m) => m !== msg));
+                    if (useOwnKey) setMode('own_key');
+                    startCouncil(msg.councilSetup!.question, { debate });
+                  }}
+                  onCancel={() => setMessages((prev) => prev.filter((m) => m !== msg))}
+                />
               ) : msg.role === 'council' && msg.council ? (
                 /* Five separate cards, not one block of prose. The disagreement between them is
                    the thing worth reading, and it disappears the moment they are merged. */
                 <div key={i} className="mx-1 my-1.5 space-y-1.5">
                   <div className="flex items-center gap-1.5 px-1">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#e8a33d" strokeWidth="1.8" strokeLinecap="round">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#e8a33d" strokeWidth="1.8" strokeLinecap="round" className={msg.councilLive ? 'animate-pulse' : ''}>
                       <circle cx="12" cy="5" r="2" /><circle cx="5" cy="9" r="2" /><circle cx="19" cy="9" r="2" /><circle cx="7.5" cy="19" r="2" /><circle cx="16.5" cy="19" r="2" />
                     </svg>
-                    <span className="text-[11px] font-semibold" style={{ color: '#e8a33d' }}>Your council · {msg.council.length} views</span>
+                    <span className="text-[11px] font-semibold" style={{ color: '#e8a33d' }}>
+                      {msg.councilFollowUp ? 'The council answers you' : 'Your council'}
+                      {' · '}
+                      {msg.councilLive
+                        ? `${msg.council.filter((v) => v.status === 'done').length} of ${msg.council.length}`
+                        : `${msg.council.length} view${msg.council.length === 1 ? '' : 's'}`}
+                    </span>
                     <span className="text-[9.5px] text-nv-faint truncate">on: {msg.content.slice(0, 70)}</span>
                   </div>
+                  {/* WHAT IS HAPPENING RIGHT NOW. The council used to sit behind one silent spinner
+                      for minutes — a hang and a slow model looked identical, and the user was
+                      paying either way. */}
+                  {msg.councilStage && (
+                    <p className="px-1 text-[9.5px] flex items-center gap-1.5" style={{ color: '#e8a33d' }}>
+                      {msg.councilLive && (
+                        <span className="w-1.5 h-1.5 rounded-full animate-pulse shrink-0" style={{ background: '#e8a33d' }} />
+                      )}
+                      {msg.councilStage}
+                    </p>
+                  )}
                   {msg.council.map((v) => (
-                    <details key={v.key} open className="rounded-xl border overflow-hidden" style={{ borderColor: '#e8a33d40', background: '#e8a33d0a' }}>
+                    <details key={v.key} open={v.status !== 'waiting'} className="rounded-xl border overflow-hidden" style={{ borderColor: '#e8a33d40', background: '#e8a33d0a', opacity: v.status === 'waiting' ? 0.5 : 1 }}>
                       <summary className="cursor-pointer select-none px-3 py-2 flex items-center gap-2">
                         <span className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0" style={{ background: '#e8a33d25', color: '#e8a33d' }}>
                           {v.human.slice(0, 2).toUpperCase()}
                         </span>
                         <span className="text-[11.5px] font-semibold text-nv-text">{v.name}</span>
                         <span className="text-[10px] text-nv-faint">{v.human}</span>
+                        {v.status === 'thinking' && (
+                          <span className="text-[9.5px] flex items-center gap-1" style={{ color: '#e8a33d' }}>
+                            <span className="w-1 h-1 rounded-full animate-pulse" style={{ background: '#e8a33d' }} />
+                            writing…
+                          </span>
+                        )}
+                        {v.status === 'waiting' && <span className="text-[9.5px] text-nv-faint">waiting their turn</span>}
                       </summary>
                       {/* Through the SAME markdown renderer every other answer uses. Council
                           members write in headings, bold and tables like any other agent, and
                           dumping the raw string here left "### What Works Well" and "**Verdict**"
                           on screen as literal characters — the one place in the app where markup
                           leaked through to the user. */}
-                      <div className="px-3 pb-2.5 pt-0.5 text-[11.5px] leading-relaxed text-nv-muted">{renderMarkdown(v.text)}</div>
+                      {v.text
+                        ? <div className="px-3 pb-2.5 pt-0.5 text-[11.5px] leading-relaxed text-nv-muted">{renderMarkdown(v.text)}</div>
+                        : v.status !== 'waiting' && <div className="px-3 pb-2.5 pt-0.5 text-[11px] text-nv-faint italic">thinking it through…</div>}
+                      {/* Round 2 — what they said once they had read each other. Kept visually
+                          apart from the opening view, because a concession is a different kind of
+                          statement from an opening argument and reads wrong merged into it. */}
+                      {v.reply && (
+                        <div className="mx-3 mb-2.5 px-2.5 py-1.5 rounded-lg border-l-2" style={{ borderColor: '#e8a33d80', background: '#e8a33d0d' }}>
+                          <div className="text-[9.5px] font-semibold mb-0.5" style={{ color: '#e8a33d' }}>After hearing the others</div>
+                          <div className="text-[11px] leading-relaxed text-nv-muted">{renderMarkdown(v.reply)}</div>
+                        </div>
+                      )}
                     </details>
                   ))}
                   {/* THE COUNCIL HAS TO END IN SOMETHING YOU CAN DO.
@@ -12029,8 +12493,21 @@ Everything you need for follow-ups is in that answer above; read it there rather
                       onClick={() => setInput('Take what the council just said and give me the ONE thing to do first, today, with what I already have.')}
                       className="text-[10px] px-2.5 py-1 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
                     >What do I do first?</button>
+                    {/* The council is wrong about something roughly as often as anyone is, and
+                        until this existed the only answers to that were to accept the plan or pay
+                        for the whole council again. */}
+                    {!msg.councilLive && !councilTalk && (
+                      <button
+                        onClick={() => { setCouncilTalk({ question: msg.content }); inputRef.current?.focus(); }}
+                        className="text-[10px] font-medium px-2.5 py-1 rounded-lg border transition-fast"
+                        style={{ borderColor: '#e8a33d66', color: '#e8a33d' }}
+                      >↩ Reply to the council</button>
+                    )}
                   </div>
-                  <p className="px-1 text-[9.5px] text-nv-faint">They are meant to disagree — where they do is usually the real decision.</p>
+                  <p className="px-1 text-[9.5px] text-nv-faint">
+                    They are meant to disagree — where they do is usually the real decision.
+                    {!msg.councilLive && ' Tell them what they got wrong and they will revise; name one of them to hear back from just that person.'}
+                  </p>
                 </div>
               ) : msg.role === 'lead_result' ? (
                 /* The whole point of the guided flow: the list is done, so the next step is one
@@ -12352,6 +12829,37 @@ Everything you need for follow-ups is in that answer above; read it there rather
             <p className="text-[10px] text-red-400 mb-1.5 px-0.5">{voiceErr}
               <button className="ml-1.5 underline opacity-60" onClick={() => { setVoiceErr(null); setVoiceStatus('idle'); }}>dismiss</button>
             </p>
+          )}
+          {/* WHO IS LISTENING, always on screen while it is the council and not the boss. A mode
+              the user cannot see is a trap; this one names itself, says how to talk to one member
+              cheaply, and leaves on one click. */}
+          {councilTalk && (
+            <div className="flex items-center gap-2 mb-2 px-2.5 py-1.5 rounded-lg border" style={{ borderColor: '#e8a33d55', background: '#e8a33d12' }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#e8a33d" strokeWidth="1.8" strokeLinecap="round" className="shrink-0">
+                <circle cx="12" cy="5" r="2" /><circle cx="5" cy="9" r="2" /><circle cx="19" cy="9" r="2" /><circle cx="7.5" cy="19" r="2" /><circle cx="16.5" cy="19" r="2" />
+              </svg>
+              <span className="text-[11px] flex-1 min-w-0 truncate" style={{ color: '#e8a33d' }}>
+                Talking to your council
+                <span className="text-nv-faint"> · correct them, push back, or ask one of them by name</span>
+                {/* WHAT THEY REMEMBER, WHERE YOU CAN SEE IT. A correction silently shapes every
+                    later answer, so it has to be visible and removable — an invisible memory that
+                    the user cannot inspect is how a single misheard sentence quietly becomes a
+                    permanent wrong assumption. */}
+                {councilMemory.length > 0 && (
+                  <span
+                    className="text-nv-faint"
+                    title={councilMemory.map((f) => `• ${f.text}`).join('\n')}
+                  > · remembers {councilMemory.length} correction{councilMemory.length === 1 ? '' : 's'} <button
+                    onClick={() => { clearCouncilFacts(); setCouncilMemory([]); }}
+                    className="underline hover:text-nv-muted"
+                  >forget</button></span>
+                )}
+              </span>
+              <button
+                onClick={() => setCouncilTalk(null)}
+                className="text-[10px] font-mono text-nv-faint hover:text-nv-muted shrink-0"
+              >✕ back to chat</button>
+            </div>
           )}
           {focusedFile && (
             <div className="flex items-center gap-2 mb-2 px-2.5 py-1.5 rounded-lg border border-accent/30 bg-accent/8">
@@ -12982,37 +13490,13 @@ Everything you need for follow-ups is in that answer above; read it there rather
              deciding this is work to delegate and writing its own review instead. */
           onCouncil={(question) => {
             setPlanOpen(false);
-            setBusy(true);
-            stopRef.current = false;
-            // A SESSION FIRST, or none of this is saved.
-            //
-            // This path bypasses send(), which is where every other turn gets its conversation
-            // created — so the council ran, filled the screen, and vanished on reload: no chat in
-            // the sidebar, nothing in the history, five model calls of real work gone. The
-            // question and the verdict are both written to the same session as ordinary messages.
-            void (async () => {
-              const sid = await ensureSession('Council review').catch(() => null);
-              const ask = 'Put my plan in front of the council.';
-              addMsg({ role: 'user', content: ask });
-              if (sid) krewDb.saveMessage(sid, 'user', ask).catch(() => {});
-              try {
-                const verdict = await runCouncil(question);
-                // The boss's own closing line, saved as the assistant turn so the conversation
-                // reads properly when it is reopened.
-                const closing = verdict.startsWith('The council has answered')
-                  ? 'The council has answered — their five views are above.'
-                  : verdict;
-                addMsg({ role: 'assistant', content: closing });
-                if (sid) krewDb.saveMessage(sid, 'assistant', closing).catch(() => {});
-              } catch (e) {
-                const msg = `The council could not be reached: ${e instanceof Error ? e.message : String(e)}`;
-                addMsg({ role: 'assistant', content: msg });
-                if (sid) krewDb.saveMessage(sid, 'assistant', msg).catch(() => {});
-              } finally {
-                setBusy(false);
-                setAgentStep(null);
-              }
-            })();
+            // On adris.tech credit, say what it costs first — see CouncilCostNotice. On the user's
+            // own key or a local model there is nothing of theirs to warn about, so it just runs.
+            if (mode === 'nivara') {
+              addMsgHere({ role: 'council_setup', content: 'Ask the council?', councilSetup: { question, source: mode } });
+              return;
+            }
+            startCouncil(question, { debate: true });
           }}
         />
       )}
