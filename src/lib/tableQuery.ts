@@ -48,6 +48,19 @@ const isSepRow = (l: string) => /^\|?[\s:|-]+\|?$/.test(l.trim()) && l.includes(
  * mostly short, mostly non-numeric, and no cell that is obviously data (an email, a long address).
  * Only the first few rows are considered — a header is never on line 40.
  */
+/**
+ * True when the chosen "header" is actually the first row of DATA.
+ *
+ * A sheet exported without headers, or pasted from a selection that missed the top row, has real
+ * values where the labels should be. Taking them as column names loses that row entirely — and on
+ * a two-row list, that is half the file. Emails, URLs and phone numbers never appear in a header.
+ */
+function headerIsReallyData(cells: string[]): boolean {
+  const filled = cells.map((c) => (c || '').trim()).filter(Boolean);
+  if (!filled.length) return false;
+  return filled.some((c) => /^[^@\s]+@[^@\s]+\.[^@\s]{2,}/.test(c) || /^https?:\/\//i.test(c) || /^[+(]?[\d][\d\s().-]{8,}\d$/.test(c));
+}
+
 function pickHeaderRow(rows: string[][]): number {
   let best = 0, bestScore = -1;
   for (let i = 0; i < Math.min(rows.length, 8); i++) {
@@ -130,16 +143,30 @@ function parseDelimited(src: string): Table | null {
   if (agreeing < Math.max(2, Math.ceil(sample.length / 2))) return null;
   const rows = lines.map((l) => splitDelimited(l, bestDelim));
   const h = pickHeaderRow(rows);
-  const headers = rows[h].map((c, i) => c || `Column ${i + 1}`);
+  // A file with no header row at all: the top line holds real values. Give the columns generic
+  // names and keep every row as data, rather than consuming the first record as labels.
+  const noHeader = headerIsReallyData(rows[h]);
+  const headers = noHeader
+    ? rows[h].map((_, i) => `Column ${i + 1}`)
+    : rows[h].map((c, i) => c || `Column ${i + 1}`);
   const width = headers.length;
-  const body = rows.slice(h + 1)
+  const body = rows.slice(noHeader ? h : h + 1)
     .map((r) => (r.length >= width ? r.slice(0, width) : [...r, ...Array(width - r.length).fill('')]))
     .filter((r) => r.some((c) => c && c !== '—' && c !== '-'));
   return body.length ? { headers, rows: body } : null;
 }
 
 export function parseAnyTable(text: string): Table | null {
-  const src = String(text || '');
+  // NON-BREAKING SPACES FIRST, ALWAYS.
+  //
+  // Every HTML editor turns runs of spaces into &nbsp; — that is what keeps the columns aligned on
+  // screen. The character it leaves behind is U+00A0, which is NOT matched by \s in the split
+  // patterns below, so a table that looks perfectly columnar to the user parses as one enormous
+  // single-column blob and the file is reported as containing no table at all. Two other invisible
+  // characters do the same thing: the zero-width space and the BOM.
+  const src = String(text || '')
+    .replace(/ /g, ' ')
+    .replace(/[​﻿]/g, '');
   if (!src.trim()) return null;
 
   // HTML first: if the body has a <table>, that is authoritative — a converted markdown version of
@@ -192,14 +219,19 @@ export function parseAnyTable(text: string): Table | null {
 // Account, Firm; EMAIL, E-Mail, Mail ID, Email Address, Contact Email. Matching on one spelling is
 // how a file "has no email column" while plainly having one. These are the aliases actually seen in
 // the wild, ordered so the most specific wins.
-export type CanonField = 'name' | 'person' | 'company' | 'email' | 'phone' | 'city' | 'country' | 'website' | 'title' | 'linkedin' | 'status' | 'id';
+export type CanonField = 'name' | 'person' | 'company' | 'lastName' | 'email' | 'phone' | 'city' | 'country' | 'website' | 'title' | 'linkedin' | 'status' | 'id';
 
 const FIELD_ALIASES: Record<CanonField, RegExp> = {
   // A row's own label. Kept separate from `person` and `company` because a vendor sheet has ONE
   // name column and it is the organisation.
   name:     /^(?:supplier|vendor|party|account|customer|client|firm|business|entity|org(?:anisation|anization)?|company|contact|full)?[\s_-]*name$|^name$|^supplier$|^vendor$|^party$|^account$/i,
-  person:   /(?:contact|owner|founder|director|poc|point.of.contact|attention|attn|person|representative|rep)[\s_-]*(?:name|person)?$|^(?:first|last|full)[\s_-]*name$/i,
-  company:  /(?:company|organisation|organization|firm|business|employer|account)[\s_-]*(?:name)?$/i,
+  person:   /(?:contact|owner|founder|director|poc|point.of.contact|attention|attn|person|representative|rep)[\s_-]*(?:name|person)?$|^(?:first|fore|given|full)[\s_-]*name$|^fname$/i,
+  // English plus the words other languages use, since an export is written by whoever made it.
+  company:  /(?:company|organisation|organization|firm|business|employer|account)[\s_-]*(?:name)?$|^(?:firma|firmenname|société|societe|entreprise|empresa|azienda|bedrijf|ragione\s*sociale|raz[oó]n\s*social)$/i,
+  // A CRM export splits the person across two columns far more often than not. Without this the
+  // whole list is on first-name terms with strangers — "Hi Ravi" to someone you have never met,
+  // and two different Ravis indistinguishable in the campaign.
+  lastName: /^(?:last|sur|family)[\s_-]*name$|^lname$|^surname$/i,
   email:    /e[\s_-]*mail|^mail([\s_-]*id)?$|email[\s_-]*(?:id|address)/i,
   phone:    /phone|mobile|contact[\s_-]*(?:no|number)|whats[\s_-]*app|tel(?:ephone)?|cell/i,
   city:     /city|town|district|location|locality|place/i,
@@ -222,7 +254,7 @@ export function mapFields(headers: string[]): Record<CanonField, number> {
   const out = {} as Record<CanonField, number>;
   const taken = new Set<number>();
   // Order matters: the most specific patterns claim their column first.
-  const order: CanonField[] = ['linkedin', 'email', 'phone', 'website', 'title', 'status', 'person', 'company', 'name', 'city', 'country', 'id'];
+  const order: CanonField[] = ['linkedin', 'email', 'phone', 'website', 'title', 'status', 'lastName', 'person', 'company', 'name', 'city', 'country', 'id'];
   for (const f of order) {
     const re = FIELD_ALIASES[f];
     let idx = -1;
@@ -481,6 +513,177 @@ export function looksLikeHeaderRow(raw?: string): boolean {
   if (words.length < 3) return false;
   const hits = (flat.match(HEADER_WORDS) || []).length;
   return hits >= 3 && hits >= words.length / 2;
+}
+
+// ─── Turning a file into contacts ─────────────────────────────────────────────
+//
+// This is the whole "who is in this list" decision, in one pure function.
+//
+// It used to live inside the chat component, spread across a heuristic gate, two competing parsers
+// and a merge loop — which is why the same class of bug kept coming back wearing a different face:
+// contacts named "1074", a campaign built from somebody else's list, and "I don't have anyone to
+// reach out to yet" said about a file full of names and email addresses. Each was a different link
+// in a chain that could not be tested end to end, so each fix was verified on the piece that had
+// broken rather than on the answer the user actually gets.
+//
+// Here the input is text and the output is contacts, so a test can assert the thing that matters.
+
+export interface ExtractedContact {
+  name: string;
+  company: string;
+  headline: string;
+  url: string;
+  email: string;
+  emails: string[];
+  phone: string;
+  website: string;
+  entityKind: 'person' | 'company';
+}
+
+export interface ExtractResult {
+  contacts: ExtractedContact[];
+  /** Every row accounted for, so the caller can say where its number came from. */
+  stats: { total: number; kept: number; noContact: number; noName: number; duplicate: number; companies: number; people: number };
+  /** Plain English for when nothing came out — shown to the user, never swallowed. */
+  problem: string;
+  headers: string[];
+}
+
+const EMPTY_STATS = { total: 0, kept: 0, noContact: 0, noName: 0, duplicate: 0, companies: 0, people: 0 };
+
+/**
+ * Read a file of any shape into contacts.
+ *
+ * `requireContact` — a row with a name but no email, phone or profile cannot be messaged, so by
+ * default it is counted and dropped rather than padding a campaign with people who can never be
+ * reached. Callers that just want to see the rows can turn it off.
+ */
+export function extractContacts(text: string, requireContact = true): ExtractResult {
+  const table = parseAnyTable(text);
+  if (!table) {
+    return { contacts: [], stats: { ...EMPTY_STATS }, headers: [], problem: 'No table found — the columns may not be separated by tabs, commas or pipes.' };
+  }
+  const f = mapFields(table.headers);
+  // ── FIND THE CONTACT COLUMNS BY WHAT IS IN THEM ───────────────────────────────────────────
+  //
+  // "Courriel", "Correo", "Mail ID", "E-post", or a sheet with no header row at all — the word
+  // above a column of email addresses can be anything, but the addresses themselves are
+  // unmistakable. Same for phone numbers and LinkedIn URLs. Detecting these by content instead of
+  // vocabulary is what makes an unfamiliar export work on the first try rather than after someone
+  // adds another word to a list.
+  const sniff = table.rows.slice(0, 60);
+  const colHas = (c: number, re: RegExp) => {
+    const vals = sniff.map((r) => (r[c] || '').trim()).filter(Boolean);
+    if (!vals.length) return 0;
+    return vals.filter((v) => re.test(v)).length / vals.length;
+  };
+  if (f.email < 0) for (let c = 0; c < table.headers.length; c++) {
+    if (colHas(c, /^[^@\s]+@[^@\s]+\.[^@\s]{2,}/) >= 0.5) { f.email = c; break; }
+  }
+  if (f.linkedin < 0) for (let c = 0; c < table.headers.length; c++) {
+    if (colHas(c, /linkedin\.com\/in\//i) >= 0.5) { f.linkedin = c; break; }
+  }
+  if (f.phone < 0) for (let c = 0; c < table.headers.length; c++) {
+    if (c === f.email || c === f.id) continue;
+    // A phone number: 7+ digits, and not a year, an amount or a serial (those have no separators
+    // and no leading +, and tend to sit in columns we have already claimed).
+    if (colHas(c, /^[+(]?[\d][\d\s().-]{6,}\d$/) >= 0.6) { f.phone = c; break; }
+  }
+  // A person column if the sheet has one (a CRM export), else the general name column (a vendor
+  // master), else the company. Falling back through all three is what makes one function work on
+  // every export instead of one schema.
+  let iName = f.person >= 0 ? f.person : f.name >= 0 ? f.name : f.company;
+  const stats = { ...EMPTY_STATS, total: table.rows.length };
+  // ── WHEN THE HEADER TELLS US NOTHING, READ THE DATA ────────────────────────────────────────
+  //
+  // No vocabulary list will ever cover every export: headers arrive in other languages, as
+  // internal jargon ("Party", "Ledger A/c"), or as "Column 3" because the sheet never had a
+  // header at all. Chasing the words is a losing game — so when none matches, pick the column
+  // whose CONTENTS look most like names: text with letters in it, not codes, not emails, not
+  // URLs, not numbers, and not all identical. That is a property of the data, so it works on a
+  // list nobody has seen before, which is the whole requirement.
+  if (iName < 0) {
+    let best = -1, bestScore = 0;
+    const sample = table.rows.slice(0, 60);
+    for (let c = 0; c < table.headers.length; c++) {
+      if (c === f.email || c === f.phone || c === f.linkedin || c === f.website || c === f.id || c === f.status) continue;
+      const vals = sample.map((r) => (r[c] || '').trim()).filter(Boolean);
+      if (!vals.length) continue;
+      const nameish = vals.filter((v) =>
+        /[A-Za-zÀ-ɏ]{2}/.test(v)          // has real letters (accents included)
+        && !looksLikeIdentifier(v)
+        && !v.includes('@') && !/^https?:\/\//i.test(v)
+        && v.length <= 90).length;
+      const distinct = new Set(vals.map((v) => v.toLowerCase())).size;
+      // DISTINCTNESS IS DECISIVE. A Country column is pure letters and passes every other test,
+      // and on a sheet where every row says "INDIA" it would otherwise be chosen as the name —
+      // producing a campaign of contacts all called India. Names are nearly all different; a
+      // category column repeats. Anything under two thirds distinct is not a name column.
+      const variety = distinct / vals.length;
+      if (variety < 0.66) continue;
+      const score = (nameish / vals.length) * variety;
+      if (score > bestScore) { bestScore = score; best = c; }
+    }
+    // Better than half the cells must look like names, or we are guessing rather than reading.
+    if (bestScore >= 0.5) iName = best;
+  }
+  if (iName < 0) {
+    return { contacts: [], stats, headers: table.headers, problem: `No column looks like a name. Columns found: ${table.headers.join(', ')}.` };
+  }
+  const cell = (r: string[], i: number) => (i >= 0 ? (r[i] || '').trim() : '');
+  const out: ExtractedContact[] = [];
+  const seen = new Set<string>();
+  for (const r of table.rows) {
+    // Join a split first/last name back together before anything else looks at it.
+    const last = cell(r, f.lastName);
+    const name = [cell(r, iName), iName === f.person ? last : ''].filter(Boolean).join(' ').trim();
+    // A contact must have a NAME. "1074", "IN00110430" and a header row that leaked through as
+    // data are things nobody can write a message to or recognise in a list.
+    if (!name || name === '—' || looksLikeIdentifier(name) || looksLikeHeaderRow(name)) { stats.noName++; continue; }
+    const emails = splitEmailCell(cell(r, f.email));
+    const phone = cell(r, f.phone);
+    const li = cell(r, f.linkedin);
+    const m = /(https?:\/\/[^\s)\]]*linkedin\.com\/in\/[^\s)\]]+)/i.exec(li);
+    if (requireContact && !emails.length && !m && !phone) { stats.noContact++; continue; }
+    const key = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (seen.has(key)) { stats.duplicate++; continue; }   // most exports list a supplier twice
+    seen.add(key);
+    const company = f.company >= 0 ? cell(r, f.company) : (f.person >= 0 && f.name >= 0 ? cell(r, f.name) : '');
+    // A filled person column means the row names a human even on an otherwise company-shaped sheet.
+    const isCompany = f.person >= 0 && cell(r, f.person) ? false : looksLikeCompanyName(name);
+    if (isCompany) stats.companies++; else stats.people++;
+    stats.kept++;
+    out.push({
+      name,
+      company: company || (isCompany ? name : ''),
+      headline: [company && company !== name ? company : '', cell(r, f.title), cell(r, f.city), cell(r, f.country)]
+        .map((s) => s.trim()).filter((s) => s && s !== '—').join(' · ').slice(0, 140),
+      url: m ? m[1] : '',
+      email: emails[0] || '',
+      emails,
+      phone,
+      website: cell(r, f.website),
+      entityKind: isCompany ? 'company' : 'person',
+    });
+  }
+  let problem = '';
+  if (!out.length) {
+    problem = stats.noContact > stats.noName
+      ? `All ${stats.total} rows have a name but none has an email, phone or LinkedIn — there is no way to contact them.`
+      : `None of the ${stats.total} rows had a usable name (the name column read as codes or numbers). Columns found: ${table.headers.join(', ')}.`;
+  }
+  return { contacts: out, stats, headers: table.headers, problem };
+}
+
+/** Every address in one cell — exports put three in a single field, separated by anything. */
+export function splitEmailCell(cell?: string): string[] {
+  return String(cell || '')
+    .replace(/ /g, ' ')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .split(/[,;/|\s]+/)
+    .map((s) => s.replace(/^[[(<]+|[\])>.]+$/g, '').trim().toLowerCase())
+    .filter((s) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s))
+    .filter((s, i, a) => a.indexOf(s) === i);
 }
 
 /** Render a table back to markdown. */

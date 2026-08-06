@@ -34,7 +34,7 @@ import { getImageBudget, unitsForModel } from '../../lib/imageQuota';
 import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining } from '../../lib/tokenTier';
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
 import { builtInSkillsBlock, learnSkill } from '../../lib/skillGraph';
-import { parseAnyTable, mapFields, looksLikeCompanyName, looksLikeIdentifier, looksLikeHeaderRow } from '../../lib/tableQuery';
+import { parseAnyTable, looksLikeIdentifier, looksLikeHeaderRow, extractContacts } from '../../lib/tableQuery';
 import { observeForRole, roleBlock } from '../../lib/userRole';
 import SkillsPanel from './SkillsPanel';
 import PlanPanel from './PlanPanel';
@@ -6429,63 +6429,36 @@ The prompt must be production-ready — specific enough for a motion designer to
     entityKind?: OutreachContact['entityKind']; company?: string; phone?: string; website?: string;
   };
   /** What happened to every row, so the campaign can SAY where its number came from. */
-  type IntakeStats = { total: number; kept: number; noContact: number; duplicate: number; companies: number; people: number; name?: string };
+  type IntakeStats = { total: number; kept: number; noContact: number; duplicate: number; companies: number; people: number; name?: string; problem?: string; headers?: string[] };
   const lastIntakeRef = useRef<IntakeStats | null>(null);
 
+  /**
+   * Read an ordinary imported sheet as outreach contacts.
+   *
+   * The decision itself lives in tableQuery.extractContacts — one pure function, so it can be
+   * tested against the answer the user actually gets rather than against the piece that happened
+   * to break. This wrapper only adapts the result to the shape the campaign builder wants and
+   * records the funnel for the message afterwards.
+   */
   function parseGenericContactRows(text: string): GenericRow[] {
-    const t = parseAnyTable(text);
-    if (!t) return [];
-    const f = mapFields(t.headers);
-    // A row's identity: a person column if the sheet has one, otherwise the general name column,
-    // otherwise the company. A supplier master has only the last two; a CRM export has all three.
-    const iName = f.person >= 0 ? f.person : f.name >= 0 ? f.name : f.company;
-    if (iName < 0) return [];
-    const cell = (r: string[], i: number) => (i >= 0 ? (r[i] || '').trim() : '');
-    const out: GenericRow[] = [];
-    const seen = new Set<string>();
-    const stats: IntakeStats = { total: t.rows.length, kept: 0, noContact: 0, duplicate: 0, companies: 0, people: 0 };
-    for (const r of t.rows) {
-      const name = cell(r, iName);
-      if (!name || name === '—') { stats.noContact++; continue; }
-      // A CONTACT MUST HAVE A NAME. "1074", "IN00110430" and a header row that leaked through as
-      // data are all things the user cannot write a message to and cannot recognise in a list —
-      // and a campaign full of them is worse than no campaign, because it looks finished.
-      if (looksLikeIdentifier(name) || looksLikeHeaderRow(name)) { stats.noContact++; continue; }
-      const emails = splitEmails(cell(r, f.email));
-      const phone = cell(r, f.phone);
-      const li = cell(r, f.linkedin);
-      const m = /(https?:\/\/[^\s)\]]*linkedin\.com\/in\/[^\s)\]]+)/i.exec(li);
-      // NO WAY TO REACH THEM IS NOT A CONTACT. A supplier master carries hundreds of rows with a
-      // name and nothing else; drafting for those inflates the campaign with people who can never
-      // be messaged, and the count stops meaning anything. Counted and reported, never silent.
-      if (!emails.length && !m && !phone) { stats.noContact++; continue; }
-      const key = name.toLowerCase().replace(/[^a-z0-9]/g, '');
-      if (seen.has(key)) { stats.duplicate++; continue; }   // most exports list a supplier twice
-      seen.add(key);
-      // A person column present AND filled means the row names a human even when the sheet is
-      // otherwise about companies — that person is who to write to.
-      const company = f.company >= 0 ? cell(r, f.company) : (f.person >= 0 && f.name >= 0 ? cell(r, f.name) : '');
-      const isCompany = f.person >= 0 && cell(r, f.person)
-        ? false
-        : looksLikeCompanyName(name);
-      if (isCompany) stats.companies++; else stats.people++;
-      stats.kept++;
-      out.push({
-        name,
-        company: company || (isCompany ? name : ''),
-        headline: [company && company !== name ? company : '', cell(r, f.title), cell(r, f.city), cell(r, f.country)]
-          .map((s) => s.trim()).filter((s) => s && s !== '—').join(' · ').slice(0, 140),
-        url: m ? m[1] : '',
-        email: emails[0],
-        emails,
-        phone,
-        website: cell(r, f.website),
-        entityKind: isCompany ? 'company' : 'person',
-      });
-    }
-    lastIntakeRef.current = stats;
-    return out;
+    const res = extractContacts(text);
+    lastIntakeRef.current = {
+      total: res.stats.total,
+      kept: res.stats.kept,
+      noContact: res.stats.noContact + res.stats.noName,
+      duplicate: res.stats.duplicate,
+      companies: res.stats.companies,
+      people: res.stats.people,
+      problem: res.problem,
+      headers: res.headers,
+    };
+    return res.contacts.map((c) => ({
+      name: c.name, headline: c.headline, url: c.url,
+      email: c.email || undefined, emails: c.emails,
+      entityKind: c.entityKind, company: c.company, phone: c.phone, website: c.website,
+    }));
   }
+
   // A cell that is a saved outreach status label → the OutreachStatus it maps to (else undefined).
   // Lets parseContactRows read the Status column of the outreach-progress note so re-attaching it
   // continues from where the user left off instead of re-drafting people already contacted.
@@ -7669,15 +7642,16 @@ _None of them had everything you ticked, so I've saved them rather than lose the
       // the columns it has, and the first line — which is enough to see the real problem.
       const picked = attachedFiles.find((f) => f.content);
       if (picked) {
-        const t = parseAnyTable(picked.content);
+        // The extractor already worked out WHY, in plain English. Repeat it rather than guessing
+        // a second time — a wrong diagnosis wastes more of the user's time than no diagnosis.
+        const res = extractContacts(picked.content);
         const firstLine = picked.content.split('\n').map((l) => l.trim()).filter(Boolean)[0] || '';
-        const detail = t
-          ? `I read a table with **${t.rows.length} rows** and these columns: ${t.headers.join(' · ')}.\n\n`
-            + `But none of the rows gave me a usable contact — every one was missing a name I could use, or had no email, phone or profile at all.`
-            + `${t.rows.length ? `\n\nThe first row reads: ${t.rows[0].slice(0, 6).map((c) => c || '—').join(' · ')}` : ''}`
-          : `I couldn't find a table in it at all (${Math.round(picked.content.length / 1024)} KB of text). The first line reads:\n\n> ${firstLine.slice(0, 200)}`;
+        const detail = res.headers.length
+          ? `I read a table with **${res.stats.total} rows** and these columns:\n\n${res.headers.map((h) => `\`${h}\``).join(' · ')}\n\n${res.problem}`
+            + (res.stats.noContact ? `\n\n(${res.stats.noContact} rows had a name but nothing to contact them on.)` : '')
+          : `I couldn't find a table in it at all — ${Math.round(picked.content.length / 1024)} KB of text with no columns I could separate. The first line reads:\n\n> ${firstLine.slice(0, 200)}`;
         const msg = `I opened **${picked.name}** but couldn't build a contact list from it.\n\n${detail}\n\n`
-          + `Tell me which column holds the name and which holds the email and I'll use those — or open the file in the Brain and check the columns are separated properly.`;
+          + `Tell me which column holds the name and which holds the email and I'll use those.`;
         addMsg({ role: 'assistant', content: msg });
         if (sid) krewDb.saveMessage(sid, 'assistant', msg).catch(() => {});
         return;
