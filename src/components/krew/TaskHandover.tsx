@@ -1,9 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { PlanStep } from '../../lib/planStore';
 import {
-  type WorkOrder, parseWorkOrder, formatWorkOrder, workOrderInstruction, blankWorkOrder, deriveSteps,
+  type WorkOrder, parseWorkOrder, formatWorkOrder, workOrderInstruction, blankWorkOrder, deriveSteps, routingText,
 } from '../../lib/workOrder';
-import { routeTeam } from '../../lib/taskRouting';
+import { routeTeam, routeTask } from '../../lib/taskRouting';
 import { AGENT_BY_KEY, agentHandle } from '../../lib/krewAgents';
 
 /**
@@ -97,6 +97,22 @@ export default function TaskHandover({ step, planTitle, draft, onRun, onSaveOnly
   useEffect(() => {
     setTeam((t) => (t.length ? t : suggested.slice(0, 3).map((a) => a.key)));
   }, [suggested]);
+
+  // The steps no ticked agent is actually a specialist for, with who would be. Computed from the
+  // same routing view the pipeline uses, so this warns about exactly what will go wrong there and
+  // not about something subtly different. Steps that match no rule at all are not "uncovered" —
+  // nobody is a specialist in "pass/fail: 4 replies", and flagging those would cry wolf.
+  const uncovered = useMemo(() => {
+    const units = order.steps.filter((s) => s.trim());
+    const work = units.length ? units : deriveSteps(order.summary);
+    return work
+      .map((s) => ({ what: s.length > 46 ? `${s.slice(0, 46).trim()}…` : s, all: routeTask(routingText(s))?.agents ?? [] }))
+      .filter((u) => u.all.length > 0 && !u.all.some((k) => team.includes(k)))
+      .map((u) => ({
+        what: u.what,
+        who: u.all.slice(0, 2).map((k) => AGENT_BY_KEY[k]).filter(Boolean).map((a) => agentHandle(a)),
+      }));
+  }, [order.steps, order.summary, team]);
 
   useEffect(() => {
     if (started.current || step.brief) return;
@@ -270,6 +286,19 @@ export default function TaskHandover({ step, planTitle, draft, onRun, onSaveOnly
                       ? `${suggested.find((a) => a.key === team[0])?.handle ?? team[0]} takes the whole thing.`
                       : 'Whoever the boss thinks fits.'}
                 </p>
+                {/* WORK NOBODY TICKED CAN ACTUALLY DO.
+                    Untick the engineer and "smoke-test the install on a clean VM" does not fail —
+                    it silently lands on whoever holds the step before it, which on a real run meant
+                    a sales agent was asked to test an installer. The pipeline cannot invent an agent
+                    the user did not approve, so the only place this is fixable is here, before it is
+                    handed over, while ticking one more box still costs nothing. */}
+                {uncovered.length > 0 && (
+                  <p className="text-[9.5px] mt-1 leading-snug" style={{ color: 'var(--nv-amber, #d97706)' }}>
+                    Nobody ticked can really do: {uncovered.map((u) => `"${u.what}"`).join(', ')}
+                    {uncovered.some((u) => u.who) && ` — ${[...new Set(uncovered.flatMap((u) => u.who))].join(' or ')} could.`}
+                    {' '}It will fall to whoever has the step before it.
+                  </p>
+                )}
               </div>
 
               <div>

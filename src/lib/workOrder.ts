@@ -322,6 +322,36 @@ function splitSentences(line: string): string[] {
  * Deliberately conservative: a fragment too short to route is glued back onto the one before it,
  * because "Record time-to-first-answer" is a real instruction and "Pass/fail:" alone is not.
  */
+/**
+ * The part of a step that says what the WORK is, with the deliverable's own content taken out.
+ *
+ * A work order quotes the thing being made — the one-liner to write, the cold message to send —
+ * and the router reads the whole step, so the quoted material votes on who does the job. It votes
+ * badly, because it is written in the language of its own subject rather than of the task:
+ *
+ *   "Message = 3 sentences naming the pain ("… Open to a 15-min call to see if this hurts you?")"
+ *
+ * routes to the AUTOMATION agent, on "15-min call", because that looks like scheduling. It is not
+ * scheduling; it is a sentence somebody has to write. Same trap in step one, where "local models
+ * scan your code & docs" inside the quoted one-liner pulls in the engineers.
+ *
+ * Only ever used to decide WHO. The agent is always handed the step in full — they need the quote,
+ * it is the thing they are making.
+ */
+export function routingText(step: string): string {
+  // Quotation marks only. Brackets were tried too and cost more than they saved: "(Brain or CSV)"
+  // is what identifies "save the filtered sheet" as spreadsheet work, and dropping it left the step
+  // matching nothing, so the one agent on that team who could have taken it never saw it.
+  const stripped = step
+    .replace(/"[^"]*"/g, ' ')
+    .replace(/“[^”]*”/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  // A step that was almost entirely quotation has nothing left to route on — better the noisy
+  // original than a two-word fragment that matches whatever rule happens to be first.
+  return stripped.length >= 12 ? stripped : step;
+}
+
 export function deriveSteps(brief: string, max = 8): string[] {
   const text = (brief || '').replace(/\r/g, '').trim();
   if (!text) return [];
@@ -426,23 +456,44 @@ export function planFromWorkOrder(
       .trim(),
   );
 
-  // Assign each step to the best-suited member of the NAMED team — the user picked these people and
-  // we do not get to add one they did not approve.
+  // ── A STAGE IS A CONTIGUOUS PHASE OF THE WORK, NOT A PILE OF MATCHING STEPS ──
   //
-  // A step no approved agent matches used to go to the first of them, which on the user's own order
-  // meant the content planner was handed the install smoke-test AND the pass/fail rule AND the
-  // timing — five of seven steps — while an approved agent got nothing at all and was dropped from
-  // the pipeline entirely. Unmatched work now goes to whoever is carrying the least, so everyone
-  // the user ticked actually gets a share and nobody is left holding the whole order.
-  const byAgent = new Map<string, string[]>();
-  const load = (k: string) => byAgent.get(k)?.length ?? 0;
-  for (const s of steps) {
-    const wanted = routeFor(s).find((k) => keys.includes(k))
-      ?? keys.reduce((a, b) => (load(b) < load(a) ? b : a), keys[0]);
-    byAgent.set(wanted, [...(byAgent.get(wanted) ?? []), s]);
+  // Matching each step to its best specialist independently is right about WHO and silent about
+  // WHEN, and a pipeline runs in one direction. On the user's day-3 order the writer legitimately
+  // matched step 1 (the one-liner), step 5 (rewrite the pain sentence) and step 7 (record the
+  // install timing) — so she ran FIRST holding two steps that cannot start until the outreach and
+  // the install have happened. Her answer was the one-liner, then "both are blocked on other
+  // specialists' deliverables, I'll act when those land." She was right, and nothing came back to
+  // her, because an agent appears in the pipeline exactly once (the handler skips a repeat key).
+  //
+  // So steps keep their order and each agent gets ONE unbroken run of them. A step whose specialist
+  // has already had their turn joins the run in progress instead of reopening a closed one.
+  const owner: string[] = [];
+  for (let i = 0; i < steps.length; i++) {
+    // Every approved agent the router would consider for this step, best first — not just the top
+    // one. Taking only the top name and giving up when their run had closed is what sent "write the
+    // 3-sentence pain message" to the automation manager while an approved MARKETING writer, who
+    // was sitting right there in the same alternates list and had not run yet, got nothing at all.
+    const matches = routeFor(routingText(steps[i])).filter((k) => keys.includes(k));
+    // Usable = the agent currently mid-run (their block simply continues), or anyone whose turn has
+    // not come yet (they open a new block). Never someone whose block has already closed.
+    const match = matches.find((k) => k === owner[i - 1] || !owner.includes(k));
+    if (match) { owner[i] = match; continue; }
+    // No approved specialist, or the right one has already been and gone. Either way this belongs
+    // with the step in front of it: "record the time-to-first-answer" is part of running the test,
+    // not a separate job, and whoever just did the test is the only one holding the answer.
+    owner[i] = owner[i - 1]
+      // Nothing in front of it yet — hand the opening steps to whoever the work reaches first.
+      ?? steps.slice(i + 1).map((s) => routeFor(routingText(s)).find((k) => keys.includes(k))).find(Boolean)
+      ?? keys[0];
   }
-  // Keep the panel's order, and drop anyone who ended up with nothing to do.
-  const ordered = keys.filter((k) => (byAgent.get(k)?.length ?? 0) > 0);
+  const byAgent = new Map<string, string[]>();
+  steps.forEach((s, i) => byAgent.set(owner[i], [...(byAgent.get(owner[i]) ?? []), s]));
+  // Run in the order the WORK runs, not the order the user happened to tick the boxes. The panel's
+  // order is alphabetical-ish and means nothing; a pipeline whose second stage needs the third
+  // stage's output is the whole problem this function exists to solve. Anyone who ended up with
+  // nothing to do is dropped rather than being given a stage to be idle in.
+  const ordered = owner.filter((k, i) => owner.indexOf(k) === i);
   const crew = ordered.length ? ordered : keys.slice(0, 1);
 
   return crew.map((key, i) => {

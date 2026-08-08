@@ -10855,7 +10855,16 @@ Everything you need for follow-ups is in that answer above; read it there rather
                 const wfRawTask = String(del.task ?? '');
                 // Mark current phase as running
                 setTaskPhases((prev) => prev.map((p, i) => i === phIdx ? { ...p, status: 'running' as const } : p));
-                const wfTask = wfResults.length > 0 ? wfRawTask.replace(/\{\{prev\}\}/g, wfResults[wfResults.length - 1]) : wfRawTask;
+                // {{prev}} IS THE LAST STEP THAT ACTUALLY PRODUCED SOMETHING.
+                //
+                // It used to be literally the previous entry, empty or not — so one silent step
+                // wiped the pipeline for everyone after it. On the user's day-3 run the ops step
+                // returned nothing, and the marketing step behind it opened with an empty {{prev}},
+                // concluded it had no data to evaluate, and wrote a report about the absence. Three
+                // agents' work was sitting in wfResults the whole time, one slot further back.
+                const wfPrev = [...wfResults].reverse().find((r) => r.trim().length > 0) ?? '';
+                const wfTask = wfRawTask.replace(/\{\{prev\}\}/g, wfPrev
+                  || '(Nothing usable came back from the steps before you. Do your own part from the brief above, and say in one line that you had nothing to build on.)');
                 const wfAgent = AGENT_BY_KEY[wfKey];
                 if (!wfAgent || delegatedAgents.has(wfKey)) {
                   // Invalid or duplicate agent — mark this phase done so the bar still completes.
@@ -10885,10 +10894,9 @@ Everything you need for follow-ups is in that answer above; read it there rather
                 // Same "ran out of steps while still working" signal as the single-delegate loop —
                 // forces a real final answer instead of a silent/empty step result.
                 let wfCutOff = false;
-                // Same anyToolRan backstop as the single-delegate loop: a step that already ran a
-                // real tool but whose LAST turn came back empty (stream hiccup, model just stops)
-                // must still get the wrap-up chance, not silently become "(no response)".
-                let wfAnyToolRan = false;
+                // (The old wfAnyToolRan flag gated the empty-answer wrap-up on a tool having run.
+                //  That gate is gone — see the break below — because the step most in need of the
+                //  wrap-up is the one that ran nothing and said nothing.)
                 // superseded(), not stopRef alone — a delegate that keeps running after Stop is
                 // exactly how a specialist came back talking after the user ended the turn.
                 for (let ds = 0; ds < 8 && !superseded(); ds++) {
@@ -10928,9 +10936,15 @@ Everything you need for follow-ups is in that answer above; read it there rather
                   let dm = wfFinal.match(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/) ?? wfFinal.match(/<tool_code>\s*([\s\S]*?)\s*<\/tool_code>/);
                   if (!dm) { const ot = ['<tool_call>','<tool_code>'].find(t => wfFinal.includes(t)); if (ot) { const after = wfFinal.slice(wfFinal.indexOf(ot) + ot.length).trim(); const cl = ['</tool_call>','</tool_code>'].reduce((s,t) => s.split(t).join(''), after).trim(); if (cl.startsWith('{')) dm = ['', cl] as unknown as RegExpMatchArray; } }
                   if (!dm) {
-                    // Same backstop as the single-delegate loop: real tool work happened this step
-                    // but the model's final turn came back with nothing — force the wrap-up.
-                    if (wfAnyToolRan && !wfAccum.trim()) wfCutOff = true;
+                    // Same backstop as the single-delegate loop: the model's final turn came back
+                    // with nothing — force the wrap-up rather than letting the step end silently.
+                    //
+                    // This used to require that a tool had already run, which left the worst case
+                    // uncovered: an agent handed a step it could not act on answers with nothing at
+                    // all, on its very first turn, having called no tool. That is precisely how the
+                    // ops step became "(no response)" — and a step that says nothing is worse than
+                    // one that says why, because the reason is what tells the user what to fix.
+                    if (!wfAccum.trim()) wfCutOff = true;
                     break; // no tool call anywhere in the text — genuine final answer
                   }
                   let dParsed: Record<string, unknown> | null = null;
@@ -10948,7 +10962,6 @@ Everything you need for follow-ups is in that answer above; read it there rather
                   const dTool = String(dParsed.tool ?? ''); const dRoot = { ...dParsed } as Record<string, unknown>; delete dRoot.tool;
                   const dArgs = (dParsed.args && typeof dParsed.args === 'object') ? { ...dRoot, ...(dParsed.args as Record<string, unknown>) } : dRoot;
                   setAgentStep(`${agentHandle(wfAgent)} · ${dTool.replace(/_/g,' ')}…`); updateLastMsg((wfAccum || '') + `\n\n*${agentHandle(wfAgent)} is using ${dTool.replace(/_/g,' ')}…*`);
-                  wfAnyToolRan = true;
                   let dRes = ''; try { dRes = await executeTool(dTool, dArgs, creds, requestTerminalApproval, wfKey, user?.id ?? '', `${sidRef.current ?? 'main'}-${wfKey}`); if (dTool.startsWith('browser_') && dRes.includes('[agent-browser not installed')) setBrowserNudge(true); } catch (e) { dRes = `Error: ${e}`; }
                   if (superseded()) break;   // user stopped mid-tool — don't re-show the indicator
                   const cappedWfRes = dRes.length > 3000 ? dRes.slice(0, 3000) + '\n…[truncated for context]' : dRes;
@@ -10961,7 +10974,12 @@ Everything you need for follow-ups is in that answer above; read it there rather
                 // net as the single-delegate loop, so a step never silently returns "(no response)".
                 if (wfCutOff && !stopRef.current) {
                   setAgentStep(`${agentHandle(wfAgent)} · finishing up…`);
-                  wfHist.push({ role: 'user', content: 'STOP using tools now. From everything you have already found this run, output the COMPLETE final result right now — the full table (and any drafts requested), formatted cleanly. Do NOT call any more tools, do NOT say the data was slow, and do NOT return an empty reply. If some rows are thin, include what you have and note it in one line.' });
+                  // The "give me the full table" push is right for a step that HAS the data and
+                  // stalled on the way to writing it out, and dangerous for one that has nothing:
+                  // told to produce a table or else, a model produces a table. Since this now also
+                  // catches steps that never ran a tool, saying plainly that it could not be done
+                  // has to be an allowed answer — otherwise the fix for silence is invention.
+                  wfHist.push({ role: 'user', content: 'STOP using tools now. From everything you have already found this run, output the COMPLETE final result right now — the full table (and any drafts requested), formatted cleanly. Do NOT call any more tools, do NOT say the data was slow, and do NOT return an empty reply. If some rows are thin, include what you have and note it in one line. If you genuinely could not do your part of this — the data was not there, the step depends on something nobody has done yet, or it needs the user\'s own hands — then say exactly that in one or two lines and stop. That is a real answer and it is the one I want. Never invent rows, names, numbers or results to fill the gap.' });
                   const wfWrap = await streamTurnWithRetry(wfHist, wfSys, () => {}).catch(() => ({ text: '', truncated: false }));
                   const wfWrapClean = (wfWrap.text || '').replace(/<tool_call>[\s\S]*/g, '').replace(/<tool_code>[\s\S]*/g, '').replace(/CHOICES_BLOCK:[\s\S]*/g, '').trim();
                   if (wfWrapClean) wfAccum = wfAccum ? wfAccum + '\n\n' + wfWrapClean : wfWrapClean;
