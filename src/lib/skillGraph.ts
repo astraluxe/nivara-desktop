@@ -142,7 +142,7 @@ export const SKILL_GRAPH: SkillDef[] = [
     tools: ['query_table'],
     triggers: /\b(spreadsheet|excel|xlsx?|csv|sheet|vendor master|the table|column|columns|\brows?\b|filter(ed)?|sort|only the ones|which of (them|these)|based on (the )?(location|city|region|size|revenue|sector)|from (the|my) (file|list|sheet))\b/i,
     needs: ['brain'],
-    guide: 'Big sheets: use query_table, never recall_from_brain — recall truncates a 4,000-row sheet to its first few rows and you would answer from a fraction of the data without knowing it. Call query_table with no "where" first to learn the columns, then again with a filter ("Location contains Bengaluru; Employees > 50") and only the columns you need. If it says a column does not exist, use the column names it lists — never guess a second time. If it says no rows matched, that is a real answer about the filter, NOT evidence the sheet is empty.',
+    guide: 'Big sheets: query_table is the tool — it reads the real rows. (recall_from_brain truncates a 4,000-row sheet to its first few, so you would answer from a fraction of the data without knowing it; for an ordinary NOTE recall_from_brain is still exactly right.) Never ask the user to paste or export a sheet you can read with query_table. Call query_table with no "where" first to learn the columns, then again with a filter ("Location contains Bengaluru; Employees > 50") and only the columns you need. If it says a column does not exist, use the column names it lists — never guess a second time. If it says no rows matched, that is a real answer about the filter, NOT evidence the sheet is empty.',
   },
   {
     id: 'decisions',

@@ -302,7 +302,8 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
                     ? parseWorkOrder(s.brief, s.action)
                     : { ...blankWorkOrder(s.action), doneWhen: s.doneWhen ?? '' };
                   if (s.doneWhen && !order.doneWhen) order.doneWhen = s.doneWhen;
-                  const crew = (r?.agents ?? []).map((k) => AGENT_BY_KEY[k]).filter(Boolean).map((a) => agentHandle(a)).slice(0, 3);
+                  const crew = (r?.agents ?? []).map((k) => AGENT_BY_KEY[k]).filter(Boolean)
+                    .slice(0, 3).map((a) => ({ key: a.key, handle: agentHandle(a) }));
                   onRunStep(
                     `${workOrderInstruction(order, s.action, s.day, crew)}\n\n`
                     + 'Check what I have ALREADY done first — my outreach lists, my lead lists in the Brain, my LinkedIn — and pick up from there instead of starting over.',

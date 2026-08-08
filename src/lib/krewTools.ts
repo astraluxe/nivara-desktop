@@ -717,7 +717,7 @@ export const SYSTEM_TOOLS: ToolDef[] = [
   },
   {
     name: 'query_table',
-    description: 'Read ONLY the rows you need out of a big table/spreadsheet saved in the Brain (a vendor master, a lead list, an export — thousands of rows). Call it with no "where" FIRST to see the columns, the row count and a few sample rows; then call it again with a filter to get exactly the rows that matter. Always use this instead of recalling the whole file: recall_from_brain truncates a big sheet to its first few rows, and reading all of it wastes the user\'s tokens on data the request never mentioned.',
+    description: 'THE way to read a big table/spreadsheet saved in the Brain (a vendor master, a lead list, an export — thousands of rows). Call it with no "where" FIRST to see the columns, the row count and a few sample rows; then call it again with a filter to get exactly the rows that matter. Prefer it over recall_from_brain for a SHEET, which truncates a big one to its first few rows. This is the tool that means you never have to ask the user to paste or export their own data — if you want their list, call this.',
     parameters: {
       title:   { type: 'string', description: 'Title of the Brain note holding the table (e.g. "Vendor master 1"). A close match is fine.', required: true },
       where:   { type: 'string', description: 'Filter, ANDed, e.g. "Location contains Bengaluru; Employees > 50" or "City is Pune". Operators: contains, is, is not, >, <, >=, <=, starts with, ends with, is empty, is not empty, in (a|b|c). A bare word searches every column. Leave EMPTY to just see the columns and sample rows.', required: false },

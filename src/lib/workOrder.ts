@@ -29,6 +29,9 @@ export interface WorkOrder {
   asks: string[];
 }
 
+/** An agent the work can go to: the key the TOOL needs, and the handle a PERSON reads. */
+export interface TeamMember { key: string; handle: string }
+
 export function blankWorkOrder(action = ''): WorkOrder {
   return { summary: action, who: '', uses: [], steps: [], doneWhen: '', asks: [] };
 }
@@ -167,21 +170,41 @@ export function formatWorkOrder(w: WorkOrder): string {
  * read it, edited it and approved it. The closing rules exist because the failure mode of a long
  * instruction is an agent that describes the work beautifully and does none of it.
  */
-export function workOrderInstruction(w: WorkOrder, action: string, day?: number, team: string[] = []): string {
+export function workOrderInstruction(
+  w: WorkOrder,
+  action: string,
+  day?: number,
+  team: TeamMember[] = [],
+): string {
   const lines: string[] = [];
   lines.push(`WORK ORDER${day ? ` — day ${day} of my plan` : ''}: ${action}`);
-  // ONE TASK IS USUALLY SEVERAL PEOPLE'S WORK.
+  // ONE TASK IS USUALLY SEVERAL PEOPLE'S WORK — BUT SAY IT THE WAY THE BOSS UNDERSTANDS.
   //
-  // "Write the one-liner, filter the sheet, and smoke-test the install" is a writer, an analyst and
-  // an engineer. Handing all of it to whoever the router picked first produced one agent writing a
-  // beautiful document about all three jobs and doing none of them. Naming the team and telling the
-  // boss to split it is what turns that back into work.
-  const crew = [w.who.trim(), ...team].map((s) => s.trim()).filter(Boolean)
-    .filter((v, i, a) => a.indexOf(v) === i);
+  // Two separate mistakes lived in the previous version of these three lines, and together they
+  // guaranteed nothing would run.
+  //
+  // First, it named people by their DISPLAY HANDLE — "Nyx.Research". delegate_to_agent takes an
+  // agent_key and resolves it with an exact lookup, so even a perfectly formed call would have come
+  // back "Unknown agent key". The keys are what the tool accepts; the handle is for the user.
+  //
+  // Second, it said "use delegate_to_agent for each part", which directly contradicts the boss's own
+  // strongest standing rule: a request with more than one deliverable goes to plan_workflow, and
+  // repeated delegation is named there as the thing that "goes empty or garbles". Given two orders
+  // that cannot both be obeyed, it obeyed neither and printed the calls as prose.
+  const crew: TeamMember[] = [];
+  for (const m of team) {
+    const key = (m?.key || '').trim();
+    if (key && !crew.some((c) => c.key === key)) crew.push({ key, handle: (m.handle || key).trim() });
+  }
   if (crew.length > 1) {
-    lines.push(`\nThis is more than one person's job. Split it across ${crew.join(', ')} — use delegate_to_agent for each part rather than doing all of it yourself, and give me their work combined at the end. If one of them cannot do a part, pass it to another before telling me it cannot be done.`);
+    lines.push(
+      `\nThis is more than one person's job — ${crew.map((c) => c.handle).join(', ')}.`
+      + '\nDo it with ONE plan_workflow call: an ordered pipeline, one agent per step, passing each step\'s output into the next with {{prev}}. '
+      + 'Do not call delegate_to_agent several times for this, and do not answer the whole thing yourself.'
+      + `\nUse these agent_key values EXACTLY as written — they are the only spellings the tool accepts:\n${crew.map((c) => `- "${c.key}"  (${c.handle})`).join('\n')}`,
+    );
   } else if (crew.length === 1) {
-    lines.push(`\nThis is for ${crew[0]}. Hand it to them.`);
+    lines.push(`\nThis is for ${crew[0].handle}. Delegate it with delegate_to_agent, agent_key exactly "${crew[0].key}".`);
   }
   if (w.summary.trim() && w.summary.trim() !== action.trim()) lines.push(`\n${w.summary.trim()}`);
   if (w.steps.length) lines.push(`\nDo these, in order:\n${w.steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`);
@@ -207,6 +230,10 @@ export function workOrderInstruction(w: WorkOrder, action: string, day?: number,
     + '- Do not claim you searched, read, checked or verified anything unless you actually called the tool that does it in THIS turn. No "research conducted via live web search" unless you ran the search.\n'
     + '- Do not present invented numbers as validated — no prices "validated with 5 prospects", no reply rates, no benchmarks you did not measure. Label a guess as a guess.\n'
     + '- Before saying you cannot reach something of mine, CHECK: you can read my saved lists and notes, filter a spreadsheet by column, search the web, drive a browser and use my connected apps. Try the tool before reporting a limitation.\n'
+    // Both agents on the failing run ended by asking the user to paste 525 rows they could have
+    // read themselves. Asking someone to hand you data you are holding the key to is the clearest
+    // possible signal that no work happened.
+    + '- NEVER ask me to paste, export or share my own data with you. My lists and sheets are in the Brain: call query_table on a big sheet (with no filter first, to see its columns), or recall_from_brain for a note. If you cannot find the one you want, say which titles you DID find and ask which of those it is.\n'
     + '- If a step genuinely needs my hands — a physical machine, a password, a decision only I can make — say so in ONE line and move on. Do not write a substitute procedure to fill the gap.\n'
     + '- Do every other step regardless, then tell me plainly which one you could not do and why.',
   );

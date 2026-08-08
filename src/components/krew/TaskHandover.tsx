@@ -77,8 +77,11 @@ export default function TaskHandover({ step, planTitle, draft, onRun, onSaveOnly
   // most plan tasks really are two or three jobs, and the failure this fixes was all of it landing
   // on one agent.
   const suggested = (routeTask(`${step.action} ${step.brief ?? ''}`)?.agents ?? [])
-    .map((k) => AGENT_BY_KEY[k]).filter(Boolean).map((a) => agentHandle(a));
-  const [team, setTeam] = useState<string[]>(() => suggested.slice(0, 3));
+    .map((k) => AGENT_BY_KEY[k]).filter(Boolean)
+    .map((a) => ({ key: a.key, handle: agentHandle(a) }));
+  // Keyed by agent KEY, never by handle: the handle is a label, and delegate_to_agent resolves
+  // agent_key with an exact lookup — a display name reaches nobody.
+  const [team, setTeam] = useState<string[]>(() => suggested.slice(0, 3).map((a) => a.key));
 
   useEffect(() => {
     if (started.current || step.brief) return;
@@ -229,16 +232,16 @@ export default function TaskHandover({ step, planTitle, draft, onRun, onSaveOnly
               <div>
                 <label className={label}>Who it goes to</label>
                 <div className="flex flex-wrap gap-1 mt-1">
-                  {suggested.map((h) => {
-                    const on = team.includes(h);
+                  {suggested.map((a) => {
+                    const on = team.includes(a.key);
                     return (
                       <button
-                        key={h}
-                        onClick={() => setTeam((t) => (on ? t.filter((x) => x !== h) : [...t, h]))}
+                        key={a.key}
+                        onClick={() => setTeam((t) => (on ? t.filter((x) => x !== a.key) : [...t, a.key]))}
                         className={`text-[10px] px-1.5 py-0.5 rounded-md border transition-fast ${
                           on ? 'border-accent/50 bg-accent/10 text-accent' : 'border-nv-border text-nv-faint hover:text-nv-muted'
                         }`}
-                      >{on ? '✓ ' : ''}{h}</button>
+                      >{on ? '✓ ' : ''}{a.handle}</button>
                     );
                   })}
                   {suggested.length === 0 && (
@@ -248,7 +251,9 @@ export default function TaskHandover({ step, planTitle, draft, onRun, onSaveOnly
                 <p className="text-[9.5px] text-nv-faint mt-1 leading-snug">
                   {team.length > 1
                     ? `Split across ${team.length} of them, one part each.`
-                    : team.length === 1 ? `${team[0]} takes the whole thing.` : 'Whoever the boss thinks fits.'}
+                    : team.length === 1
+                      ? `${suggested.find((a) => a.key === team[0])?.handle ?? team[0]} takes the whole thing.`
+                      : 'Whoever the boss thinks fits.'}
                 </p>
               </div>
 
@@ -292,7 +297,7 @@ export default function TaskHandover({ step, planTitle, draft, onRun, onSaveOnly
             disabled={!runnable}
             onClick={() => {
               const brief = formatWorkOrder(clean);
-              onRun(workOrderInstruction(clean, step.action, step.day, team), brief);
+              onRun(workOrderInstruction(clean, step.action, step.day, suggested.filter((a) => team.includes(a.key))), brief);
             }}
             className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent/85 transition-fast disabled:opacity-40"
           >Hand it over →</button>

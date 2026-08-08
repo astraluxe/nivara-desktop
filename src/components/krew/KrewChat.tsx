@@ -12,6 +12,7 @@ import { TaskProgress, type TaskPhase } from './TaskProgress';
 import { StatusGlobe } from './StatusGlobe';
 import { runParallelResearch } from '../../lib/researchSources';
 import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, KREW_AGENTS, type KrewAgent } from '../../lib/krewAgents';
+import { rescuePrintedCalls } from '../../lib/toolCallRescue';
 import { useAuth } from '../../contexts/AuthContext';
 import { extractTableRows, findLeadHeaderIndex, hasPopulatedLeadTable, mergeLeadTables, parseLeadRows, rowsToMarkdown, leadConnStatusToOutreach, looksLikePersonLead, matchesSeniority, matchesSector, peopleSearchPhrases } from '../../lib/leadTable';
 import { supabase } from '../../lib/supabase';
@@ -10124,6 +10125,26 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
         // downstream (tool parsing, the saved message, the rendered answer) must see the WHOLE
         // answer, not just the last continuation.
         if (carried) fullResponse = joinCarried(carried, fullResponse);
+
+        // THE BOSS WROTE THE CALLS OUT INSTEAD OF MAKING THEM.
+        //
+        // A real run answered a work order with three literal `delegate_to_agent("Nyx.Research",
+        // "…")` lines in the message body and then described what it was "doing in parallel".
+        // Nothing ran. The instructions that caused it are fixed, but any model can fall out of the
+        // tool-call format under a long prompt, so this is the deterministic catch underneath: the
+        // printed calls are recovered and re-issued as the call that should have been made. It only
+        // fires when there is no real tool call and every agent named actually exists.
+        {
+          const rescued = rescuePrintedCalls(fullResponse, (name) => {
+            const n = name.trim();
+            if (AGENT_BY_KEY[n]) return n;
+            const hit = KREW_AGENTS.find((a) => agentHandle(a).toLowerCase() === n.toLowerCase()
+              || a.humanName.toLowerCase() === n.toLowerCase()
+              || a.name.toLowerCase() === n.toLowerCase());
+            return hit ? hit.key : null;
+          });
+          if (rescued) fullResponse = rescued;
+        }
 
         // Check for tool call — handle <tool_call> and <tool_code> (model uses both), plus unclosed tags
         const OPEN_TAGS  = ['<tool_call>', '<tool_code>'];
