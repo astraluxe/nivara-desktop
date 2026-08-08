@@ -157,6 +157,18 @@ const RULES: Rule[] = [
     why: 'changes software',
   },
   {
+    // "Smoke-test the install on a clean VM" matched no rule at all, so it fell through to the
+    // first agent on the team — which is how a content planner was handed a release test.
+    re: /\b(smoke[- ]?test|qa\b|test (the )?(install|build|app|release)|install(er|ation)?\b|regression|verify (the )?(build|release)|clean vm|first scan|time[- ]to[- ]first)\b/i,
+    agents: ['test_writer', 'bug_hunter', 'coder'],
+    tools: [
+      ['execute_terminal', 'actually runs it and reports what happened rather than assuming'],
+      ['read_file', 'reads the real build output and logs'],
+      ['create_todo', 'raises whatever broke so it is not lost'],
+    ],
+    why: 'checks something really works',
+  },
+  {
     re: /\b(automat(e|ion)|every (monday|week|day)|recurring|on a schedule)\b/i,
     agents: ['automation_strategist', 'ops_agent'],
     tools: [
@@ -192,6 +204,36 @@ const RULES: Rule[] = [
  * correct behaviour. A confident wrong name ("give this to Slade") on a task Slade cannot do is
  * worse than no suggestion at all, because the user will act on it.
  */
+/**
+ * The team for a whole work order — routed per STEP, not over the task as one blob.
+ *
+ * Routing the blob returns the two rules that scored highest across all of it, which is fine for a
+ * headline and wrong for a team: "write the one-liner, filter the sheet, test the install" scored as
+ * writing, so the suggested team was three writers and nobody who could touch a spreadsheet. Every
+ * step then fell back to the first agent — one agent again, which is the bug this was meant to fix.
+ *
+ * Each step names its own specialist, so the team actually covers the work. Ordered by first need,
+ * capped, because a pipeline of six is slower and worse than one of three.
+ */
+export function routeTeam(texts: string[], max = 4): string[] {
+  const out: string[] = [];
+  for (const t of texts) {
+    const r = routeTask(t);
+    if (!r) continue;
+    // A step needs nobody new only when the person it would ACTUALLY pick is already here.
+    //
+    // Two wrong versions of this line came first. Taking "the best agent not already on the team"
+    // spent a slot on a second writer for a step the first writer could do, and pushed the engineer
+    // off the end of the cap. Then treating any listed alternate as coverage was worse: a content
+    // planner sits in the outreach rule's tail, so the cold-message step looked covered by a writer
+    // and the outreach specialist was never called. Only the primary counts.
+    if (out.includes(r.agents[0])) continue;
+    out.push(r.agents[0]);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
 export function routeTask(text: string): TaskRoute | null {
   const t = (text || '').trim();
   if (t.length < 4) return null;

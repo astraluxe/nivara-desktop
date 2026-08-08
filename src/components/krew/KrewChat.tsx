@@ -13,6 +13,8 @@ import { StatusGlobe } from './StatusGlobe';
 import { runParallelResearch } from '../../lib/researchSources';
 import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, KREW_AGENTS, type KrewAgent } from '../../lib/krewAgents';
 import { rescuePrintedCalls } from '../../lib/toolCallRescue';
+import { planFromWorkOrder, type Delegation } from '../../lib/workOrder';
+import { routeTask } from '../../lib/taskRouting';
 import { useAuth } from '../../contexts/AuthContext';
 import { extractTableRows, findLeadHeaderIndex, hasPopulatedLeadTable, mergeLeadTables, parseLeadRows, rowsToMarkdown, leadConnStatusToOutreach, looksLikePersonLead, matchesSeniority, matchesSector, peopleSearchPhrases } from '../../lib/leadTable';
 import { supabase } from '../../lib/supabase';
@@ -1185,7 +1187,9 @@ function proposalToFlow(proposal: AutomationProposal): { nodes: Node[]; edges: E
 // 'delegate' → inject a synthetic tool_call without calling the boss LLM
 type FastBossResult =
   | { type: 'reply';    text: string }
-  | { type: 'delegate'; agentKey: string; task: string };
+  | { type: 'delegate'; agentKey: string; task: string }
+  /** An approved work order, already split into stages — see planFromWorkOrder. */
+  | { type: 'workflow'; delegations: Delegation[] };
 
 /**
  * Is the user asking for ONE specific written thing?
@@ -1209,6 +1213,17 @@ export function namedArtifact(text: string): string {
 
 function classifyBossMessage(text: string): FastBossResult | null {
   const trimmed = text.trim();
+
+  // AN APPROVED WORK ORDER DOES NOT GET ROUTED — IT GETS RUN.
+  //
+  // The boss's highest-priority standing rule says a WRITING or STRATEGY task is answered directly
+  // and must not be delegated, "EVEN when the request has several sections". A work order reads
+  // exactly like that, so the boss kept obeying that rule and writing the whole thing itself — and
+  // two rounds of sharpening the work order's wording could not beat a rule sitting above it in the
+  // same prompt. The user approved a division of labour; the pipeline is built from their own order
+  // and injected, so no model decides whether to honour it.
+  const wf = planFromWorkOrder(trimmed, (s) => routeTask(s)?.agents ?? []);
+  if (wf && wf.length) return { type: 'workflow', delegations: wf };
 
   // Greeting-only fast-path — no LLM call at all
   if (/^(hi+|hey+|hello+|howdy|hiya|sup|what'?s up|greetings|good\s*(morning|afternoon|evening|day))[!.,?🙂]*\s*$/i.test(trimmed)) {
@@ -10047,6 +10062,14 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
             // Direct reply — no LLM, no delegation (used for greetings)
             updateLastMsg(fastBoss.text);
             fullResponse = fastBoss.text;
+            wasTruncated = false;
+          } else if (fastBoss.type === 'workflow') {
+            // The user already approved who does what. Run it.
+            setAgentStep(`Starting the work order — ${fastBoss.delegations.length} stage${fastBoss.delegations.length === 1 ? '' : 's'}`);
+            fullResponse = `<tool_call>${JSON.stringify({
+              tool: 'plan_workflow',
+              delegations: JSON.stringify(fastBoss.delegations),
+            })}</tool_call>`;
             wasTruncated = false;
           } else {
             // Bypass boss LLM — inject synthetic delegation directly

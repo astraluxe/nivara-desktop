@@ -229,6 +229,12 @@ export function workOrderInstruction(
     + '- NEVER invent a command, URL, repository, file path, endpoint or install step for my own product or systems. If you do not know it, ask me — a plausible-looking command I then run is worse than no answer.\n'
     + '- Do not claim you searched, read, checked or verified anything unless you actually called the tool that does it in THIS turn. No "research conducted via live web search" unless you ran the search.\n'
     + '- Do not present invented numbers as validated — no prices "validated with 5 prospects", no reply rates, no benchmarks you did not measure. Label a guess as a guess.\n'
+    // A run ended "Saved to Brain: ICP-Validation-Pool" having never called save_to_brain, and
+    // handed over twenty well-known founders as though they were rows from the user's sheet. Both
+    // are worse than doing nothing: the user stops looking for a file that does not exist, and
+    // starts outreach against a list they never built.
+    + '- Do not say you SAVED, CREATED, SENT or ADDED anything unless you called the tool and it worked. If you produce a list or a document, call save_to_brain so it really exists, and tell me what you named it.\n'
+    + '- Any person or company you name must come from a tool result you actually received this turn — query_table on my sheet, a search, a page you opened. A plausible list of well-known founders is not my list, and presenting one as "filtered from your Brain" is the worst thing you can hand me.\n'
     + '- Before saying you cannot reach something of mine, CHECK: you can read my saved lists and notes, filter a spreadsheet by column, search the web, drive a browser and use my connected apps. Try the tool before reporting a limitation.\n'
     // Both agents on the failing run ended by asking the user to paste 525 rows they could have
     // read themselves. Asking someone to hand you data you are holding the key to is the clearest
@@ -238,6 +244,110 @@ export function workOrderInstruction(
     + '- Do every other step regardless, then tell me plainly which one you could not do and why.',
   );
   return lines.join('\n');
+}
+
+// ─── Running a work order without asking anyone's permission to ──────────────
+//
+// Twice now an approved work order has produced one agent writing a long document about all of the
+// work and doing none of it. The instruction has been sharpened twice and it did not help, because
+// the problem was never the wording — it was that the routing decision belonged to a model at all.
+//
+// The boss carries a standing rule with the highest priority in its prompt: a task that is WRITING,
+// ADVISING or STRATEGISING should be answered directly, "EVEN when the request has several
+// sections", and explicitly must NOT be delegated. A work order — "write the one-liner, filter the
+// sheet, test the install" — reads exactly like that. So the boss was following its own rules
+// correctly, and no amount of "please delegate this" further down the same prompt was going to win.
+//
+// So the work order does not ask. The pipeline is computed here, from the order's own text, and
+// injected as the tool call the boss would have had to make. Same lesson as the council: a button
+// whose behaviour depends on a model routing correctly is not a button.
+
+export interface Delegation { agent_key: string; task: string }
+
+/** The rules every delegate gets, whichever stage it is running. */
+const HONESTY = [
+  'GROUND RULES:',
+  '- NEVER invent a command, URL, repository, file path or install step for the user\'s own product. If you do not know it, say so in one line.',
+  '- Do not claim you searched, read or verified anything unless you called the tool in THIS turn.',
+  // The failure this was written for: an answer that ended "Saved to Brain: ICP-Validation-Pool"
+  // having never called save_to_brain. A claimed save is worse than no save, because the user
+  // stops looking for the thing.
+  '- Do not claim you SAVED, CREATED, SENT or ADDED anything unless you actually called the tool and it succeeded. If you produce a list or a document, call save_to_brain so it really exists, and say what you called it.',
+  '- Do not present invented rows as the user\'s data. If you name people or companies, they must come from a tool result you actually received — query_table on their sheet, a web search, a browser page. A plausible list of well-known founders is not their list.',
+  '- NEVER ask the user to paste or export their own data. Their sheets are in the Brain: call query_table with no filter first to see the columns, then again with a filter. recall_from_brain reads an ordinary note.',
+  '- If a step genuinely needs the user\'s hands, say so in ONE line. Do not write a substitute procedure.',
+].join('\n');
+
+/**
+ * Turn an approved work order back into the pipeline that should run it.
+ *
+ * Reads the instruction that workOrderInstruction() produced — the agent keys, the numbered steps,
+ * the context — and assigns each step to whichever named agent suits it, using the same router the
+ * panel used to name them. Returns null for anything that is not a work order, so ordinary messages
+ * are untouched.
+ */
+export function planFromWorkOrder(
+  text: string,
+  routeFor: (s: string) => string[],
+): Delegation[] | null {
+  const t = text || '';
+  if (!/^\s*WORK ORDER\b/.test(t)) return null;
+
+  // The team, in the order the panel listed them: `- "content_planner"  (Meera.Content)`
+  const keys: string[] = [];
+  for (const m of t.matchAll(/^-\s*"([a-z_0-9]+)"\s*\(/gim)) {
+    if (!keys.includes(m[1])) keys.push(m[1]);
+  }
+  // A single-owner order says it in prose instead.
+  const solo = t.match(/agent_key exactly "([a-z_0-9]+)"/i);
+  if (!keys.length && solo) keys.push(solo[1]);
+  if (!keys.length) return null;
+
+  // The numbered steps, if the order has them.
+  const stepBlock = t.match(/Do these, in order:\n([\s\S]*?)(?:\n\n|$)/);
+  const steps = stepBlock
+    ? stepBlock[1].split('\n').map((l) => l.replace(/^\s*\d+\.\s*/, '').trim()).filter((l) => l.length > 3)
+    : [];
+
+  // Everything that is not the delegation preamble or the rules — the actual brief.
+  const context = t
+    .replace(/\nThis is (more than one person's job|for )[\s\S]*?(?=\n\n)/, '')
+    // The full step list is deliberately removed: each stage is handed its OWN steps below, and
+    // giving every agent the whole list is how four agents each produce the whole deliverable.
+    .replace(/\nDo these, in order:\n[\s\S]*?(?=\n\n|$)/, '')
+    .replace(/\nHOW TO NOT WASTE MY TIME:[\s\S]*$/, '')
+    .trim();
+
+  // Assign each step to the best-suited member of the named team. A step nobody matches goes to
+  // the first agent, so nothing is silently dropped.
+  const byAgent = new Map<string, string[]>();
+  for (const s of steps) {
+    const wanted = routeFor(s).find((k) => keys.includes(k)) ?? keys[0];
+    byAgent.set(wanted, [...(byAgent.get(wanted) ?? []), s]);
+  }
+  // Keep the panel's order, and drop anyone who ended up with nothing to do.
+  const ordered = keys.filter((k) => (byAgent.get(k)?.length ?? 0) > 0);
+  const crew = ordered.length ? ordered : keys.slice(0, 1);
+
+  return crew.map((key, i) => {
+    const mine = byAgent.get(key) ?? steps;
+    const isLast = i === crew.length - 1;
+    return {
+      agent_key: key,
+      task: [
+        context,
+        '',
+        mine.length ? `YOUR PART OF THIS — do exactly these, and only these:\n${mine.map((s, j) => `${j + 1}. ${s}`).join('\n')}` : 'YOUR PART: the whole of the above.',
+        i > 0 ? '\nWHAT THE PEOPLE BEFORE YOU PRODUCED — build on it, do not repeat it:\n{{prev}}' : '',
+        '',
+        HONESTY,
+        '',
+        isLast
+          ? 'YOU ARE LAST. Before you finish: save anything the order asked to be saved with save_to_brain under the name the order gives it, and add any genuine follow-up as a to-do with create_todo. Then give the user the finished work — the real content, not a description of it — and one honest line on anything nobody could do.'
+          : 'Hand back the finished content itself, not a summary of it. The next person builds directly on what you write.',
+      ].filter(Boolean).join('\n'),
+    };
+  });
 }
 
 /**

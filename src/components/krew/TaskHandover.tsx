@@ -1,9 +1,9 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { PlanStep } from '../../lib/planStore';
 import {
   type WorkOrder, parseWorkOrder, formatWorkOrder, workOrderInstruction, blankWorkOrder,
 } from '../../lib/workOrder';
-import { routeTask } from '../../lib/taskRouting';
+import { routeTeam } from '../../lib/taskRouting';
 import { AGENT_BY_KEY, agentHandle } from '../../lib/krewAgents';
 
 /**
@@ -73,15 +73,25 @@ export default function TaskHandover({ step, planTitle, draft, onRun, onSaveOnly
   const [err, setErr] = useState('');
   const started = useRef(false);
 
-  // Everyone this task could sensibly go to, worked out from the task itself. Ticked by default:
-  // most plan tasks really are two or three jobs, and the failure this fixes was all of it landing
-  // on one agent.
-  const suggested = (routeTask(`${step.action} ${step.brief ?? ''}`)?.agents ?? [])
-    .map((k) => AGENT_BY_KEY[k]).filter(Boolean)
-    .map((a) => ({ key: a.key, handle: agentHandle(a) }));
+  // Everyone this task could sensibly go to — routed per STEP, so the team actually covers the
+  // work. Routing the task as one blob returned whichever two rules scored highest over all of it,
+  // which for "write the one-liner, filter the sheet, test the install" meant three writers and
+  // nobody who could open a spreadsheet: every step then fell to the first agent and one agent did
+  // the lot, which is the exact failure this whole sheet exists to prevent.
+  const suggested = useMemo(
+    () => routeTeam([step.action, ...order.steps.filter((s) => s.trim())])
+      .map((k) => AGENT_BY_KEY[k]).filter(Boolean)
+      .map((a) => ({ key: a.key, handle: agentHandle(a) })),
+    [step.action, order.steps],
+  );
   // Keyed by agent KEY, never by handle: the handle is a label, and delegate_to_agent resolves
   // agent_key with an exact lookup — a display name reaches nobody.
-  const [team, setTeam] = useState<string[]>(() => suggested.slice(0, 3).map((a) => a.key));
+  const [team, setTeam] = useState<string[]>([]);
+  // The draft arrives after mount and brings the steps with it, so the team is only knowable then.
+  // Anything the user has already ticked is respected; this only fills an empty selection.
+  useEffect(() => {
+    setTeam((t) => (t.length ? t : suggested.slice(0, 3).map((a) => a.key)));
+  }, [suggested]);
 
   useEffect(() => {
     if (started.current || step.brief) return;
