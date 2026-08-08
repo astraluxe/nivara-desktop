@@ -695,9 +695,9 @@ export const SYSTEM_TOOLS: ToolDef[] = [
   },
   {
     name: 'open_content_studio',
-    description: "Open a FREE web tool that makes marketing content — on-brand campaign images and ads (Pomelli), or briefing docs, FAQs and podcast-style audio from the user's own documents (NotebookLM). Use it when the user wants real creative assets rather than words on a page: this app cannot generate images or audio itself, and these tools are free and already signed in inside the ADRIS browser. Call with no arguments first to see what is available and whether it works in the user's country.",
+    description: "Open a FREE web tool in the ADRIS browser, signed in as the user. SIX are available: notebooklm (turns the user's OWN documents into briefing docs, FAQs, mind maps and podcast-style audio or VIDEO overviews), trends (Google Trends — real search demand by region and city, no account needed, the best free input to positioning), imagefx (images from a written prompt), pomelli (on-brand campaigns generated from the user's real website), lookerstudio (live dashboards and reports built on a Google Sheet), gbp (Google Business Profile — the free listing that decides whether a local business appears in Maps and 'near me' searches at all). Use it whenever the user wants a real asset, real demand data or a real dashboard rather than words on a page: this app cannot generate images, audio or video itself, and none of these cost anything. Call with no arguments first to see which suits the brief and whether it works in the user's country.",
     parameters: {
-      studio: { type: 'string', description: 'Which one: "pomelli" or "notebooklm". Leave EMPTY to list what suits the brief and what each needs.', required: false },
+      studio: { type: 'string', description: 'Which one: "notebooklm", "trends", "imagefx", "pomelli", "lookerstudio" or "gbp". Leave EMPTY to list what suits the brief and what each needs.', required: false },
       brief:  { type: 'string', description: 'What the user actually wants made, in their words. Used to pick the right tool and to tell the user what to expect.', required: false },
     },
   },
@@ -2378,7 +2378,8 @@ async function executeToolCore(
       + `\n\nIf a column was read wrongly, say so — do not build outreach on a list whose names are codes.`;
   }
   if (toolName === 'open_content_studio') {
-    const { pickStudios, studioById, studioBriefing } = await import('./contentStudios');
+    const { pickStudios, studioById, studioBriefing, CONTENT_STUDIOS } = await import('./contentStudios');
+    const CONTENT_STUDIO_IDS = CONTENT_STUDIOS.map((x) => x.id);
     const brief = str(args.brief).trim();
     const wanted = str(args.studio).trim().toLowerCase();
     let where = '';
@@ -2390,12 +2391,12 @@ async function executeToolCore(
       const picks = pickStudios(brief || 'marketing content', where);
       return 'Free content tools you can drive in the ADRIS browser:\n\n'
         + picks.map((p) => studioBriefing(p)).join('\n\n')
-        + '\n\nCall open_content_studio again with studio="pomelli" or "notebooklm" to open one. '
+        + `\n\nCall open_content_studio again with studio="<id>" to open one — the ids are: ${CONTENT_STUDIO_IDS.join(', ')}. `
         + 'Only offer the user a tool that is available where they are.';
     }
 
     const studio = studioById(wanted);
-    if (!studio) return `No such studio "${wanted}". The options are: pomelli, notebooklm.`;
+    if (!studio) return `No such studio "${wanted}". The options are: ${CONTENT_STUDIO_IDS.join(', ')}.`;
     const pick = pickStudios(brief || studio.makes, where).find((p) => p.studio.id === studio.id)
       ?? { studio, availableHere: true, why: '' };
     // ── REGION LOCKS ARE A WARNING, NOT A VERDICT ─────────────────────────────────────────────

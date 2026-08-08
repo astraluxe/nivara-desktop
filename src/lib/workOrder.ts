@@ -167,10 +167,22 @@ export function formatWorkOrder(w: WorkOrder): string {
  * read it, edited it and approved it. The closing rules exist because the failure mode of a long
  * instruction is an agent that describes the work beautifully and does none of it.
  */
-export function workOrderInstruction(w: WorkOrder, action: string, day?: number): string {
+export function workOrderInstruction(w: WorkOrder, action: string, day?: number, team: string[] = []): string {
   const lines: string[] = [];
   lines.push(`WORK ORDER${day ? ` — day ${day} of my plan` : ''}: ${action}`);
-  if (w.who.trim()) lines.push(`\nThis is for ${w.who.trim()}. Hand it to them.`);
+  // ONE TASK IS USUALLY SEVERAL PEOPLE'S WORK.
+  //
+  // "Write the one-liner, filter the sheet, and smoke-test the install" is a writer, an analyst and
+  // an engineer. Handing all of it to whoever the router picked first produced one agent writing a
+  // beautiful document about all three jobs and doing none of them. Naming the team and telling the
+  // boss to split it is what turns that back into work.
+  const crew = [w.who.trim(), ...team].map((s) => s.trim()).filter(Boolean)
+    .filter((v, i, a) => a.indexOf(v) === i);
+  if (crew.length > 1) {
+    lines.push(`\nThis is more than one person's job. Split it across ${crew.join(', ')} — use delegate_to_agent for each part rather than doing all of it yourself, and give me their work combined at the end. If one of them cannot do a part, pass it to another before telling me it cannot be done.`);
+  } else if (crew.length === 1) {
+    lines.push(`\nThis is for ${crew[0]}. Hand it to them.`);
+  }
   if (w.summary.trim() && w.summary.trim() !== action.trim()) lines.push(`\n${w.summary.trim()}`);
   if (w.steps.length) lines.push(`\nDo these, in order:\n${w.steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`);
   if (w.uses.length) lines.push(`\nUse what I already have — specifically: ${w.uses.join(', ')}. Check these before creating anything new.`);
@@ -180,8 +192,23 @@ export function workOrderInstruction(w: WorkOrder, action: string, day?: number)
   }
   lines.push(
     '\nI have read and approved this work order, so start on it rather than proposing it back to me. '
-    + 'Do the parts you can with your tools — browser, files, calendar, connected apps — instead of describing how they would be done. '
-    + 'If a step turns out to be genuinely impossible, do every other step, then tell me which one you could not do and why.',
+    + 'Do the parts you can with your tools — browser, files, calendar, connected apps, my saved lists — instead of describing how they would be done.',
+  );
+  // ── The rules that stop a confident document being mistaken for work ────────
+  //
+  // Every one of these is something that actually happened on a real work order: an agent invented
+  // a git repo and an install script for the user's OWN product, wrote "research conducted via live
+  // web search" without searching, quoted pricing "validated with 5 prospects" that no one had ever
+  // validated, and said it could not reach the user's list while holding the tool that reads it.
+  // A document like that is worse than a refusal, because it looks finished.
+  lines.push(
+    '\nHOW TO NOT WASTE MY TIME:\n'
+    + '- NEVER invent a command, URL, repository, file path, endpoint or install step for my own product or systems. If you do not know it, ask me — a plausible-looking command I then run is worse than no answer.\n'
+    + '- Do not claim you searched, read, checked or verified anything unless you actually called the tool that does it in THIS turn. No "research conducted via live web search" unless you ran the search.\n'
+    + '- Do not present invented numbers as validated — no prices "validated with 5 prospects", no reply rates, no benchmarks you did not measure. Label a guess as a guess.\n'
+    + '- Before saying you cannot reach something of mine, CHECK: you can read my saved lists and notes, filter a spreadsheet by column, search the web, drive a browser and use my connected apps. Try the tool before reporting a limitation.\n'
+    + '- If a step genuinely needs my hands — a physical machine, a password, a decision only I can make — say so in ONE line and move on. Do not write a substitute procedure to fill the gap.\n'
+    + '- Do every other step regardless, then tell me plainly which one you could not do and why.',
   );
   return lines.join('\n');
 }

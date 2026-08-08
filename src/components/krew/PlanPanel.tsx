@@ -8,6 +8,7 @@ import { todos } from '../../lib/todoStore';
 import PlanCalendar from './PlanCalendar';
 import TaskHandover from './TaskHandover';
 import { routeTask } from '../../lib/taskRouting';
+import { workOrderInstruction, parseWorkOrder, blankWorkOrder } from '../../lib/workOrder';
 import { AGENT_BY_KEY, agentHandle } from '../../lib/krewAgents';
 import { loadAvailability, freeSlotsOn, to24h, describeAvailability, AVAIL_EVENT } from '../../lib/availability';
 
@@ -287,9 +288,26 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
             {s.handedOverAt && (
               <span className="text-[9px] text-nv-faint" title={new Date(s.handedOverAt).toLocaleString()}>handed over</span>
             )}
+            {/* SAME INSTRUCTION, JUST WITHOUT THE REVIEW STEP.
+                This used to send a much thinner prompt than the handover did — so the quick button
+                quietly got worse work, which is the opposite of what a shortcut should do. It now
+                builds the identical work order from whatever the task already knows (its detail,
+                its done-when, the agents that suit it) and skips only the part where you read it
+                first. */}
             {!s.done && (
               <button
-                onClick={() => onRunStep(`Help me do this step from my plan, and actually do the parts you can: "${s.action}".${s.doneWhen ? ` It counts as finished when: ${s.doneWhen}.` : ''} Check what I have ALREADY done first — my outreach list, my lead lists in the Brain, my LinkedIn — and pick up from there instead of starting over. Use your tools (browser, files, calendar, connected apps) rather than just telling me how.`)}
+                onClick={() => {
+                  const r = routeTask(`${s.action} ${s.brief ?? ''}`);
+                  const order = s.brief
+                    ? parseWorkOrder(s.brief, s.action)
+                    : { ...blankWorkOrder(s.action), doneWhen: s.doneWhen ?? '' };
+                  if (s.doneWhen && !order.doneWhen) order.doneWhen = s.doneWhen;
+                  const crew = (r?.agents ?? []).map((k) => AGENT_BY_KEY[k]).filter(Boolean).map((a) => agentHandle(a)).slice(0, 3);
+                  onRunStep(
+                    `${workOrderInstruction(order, s.action, s.day, crew)}\n\n`
+                    + 'Check what I have ALREADY done first — my outreach lists, my lead lists in the Brain, my LinkedIn — and pick up from there instead of starting over.',
+                  );
+                }}
                 className="text-[9.5px] px-1.5 py-0.5 rounded-md border border-nv-border text-nv-muted hover:bg-nv-surface2 transition-fast"
               >Just do it →</button>
             )}

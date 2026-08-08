@@ -1,8 +1,45 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { PlanStep } from '../../lib/planStore';
 import {
   type WorkOrder, parseWorkOrder, formatWorkOrder, workOrderInstruction, blankWorkOrder,
 } from '../../lib/workOrder';
+import { routeTask } from '../../lib/taskRouting';
+import { AGENT_BY_KEY, agentHandle } from '../../lib/krewAgents';
+
+/**
+ * A text box that grows to fit what is in it.
+ *
+ * The work order that arrives from a plan is often one long paragraph — the whole of a day's
+ * detail, written by the council — and a fixed three-row box showed about a tenth of it with no
+ * way to open it up. You cannot approve what you cannot read, which defeats the entire point of
+ * showing the order before it runs. It still caps and scrolls, so one enormous brief cannot push
+ * the buttons off the bottom of the screen.
+ */
+function GrowText({ value, onChange, min = 3, max = 320, ...rest }: {
+  value: string;
+  onChange: (v: string) => void;
+  min?: number;
+  max?: number;
+  placeholder?: string;
+  className?: string;
+}) {
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(Math.max(el.scrollHeight, min * 18), max)}px`;
+  }, [value, min, max]);
+  return (
+    <textarea
+      ref={ref}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      {...rest}
+      style={{ overflowY: 'auto' }}
+    />
+  );
+}
 
 // ─── Handing a task to the team ──────────────────────────────────────────────
 //
@@ -35,6 +72,13 @@ export default function TaskHandover({ step, planTitle, draft, onRun, onSaveOnly
   const [partial, setPartial] = useState('');
   const [err, setErr] = useState('');
   const started = useRef(false);
+
+  // Everyone this task could sensibly go to, worked out from the task itself. Ticked by default:
+  // most plan tasks really are two or three jobs, and the failure this fixes was all of it landing
+  // on one agent.
+  const suggested = (routeTask(`${step.action} ${step.brief ?? ''}`)?.agents ?? [])
+    .map((k) => AGENT_BY_KEY[k]).filter(Boolean).map((a) => agentHandle(a));
+  const [team, setTeam] = useState<string[]>(() => suggested.slice(0, 3));
 
   useEffect(() => {
     if (started.current || step.brief) return;
@@ -129,11 +173,22 @@ export default function TaskHandover({ step, planTitle, draft, onRun, onSaveOnly
             <>
               <div>
                 <label className={label}>What this actually means</label>
-                <textarea
-                  value={order.summary} onChange={(e) => set('summary', e.target.value)}
-                  rows={3} className={`${field} mt-1`}
+                <GrowText
+                  value={order.summary} onChange={(v) => set('summary', v)}
+                  min={3} max={340} className={`${field} mt-1`}
                   placeholder="What the task really is, in your situation."
                 />
+                {/* A plan's own detail arrives as one paragraph. Splitting it is the difference
+                    between an order an agent can follow and a wall of text it will summarise. */}
+                {order.steps.length === 0 && order.summary.split(/(?<=[.!?])\s+/).filter((x) => x.trim().length > 15).length > 2 && (
+                  <button
+                    onClick={() => setOrder((o) => {
+                      const parts = o.summary.split(/(?<=[.!?])\s+|\n+/).map((x) => x.trim()).filter((x) => x.length > 15);
+                      return { ...o, summary: parts[0] ?? o.summary, steps: parts.slice(1).slice(0, 8) };
+                    })}
+                    className="mt-1 text-[9.5px] px-1.5 py-0.5 rounded-md border border-nv-border text-nv-faint hover:text-nv-text hover:bg-nv-surface2 transition-fast"
+                  >Split this into steps →</button>
+                )}
               </div>
 
               <div>
@@ -148,8 +203,8 @@ export default function TaskHandover({ step, planTitle, draft, onRun, onSaveOnly
                   {order.steps.map((s, i) => (
                     <div key={i} className="flex items-start gap-1">
                       <span className="text-[9.5px] font-mono text-nv-faint mt-1.5 w-3.5 shrink-0 text-right">{i + 1}</span>
-                      <textarea
-                        value={s} onChange={(e) => setStep(i, e.target.value)} rows={2}
+                      <GrowText
+                        value={s} onChange={(v) => setStep(i, v)} min={2} max={200}
                         className={`${field} flex-1`}
                       />
                       <div className="flex flex-col gap-0.5 shrink-0 mt-0.5">
@@ -165,23 +220,45 @@ export default function TaskHandover({ step, planTitle, draft, onRun, onSaveOnly
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className={label}>Who takes it</label>
-                  <input
-                    value={order.who} onChange={(e) => set('who', e.target.value)}
-                    placeholder="anyone"
-                    className={`${field} mt-1`}
-                  />
+              {/* WHO IT GETS SPLIT ACROSS.
+                  "Write the one-liner, filter the sheet, smoke-test the install" is three people's
+                  work. Handing all of it to whichever agent the router named first produced one
+                  agent writing a document about all three and doing none of them — so the team is
+                  named here, shown before you approve, and the instruction tells the boss to
+                  delegate each part rather than answer the whole thing itself. */}
+              <div>
+                <label className={label}>Who it goes to</label>
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {suggested.map((h) => {
+                    const on = team.includes(h);
+                    return (
+                      <button
+                        key={h}
+                        onClick={() => setTeam((t) => (on ? t.filter((x) => x !== h) : [...t, h]))}
+                        className={`text-[10px] px-1.5 py-0.5 rounded-md border transition-fast ${
+                          on ? 'border-accent/50 bg-accent/10 text-accent' : 'border-nv-border text-nv-faint hover:text-nv-muted'
+                        }`}
+                      >{on ? '✓ ' : ''}{h}</button>
+                    );
+                  })}
+                  {suggested.length === 0 && (
+                    <span className="text-[10px] text-nv-faint">No obvious specialist — the boss will pick.</span>
+                  )}
                 </div>
-                <div>
-                  <label className={label}>Done when</label>
-                  <input
-                    value={order.doneWhen} onChange={(e) => set('doneWhen', e.target.value)}
-                    placeholder="how you'll know"
-                    className={`${field} mt-1`}
-                  />
-                </div>
+                <p className="text-[9.5px] text-nv-faint mt-1 leading-snug">
+                  {team.length > 1
+                    ? `Split across ${team.length} of them, one part each.`
+                    : team.length === 1 ? `${team[0]} takes the whole thing.` : 'Whoever the boss thinks fits.'}
+                </p>
+              </div>
+
+              <div>
+                <label className={label}>Done when</label>
+                <input
+                  value={order.doneWhen} onChange={(e) => set('doneWhen', e.target.value)}
+                  placeholder="how you'll know it's finished"
+                  className={`${field} mt-1`}
+                />
               </div>
 
               <div>
@@ -215,7 +292,7 @@ export default function TaskHandover({ step, planTitle, draft, onRun, onSaveOnly
             disabled={!runnable}
             onClick={() => {
               const brief = formatWorkOrder(clean);
-              onRun(workOrderInstruction(clean, step.action, step.day), brief);
+              onRun(workOrderInstruction(clean, step.action, step.day, team), brief);
             }}
             className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent/85 transition-fast disabled:opacity-40"
           >Hand it over →</button>
