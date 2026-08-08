@@ -18,11 +18,12 @@ import { useState, useEffect, useRef } from 'react';
 // the top. A filter that hid things would make people wonder what they were missing, and be wrong
 // the moment someone's job spans two of these.
 
-type Dept = 'all' | 'founder' | 'sales' | 'marketing' | 'coding' | 'ops' | 'research';
+type Dept = 'all' | 'founder' | 'student' | 'sales' | 'marketing' | 'coding' | 'ops' | 'research';
 
 const DEPTS: { id: Dept; label: string; blurb: string }[] = [
   { id: 'all',       label: 'Everything',  blurb: 'The manual in its natural order' },
   { id: 'founder',   label: 'Founder',     blurb: 'Plan the month, get advice, keep it moving' },
+  { id: 'student',   label: 'Student',     blurb: 'Study, research, write, and run it all free' },
   { id: 'sales',     label: 'Sales',       blurb: 'Lists, outreach, replies, meetings' },
   { id: 'marketing', label: 'Marketing',   blurb: 'Content, posts, decks, free web studios' },
   { id: 'coding',    label: 'Engineering', blurb: 'Coder, local models, MCP, terminal' },
@@ -34,11 +35,60 @@ const DEPTS: { id: Dept; label: string; blurb: string }[] = [
 const DEPT_PRIORITY: Record<Dept, string[]> = {
   all:       [],
   founder:   ['plan', 'council', 'handover', 'krew', 'todo', 'commands', 'brain'],
+  // A student's constraint is money before anything else, so what runs FREE comes first: local
+  // models and their own key, then the Brain that turns a term's reading into something reusable.
+  student:   ['start', 'models', 'brain', 'studios', 'commands', 'todo', 'krew', 'coder', 'plan'],
   sales:     ['linkedin', 'commands', 'plan', 'handover', 'krew', 'connect', 'brain'],
   marketing: ['studios', 'studio', 'krew', 'commands', 'brain', 'linkedin', 'automation'],
   coding:    ['coder', 'models', 'connect', 'autopilot', 'commands', 'guard', 'mesh'],
   ops:       ['automation', 'todo', 'connect', 'plan', 'handover', 'guard', 'vault', 'quickbar'],
   research:  ['brain', 'commands', 'studios', 'models', 'krew', 'autopilot'],
+};
+
+/**
+ * Three things worth doing first, for each kind of reader.
+ *
+ * Reordering alone answers "where do I start reading". It does not answer "what do I actually type",
+ * which is the question someone has thirty seconds after installing. These are real commands against
+ * real features — nothing aspirational, nothing that needs a paid plan unless it says so.
+ */
+const DEPT_START: Record<Dept, { do: string; how: string }[]> = {
+  all: [],
+  founder: [
+    { do: 'Get a month you can actually work through', how: 'Type /newplan. It asks about your goal and how many hours a day you really have, then writes it dated. The Plan panel shows today\'s job every morning.' },
+    { do: 'Have five advisers tear the plan apart before you commit a month to it', how: 'Type /council. They argue with each other, then the Executor writes the plan they can all live with. Reply to them if they get something wrong.' },
+    { do: 'Hand a task to the team instead of doing it', how: 'Open the Plan, press ⇄ Hand to Krew on any task, edit the work order it drafts, then release it.' },
+  ],
+  student: [
+    { do: 'Turn a term\'s reading into a revision pack — free', how: 'Attach your PDFs and lecture notes, then type /studio and pick NotebookLM. It builds a study guide, an FAQ and a mind map from YOUR sources, plus a podcast-style audio overview you can listen to on the way in.' },
+    { do: 'Run the whole app without paying for anything', how: 'Open Models and download a local model — it then runs on your own laptop with no account and no limit. Or connect a free NVIDIA or Groq key under Own key. Both leave your adris.tech allowance untouched.' },
+    { do: 'Stop losing what you read last month', how: 'Everything you save goes to the Brain, and every agent can recall it. Write the essay from your own saved sources instead of a blank page — ask for a draft "using what I saved about X".' },
+  ],
+  sales: [
+    { do: 'Build a list of real people, verified', how: 'Type /leads and set size, city, sector and seniority. Every profile is opened and checked; phone and email are read from Maps and the company site. Then one button sends it to outreach.' },
+    { do: 'Message them without it reading like a mail-merge', how: 'Type /outreach. It drafts per person from their profile, and the copilot tracks who replied. It writes a connection note for people you are not connected to yet.' },
+    { do: 'Answer replies without re-reading every thread', how: 'Type /linkedin. It reads each conversation in full, drafts a reply only where something is genuinely outstanding, and never sends anything for you.' },
+  ],
+  marketing: [
+    { do: 'Make the assets without paying for a generator', how: 'Type /studio. NotebookLM for video and podcast overviews, ImageFX for images, Pomelli for on-brand campaigns from your website — all driven in your own browser.' },
+    { do: 'Find out what people actually search for', how: 'Ask for demand or trends and an agent opens Google Trends — free, no account, and filterable to your own city. "Related queries → Rising" is where your buyers\' own words show up.' },
+    { do: 'Build a deck that says what you actually say', how: 'Type /deck. It pulls your saved positioning out of the Brain rather than inventing a story, and exports a real file.' },
+  ],
+  coding: [
+    { do: 'Work on a real project, not a chat about one', how: 'Open Coder and open your folder. Agents read the real files, run the build and the tests, and apply changes in place.' },
+    { do: 'Run it entirely on your own machine', how: 'Open Models, pull a local model, and switch the connection bar to Local. Nothing leaves the laptop — which is the point for client code.' },
+    { do: 'Give the agents your own tools', how: 'Type /mcp and add any MCP server by URL. Its tools appear alongside the built-in ones, namespaced so nothing collides.' },
+  ],
+  ops: [
+    { do: 'Make the repetitive thing run without you', how: 'Type /automate and describe it, or open the visual builder with /automations. Flows can loop, branch and run subagents.' },
+    { do: 'See the week honestly', how: 'The Plan panel refits unfinished work onto days you actually work, and never touches anything you have ticked off.' },
+    { do: 'Check a document before it commits you', how: 'Open Guard and scan a contract. It runs locally — nothing is uploaded.' },
+  ],
+  research: [
+    { do: 'Research that cites real sources', how: 'Type /research for the workspace, or ask an agent directly — it reads pages rather than recalling them, and says when it could not confirm something.' },
+    { do: 'Query a big sheet instead of reading it', how: 'Save the spreadsheet to your Brain, then ask in words: "the rows in Vendor master 1 with an email and a Bengaluru address". It filters by column without loading the lot.' },
+    { do: 'Build the knowledge base as you go', how: 'Everything saved to the Brain is linked and searchable, and agents recall from it — which cuts what each later question costs.' },
+  ],
 };
 
 /**
@@ -263,6 +313,28 @@ export default function InfoModule() {
             <button onClick={() => go('linkedin')} className="text-accent hover:underline">LinkedIn worked example</button> —
             between them they cover how most people use adris.tech day to day.
           </p>
+
+          {/* THE FILTER SHOULD PAY FOR ITSELF IMMEDIATELY.
+              Reordering answers "where do I start reading". This answers "what do I type", which
+              is the question people actually have thirty seconds after installing — and it is the
+              difference between a filter that rearranges a page and one that gets someone working. */}
+          {dept !== 'all' && DEPT_START[dept].length > 0 && (
+            <div className="mt-5 rounded-xl border border-accent/25 bg-accent/[0.05] overflow-hidden">
+              <div className="px-4 py-2 border-b border-accent/20">
+                <span className="text-[9px] font-mono uppercase tracking-wider text-accent">
+                  Start here · {DEPTS.find((d) => d.id === dept)!.label}
+                </span>
+              </div>
+              <div className="px-4 py-3 space-y-3">
+                {DEPT_START[dept].map((x) => (
+                  <div key={x.do}>
+                    <p className="text-[12.5px] font-semibold text-nv-text leading-snug">{x.do}</p>
+                    <p className="text-[12px] leading-[1.65] text-nv-muted mt-0.5">{x.how}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <Sec id="what" rank={rank}>
           <H id="what">What adris.tech is</H>

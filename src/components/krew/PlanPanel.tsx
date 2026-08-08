@@ -228,7 +228,7 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
                   <div className={s.brief || stepContext(s) ? 'mt-2 pt-2 border-t border-nv-border' : ''}>
                     {named.length > 0 && (
                       <>
-                        <p className="text-[9px] font-semibold uppercase tracking-wide text-nv-faint">Best suited — {r.why}</p>
+                        <p className="text-[9px] font-semibold uppercase tracking-wide text-nv-faint">Best suited — this task {r.why}</p>
                         <div className="flex flex-wrap gap-1 mt-1">
                           {named.map((a) => (
                             <span key={a.key} className="text-[9.5px] px-1.5 py-0.5 rounded-md border border-accent/30 bg-accent/[0.07] text-accent">
@@ -253,9 +253,18 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
                   </div>
                 );
               })()}
+              {/* THIS LINE HAS TO AGREE WITH WHAT IS ABOVE IT.
+                  It used to read "No detail was written for this one" while sitting directly under
+                  a list of suggested agents and tools — so the panel showed you detail and then
+                  told you there wasn't any. Both halves were true and together they read as a bug.
+                  What is above is INFERRED from the task's wording; what is missing is the written
+                  work order. Saying which is which is the whole fix. */}
               {!s.brief && !stepContext(s) && (
-                <p className="text-[10px] text-nv-faint leading-relaxed mt-2">
-                  No detail was written for this one. <b className="text-nv-text">Hand to Krew</b> drafts the full work order — what it means, the steps, and what done looks like — for you to edit before anything runs.
+                <p className="text-[10px] text-nv-faint leading-relaxed mt-2 pt-2 border-t border-nv-border">
+                  {routeTask(s.action)
+                    ? <>That is worked out from how the task is worded — nobody has written the real work order yet. </>
+                    : <>Nothing has been written about this task yet. </>}
+                  <b className="text-nv-text">Hand to Krew</b> drafts it — what it means for you, the steps, what it will use and what done looks like — for you to edit before anything runs.
                 </p>
               )}
               <button

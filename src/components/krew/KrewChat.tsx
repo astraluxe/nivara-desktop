@@ -11331,7 +11331,18 @@ Everything you need for follow-ups is in that answer above; read it there rather
       let last = 0;
       let lastDelta = Date.now();
       let abandoned = false;
-      const silenceMs = mode === 'local' ? 240_000 : 90_000;
+      // TWO DIFFERENT WAITS, because they mean two different things.
+      //
+      // A single budget measured from the start of the call is really a TIME-TO-FIRST-TOKEN limit,
+      // and 90 seconds of it killed the Executor — the one member whose prompt contains everybody
+      // else's answer, so the one that takes longest to think before it writes anything. Four
+      // voices went up and the plan they were all for never arrived.
+      //
+      // Waiting for a large prompt to be read is normal and can take minutes. A stream that has
+      // already started and then stops is a dead connection. Only the second deserves a short leash.
+      const firstTokenMs = mode === 'local' ? 480_000 : 300_000;
+      const stallMs      = mode === 'local' ? 240_000 : 120_000;
+      const silenceMs = () => (acc.length ? stallMs : firstTokenMs);
       try {
         const answer = streamTurnWithRetry(
           [{ role: 'user', content: prompt }],
@@ -11350,7 +11361,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
         );
         const watchdog = new Promise<null>((resolve) => {
           const t = setInterval(() => {
-            if (gone() || Date.now() - lastDelta > silenceMs) { clearInterval(t); resolve(null); }
+            if (gone() || Date.now() - lastDelta > silenceMs()) { clearInterval(t); resolve(null); }
           }, 2000);
           void answer.finally(() => clearInterval(t));
         });
@@ -11421,20 +11432,48 @@ Everything you need for follow-ups is in that answer above; read it there rather
       updateCouncilCard((m) => ({ ...m, councilStage: `${executor.humanName} is turning all of it into one plan.` }));
       setAgentStep(`${agentHandle(executor)} is writing the final plan`);
       paint();
-      const transcript = speakers.map((o) => {
+      /** The other four, at a given length each. Shorter on a retry — see below. */
+      const transcriptAt = (full: number, reply: number) => speakers.map((o) => {
         const v = live.find((x) => x.key === o.key);
         if (!v?.text) return '';
-        return `### ${o.name} (${o.humanName})\n${v.text.slice(0, 1400)}`
-          + (v.reply ? `\n**After hearing the others, ${o.humanName} added:** ${v.reply.slice(0, 500)}` : '');
+        return `### ${o.name} (${o.humanName})\n${v.text.slice(0, full)}`
+          + (v.reply ? `\n**After hearing the others, ${o.humanName} added:** ${v.reply.slice(0, reply)}` : '');
       }).filter(Boolean).join('\n\n');
-      await ask(executor,
-        `THE DECISION IN FRONT OF THE COUNCIL:\n${question}\n\n`
-        + (transcript ? `THE FULL COUNCIL TRANSCRIPT — opening views and what each said after reading the others:\n${transcript}\n\n` : '')
-        + 'You speak LAST, and the plan you write is the one the user acts on. It is not your view alone — it is the council\'s.\n'
-        + 'Before the plan, open with **What the council agreed** (3–5 bullets) and **Where they still split** (the real disagreements, named — do not smooth them over; say which way you came down and why).\n'
+
+      // The brief is the same whichever size of transcript it gets.
+      const brief =
+        'You speak LAST, and the plan you write is the one the user acts on.\n'
+        + 'YOUR OWN JUDGEMENT COUNTS TOO. You are the fifth member, not a secretary for the other four — so say plainly what YOU think should happen, including where you disagree with all of them. A plan that is only an average of other people\'s views is the weakest thing this council can produce.\n'
+        + 'Open with **What the council agreed** (3–5 bullets), then **Where they still split** — the real disagreements, named. Do not smooth them over; say which way you came down and why.\n'
         + 'Then give the plan. Every substantive point any member raised must be either FOLDED IN — naming who raised it — or explicitly rejected in one line with the reason. Do not silently drop anyone.\n'
-        + 'Give the steps as "Day N: action" lines so they can go straight into the plan panel, re-planning ONLY the unfinished ones.',
+        + 'Give the steps as "Day N: action" lines so they can go straight into the plan panel, re-planning ONLY the unfinished ones. Under each day, write the two or three lines that say what actually has to be done — which list, filtered to what, sent to whom — because the day heading on its own is not something anyone can work from.';
+
+      const t1 = transcriptAt(1400, 500);
+      let out = await ask(executor,
+        `THE DECISION IN FRONT OF THE COUNCIL:\n${question}\n\n`
+        + (t1 ? `THE FULL COUNCIL TRANSCRIPT — opening views and what each said after reading the others:\n${t1}\n\n` : '')
+        + brief,
         slot, (t) => { live[slot].text = t; });
+
+      // THE EXECUTOR IS THE ONE MEMBER WHOSE SILENCE WASTES THE WHOLE COUNCIL.
+      //
+      // Four opinions and no plan is precisely the outcome the Executor exists to prevent, and the
+      // user has already paid for the four. Its prompt is also the largest by far — everyone else's
+      // answer is in it — so when a model gives up on length, this is the call it gives up on.
+      // One retry on a much shorter transcript, which is the difference between a council that
+      // ends in a plan and one that ends in a shrug.
+      if (!out.trim() && !gone()) {
+        updateCouncilCard((m) => ({ ...m, councilStage: `${executor.humanName} is trying again on a shorter brief.` }));
+        setAgentStep(`${agentHandle(executor)} is writing the final plan (second attempt)`);
+        live[slot].status = 'thinking';
+        paint();
+        const t2 = transcriptAt(500, 0);
+        out = await ask(executor,
+          `THE DECISION IN FRONT OF THE COUNCIL:\n${question}\n\n`
+          + (t2 ? `WHAT THE REST OF THE COUNCIL ARGUED, in brief:\n${t2}\n\n` : '')
+          + brief,
+          slot, (t) => { live[slot].text = t; });
+      }
     }
 
     setTaskPhases([]);
@@ -11442,11 +11481,18 @@ Everything you need for follow-ups is in that answer above; read it there rather
     const heard = live.filter((v) => (v.text || '').trim().length > 0);
     // A council stopped half-way still shows what it managed to say — those answers were paid for,
     // and throwing them away is the one thing worse than not having asked.
+    // Say it out loud when the PLAN is the thing missing. Four opinions and no plan is a different
+    // and much worse outcome than five opinions, and it should not be left for the user to notice.
+    const noPlan = !!executor && !live.find((v) => v.key === executor.key)?.text?.trim();
     updateCouncilCard((m) => ({
       ...m,
       council: live.map((v) => ({ ...v, status: 'done' as const })).filter((v) => (v.text || '').trim()),
       councilLive: false,
-      councilStage: gone() ? 'Stopped part-way — what they had already said is kept below.' : undefined,
+      councilStage: gone()
+        ? 'Stopped part-way — what they had already said is kept below.'
+        : noPlan
+          ? `${executor!.humanName} did not come back with the final plan, even on a second, shorter attempt — so what you have below is four views and no plan. Reply here asking ${executor!.humanName} for it and he will answer on his own.`
+          : undefined,
     }));
     if (!heard.length) return 'The council could not be reached this time — no member returned an answer. Nothing was decided.';
     saveCouncilCard(question, heard);

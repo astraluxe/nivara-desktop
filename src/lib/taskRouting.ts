@@ -40,7 +40,7 @@ const RULES: Rule[] = [
       ['generate_document', 'builds the real .pptx / .pdf file, not a description of one'],
       ['recall_from_brain', 'pulls your existing positioning and numbers so the deck says what you actually say'],
     ],
-    why: 'it produces slides',
+    why: 'produces slides',
   },
   {
     re: /\b(spreadsheet|xlsx|excel|csv|filter (the )?(list|sheet|rows)|rows with|dedup|clean (the )?(list|data)|segment)\b/i,
@@ -50,7 +50,7 @@ const RULES: Rule[] = [
       ['extract_contacts', 'pulls names, emails and links out of any shape of list'],
       ['generate_document', 'writes the result back out as a real .xlsx'],
     ],
-    why: 'it is table work',
+    why: 'is spreadsheet work',
   },
   {
     re: /\b(outreach|cold (email|dm|message)|reach out|send (the )?(batch|messages|dms)|prospect(ing)?|follow[- ]?up (non-?repliers|the list))\b/i,
@@ -60,7 +60,7 @@ const RULES: Rule[] = [
       ['gmail_send_bulk', 'one separate personalised email each, never a visible group send'],
       ['query_table', 'narrows your list to the rows worth contacting first'],
     ],
-    why: 'it contacts people on a list',
+    why: 'contacts people on a list',
   },
   {
     re: /\b(lead list|find (leads|prospects|companies)|build (a )?list|target list|icp|verify (the )?(leads?|list)|enrich)\b/i,
@@ -70,7 +70,7 @@ const RULES: Rule[] = [
       ['verify_lead_list', 'opens each profile and drops the rows that do not check out'],
       ['enrich_lead_list', 'fills the missing LinkedIn, phone and email in one pass'],
     ],
-    why: 'it builds or checks a list of real people',
+    why: 'builds or checks a list of real people',
   },
   {
     re: /\b(video|loom|screen[- ]?(share|capture|record)|demo (recording|video)|podcast|audio overview|explainer)\b/i,
@@ -79,7 +79,7 @@ const RULES: Rule[] = [
       ['open_content_studio', 'drives NotebookLM, which turns your own documents into audio and video overviews free'],
       ['generate_document', 'writes the script or shot list you record from'],
     ],
-    why: 'it produces something recorded',
+    why: 'produces something recorded',
   },
   {
     re: /\b(image|logo|graphic|illustration|thumbnail|banner|gif|visual asset|creative)\b/i,
@@ -87,7 +87,7 @@ const RULES: Rule[] = [
     tools: [
       ['open_content_studio', 'drives ImageFX and Pomelli — free image and campaign generation on the open web'],
     ],
-    why: 'it produces a picture',
+    why: 'produces a picture',
   },
   {
     re: /\b(comparison page|landing page|website copy|notion page|publish (a|the) page|one-?pager|blog|article|seo)\b/i,
@@ -97,7 +97,7 @@ const RULES: Rule[] = [
       ['recall_from_brain', 'uses your saved positioning so the page and your outreach say the same thing'],
       ['web_search', 'checks what the alternatives actually claim before you compare against them'],
     ],
-    why: 'it publishes something people will read',
+    why: 'publishes something people will read',
   },
   {
     re: /\b(market research|competitor|trends?|demand|what are people searching|pricing research|landscape)\b/i,
@@ -107,7 +107,7 @@ const RULES: Rule[] = [
       ['open_content_studio', 'opens Google Trends — free, no account, real demand data by city'],
       ['fetch_open_data', 'official statistics where they exist'],
     ],
-    why: 'it is research into a market',
+    why: 'is research into a market',
   },
   {
     re: /\b(call|meeting|discovery|demo call|schedule|book (a|the)|calendar|onboard(ing)?)\b/i,
@@ -117,7 +117,7 @@ const RULES: Rule[] = [
       ['create_calendar_event', 'puts it in your actual calendar with the link'],
       ['gmail_send_email', 'sends the confirmation'],
     ],
-    why: 'it involves other people\'s time',
+    why: 'involves other people\'s time',
   },
   {
     re: /\b(inbox|reply|replied|respond to|answer (the )?(email|message|dm))\b/i,
@@ -126,7 +126,7 @@ const RULES: Rule[] = [
       ['gmail_search', 'finds the thread and reads what was actually said'],
       ['draft_linkedin_reply', 'drafts the reply — it never sends without you'],
     ],
-    why: 'it answers someone',
+    why: 'answers someone',
   },
   {
     re: /\b(agreement|contract|mou|terms|nda|legal|compliance|invoice|pricing|₹|\$\d)/i,
@@ -135,7 +135,7 @@ const RULES: Rule[] = [
       ['generate_document', 'produces the real document file'],
       ['read_file', 'reads the existing agreement locally — nothing is uploaded'],
     ],
-    why: 'it commits you to something',
+    why: 'commits you to something',
   },
   {
     re: /\b(dashboard|tracker|kpi|metrics|weekly report|results|conversion|analytics)\b/i,
@@ -145,7 +145,7 @@ const RULES: Rule[] = [
       ['open_content_studio', 'opens Looker Studio for a live dashboard on a link'],
       ['query_table', 'reads the numbers out of your saved sheets'],
     ],
-    why: 'it turns work into numbers you can see',
+    why: 'turns work into numbers you can see',
   },
   {
     re: /\b(code|build (the )?(app|feature)|bug|refactor|deploy|api|script\b)/i,
@@ -154,7 +154,7 @@ const RULES: Rule[] = [
       ['read_file', 'reads the real project on your disk'],
       ['execute_terminal', 'runs the build and the tests rather than guessing they pass'],
     ],
-    why: 'it changes software',
+    why: 'changes software',
   },
   {
     re: /\b(automat(e|ion)|every (monday|week|day)|recurring|on a schedule)\b/i,
@@ -163,7 +163,7 @@ const RULES: Rule[] = [
       ['create_automation', 'sets it running on a schedule without you'],
       ['list_automations', 'checks what is already running so nothing doubles up'],
     ],
-    why: 'it should run without you',
+    why: 'should run without you',
   },
   {
     re: /\b(post|linkedin post|tweet|thread|caption|social)\b/i,
@@ -172,7 +172,7 @@ const RULES: Rule[] = [
       ['linkedin_create_post', 'posts it, or leaves it as a draft for you to approve'],
       ['recall_from_brain', 'keeps it in the voice you have already established'],
     ],
-    why: 'it is published to an audience',
+    why: 'is published to an audience',
   },
   {
     re: /\b(write|draft|note|one[- ]?liner|positioning|messaging|define|decide|spec)\b/i,
@@ -181,7 +181,7 @@ const RULES: Rule[] = [
       ['save_to_brain', 'saves it where every other agent will find and reuse it'],
       ['recall_from_brain', 'starts from what you have already decided rather than a blank page'],
     ],
-    why: 'it is writing something down',
+    why: 'writes something down',
   },
 ];
 
@@ -207,8 +207,11 @@ export function routeTask(text: string): TaskRoute | null {
     .sort((a, b) => b.n - a.n || a.i - b.i);
   if (!scored.length) return null;
   const hit = scored[0].r;
-  // A second rule that also matches contributes its agents — real tasks are often two jobs
-  // ("filter the list AND send the batch"), and naming both is more useful than picking one.
+  // A second rule contributes its agents too. Real tasks are usually two jobs — "filter the list
+  // to rows with an email, then send the batch" is a spreadsheet job followed by an outreach one —
+  // and naming both teams is more useful than picking a winner. What made this read badly before
+  // was the phrasing, not the pairing: two clauses that each began "it is…" glued together with a
+  // comma. The clauses are now written to join.
   const also = scored[1]?.r;
   const agents = [...hit.agents, ...(also?.agents ?? [])].filter((a, i, arr) => arr.indexOf(a) === i).slice(0, 4);
   const seen = new Set<string>();
