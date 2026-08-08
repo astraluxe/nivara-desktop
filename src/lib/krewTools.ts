@@ -675,6 +675,23 @@ export const SYSTEM_TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'save_link',
+    description: 'SAVE A WEB PAGE THE USER WILL NEED AGAIN — the Notion page you just created or filled in, the Google Doc/Sheet you built, the Trello board, the profile or article you verified. Call this the moment you finish working on a page, and BEFORE you tell the user about it: a URL that only appears in a chat message is gone as soon as the conversation scrolls, so the user cannot reopen it and the next agent rebuilds it somewhere else. Saved into the Brain\'s "Links" folder, grouped by site, and de-duplicated — saving the same page twice updates it instead of making a mess. Do NOT save every page you happen to open; save the ones with something of the user\'s in them.',
+    parameters: {
+      url:      { type: 'string', description: 'The full URL of the page, exactly as it appears in the address bar. Never invent or shorten one — if you do not have the real URL, do not call this.', required: true },
+      title:    { type: 'string', description: 'What this page IS, in the user\'s words: "ICP Validation Pool (Notion)", "Day 3 smoke-test log". Not the site name.', required: true },
+      what_for: { type: 'string', description: 'Why it matters and what is on it, in one or two lines — what you did there, and what the user or the next agent would come back for.', required: false },
+      remember_as: { type: 'string', description: 'ONLY for a place the team will keep returning to — the user\'s own workspace, board or master sheet. A short key like "notion_workspace" or "outreach_board", which also files it in the shared profile every agent reads. Leave empty for an ordinary page; filling this in for one-off pages is what turns the profile into noise.', required: false },
+    },
+  },
+  {
+    name: 'find_link',
+    description: 'Look up a page already saved with save_link — by site, by a word in its name, or by what it was for. USE THIS BEFORE creating a new doc, board or page for the user: they very often already have the one you are about to duplicate, and before asking them for a URL, which they should never have to give you twice. Returns the real URLs, which you can then open with browser_open or browser_navigate.',
+    parameters: {
+      query: { type: 'string', description: 'Site, name or purpose — "notion", "ICP pool", "outreach board". Leave empty to list everything saved.', required: false },
+    },
+  },
+  {
     name: 'save_to_brain',
     description: 'Save important data to the shared BRAIN — a persistent, visual knowledge store the user can see and every agent can recall. Use it to keep a company/lead list, an outreach draft, research findings, a contact and their outreach progress, or any result worth reusing — so it is NEVER re-fetched (this saves the user tokens). Optionally connect it to a related Brain item.',
     parameters: {
@@ -1763,6 +1780,20 @@ There is a persistent shared Brain (a visual knowledge graph the user can see). 
 - CONTINUE / EDIT existing data: to extend a list, update a contact's progress, or refine a draft, recall_from_brain first, then save_to_brain with the SAME title and append: true (it adds to the stored data instead of overwriting). This is how the team builds on saved work over time.
 - CHANGE something already saved: use edit_brain(title, mode, content). mode "add" appends, "replace" overwrites, "remove" deletes the lines/rows containing the given text (e.g. drop one company from a list, or remove an outdated table). Use this instead of making a new copy when the user says "add to / remove from / update" a note that already exists.
 
+## Working ON the web — Notion, Docs, Sheets, boards
+A site the user works in is somewhere you can WORK, not just read. Notion, Google Docs/Sheets/Slides, Trello, Airtable, Linear, Canva, a CMS — the user is already signed in to all of them in the agent browser (sessions are saved permanently), so you do not need a connected API key to use them:
+- browser_open / browser_navigate to reach the page, browser_snapshot to see what is on it, then browser_click, browser_fill and browser_select to actually do the work. Snapshot BEFORE clicking — the refs come from it, and a guessed selector clicks the wrong thing.
+- If a service IS connected (its own tools appear in your list), prefer those tools — they are faster and more reliable than driving the page. The browser is for everything else.
+- Do NOT tell the user to "go and create a page in Notion" and then describe what to put in it. Open it and put it there. Describing the work is not doing the work.
+
+## Links — save the page, not just a sentence about it
+Every page you create or make useful for the user must be saved with save_link the moment it exists, BEFORE you write your reply:
+- A URL that appears only in a chat message is lost as soon as the conversation scrolls. The user cannot reopen it, and the next agent cannot either — so it gets built again, somewhere else, and now there are two.
+- save_link files it in the Brain's "Links" folder, grouped by site, and de-duplicates by URL: saving the same page twice UPDATES the entry instead of littering. Give it a title in the user's terms ("ICP Validation Pool (Notion)"), and say in what_for what is on it and what you did there.
+- Use remember_as ONLY for a place the team will keep returning to — the user's own workspace, master sheet or board. That also puts it in the shared profile every agent reads, which is what stops the next agent asking the user for a URL they have already given.
+- BEFORE creating any new doc, board or page: call find_link first. The user very often already has the thing you are about to duplicate. And never ask the user for a URL until find_link and read_browser_history have both come up empty.
+- Only save real addresses you actually landed on. A link you invented is worse than none: the user clicks it, lands nowhere, and stops trusting the whole folder.
+
 ## Attached files = reference, NOT a reason to duplicate
 - When the user attaches a file (especially one from their Brain — its header says "Connected in Brain"), it is the BASIS to work FROM. Read it, use its data, and EXPAND on it. Do NOT re-create it.
 - NEVER create a second copy of something that already exists (e.g. a new "PRODUCT.md" or a new "Lead list" when one is attached/already in the Brain). To grow a list, ADD the new rows to the SAME existing list (save_to_brain with the same title / append) — one list that gets longer, never "Lead list", "Lead list 2", "Bangalore leads", etc.
@@ -2266,6 +2297,45 @@ async function executeToolCore(
   }
 
   // ── Brain (shared knowledge graph) ────────────────────────────────────────
+  if (toolName === 'save_link') {
+    const { brain, linkSite, normalizeLinkUrl } = await import('./knowledgeStore');
+    const raw = str(args.url).trim();
+    const url = normalizeLinkUrl(raw);
+    // An invented URL is worse than no URL — the user clicks it, lands nowhere, and now distrusts
+    // every other link in the folder. Refuse anything that is not a real http(s) address.
+    if (!url) return `[save_link needs a real http/https URL — "${raw.slice(0, 80)}" is not one, so nothing was saved. If you do not have the actual address of the page, say so instead of guessing.]`;
+    const title = str(args.title).trim();
+    if (!title) return `[save_link needs a "title" saying what this page is — nothing was saved.]`;
+    const node = brain.addLink({ url, title, body: str(args.what_for).trim() });
+    if (!node) return `[save_link could not store that URL — nothing was saved.]`;
+    // A place the team keeps coming back to also belongs in the shared profile, so the NEXT agent
+    // starts with it instead of asking the user for it again. Deliberately opt-in: filing every
+    // one-off page here is what would turn the profile into noise nobody reads.
+    const key = str(args.remember_as).trim().replace(/\s+/g, '_').toLowerCase();
+    let alsoProfile = '';
+    if (key) {
+      try {
+        await krewMemoryDb.save(KREW_PROFILE_KEY, key, url);
+        alsoProfile = ` Also saved to the shared profile as "${key}", so every agent knows where it is.`;
+      } catch { /* the link itself is saved; the profile copy is a bonus */ }
+    }
+    return `Saved "${node.title}" to the Brain under Links — ${linkSite(url)}: ${url}${alsoProfile} The user can open it from the Brain, and you can find it again with find_link.`;
+  }
+
+  if (toolName === 'find_link') {
+    const { brain, linkSite } = await import('./knowledgeStore');
+    const q = str(args.query).trim();
+    const hits = brain.findLinks(q).slice(0, 25);
+    if (!hits.length) {
+      const total = brain.listLinks().length;
+      return total
+        ? `No saved page matches "${q}". There are ${total} saved — try a broader word, or list them all by calling find_link with no query.`
+        : `Nothing has been saved with save_link yet. If you create or find a page worth keeping, save it so it is here next time.`;
+    }
+    return `${hits.length} saved page${hits.length === 1 ? '' : 's'}${q ? ` matching "${q}"` : ''}:\n`
+      + hits.map((n) => `- ${n.title} [${linkSite(n.url ?? '')}] — ${n.url}${n.body ? `\n  ${n.body.slice(0, 200)}` : ''}`).join('\n');
+  }
+
   if (toolName === 'save_to_brain') {
     const { brain } = await import('./knowledgeStore');
     const validKind = ['list', 'outreach', 'contact', 'data', 'note', 'source', 'file', 'skill'];

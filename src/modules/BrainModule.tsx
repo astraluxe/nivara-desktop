@@ -10,11 +10,13 @@ import { todos, type TodoItem } from '../lib/todoStore';
 const KIND_COLOR: Record<BrainNodeKind, string> = {
   note: '#7C5CFF', file: '#38bdf8', data: '#34d399', list: '#f59e0b',
   outreach: '#f472b6', contact: '#a78bfa', source: '#94a3b8', image: '#f97316', skill: '#22d3ee',
+  link: '#2dd4bf',
 };
 const KIND_LABEL: Record<BrainNodeKind, string> = {
   note: 'Note', file: 'File', data: 'Data', list: 'List', outreach: 'Outreach', contact: 'Contact', source: 'Source', image: 'Picture', skill: 'Skill',
+  link: 'Link',
 };
-const KINDS: BrainNodeKind[] = ['note', 'file', 'data', 'list', 'outreach', 'contact', 'source', 'image', 'skill'];
+const KINDS: BrainNodeKind[] = ['note', 'file', 'data', 'list', 'outreach', 'contact', 'source', 'image', 'skill', 'link'];
 
 const NODE_W = 150, NODE_H = 38;
 
@@ -1082,6 +1084,14 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
     else setDiskSize(null);
     return () => { cancelled = true; };
   }, [filePath]);
+  const [copiedUrl, setCopiedUrl] = useState(false);
+  /** Open a saved page in the AGENT's browser — the one window where the user is already signed in
+   *  to Notion, Google and the rest, and the same one the agent used when it saved the link. */
+  const openUrl = async (u: string) => {
+    if (!u) return;
+    try { await invoke<string>('run_browser_persistent', { args: `open "${u}"` }); }
+    catch { try { window.open(u, '_blank', 'noreferrer'); } catch { /* nothing left to try */ } }
+  };
   const textBytes = useMemo(() => new Blob([node.body || '']).size, [node.body]);
   const storageBytes = diskSize != null ? diskSize + textBytes : textBytes;
   // A very large body (a big spreadsheet — thousands of rows) is rendered READ-ONLY: a live
@@ -1634,6 +1644,30 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
           </button>
           <button onClick={() => { save(); onClose(); }} className="text-xl ml-0.5" style={{ color: 'var(--nv-faint)' }}>×</button>
         </div>
+
+        {/* THE PAGE ITSELF, one click away.
+            A saved link whose URL you have to hunt for in the body text is barely saved at all —
+            the whole reason it is here is to be reopened. The address is shown in full as well as
+            being clickable, because the user checking WHERE something points before they click it
+            is exactly the habit that catches an agent that saved the wrong page. */}
+        {node.url && (
+          <div className="flex items-center gap-2 px-5 py-2 shrink-0" style={{ borderBottom: '1px solid var(--nv-border)', background: 'var(--nv-bg)' }}>
+            <span className="text-[9px] font-mono uppercase tracking-wider shrink-0" style={{ color: 'var(--nv-faint)' }}>Link</span>
+            <a href={node.url} target="_blank" rel="noreferrer"
+              className="text-[11px] truncate hover:underline" style={{ color: 'var(--nv-accent, #7C5CFF)' }}
+              title={node.url}>{node.url}</a>
+            <button
+              onClick={() => { void navigator.clipboard?.writeText(node.url ?? ''); setCopiedUrl(true); setTimeout(() => setCopiedUrl(false), 1400); }}
+              className="ml-auto text-[10px] px-2 py-1 rounded-md shrink-0 transition-fast hover:bg-nv-surface2"
+              style={{ color: 'var(--nv-muted)', border: '1px solid var(--nv-border)' }}
+            >{copiedUrl ? 'Copied' : 'Copy'}</button>
+            <button
+              onClick={() => { void openUrl(node.url ?? ''); }}
+              className="text-[10px] px-2 py-1 rounded-md shrink-0 transition-fast hover:bg-nv-surface2"
+              style={{ color: 'var(--nv-muted)', border: '1px solid var(--nv-border)' }}
+            >Open ↗</button>
+          </div>
+        )}
 
         {/* Table toolbar — Excel-style structure editing (hidden for read-only files: PDF/deck) */}
         {!readOnlyFile && (

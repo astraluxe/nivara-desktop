@@ -7,8 +7,8 @@ import {
 import { todos } from '../../lib/todoStore';
 import PlanCalendar from './PlanCalendar';
 import TaskHandover from './TaskHandover';
-import { routeTask } from '../../lib/taskRouting';
-import { workOrderInstruction, parseWorkOrder, blankWorkOrder } from '../../lib/workOrder';
+import { routeTask, routeTeam } from '../../lib/taskRouting';
+import { workOrderInstruction, parseWorkOrder, blankWorkOrder, deriveSteps } from '../../lib/workOrder';
 import { AGENT_BY_KEY, agentHandle } from '../../lib/krewAgents';
 import { loadAvailability, freeSlotsOn, to24h, describeAvailability, AVAIL_EVENT } from '../../lib/availability';
 
@@ -297,13 +297,18 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
             {!s.done && (
               <button
                 onClick={() => {
-                  const r = routeTask(`${s.action} ${s.brief ?? ''}`);
                   const order = s.brief
                     ? parseWorkOrder(s.brief, s.action)
                     : { ...blankWorkOrder(s.action), doneWhen: s.doneWhen ?? '' };
                   if (s.doneWhen && !order.doneWhen) order.doneWhen = s.doneWhen;
-                  const crew = (r?.agents ?? []).map((k) => AGENT_BY_KEY[k]).filter(Boolean)
-                    .slice(0, 3).map((a) => ({ key: a.key, handle: agentHandle(a) }));
+                  // Routed per unit of work, exactly as the handover sheet does it. This button
+                  // builds the SAME instruction, so it was quietly the last place left where one
+                  // blob route picked the team — three writers for a task that needed an analyst
+                  // and a tester, and then one of them did the lot.
+                  const units = order.steps.filter((x) => x.trim());
+                  const crew = routeTeam([s.action, ...(units.length ? units : deriveSteps(order.summary))])
+                    .map((k) => AGENT_BY_KEY[k]).filter(Boolean)
+                    .map((a) => ({ key: a.key, handle: agentHandle(a) }));
                   onRunStep(
                     `${workOrderInstruction(order, s.action, s.day, crew)}\n\n`
                     + 'Check what I have ALREADY done first — my outreach lists, my lead lists in the Brain, my LinkedIn — and pick up from there instead of starting over.',

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { PlanStep } from '../../lib/planStore';
 import {
-  type WorkOrder, parseWorkOrder, formatWorkOrder, workOrderInstruction, blankWorkOrder,
+  type WorkOrder, parseWorkOrder, formatWorkOrder, workOrderInstruction, blankWorkOrder, deriveSteps,
 } from '../../lib/workOrder';
 import { routeTeam } from '../../lib/taskRouting';
 import { AGENT_BY_KEY, agentHandle } from '../../lib/krewAgents';
@@ -78,11 +78,16 @@ export default function TaskHandover({ step, planTitle, draft, onRun, onSaveOnly
   // which for "write the one-liner, filter the sheet, test the install" meant three writers and
   // nobody who could open a spreadsheet: every step then fell to the first agent and one agent did
   // the lot, which is the exact failure this whole sheet exists to prevent.
+  // A draft that wrote its brief as prose instead of STEP: lines has no steps to route, and routing
+  // the title alone lands right back on one agent. The prose is read as the list it actually is.
   const suggested = useMemo(
-    () => routeTeam([step.action, ...order.steps.filter((s) => s.trim())])
-      .map((k) => AGENT_BY_KEY[k]).filter(Boolean)
-      .map((a) => ({ key: a.key, handle: agentHandle(a) })),
-    [step.action, order.steps],
+    () => {
+      const units = order.steps.filter((s) => s.trim());
+      return routeTeam([step.action, ...(units.length ? units : deriveSteps(order.summary))])
+        .map((k) => AGENT_BY_KEY[k]).filter(Boolean)
+        .map((a) => ({ key: a.key, handle: agentHandle(a) }));
+    },
+    [step.action, order.steps, order.summary],
   );
   // Keyed by agent KEY, never by handle: the handle is a label, and delegate_to_agent resolves
   // agent_key with an exact lookup — a display name reaches nobody.

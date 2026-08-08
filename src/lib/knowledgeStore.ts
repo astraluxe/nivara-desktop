@@ -6,11 +6,16 @@
 // SAME store. Agents save results here and recall them later instead of
 // re-fetching → fewer tokens, and nothing is forgotten between turns.
 
-export type BrainNodeKind = 'note' | 'file' | 'data' | 'list' | 'outreach' | 'contact' | 'source' | 'image' | 'skill';
+export type BrainNodeKind = 'note' | 'file' | 'data' | 'list' | 'outreach' | 'contact' | 'source' | 'image' | 'skill' | 'link';
 
 // Title of the single hub node that all saved pictures (logos, photos the user drops in
 // chat) connect to — the Brain's "Pictures folder".
 export const PICTURES_HUB = 'Pictures';
+
+// The same idea for web pages an agent worked on or found worth keeping: the Notion page it
+// filled in, the sheet it built, the profile it verified. One hub, then one group per site
+// underneath it — see addLink for why the grouping is not optional.
+export const LINKS_HUB = 'Links';
 
 export interface BrainNode {
   id: string;
@@ -18,6 +23,13 @@ export interface BrainNode {
   title: string;
   body: string;          // the content/summary agents can recall
   filePath?: string;     // for attached files (path saved + connected to its data)
+  /**
+   * The page this node IS, for link nodes — the Notion doc an agent filled in, the sheet it built.
+   *
+   * A first-class field rather than a URL buried in the body, because everything useful depends on
+   * having it separately: opening it in one click, and knowing that two saves are the same page.
+   */
+  url?: string;
   ref?: string;          // user's free-text reference note about this node
   /**
    * The COMPLETE content, kept aside while the note is narrowed to a filtered subset.
@@ -251,7 +263,7 @@ export const brain = {
   all: read,
 
   /** Add a node. De-dupes by title (case-insensitive) — updates the existing one instead. */
-  addNode(n: { title: string; body?: string; kind?: BrainNodeKind; filePath?: string }): BrainNode {
+  addNode(n: { title: string; body?: string; kind?: BrainNodeKind; filePath?: string; url?: string }): BrainNode {
     const d = read();
     // De-dupe by NORMALISED title (ignore case + trailing .md/.txt/.json/.csv) so
     // "PRODUCT.MD" and "PRODUCT.MD.md" don't create two nodes.
@@ -261,6 +273,7 @@ export const brain = {
       if (n.body !== undefined) existing.body = n.body;
       if (n.kind) existing.kind = n.kind;
       if (n.filePath) existing.filePath = n.filePath;
+      if (n.url) existing.url = n.url;
       existing.updatedAt = Date.now();
       write(d);
       return existing;
@@ -268,7 +281,7 @@ export const brain = {
     const { x, y } = nextPos(d.nodes);
     const node: BrainNode = {
       id: uid(), kind: n.kind ?? 'note', title: n.title.slice(0, 120), body: n.body ?? '',
-      filePath: n.filePath,
+      filePath: n.filePath, url: n.url,
       x, y,
       createdAt: Date.now(), updatedAt: Date.now(),
     };
@@ -284,7 +297,7 @@ export const brain = {
    *  "title (2)", "title (3)"... instead. For auto-captured content (Guard scans, Coder
    *  explanations, saved emails) where each new one is its own distinct record, not a
    *  continuation of the last thing that happened to get the same title. */
-  addUniqueNode(n: { title: string; body?: string; kind?: BrainNodeKind; filePath?: string }): BrainNode {
+  addUniqueNode(n: { title: string; body?: string; kind?: BrainNodeKind; filePath?: string; url?: string }): BrainNode {
     const d = read();
     let title = n.title;
     if (d.nodes.some((x) => normTitle(x.title) === normTitle(title))) {
@@ -443,4 +456,136 @@ export const brain = {
   listPictures(): BrainNode[] {
     return read().nodes.filter((n) => n.kind === 'image').sort((a, b) => b.createdAt - a.createdAt);
   },
+
+  // ── Links folder ────────────────────────────────────────────────────────────
+  //
+  // Agents work on the real web — they open a Notion page and fill it in, build a sheet, find the
+  // right profile. Until now the URL of whatever they made existed only in a chat message, which
+  // means it was gone the moment the conversation scrolled: the user could not reopen it, and the
+  // NEXT agent could not either, so it got made again somewhere else.
+  //
+  // Three things make the difference between a link store and a pile of links, and all three live
+  // here rather than in the agents, because a rule an agent has to remember is a rule that holds
+  // most of the time:
+  //   · the URL is canonicalised, so the same page saved from three places is ONE entry;
+  //   · saving an existing page updates it instead of adding a near-duplicate;
+  //   · every link hangs off its own site's group, so fifty links are ten tidy folders and not
+  //     fifty loose nodes sprayed across the graph.
+
+  /** Find (or create) the single "Links" hub every saved page hangs under. */
+  ensureLinksHub(): BrainNode {
+    const d = read();
+    const hub = d.nodes.find((n) => n.kind === 'list' && normTitle(n.title) === normTitle(LINKS_HUB));
+    return hub ?? this.addNode({
+      title: LINKS_HUB, kind: 'list',
+      body: 'Pages you and your agents have worked on or want to come back to — grouped by site. Open one to go straight there.',
+    });
+  },
+
+  /** Find (or create) the group node for one site, e.g. "Links — notion.so". */
+  ensureSiteGroup(site: string): BrainNode {
+    const title = `${LINKS_HUB} — ${site}`;
+    const d = read();
+    const found = d.nodes.find((n) => normTitle(n.title) === normTitle(title));
+    if (found) return found;
+    const hub = this.ensureLinksHub();
+    const group = this.addNode({ title, kind: 'list', body: `Saved pages on ${site}.` });
+    this.link(hub.id, group.id, 'site');
+    return group;
+  },
+
+  /** The saved page for this URL, whatever spelling it arrives in. */
+  findLinkByUrl(url: string): BrainNode | undefined {
+    const norm = normalizeLinkUrl(url);
+    if (!norm) return undefined;
+    return read().nodes.find((n) => n.kind === 'link' && n.url && normalizeLinkUrl(n.url) === norm);
+  },
+
+  /**
+   * Save a page. Saving one that is already saved UPDATES it — it never makes a second copy.
+   *
+   * `body` is what the link is FOR in the user's own terms ("the Day-3 validation tracker I built"),
+   * because a bare URL six weeks later tells nobody anything.
+   */
+  addLink(l: { url: string; title: string; body?: string }): BrainNode | null {
+    const url = normalizeLinkUrl(l.url);
+    if (!url) return null;
+    const site = linkSite(url);
+    const existing = this.findLinkByUrl(url);
+    if (existing) {
+      this.updateNode(existing.id, {
+        url,
+        // A better description replaces a worse one; an empty one never wipes what is there.
+        ...(l.body?.trim() ? { body: l.body.trim() } : {}),
+        ...(l.title.trim() && normTitle(l.title) !== normTitle(existing.title) ? { title: l.title.trim().slice(0, 120) } : {}),
+      });
+      return read().nodes.find((n) => n.id === existing.id) ?? existing;
+    }
+    const group = this.ensureSiteGroup(site);
+    const node = this.addUniqueNode({
+      title: (l.title.trim() || site).slice(0, 120),
+      kind: 'link', url,
+      body: l.body?.trim() ?? '',
+    });
+    this.link(group.id, node.id, 'link');
+    return node;
+  },
+
+  /** Every saved page, newest first. */
+  listLinks(): BrainNode[] {
+    return read().nodes.filter((n) => n.kind === 'link').sort((a, b) => b.updatedAt - a.updatedAt);
+  },
+
+  /** Saved pages matching a site, a word in the title, or a word in the description. */
+  findLinks(query: string): BrainNode[] {
+    const q = (query || '').trim().toLowerCase();
+    if (!q) return this.listLinks();
+    return this.listLinks().filter((n) =>
+      n.title.toLowerCase().includes(q) || (n.url ?? '').toLowerCase().includes(q) || n.body.toLowerCase().includes(q));
+  },
 };
+
+// ─── Canonical URLs ──────────────────────────────────────────────────────────
+
+/** Parameters that identify a CAMPAIGN rather than a page. Dropping them is what stops the same
+ *  Notion doc arriving from an email, a share sheet and a search from becoming three entries. */
+// utm_ is a PREFIX (utm_source, utm_campaign…), the rest are whole names. Written as one anchored
+// alternation before, which quietly matched nothing but a parameter literally called "utm_".
+const TRACKING = /^(?:utm_.+|fbclid|gclid|mc_[ce]id|igshid|si|ref|ref_src|source|spm)$/i;
+
+/**
+ * One spelling per page.
+ *
+ * Deliberately conservative about what it throws away: the path's case is preserved (plenty of
+ * sites are case-sensitive), and the fragment is kept because single-page apps put the actual
+ * document id in it. Only the parts that are demonstrably not the page — the scheme's case, a
+ * "www.", a trailing slash, campaign parameters — are normalised away.
+ */
+export function normalizeLinkUrl(raw: string): string {
+  const s = (raw || '').trim();
+  if (!s) return '';
+  try {
+    const u = new URL(/^https?:\/\//i.test(s) ? s : `https://${s}`);
+    if (!/^https?:$/.test(u.protocol)) return '';
+    u.hostname = u.hostname.toLowerCase().replace(/^www\./, '');
+    // "https://nonsense" parses perfectly happily, so a model that passes a stray word instead of a
+    // URL would otherwise get its own folder in the Links pane. A real host has a dot in it.
+    if (!/^localhost$/.test(u.hostname) && !/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(u.hostname)) return '';
+    for (const k of [...u.searchParams.keys()]) if (TRACKING.test(k)) u.searchParams.delete(k);
+    u.searchParams.sort();
+    if (u.pathname !== '/' && u.pathname.endsWith('/')) u.pathname = u.pathname.replace(/\/+$/, '');
+    const qs = u.searchParams.toString();
+    return `${u.protocol}//${u.hostname}${u.pathname === '/' ? '' : u.pathname}${qs ? `?${qs}` : ''}${u.hash}`;
+  } catch {
+    return '';
+  }
+}
+
+/** The site a URL belongs to, as a person would name it: "notion.so", "docs.google.com". */
+export function linkSite(url: string): string {
+  try {
+    return new URL(normalizeLinkUrl(url) || url).hostname.replace(/^www\./, '') || 'the web';
+  } catch {
+    return 'the web';
+  }
+}

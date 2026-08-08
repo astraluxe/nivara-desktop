@@ -264,6 +264,87 @@ export function workOrderInstruction(
 
 export interface Delegation { agent_key: string; task: string }
 
+// ─── Finding the work in a brief that was never written as a list ────────────
+//
+// The version before this one only split a work order that had a numbered STEP list, and quietly
+// collapsed everything else onto one agent. That is not an edge case: it is what the user's own
+// day-3 order looked like. Their whole brief — write the one-liner, filter the sheet to Tier 1/2,
+// send twenty messages, smoke-test the install, save the pool — arrived as ONE prose paragraph,
+// because a drafting model that does not emit `STEP:` lines has its whole reply parked in the
+// summary by parseWorkOrder's degrade path. So three approved agents became one, which is the
+// exact failure the pipeline exists to prevent, and I shipped it with a test asserting it.
+//
+// A brief like that is still a list; it is just punctuated as sentences. So read it as one.
+
+/** Abbreviations whose full stop ends nothing. Kept short — these are the ones that actually appear. */
+const ABBREV = /(?:^|\s)(?:e\.g|i\.e|etc|vs|approx|no|fig|dept|est|min|max|hrs?|mr|mrs|ms|dr|prof|inc|ltd|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\.$/i;
+
+/**
+ * Split prose into sentences without cutting inside a quote or a bracket.
+ *
+ * Naive splitting on `.` tears the deliverable in half, and the deliverable is usually the quoted
+ * bit: the one-liner in that order is `"adris.tech = your private AI office: local models scan
+ * your code & docs, answer questions, nothing leaves your network."` — four sentence-ends, all of
+ * them inside the quotation marks, none of them a boundary.
+ */
+function splitSentences(line: string): string[] {
+  const out: string[] = [];
+  let buf = '';
+  let quoted = false;
+  let depth = 0;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    buf += c;
+    if (c === '"' || c === '“' || c === '”') quoted = !quoted;
+    else if (c === '(' || c === '[') depth++;
+    else if (c === ')' || c === ']') depth = Math.max(0, depth - 1);
+    if (quoted || depth > 0) continue;
+    // The full stop that ends the one-liner is INSIDE its quotation marks — `nothing leaves your
+    // network."` — so the boundary is the closing quote, not the stop. Allow the stop to be
+    // followed by whatever closes around it.
+    if (!/[.!?]["”')\]]?$/.test(buf)) continue;
+    // A boundary also needs whitespace after it AND something that starts a new thought — a
+    // capital, a digit or an opening quote. "adris.tech" has no space and never splits.
+    const m = line.slice(i + 1).match(/^\s+(.)/);
+    if (!m || !/[A-Z0-9"“]/.test(m[1]) || ABBREV.test(buf)) continue;
+    out.push(buf.trim());
+    // Land on the character that opens the next sentence; the loop's own i++ moves past it.
+    i += m[0].length;
+    buf = m[1];
+  }
+  if (buf.trim()) out.push(buf.trim());
+  return out;
+}
+
+/**
+ * The units of work inside a brief, whether or not anyone numbered them.
+ *
+ * Deliberately conservative: a fragment too short to route is glued back onto the one before it,
+ * because "Record time-to-first-answer" is a real instruction and "Pass/fail:" alone is not.
+ */
+export function deriveSteps(brief: string, max = 8): string[] {
+  const text = (brief || '').replace(/\r/g, '').trim();
+  if (!text) return [];
+  const out: string[] = [];
+  for (const block of text.split(/\n+/)) {
+    const line = block.replace(/^\s*(?:[-*•–—]\s+|\d+[.)]\s+)/, '').trim();
+    if (!line) continue;
+    // Merged WITHIN a line only. A stray "OK." belongs to the sentence beside it, but a short
+    // BULLET is its own instruction — glue those together and "Filter the sheet" disappears into
+    // the line above it, which is how a whole step stops being anybody's job.
+    // The bar is low on purpose. At 28 characters it ate "Then send it to the list." and
+    // "Then log every reply." — whole instructions, silently folded into the sentence before them
+    // and therefore routed to whoever owned that one. Only true scraps ("OK.", "Pass/fail:") merge.
+    const units: string[] = [];
+    for (const s of splitSentences(line)) {
+      if (units.length && s.length < 16) units[units.length - 1] = `${units[units.length - 1]} ${s}`;
+      else units.push(s);
+    }
+    out.push(...units);
+  }
+  return out.filter((s) => s.length > 12).slice(0, max);
+}
+
 /** The rules every delegate gets, whichever stage it is running. */
 const HONESTY = [
   'GROUND RULES:',
@@ -305,24 +386,59 @@ export function planFromWorkOrder(
 
   // The numbered steps, if the order has them.
   const stepBlock = t.match(/Do these, in order:\n([\s\S]*?)(?:\n\n|$)/);
-  const steps = stepBlock
+  const listed = stepBlock
     ? stepBlock[1].split('\n').map((l) => l.replace(/^\s*\d+\.\s*/, '').trim()).filter((l) => l.length > 3)
+    : [];
+
+  // THE QUESTIONS CANNOT BE ASKED FROM INSIDE A PIPELINE.
+  //
+  // "Ask me these FIRST and wait for my answer" is right when a person is reading, and impossible
+  // here: a delegate runs under an explicit "there is NO user to answer questions" rule, so an
+  // agent that obeys the order stalls and an agent that ignores it has ignored the order. The
+  // questions still matter, so they are carried to the end as assumptions to declare, not gates.
+  const askBlock = t.match(/\nAsk me these FIRST[^\n]*\n([\s\S]*?)(?=\n\n|$)/);
+  const asks = askBlock
+    ? askBlock[1].split('\n').map((l) => l.replace(/^\s*[-*•]\s*/, '').trim()).filter(Boolean)
     : [];
 
   // Everything that is not the delegation preamble or the rules — the actual brief.
   const context = t
-    .replace(/\nThis is (more than one person's job|for )[\s\S]*?(?=\n\n)/, '')
+    // Apostrophe-agnostic: an order that has been through a copy-paste or a model rewrite can come
+    // back with a curly one, and a preamble that fails to strip leaves the literal text "{{prev}}"
+    // in the brief — which the FIRST stage then carries, with nothing before it to substitute in.
+    .replace(/\nThis is (more than one person['’]s job|for )[\s\S]*?(?=\n\n)/, '')
     // The full step list is deliberately removed: each stage is handed its OWN steps below, and
     // giving every agent the whole list is how four agents each produce the whole deliverable.
     .replace(/\nDo these, in order:\n[\s\S]*?(?=\n\n|$)/, '')
+    .replace(/\nAsk me these FIRST[^\n]*\n[\s\S]*?(?=\n\n|$)/, '')
     .replace(/\nHOW TO NOT WASTE MY TIME:[\s\S]*$/, '')
     .trim();
 
-  // Assign each step to the best-suited member of the named team. A step nobody matches goes to
-  // the first agent, so nothing is silently dropped.
+  // No numbered list? Then the work is in the prose, and it still has to be split — see deriveSteps.
+  // Everything the instruction builder writes under a known heading is removed first, so the title,
+  // the approval sentence and the done-when line cannot be mistaken for work to hand out.
+  const steps = listed.length ? listed : deriveSteps(
+    context
+      .replace(/^WORK ORDER[^\n]*\n?/, '')
+      .replace(/\nUse what I already have[\s\S]*?(?=\n\n|$)/, '')
+      .replace(/\nIt is finished when:[^\n]*/, '')
+      .replace(/\nI have read and approved[\s\S]*?(?=\n\n|$)/, '')
+      .trim(),
+  );
+
+  // Assign each step to the best-suited member of the NAMED team — the user picked these people and
+  // we do not get to add one they did not approve.
+  //
+  // A step no approved agent matches used to go to the first of them, which on the user's own order
+  // meant the content planner was handed the install smoke-test AND the pass/fail rule AND the
+  // timing — five of seven steps — while an approved agent got nothing at all and was dropped from
+  // the pipeline entirely. Unmatched work now goes to whoever is carrying the least, so everyone
+  // the user ticked actually gets a share and nobody is left holding the whole order.
   const byAgent = new Map<string, string[]>();
+  const load = (k: string) => byAgent.get(k)?.length ?? 0;
   for (const s of steps) {
-    const wanted = routeFor(s).find((k) => keys.includes(k)) ?? keys[0];
+    const wanted = routeFor(s).find((k) => keys.includes(k))
+      ?? keys.reduce((a, b) => (load(b) < load(a) ? b : a), keys[0]);
     byAgent.set(wanted, [...(byAgent.get(wanted) ?? []), s]);
   }
   // Keep the panel's order, and drop anyone who ended up with nothing to do.
@@ -338,12 +454,21 @@ export function planFromWorkOrder(
         context,
         '',
         mine.length ? `YOUR PART OF THIS — do exactly these, and only these:\n${mine.map((s, j) => `${j + 1}. ${s}`).join('\n')}` : 'YOUR PART: the whole of the above.',
+        // The brief above describes the WHOLE job, and an agent reading a whole job tends to do a
+        // whole job. Saying who covers the rest is what makes the rest somebody else's.
+        crew.length > 1
+          ? `The rest of the order is context only — ${crew.length - 1} other specialist${crew.length === 2 ? ' is' : 's are'} covering it in this same pipeline. Do not do their parts.`
+          : '',
         i > 0 ? '\nWHAT THE PEOPLE BEFORE YOU PRODUCED — build on it, do not repeat it:\n{{prev}}' : '',
         '',
         HONESTY,
+        // Carried from the order's ASK ME block, which cannot be asked from in here.
+        asks.length
+          ? `\nTHE USER WAS NEVER ASKED THESE, AND CANNOT BE ASKED NOW:\n${asks.map((a) => `- ${a}`).join('\n')}\nMake the most reasonable assumption, carry on, and LABEL it clearly as an assumption in what you hand back. Do not stop and do not ask.`
+          : '',
         '',
         isLast
-          ? 'YOU ARE LAST. Before you finish: save anything the order asked to be saved with save_to_brain under the name the order gives it, and add any genuine follow-up as a to-do with create_todo. Then give the user the finished work — the real content, not a description of it — and one honest line on anything nobody could do.'
+          ? 'YOU ARE LAST. Before you finish: save anything the order asked to be saved with save_to_brain under the name the order gives it, save any page or document you created or will need again with save_link, and add any genuine follow-up as a to-do with create_todo. Then give the user the finished work — the real content, not a description of it — and one honest line on anything nobody could do.'
           : 'Hand back the finished content itself, not a summary of it. The next person builds directly on what you write.',
       ].filter(Boolean).join('\n'),
     };
