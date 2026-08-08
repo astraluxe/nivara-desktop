@@ -1,11 +1,11 @@
 {
-    "version":  "1.26.5",
+    "version":  "1.26.6",
     "notes":  "Bug fixes and improvements",
-    "pub_date":  "2026-08-08T13:21:21Z",
+    "pub_date":  "2026-08-08T14:23:42Z",
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUUWNjQ0laVXZRdVU3UklWb3hjZm1wMHhndFR5Q1FMQTMyYUU0dDNsdFNtUEloRlRVUE4xY3I5S202U3hMaVQ5TG1VSkVScGFUWGt6OG9QZDliOFlObUJsZEI5K3RvcHdzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2MTc1NDgwCWZpbGU6YWRyaXMudGVjaF8xLjI2LjVfeDY0LXNldHVwLmV4ZQpQaVhZMDBYbGl0Q1ByYVppOXp6UElMSWN0NEp6dkhiVGFiVFcyaUtiaVFGcXdEUmZyODU1U0hTSUcxRWdHWHlodjRHOWVJS25temNlQ2lFNXdFOW1EQT09Cg==",
-                                             "url":  "https://github.com/astraluxe/nivara-desktop/releases/download/v1.26.5/adris.tech_1.26.5_x64-setup.exe"
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUUWNjQ0laVXZRdWU0N0VPNXBtVWdmMFFhbG43TVBsTHpmN1QxeGdPWnBTZzNjRmo2SG00NDNQRjg5R0tKYk41SFVxVjJQMTVRRDR1ZW5wTmtyVFUzSWZ2TTFoNGtRZ0FFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2MTc5MjIyCWZpbGU6YWRyaXMudGVjaF8xLjI2LjZfeDY0LXNldHVwLmV4ZQpjOVZwTGFpNldleUtBSlYxdTVkK3IvZVhxem9QRTRSOU5RL1JlZEU4aXYxWG5WSkRxQ3ZrTkVyK3ZWd2pENmdVME1McVc4RW5QRGRkTHlDQWpFR2dEdz09Cg==",
+                                             "url":  "https://github.com/astraluxe/nivara-desktop/releases/download/v1.26.6/adris.tech_1.26.6_x64-setup.exe"
                                          }
                   }
 }
