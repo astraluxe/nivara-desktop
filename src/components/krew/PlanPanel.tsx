@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react';
 import {
   type ActionPlan, type PlanStep,
   loadPlan, savePlan, clearPlan, stepDate, isSameDay, todayView, planProgress, PLAN_EVENT,
-  notesForDay, currentDay, setStepNote, setStepBrief, rescheduleOpenSteps,
+  notesForDay, currentDay, setStepNote, setStepBrief, rescheduleOpenSteps, councilQuestionFor,
 } from '../../lib/planStore';
 import { todos } from '../../lib/todoStore';
 import PlanCalendar from './PlanCalendar';
 import TaskHandover from './TaskHandover';
+import { routeTask } from '../../lib/taskRouting';
+import { AGENT_BY_KEY, agentHandle } from '../../lib/krewAgents';
 import { loadAvailability, freeSlotsOn, to24h, describeAvailability, AVAIL_EVENT } from '../../lib/availability';
 
 // ─── The plan you actually work through ──────────────────────────────────────
@@ -203,14 +205,58 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
                   than a headline you have to remember the meaning of. */}
               {s.brief && (
                 <div className="mb-2 pb-2 border-b border-nv-border">
-                  <p className="text-[9px] font-semibold uppercase tracking-wide text-accent">The work order</p>
+                  <p className="text-[9px] font-semibold uppercase tracking-wide text-accent">
+                    {s.handedOverAt ? 'The work order · handed over' : 'The work order'}
+                  </p>
                   <p className="text-[10px] text-nv-muted leading-relaxed whitespace-pre-wrap mt-0.5">{s.brief}</p>
                 </div>
               )}
-              {stepContext(s) ? (
+              {stepContext(s) && (
                 <p className="text-[10px] text-nv-muted leading-relaxed whitespace-pre-wrap">{stepContext(s)}</p>
-              ) : (
-                <p className="text-[10px] text-nv-faint leading-relaxed">No extra detail was written for this one. Ask Krew below and it will work out the specifics from the rest of the plan.</p>
+              )}
+              {/* WHO WOULD DO THIS, AND WITH WHAT.
+                  Worked out from the task itself, with no model call — the user is reading a panel,
+                  not asking a question, and a table answers "who makes decks" faster and more
+                  reliably than a request would. Absent entirely when nothing matches: a confident
+                  wrong name on a task that agent cannot do is worse than no suggestion, because it
+                  will be acted on. */}
+              {(() => {
+                const r = routeTask(`${s.action} ${s.brief ?? ''}`);
+                if (!r) return null;
+                const named = r.agents.map((k) => AGENT_BY_KEY[k]).filter(Boolean);
+                return (
+                  <div className={s.brief || stepContext(s) ? 'mt-2 pt-2 border-t border-nv-border' : ''}>
+                    {named.length > 0 && (
+                      <>
+                        <p className="text-[9px] font-semibold uppercase tracking-wide text-nv-faint">Best suited — {r.why}</p>
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {named.map((a) => (
+                            <span key={a.key} className="text-[9.5px] px-1.5 py-0.5 rounded-md border border-accent/30 bg-accent/[0.07] text-accent">
+                              {agentHandle(a)}
+                            </span>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                    {r.tools.length > 0 && (
+                      <>
+                        <p className="text-[9px] font-semibold uppercase tracking-wide text-nv-faint mt-2">What they will use</p>
+                        <ul className="mt-0.5 space-y-0.5">
+                          {r.tools.map((t) => (
+                            <li key={t.name} className="text-[9.5px] text-nv-muted leading-snug">
+                              <code className="text-[9px] font-mono text-nv-text">{t.name}</code> — {t.what}
+                            </li>
+                          ))}
+                        </ul>
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
+              {!s.brief && !stepContext(s) && (
+                <p className="text-[10px] text-nv-faint leading-relaxed mt-2">
+                  No detail was written for this one. <b className="text-nv-text">Hand to Krew</b> drafts the full work order — what it means, the steps, and what done looks like — for you to edit before anything runs.
+                </p>
               )}
               <button
                 onClick={() => onRunStep(`About this step in my plan: "${s.action}". Explain exactly what it means for MY situation and what "good" looks like — check what I have already done before you answer (my lead lists, my outreach progress, my Brain notes) rather than assuming I am starting fresh. Then offer to do the parts you can.`)}
@@ -349,18 +395,9 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
           >✎ Refine this plan</button>
           <button
             onClick={() => {
-              // Finished and unfinished work go in SEPARATELY and labelled. Handing the council one
-              // undifferentiated list is how it starts rewriting days that are already behind you.
-              const done = plan.steps.filter((x) => x.done).map((x) => `- Day ${x.day}: ${x.action}`).join('\n');
-              const todo = plan.steps.filter((x) => !x.done).map((x) => `- Day ${x.day}: ${x.action}`).join('\n');
-              onCouncil(
-                'Is this the right plan for what I am trying to do, and what would you change?\n\n'
-                + `THE PLAN — ${plan.title}\n\n`
-                + 'ALREADY FINISHED (do not re-plan, repeat or move these):\n'
-                + (done || '- (nothing yet)')
-                + '\n\nSTILL TO DO (only these may be re-planned):\n'
-                + (todo || '- (nothing left)'),
-              );
+              // The question itself lives in planStore, shared with /council — two entry points to
+              // the same five advisers must not drift into asking two different questions.
+              onCouncil(councilQuestionFor(plan));
               onClose();
             }}
             className="flex-1 text-[10px] px-2 py-1 rounded-lg border transition-fast font-medium"

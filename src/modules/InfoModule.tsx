@@ -6,11 +6,68 @@ import { useState, useEffect, useRef } from 'react';
 // knowing what the app does and how to get real work out of it. Every section that
 // describes a workflow carries a concrete example instead of an abstract summary.
 
+// ─── Reading order, by the work you actually do ──────────────────────────────
+//
+// A manual with twenty-five sections has the same problem as a plan with thirty days: everything in
+// it is true, and almost none of it is what you need this morning. A developer opening this page
+// scrolls past outreach, decks and social posting to reach Coder; someone doing sales scrolls past
+// Coder and Mesh to reach outreach. Both give up somewhere in the middle.
+//
+// So the page reorders around the reader. NOTHING IS HIDDEN — every section stays on the page and
+// in the contents, exactly as written; the ones that matter for the work you picked simply move to
+// the top. A filter that hid things would make people wonder what they were missing, and be wrong
+// the moment someone's job spans two of these.
+
+type Dept = 'all' | 'founder' | 'sales' | 'marketing' | 'coding' | 'ops' | 'research';
+
+const DEPTS: { id: Dept; label: string; blurb: string }[] = [
+  { id: 'all',       label: 'Everything',  blurb: 'The manual in its natural order' },
+  { id: 'founder',   label: 'Founder',     blurb: 'Plan the month, get advice, keep it moving' },
+  { id: 'sales',     label: 'Sales',       blurb: 'Lists, outreach, replies, meetings' },
+  { id: 'marketing', label: 'Marketing',   blurb: 'Content, posts, decks, free web studios' },
+  { id: 'coding',    label: 'Engineering', blurb: 'Coder, local models, MCP, terminal' },
+  { id: 'ops',       label: 'Operations',  blurb: 'Automations, To-do, connected apps, security' },
+  { id: 'research',  label: 'Research',    blurb: 'Brain, deep research, data, reports' },
+];
+
+/** What floats to the top for each kind of work, best first. Everything else keeps its own order. */
+const DEPT_PRIORITY: Record<Dept, string[]> = {
+  all:       [],
+  founder:   ['plan', 'council', 'handover', 'krew', 'todo', 'commands', 'brain'],
+  sales:     ['linkedin', 'commands', 'plan', 'handover', 'krew', 'connect', 'brain'],
+  marketing: ['studios', 'studio', 'krew', 'commands', 'brain', 'linkedin', 'automation'],
+  coding:    ['coder', 'models', 'connect', 'autopilot', 'commands', 'guard', 'mesh'],
+  ops:       ['automation', 'todo', 'connect', 'plan', 'handover', 'guard', 'vault', 'quickbar'],
+  research:  ['brain', 'commands', 'studios', 'models', 'krew', 'autopilot'],
+};
+
+/**
+ * Where each section sits for this reader.
+ *
+ * Prioritised sections get 1, 2, 3…; everything else keeps its written order starting at 100. So
+ * the natural sequence is preserved among the sections nobody floated, which stops the page feeling
+ * shuffled — only the top changes.
+ */
+function ranksFor(dept: Dept): Record<string, number> {
+  const rank: Record<string, number> = {};
+  SECTIONS.forEach((s, i) => { rank[s.id] = 100 + i; });
+  DEPT_PRIORITY[dept].forEach((id, i) => { if (rank[id] != null) rank[id] = 1 + i; });
+  return rank;
+}
+
+/** One section of the manual, placed by rank. `order` on a flex child — the DOM never moves. */
+function Sec({ id, rank, children }: { id: string; rank: Record<string, number>; children: React.ReactNode }) {
+  return <div style={{ order: rank[id] ?? 500 }}>{children}</div>;
+}
+
 const SECTIONS: { id: string; label: string }[] = [
   { id: 'what',       label: 'What adris.tech is' },
   { id: 'start',      label: 'Getting started' },
   { id: 'krew',       label: 'Krew — your agent team' },
   { id: 'commands',   label: 'Slash commands' },
+  { id: 'council',    label: 'Your council of five' },
+  { id: 'handover',   label: 'Handing a task to the team' },
+  { id: 'studios',    label: 'Free tools on the web' },
   { id: 'autopilot',  label: 'Web Autopilot' },
   { id: 'brain',      label: 'Brain — shared memory' },
   { id: 'todo',       label: 'To-do' },
@@ -108,9 +165,27 @@ function Note({ children }: { children: React.ReactNode }) {
   );
 }
 
+const DEPT_KEY = 'nv-manual-dept';
+
 export default function InfoModule() {
   const [active, setActive] = useState(SECTIONS[0].id);
+  // Remembered: someone who does sales does sales tomorrow too, and re-picking it on every visit
+  // would be a filter that costs more than it saves.
+  const [dept, setDept] = useState<Dept>(() => {
+    try {
+      const v = localStorage.getItem(DEPT_KEY) as Dept | null;
+      return v && DEPTS.some((d) => d.id === v) ? v : 'all';
+    } catch { return 'all'; }
+  });
+  const rank = ranksFor(dept);
+  const ordered = [...SECTIONS].sort((a, b) => (rank[a.id] ?? 500) - (rank[b.id] ?? 500));
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  function pickDept(d: Dept) {
+    setDept(d);
+    try { localStorage.setItem(DEPT_KEY, d); } catch { /* the page still reorders, just not next time */ }
+    scrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  }
 
   // Highlight whichever section is being read, so the contents list doubles as a
   // progress marker on a long page.
@@ -138,8 +213,32 @@ export default function InfoModule() {
     <div className="flex h-full overflow-hidden">
       {/* Contents — a long page needs a spine, but it stays out of the way */}
       <nav className="hidden lg:block w-56 shrink-0 border-r border-nv-border overflow-y-auto py-8 px-3">
+        {/* PICK YOUR WORK, AND THE MANUAL REARRANGES.
+            Nothing is removed — the whole page is still here and still in the contents. What
+            changes is what you meet first, which on a page this long is the only thing that
+            decides whether it gets read at all. */}
+        <p className="text-[9px] font-mono uppercase tracking-wider text-nv-faint px-2 mb-1.5">I mainly do</p>
+        <div className="flex flex-wrap gap-1 px-1 mb-4">
+          {DEPTS.map((d) => (
+            <button
+              key={d.id}
+              onClick={() => pickDept(d.id)}
+              title={d.blurb}
+              className={`text-[10.5px] px-2 py-1 rounded-md border transition-fast ${
+                dept === d.id
+                  ? 'border-accent/50 bg-accent/10 text-accent font-medium'
+                  : 'border-nv-border text-nv-faint hover:text-nv-muted hover:bg-nv-surface2/50'
+              }`}
+            >{d.label}</button>
+          ))}
+        </div>
+        {dept !== 'all' && (
+          <p className="text-[9.5px] text-nv-faint leading-snug px-2 mb-3">
+            Ordered for {DEPTS.find((d) => d.id === dept)!.label.toLowerCase()} work. Nothing is hidden — the rest of the manual follows underneath.
+          </p>
+        )}
         <p className="text-[9px] font-mono uppercase tracking-wider text-nv-faint px-2 mb-2">Contents</p>
-        {SECTIONS.map((s) => (
+        {ordered.map((s) => (
           <button
             key={s.id}
             onClick={() => go(s.id)}
@@ -153,7 +252,9 @@ export default function InfoModule() {
       </nav>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        <article className="max-w-[720px] mx-auto px-7 py-10 pb-24">
+        {/* A flex column so a section can be MOVED by rank without its DOM position changing —
+            every anchor, the reading-position observer and browser find all keep working. */}
+        <article className="max-w-[720px] mx-auto px-7 py-10 pb-24 flex flex-col">
           <p className="text-[10px] font-mono uppercase tracking-wider text-accent mb-2">User manual</p>
           <h1 className="text-[30px] font-semibold text-nv-text leading-tight mb-3">How adris.tech works</h1>
           <p className="text-[14px] leading-[1.7] text-nv-muted">
@@ -163,6 +264,7 @@ export default function InfoModule() {
             between them they cover how most people use adris.tech day to day.
           </p>
 
+          <Sec id="what" rank={rank}>
           <H id="what">What adris.tech is</H>
           <P>
             adris.tech is a private AI office that runs on your own computer. Instead of a single
@@ -177,6 +279,8 @@ export default function InfoModule() {
             uploaded and nothing is used for training.
           </P>
 
+          </Sec>
+          <Sec id="start" rank={rank}>
           <H id="start">Getting started</H>
           <P>
             Sign in once with your adris.tech account. Your plan sets how much hosted AI you can use each
@@ -194,6 +298,8 @@ export default function InfoModule() {
             working. You do not have to upgrade to keep using the app.
           </Note>
 
+          </Sec>
+          <Sec id="krew" rank={rank}>
           <H id="krew">Krew — your agent team</H>
           <P>
             Krew is the main screen. Type what you want in plain English and the right specialist picks
@@ -221,6 +327,8 @@ export default function InfoModule() {
             automatically.
           </P>
 
+          </Sec>
+          <Sec id="commands" rank={rank}>
           <H id="commands">Slash commands</H>
           <P>
             Type <K>/</K> in the message box to see everything available. Commands are shortcuts, not a
@@ -303,8 +411,120 @@ export default function InfoModule() {
             ['/connect', 'Connect apps', 'Link Gmail, LinkedIn, Notion, Slack and the rest.'],
             ['/mcp', 'Connect MCP server', 'Add any MCP server by URL and use its tools inside Krew.'],
             ['/settings', 'Settings', 'App preferences, stored on this device.'],
+            ['/manual', 'How to use this app', 'This page. It reorders itself around the work you pick in the sidebar.'],
           ]} />
 
+          <H3>Running the office</H3>
+          <P>Your plan, your advisers, and the free tools on the open web.</P>
+          <CmdTable rows={[
+            ['/plan', 'Open my plan', 'Opens the month day by day. If you have no plan yet it asks for one instead of opening an empty panel.', '/plan'],
+            ['/newplan', 'Build a new plan', 'Has an agent write a dated plan you can work through — it asks about your goal and your available hours first rather than guessing.', '/newplan'],
+            ['/council', 'Ask the council', 'Puts your plan in front of five advisers who argue it out and hand back one plan. With no plan running, type your question after the command.', '/council — or “Ask the council: should I raise prices?”'],
+            ['/handover', 'Hand a task to the team', 'Opens the plan so you can pick a task and open its work order — what it means, the steps, who takes it — to edit before anything runs.', '/handover'],
+            ['/studio', 'Open a content studio', 'Lists the free web tools an agent can drive for you, and what each is actually good for.', '/studio'],
+          ]} />
+
+          </Sec>
+
+          <Sec id="council" rank={rank}>
+          <H id="council">Your council of five</H>
+          <P>
+            One agent asked "is this a good plan?" says yes. That is not because it is lying — it is because a
+            single voice has no one to disagree with. The council is five advisers with genuinely opposed jobs,
+            and where they disagree is usually the real decision.
+          </P>
+          <ul className="list-disc pl-5 mb-3">
+            <Li><b>Vikram, the Contrarian</b> — attacks the plan. Finds the arithmetic that does not work.</Li>
+            <Li><b>Nila, First Principles</b> — throws out the framing and asks what problem this actually solves.</Li>
+            <Li><b>Rhea, the Expansionist</b> — ignores your constraints and describes the 10× version.</Li>
+            <Li><b>Sam, the Outsider</b> — knows nothing about your business and asks what a stranger would ask.</Li>
+            <Li><b>Dev, the Executor</b> — speaks last, hears everyone, and writes the plan you actually act on.</Li>
+          </ul>
+          <P>
+            Open it from <K>⚖ Ask the council</K> in the Plan panel, or type <K>/council</K>. They answer one at a
+            time on screen, so you can read Vikram while Nila is still writing.
+          </P>
+          <H3>They argue, then they decide</H3>
+          <P>
+            After the opening views there is a second round: each one reads the others and answers <i>them</i> —
+            what they concede, where they still disagree, and the one thing of theirs that must survive. Dev then
+            writes the final plan with the whole transcript in front of him, and every point raised is either
+            folded in with credit or rejected in one line with a reason. Nobody gets silently dropped.
+          </P>
+          <H3>You can talk back to them</H3>
+          <P>
+            When they finish, a chip appears above the message box saying <b>Talking to your council</b>. Anything
+            you type goes to them, not to the boss. Correct them — <i>"that vendor sheet isn't my suppliers, I
+            bought that data"</i> — and everyone whose argument depended on it revises, then Dev re-issues the plan.
+            Name one of them and only that person answers, which costs a single request instead of five.
+          </P>
+          <P>
+            Corrections are remembered, so you never explain the same thing twice. The chip shows how many are
+            held; hover to read them and press <K>forget</K> to clear them.
+          </P>
+          <Note>
+            A council is five to nine full-length answers for one question. On adris.tech AI you will be told what
+            it costs before it runs, and offered the quick version. On your own key or a local model it just runs —
+            that capacity is yours.
+          </Note>
+          </Sec>
+
+          <Sec id="handover" rank={rank}>
+          <H id="handover">Handing a task to the team</H>
+          <P>
+            "Day 8: Publish the comparison page" is a headline. It does not say which page, what goes on it, or
+            how either of you would know it was finished — so it is not something you can hand to anyone and walk
+            away from. Every task in the plan and the calendar carries <K>⇄ Hand to Krew</K>, and it does not run
+            the task. It opens the <b>work order</b> behind it.
+          </P>
+          <Example title="What the button opens">
+            An agent drafts the order from the plan's own reasoning: what the task actually means for you, who
+            should take it, which of your real lists and apps it touches, the ordered steps, what done looks like,
+            and the decisions only you can make. Then you edit all of it — reorder the steps, delete the two that
+            are wrong, add the one it missed, fix the list it guessed at. Only then does <b>Hand it over</b> start
+            anything.
+          </Example>
+          <P>
+            The questions it needs answering go at the front of the instruction, so an agent asks before it works
+            rather than three steps in. The order is saved on the task before the run is sent — if the run fails or
+            you stop it, the order you just agreed is still there — and it shows in the calendar day, so the task
+            reads as a job rather than a headline.
+          </P>
+          <P>
+            <b>Save the detail, don't start</b> writes the order without running anything, so you can brief
+            Thursday's work on Monday. <b>Just do it</b> is still there for when you only want an agent to get on
+            with something.
+          </P>
+          <P>
+            The Details panel under each task also names <b>which agents suit it</b> and <b>which tools they will
+            use</b> — worked out from the task itself, with no request spent. If nothing matches, it says nothing
+            rather than guessing at a name you would then act on.
+          </P>
+          </Sec>
+
+          <Sec id="studios" rank={rank}>
+          <H id="studios">Free tools on the web</H>
+          <P>
+            Building an image generator, a video renderer and a podcast engine would take months and produce
+            something worse than tools that already exist and are free. So the agents drive those instead — in the
+            same browser window you already use for LinkedIn and Gmail, signed in as you, with you watching. Type
+            <K>/studio</K> to see the list, or just say what you are making.
+          </P>
+          <CmdTable rows={[
+            ['NotebookLM', 'Documents → briefings, podcasts, video overviews', 'Upload what you already have and it produces study guides, FAQs, mind maps, and audio or video overviews you can download. The closest thing to a free explainer-video generator. It only works from sources you give it.'],
+            ['Google Trends', 'What people actually search for', 'Free, no account, real relative demand by region and city. "Related queries → Rising" is where the language your buyers use shows up. Figures are relative interest, never absolute volumes — anyone quoting "12,000 searches" from Trends invented it.'],
+            ['ImageFX', 'Images from a prompt', 'Google Labs. Illustrations, backgrounds, social graphics, downloadable. Labs rolls out country by country, so it may not open for you — that is why, and the agent will say so rather than retrying.'],
+            ['Pomelli', 'On-brand campaigns from your website', 'Reads your real site to match your colours, fonts and tone, then generates social posts and ads. Officially US, Canada, Australia and New Zealand only.'],
+            ['Looker Studio', 'Dashboards and reports', 'Free live dashboards on a shareable link, built from a Google Sheet. The honest way to show real numbers without building anything.'],
+            ['Google Business Profile', 'Local search and Maps', 'The free listing that decides whether a local business appears in "near me" searches at all. Its Insights tab shows the exact words people searched before they called.'],
+          ]} />
+          <Note>
+            Availability is reported, never hidden. If a tool is not officially offered in your country you are
+            told so — and told that Vault (the app's DNS switch) may still open it, rather than the app pretending
+            either way.
+          </Note>
+          </Sec>
+          <Sec id="autopilot" rank={rank}>
           <H id="autopilot">Web Autopilot — sites we did not build a button for</H>
           <P>
             Krew has purpose-built support for LinkedIn, Gmail, Calendar, Notion and the rest. Web
@@ -357,6 +577,8 @@ export default function InfoModule() {
             Country · 3 tick I accept the terms · 4 click Submit ← needs approval</span>
           </Example>
 
+          </Sec>
+          <Sec id="brain" rank={rank}>
           <H id="brain">Brain — shared memory</H>
           <P>
             Brain is the app's long-term memory: notes joined by links, drawn as a graph. Every agent can
@@ -387,6 +609,8 @@ export default function InfoModule() {
             codebase or a set of docs to read.
           </P>
 
+          </Sec>
+          <Sec id="todo" rank={rank}>
           <H id="todo">To-do</H>
           <P>The <span className="text-nv-text">To-do</span> tab next to Skill lib holds two kinds of item.</P>
           <P>
@@ -425,6 +649,8 @@ export default function InfoModule() {
             entirely and type whatever you actually want instead.
           </P>
 
+          </Sec>
+          <Sec id="plan" rank={rank}>
           <H id="plan">Plan &mdash; your month, in play</H>
           <P>
             When an agent writes a day-by-day plan, a <span className="text-nv-text">Start this plan</span> button
@@ -462,6 +688,8 @@ export default function InfoModule() {
             and leaves everything you have already ticked off exactly as it is.
           </P>
 
+          </Sec>
+          <Sec id="linkedin" rank={rank}>
           <H id="linkedin">Worked example: LinkedIn outreach</H>
           <P>
             This is the workflow most people run, and it is worth reading in full because it shows how the
@@ -545,6 +773,8 @@ export default function InfoModule() {
             further down your list you go.
           </P>
 
+          </Sec>
+          <Sec id="models" rank={rank}>
           <H id="models">Models — running AI locally</H>
           <P>
             The Models tab is a catalogue of open models you can download and run on this machine. Local
@@ -593,6 +823,8 @@ export default function InfoModule() {
             carry 128K or more, which is plenty.
           </Note>
 
+          </Sec>
+          <Sec id="coder" rank={rank}>
           <H id="coder">Coder</H>
           <P>
             A full code editor with an AI pair beside it. Open a folder, describe the change you want, and
@@ -600,6 +832,8 @@ export default function InfoModule() {
             built-in terminal, so it can install packages and run tests as it works.
           </P>
 
+          </Sec>
+          <Sec id="studio" rank={rank}>
           <H id="studio">Studio &amp; decks</H>
           <P>
             Ask for a presentation in plain words and you get a real slide deck back. Edit it in place —
@@ -613,6 +847,8 @@ export default function InfoModule() {
             “remove the last slide”, “put this photo on slide 2”.
           </Example>
 
+          </Sec>
+          <Sec id="automation" rank={rank}>
           <H id="automation">Automations</H>
           <P>
             Work that should happen without you asking. Build it as a simple form or by drawing a flow on a
@@ -621,6 +857,8 @@ export default function InfoModule() {
             the app is open or continue in the background.
           </P>
 
+          </Sec>
+          <Sec id="connect" rank={rank}>
           <H id="connect">Connect apps &amp; MCP</H>
           <P>
             Connect Gmail, Notion, Slack, GitHub, Linear, Airtable, LinkedIn and others, and your agents can
@@ -632,6 +870,8 @@ export default function InfoModule() {
             and its tools join everything else your agents can use.
           </P>
 
+          </Sec>
+          <Sec id="vault" rank={rank}>
           <H id="vault">Vault</H>
           <P>
             Vault protects the connection itself by switching your computer to private DNS, so the sites you
@@ -640,18 +880,24 @@ export default function InfoModule() {
             internet.
           </P>
 
+          </Sec>
+          <Sec id="mesh" rank={rank}>
           <H id="mesh">Mesh</H>
           <P>
             Mesh joins several computers together so they can run a model too large for any one of them. If
             you have more than one machine, this is how you run the big models without buying hardware.
           </P>
 
+          </Sec>
+          <Sec id="quickbar" rank={rank}>
           <H id="quickbar">Quick Bar</H>
           <P>
             A small always-on-top window for quick questions without opening the full app. It shares your
             account, your Brain and your theme, and can start automatically when your computer does.
           </P>
 
+          </Sec>
+          <Sec id="guard" rank={rank}>
           <H id="guard">Guard — security watch</H>
           <P>
             Guard is the security analyst a small business normally cannot afford. It has four parts,
@@ -696,6 +942,8 @@ export default function InfoModule() {
             stays yours.
           </Note>
 
+          </Sec>
+          <Sec id="whatsnew" rank={rank}>
           <H id="whatsnew">What’s new</H>
           <P>
             The most recent additions, and what each one is actually for. Settings → About always shows
@@ -800,6 +1048,8 @@ export default function InfoModule() {
             already fine.
           </P>
 
+          </Sec>
+          <Sec id="rules" rank={rank}>
           <H id="rules">How things actually work</H>
           <P>
             The details that are easy to guess wrong. If something behaves differently from what you
@@ -877,6 +1127,8 @@ export default function InfoModule() {
             not — it runs only while the app is open.
           </QA>
 
+          </Sec>
+          <Sec id="privacy" rank={rank}>
           <H id="privacy">Privacy</H>
           <P>
             Your Brain, files, chats, saved lists and downloaded models all stay on this computer. Local
@@ -885,6 +1137,8 @@ export default function InfoModule() {
             them for something you asked for.
           </P>
 
+          </Sec>
+          <Sec id="trouble" rank={rank}>
           <H id="trouble">When something goes wrong</H>
           <H3>A scan finds nobody</H3>
           <P>
@@ -907,7 +1161,8 @@ export default function InfoModule() {
             monthly usage, switch the connection bar to Own key or Local and keep working.
           </P>
 
-          <div className="mt-14 pt-5 border-t border-nv-border">
+          </Sec>
+          <div className="mt-14 pt-5 border-t border-nv-border" style={{ order: 999 }}>
             <p className="text-[12px] text-nv-faint leading-relaxed">
               Still stuck, or something here does not match what you see? Get in touch through{' '}
               <a href="https://adris.tech/partner" target="_blank" rel="noreferrer" className="text-accent hover:underline">adris.tech/partner</a>

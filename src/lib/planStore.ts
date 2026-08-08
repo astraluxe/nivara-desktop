@@ -187,7 +187,76 @@ export function parsePlanSteps(text: string): PlanStep[] {
     }
   }
 
+  // ── THE LINES UNDER EACH DAY ARE THE TASK, and they were all being thrown away ──
+  //
+  // Agents do not write "Day 3: do the thing" and stop. They write the day, and then the three or
+  // four lines that say WHICH list, what to filter it to, what to send, and how long it should
+  // take. Parsing kept the headline and discarded every one of those lines — so a plan the user had
+  // just watched their council reason out arrived in the calendar as a row of titles with nothing
+  // behind them, and the Details panel had genuinely nothing to show.
+  //
+  // Those lines are attached to their step here. Done separately from the loop above so the
+  // headline matching is untouched: a plan written as a flat "Day 1: …/Day 2: …" list still parses
+  // exactly as it did, and simply has no detail to attach.
+  attachDetail(lines, steps);
+
   return steps.sort((a, b) => a.day - b.day);
+}
+
+/** A line that ends the detail belonging to the day above it. */
+function endsDetail(line: string): boolean {
+  const t = line.trim();
+  if (!t) return false;                                  // blank lines sit INSIDE a day's detail
+  if (/^#{1,6}\s/.test(t)) return true;                  // a new heading
+  if (t.startsWith('|')) return true;                    // a table
+  if (/^\**week\s*\d/i.test(t)) return true;             // a week heading
+  if (/^(?:#{1,6}\s*)?[-•*]?\s*\**day\s*\d{1,2}\b/i.test(t)) return true;   // the next day
+  // A closing section — models habitually end a plan with these, and without this the whole
+  // epilogue is glued onto the last day as if it were part of that morning's work.
+  if (/^\**\s*(what to drop|what not to do|what to cut|key changes?|bottom line|why this works|notes?|summary|caveats?|assumptions?|risks?|next steps?|in short)\b/i.test(t)) return true;
+  return false;
+}
+
+/** Give each step the lines written underneath its day heading. */
+function attachDetail(lines: string[], steps: PlanStep[]): void {
+  if (!steps.length) return;
+  // Index by the line each step's headline came from, matching on day + opening words so two steps
+  // on the same day cannot swap their detail.
+  const byDay = new Map<number, PlanStep[]>();
+  for (const s of steps) {
+    const list = byDay.get(s.day) ?? [];
+    list.push(s);
+    byDay.set(s.day, list);
+  }
+  const used = new Set<PlanStep>();
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].trim().match(/^(?:#{1,6}\s*)?[-•*]?\s*\**day\s*(\d{1,2})\b/i);
+    if (!m) continue;
+    const candidates = (byDay.get(Number(m[1])) ?? []).filter((s) => !used.has(s));
+    if (!candidates.length) continue;
+    const step = candidates[0];
+
+    const detail: string[] = [];
+    for (let j = i + 1; j < lines.length && detail.length < 14; j++) {
+      if (endsDetail(lines[j])) break;
+      const t = lines[j].trim();
+      if (!t) { if (detail.length) detail.push(''); continue; }
+      detail.push(t.replace(/^[-•*]\s*/, '').trim());
+    }
+    while (detail.length && !detail[detail.length - 1]) detail.pop();
+    const text = detail.join('\n').trim();
+    if (text.length > 3) {
+      step.brief = text.slice(0, 1600);
+      used.add(step);
+      // "Done when: …" / "Success: …" written among the detail is the step's definition of done —
+      // the plan already has a field for that, and it belongs there rather than buried in prose.
+      if (!step.doneWhen) {
+        const dw = detail.find((d) => /^(done when|finished when|success|deliverable|output)\s*[:—-]/i.test(d));
+        if (dw) step.doneWhen = clean(dw.replace(/^[^:—-]*[:—-]\s*/, '')).slice(0, 200) || undefined;
+      }
+    }
+  }
 }
 
 /**
@@ -281,14 +350,17 @@ export function todayView(plan: ActionPlan): { today: PlanStep[]; overdue: PlanS
  * not a replace. Steps already present on the same day with the same action are left exactly as
  * they are, including their done state; genuinely new ones are added. Returns how many were added.
  */
-export function mergeIntoPlan(plan: ActionPlan, text: string): { added: number; updated: number; kept: number } {
+export function mergeIntoPlan(plan: ActionPlan, text: string): { added: number; updated: number; unchanged: number; detailed: number; read: number; kept: number } {
   const incoming = parsePlanSteps(text);
-  if (!incoming.length) return { added: 0, updated: 0, kept: plan.steps.length };
+  if (!incoming.length) return { added: 0, updated: 0, unchanged: 0, detailed: 0, read: 0, kept: plan.steps.length };
   const norm = (a: string) => a.toLowerCase().replace(/\s+/g, ' ').trim();
   let added = 0, updated = 0;
   // Tracked separately from `updated`: filling in a missing "done when" is worth PERSISTING but is
   // not a change the user needs to be told about, and it must not be reported as a reworded step.
   let enriched = false;
+
+  let unchanged = 0;
+  let detailed = 0;
 
   for (const s of incoming) {
     const sameDay = plan.steps.filter((x) => x.day === s.day);
@@ -297,6 +369,20 @@ export function mergeIntoPlan(plan: ActionPlan, text: string): { added: number; 
       // Unchanged. Leave it completely alone — including its tick and the date it was ticked.
       // A "done when" the new plan spells out more clearly is still worth taking.
       if (s.doneWhen && !identical.doneWhen) { identical.doneWhen = s.doneWhen; enriched = true; }
+      // THE DETAIL IS WORTH TAKING EVEN WHEN THE HEADLINE DID NOT MOVE. A council that restates a
+      // step word for word but finally spells out which list to filter and what to send has given
+      // the user the most useful thing in the whole answer, and reporting that as "unchanged" and
+      // dropping it is why a re-planned task still had an empty Details panel.
+      if (s.brief && s.brief !== identical.brief) {
+        identical.brief = identical.handedOverAt && identical.brief
+          // An order the user has already edited and handed over is theirs. Do not overwrite it —
+          // add underneath, so nothing they agreed is silently replaced by a fresh draft.
+          ? `${identical.brief}\n\n— revised plan says —\n${s.brief}`
+          : s.brief;
+        detailed++;
+        enriched = true;
+      }
+      unchanged++;
       continue;
     }
     // A REWORDED STEP IS A REVISION, NOT A NEW ONE. If that day has an open step and the new plan
@@ -309,6 +395,12 @@ export function mergeIntoPlan(plan: ActionPlan, text: string): { added: number; 
       openSameDay[0].action = s.action;
       if (s.doneWhen) openSameDay[0].doneWhen = s.doneWhen;
       if (s.week != null) openSameDay[0].week = s.week;
+      if (s.brief) {
+        openSameDay[0].brief = openSameDay[0].handedOverAt && openSameDay[0].brief
+          ? `${openSameDay[0].brief}\n\n— revised plan says —\n${s.brief}`
+          : s.brief;
+        detailed++;
+      }
       updated++;
       continue;
     }
@@ -323,7 +415,11 @@ export function mergeIntoPlan(plan: ActionPlan, text: string): { added: number; 
     plan.steps.sort((a, b) => a.day - b.day);
     savePlan(plan);
   }
-  return { added, updated, kept: plan.steps.length };
+  // `read` and `unchanged` exist so the user can be told whether the WHOLE revision landed. "6
+  // sharpened" left them asking "is all of it in?" — and it was not answerable, because a step the
+  // revision restated word for word was skipped silently and counted nowhere. Now every incoming
+  // step is accounted for: added, sharpened, or already there.
+  return { added, updated, unchanged, detailed, read: incoming.length, kept: plan.steps.length };
 }
 
 /** Write (or clear) the user's note on one step. */
@@ -335,6 +431,47 @@ export function setStepNote(stepId: string, note: string): void {
   const t = note.trim();
   if (t) step.note = t.slice(0, 2000); else delete step.note;
   savePlan(plan);
+}
+
+/**
+ * Say what actually happened to a revision, in one sentence the user can check.
+ *
+ * "6 sharpened" was true and useless: it accounted for six of the twenty-eight steps the revision
+ * contained and said nothing about the other twenty-two, so the only honest response was the one
+ * the user gave — "is all of it in?" — and nothing on screen could answer it. Every step read is
+ * now accounted for, which is the difference between a report and a number.
+ */
+export function describeMerge(r: { added: number; updated: number; unchanged: number; detailed: number; read: number }, title: string): string {
+  if (!r.read) return `I could not find any dated steps in that, so **${title}** is unchanged. A plan needs lines like "Day 3: …" to merge.`;
+  const bits = [
+    r.added ? `**${r.added}** new step${r.added === 1 ? '' : 's'} added` : '',
+    r.updated ? `**${r.updated}** rewritten` : '',
+    r.unchanged ? `**${r.unchanged}** already matched what you had` : '',
+    r.detailed ? `**${r.detailed}** now carry the full detail behind the task` : '',
+  ].filter(Boolean);
+  return `Read all **${r.read}** steps of that revision into **${title}** — ${bits.join(', ')}. `
+    + 'Nothing you had ticked off changed, and nothing was deleted.';
+}
+
+/**
+ * What the council is asked about a plan.
+ *
+ * Finished and unfinished work go in SEPARATELY and labelled. Handing the council one
+ * undifferentiated list is how it starts re-planning days that are already behind the user — and a
+ * plan that rewrites its own past stops being a record of what happened.
+ *
+ * Shared by the Plan panel's button and /council so the two cannot drift into asking different
+ * questions and getting different answers.
+ */
+export function councilQuestionFor(plan: ActionPlan): string {
+  const done = plan.steps.filter((s) => s.done).map((s) => `- Day ${s.day}: ${s.action}`).join('\n');
+  const todo = plan.steps.filter((s) => !s.done).map((s) => `- Day ${s.day}: ${s.action}`).join('\n');
+  return 'Is this the right plan for what I am trying to do, and what would you change?\n\n'
+    + `THE PLAN — ${plan.title}\n\n`
+    + 'ALREADY FINISHED (do not re-plan, repeat or move these):\n'
+    + (done || '- (nothing yet)')
+    + '\n\nSTILL TO DO (only these may be re-planned):\n'
+    + (todo || '- (nothing left)');
 }
 
 /**

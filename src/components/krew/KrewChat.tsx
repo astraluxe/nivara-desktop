@@ -42,13 +42,14 @@ import {
 } from '../../lib/councilContext';
 import SkillsPanel from './SkillsPanel';
 import PlanPanel from './PlanPanel';
-import { looksLikeActionPlan, parsePlanSteps, createPlan, savePlan, loadPlan, planProgress, syncPlanToTodos, todayPlanNote, mergeIntoPlan, PLAN_EVENT, type ActionPlan, type PlanStep } from '../../lib/planStore';
+import { looksLikeActionPlan, parsePlanSteps, createPlan, savePlan, loadPlan, planProgress, syncPlanToTodos, todayPlanNote, mergeIntoPlan, PLAN_EVENT, councilQuestionFor, describeMerge, type ActionPlan, type PlanStep } from '../../lib/planStore';
 import { availabilityNote, looksLikeAvailability, parseAvailability, saveAvailability, loadAvailability, describeAvailability } from '../../lib/availability';
 import { workStateNote } from '../../lib/workState';
 import { draftPrompt } from '../../lib/workOrder';
 import { isPowerCommand, commandBudget, recordCommandRun, exhaustedMessage, COMMAND_QUOTA_EVENT } from '../../lib/commandQuota';
 import LeadSetupCard, { type LeadConfig } from './LeadSetupCard';
 import { loadUserLocation, locationLabel } from '../../lib/userLocation';
+import { pickStudios } from '../../lib/contentStudios';
 import { identityBlock } from '../../lib/userIdentity';
 import OutreachCopilot, { type OutreachCampaign, type OutreachContact, loadSavedCampaign, loadResumableCampaign, loadCampaignByTitle, saveCampaign, bestProfileUrl, splitEmails, listCampaigns, campaignProgress } from './OutreachCopilot';
 import TodoPanel from './TodoPanel';
@@ -82,7 +83,7 @@ async function freshSessionToken(fallback: string | null): Promise<string | null
 //  • 'prompt' → drops a ready phrasing into the input (the user reviews and sends; it routes
 //    through the normal Krew flow / deterministic short-circuits).
 //  • 'nav'    → opens another module of the exe (via the global nv-navigate event App listens to).
-type SlashCmd = { cmd: string; label: string; desc: string; run: 'prompt' | 'nav' | 'research' | 'agents' | 'outreach' | 'continue' | 'scan' | 'verifylinks' | 'refine' | 'toggleSetting' | 'leads'; value: string };
+type SlashCmd = { cmd: string; label: string; desc: string; run: 'prompt' | 'nav' | 'research' | 'agents' | 'outreach' | 'continue' | 'scan' | 'verifylinks' | 'refine' | 'toggleSetting' | 'leads' | 'council' | 'plan' | 'studio'; value: string };
 const SLASH_COMMANDS: SlashCmd[] = [
   // ── Actions that run in the chat ─────────────────────────────────────────
   { cmd: 'verify',   label: 'Verify LinkedIn',   desc: 'Open & check every LinkedIn in your lead list',   run: 'prompt', value: 'Go to <file name> and verify each and every LinkedIn — open and check each one, and fill it in properly if it exists.' },
@@ -108,6 +109,13 @@ const SLASH_COMMANDS: SlashCmd[] = [
   { cmd: 'autopilot',label: 'Toggle Web Autopilot', desc: 'Let Krew explore any site & learn skills (Settings → Advanced)', run: 'toggleSetting', value: 'webAutopilot' },
   { cmd: 'skills',   label: 'Learned skills',    desc: 'See what Krew has learned to do on its own',      run: 'nav', value: 'brain' },
   { cmd: 'repair-table', label: 'Repair a broken table', desc: 'Fix a Brain note whose table rows ran together onto one line', run: 'prompt', value: 'Repair the table in <file name>' },
+  // ── The office: your plan, your advisers, the free tools on the web ──────
+  { cmd: 'council',  label: 'Ask the council',   desc: 'Five advisers argue it out — contrarian, first principles, expansionist, outsider, executor', run: 'council', value: '' },
+  { cmd: 'plan',     label: 'Open my plan',      desc: 'The month day by day — or ask for one if you have none yet', run: 'plan', value: '' },
+  { cmd: 'newplan',  label: 'Build a new plan',  desc: 'Have an agent write a day-by-day plan you can work through', run: 'prompt', value: 'Write me a day-by-day action plan I can actually work through. Ask me anything you need about my business, my goal and how much time I have each day before you write it. Lay it out as "Day 1: …", "Day 2: …" with one concrete action per day and how I know it is finished.' },
+  { cmd: 'handover', label: 'Hand a task to the team', desc: 'Open a task\'s work order — edit it, then the agents run it', run: 'plan', value: '' },
+  { cmd: 'studio',   label: 'Open a content studio', desc: 'Free web tools for marketing work — NotebookLM, Pomelli, Trends, ImageFX', run: 'studio', value: '' },
+  { cmd: 'manual',   label: 'How to use this app', desc: 'The full manual, ordered around the work you do', run: 'nav', value: 'info' },
   // ── Open a feature / module of the app ───────────────────────────────────
   { cmd: 'mesh',       label: 'Open Mesh',          desc: 'Distributed compute mesh',           run: 'nav', value: 'mesh' },
   { cmd: 'automations',label: 'Automation builder', desc: 'Visual automation flows',            run: 'nav', value: 'automation' },
@@ -9027,6 +9035,31 @@ _${plan.advice}_` : ''}`;
       return;
     }
     if (c.run === 'verifylinks') { setInput(''); verifyOutreachLinks(); return; }
+    // THE COUNCIL, from the composer. With a plan running the question is the plan — the same
+    // thing the Plan panel's button asks — because that is what people actually want reviewed. With
+    // no plan there is nothing to review, so the phrasing is dropped in for the user to finish and
+    // send(), which routes "ask the council: …" straight to them without a model deciding anything.
+    if (c.run === 'council') {
+      setInput('');
+      const plan = loadPlan();
+      if (plan) { askCouncilAboutPlan(plan); return; }
+      setInput('Ask the council: ');
+      setTimeout(() => { const el = inputRef.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0);
+      return;
+    }
+    if (c.run === 'plan') {
+      setInput('');
+      if (loadPlan()) { setPlanOpen(true); return; }
+      // No plan yet: opening an empty panel is a dead end, so ask for one instead.
+      setInput('Write me a day-by-day action plan I can actually work through. Ask me about my goal and how much time I have each day first. Lay it out as "Day 1: …", "Day 2: …" with one concrete action per day and how I know it is finished.');
+      setTimeout(() => { const el = inputRef.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0);
+      return;
+    }
+    if (c.run === 'studio') {
+      setInput('');
+      addMsgHere({ role: 'assistant', content: studioMenu() });
+      return;
+    }
     // Opens the setup card instead of running anything — the whole point is to ask BEFORE spending
     // several minutes of browser time on the wrong kind of lead.
     if (c.run === 'leads') { setInput(''); addMsgHere({ role: 'lead_setup', content: '' }); return; }
@@ -11273,20 +11306,39 @@ Everything you need for follow-ups is in that answer above; read it there rather
       ...m, council: live.map((v) => ({ ...v })), ...(stage !== undefined ? { councilStage: stage } : {}),
     }));
 
-    setTaskPhases(members.map((m, i) => ({ id: String(i), label: m.name, status: 'pending' as const })));
-    const phase = (i: number, status: 'running' | 'done') =>
-      setTaskPhases((prev) => prev.map((p, j) => (j === i ? { ...p, status } : p)));
+    // NO SEPARATE PROGRESS STRIP FOR A COUNCIL.
+    //
+    // The card already shows all five with their state, live. Driving the dismissable strip at the
+    // bottom of the chat as well meant the same five names in two places, one of them with an X on
+    // it — and pressing that X (which only hides the strip) looked exactly like cancelling whoever
+    // was mid-answer. Two progress displays for one thing is one too many.
 
-    /** One member, one question — streamed straight into their card. */
+    /**
+     * One member, one question — streamed straight into their card.
+     *
+     * ONE SILENT MEMBER MUST NOT HOLD UP THE COUNCIL. They speak in turn, so a call that stalls
+     * blocks everyone behind it, and the Executor — who speaks last — waits longest of all. The
+     * retry layer underneath will keep trying a dead connection for several minutes, which is right
+     * for a single answer the user is waiting on and wrong for one of five.
+     *
+     * So the wait is bounded by SILENCE, not by total time: a member writing a long answer streams
+     * tokens the whole way and is never cut off, while one that has produced nothing for the budget
+     * is left behind and the council moves on. Local models get far longer, because loading one can
+     * legitimately take minutes before the first token appears.
+     */
     const ask = async (member: KrewAgent, prompt: string, slot: number, onText: (t: string) => void) => {
       let acc = '';
       let last = 0;
+      let lastDelta = Date.now();
+      let abandoned = false;
+      const silenceMs = mode === 'local' ? 240_000 : 90_000;
       try {
-        const { text } = await streamTurnWithRetry(
+        const answer = streamTurnWithRetry(
           [{ role: 'user', content: prompt }],
           member.systemPrompt + councilContext(true),
           (t) => {
             acc += t;
+            lastDelta = Date.now();
             // Repainting five markdown-rendered cards on every token is real work, and the answer
             // arrives faster than anyone reads. Four times a second is plenty to look alive.
             const now = Date.now();
@@ -11296,11 +11348,25 @@ Everything you need for follow-ups is in that answer above; read it there rather
             paint();
           },
         );
-        acc = text || acc;
+        const watchdog = new Promise<null>((resolve) => {
+          const t = setInterval(() => {
+            if (gone() || Date.now() - lastDelta > silenceMs) { clearInterval(t); resolve(null); }
+          }, 2000);
+          void answer.finally(() => clearInterval(t));
+        });
+        const r = await Promise.race([answer, watchdog]);
+        if (r === null && !acc.trim()) {
+          // Nothing at all, and nothing coming. Say so on their card rather than leaving a spinner
+          // that never resolves, and let the next member start.
+          abandoned = true;
+          acc = '';
+        } else if (r && typeof r === 'object' && 'text' in r) {
+          acc = r.text || acc;
+        }
       } catch (e) {
         acc = `_${member.humanName} could not answer this time — ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}_`;
       }
-      const clean = acc.replace(/<tool_call>[\s\S]*/g, '').trim();
+      const clean = abandoned ? '' : acc.replace(/<tool_call>[\s\S]*/g, '').trim();
       onText(clean);
       live[slot].status = 'done';
       paint();
@@ -11312,12 +11378,10 @@ Everything you need for follow-ups is in that answer above; read it there rather
       if (gone()) break;
       const slot = live.findIndex((v) => v.key === member.key);
       live[slot].status = 'thinking';
-      phase(slot, 'running');
       setAgentStep(`${agentHandle(member)} is writing their view — ${slot + 1} of ${members.length}`);
       paint();
       await ask(member, `THE DECISION IN FRONT OF THE COUNCIL:\n${question}\n\nGive your view, in character, following your rules. Be brief and specific.`,
         slot, (t) => { live[slot].text = t; });
-      phase(slot, 'done');
     }
 
     // ── Round 2: they answer each other ──────────────────────────────────────
@@ -11354,7 +11418,6 @@ Everything you need for follow-ups is in that answer above; read it there rather
     if (executor && !gone()) {
       const slot = live.findIndex((v) => v.key === executor.key);
       live[slot].status = 'thinking';
-      phase(slot, 'running');
       updateCouncilCard((m) => ({ ...m, councilStage: `${executor.humanName} is turning all of it into one plan.` }));
       setAgentStep(`${agentHandle(executor)} is writing the final plan`);
       paint();
@@ -11372,7 +11435,6 @@ Everything you need for follow-ups is in that answer above; read it there rather
         + 'Then give the plan. Every substantive point any member raised must be either FOLDED IN — naming who raised it — or explicitly rejected in one line with the reason. Do not silently drop anyone.\n'
         + 'Give the steps as "Day N: action" lines so they can go straight into the plan panel, re-planning ONLY the unfinished ones.',
         slot, (t) => { live[slot].text = t; });
-      phase(slot, 'done');
     }
 
     setTaskPhases([]);
@@ -11435,6 +11497,44 @@ Everything you need for follow-ups is in that answer above; read it there rather
       onDelta(acc.replace(/<tool_call>[\s\S]*/g, ''));
     });
     return (text || acc).replace(/<tool_call>[\s\S]*/g, '').trim();
+  }
+
+  /**
+   * Put something to the council — the ONE entry point, shared by the Plan button and /council.
+   *
+   * On adris.tech credit it shows what this will spend first; on the user's own key or a local
+   * model there is nothing of theirs to warn about, so it just runs.
+   */
+  function openCouncil(question: string) {
+    if (mode === 'nivara') {
+      addMsgHere({ role: 'council_setup', content: 'Ask the council?', councilSetup: { question, source: mode } });
+      return;
+    }
+    startCouncil(question, { debate: true });
+  }
+
+  function askCouncilAboutPlan(plan: ActionPlan) {
+    openCouncil(councilQuestionFor(plan));
+  }
+
+  /**
+   * The free tools on the open web, and what each is actually for.
+   *
+   * Listed rather than launched: which one you want depends entirely on what you are making, and
+   * opening the wrong one is a browser window the user has to close. Availability is stated, never
+   * used to hide a tool — "not officially available here, try Vault" is information; a tool quietly
+   * missing from the list is not.
+   */
+  function studioMenu(): string {
+    const loc = loadUserLocation();
+    const picks = pickStudios('', [loc?.city, loc?.country].filter(Boolean).join(', '));
+    return [
+      '**Free tools I can drive for you** — in the same browser window you already use, signed in as you.',
+      '',
+      ...picks.map((p) => `**${p.studio.name}** — ${p.studio.makes}\n· You get: ${p.studio.outputs}\n· ${p.why}${p.availableHere ? '' : ''}`),
+      '',
+      'Tell me what you are making and I will open the right one and work it with you — for example *"turn my research note into a podcast overview"* or *"check whether demand for this is rising in Bengaluru"*.',
+    ].join('\n\n');
   }
 
   /** Is there a usable own-key credential to point the council at, rather than adris.tech credit? */
@@ -11553,7 +11653,6 @@ Everything you need for follow-ups is in that answer above; read it there rather
       councilStage: targets.length === 1 ? `${targets[0].human} is answering you.` : 'The council is taking your point.',
     });
     const paint = () => updateCouncilCard((m) => ({ ...m, council: live.map((v) => ({ ...v })) }));
-    setTaskPhases(targets.map((t, i) => ({ id: String(i), label: t.name, status: 'pending' as const })));
 
     // Each member is reminded of THEIR OWN previous answer only, plus one line of everyone else's.
     // Re-sending the full transcript to all five is how a follow-up ends up costing more than the
@@ -11566,7 +11665,6 @@ Everything you need for follow-ups is in that answer above; read it there rather
       const isExec = live[i].key === executorKey;
       if (!member) { live[i].status = 'done'; continue; }
       live[i].status = 'thinking';
-      setTaskPhases((prev) => prev.map((p, j) => (j === i ? { ...p, status: 'running' as const } : p)));
       setAgentStep(`${agentHandle(member)} is answering you`);
       paint();
       const mine = prior.find((v) => v.key === live[i].key)?.text || '';
@@ -11606,7 +11704,6 @@ Everything you need for follow-ups is in that answer above; read it there rather
       }
       live[i].text = acc.replace(/<tool_call>[\s\S]*/g, '').trim();
       live[i].status = 'done';
-      setTaskPhases((prev) => prev.map((p, j) => (j === i ? { ...p, status: 'done' as const } : p)));
       paint();
     }
 
@@ -12484,9 +12581,33 @@ Everything you need for follow-ups is in that answer above; read it there rather
                           dumping the raw string here left "### What Works Well" and "**Verdict**"
                           on screen as literal characters — the one place in the app where markup
                           leaked through to the user. */}
+                      {/* AN EMPTY ANSWER IS NOT A SLOW ONE.
+                          This used to show "thinking it through…" for any member without text,
+                          including one whose call had already finished and returned nothing — so a
+                          member who never answered sat there apparently still working while the
+                          rest of the council carried on around them, and the Executor waited for a
+                          turn that was never coming. The three states are now told apart, and the
+                          dead one offers the way out instead of a spinner. */}
                       {v.text
                         ? <div className="px-3 pb-2.5 pt-0.5 text-[11.5px] leading-relaxed text-nv-muted">{renderMarkdown(v.text)}</div>
-                        : v.status !== 'waiting' && <div className="px-3 pb-2.5 pt-0.5 text-[11px] text-nv-faint italic">thinking it through…</div>}
+                        : v.status === 'thinking'
+                          ? <div className="px-3 pb-2.5 pt-0.5 text-[11px] text-nv-faint italic">thinking it through…</div>
+                          : v.status === 'done' && (
+                            <div className="px-3 pb-2.5 pt-0.5">
+                              <p className="text-[11px] text-nv-faint leading-snug">
+                                {v.human} did not answer — the model returned nothing for them. The rest of the council carried on without them.
+                              </p>
+                              <button
+                                onClick={() => {
+                                  setCouncilTalk({ question: msg.content });
+                                  setInput(`${v.human}, you did not answer. Give me your view on this.`);
+                                  setTimeout(() => inputRef.current?.focus(), 0);
+                                }}
+                                className="mt-1 text-[10px] px-2 py-0.5 rounded-md border transition-fast"
+                                style={{ borderColor: '#e8a33d66', color: '#e8a33d' }}
+                              >Ask {v.human} again</button>
+                            </div>
+                          )}
                       {/* Round 2 — what they said once they had read each other. Kept visually
                           apart from the opening view, because a concession is a different kind of
                           statement from an opening argument and reads wrong merged into it. */}
@@ -12517,10 +12638,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
                             if (existing) {
                               const r = mergeIntoPlan(existing, dev.text);
                               setPlanOpen(true);
-                              const bits = [r.added ? `${r.added} step${r.added === 1 ? '' : 's'} added` : '', r.updated ? `${r.updated} sharpened` : ''].filter(Boolean);
-                              addMsg({ role: 'assistant', content: bits.length
-                                ? `Added the Executor's steps to **${existing.title}** — ${bits.join(' and ')}. Nothing you had ticked off changed.`
-                                : `**${existing.title}** already covers what the Executor suggested — nothing to add.` });
+                              addMsg({ role: 'assistant', content: describeMerge(r, existing.title) });
                             } else {
                               savePlan(createPlan(dev.text));
                               setPlanOpen(true);
@@ -12747,13 +12865,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
                             onClick={() => {
                               const r = mergeIntoPlan(loadPlan()!, msg.content);
                               setPlanOpen(true);
-                              const bits = [
-                                r.updated ? `reworded ${r.updated} step${r.updated === 1 ? '' : 's'}` : '',
-                                r.added ? `added ${r.added} new one${r.added === 1 ? '' : 's'}` : '',
-                              ].filter(Boolean);
-                              addMsgHere({ role: 'assistant', content: bits.length
-                                ? `Refined **${activePlan.title}** — ${bits.join(' and ')}. Everything you'd already ticked off stayed ticked, and nothing was deleted.`
-                                : `Nothing to change — **${activePlan.title}** already says all of that.` });
+                              addMsgHere({ role: 'assistant', content: describeMerge(r, activePlan.title) });
                             }}
                             className="text-[10.5px] px-2.5 py-1.5 rounded-lg bg-accent text-white font-medium hover:bg-accent-dim transition-fast"
                           >Refine plan →</button>
@@ -13531,16 +13643,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
           onSchedule={(instruction) => { setPlanOpen(false); void send(instruction, { skipShortcuts: true }); }}
           /* Straight to the council — no chat message, no routing, no chance of an ops agent
              deciding this is work to delegate and writing its own review instead. */
-          onCouncil={(question) => {
-            setPlanOpen(false);
-            // On adris.tech credit, say what it costs first — see CouncilCostNotice. On the user's
-            // own key or a local model there is nothing of theirs to warn about, so it just runs.
-            if (mode === 'nivara') {
-              addMsgHere({ role: 'council_setup', content: 'Ask the council?', councilSetup: { question, source: mode } });
-              return;
-            }
-            startCouncil(question, { debate: true });
-          }}
+          onCouncil={(question) => { setPlanOpen(false); openCouncil(question); }}
         />
       )}
       {outreachCampaign && (
