@@ -29,6 +29,18 @@ export interface PlanStep {
    * it is about, and survives the step being moved to another day.
    */
   note?: string;
+  /**
+   * The work order: what this task ACTUALLY means, step by step, agreed with the user before
+   * anyone starts.
+   *
+   * A plan line is a title — "Day 8: Publish the comparison page" — and a title is not enough to
+   * work from or to hand to anyone. This is the detail behind it, drafted by an agent, edited and
+   * signed off by the user, and then kept ON the step so the calendar shows the real job rather
+   * than the headline, and so handing it over twice does not mean writing it twice.
+   */
+  brief?: string;
+  /** When the user last handed this to the team — drives the badge, nothing else. */
+  handedOverAt?: number;
 }
 
 export interface ActionPlan {
@@ -322,6 +334,25 @@ export function setStepNote(stepId: string, note: string): void {
   if (!step) return;
   const t = note.trim();
   if (t) step.note = t.slice(0, 2000); else delete step.note;
+  savePlan(plan);
+}
+
+/**
+ * Store the agreed work order against a step, and optionally record that it went to the team.
+ *
+ * Kept separate from the note because they answer different questions: a note is what the USER
+ * wants to remember about this task, the brief is what the task IS. Merging them would mean either
+ * a handover overwrites a note the user wrote by hand, or a note quietly changes the instructions
+ * an agent is about to act on. Both are bad in ways that are hard to notice.
+ */
+export function setStepBrief(stepId: string, brief: string, handedOver = false): void {
+  const plan = loadPlan();
+  if (!plan) return;
+  const step = plan.steps.find((s) => s.id === stepId);
+  if (!step) return;
+  const t = brief.trim();
+  if (t) step.brief = t.slice(0, 6000); else delete step.brief;
+  if (handedOver) step.handedOverAt = Date.now();
   savePlan(plan);
 }
 

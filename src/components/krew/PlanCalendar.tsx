@@ -20,11 +20,13 @@ function sameYMD(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
-export default function PlanCalendar({ plan, avail, onRunStep }: {
+export default function PlanCalendar({ plan, avail, onRunStep, onHandOver }: {
   plan: ActionPlan;
   avail: Availability | null;
   /** Hand something to Krew — used by the day detail so a day is actionable, not just readable. */
   onRunStep: (instruction: string) => void;
+  /** Open the work order for one task, so it can be agreed before anyone starts it. */
+  onHandOver?: (step: PlanStep) => void;
 }) {
   const today = new Date();
   const [month, setMonth] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1));
@@ -145,11 +147,28 @@ export default function PlanCalendar({ plan, avail, onRunStep }: {
             )}
 
             {steps.map((s) => (
-              <div key={s.id} className="flex items-start gap-1.5 mb-1">
+              <div key={s.id} className="flex items-start gap-1.5 mb-1.5">
                 <span className={`mt-[3px] w-1.5 h-1.5 rounded-full shrink-0 ${s.done ? 'bg-nv-green' : 'bg-accent'}`} />
                 <div className="min-w-0 flex-1">
                   <p className={`text-[10.5px] leading-snug ${s.done ? 'line-through text-nv-faint' : 'text-nv-text'}`}>{s.action}</p>
                   {s.doneWhen && <p className="text-[9px] text-nv-faint leading-snug">done when: {s.doneWhen}</p>}
+                  {/* THE DETAIL, ON THE DAY. A calendar showing only titles means opening the plan
+                      panel to remember what "publish the comparison page" was supposed to be. Once a
+                      work order exists for a task, the day itself can answer that. */}
+                  {s.brief && (
+                    <details className="mt-0.5">
+                      <summary className="text-[9px] text-accent cursor-pointer select-none">
+                        {s.handedOverAt ? 'Work order · handed over' : 'Work order'}
+                      </summary>
+                      <p className="text-[9.5px] text-nv-muted leading-relaxed whitespace-pre-wrap mt-0.5 pl-1.5 border-l border-accent/30">{s.brief}</p>
+                    </details>
+                  )}
+                  {!s.done && onHandOver && (
+                    <button
+                      onClick={() => onHandOver(s)}
+                      className="mt-0.5 text-[9px] px-1.5 py-0.5 rounded-md bg-accent/[0.12] border border-accent/50 text-accent hover:bg-accent/20 transition-fast"
+                    >{s.brief ? '⇄ Work order' : '⇄ Hand to Krew'}</button>
+                  )}
                 </div>
               </div>
             ))}

@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react';
 import {
   type ActionPlan, type PlanStep,
   loadPlan, savePlan, clearPlan, stepDate, isSameDay, todayView, planProgress, PLAN_EVENT,
-  notesForDay, currentDay, setStepNote, rescheduleOpenSteps,
+  notesForDay, currentDay, setStepNote, setStepBrief, rescheduleOpenSteps,
 } from '../../lib/planStore';
 import { todos } from '../../lib/todoStore';
 import PlanCalendar from './PlanCalendar';
+import TaskHandover from './TaskHandover';
 import { loadAvailability, freeSlotsOn, to24h, describeAvailability, AVAIL_EVENT } from '../../lib/availability';
 
 // ─── The plan you actually work through ──────────────────────────────────────
@@ -25,10 +26,17 @@ function localISO(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil }: {
+export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, onDraftBrief }: {
   onClose: () => void;
   /** Hand a step to Krew so it can actually DO it — with the browser, the apps, the lot. */
   onRunStep: (instruction: string) => void;
+  /**
+   * Ask an agent to draft the work order behind a task, streaming as it writes.
+   *
+   * The drafting lives in the chat component because that is where the model connection is; this
+   * panel only decides WHEN to ask and shows the result for the user to edit.
+   */
+  onDraftBrief: (step: PlanStep, onDelta: (partial: string) => void) => Promise<string>;
   /** Ask Krew to put a set of steps in the real calendar. */
   onSchedule: (instruction: string) => void;
   /**
@@ -48,6 +56,8 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil }:
   const [note, setNote] = useState('');
   /** Which step has its detail open. One at a time — the panel is 380px wide. */
   const [expanded, setExpanded] = useState<string | null>(null);
+  /** The task whose work order is being written and signed off. Nothing runs while this is open. */
+  const [handover, setHandover] = useState<PlanStep | null>(null);
   const [view, setView] = useState<'list' | 'month'>('list');
 
   const [avail, setAvail] = useState(() => loadAvailability());
@@ -188,6 +198,15 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil }:
               away instead of lost in a chat scroll. */}
           {expanded === s.id && (
             <div className="mt-1.5 p-2 rounded-lg bg-nv-bg border border-nv-border">
+              {/* The agreed work order, when there is one — this is the DETAIL behind the title,
+                  and it is the reason a task in the calendar is now something you can read rather
+                  than a headline you have to remember the meaning of. */}
+              {s.brief && (
+                <div className="mb-2 pb-2 border-b border-nv-border">
+                  <p className="text-[9px] font-semibold uppercase tracking-wide text-accent">The work order</p>
+                  <p className="text-[10px] text-nv-muted leading-relaxed whitespace-pre-wrap mt-0.5">{s.brief}</p>
+                </div>
+              )}
               {stepContext(s) ? (
                 <p className="text-[10px] text-nv-muted leading-relaxed whitespace-pre-wrap">{stepContext(s)}</p>
               ) : (
@@ -200,11 +219,24 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil }:
             </div>
           )}
           <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+            {/* HAND IT OVER — the office version of doing a task. It opens the work order for
+                this job, drafted from the plan's own reasoning, and NOTHING runs until the user
+                has read it, fixed it and pressed the button. "Do this with Krew" below is still
+                here for when you just want an agent to get on with it. */}
+            {!s.done && (
+              <button
+                onClick={() => setHandover(s)}
+                className="text-[9.5px] font-medium px-1.5 py-0.5 rounded-md bg-accent/[0.12] border border-accent/50 text-accent hover:bg-accent/20 transition-fast"
+              >{s.brief ? '⇄ Work order' : '⇄ Hand to Krew'}</button>
+            )}
+            {s.handedOverAt && (
+              <span className="text-[9px] text-nv-faint" title={new Date(s.handedOverAt).toLocaleString()}>handed over</span>
+            )}
             {!s.done && (
               <button
                 onClick={() => onRunStep(`Help me do this step from my plan, and actually do the parts you can: "${s.action}".${s.doneWhen ? ` It counts as finished when: ${s.doneWhen}.` : ''} Check what I have ALREADY done first — my outreach list, my lead lists in the Brain, my LinkedIn — and pick up from there instead of starting over. Use your tools (browser, files, calendar, connected apps) rather than just telling me how.`)}
-                className="text-[9.5px] px-1.5 py-0.5 rounded-md border border-accent/40 text-accent hover:bg-accent/10 transition-fast"
-              >Do this with Krew →</button>
+                className="text-[9.5px] px-1.5 py-0.5 rounded-md border border-nv-border text-nv-muted hover:bg-nv-surface2 transition-fast"
+              >Just do it →</button>
             )}
             <button
               onClick={() => setExpanded((v) => (v === s.id ? null : s.id))}
@@ -360,7 +392,7 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil }:
 
       {view === 'month' ? (
         <div className="flex-1 overflow-y-auto min-h-0 p-2.5">
-          <PlanCalendar plan={plan} avail={avail} onRunStep={onRunStep} />
+          <PlanCalendar plan={plan} avail={avail} onRunStep={onRunStep} onHandOver={setHandover} />
         </div>
       ) : (
       <div className="flex-1 overflow-y-auto min-h-0 p-2.5 space-y-3">
@@ -495,6 +527,29 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil }:
         >Drop plan</button>
       </div>
       </div>
+      {handover && (
+        <TaskHandover
+          step={handover}
+          planTitle={plan.title}
+          draft={(onDelta) => onDraftBrief(handover, onDelta)}
+          onRun={(instruction, brief) => {
+            // Saved BEFORE it is sent. If the run fails, times out or the user stops it, the work
+            // order they just spent five minutes agreeing is still on the task.
+            setStepBrief(handover.id, brief, true);
+            setPlan(loadPlan());
+            setHandover(null);
+            onRunStep(instruction);
+          }}
+          onSaveOnly={(brief) => {
+            setStepBrief(handover.id, brief);
+            setPlan(loadPlan());
+            setHandover(null);
+            setNote('Saved as this task\'s detail. It shows in the calendar and is ready to hand over whenever you are.');
+            setTimeout(() => setNote(''), 6000);
+          }}
+          onClose={() => setHandover(null)}
+        />
+      )}
     </div>
   );
 }

@@ -11,7 +11,7 @@ import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOL
 import { TaskProgress, type TaskPhase } from './TaskProgress';
 import { StatusGlobe } from './StatusGlobe';
 import { runParallelResearch } from '../../lib/researchSources';
-import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, type KrewAgent } from '../../lib/krewAgents';
+import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, KREW_AGENTS, type KrewAgent } from '../../lib/krewAgents';
 import { useAuth } from '../../contexts/AuthContext';
 import { extractTableRows, findLeadHeaderIndex, hasPopulatedLeadTable, mergeLeadTables, parseLeadRows, rowsToMarkdown, leadConnStatusToOutreach, looksLikePersonLead, matchesSeniority, matchesSector, peopleSearchPhrases } from '../../lib/leadTable';
 import { supabase } from '../../lib/supabase';
@@ -42,9 +42,10 @@ import {
 } from '../../lib/councilContext';
 import SkillsPanel from './SkillsPanel';
 import PlanPanel from './PlanPanel';
-import { looksLikeActionPlan, parsePlanSteps, createPlan, savePlan, loadPlan, planProgress, syncPlanToTodos, todayPlanNote, mergeIntoPlan, PLAN_EVENT, type ActionPlan } from '../../lib/planStore';
+import { looksLikeActionPlan, parsePlanSteps, createPlan, savePlan, loadPlan, planProgress, syncPlanToTodos, todayPlanNote, mergeIntoPlan, PLAN_EVENT, type ActionPlan, type PlanStep } from '../../lib/planStore';
 import { availabilityNote, looksLikeAvailability, parseAvailability, saveAvailability, loadAvailability, describeAvailability } from '../../lib/availability';
 import { workStateNote } from '../../lib/workState';
+import { draftPrompt } from '../../lib/workOrder';
 import { isPowerCommand, commandBudget, recordCommandRun, exhaustedMessage, COMMAND_QUOTA_EVENT } from '../../lib/commandQuota';
 import LeadSetupCard, { type LeadConfig } from './LeadSetupCard';
 import { loadUserLocation, locationLabel } from '../../lib/userLocation';
@@ -11395,6 +11396,47 @@ Everything you need for follow-ups is in that answer above; read it there rather
       + '\n\nDo NOT repeat what they said — the user can read it. Add only what YOU conclude: where they genuinely disagree, and what you would do. Two short paragraphs at most.';
   }
 
+  /**
+   * Draft the work order behind one plan task.
+   *
+   * Deliberately a PLAIN model call rather than a turn through the boss: this produces a document
+   * for the user to read and edit, not work to be done, and routing it through the delegating boss
+   * would have an agent start doing the task while the user was still deciding whether it was the
+   * right task. The whole point of the sheet is that nothing happens until they say so.
+   *
+   * It is given the plan's own source answer, because the detail behind "publish the comparison
+   * page" was written there and is exactly what the user cannot see from the calendar.
+   */
+  async function draftStepBrief(step: PlanStep, onDelta: (partial: string) => void): Promise<string> {
+    const plan = loadPlan();
+    const roster = KREW_AGENTS
+      .filter((a) => a.key !== 'boss' && !a.key.startsWith('council_'))
+      .slice(0, 28)
+      .map((a) => `- ${agentHandle(a)} (${a.name}) — ${a.role || a.category}`)
+      .join('\n');
+    const prompt = draftPrompt({
+      action: step.action,
+      day: step.day,
+      doneWhen: step.doneWhen,
+      note: step.note,
+      planTitle: plan?.title,
+      planSource: plan?.source,
+      roster,
+    });
+    // Same grounding the council gets: the user's real lists with their columns, their role, their
+    // working hours. Without it the draft names a CRM they do not have.
+    const sys = 'You write work orders for an AI office. You are precise, you name only things that '
+      + 'really exist, and you never pad. You are writing for the person who will read this in ten '
+      + 'seconds and either approve it or fix it.'
+      + councilContext(false);
+    let acc = '';
+    const { text } = await streamTurnWithRetry([{ role: 'user', content: prompt }], sys, (t) => {
+      acc += t;
+      onDelta(acc.replace(/<tool_call>[\s\S]*/g, ''));
+    });
+    return (text || acc).replace(/<tool_call>[\s\S]*/g, '').trim();
+  }
+
   /** Is there a usable own-key credential to point the council at, rather than adris.tech credit? */
   function hasOwnKey(): boolean {
     if (apiKey.trim()) return true;
@@ -13485,6 +13527,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
           /* A step goes back through the normal turn, so the agent does it with everything it has
              — browser, files, calendar, connected apps — instead of describing it. */
           onRunStep={(instruction) => { setPlanOpen(false); void send(instruction, { skipShortcuts: true }); }}
+          onDraftBrief={draftStepBrief}
           onSchedule={(instruction) => { setPlanOpen(false); void send(instruction, { skipShortcuts: true }); }}
           /* Straight to the council — no chat message, no routing, no chance of an ops agent
              deciding this is work to delegate and writing its own review instead. */
