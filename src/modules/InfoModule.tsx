@@ -1102,6 +1102,46 @@ export default function InfoModule() {
             the notes for the exact version you are running.
           </P>
 
+          <H3>Plans that actually run across your team</H3>
+          <P>
+            Handing a plan task to three or four specialists used to produce one agent writing a long
+            document about all of the work and doing none of it. The routing decision has been taken away
+            from the model: the pipeline is worked out from your own approved order and run, so nobody gets
+            a vote on whether to honour the split you just agreed.
+          </P>
+          <P>
+            Each specialist now gets one unbroken stretch of the work, in the order the work actually runs
+            — so nobody is handed a step that cannot start until a later stage has finished. If a task names
+            something to be saved (<K>save the filtered sheet as ICP-Validation-Pool</K>) the app saves it
+            itself rather than trusting an agent to remember, and the handover sheet warns you when nobody
+            you ticked can really do part of the job, naming who could.
+          </P>
+
+          <H3>Email that arrives with the file on it</H3>
+          <P>
+            LinkedIn messages have attached files automatically for a while; email now does the same, which
+            was the more important half — the attachment is usually the entire point. The message and the
+            file are prepared in the Gmail window you are already signed in to, and you press Send. Any agent
+            can do this, not just the outreach copilot: <K>write them a proposal and email it</K> is one
+            instruction. Nothing is ever sent without you.
+          </P>
+          <P>
+            The copilot also shows what is about to go out <span className="text-nv-text">before</span> anything
+            opens — subject, message and the attachment by name. And if the document does not exist yet, one
+            button writes it: a one-pager, a pilot programme or a proposal, as a real PDF, for that person at
+            the stage the conversation actually reached. It uses only facts you have, tells you what it left
+            out, and refuses to hand you a draft full of <K>[insert price]</K>.
+          </P>
+
+          <H3>Ask the council your own question</H3>
+          <P>
+            “Is this the right plan?” is a good default and the wrong tool when you have a specific worry.
+            The plan panel now takes your own question — <span className="text-nv-text">is 30 days realistic
+            with 3 hours a day?</span> — and the panel answers that, against your plan, and says which days
+            would change. It answers from what is really in your Brain and how many days are genuinely left,
+            and it is told to disagree where the plan is wrong rather than approve everything.
+          </P>
+
           <H3>Real documents — PDF, Excel, Word</H3>
           <P>
             Ask Krew to <K>make a PDF one-pager about us for this client</K> or <K>give me an Excel of
