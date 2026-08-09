@@ -1093,6 +1093,64 @@ export const AUTOPILOT_TOOLS: ToolDef[] = [
   },
 ];
 
+// ─── The user's workspace folder ─────────────────────────────────────────────
+//
+// Only exist when the user has switched the folder on in Settings → Files. A tool that is absent
+// cannot be talked into anything, which is a stronger promise than one that is present and asked
+// nicely not to. Everything here goes through the Rust side, which refuses any path outside the
+// folder the user picked.
+
+export const WORKSPACE_TOOLS: ToolDef[] = [
+  {
+    name: 'save_to_my_folder',
+    description: "SAVE A FILE INTO THE USER'S OWN FOLDER on this computer, so it survives the chat and they can open, post or attach it later. Use it for anything you make or fetch that is worth keeping: a generated poster or image, a video you downloaded, an exported PDF or deck, a CSV, a script, a document from a website. Give EITHER content (for text: markdown, csv, html, code) OR from_url (to download the real file at that address). The full path is recorded in the Brain automatically, so a later chat can find it with find_my_file and post it somewhere — that is what makes \"make a poster\" and \"now put it on Instagram\" one job instead of two.",
+    parameters: {
+      name:      { type: 'string', description: 'Filename WITH its extension, e.g. "launch-poster.png", "icp-pool.csv". No slashes — use subfolder for that.', required: true },
+      subfolder: { type: 'string', description: 'Folder inside the workspace to keep it tidy, e.g. "posters", "videos", "outreach". Created if needed. One level is plenty.', required: false },
+      content:   { type: 'string', description: 'The text to write, for a text file. Give the FULL content — never a description of it.', required: false },
+      from_url:  { type: 'string', description: 'Download the file at this http(s) address and save the real bytes. Use this for images, videos and PDFs rather than trying to write them as text.', required: false },
+      what_for:  { type: 'string', description: 'One line on what this file is and what it is for, so it still makes sense in the Brain weeks later.', required: false },
+    },
+  },
+  {
+    name: 'find_my_file',
+    description: "Find a file the team has already saved in the user's folder — by name, by subfolder, or by what it was for. USE THIS BEFORE making something again, and before asking the user where a file is. Returns real paths on disk you can then attach, upload with browser_upload_file, or read.",
+    parameters: {
+      query: { type: 'string', description: 'Name, folder or purpose — "poster", "videos", "ICP pool". Leave empty to list everything saved.', required: false },
+    },
+  },
+  {
+    name: 'list_my_folder',
+    description: "List what is actually in the user's workspace folder right now (or one subfolder of it). This reads the real disk, so it also finds files the user put there themselves — use it when they say \"the video I saved\" or \"that file on my desktop folder\".",
+    parameters: {
+      subfolder: { type: 'string', description: 'Subfolder to look in. Leave empty for the top level.', required: false },
+    },
+  },
+  {
+    name: 'open_my_folder',
+    description: "Show the user their workspace folder (or one file in it) in Explorer/Finder. Use after saving something they will want to look at, or when they ask where a file went.",
+    parameters: {
+      path: { type: 'string', description: 'A full file path to reveal. Leave empty to open the workspace folder itself.', required: false },
+    },
+  },
+];
+
+/** The workspace folder the user granted, or '' when the feature is off. */
+export function workspaceRoot(): string {
+  try {
+    const raw = JSON.parse(localStorage.getItem('nv-settings') ?? '{}');
+    // Settings resolves the default to a concrete path the moment the toggle goes on, so an
+    // enabled workspace always has one. No path means not ready, which means no tools.
+    if (raw?.workspaceEnabled !== true) return '';
+    return String(raw?.workspacePath ?? '').trim();
+  } catch { return ''; }
+}
+
+/** Returns WORKSPACE_TOOLS only when the user has switched the folder on AND a path is known. */
+export function getWorkspaceTools(): ToolDef[] {
+  return workspaceRoot() ? WORKSPACE_TOOLS : [];
+}
+
 function isWebAutopilotEnabled(): boolean {
   try {
     const raw = JSON.parse(localStorage.getItem('nv-settings') ?? '{}');
@@ -1794,6 +1852,15 @@ Every page you create or make useful for the user must be saved with save_link t
 - BEFORE creating any new doc, board or page: call find_link first. The user very often already has the thing you are about to duplicate. And never ask the user for a URL until find_link and read_browser_history have both come up empty.
 - Only save real addresses you actually landed on. A link you invented is worse than none: the user clicks it, lands nowhere, and stops trusting the whole folder.
 
+## The user's folder — where things you make actually go
+If save_to_my_folder is in your tool list, the user has given you ONE folder on their computer (and nothing else). That folder is what makes a two-part job one job: "make me a poster" and, next week, "put that poster on Instagram".
+- SAVE WHAT YOU MAKE OR FETCH. A generated image or poster, a video you found or rendered, an exported PDF or deck, a CSV, a scraped document — save_to_my_folder with from_url for real files, or content for text. Keep it tidy with subfolder ("posters", "videos", "outreach").
+- The path is recorded in the Brain for you. So the NEXT chat can call find_my_file, get the real path, and attach it, upload it with browser_upload_file, or open it. Never ask the user where a file is until find_my_file AND list_my_folder have both come up empty.
+- list_my_folder reads the real disk, so it also sees files the USER put there. "The video I saved in that folder" is a thing you can go and look at.
+- A file the user will want to see: save it, then open_my_folder so it is in front of them.
+- NEVER report a file as saved unless the tool returned a path. If it errored, say what failed. And never invent a path — a path that does not exist is worse than none, because they will go looking.
+- If the tools are NOT in your list, the folder is switched off. Say so in one line and point at Settings → Files. Do not write anywhere else on their machine.
+
 ## Attached files = reference, NOT a reason to duplicate
 - When the user attaches a file (especially one from their Brain — its header says "Connected in Brain"), it is the BASIS to work FROM. Read it, use its data, and EXPAND on it. Do NOT re-create it.
 - NEVER create a second copy of something that already exists (e.g. a new "PRODUCT.md" or a new "Lead list" when one is attached/already in the Brain). To grow a list, ADD the new rows to the SAME existing list (save_to_brain with the same title / append) — one list that gets longer, never "Lead list", "Lead list 2", "Bangalore leads", etc.
@@ -2297,6 +2364,68 @@ async function executeToolCore(
   }
 
   // ── Brain (shared knowledge graph) ────────────────────────────────────────
+  // ── The user's workspace folder ──────────────────────────────────────────────
+  if (toolName === 'save_to_my_folder' || toolName === 'find_my_file'
+      || toolName === 'list_my_folder' || toolName === 'open_my_folder') {
+    const root = workspaceRoot();
+    // Belt and braces: the tools are not offered when the folder is off, but a model that saw them
+    // earlier in a long conversation can still try. Refuse rather than fall back to somewhere else.
+    if (!root) {
+      return '[The user has not given access to a folder on this computer. Switch it on in Settings → Files → "Let agents use a folder on this computer". Do not try to write anywhere else, and do not pretend a file was saved.]';
+    }
+    const { brain } = await import('./knowledgeStore');
+
+    if (toolName === 'save_to_my_folder') {
+      const name = str(args.name).trim().replace(/[\\/]/g, '-');
+      if (!name) return '[save_to_my_folder needs a "name" with a file extension — nothing was saved.]';
+      const sub = str(args.subfolder).trim().replace(/^[\\/]+|[\\/]+$/g, '');
+      const url = str(args.from_url).trim();
+      const content = str(args.content);
+      if (!url && !content.trim()) {
+        return `[save_to_my_folder needs either "content" (the full text) or "from_url" (a real http address) — nothing was saved. Do not call it again with a description of the file instead of the file.]`;
+      }
+      let full = '';
+      try {
+        full = url
+          ? await invoke<string>('workspace_save_url', { root, subfolder: sub || null, name, url })
+          : await invoke<string>('workspace_save', { root, subfolder: sub || null, name, content, contentBase64: null });
+      } catch (e) {
+        return `[Could not save "${name}": ${String(e)}. Nothing was written — say so rather than reporting it as saved.]`;
+      }
+      // Recorded so a LATER chat can find it. This is the half that makes "make a poster" and
+      // "now post that poster" one job: without the path in the Brain, the next turn has nothing.
+      try { brain.addFileRef({ filePath: full, title: name, body: str(args.what_for).trim(), folder: sub }); } catch { /* the file is saved regardless */ }
+      return `Saved to the user's folder: ${full}\nIt is recorded in the Brain under Files${sub ? ` — ${sub}` : ''}, so you or another agent can find it later with find_my_file and attach, upload or post it. Tell the user where it is.`;
+    }
+
+    if (toolName === 'find_my_file') {
+      const hits = brain.findFiles(str(args.query).trim()).slice(0, 25);
+      if (!hits.length) {
+        return brain.listFiles().length
+          ? `No saved file matches that. Try a broader word, or call find_my_file with no query to list them all. list_my_folder reads the real folder, which also finds files the user put there themselves.`
+          : `Nothing has been saved to the user's folder yet. list_my_folder will show anything they put there themselves.`;
+      }
+      return `${hits.length} saved file${hits.length === 1 ? '' : 's'}:\n`
+        + hits.map((n) => `- ${n.title} — ${n.filePath}${n.body ? `\n  ${n.body.slice(0, 200)}` : ''}`).join('\n');
+    }
+
+    if (toolName === 'list_my_folder') {
+      const sub = str(args.subfolder).trim().replace(/^[\\/]+|[\\/]+$/g, '');
+      try {
+        const items = await invoke<Array<{ name: string; path: string; is_dir: boolean }>>(
+          'workspace_list', { root, subfolder: sub || null });
+        if (!items.length) return `${sub ? `"${sub}" is empty` : 'The workspace folder is empty'} (${root}).`;
+        return `In ${sub ? `${root}\\${sub}` : root}:\n`
+          + items.map((i) => `- ${i.is_dir ? '[folder] ' : ''}${i.name}${i.is_dir ? '' : ` — ${i.path}`}`).join('\n');
+      } catch (e) { return `[Could not read the folder: ${String(e)}]`; }
+    }
+
+    // open_my_folder
+    const target = str(args.path).trim() || root;
+    try { await invoke<void>('workspace_reveal', { path: target }); return `Opened ${target} for the user.`; }
+    catch (e) { return `[Could not open ${target}: ${String(e)}]`; }
+  }
+
   if (toolName === 'save_link') {
     const { brain, linkSite, normalizeLinkUrl } = await import('./knowledgeStore');
     const raw = str(args.url).trim();

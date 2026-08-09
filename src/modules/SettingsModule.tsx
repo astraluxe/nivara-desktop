@@ -21,6 +21,14 @@ interface NvSettings {
   // instructions for. It still NEVER submits/sends/pays without an explicit approval click either
   // way — this setting only controls whether the exploratory tools exist at all.
   webAutopilot: boolean;
+  // ONE folder on this machine that the agents may read and write — nothing else.
+  //
+  // Off by default, because it is a real grant of access to the user's own disk and nobody should
+  // discover after the fact that it was on. When it is off the file tools do not exist at all,
+  // which is a stronger guarantee than a tool that exists and is asked to behave.
+  workspaceEnabled: boolean;
+  /** Absolute path. Empty means "use the default", which is Desktop/adris.tech. */
+  workspacePath: string;
 }
 
 const DEFAULTS: NvSettings = {
@@ -29,6 +37,8 @@ const DEFAULTS: NvSettings = {
   automationRunMode: 'app_open',
   listMode:          'continue',
   webAutopilot:      false,
+  workspaceEnabled:  false,
+  workspacePath:     '',
 };
 
 export function loadSettings(): NvSettings {
@@ -622,6 +632,26 @@ export default function SettingsModule() {
     saveSettings(next);
   }
 
+  /**
+   * Switch the workspace folder on, resolving and creating it in the same step.
+   *
+   * The path is written into settings at the moment the toggle goes on, so everything downstream
+   * can read one concrete path synchronously — the tool gate, the agents, the executor. A setting
+   * that says "on" while the path is still being worked out is a window in which the tools exist
+   * and have nowhere to write.
+   */
+  async function toggleWorkspace(on: boolean) {
+    if (!on) { update('workspaceEnabled', false); return; }
+    let path = settings.workspacePath.trim();
+    if (!path) path = await invoke<string>('workspace_default_path').catch(() => '');
+    if (!path) { update('workspaceEnabled', false); return; }
+    const real = await invoke<string>('workspace_ensure', { root: path }).catch(() => '');
+    if (!real) { update('workspaceEnabled', false); return; }
+    const next = { ...settings, workspaceEnabled: true, workspacePath: real };
+    setSettings(next);
+    saveSettings(next);
+  }
+
   // Quick Bar — the always-on-top mini chat at the top of the screen.
   const [quickbarOn, setQuickbarOn] = useState(() => localStorage.getItem('nv-quickbar') !== 'off');
   async function toggleQuickbar(v: boolean) {
@@ -911,6 +941,46 @@ export default function SettingsModule() {
               {locSaved && <span className="text-[10px] text-accent">Saved — Krew will search here from now on.</span>}
             </div>
           </div>
+        </Section>
+
+        {/* ONE FOLDER, GRANTED ON PURPOSE.
+            Everything Krew made used to live inside the app or in a chat message, so "make me a
+            poster" and "now post that poster" were two jobs with the user carrying the file between
+            them. This closes that — and stays a single named folder, because "let the AI use my
+            computer" is not a checkbox anyone should tick without knowing exactly what it covers. */}
+        <Section title="Files">
+          <Toggle
+            on={settings.workspaceEnabled}
+            onChange={(v) => { void toggleWorkspace(v); }}
+            label="Let agents use a folder on this computer"
+            desc="Gives Krew ONE folder — and nothing else on your machine — to keep what it makes: posters and images it generates, videos or PDFs it downloads, spreadsheets, drafts. It remembers where each file went, so a later chat can find that poster and attach it to a post instead of asking you for it. Off by default; turning it off removes the file tools entirely."
+          />
+          {settings.workspaceEnabled && (
+            <div className="pt-1 pb-2">
+              <p className="text-[11px] text-nv-muted leading-[1.6]">
+                Krew reads and writes here, and nowhere else:
+              </p>
+              <p className="mt-1 text-[11px] font-mono break-all" style={{ color: 'var(--nv-text)' }}>
+                {settings.workspacePath || 'setting up…'}
+              </p>
+              <div className="flex flex-wrap gap-2 mt-2">
+                <button
+                  onClick={async () => {
+                    const picked = await invoke<string | null>('open_folder_dialog').catch(() => null);
+                    if (!picked) return;
+                    const real = await invoke<string>('workspace_ensure', { root: picked }).catch(() => picked);
+                    update('workspacePath', real);
+                  }}
+                  className="px-3 py-2 rounded-lg text-[11px] font-medium border border-nv-border text-nv-muted transition-fast hover:border-nv-border/80"
+                >Choose a different folder…</button>
+                <button
+                  onClick={() => { void invoke('workspace_reveal', { path: settings.workspacePath }).catch(() => {}); }}
+                  disabled={!settings.workspacePath}
+                  className="px-3 py-2 rounded-lg text-[11px] font-medium border border-nv-border text-nv-muted transition-fast hover:border-nv-border/80 disabled:opacity-40"
+                >Open folder</button>
+              </div>
+            </div>
+          )}
         </Section>
 
         {/* Advanced / experimental */}

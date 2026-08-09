@@ -31,6 +31,18 @@ const CAPABILITIES = [
   'Studio + open_content_studio — decks, and free web tools (Pomelli for campaign images, NotebookLM for briefings and podcast/video overviews)',
   'Coder — a real editor with the project open, agents that write and change files',
   'The plan panel — dated day-by-day steps, ticked off, feeding the To-do list',
+  // A council can only recommend what it knows exists. Everything below was already shipped and
+  // absent from this list, so the panel kept proposing machinery the user already owned — or
+  // worse, told them to do by hand something an agent does in one call.
+  'The browser — agents open real sites and WORK in them: read a page, fill a form, click through, upload a file. Notion, Google Docs/Sheets, Trello, Airtable, a CMS: the user is already signed in, so no API key is needed. This is how "do it in Notion" becomes a step an agent performs rather than an instruction to the user',
+  'Connected apps — Gmail (including bulk send), Notion, Slack, GitHub, Linear, Airtable, Twitter/X, LinkedIn, Google. Any MCP server can be added by URL, and its tools become available to every agent',
+  'save_link / find_link — the Brain\'s Links folder: pages an agent made or verified, grouped by site and de-duplicated, so a page built one week is reopened the next instead of rebuilt',
+  'save_to_my_folder / find_my_file — ONE folder on the user\'s own computer (Settings → Files, off until they switch it on). Agents save what they make or download there — a generated poster, a rendered video, an exported PDF or CSV — and the path is recorded in the Brain, so "make a poster" and, later, "post that poster" are one job. Only suggest this if it fits; if it is off, say it needs switching on',
+  'generate_document — real .pdf, .docx and .xlsx files, not descriptions of them',
+  'Deck maker — a full presentation from a brief, with generated images on the paid/own-key path',
+  'research_person / verify / enrich — check a real person or company before contact, and fill in the missing LinkedIn, phone and email on a list in one pass',
+  'The council itself, and plan work orders — a plan task can be handed to several specialists as one ordered pipeline, each doing their part and passing it on',
+  'A team of ~40 named specialists (research, outreach, email, content, ads, data, ops, engineering, finance, design) that can be given a task directly',
 ];
 
 /**

@@ -789,6 +789,169 @@ async fn open_folder_dialog(app: tauri::AppHandle) -> Result<Option<String>, Str
     Ok(rx.await.ok().flatten())
 }
 
+// ─── The user's workspace folder ─────────────────────────────────────────────
+//
+// A real assistant that makes things — a poster, a rendered video, a PDF, a page it downloaded —
+// has to be able to put them somewhere the user can actually find, and pick them up again later to
+// post or attach. Until now everything it produced lived inside the app's own data directory or in
+// a chat message, which is why "make me a poster, then put it on Instagram" needed the user to be
+// the courier between the two halves of their own request.
+//
+// This is deliberately ONE folder that the user chooses and switches on themselves, not general
+// filesystem access. Everything below refuses to touch anything outside it — see safe_join — so
+// switching it on grants exactly the folder on the label and nothing else, and switching it off
+// takes the tools away entirely.
+
+/// Where the workspace goes if the user has not chosen: Desktop/adris.tech, which is what they
+/// asked for and is somewhere they will actually see it.
+#[tauri::command]
+fn workspace_default_path() -> String {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
+    if home.is_empty() { return String::new(); }
+    let desktop = std::path::Path::new(&home).join("Desktop");
+    let base = if desktop.is_dir() { desktop } else { std::path::PathBuf::from(&home) };
+    base.join("adris.tech").to_string_lossy().to_string()
+}
+
+/// Resolve `rel` underneath `root`, refusing anything that climbs out of it.
+///
+/// The guard is the whole point of the permission being meaningful: without it "../.." in a name
+/// the model composed — or one it read off a web page — would reach the rest of the disk, and the
+/// setting would be a label rather than a boundary. Checked after canonicalising the root, because
+/// a symlinked or 8.3-shortened prefix compares unequal as plain text while pointing at the same
+/// place.
+fn safe_join(root: &str, rel: &str) -> Result<std::path::PathBuf, String> {
+    use std::path::{Component, Path, PathBuf};
+    if root.trim().is_empty() { return Err("No workspace folder is set.".into()); }
+    let root_p = PathBuf::from(root);
+    std::fs::create_dir_all(&root_p).map_err(|e| format!("Could not create the workspace folder: {e}"))?;
+    let root_c = root_p.canonicalize().map_err(|e| format!("Workspace folder unreadable: {e}"))?;
+
+    let mut out = root_c.clone();
+    for comp in Path::new(rel).components() {
+        match comp {
+            Component::Normal(part) => {
+                // Drive letters, UNC prefixes and anything with a separator left in it are how a
+                // "filename" becomes an absolute path on Windows.
+                let s = part.to_string_lossy();
+                if s.contains(':') || s.contains('\\') || s.contains('/') {
+                    return Err("That name is not allowed in a filename.".into());
+                }
+                out.push(part);
+            }
+            Component::CurDir => {}
+            // Climbing out, an absolute path, or a drive prefix: refuse the whole request rather
+            // than sanitising it into something the caller did not ask for.
+            _ => return Err("Paths outside your workspace folder are not allowed.".into()),
+        }
+    }
+    if !out.starts_with(&root_c) { return Err("Paths outside your workspace folder are not allowed.".into()); }
+    Ok(out)
+}
+
+/// Create the workspace folder if needed and hand back its real path.
+#[tauri::command]
+fn workspace_ensure(root: String) -> Result<String, String> {
+    let p = std::path::PathBuf::from(&root);
+    std::fs::create_dir_all(&p).map_err(|e| format!("Could not create {root}: {e}"))?;
+    Ok(p.canonicalize().map(|c| c.to_string_lossy().to_string()).unwrap_or(root))
+}
+
+/// Write a file into the workspace. `content_base64` carries real bytes (an image, a video, a
+/// PDF); otherwise `content` is written as text. Returns the full path so it can be recorded.
+#[tauri::command]
+fn workspace_save(
+    root: String,
+    subfolder: Option<String>,
+    name: String,
+    content: Option<String>,
+    content_base64: Option<String>,
+) -> Result<String, String> {
+    use base64::Engine;
+    let rel = match subfolder.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(sub) => format!("{sub}/{name}"),
+        None => name.clone(),
+    };
+    let path = safe_join(&root, &rel)?;
+    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+    match content_base64 {
+        Some(b64) if !b64.trim().is_empty() => {
+            // Data URLs arrive from canvases and generated images ("data:image/png;base64,AAAA").
+            // rsplit returns the whole string when there is no comma, so plain base64 works too.
+            let raw = b64.rsplit(',').next().unwrap_or(&b64).trim();
+            let bytes = base64::engine::general_purpose::STANDARD.decode(raw)
+                .map_err(|e| format!("That is not valid base64: {e}"))?;
+            std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        }
+        _ => {
+            std::fs::write(&path, content.unwrap_or_default()).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// Download a URL straight into the workspace — the rendered video, the exported PDF, the image.
+#[tauri::command]
+async fn workspace_save_url(
+    root: String,
+    subfolder: Option<String>,
+    name: String,
+    url: String,
+) -> Result<String, String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("Only http/https addresses can be downloaded.".into());
+    }
+    let rel = match subfolder.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(sub) => format!("{sub}/{name}"),
+        None => name.clone(),
+    };
+    // Checked BEFORE the download, so a bad name costs nothing and nothing part-written is left.
+    let path = safe_join(&root, &rel)?;
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .header(header::USER_AGENT, "Mozilla/5.0")
+        .send().await.map_err(|e| format!("Download failed: {e}"))?;
+    if !resp.status().is_success() { return Err(format!("Download failed: HTTP {}", resp.status())); }
+    let bytes = resp.bytes().await.map_err(|e| format!("Download failed while reading: {e}"))?;
+    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// What is in the workspace (or one subfolder of it).
+#[tauri::command]
+fn workspace_list(root: String, subfolder: Option<String>) -> Result<Vec<FileEntry>, String> {
+    let dir = match subfolder.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(sub) => safe_join(&root, sub)?,
+        None => std::path::PathBuf::from(workspace_ensure(root)?),
+    };
+    if !dir.is_dir() { return Ok(Vec::new()); }
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') { continue; }
+        let is_dir = entry.metadata().map(|m| m.is_dir()).unwrap_or(false);
+        out.push(FileEntry { name, path: entry.path().to_string_lossy().to_string(), is_dir });
+    }
+    Ok(out)
+}
+
+/// Show a file or folder to the user in Explorer/Finder.
+#[tauri::command]
+fn workspace_reveal(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() { return Err(format!("{path} does not exist.")); }
+    #[cfg(target_os = "windows")]
+    { std::process::Command::new("explorer").arg(&path).spawn().map_err(|e| e.to_string())?; }
+    #[cfg(target_os = "macos")]
+    { std::process::Command::new("open").arg(&path).spawn().map_err(|e| e.to_string())?; }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    { std::process::Command::new("xdg-open").arg(&path).spawn().map_err(|e| e.to_string())?; }
+    Ok(())
+}
+
 // ─── Folder scanner for compliance ───────────────────────────────────────────
 
 #[tauri::command]
@@ -7286,6 +7449,14 @@ pub fn run() {
             list_files_recursive,
             search_in_files,
             open_folder_dialog,
+            // The user's own workspace folder (Settings → Files). Every one of these refuses to
+            // touch anything outside the folder the user picked — see safe_join.
+            workspace_default_path,
+            workspace_ensure,
+            workspace_save,
+            workspace_save_url,
+            workspace_list,
+            workspace_reveal,
             scan_folder_for_compliance,
             // AI — Coder
             ai_stream,

@@ -463,15 +463,40 @@ export function describeMerge(r: { added: number; updated: number; unchanged: nu
  * Shared by the Plan panel's button and /council so the two cannot drift into asking different
  * questions and getting different answers.
  */
-export function councilQuestionFor(plan: ActionPlan): string {
+/**
+ * WHAT THE PANEL IS ANSWERING ABOUT — the user's real situation, not a hypothetical one.
+ *
+ * A council that answers from general business knowledge produces the advice you could have got
+ * from a search: "validate with customers", "consider paid channels". Useful advice needs the
+ * things only this app knows — what is already in their Brain, what their machine and their
+ * connected accounts can actually do, how many days are genuinely left — and needs to say which
+ * parts are estimates. Both entry points share this, so /council and the plan button cannot drift.
+ */
+const REAL_FACTORS =
+  '\n\nANSWER FROM MY REAL SITUATION, NOT A GENERIC ONE:\n'
+  + '- Use what I actually have. My lists, notes, sheets and saved research are in the Brain — recall_from_brain, or query_table for a big sheet. My own product, market and location are in the shared profile. Never ask me to describe my own business back to you.\n'
+  + '- Count the real constraints: how many days are genuinely left, which steps are already done, how much of the work needs my hands rather than an agent, and what one person can actually do in a day.\n'
+  + '- Recommend things this app can really carry out. The team can browse and fill in sites, read and filter my sheets, draft and send email, research and verify people, generate documents, decks and images, run automations on a schedule, and save files to my own folder. Prefer a plan the agents can execute over one that reads well.\n'
+  + '- NEVER invent numbers. No made-up conversion rates, market sizes, CACs or benchmarks. If a figure matters and you do not have it, say it is an estimate and say what it rests on — or say how to measure it this week.\n'
+  + '- Disagree with the plan where it is wrong, and say what you would drop. A review that approves everything is worth nothing.';
+
+export function councilQuestionFor(plan: ActionPlan, ask = ''): string {
   const done = plan.steps.filter((s) => s.done).map((s) => `- Day ${s.day}: ${s.action}`).join('\n');
   const todo = plan.steps.filter((s) => !s.done).map((s) => `- Day ${s.day}: ${s.action}`).join('\n');
-  return 'Is this the right plan for what I am trying to do, and what would you change?\n\n'
-    + `THE PLAN — ${plan.title}\n\n`
+  const q = ask.trim();
+  return (q
+    // The user's own question leads, and is repeated at the end as the thing to actually answer —
+    // a specific question buried above a long plan gets answered as "here are my thoughts on the
+    // plan", which is the generic review they were trying to avoid asking for.
+    ? `${q}\n\nAnswer THAT, against the plan below. If the plan needs to change to fit it, say exactly which days change and how.`
+    : 'Is this the right plan for what I am trying to do, and what would you change?')
+    + `\n\nTHE PLAN — ${plan.title}\n\n`
     + 'ALREADY FINISHED (do not re-plan, repeat or move these):\n'
     + (done || '- (nothing yet)')
     + '\n\nSTILL TO DO (only these may be re-planned):\n'
-    + (todo || '- (nothing left)');
+    + (todo || '- (nothing left)')
+    + REAL_FACTORS
+    + (q ? `\n\nTHE QUESTION I ACTUALLY WANT ANSWERED: ${q}` : '');
 }
 
 /**

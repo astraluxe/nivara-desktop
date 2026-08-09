@@ -297,6 +297,28 @@ export const SKILL_GRAPH: SkillDef[] = [
     needs: [],
     guide: 'Connected apps: only the services actually connected are available. If one is missing, name it and point the user at Connect Apps rather than pretending to have done the action.',
   },
+  {
+    id: 'saved-links',
+    name: 'Keeping pages you worked on',
+    area: 'knowledge',
+    blurb: 'The Notion page, doc or board an agent made — filed by site so it is reopened, not rebuilt.',
+    tools: ['save_link', 'find_link'],
+    triggers: /\b(link|url|page|notion|google doc|docs?\.google|sheet|board|trello|bookmark|where did (you|we) (save|put)|that page)\b/i,
+    // Making the page is the browser's job; this is only the remembering half, so it is useless
+    // on its own and always pulled in with the thing that produced the page.
+    needs: ['browser', 'brain'],
+    guide: 'Saved pages: call find_link BEFORE creating a doc or board — the user usually already has it. After you create or fill in a page, call save_link with the real URL and what it is for. Never invent a URL; a link that goes nowhere costs the user more than no link.',
+  },
+  {
+    id: 'my-folder',
+    name: 'Saving files to my computer',
+    area: 'make',
+    blurb: 'Posters, videos, PDFs and sheets saved in your own folder — and found again later to post or attach.',
+    tools: ['save_to_my_folder', 'find_my_file', 'list_my_folder', 'open_my_folder'],
+    triggers: /\b(save (it|this|that|the file)|download|to my (folder|computer|desktop|laptop)|on my (desktop|computer|machine)|attach|the (file|video|poster|image|pdf) (i|you) (saved|made)|where is the file)\b/i,
+    needs: ['brain'],
+    guide: 'The user\'s folder: only exists when they switched it on in Settings → Files — if the tools are absent, say that in one line rather than writing elsewhere. Save anything you make or download (from_url for real files, content for text), then say where it went. The path is recorded in the Brain, so find_my_file gets it back in a later chat to attach, upload or post. Never report a save the tool did not confirm.',
+  },
 ];
 
 // ─── Edges ────────────────────────────────────────────────────────────────────

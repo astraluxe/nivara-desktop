@@ -62,6 +62,9 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
   /** The task whose work order is being written and signed off. Nothing runs while this is open. */
   const [handover, setHandover] = useState<PlanStep | null>(null);
   const [view, setView] = useState<'list' | 'month'>('list');
+  /** The "ask the council my own question" box: open, and what has been typed into it. */
+  const [askOpen, setAskOpen] = useState(false);
+  const [askText, setAskText] = useState('');
 
   const [avail, setAvail] = useState(() => loadAvailability());
 
@@ -436,6 +439,50 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
             className="flex-1 text-[10px] px-2 py-1 rounded-lg border transition-fast font-medium"
             style={{ borderColor: '#e8a33d66', color: '#e8a33d' }}
           >⚖ Ask the council</button>
+        </div>
+        {/* THE COUNCIL, ABOUT THE THING YOU ACTUALLY WANT TO KNOW.
+            "Is this the right plan?" gets a general review, which is the right default and the
+            wrong tool when you have a specific worry — is 30 days enough, is the pricing wrong,
+            should this be one market or three. Asked that way the panel answers the question AND
+            says which days change, instead of restating the plan back at you. */}
+        <div className="mt-1.5">
+          {!askOpen ? (
+            <button
+              onClick={() => setAskOpen(true)}
+              className="w-full text-[10px] px-2 py-1 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:bg-nv-surface2 transition-fast font-medium"
+            >⚖ Ask the council my own question…</button>
+          ) : (
+            <div className="rounded-lg border border-nv-border p-2">
+              <textarea
+                value={askText}
+                onChange={(e) => setAskText(e.target.value)}
+                autoFocus
+                rows={2}
+                placeholder="e.g. Is 30 days realistic with 3 hours a day? Should I charge per seat or per company?"
+                className="w-full rounded-md px-2 py-1.5 text-[11px] bg-nv-bg border border-nv-border focus:border-accent outline-none text-nv-text resize-y"
+              />
+              <p className="text-[9.5px] text-nv-faint mt-1 leading-snug">
+                They answer this against your plan, using what is actually in your Brain and how many days are really left — and say which days would change.
+              </p>
+              <div className="flex gap-1.5 mt-1.5">
+                <button
+                  disabled={askText.trim().length < 4}
+                  onClick={() => {
+                    onCouncil(councilQuestionFor(plan, askText));
+                    setAskOpen(false);
+                    setAskText('');
+                    onClose();
+                  }}
+                  className="flex-1 text-[10px] px-2 py-1 rounded-lg border transition-fast font-medium disabled:opacity-40"
+                  style={{ borderColor: '#e8a33d66', color: '#e8a33d' }}
+                >Put it to the council →</button>
+                <button
+                  onClick={() => { setAskOpen(false); setAskText(''); }}
+                  className="text-[10px] px-2 py-1 rounded-lg border border-nv-border text-nv-faint hover:text-nv-text transition-fast"
+                >Cancel</button>
+              </div>
+            </div>
+          )}
         </div>
         {/* FIT THE REMAINING WORK TO THE DAYS YOU ACTUALLY HAVE.
             A plan written as Day 1…Day 30 has no idea which of those is a Sunday, or that four days

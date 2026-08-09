@@ -17,6 +17,12 @@ export const PICTURES_HUB = 'Pictures';
 // underneath it — see addLink for why the grouping is not optional.
 export const LINKS_HUB = 'Links';
 
+// And the same for things that live on disk in the user's own workspace folder: the poster that
+// was generated, the video that was downloaded, the PDF that was exported. The Brain holds the
+// PATH, not the bytes — so "post that poster to Instagram" a week later can find the file instead
+// of asking the user where they put it.
+export const FILES_HUB = 'Files';
+
 export interface BrainNode {
   id: string;
   kind: BrainNodeKind;
@@ -534,6 +540,84 @@ export const brain = {
   /** Every saved page, newest first. */
   listLinks(): BrainNode[] {
     return read().nodes.filter((n) => n.kind === 'link').sort((a, b) => b.updatedAt - a.updatedAt);
+  },
+
+  // ── Files folder ────────────────────────────────────────────────────────────
+  //
+  // Same shape as Links and for the same reason: one hub, a group per subfolder, deduped on the
+  // thing that identifies the item — here the path on disk. An agent that saves the same poster
+  // twice should update one entry, not leave the user guessing which of two nodes is current.
+
+  /** Find (or create) the single "Files" hub every saved file hangs under. */
+  ensureFilesHub(): BrainNode {
+    const d = read();
+    const hub = d.nodes.find((n) => n.kind === 'list' && normTitle(n.title) === normTitle(FILES_HUB));
+    return hub ?? this.addNode({
+      title: FILES_HUB, kind: 'list',
+      body: 'Things your agents made or downloaded into your workspace folder — grouped by folder. Open one to see where it is on disk.',
+    });
+  },
+
+  /** Find (or create) the group node for one workspace subfolder, e.g. "Files — posters". */
+  ensureFolderGroup(folder: string): BrainNode {
+    const name = (folder || '').trim() || 'loose';
+    const title = `${FILES_HUB} — ${name}`;
+    const d = read();
+    const found = d.nodes.find((n) => normTitle(n.title) === normTitle(title));
+    if (found) return found;
+    const hub = this.ensureFilesHub();
+    const group = this.addNode({ title, kind: 'list', body: `Files saved in ${name}.` });
+    this.link(hub.id, group.id, 'folder');
+    return group;
+  },
+
+  /** The saved record for a path on disk, however it is capitalised or separated. */
+  findFileByPath(filePath: string): BrainNode | undefined {
+    const norm = (filePath || '').replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+    if (!norm) return undefined;
+    return read().nodes.find((n) => n.kind === 'file' && n.filePath
+      && n.filePath.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '') === norm);
+  },
+
+  /**
+   * Record a file the agents put in the workspace. Saving the same path again updates it.
+   *
+   * `body` is what the file IS in the user's terms ("the launch poster, 1080x1350, for Instagram"),
+   * because a path six weeks later tells nobody what is in it.
+   */
+  addFileRef(f: { filePath: string; title: string; body?: string; folder?: string }): BrainNode | null {
+    const filePath = (f.filePath || '').trim();
+    if (!filePath) return null;
+    const existing = this.findFileByPath(filePath);
+    if (existing) {
+      this.updateNode(existing.id, {
+        filePath,
+        ...(f.body?.trim() ? { body: f.body.trim() } : {}),
+        ...(f.title.trim() && normTitle(f.title) !== normTitle(existing.title) ? { title: f.title.trim().slice(0, 120) } : {}),
+      });
+      return read().nodes.find((n) => n.id === existing.id) ?? existing;
+    }
+    const group = this.ensureFolderGroup(f.folder ?? '');
+    const node = this.addUniqueNode({
+      title: (f.title.trim() || filePath.split(/[\\/]/).pop() || 'file').slice(0, 120),
+      kind: 'file', filePath, body: f.body?.trim() ?? '',
+    });
+    this.link(group.id, node.id, 'file');
+    return node;
+  },
+
+  /** Every recorded workspace file, newest first. */
+  listFiles(): BrainNode[] {
+    return read().nodes.filter((n) => n.kind === 'file' && !!n.filePath)
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+  },
+
+  /** Recorded files matching a name, a folder or what they were for. */
+  findFiles(query: string): BrainNode[] {
+    const q = (query || '').trim().toLowerCase();
+    if (!q) return this.listFiles();
+    return this.listFiles().filter((n) =>
+      n.title.toLowerCase().includes(q) || (n.filePath ?? '').toLowerCase().includes(q) || n.body.toLowerCase().includes(q));
   },
 
   /** Saved pages matching a site, a word in the title, or a word in the description. */

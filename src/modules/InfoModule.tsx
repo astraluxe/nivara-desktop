@@ -120,6 +120,7 @@ const SECTIONS: { id: string; label: string }[] = [
   { id: 'studios',    label: 'Free tools on the web' },
   { id: 'autopilot',  label: 'Web Autopilot' },
   { id: 'brain',      label: 'Brain — shared memory' },
+  { id: 'files',      label: 'Files — your own folder' },
   { id: 'todo',       label: 'To-do' },
   { id: 'plan',       label: 'Plan — your month, in play' },
   { id: 'linkedin',   label: 'Worked example: LinkedIn outreach' },
@@ -368,6 +369,47 @@ export default function InfoModule() {
           <Note>
             If you ever see “monthly limit reached”, switch the bar to Own key or Local and carry on
             working. You do not have to upgrade to keep using the app.
+          </Note>
+
+          <H3>Where to start, depending on what you do</H3>
+          <P>
+            The app does not assume you are a startup founder. The fastest first win is different for
+            each of these, so start with the row that sounds like you.
+          </P>
+          <ul className="list-disc pl-5 mb-3">
+            <Li>
+              <span className="text-nv-text">Selling a product or service</span> — <K>/leads</K> to build a
+              verified list of real named people, then <K>/outreach</K> to draft a message each and track who
+              replied. Ask for a day-by-day plan first if you want the whole month laid out.
+            </Li>
+            <Li>
+              <span className="text-nv-text">Freelance or consulting</span> — <K>/scan</K> pulls your own LinkedIn
+              connections into a list; warm people you already know beat cold ones. Then <K>/outreach</K> on that
+              list, and let it write the follow-ups.
+            </Li>
+            <Li>
+              <span className="text-nv-text">Running a shop or a local business</span> — ask the researcher for
+              suppliers, competitors or nearby businesses by area; use Automations for the weekly jobs (stock
+              checks, price watches, a Monday summary) so they happen without you.
+            </Li>
+            <Li>
+              <span className="text-nv-text">Content, social or marketing</span> — ask for posts and they arrive
+              tailored per platform; Studio and the deck maker handle images, decks and campaign visuals, and with
+              Settings → Files on, everything it makes lands in your own folder ready to post.
+            </Li>
+            <Li>
+              <span className="text-nv-text">Studying or researching</span> — put your material in the Brain (drag
+              files in, or import a GitHub folder) and ask questions against it. Guard reads contracts and documents
+              locally, and NotebookLM in Studio turns a pile of sources into a briefing.
+            </Li>
+            <Li>
+              <span className="text-nv-text">Building software</span> — Coder opens your project properly, with
+              agents that read and change real files. Models lets you run it all on a local model for free.
+            </Li>
+          </ul>
+          <Note>
+            Not sure? Ask the council (<K>/council</K>) what you should be doing first. It reads what is already in
+            your Brain and answers for your actual situation — and it will tell you when it is guessing.
           </Note>
 
           </Sec>
@@ -680,6 +722,44 @@ export default function InfoModule() {
             and links them under a repo hub — no clone, no token, no cost. Handy for giving the agents a
             codebase or a set of docs to read.
           </P>
+
+          <P>
+            <span className="text-nv-text font-medium">Links</span> and{' '}
+            <span className="text-nv-text font-medium">Files</span> — two folders that fill themselves. When an
+            agent makes or verifies a web page (a Notion doc, a sheet, a board) it files the address under
+            Links, grouped by site, so the next chat reopens it instead of building a second one. When it saves
+            something to your computer, the path is filed under Files. Both de-duplicate, so the same page or
+            file saved twice updates one entry rather than leaving you to guess which is current.
+          </P>
+
+          </Sec>
+          <Sec id="files" rank={rank}>
+          <H id="files">Files — your own folder</H>
+          <P>
+            Everything the agents made used to live inside the app or in a chat message. So “make me a poster”
+            and “now put that poster on Instagram” were two jobs, with you carrying the file between them.
+          </P>
+          <P>
+            In <span className="text-nv-text">Settings → Files</span> you can give adris.tech <span className="text-nv-text font-medium">one
+            folder</span> on this computer — by default a folder called <K>adris.tech</K> on your Desktop, or any
+            folder you choose. It is off until you switch it on, and it is that folder only: everything the agents
+            write refuses any path outside it, so this is not “let the AI use my computer”.
+          </P>
+          <P>
+            With it on, agents save what they make or fetch — a generated poster or image, a video or PDF they
+            downloaded, a spreadsheet, a draft — and tell you where each one went. The path is recorded in the
+            Brain at the same time, which is the half that matters later: a chat next week can find that poster
+            by name and attach, upload or post it without you going to look for it.
+          </P>
+          <Example title="What this changes">
+            “Make a launch poster and save it” puts a real <K>.png</K> in <K>Desktop\adris.tech\posters</K>. Days
+            later, “post the launch poster to Instagram” finds it by name, opens the browser and attaches the actual
+            file — no hunting, no re-generating, no describing it again.
+          </Example>
+          <Note>
+            Turning the setting off removes the file tools completely — the agents do not have them to misuse. If
+            an agent tells you a file was saved, it saved it: a path is only reported when the write really happened.
+          </Note>
 
           </Sec>
           <Sec id="todo" rank={rank}>

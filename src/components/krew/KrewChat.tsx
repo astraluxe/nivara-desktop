@@ -7,7 +7,7 @@ import type { Node, Edge } from '@xyflow/react';
 import { krewDb, credentialStore, krewMemoryDb, type KrewMemory } from '../../lib/krewDb';
 import { listMcpServers, mcpToolDefs } from '../../lib/krewMcp';
 import { brain as brainStore, nodeToMarkdown, requestBrainFocus } from '../../lib/knowledgeStore';
-import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, LEAD_TOOLS, getAutopilotTools, buildKrewSystemPrompt, executeTool, needsCompression, resetBrowserRunState, closeAgentBrowserIfActive, setAgentBrowserHold, requestLeadStop, resetLeadStop, isLeadStopRequested, requestToolStop, resetToolStop, KREW_PROFILE_KEY, setBrainSaveFallback, type ToolDef } from '../../lib/krewTools';
+import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, LEAD_TOOLS, getAutopilotTools, getWorkspaceTools, buildKrewSystemPrompt, executeTool, needsCompression, resetBrowserRunState, closeAgentBrowserIfActive, setAgentBrowserHold, requestLeadStop, resetLeadStop, isLeadStopRequested, requestToolStop, resetToolStop, KREW_PROFILE_KEY, setBrainSaveFallback, type ToolDef } from '../../lib/krewTools';
 import { TaskProgress, type TaskPhase } from './TaskProgress';
 import { StatusGlobe } from './StatusGlobe';
 import { runParallelResearch } from '../../lib/researchSources';
@@ -3626,6 +3626,25 @@ function browserActionLabel(tool: string, args: Record<string, unknown>): string
     case 'browser_fill':     return 'Typing into the page (browser window)';
     case 'browser_press':    return 'Pressing a key in the browser window';
     case 'browser_get_text': return 'Reading text from the browser window';
+    case 'browser_upload_file': return 'Attaching a file to the page';
+    // WRITING TO SOMEBODY'S OWN DISK SHOULD NEVER LOOK LIKE "save to my folder…".
+    //
+    // The step line is the only place the user finds out what is happening while it happens, and
+    // this is the one class of action that reaches outside the app. Saying which file, and where
+    // it is going, is the difference between watching it work and wondering what it just did.
+    case 'save_to_my_folder': {
+      const nm = String(args?.name ?? '').trim();
+      const sub = String(args?.subfolder ?? '').trim();
+      const where = sub ? ` into your ${sub} folder` : ' to your folder';
+      return String(args?.from_url ?? '').trim()
+        ? `Downloading ${nm || 'the file'}${where}`
+        : `Saving ${nm || 'the file'}${where}`;
+    }
+    case 'find_my_file':   return 'Looking through the files it has saved for you';
+    case 'list_my_folder': return 'Reading what is in your folder';
+    case 'open_my_folder': return 'Opening your folder';
+    case 'save_link':      return host ? `Saving the ${host} page to your Brain` : 'Saving the page to your Brain';
+    case 'find_link':      return 'Looking through the pages it has saved for you';
     default: return null;
   }
 }
@@ -4511,6 +4530,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     }
     if (agent.category === 'Ops') tools.push(...AUTOMATION_TOOLS);
     tools.push(...BROWSER_TOOLS); // every agent can open the browser
+    tools.push(...getWorkspaceTools()); // only when the user has granted a folder
     tools.push(...getAutopilotTools()); // opt-in (Settings → Advanced → Web Autopilot): file upload + local file search
     tools.push(...LEAD_TOOLS);    // every agent can verify/enrich a lead list (so none fakes it)
     if (agent.key === 'research_agent' || agent.category === 'Sales' || agent.category === 'Content') tools.push(...RESEARCH_TOOLS);
@@ -10356,6 +10376,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
               }
               if (targetAgent.category === 'Ops') delegateTools.push(...AUTOMATION_TOOLS);
               delegateTools.push(...BROWSER_TOOLS); // every agent can open the browser
+              delegateTools.push(...getWorkspaceTools());
               delegateTools.push(...getAutopilotTools()); // opt-in Web Autopilot tools
               delegateTools.push(...LEAD_TOOLS);    // every agent can verify/enrich a lead list (so none fakes it)
               if (targetKey === 'research_agent' || targetAgent.category === 'Sales' || targetAgent.category === 'Content') delegateTools.push(...RESEARCH_TOOLS);
@@ -10573,7 +10594,10 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
                 const dRoot = { ...dParsed } as Record<string, unknown>; delete dRoot.tool;
                 const dArgs = (dParsed.args && typeof dParsed.args === 'object')
                   ? { ...dRoot, ...(dParsed.args as Record<string, unknown>) } : dRoot;
-                const toolDisplayName = dTool.replace(/_/g, ' ');
+                // The same friendly wording the main path uses. Without it a delegate narrated
+                // itself as "save to my folder" while the boss said "Saving launch.png to your
+                // folder" for the identical action.
+                const toolDisplayName = browserActionLabel(dTool, dArgs) ?? dTool.replace(/_/g, ' ');
                 const agentDisplayName = agentHandle(targetAgent);
                 setAgentStep(`${agentDisplayName} · ${toolDisplayName}…`);
                 // A LIVE PANEL, NOT A FROZEN LINE.
@@ -10886,6 +10910,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
                 for (const svc of Object.keys(creds)) { if (SERVICE_TOOLS[svc] && hasUsableCred(creds[svc])) wfTools.push(...SERVICE_TOOLS[svc]); }
                 if (wfAgent.category === 'Ops') wfTools.push(...AUTOMATION_TOOLS);
                 wfTools.push(...BROWSER_TOOLS); // every agent can open the browser
+                wfTools.push(...getWorkspaceTools());
                 if (wfKey === 'research_agent' || wfAgent.category === 'Sales' || wfAgent.category === 'Content') wfTools.push(...RESEARCH_TOOLS);
                 wfTools.push(...mcpTools); // user-connected MCP servers
                 const wfSys = assembleSystemPrompt(
@@ -10967,7 +10992,10 @@ Everything you need for follow-ups is in that answer above; read it there rather
                   }
                   const dTool = String(dParsed.tool ?? ''); const dRoot = { ...dParsed } as Record<string, unknown>; delete dRoot.tool;
                   const dArgs = (dParsed.args && typeof dParsed.args === 'object') ? { ...dRoot, ...(dParsed.args as Record<string, unknown>) } : dRoot;
-                  setAgentStep(`${agentHandle(wfAgent)} · ${dTool.replace(/_/g,' ')}…`); updateLastMsg((wfAccum || '') + `\n\n*${agentHandle(wfAgent)} is using ${dTool.replace(/_/g,' ')}…*`);
+                  // Same friendly wording the other two paths use — a pipeline stage saving a file
+                  // should read "Saving launch.png to your folder", not "save to my folder".
+                  const wfToolLabel = browserActionLabel(dTool, dArgs) ?? dTool.replace(/_/g,' ');
+                  setAgentStep(`${agentHandle(wfAgent)} · ${wfToolLabel}…`); updateLastMsg((wfAccum || '') + `\n\n*${agentHandle(wfAgent)} is using ${wfToolLabel}…*`);
                   let dRes = ''; try { dRes = await executeTool(dTool, dArgs, creds, requestTerminalApproval, wfKey, user?.id ?? '', `${sidRef.current ?? 'main'}-${wfKey}`); if (dTool.startsWith('browser_') && dRes.includes('[agent-browser not installed')) setBrowserNudge(true); } catch (e) { dRes = `Error: ${e}`; }
                   if (superseded()) break;   // user stopped mid-tool — don't re-show the indicator
                   const cappedWfRes = dRes.length > 3000 ? dRes.slice(0, 3000) + '\n…[truncated for context]' : dRes;
