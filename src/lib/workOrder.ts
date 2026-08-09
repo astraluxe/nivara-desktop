@@ -410,12 +410,35 @@ const HONESTY = [
  * Conservative on purpose. It must not fire on "save time as much as possible", so the captured
  * name has to look like a name — a capital or a hyphen, and no sentence-punctuation inside it.
  */
+/**
+ * The name in a "done when" line, but only when it really is a name.
+ *
+ * "It is finished when: ICP-Qualified-40 (CSV in Brain)" names the deliverable; "It is finished
+ * when: the landing page is live" does not, and creating a Brain note called "the landing page"
+ * would be worse than creating nothing. So the capture has to look like an identifier — one token,
+ * or something carrying a hyphen — rather than the opening words of a sentence.
+ */
+function doneWhenName(t: string): RegExpMatchArray | null {
+  const m = t.match(/\b(?:it is finished when|finished when|done when)\s*[:—–-]\s*["“']?([^\n"”'(),.;:—–]{3,60})/i);
+  const raw = (m?.[1] ?? '').trim();
+  if (!raw) return null;
+  const looksLikeAName = !/\s/.test(raw) || /-/.test(raw);
+  return looksLikeAName ? m : null;
+}
+
 export function saveTargetFromOrder(text: string): string {
   const t = text || '';
   const m =
     t.match(/\bsav(?:e|ed|ing)\b[^\n]{0,44}?\bas\s+["“']?([^\n"”'(),.;:—–]{3,60})/i)
     ?? t.match(/\b(?:call|name)\s+it\s+["“']?([^\n"”'(),.;:—–]{3,60})/i)
-    ?? t.match(/\b(?:called|named|titled)\s+["“']([^\n"”']{3,60})["”']/i);
+    ?? t.match(/\b(?:called|named|titled)\s+["“']([^\n"”']{3,60})["”']/i)
+    // THE DELIVERABLE IS USUALLY NAMED IN "DONE WHEN", NOT IN A "SAVE IT AS" SENTENCE.
+    //
+    // The user's own day-3 order ends: "It is finished when: ICP-Qualified-40 (CSV in Brain) —
+    // columns: Name, Company, …". Nobody wrote "save it as", so this returned nothing, the
+    // deterministic Brain save never ran, and the only thing standing between the user and a note
+    // that does not exist was an agent remembering to call save_to_brain. It did not.
+    ?? doneWhenName(t);
   const name = (m?.[1] ?? '')
     .trim()
     .replace(/\s+/g, ' ')
@@ -530,8 +553,22 @@ export function planFromWorkOrder(
   const ordered = owner.filter((k, i) => owner.indexOf(k) === i);
   const crew = ordered.length ? ordered : keys.slice(0, 1);
 
+  // ONE PERSON DOES THE WHOLE ORDER.
+  //
+  // deriveSteps reads a prose brief as sentences, which is right when the work has to be divided
+  // between several specialists and actively harmful when it does not. On the user's day-3 order
+  // — one agent, no numbered list — the only sentence that survived the heading strippers was
+  // "Agent: querytable + recallfrombrain; you review 15 min at 11am", so the agent was told its
+  // part of the job was a note about an 11am review. The actual task, the deliverable and its
+  // columns were all sitting in the context above, marked as background. Splitting is only ever
+  // worth its risk when there is more than one person to split between, or when the user actually
+  // numbered the steps themselves.
+  const splitByStep = crew.length > 1 || listed.length > 0;
+  /** The name the order gives its deliverable, if it gives one — see saveTargetFromOrder. */
+  const orderSaveName = saveTargetFromOrder(t);
+
   return crew.map((key, i) => {
-    const mine = byAgent.get(key) ?? steps;
+    const mine = splitByStep ? (byAgent.get(key) ?? steps) : [];
     const isLast = i === crew.length - 1;
     return {
       agent_key: key,
@@ -553,7 +590,13 @@ export function planFromWorkOrder(
           : '',
         '',
         isLast
-          ? 'YOU ARE LAST. Before you finish: save anything the order asked to be saved with save_to_brain under the name the order gives it, save any page or document you created or will need again with save_link, and add any genuine follow-up as a to-do with create_todo. Then give the user the finished work — the real content, not a description of it — and one honest line on anything nobody could do.'
+          // NAME THE DELIVERABLE. "Under the name the order gives it" asks the agent to find the
+          // name in a page of prose; saveTargetFromOrder has already found it, so say it.
+          ? `YOU ARE LAST. Before you finish: ${orderSaveName
+              ? `call save_to_brain with the title EXACTLY "${orderSaveName}" and the finished content as the body — that named note IS the deliverable, and a later day goes looking for it`
+              : 'save anything the order asked to be saved with save_to_brain under the name the order gives it'}`
+            + '. Also save any page or document you created or will need again with save_link, and add any genuine follow-up as a to-do with create_todo. '
+            + 'Then give the user the finished work — the real content, not a description of it — and one honest line on anything nobody could do.'
           : 'Hand back the finished content itself, not a summary of it. The next person builds directly on what you write.',
       ].filter(Boolean).join('\n'),
     };

@@ -413,6 +413,16 @@ export function mergeIntoPlan(plan: ActionPlan, text: string): { added: number; 
   // drop it themselves). Nothing is ever removed here.
   if (added || updated || enriched) {
     plan.steps.sort((a, b) => a.day - b.day);
+    // THE REASONING BEHIND THE NEW STEPS HAS TO TRAVEL WITH THEM.
+    //
+    // `source` is the answer the plan was written from, and it is what the work-order drafter
+    // reads to find out what a one-line task actually means (see draftPrompt's planSource). A
+    // merge changed the steps and left source pointing at the ORIGINAL answer — so a day the
+    // council had just re-planned, in detail, was drafted from a document that never mentioned
+    // it, and the draft went back to guessing. Append the revision instead, newest last, and
+    // keep it bounded so a plan revised ten times does not carry ten full transcripts.
+    const stamp = new Date().toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+    plan.source = `${plan.source || ''}\n\n--- revision (${stamp}) ---\n${text.trim()}`.slice(-40000);
     savePlan(plan);
   }
   // `read` and `unchanged` exist so the user can be told whether the WHOLE revision landed. "6

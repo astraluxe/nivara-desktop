@@ -5,6 +5,11 @@ import {
   type KrewAgent, type KrewCategory,
 } from '../../lib/krewAgents';
 import { executeAutomation, type AutomationRow } from '../../lib/automationRunner';
+import {
+  type ActionPlan, type PlanStep,
+  loadPlan, todayView, planProgress, currentDay, PLAN_EVENT,
+} from '../../lib/planStore';
+import { routeTask } from '../../lib/taskRouting';
 
 // ─── Stage constants ──────────────────────────────────────────────────────────
 const STAGE_W = 1240, STAGE_H = 860;
@@ -158,8 +163,10 @@ function Edges({ layout, activeDept, showLinks }: {
 }
 
 // ─── Agent box ────────────────────────────────────────────────────────────────
-function AgentBox({ la, active, dim, onEnter, onLeave, onClick }: {
+function AgentBox({ la, active, dim, onDuty, onEnter, onLeave, onClick }: {
   la: LayoutAgent; active: boolean; dim: boolean;
+  /** This agent is the one today's plan work would actually go to — see TodayStrip. */
+  onDuty?: boolean;
   onEnter: () => void; onLeave: () => void; onClick: () => void;
 }) {
   return (
@@ -168,7 +175,7 @@ function AgentBox({ la, active, dim, onEnter, onLeave, onClick }: {
       style={{
         left: la.x, top: la.y, zIndex: active ? 25 : 8,
         animationDelay: `${220 + la.idx * 18}ms`,
-        opacity: dim ? 0.25 : 1,
+        opacity: dim ? (onDuty ? 0.6 : 0.25) : 1,
         transition: 'opacity .25s',
       }}
       onMouseEnter={onEnter} onMouseLeave={onLeave} onClick={onClick}>
@@ -176,16 +183,24 @@ function AgentBox({ la, active, dim, onEnter, onLeave, onClick }: {
         className="flex items-center gap-1.5 rounded-lg pl-2 pr-2.5 py-1 whitespace-nowrap transition-all duration-150"
         style={{
           background: 'var(--nv-surface)',
-          border: `1.5px solid ${active ? la.color : 'var(--nv-border)'}`,
+          border: `1.5px solid ${active || onDuty ? la.color : 'var(--nv-border)'}`,
           boxShadow: active
             ? `0 6px 20px ${la.color}44`
-            : '0 3px 10px rgba(0,0,0,.18)',
+            : onDuty
+              ? `0 0 0 3px ${la.color}22, 0 3px 10px rgba(0,0,0,.18)`
+              : '0 3px 10px rgba(0,0,0,.18)',
           transform: active ? 'scale(1.1)' : 'scale(1)',
         }}>
         <span className="w-2 h-2 rounded-full shrink-0" style={{ background: la.color }} />
         <span className="text-[11.5px] font-medium" style={{ color: 'var(--nv-text)' }}>
           {la.agent.humanName}
         </span>
+        {/* WHO TODAY'S WORK BELONGS TO, ON THE FLOOR PLAN ITSELF. Until now the Office was a
+            picture of the org and the Plan was a list of jobs, and nothing joined them: you could
+            not look at the room and see who was on the hook today. */}
+        {onDuty && (
+          <span className="text-[9px] font-mono px-1 rounded" style={{ background: `${la.color}22`, color: la.color }}>today</span>
+        )}
       </span>
     </button>
   );
@@ -478,16 +493,135 @@ function Legend() {
   );
 }
 
+// ─── Today's plan, on the office floor ────────────────────────────────────────
+//
+// The Office drew the org chart and knew nothing about the work; the Plan held the work and never
+// showed who it belonged to; the council could change the plan and neither of the other two would
+// notice. Three screens about one thing, joined by the user's memory. This strip is the join: what
+// today's job is, who in this room it goes to, and the two buttons that actually start it.
+
+/** The agent keys today's (and overdue) work would be routed to — same router the handover uses. */
+export function agentsOnDuty(steps: PlanStep[]): string[] {
+  const keys: string[] = [];
+  for (const st of steps) {
+    const r = routeTask(st.action);
+    for (const k of (r?.agents ?? []).slice(0, 1)) if (!keys.includes(k)) keys.push(k);
+  }
+  return keys;
+}
+
+function TodayStrip({ plan, onRun, onCouncil, onOpenPlan }: {
+  plan: ActionPlan | null;
+  onRun: (instruction: string) => void;
+  onCouncil: () => void;
+  onOpenPlan: () => void;
+}) {
+  if (!plan) {
+    return (
+      <div className="flex items-center gap-3 px-5 py-2 shrink-0" style={{ borderBottom: '1px solid var(--nv-border)' }}>
+        <span className="text-[11px]" style={{ color: 'var(--nv-faint)' }}>
+          No plan running — this room has nothing to work on yet.
+        </span>
+        <button
+          onClick={() => onRun('Write me a day-by-day action plan I can actually work through. Ask me anything you need about my business, my goal and how much time I have each day before you write it. Lay it out as "Day 1: …", "Day 2: …" with one concrete action per day and how I know it is finished.')}
+          className="text-[10px] font-medium px-2 py-1 rounded-lg border transition-fast"
+          style={{ borderColor: 'var(--nv-border)', color: 'var(--nv-muted)' }}
+        >Ask for a plan →</button>
+      </div>
+    );
+  }
+
+  const { today, overdue } = todayView(plan);
+  const prog = planProgress(plan);
+  const day = currentDay(plan);
+  const focus = [...today, ...overdue].slice(0, 3);
+  const onDuty = agentsOnDuty(focus);
+
+  return (
+    <div className="px-5 py-2 shrink-0" style={{ borderBottom: '1px solid var(--nv-border)' }}>
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded" style={{ background: 'rgba(124,92,255,.14)', color: '#7C5CFF' }}>
+          Day {day}
+        </span>
+        <span className="text-[11.5px] font-semibold truncate max-w-[280px]" style={{ color: 'var(--nv-text)' }}>{plan.title}</span>
+        <span className="text-[10px] font-mono" style={{ color: 'var(--nv-faint)' }}>
+          {prog.done}/{prog.total} done{overdue.length ? ` · ${overdue.length} overdue` : ''}
+        </span>
+        <div className="flex-1" />
+        <button onClick={onOpenPlan}
+          className="text-[10px] px-2 py-1 rounded-lg border transition-fast"
+          style={{ borderColor: 'var(--nv-border)', color: 'var(--nv-muted)' }}>Open plan</button>
+        <button onClick={onCouncil}
+          className="text-[10px] font-medium px-2 py-1 rounded-lg border transition-fast"
+          style={{ borderColor: '#e8a33d66', color: '#e8a33d' }}>⚖ Ask the council</button>
+      </div>
+
+      {focus.length === 0 ? (
+        <p className="text-[11px] mt-1" style={{ color: 'var(--nv-faint)' }}>
+          Nothing is due today and nothing is overdue.
+        </p>
+      ) : (
+        <div className="mt-1.5 flex flex-col gap-1">
+          {focus.map((st) => {
+            const who = (routeTask(st.action)?.agents ?? [])[0];
+            const agent = who ? KREW_AGENTS.find((a) => a.key === who) : undefined;
+            const overdueStep = overdue.includes(st);
+            return (
+              <div key={st.id} className="flex items-center gap-2 min-w-0">
+                <span className="text-[10px] font-mono shrink-0"
+                  style={{ color: overdueStep ? '#e8a33d' : 'var(--nv-faint)' }}>
+                  {overdueStep ? `late · day ${st.day}` : `day ${st.day}`}
+                </span>
+                <span className="text-[11.5px] truncate" style={{ color: 'var(--nv-text)' }}>{st.action}</span>
+                {agent && (
+                  <span className="text-[10px] font-mono shrink-0" style={{ color: DEPT_META[agent.category]?.color ?? 'var(--nv-faint)' }}>
+                    → {agentHandle(agent)}
+                  </span>
+                )}
+                {st.handedOverAt && (
+                  <span className="text-[9px] font-mono shrink-0" style={{ color: 'var(--nv-faint)' }}>handed over</span>
+                )}
+                <button
+                  onClick={() => onRun(
+                    // The brief the user already agreed, when there is one — otherwise the task
+                    // line itself. Never a paraphrase: this is the thing that gets worked on.
+                    st.brief?.trim()
+                      ? `${st.brief.trim()}\n\n(This is day ${st.day} of my plan "${plan.title}": ${st.action}. Do it now with your tools — my Brain, my lists, the browser and my connected apps — and use what I already have before creating anything new.)`
+                      : `Day ${st.day} of my plan "${plan.title}": ${st.action}.${st.doneWhen ? ` It is finished when: ${st.doneWhen}.` : ''} Do it now with your tools — my Brain, my lists, the browser and my connected apps — and use what I already have before creating anything new.`,
+                  )}
+                  className="text-[10px] font-medium px-2 py-0.5 rounded-lg border shrink-0 transition-fast"
+                  style={{ borderColor: '#7C5CFF44', color: '#7C5CFF' }}
+                >Start</button>
+              </div>
+            );
+          })}
+          {onDuty.length > 0 && (
+            <p className="text-[9.5px]" style={{ color: 'var(--nv-faint)' }}>
+              Highlighted on the floor: {onDuty.map((k) => KREW_AGENTS.find((a) => a.key === k)?.humanName ?? k).join(', ')}.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Props ────────────────────────────────────────────────────────────────────
 interface Props {
   userId: string;
   onSelectAgent: (agent: KrewAgent) => void;
   onClose: () => void;
   onOpenAutomations?: () => void;
+  /**
+   * Hand something from the office floor back to the chat: run today's task, put the plan to the
+   * council, or just open the plan panel. The office cannot do any of these itself — the chat owns
+   * the model connection and the plan panel — so it says what it wants and KrewModule routes it.
+   */
+  onFromOffice?: (req: { kind: 'run' | 'council' | 'plan'; text: string }) => void;
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
-export default function OfficeView({ userId, onSelectAgent, onClose, onOpenAutomations }: Props) {
+export default function OfficeView({ userId, onSelectAgent, onClose, onOpenAutomations, onFromOffice }: Props) {
   const [showLinks,    setShowLinks]   = useState(true);
   const [hoverDept,    setHoverDept]   = useState<KrewCategory | null>(null);
   const [panel,        setPanel]       = useState<{ dept: KrewCategory; handle: string } | null>(null);
@@ -495,7 +629,22 @@ export default function OfficeView({ userId, onSelectAgent, onClose, onOpenAutom
   const [runningId,    setRunningId]   = useState<string | null>(null);
   const [loadingAutos, setLoadingAutos]= useState(true);
   const [scale,        setScale]       = useState(1);
+  const [plan,         setPlan]        = useState(() => loadPlan());
   const stageRef = useRef<HTMLDivElement>(null);
+
+  // The plan changes from the chat, the council and the plan panel — all of which can be open
+  // while this view is mounted. Same event every other plan-aware surface listens to.
+  useEffect(() => {
+    const on = () => setPlan(loadPlan());
+    window.addEventListener(PLAN_EVENT, on);
+    return () => window.removeEventListener(PLAN_EVENT, on);
+  }, []);
+
+  const dutyKeys = useMemo(() => {
+    if (!plan) return [] as string[];
+    const { today, overdue } = todayView(plan);
+    return agentsOnDuty([...today, ...overdue].slice(0, 3));
+  }, [plan]);
 
   const layout = useMemo(() => computeLayout(), []);
   const activeDept = hoverDept ?? (panel?.dept ?? null);
@@ -595,6 +744,16 @@ export default function OfficeView({ userId, onSelectAgent, onClose, onOpenAutom
         </div>
       </div>
 
+      {/* ── Today, from the plan ───────────────────────────────────────── */}
+      {onFromOffice && (
+        <TodayStrip
+          plan={plan}
+          onRun={(instruction) => onFromOffice({ kind: 'run', text: instruction })}
+          onCouncil={() => onFromOffice({ kind: 'council', text: '' })}
+          onOpenPlan={() => onFromOffice({ kind: 'plan', text: '' })}
+        />
+      )}
+
       {/* ── Graph stage ────────────────────────────────────────────────── */}
       <div ref={stageRef} className="relative flex-1 overflow-hidden">
         <div
@@ -610,6 +769,7 @@ export default function OfficeView({ userId, onSelectAgent, onClose, onOpenAutom
               key={la.idx} la={la}
               active={activeDept === la.dept}
               dim={!!activeDept && activeDept !== la.dept}
+              onDuty={dutyKeys.includes(la.agent.key)}
               onEnter={() => setHoverDept(la.dept)}
               onLeave={() => setHoverDept(null)}
               onClick={() => setPanel({ dept: la.dept, handle: agentHandle(la.agent) })}

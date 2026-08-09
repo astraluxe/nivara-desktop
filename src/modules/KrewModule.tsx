@@ -28,6 +28,10 @@ export default function KrewModule({ onViewOnCanvas, onOpenAutomations }: KrewMo
   // Bumped on every "new chat" click so KrewChat resets even when the session is ALREADY null
   // (e.g. right after a /scan that created no session) — otherwise setSessionId(null) is a no-op.
   const [newChatNonce, setNewChatNonce] = useState(0);
+  // Something the Office asked the chat to do — run today's plan task, put the plan to the
+  // council, open the plan panel. The Office tab unmounts KrewChat, so this cannot be a direct
+  // call: it is handed over as state and picked up when the chat comes back on screen.
+  const [fromOffice, setFromOffice] = useState<{ kind: 'run' | 'council' | 'plan'; text: string } | null>(null);
 
   function handleSelectAgent(a: KrewAgent) {
     setAgent(a);
@@ -131,6 +135,7 @@ export default function KrewModule({ onViewOnCanvas, onOpenAutomations }: KrewMo
               onSelectAgent={handleSelectAgent}
               onClose={() => setView('chat')}
               onOpenAutomations={onOpenAutomations}
+              onFromOffice={(req) => { setFromOffice(req); setView('chat'); }}
             />
           )}
           {view === 'chat' && (
@@ -144,6 +149,8 @@ export default function KrewModule({ onViewOnCanvas, onOpenAutomations }: KrewMo
               onAgentChange={setAgent}
               onViewOnCanvas={onViewOnCanvas}
               onOpenResearch={(q) => { setResearchQuery(q); setView('research'); }}
+              fromOffice={fromOffice}
+              onFromOfficeDone={() => setFromOffice(null)}
             />
           )}
         </div>

@@ -1492,3 +1492,93 @@ export async function planFollowUp(opts: {
     nextAction: p.nextAction ? String(p.nextAction).slice(0, 240) : undefined,
   };
 }
+
+// ─── "It is working on it now, I'll let you know" — when nothing is running ───
+//
+// A real run: the boss delegated a work order, the specialist came back with nothing at all, and
+// the boss then closed with "The research_agent is now working on qualifying your lists… I'll let
+// you know when it's complete with the actual qualified list." Nothing was working on anything.
+// The turn had ENDED — there is no background job in this app, no queue, nothing that could
+// finish later and no mechanism by which the user could ever be told. So the user waits for a
+// result that cannot arrive, and only finds out much later that the run failed.
+//
+// A model told not to say this will still say it, because it is the natural way to end a sentence
+// about a delegation. So it is removed in code, at the one moment we know for certain it is false:
+// the turn is over and nothing is left running.
+
+// Deliberately narrow. An AUTOMATION genuinely does run later ("this will run every morning at
+// 9am"), a to-do genuinely is waiting for the user, and a promise about the NEXT turn ("send it
+// again and I'll dig deeper") is honest — none of those may be touched. What is caught is the
+// present-continuous claim about work happening right now, and the promise to come back with the
+// result of it.
+
+// A sentence boundary that survives "Nyx.Research" and "adris.tech": a full stop only ends a
+// sentence when whitespace (or the end of the text) follows it. Without this the guard skipped
+// every answer that named an agent by handle — which is most of them.
+const SENT_CHAR = String.raw`(?:[^.!?\n]|[.!?](?!\s|$))`;
+
+/** "I'll let you know when it's done" — a promise to come back that nothing can ever keep. */
+const LATER_PROMISE = new RegExp(
+  String.raw`(?:i'?ll|i will|we'?ll|we will)\s+(?:let you know|update you|report back|come back to you|share (?:it|them|the results?|the list))\b`
+  + String.raw`|\bonce (?:it|they|he|she)\s*(?:is|are|'s)?\s*(?:done|finished|complete)\b[^\n]{0,40}?\b(?:i'?ll|i will|we'?ll)\b`,
+  'i',
+);
+
+/** "…is now working on it", "…has been kicked off in the background". */
+const IN_FLIGHT = new RegExp(
+  String.raw`(?:is|are|'s)\s+(?:now\s+|currently\s+|already\s+)?(?:working on|running|processing|handling|qualifying|compiling|putting together|pulling together|digging into)\b`
+  + String.raw`|(?:kick(?:ed|ing)?\s+(?:it\s+)?off|started\s+(?:on\s+)?(?:it|this|the task))\b[^\n]{0,40}?\b(?:background|now|already)\b`
+  + String.raw`|\bin the background\b`,
+  'i',
+);
+
+/** One whole sentence that trips either rule — the unit that gets removed or kept. */
+const CLAIM_SENTENCE = new RegExp(
+  String.raw`(?:^|(?<=[.!?]\s)|(?<=\n))\s*` + SENT_CHAR + String.raw`*?\b(?:`
+  + LATER_PROMISE.source + '|' + IN_FLIGHT.source
+  + String.raw`)` + SENT_CHAR + String.raw`*[.!?]*`,
+  'gi',
+);
+
+/**
+ * Whoever the sentence would have to be about for the claim to be the one we mean.
+ *
+ * "The script is building the deck locally" and "your browser is running in the visible window"
+ * are true sentences about machinery, and an earlier version of this deleted both. A claim about
+ * WORK IN FLIGHT is only false in the way that matters when it is about a person on the team —
+ * so an in-flight sentence has to name one of the agents that actually ran, or talk about the
+ * team in the abstract, before it is touched.
+ */
+function namesSomeone(sentence: string, names: string[]): boolean {
+  const t = sentence.toLowerCase();
+  if (/\b(the team|the agent|specialist|colleague)\b/.test(t)) return true;
+  // First person is the app itself claiming to be mid-task ("I've kicked it off in the
+  // background") — false the moment the turn ends, whoever it was about.
+  if (/\b(i'?ve|i have|i'?m|i am|we'?ve|we'?re|we have)\b/.test(t)) return true;
+  if (/\b\w+_agent\b/.test(t)) return true;                    // research_agent, ops_agent
+  return names.some((n) => n.trim().length > 2 && t.includes(n.trim().toLowerCase()));
+}
+
+/**
+ * Remove claims of work still in flight from a FINISHED turn's answer.
+ *
+ * `names` are the agents that ran this turn (keys, handles, human names) — an in-flight claim is
+ * only stripped when it is about one of them, so ordinary sentences about the browser, a script
+ * or a build survive untouched. Promises to report back later are always removed: the turn is
+ * over, and there is no mechanism by which the user could ever be told anything more.
+ *
+ * Returns the text unchanged when it makes no such claim, which is the overwhelmingly common
+ * case. If stripping empties the answer the caller gets an empty string back and is expected to
+ * say what actually happened instead — a blank reply is not an improvement on a false one.
+ */
+export function stripOngoingWorkClaims(text: string, names: string[] = []): string {
+  const s = String(text || '');
+  if (!s.trim()) return s;
+  // Cheap pre-test so the alternation only runs on the few answers that could possibly match.
+  if (!/\b(working on|running|processing|handling|qualifying|compiling|putting together|pulling together|digging into|in the background|let you know|report back|update you|come back to you|kick(?:ed|ing)? (?:it )?off|started (?:on )?(?:it|this|the task))\b/i.test(s)) return s;
+  const out = s.replace(CLAIM_SENTENCE, (m) => {
+    if (LATER_PROMISE.test(m)) return ' ';
+    return namesSomeone(m, names) ? ' ' : m;
+  });
+  return out.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+}

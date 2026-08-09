@@ -30,7 +30,7 @@ import { isDeadModelError, repairDeadModel, blockModel, scanModelsIfStale, measu
 import { noteActiveModel, bulkPlan } from '../../lib/contextBudget';
 import { normaliseScore, scoreValue, decisionBias, recordDecision, decisionStyleNote, workingFileNote, setWorkingFile, EFFORT_LABEL, IMPACT_LABEL } from '../../lib/agentBrain';
 import { slugLooksLikeName } from '../../lib/outreachConnections';
-import { auditPromises, cleanOutboundMessage, type PromiseIssue } from '../../lib/verify';
+import { auditPromises, cleanOutboundMessage, stripOngoingWorkClaims, type PromiseIssue } from '../../lib/verify';
 import ConnectionBar from '../coder/ConnectionBar';
 import { getMonthlyUsage } from '../../lib/tokenTracker';
 import { getImageBudget, unitsForModel } from '../../lib/imageQuota';
@@ -317,7 +317,7 @@ interface DisplayMsg {
   /** Who asked, on a follow-up card, so the thread reads as a conversation rather than a repeat. */
   councilFollowUp?: string;
   /** The cost/BYOK notice shown before a council runs on adris.tech credit. */
-  councilSetup?: { question: string; source: string };
+  councilSetup?: { question: string; source: string; asked?: string };
   /** A time the OTHER person proposed, waiting on a yes/no from the user before anything is booked.
    *  Typing out "yes I'm free" was the only way to answer, so the flow usually just stopped there. */
   avail?: { who: string; when: string; prompt: string };
@@ -620,6 +620,9 @@ interface Props {
   onViewOnCanvas?: (nodes: Node[], edges: Edge[]) => void;
   onOpenStudio?: (req: StudioRequest) => void;
   onOpenResearch?: (query: string) => void;
+  /** A request handed over from the Office tab — see KrewModule and OfficeView's TodayStrip. */
+  fromOffice?: { kind: 'run' | 'council' | 'plan'; text: string } | null;
+  onFromOfficeDone?: () => void;
 }
 
 // ─── Terminal approval modal ──────────────────────────────────────────────────
@@ -3607,6 +3610,29 @@ function MessageRow({ msg, agent }: { msg: DisplayMsg; agent: KrewAgent }) {
 // page. web_search stays (discovery is fine and fast); browser_navigate does the real reading.
 const ADVANCED_DROP_TOOLS = new Set(['research_companies', 'scrape_structured', 'fetch_open_data']);
 
+// ─── The rules every delegated specialist runs under ─────────────────────────
+//
+// ONE COPY, TWO CALLERS. delegate_to_agent had all of this and plan_workflow had only the first
+// paragraph — so the SAME agent, given the same job, behaved differently depending on whether the
+// boss sent it alone or as a stage in a pipeline. A work order always runs as a pipeline (see
+// planFromWorkOrder), which means the weaker version was the one running the user's approved
+// work, and that is exactly where "(no response)" kept coming from.
+const PIPELINE_RULE = [
+  '',
+  'CRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.',
+  '',
+  'DELIVERABLE RULE (MANDATORY): If the task asks you to write, draft, create, or prepare something (emails, messages, outreach, posts, copy, code, a document), your reply MUST contain the COMPLETE finished content itself. NEVER say you "drafted", "prepared", or "put together" something without including the full text right there. If a tool such as web_search fails, returns nothing, or hits a technical snag, do NOT stop, apologise, or describe what you would have done — produce the full deliverable from the context already provided, briefly note any assumption in one line, and output the entire content. A reply that only claims work was done, without the actual content, is a failed task.',
+  '',
+  // THEIR OWN THINGS FIRST. The user's complaint, in their words: "tell it to try using the
+  // resources what user has first and build new one which is required and when required." An
+  // agent that re-researches a list the user already has burns their tokens to produce a worse
+  // copy of something sitting in the Brain, and a second list nobody asked for is worse than no
+  // list — from then on there are two, and neither is the one.
+  'USE WHAT THEY ALREADY HAVE, FIRST: before you research, build, write or create anything new, LOOK for it. recall_from_brain finds their saved notes and lists; query_table reads a big sheet (call it with no filter first to see its columns, then again filtered); find_link finds a page they already saved; read_my_calendar, the connected apps and the browser reach the rest. Build something new only when you have looked and it genuinely is not there, or when the task is explicitly to make a new thing — and when you do, say in one line what you looked for and why you had to create it. Never ask them to paste, export or re-send data they have already given you.',
+  '',
+  'BE RESOURCEFUL — DECIDE HOW TO FIND THE ANSWER: you have real tools (web_search, scrape_structured, a live browser you can open in front of the user, Google Maps, LinkedIn, plus any connected apps). Pick the right one for what is being asked, and if the first source comes up short, CHAIN to another and EXPAND the approach instead of guessing or giving a thin answer: e.g. web_search, then if weak open the browser and read the page, then if a person or contact is missing try LinkedIn people-search or the company Team/Contact page, and if a phone or address is missing try Google Maps. VERIFY facts you can verify (open the page and read it) rather than inventing them. Only fall back to a clearly-labelled best guess after you have genuinely tried to find the real thing. Use 2–3 sources when one is not enough — that is what makes the answer actually useful.',
+].join('\n');
+
 function browserActionLabel(tool: string, args: Record<string, unknown>): string | null {
   const host = (() => {
     const raw = String(args?.url ?? '');
@@ -3778,7 +3804,7 @@ function NextTaskCard({ suggestion, onAccept, onDismiss }: { suggestion: string;
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCreated, onOpenConnectApps, onBrowseAgents, onViewOnCanvas, onOpenStudio, onOpenResearch }: Props) {
+export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCreated, onOpenConnectApps, onBrowseAgents, onViewOnCanvas, onOpenStudio, onOpenResearch, fromOffice, onFromOfficeDone }: Props) {
   const { user, session, profile } = useAuth();
   const planCfg = getPlanConfig(profile?.plan ?? 'explore');
   type VoiceStatus = 'idle' | 'recording' | 'transcribing' | 'error';
@@ -4387,6 +4413,28 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     }).then(fn => { un3 = fn; });
     return () => { un1?.(); un2?.(); un3?.(); };
   }, []);
+
+  // ── Something the Office floor asked for ──────────────────────────────────
+  //
+  // The Office tab unmounts this component, so it cannot call in directly; KrewModule holds the
+  // request and hands it over when the chat is back on screen. Runs once per request — cleared
+  // immediately, so switching tabs again does not re-fire it.
+  useEffect(() => {
+    if (!fromOffice) return;
+    onFromOfficeDone?.();
+    if (fromOffice.kind === 'plan') { setPlanOpen(true); return; }
+    if (fromOffice.kind === 'council') {
+      const p = loadPlan();
+      if (p) askCouncilAboutPlan(p);
+      else setPlanOpen(true);
+      return;
+    }
+    // A short delay so the turn starts with credentials and the model source already loaded —
+    // the same state every other send() waits for by virtue of the user having to type first.
+    const t = setTimeout(() => { void send(fromOffice.text, { skipShortcuts: true }); }, 350);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromOffice]);
 
   // A Brain note/file sent to chat → attach it so Krew reads it on the next message.
   useEffect(() => {
@@ -9862,6 +9910,17 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
       '8. SAY WHAT IS TRUE. Report what you actually did and actually found. Never claim a tool ran,',
       '   a file was written or a message was sent unless it was. If you could not verify something,',
       '   say so plainly rather than presenting a guess as a fact.',
+      // The user, in their own words: use what I already have first, and build something new only
+      // when it is actually needed. A second lead list nobody asked for is worse than none — from
+      // then on there are two and neither is the one.
+      '9. USE WHAT THEY ALREADY HAVE, BEFORE YOU BUILD ANYTHING NEW. Their lists, sheets, notes,',
+      '   saved links and connected accounts are reachable from here: recall_from_brain for a note,',
+      '   query_table for a big sheet (no filter first to see its columns, then filtered), find_link',
+      '   for a page they saved, read_my_calendar and the connected apps for the rest. LOOK before',
+      '   you research, write or create — then extend what is there rather than making a second copy',
+      '   of it. Create something new when you have looked and it genuinely is not there, or when',
+      '   they asked for a new thing; say in one line what you looked for when you do. Never ask them',
+      '   to paste, export or re-send data they have already given you.',
     ].join('\n');
 
     const systemPrt  = assembleSystemPrompt(
@@ -10247,8 +10306,27 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
                 ? "The model replied, but there was nothing usable in it once the incomplete parts were removed. Send that again — if it keeps happening, try a different model for this task."
                 : "The model accepted the request and sent nothing back. That is usually the model being unavailable or out of quota, not your key — try again, or switch the chat to another model."
           );
-          finaliseLastMsg(displayResponse);
-          if (sid) krewDb.saveMessage(sid, 'assistant', fullResponse).catch(() => {});
+          // NOTHING IS STILL RUNNING WHEN THIS SENTENCE IS WRITTEN.
+          //
+          // A real run ended: "The research_agent is now working on qualifying your lists… I'll
+          // let you know when it's complete." It was not working on anything — the specialist had
+          // already come back empty and the turn was over. There is no background queue here and
+          // no way to tell the user anything later, so they wait for a result that can never
+          // arrive. The rule against saying this is in the prompt and models say it anyway,
+          // because it is the natural way to close a sentence about a delegation. So it is
+          // removed at the one moment we know for certain it is false: right now.
+          const ranNames = [...delegatedAgents].flatMap((k) => {
+            const a = AGENT_BY_KEY[k];
+            return a ? [k, agentHandle(a), a.humanName, a.name] : [k];
+          });
+          const stripped2 = delegatedAgents.size ? stripOngoingWorkClaims(displayResponse, ranNames) : displayResponse;
+          const honest = stripped2.trim() || (delegatedAgents.size
+            ? `That is everything this run produced — nothing is still running in the background. ${ranNames[1] ?? 'The specialist'}'s answer is above; send it again if you want another pass.`
+            : displayResponse);
+          finaliseLastMsg(honest);
+          // Save what the user actually SAW. Saving fullResponse here put the false "still working
+          // on it" line back on screen every time the conversation was reopened.
+          if (sid) krewDb.saveMessage(sid, 'assistant', honest).catch(() => {});
           history.push({ role: 'assistant', content: fullResponse });
           // If this final answer contains outreach drafts, save them to the Brain too.
           autoSaveDraftsToBrain(displayResponse, attachedTitlesRef.current.length ? attachedTitlesRef.current : [lastAttachedTitleRef.current], text);
@@ -10315,15 +10393,23 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
           : rootParams;
         // A run the user has stopped must not start a NEW tool, however far through it was.
         if (superseded()) break;
-        setAgentStep(`${agentHandle(agent)} · ${browserActionLabel(tool, args) ?? tool.replace(/_/g, ' ')}…`);
+        // "Arjun.Boss · plan workflow…" is the machine's word for it. Say what is happening.
+        const toolLabel = tool === 'plan_workflow'
+          ? (() => { let n = 0; try { n = (JSON.parse(String(args.delegations ?? '[]')) as unknown[]).length; } catch { /* label only */ }
+                     return n ? `handing this to ${n} specialist${n === 1 ? '' : 's'}` : 'setting up the team'; })()
+          : (browserActionLabel(tool, args) ?? tool.replace(/_/g, ' '));
+        setAgentStep(`${agentHandle(agent)} · ${toolLabel}…`);
         setAgentTool(tool);
         // Hand the turn's real output to the tool layer, so a save_to_brain call whose body is a
         // pointer rather than the content can store what was actually written instead of a stub.
         setBrainSaveFallback(turnProseRef.current);
         turnToolsRef.current.push({ tool, args });
 
-        // Show tool call bubble (hidden for delegation — DelegationBubble handles it)
-        if (tool !== 'delegate_to_agent') {
+        // Show tool call bubble (hidden for delegation — DelegationBubble handles it).
+        // plan_workflow counts as a delegation too: every stage gets its own live bubble and the
+        // progress strip names the stages, so a raw "plan_workflow" JSON bubble with a status box
+        // under it added nothing except a second, contradictory description of the same work.
+        if (tool !== 'delegate_to_agent' && tool !== 'plan_workflow') {
           addMsg({ role: 'tool_call', content: JSON.stringify(args, null, 2), toolName: tool });
           // …and, under it, a live box for as long as the tool actually runs. A web search or a
           // browser page is easily thirty seconds, and until now that time was completely silent:
@@ -10332,7 +10418,10 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
           // agent-progress events from inside the tool fill in the detail line as it goes.
           showWork(browserActionLabel(tool, args) ?? tool.replace(/_/g, ' '), 'Starting…');
         }
-        if (sid) krewDb.saveMessage(sid, 'tool_call', JSON.stringify(args, null, 2), tool).catch(() => {});
+        // Delegation calls are not saved as tool_call rows: they are never shown live (the
+        // delegation bubble is the record), so saving one made a reopened conversation show a raw
+        // JSON block that had never been on screen the first time.
+        if (sid && tool !== 'delegate_to_agent' && tool !== 'plan_workflow') krewDb.saveMessage(sid, 'tool_call', JSON.stringify(args, null, 2), tool).catch(() => {});
 
         // Execute the tool (Boss delegation gets special handling)
         let toolResult = '';
@@ -10389,9 +10478,8 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
                   if (ADVANCED_DROP_TOOLS.has(delegateTools[k].name)) delegateTools.splice(k, 1);
                 }
               }
-              const pipelineRule = '\n\nCRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.'
-                + '\n\nDELIVERABLE RULE (MANDATORY): If the task asks you to write, draft, create, or prepare something (emails, messages, outreach, posts, copy, code, a document), your reply MUST contain the COMPLETE finished content itself. NEVER say you "drafted", "prepared", or "put together" something without including the full text right there. If a tool such as web_search fails, returns nothing, or hits a technical snag, do NOT stop, apologise, or describe what you would have done — produce the full deliverable from the context already provided, briefly note any assumption in one line, and output the entire content. A reply that only claims work was done, without the actual content, is a failed task.'
-                + '\n\nBE RESOURCEFUL — DECIDE HOW TO FIND THE ANSWER: you have real tools (web_search, scrape_structured, a live browser you can open in front of the user, Google Maps, LinkedIn, plus any connected apps). Pick the right one for what is being asked, and if the first source comes up short, CHAIN to another and EXPAND the approach instead of guessing or giving a thin answer: e.g. web_search → if weak, open the browser and read the page → if a person/contact is missing, try LinkedIn people-search or the company\'s Team/Contact page → if a phone/address is missing, try Google Maps. VERIFY facts you can verify (open the page and read it) rather than inventing them. Only fall back to a clearly-labelled best guess after you have genuinely tried to find the real thing. Use 2–3 sources when one is not enough — that is what makes the answer actually useful.';
+              // Every specialist, single or pipeline, runs under the SAME rules — see PIPELINE_RULE.
+              const pipelineRule = PIPELINE_RULE;
               const delegateSystem = assembleSystemPrompt(
                 [targetAgent.systemPrompt, '\n\n', buildKrewSystemPrompt(delegateTools), pipelineRule,
                  searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective],
@@ -10906,21 +10994,48 @@ Everything you need for follow-ups is in that answer above; read it there rather
                 addMsg({ role: 'delegation', content: '', toolName: wfKey, streaming: true });
                 const wfMems = await krewMemoryDb.getAll(wfKey).catch(() => [] as KrewMemory[]);
                 const wfMemBlock = wfMems.length > 0 ? '\n\n## Your memory\n' + wfMems.map((m) => `- ${m.key}: ${m.value}`).join('\n') : '';
+                // THE SAME TOOLBOX AS A SINGLE DELEGATION. A stage was handed fewer tools than the
+                // identical agent gets when the boss delegates to it directly — no lead
+                // verify/enrich, no autopilot, and no Advanced-mode filtering. Since an approved
+                // work order ALWAYS runs through here, that gap applied to exactly the work the
+                // user cares most about.
                 const wfTools: ToolDef[] = [...SYSTEM_TOOLS];
                 for (const svc of Object.keys(creds)) { if (SERVICE_TOOLS[svc] && hasUsableCred(creds[svc])) wfTools.push(...SERVICE_TOOLS[svc]); }
                 if (wfAgent.category === 'Ops') wfTools.push(...AUTOMATION_TOOLS);
                 wfTools.push(...BROWSER_TOOLS); // every agent can open the browser
                 wfTools.push(...getWorkspaceTools());
+                wfTools.push(...getAutopilotTools());
+                wfTools.push(...LEAD_TOOLS);    // so a stage verifies a list instead of inventing one
                 if (wfKey === 'research_agent' || wfAgent.category === 'Sales' || wfAgent.category === 'Content') wfTools.push(...RESEARCH_TOOLS);
                 wfTools.push(...mcpTools); // user-connected MCP servers
+                if (searchMode === 'advanced') {
+                  for (let k = wfTools.length - 1; k >= 0; k--) {
+                    if (ADVANCED_DROP_TOOLS.has(wfTools[k].name)) wfTools.splice(k, 1);
+                  }
+                }
                 const wfSys = assembleSystemPrompt(
                   [wfAgent.systemPrompt, '\n\n', buildKrewSystemPrompt(wfTools),
-                   '\n\nCRITICAL PIPELINE RULE: You are operating inside an automated delegation. There is NO user to answer questions. Complete the task with the information given — make reasonable assumptions, never ask for confirmation or clarification. Return your result in one shot.',
+                   PIPELINE_RULE,
                    searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective],
                   [identityCtx, locationBlockAuto, userBlock, connectedAppsBlock, mcpSummary,
                    profileBlock, wfMemBlock, tierDirective, dateBlock],
                 );
-                const wfHist = [{ role: 'user', content: wfTask }];
+                // THE USER'S OWN FILE HAS TO TRAVEL WITH THE STEP. A stage only ever received
+                // `task`; the focused Brain file and any attached files live on the boss's
+                // message, so a step reading "filter the attached sheet" arrived with no sheet.
+                // The single-delegate path has always forwarded these — this one never did.
+                // The FIRST stage gets the file in full; later stages get a much smaller slice,
+                // because they also carry {{prev}} — the previous stage's whole output — and a
+                // 60k file repeated behind that on every stage is how a four-step pipeline runs
+                // out of context halfway down.
+                const wfCtx: string[] = [];
+                const wfCap = phIdx === 0 ? 60000 : 8000;
+                if (focusedFile) wfCtx.push(`The user is working WITH this file from their Brain (and the notes connected to it). USE it as the basis — expand and act on it, do NOT re-create it:\n\n${focusedFile.content.slice(0, wfCap)}`);
+                for (const f of nonImageFiles) wfCtx.push(`Attached file "${f.name}":\n${f.content.slice(0, f.fromBrain ? wfCap : Math.min(8000, wfCap))}`);
+                const wfFullTask = wfCtx.length
+                  ? `${wfTask}\n\n--- THE USER'S DATA TO WORK FROM (do not ignore this; build on it) ---\n${wfCtx.join('\n\n')}`
+                  : wfTask;
+                const wfHist = [{ role: 'user', content: wfFullTask }];
                 let wfAccum = ''; let wfFinal = '';
                 // Same "ran out of steps while still working" signal as the single-delegate loop —
                 // forces a real final answer instead of a silent/empty step result.
@@ -10930,7 +11045,12 @@ Everything you need for follow-ups is in that answer above; read it there rather
                 //  wrap-up is the one that ran nothing and said nothing.)
                 // superseded(), not stopRef alone — a delegate that keeps running after Stop is
                 // exactly how a specialist came back talking after the user ended the turn.
-                for (let ds = 0; ds < 8 && !superseded(); ds++) {
+                // A RESEARCH STAGE NEEDS THE SAME ROOM AS A RESEARCH DELEGATION. Eight steps is
+                // right for a writer and nowhere near enough for an agent opening a page per row
+                // — it ran out mid-search, which is one of the two ways a stage ends up silent.
+                const wfMax = (wfKey === 'research_agent' || wfAgent.category === 'Sales')
+                  ? (searchMode === 'advanced' ? 22 : 14) : 8;
+                for (let ds = 0; ds < wfMax && !superseded(); ds++) {
                   wfCutOff = false;
                   let stepTxt = '';
                   const { text: wfRaw, truncated: wfTrunc } = await streamTurnWithRetry(wfHist, wfSys, (chunk) => {
@@ -11048,7 +11168,36 @@ Everything you need for follow-ups is in that answer above; read it there rather
                     } catch { /* verification failed — keep the unverified table rather than losing the result */ }
                   }
                 }
-                const wfBubble = wfClean.trim() || (wfChoices ? `Here are ${wfChoices.choices.length} variants.` : wfProp ? 'Automation plan ready.' : '(no response)');
+                // ONE LAST CHANCE BEFORE THE STAGE IS WRITTEN OFF — the same net the single
+                // delegation has had for a while, and the reason this path did not was simply
+                // that nobody added it. A specialist going quiet on a long brief is usually the
+                // BRIEF: a persona, a page of rules, a full tool schema and the pipeline rules,
+                // and a small or free-tier model answers with nothing at all. Asked the short
+                // way, with just the task, the same model usually answers fine.
+                if (!wfClean.trim() && !wfChoices && !wfProp && !stopRef.current) {
+                  setAgentStep(`${agentHandle(wfAgent)} · asking the short way…`);
+                  updateLastMsg(statusBlock(Date.now(), `${agentHandle(wfAgent)} went quiet — asking again, simply`,
+                    'Same task, without the extra instructions a small model can choke on.'));
+                  try {
+                    const wfRetry = await streamTurnWithRetry(
+                      [{ role: 'user', content: wfFullTask }],
+                      `You are ${wfAgent.humanName}, ${wfAgent.role}. ${wfAgent.description}\n\n`
+                      + 'Answer the request directly and completely, in plain markdown. Do NOT call any tools. '
+                      + 'Do not describe what you are about to do — produce the deliverable itself. Never reply with nothing.',
+                      () => {},
+                    );
+                    const wfRt = cleanForRender((wfRetry.text || '')
+                      .replace(/<tool_call>[\s\S]*/g, '')
+                      .replace(/<tool_code>[\s\S]*/g, '')
+                      .trim());
+                    if (wfRt) wfClean = wfRt;
+                  } catch { /* the honest failure line below is the fallback */ }
+                }
+                // "(no response)" told the user nothing and, worse, let the boss narrate its own
+                // version of what must have happened — which is where "the research agent is now
+                // working on it" came from. Name what actually happened instead.
+                const wfBubble = wfClean.trim() || (wfChoices ? `Here are ${wfChoices.choices.length} variants.` : wfProp ? 'Automation plan ready.'
+                  : `${wfAgent.name} finished this stage without producing anything to show — the model went quiet rather than returning a result. Nothing from this step was saved. Send it again${mode === 'own_key' ? ', or switch this chat to another model — smaller models sometimes stop mid-task on a long brief' : ''}.`);
                 delegationDisplay = wfBubble; // saved to DB so reload shows this, not the boss note
                 setMessages(prev => { const c = [...prev]; const l = c[c.length - 1]; if (l?.role === 'delegation') c[c.length - 1] = { ...l, content: wfBubble, streaming: false }; return c; });
                 if (wfProp) { addMsg({ role: 'proposal', content: '', proposal: wfProp }); if (sid) { sessionStorage.setItem(`krew-proposal-${sid}`, JSON.stringify(wfProp)); krewDb.saveMessage(sid, 'tool_result', JSON.stringify(wfProp), '__proposal__').catch(() => {}); } }
@@ -11112,7 +11261,26 @@ Everything you need for follow-ups is in that answer above; read it there rather
                   }
                 } catch { /* the run's output still stands even if the Brain write fails */ }
               }
-              toolResult = wfResults.map((r, i) => { const cap = r.length > 800 ? r.slice(0, 800) + '…' : r; return `[${wfDelegations[i]?.agent_key ?? `Step ${i + 1}`}]\n${cap}`; }).join('\n\n---\n\n') + toolResultExtra;
+              // WHAT THE BOSS IS TOLD DECIDES WHAT THE USER IS TOLD. Handed a pile of empty
+              // strings it filled the silence itself — "the research agent is now working on
+              // qualifying your lists, I'll let you know when it's complete" — for a pipeline
+              // that had already finished and produced nothing. So say plainly whether each
+              // stage delivered, and rule out the sentence that caused it.
+              const wfEmpty = wfResults.filter((r) => !r.trim()).length;
+              const wfRan = wfResults.length;
+              toolResult = wfResults.map((r, i) => {
+                const who = wfDelegations[i]?.agent_key ?? `Step ${i + 1}`;
+                if (!r.trim()) return `[${who}] PRODUCED NOTHING — this stage returned no result at all. Nothing from it was saved.`;
+                const cap = r.length > 800 ? r.slice(0, 800) + '…' : r;
+                return `[${who}]\n${cap}`;
+              }).join('\n\n---\n\n') + toolResultExtra
+                + `\n\n[THE PIPELINE HAS FINISHED. ${wfRan - wfEmpty} of ${wfRan} stage${wfRan === 1 ? '' : 's'} produced a result${wfEmpty ? `; ${wfEmpty} produced nothing` : ''}. `
+                + 'Nothing is still running and nothing will arrive later — there is no background queue and no way to send the user anything after this reply. '
+                + 'So NEVER say an agent "is now working on it", "is running", "will finish shortly", or that you will "let them know when it is complete". '
+                + (wfEmpty
+                  ? 'Tell them plainly which stage came back empty and that it produced nothing, then offer to run it again. Do NOT describe the work as underway or as done.'
+                  : 'Whatever came back is already displayed above in full — add at most one short sentence about what to do next.')
+                + ']';
               delegationKey = 'plan_workflow';
             }
           } else if (tool === 'council_review') {
@@ -11456,11 +11624,27 @@ Everything you need for follow-ups is in that answer above; read it there rather
      * is left behind and the council moves on. Local models get far longer, because loading one can
      * legitimately take minutes before the first token appears.
      */
-    const ask = async (member: KrewAgent, prompt: string, slot: number, onText: (t: string) => void) => {
+    const ask = async (member: KrewAgent, prompt: string, slot: number, onText: (t: string) => void, waitLabel?: string) => {
       let acc = '';
       let last = 0;
       let lastDelta = Date.now();
       let abandoned = false;
+      // A CLOCK FOR THE SILENCE BEFORE THE FIRST WORD.
+      //
+      // The Executor is handed everybody else's answer, so it reads for a long time before it
+      // writes anything — on one run, 160 seconds of a card that said "thinking" and did not move.
+      // There is no way to tell that from a hang, and the honest thing to show is how long it has
+      // been and why. The moment a token arrives the text itself is the progress and this stops.
+      const askedAt = Date.now();
+      const tick = setInterval(() => {
+        if (gone() || acc.trim()) return;
+        const secs = Math.round((Date.now() - askedAt) / 1000);
+        updateCouncilCard((m) => ({
+          ...m,
+          councilStage: `${waitLabel ?? `${member.humanName} is thinking`} — ${secs}s so far, nothing written yet. `
+            + 'It has to read the whole brief before it starts, so this pause is normal.',
+        }));
+      }, 1000);
       // TWO DIFFERENT WAITS, because they mean two different things.
       //
       // A single budget measured from the start of the call is really a TIME-TO-FIRST-TOKEN limit,
@@ -11507,6 +11691,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
       } catch (e) {
         acc = `_${member.humanName} could not answer this time — ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}_`;
       }
+      clearInterval(tick);
       const clean = abandoned ? '' : acc.replace(/<tool_call>[\s\S]*/g, '').trim();
       onText(clean);
       live[slot].status = 'done';
@@ -11583,7 +11768,8 @@ Everything you need for follow-ups is in that answer above; read it there rather
         `THE DECISION IN FRONT OF THE COUNCIL:\n${question}\n\n`
         + (t1 ? `THE FULL COUNCIL TRANSCRIPT — opening views and what each said after reading the others:\n${t1}\n\n` : '')
         + brief,
-        slot, (t) => { live[slot].text = t; });
+        slot, (t) => { live[slot].text = t; },
+        `${executor.humanName} is reading all four answers before writing the plan`);
 
       // THE EXECUTOR IS THE ONE MEMBER WHOSE SILENCE WASTES THE WHOLE COUNCIL.
       //
@@ -11602,7 +11788,8 @@ Everything you need for follow-ups is in that answer above; read it there rather
           `THE DECISION IN FRONT OF THE COUNCIL:\n${question}\n\n`
           + (t2 ? `WHAT THE REST OF THE COUNCIL ARGUED, in brief:\n${t2}\n\n` : '')
           + brief,
-          slot, (t) => { live[slot].text = t; });
+          slot, (t) => { live[slot].text = t; },
+          `${executor.humanName} is trying again on a shorter brief`);
       }
     }
 
@@ -11681,16 +11868,20 @@ Everything you need for follow-ups is in that answer above; read it there rather
    * On adris.tech credit it shows what this will spend first; on the user's own key or a local
    * model there is nothing of theirs to warn about, so it just runs.
    */
-  function openCouncil(question: string) {
+  /**
+   * @param question the full brief the council is given (the plan, the real factors, the ask)
+   * @param asked    what the USER actually typed, if anything — this is what goes on screen
+   */
+  function openCouncil(question: string, asked?: string) {
     if (mode === 'nivara') {
-      addMsgHere({ role: 'council_setup', content: 'Ask the council?', councilSetup: { question, source: mode } });
+      addMsgHere({ role: 'council_setup', content: 'Ask the council?', councilSetup: { question, source: mode, asked } });
       return;
     }
-    startCouncil(question, { debate: true });
+    startCouncil(question, { debate: true, asked });
   }
 
-  function askCouncilAboutPlan(plan: ActionPlan) {
-    openCouncil(councilQuestionFor(plan));
+  function askCouncilAboutPlan(plan: ActionPlan, asked?: string) {
+    openCouncil(councilQuestionFor(plan, asked), asked);
   }
 
   /**
@@ -11727,21 +11918,43 @@ Everything you need for follow-ups is in that answer above; read it there rather
    * other turn gets its conversation created — so the council ran, filled the screen, and vanished
    * on reload: no chat in the sidebar, nothing in the history, five model calls of real work gone.
    */
-  function startCouncil(question: string, opts?: { debate?: boolean }) {
+  function startCouncil(question: string, opts?: { debate?: boolean; asked?: string }) {
     setBusy(true);
     stopRef.current = false;
     void (async () => {
       const sid = await ensureSession('Council review').catch(() => null);
-      const ask = 'Put my plan in front of the council.';
+      // SHOW THEM WHAT THEY ASKED. This was hard-coded, so someone who typed their own question
+      // into "Ask the council my own question" watched a message go up that was not theirs — and
+      // then had no way to tell whether the council was answering their question or the generic
+      // "review my plan" one. It was answering theirs; the screen just never said so.
+      const typed = (opts?.asked ?? '').trim();
+      const ask = typed
+        ? `${typed}\n\n*(asked of the council, against my plan)*`
+        : 'Put my plan in front of the council.';
       addMsgHere({ role: 'user', content: ask });
       if (sid) krewDb.saveMessage(sid, 'user', ask).catch(() => {});
       try {
         const verdict = await runCouncil(question, '', opts);
         // The boss's own closing line, saved as the assistant turn so the conversation reads
         // properly when it is reopened.
-        const closing = verdict.startsWith('The council has answered')
+        // SAY WHAT THE COUNCIL JUST CHANGED ABOUT THE PLAN — or that it changed nothing.
+        //
+        // The Executor writes the plan in "Day N:" lines precisely so it can go into the calendar,
+        // and the only thing joining the two was a button the user had to notice. Now the closing
+        // line counts what is actually in there, so "the council planned something and my plan
+        // never moved" is at least visible rather than silent.
+        const dev = lastCouncilVoices().find((v) => v.key === 'council_executor' || /executor/i.test(v.name));
+        const devSteps = dev?.text ? parsePlanSteps(dev.text) : [];
+        const planLine = devSteps.length
+          ? `\n\n${dev!.human}'s plan has **${devSteps.length} dated step${devSteps.length === 1 ? '' : 's'}** in it. `
+            + `Press **＋ Add the Executor's steps to my plan** above to put ${devSteps.length === 1 ? 'it' : 'them'} in your calendar — `
+            + 'anything you have already ticked off stays exactly as it is.'
+          : dev?.text
+            ? `\n\n${dev!.human} did not lay this out as dated steps, so there is nothing to put in the plan yet. Ask for it day by day and it will merge in.`
+            : '';
+        const closing = (verdict.startsWith('The council has answered')
           ? 'The council has answered — their views are above. Reply here and they will take it into account.'
-          : verdict;
+          : verdict) + planLine;
         addMsg({ role: 'assistant', content: closing });
         if (sid) krewDb.saveMessage(sid, 'assistant', closing).catch(() => {});
       } catch (e) {
@@ -12200,7 +12413,21 @@ Everything you need for follow-ups is in that answer above; read it there rather
   function hideWork() {
     workRef.current = null;
     if (!owns()) return;
-    setMessages((prev) => (isWorkBox(prev[prev.length - 1]) ? prev.slice(0, -1) : prev));
+    // IT IS NOT ALWAYS THE LAST MESSAGE. This only stripped the box when it sat at the very
+    // bottom, so any tool that added messages underneath it — a delegation, a workflow, a
+    // proposal card — left the box stranded above them, still counting up and still claiming to
+    // be working, for the rest of the conversation. That is the "Arjun.Boss box still says
+    // planning workflow even though the answer came" report: the pipeline had finished and its
+    // status box could no longer be reached. Search back for the most recent one instead.
+    setMessages((prev) => {
+      for (let i = prev.length - 1; i >= 0; i--) {
+        if (isWorkBox(prev[i])) return [...prev.slice(0, i), ...prev.slice(i + 1)];
+        // Don't walk past the user's own next message — a box older than that belongs to a
+        // finished turn and is not ours to remove.
+        if (prev[i].role === 'user') break;
+      }
+      return prev;
+    });
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -12704,7 +12931,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
                   onRun={(debate, useOwnKey) => {
                     setMessages((prev) => prev.filter((m) => m !== msg));
                     if (useOwnKey) setMode('own_key');
-                    startCouncil(msg.councilSetup!.question, { debate });
+                    startCouncil(msg.councilSetup!.question, { debate, asked: msg.councilSetup!.asked });
                   }}
                   onCancel={() => setMessages((prev) => prev.filter((m) => m !== msg))}
                 />
@@ -12813,11 +13040,21 @@ Everything you need for follow-ups is in that answer above; read it there rather
                             const existing = loadPlan();
                             if (existing) {
                               const r = mergeIntoPlan(existing, dev.text);
-                              setPlanOpen(true);
+                              // Only open the panel when something actually landed in it. Opening
+                              // an unchanged plan after pressing "add these steps" reads as if it
+                              // worked; describeMerge says plainly when it did not.
+                              if (r.read) setPlanOpen(true);
                               addMsg({ role: 'assistant', content: describeMerge(r, existing.title) });
-                            } else {
+                            } else if (parsePlanSteps(dev.text).length) {
                               savePlan(createPlan(dev.text));
                               setPlanOpen(true);
+                            } else {
+                              // A NEW PLAN WITH NO STEPS IS AN EMPTY PANEL THE USER HAS TO DELETE.
+                              // The Executor does not always answer in "Day N:" lines, and when it
+                              // does not, this used to save a plan containing nothing at all.
+                              addMsg({ role: 'assistant', content:
+                                'There are no dated steps in that answer, so there is nothing to put in the plan yet — '
+                                + 'it needs lines like "Day 1: …". Ask the Executor to lay it out day by day and press this again.' });
                             }
                           }}
                           className="text-[10px] font-medium px-2.5 py-1 rounded-lg border transition-fast"
@@ -13819,7 +14056,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
           onSchedule={(instruction) => { setPlanOpen(false); void send(instruction, { skipShortcuts: true }); }}
           /* Straight to the council — no chat message, no routing, no chance of an ops agent
              deciding this is work to delegate and writing its own review instead. */
-          onCouncil={(question) => { setPlanOpen(false); openCouncil(question); }}
+          onCouncil={(question, asked) => { setPlanOpen(false); openCouncil(question, asked); }}
         />
       )}
       {outreachCampaign && (

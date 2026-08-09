@@ -48,7 +48,7 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
    * steps, decided this was work to delegate, and wrote its own five-voice review because it could
    * not run the tool. A button has to do the thing it says.
    */
-  onCouncil: (question: string) => void;
+  onCouncil: (question: string, asked?: string) => void;
 }) {
   const [plan, setPlan] = useState<ActionPlan | null>(() => loadPlan());
   const [showAll, setShowAll] = useState(false);
@@ -468,7 +468,9 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
                 <button
                   disabled={askText.trim().length < 4}
                   onClick={() => {
-                    onCouncil(councilQuestionFor(plan, askText));
+                    // The typed question travels alongside the full brief so the chat can show
+                    // what was ASKED rather than a canned "put my plan to the council" line.
+                    onCouncil(councilQuestionFor(plan, askText), askText.trim());
                     setAskOpen(false);
                     setAskText('');
                     onClose();
