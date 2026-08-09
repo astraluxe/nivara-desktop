@@ -985,6 +985,104 @@ export interface ReplyPlan {
  * (from read_linkedin_messages / the browser), `person` is who replied, `ownerContext` carries
  * the user's own facts the reply must be answered against (product, availability, what was pitched).
  */
+// ─── Preparing the thing you actually send ───────────────────────────────────
+//
+// A real office does not reply "happy to share more details" and leave it there. It attaches the
+// one-pager, or writes the pilot proposal with the scope and the price in it, and the prospect has
+// what they need to say yes. The copilot could already spot that a document was WANTED — the
+// strategist sets attachSuggested — and then could only look through files that happened to exist
+// already. If nothing matched, the user was told to go and make one.
+//
+// This is the other half: the copilot asks for the document to be written, for THIS person, at the
+// stage the conversation has actually reached, and it comes back as a real PDF ready to attach.
+
+/** The kinds of collateral worth generating from a live conversation. */
+export type CollateralKind = 'one_pager' | 'pilot' | 'proposal' | 'pricing';
+
+export const COLLATERAL_LABEL: Record<CollateralKind, string> = {
+  one_pager: 'One-pager',
+  pilot:     'Pilot programme',
+  proposal:  'Proposal',
+  pricing:   'Pricing sheet',
+};
+
+const COLLATERAL_BRIEF: Record<CollateralKind, string> = {
+  one_pager: 'A one-page introduction: what the product is, the problem it removes, who it is for, how it works in three steps, and what to do next. One page — no filler.',
+  pilot:     'A pilot-programme proposal: what the pilot covers, how long it runs, exactly what the prospect has to do, what they get, how success is measured, and what happens at the end. Give a clear scope so it reads as a real offer, not a brochure.',
+  proposal:  'A commercial proposal: what is being delivered, the scope and its boundaries, timeline, what the owner needs from them, and the next step to start.',
+  pricing:   'A pricing sheet: the plans or tiers, what each includes, and who each suits. Nothing invented — if a figure is not in the context, leave it out and say pricing is confirmed on the call.',
+};
+
+export interface CollateralDraft {
+  title: string;
+  subtitle?: string;
+  meta?: string;
+  blocks: Array<Record<string, unknown>>;
+  summary?: string;
+  /** One line for the human: what this is and what it deliberately leaves out. */
+  note?: string;
+}
+
+/**
+ * Write the document that should go with this conversation.
+ *
+ * The hard rule is the same one that governs every other generated artefact here: it may only use
+ * facts that are actually in the owner's context or the thread. A proposal that invents a price, a
+ * headcount or a customer logo is worse than no proposal, because the owner sends it, the prospect
+ * asks about the number, and the owner does not know where it came from.
+ */
+export async function prepareCollateral(opts: {
+  kind: CollateralKind;
+  person: string;
+  company?: string;
+  thread?: string;
+  ownerContext?: string;
+  aiCall?: AiCall;
+}): Promise<CollateralDraft | null> {
+  const ai = opts.aiCall || callAutomationAI;
+  const system = [
+    'You write the document a real business would attach to this conversation. Output JSON only.',
+    '',
+    `WHAT TO WRITE: ${COLLATERAL_BRIEF[opts.kind]}`,
+    '',
+    'ABSOLUTE RULES:',
+    '- Use ONLY facts present in the owner context or the thread below. If you do not know the price,',
+    '  the customer count, the funding, the team size or a case study, LEAVE IT OUT. Never invent a',
+    '  statistic, a logo, a testimonial or a number. An invented figure gets sent to a real prospect',
+    '  and the owner cannot answer for it.',
+    '- Address it to this specific person and company where that is natural — this is not a template.',
+    '- Concrete and short. Every line should be something the reader can act on or decide from.',
+    '- No placeholders. Never write "[insert X]", "TBD" or "Lorem". If something is genuinely unknown,',
+    '  either omit that section or write the honest version ("pricing confirmed on the call").',
+    '',
+    'JSON SHAPE — blocks render in order:',
+    '{"title":"","subtitle":"","meta":"","summary":"","note":"",',
+    ' "blocks":[{"type":"heading","text":""},{"type":"para","text":""},',
+    '  {"type":"bullets","items":[""]},{"type":"numbered","items":[""]},',
+    '  {"type":"kv","pairs":[{"k":"","v":""}]},{"type":"callout","text":""},',
+    '  {"type":"table","columns":[""],"rows":[[""]]}]}',
+    '',
+    '"note" is for the OWNER, not the document: one line saying what you left out because you did not',
+    'have it, so they can fill it in before sending. If nothing was left out, say so.',
+  ].join('\n');
+
+  const user = [
+    `PERSON: ${opts.person}${opts.company ? ` at ${opts.company}` : ''}`,
+    opts.ownerContext ? `\nTHE OWNER'S OWN FACTS — everything you may state comes from here:\n${opts.ownerContext}` : '',
+    opts.thread ? `\nTHE CONVERSATION SO FAR — write for the stage it has actually reached:\n${opts.thread.slice(0, 4000)}` : '',
+    `\nWrite the ${COLLATERAL_LABEL[opts.kind]}. JSON only.`,
+  ].filter(Boolean).join('\n');
+
+  const raw = await ai(user, system).catch(() => '');
+  const parsed = firstJson<CollateralDraft>(raw || '');
+  if (!parsed || !parsed.title || !Array.isArray(parsed.blocks) || !parsed.blocks.length) return null;
+  // A document made of placeholders is the failure mode that looks like success — it has a title,
+  // it has sections, and it is unsendable. Refuse it rather than attaching it to a real email.
+  const text = JSON.stringify(parsed.blocks);
+  if (/\[(insert|your|company name|x)\b|lorem ipsum|\bTBD\b/i.test(text)) return null;
+  return parsed;
+}
+
 export async function planReply(opts: {
   person: string;
   company?: string;

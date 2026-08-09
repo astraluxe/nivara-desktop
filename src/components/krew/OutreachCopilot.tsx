@@ -9,9 +9,10 @@ import { outreachStatusToLeadCell, setLeadConnStatus, setLeadProfileUrl, normali
 import {
   planReply, planFollowUp, verifyWork, refineMessage, applyPromiseAudit, parseMeetingTime,
   actionableIssues, madeProgress, MAX_FIX_ROUNDS, auditScheduling, parseCalendarBusy,
-  type ReplyPlan, type VerifyResult,
+  prepareCollateral, COLLATERAL_LABEL,
+  type ReplyPlan, type VerifyResult, type CollateralKind,
 } from '../../lib/verify';
-import { listAttachableDocs, isAttachableFile, type GeneratedDoc } from '../../lib/docgen';
+import { listAttachableDocs, isAttachableFile, generateDocument, type GeneratedDoc } from '../../lib/docgen';
 import { addPlanNote, outreachTargetToday, loadPlan, currentDay, notesForDay } from '../../lib/planStore';
 import { availabilityNote, loadAvailability, nextFreeSlots, fmtMins } from '../../lib/availability';
 
@@ -701,6 +702,14 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   const [attachDoc, setAttachDoc] = useState<GeneratedDoc | null>(null);
   /** True only once the file has actually been staged into the compose box. */
   const [attachConfirmed, setAttachConfirmed] = useState(false);
+  // ── Making the thing you send ──
+  // The strategist could say a document was wanted and then only pick from files that already
+  // existed. When nothing matched, the user was told to go and make one — which is the moment the
+  // "assistant" hands the work back. These drive generating it on the spot, for this person.
+  const [collateralBusy, setCollateralBusy] = useState<CollateralKind | ''>('');
+  const [collateralNote, setCollateralNote] = useState('');
+  /** Progress line for the email attach, which drives a browser and is otherwise a silent pause. */
+  const [emailBusy, setEmailBusy] = useState('');
   // ── Making the meeting real ──
   // The copilot could read a calendar and it could put "Meeting: Friday 6 PM" on screen, but it had
   // no way to CREATE anything — so a reply saying "I've sent the calendar invite" was a promise the
@@ -1881,6 +1890,106 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     } finally { setOpening(false); }
   }
 
+  /**
+   * Write the document this conversation needs, and attach it.
+   *
+   * The whole point is that the user does nothing: the strategist already knows who this is and
+   * what stage the thread has reached, so "send them a pilot proposal" should not begin with the
+   * user opening a document editor. It generates a real PDF, registers it like any other generated
+   * doc, and selects it as the attachment so the next click sends it.
+   */
+  async function makeCollateral(kind: CollateralKind) {
+    const contact = contacts[idx];
+    if (!contact || collateralBusy) return;
+    setCollateralBusy(kind);
+    setCollateralNote(`Writing the ${COLLATERAL_LABEL[kind].toLowerCase()} for ${contact.name || 'them'}…`);
+    try {
+      // Everything known about this conversation: what was sent, what came back (lastThread is the
+      // scanned/pasted reply), and the draft going out. The document has to match the stage the
+      // thread actually reached — a pilot proposal for someone who has not replied yet is a leaflet.
+      const thread = [contact.linkedin_message || '', lastThread || '', draftReply || ''].filter(Boolean).join('\n');
+      const draft = await prepareCollateral({
+        kind,
+        person: contact.name || 'them',
+        company: contact.company,
+        thread,
+        ownerContext: buildOwnerContext(),
+        aiCall,
+      });
+      if (!draft) {
+        // Refused rather than shipped: prepareCollateral rejects a draft built from placeholders,
+        // because a document full of "[insert price]" is the failure that looks like success.
+        setCollateralNote(`I could not write a ${COLLATERAL_LABEL[kind].toLowerCase()} I would put your name on — there is not enough about your offer saved yet. Add a product or pricing note to the Brain and try again.`);
+        return;
+      }
+      const gen = await generateDocument({
+        kind: 'pdf',
+        title: draft.title,
+        subtitle: draft.subtitle,
+        meta: draft.meta || `Prepared for ${contact.name || contact.company || 'you'}`,
+        blocks: draft.blocks as never,
+        summary: draft.summary || `${COLLATERAL_LABEL[kind]} for ${contact.name || contact.company || ''}`.trim(),
+      });
+      setDocs((d) => [gen, ...d.filter((x) => x.path !== gen.path)]);
+      setAttachDoc(gen);
+      setAttachConfirmed(false);
+      // The model's own note about what it had to leave out — the one thing the user must check
+      // before this goes to a real prospect.
+      setCollateralNote(`${gen.filename} is ready and attached.${draft.note ? ` ${draft.note}` : ''} Read it before you send it.`);
+    } catch (e) {
+      setCollateralNote(`Could not build the document: ${e instanceof Error ? e.message : String(e)}. Nothing was created.`);
+    } finally {
+      setCollateralBusy('');
+    }
+  }
+
+  /**
+   * Open Gmail's compose window with the message already in it AND the file really attached.
+   *
+   * LinkedIn has had this since the auto-attach went in; email was the half still done by hand,
+   * which is the half that matters most — the attachment IS the point of an email like this. Same
+   * mechanism: open the composer in the agent browser where the user is already signed in, then
+   * stage the file into the compose form's own file input.
+   *
+   * Gmail's compose renders its attachment input as a plain `input[type=file]`, and the selectors
+   * are tried in order because Google renames things: the named one first, then any multiple-file
+   * input, then the bare one. If none of them takes it, the user is TOLD — never left believing a
+   * file went that did not.
+   */
+  async function openEmailCompose(address: string) {
+    const contact = contacts[idx];
+    if (!contact) return;
+    const url = gmailComposeUrl({ ...contact, email: address });
+    // No attachment: nothing to drive a browser for — the plain compose window is faster.
+    if (!attachDoc?.path) { openLink(url); return; }
+
+    setEmailBusy('Opening Gmail…');
+    setAgentBrowserHold(true); setBrowserOpen(true);
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke<string>('run_browser_persistent', { args: `open ${url}` });
+      setEmailBusy(`Attaching ${attachDoc.filename}…`);
+      let attached = false;
+      for (const selector of ["input[type=file][name='Filedata']", 'input[type=file][multiple]', 'input[type=file]']) {
+        try {
+          const up = await invoke<string>('run_browser_persistent', { args: `upload ${selector} ${attachDoc.path}` });
+          if (typeof up === 'string' && !/\[|error|not found|failed/i.test(up)) { attached = true; break; }
+        } catch { /* try the next selector */ }
+      }
+      setAttachConfirmed(attached);
+      setOpenNote(attached
+        ? `Gmail is open with your message and ${attachDoc.filename} attached — check it shows in the window, then press Send.`
+        : `Gmail is open with your message. I could not attach ${attachDoc.filename} automatically — use Gmail's paperclip (the file is in your documents folder).`);
+    } catch {
+      // The browser route failed entirely; the ordinary compose link still works.
+      openLink(url);
+      setOpenNote(`Opened Gmail compose. Attach ${attachDoc.filename} yourself before sending.`);
+    } finally {
+      setEmailBusy('');
+      setAgentBrowserHold(false);
+    }
+  }
+
   // Open the folder holding the file to attach, so the user can drag/attach it into the LinkedIn or
   // Gmail compose box by hand - a fallback for when the automatic attach cannot find the file input,
   // and a way to check the file is the right one before sending. Opening the parent folder
@@ -2642,24 +2751,66 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                     inbox, an assistant — and collapsing them to "the email" meant the other two
                     were stored and never usable. Each opens a compose window with the same
                     drafted message, addressed to that mailbox. */}
+                {/* WHAT IS ACTUALLY GOING TO BE SENT.
+                    The subject and body were only ever visible after Gmail opened, and the file was
+                    not visible at all — so "send them the one-pager" was a thing you hoped had
+                    happened. Shown here, before anything opens, with the attachment named. */}
+                <div className="rounded-lg border border-nv-border bg-nv-bg/60 p-2 mb-1.5">
+                  <p className="text-[9.5px] text-nv-faint uppercase tracking-wide">Subject</p>
+                  <p className="text-[11px] text-nv-text truncate">{fillTokens(cur.email_subject || '', cur) || <span className="text-nv-faint">— none —</span>}</p>
+                  <p className="text-[9.5px] text-nv-faint uppercase tracking-wide mt-1.5">Message</p>
+                  <p className="text-[10.5px] text-nv-muted whitespace-pre-wrap leading-snug max-h-24 overflow-y-auto">
+                    {fillTokens(cur.email_body || cur.linkedin_message || '', cur) || '— nothing drafted yet —'}
+                  </p>
+                  <p className="text-[9.5px] text-nv-faint uppercase tracking-wide mt-1.5">Attachment</p>
+                  {attachDoc ? (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10.5px] text-nv-text truncate flex-1">📎 {attachDoc.filename}</span>
+                      <button onClick={() => revealAttachment(attachDoc)} className="text-[9.5px] px-1.5 py-0.5 rounded-md border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast">Check</button>
+                      <button onClick={() => { setAttachDoc(null); setAttachConfirmed(false); }} className="text-[9.5px] px-1.5 py-0.5 rounded-md border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast">Remove</button>
+                    </div>
+                  ) : (
+                    <p className="text-[10.5px] text-nv-faint">Nothing attached.</p>
+                  )}
+                  {/* MAKE THE THING, RATHER THAN TELLING THEM TO GO AND MAKE IT.
+                      This is the step a real office does without being asked: someone wants to see
+                      it in writing, so the one-pager or the pilot scope gets written and attached. */}
+                  <div className="flex flex-wrap gap-1 mt-1.5">
+                    {(['one_pager', 'pilot', 'proposal'] as CollateralKind[]).map((k) => (
+                      <button
+                        key={k}
+                        disabled={!!collateralBusy}
+                        onClick={() => void makeCollateral(k)}
+                        className="text-[9.5px] px-1.5 py-0.5 rounded-md border border-accent/40 text-accent hover:bg-accent/10 transition-fast disabled:opacity-40"
+                      >{collateralBusy === k ? 'Writing…' : `+ ${COLLATERAL_LABEL[k]}`}</button>
+                    ))}
+                  </div>
+                  {collateralNote && <p className="text-[9.5px] text-nv-muted mt-1 leading-snug">{collateralNote}</p>}
+                </div>
                 {addrs.length > 1 ? (
                   <div className="space-y-1">
                     {addrs.map((a) => (
                       <button
                         key={a}
-                        onClick={() => openLink(gmailComposeUrl({ ...cur, email: a }))}
-                        className="w-full flex items-center gap-2 text-[11px] px-2.5 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
+                        disabled={!!emailBusy}
+                        onClick={() => void openEmailCompose(a)}
+                        className="w-full flex items-center gap-2 text-[11px] px-2.5 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast disabled:opacity-50"
                       >
                         <span className="min-w-0 flex-1 truncate text-left select-text">{a}</span>
-                        <span className="shrink-0 text-accent text-[10px]">Compose →</span>
+                        <span className="shrink-0 text-accent text-[10px]">{attachDoc ? 'Compose + attach →' : 'Compose →'}</span>
                       </button>
                     ))}
                   </div>
                 ) : (
-                  <button onClick={() => openLink(gmailComposeUrl(cur))} className="w-full text-[11px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast">
-                    Open in Gmail compose
+                  <button
+                    disabled={!!emailBusy}
+                    onClick={() => void openEmailCompose(addrs[0])}
+                    className="w-full text-[11px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast disabled:opacity-50"
+                  >
+                    {emailBusy || (attachDoc ? `Open Gmail with ${attachDoc.filename} attached` : 'Open in Gmail compose')}
                   </button>
                 )}
+                {emailBusy && addrs.length > 1 && <p className="text-[9.5px] text-accent mt-1">{emailBusy}</p>}
                 {peerAddrs.length > 0 && (
                   <p className="text-[9.5px] text-nv-faint mt-1 leading-snug">
                     Also at {cur.company?.split(/\s*[/|·—–,]\s*/)[0] || 'this company'}:{' '}
