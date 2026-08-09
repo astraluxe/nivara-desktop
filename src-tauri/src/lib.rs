@@ -810,8 +810,20 @@ fn workspace_default_path() -> String {
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_default();
     if home.is_empty() { return String::new(); }
-    let desktop = std::path::Path::new(&home).join("Desktop");
-    let base = if desktop.is_dir() { desktop } else { std::path::PathBuf::from(&home) };
+    let home_p = std::path::Path::new(&home);
+    // THE DESKTOP THE USER CAN SEE, WHICH IS OFTEN NOT %USERPROFILE%\Desktop.
+    //
+    // With OneDrive's "back up my Desktop" turned on — the default on plenty of Windows machines,
+    // and the case on the machine this was written on — the real Desktop is
+    // %USERPROFILE%\OneDrive\Desktop, while %USERPROFILE%\Desktop is either missing or an empty
+    // leftover. Picking the wrong one puts the workspace somewhere the user will never find,
+    // which for a folder whose entire purpose is "you can see and open the things it makes" is a
+    // total failure dressed up as a working feature. Prefer the redirected one when it exists.
+    let candidates = [
+        home_p.join("OneDrive").join("Desktop"),
+        home_p.join("Desktop"),
+    ];
+    let base = candidates.into_iter().find(|p| p.is_dir()).unwrap_or_else(|| home_p.to_path_buf());
     base.join("adris.tech").to_string_lossy().to_string()
 }
 

@@ -3,7 +3,7 @@ import { targetRoles } from '../../lib/targetRoles';
 import { listen } from '@tauri-apps/api/event';
 import { brain, nodeToMarkdown } from '../../lib/knowledgeStore';
 import { todos } from '../../lib/todoStore';
-import { setAgentBrowserHold, bestProfileMatch } from '../../lib/krewTools';
+import { setAgentBrowserHold, bestProfileMatch, attachFileInBrowser } from '../../lib/krewTools';
 import { checkPendingConnections, runBrowserCmd, waitingLabel, type ReconcileResult } from '../../lib/outreachConnections';
 import { outreachStatusToLeadCell, setLeadConnStatus, setLeadProfileUrl, normaliseLinkedInUrl, isCompanyLinkedInUrl } from '../../lib/leadTable';
 import {
@@ -1867,10 +1867,9 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
           // other commands use would have been swallowed into the file path and every upload would
           // have failed with "file not found".
           const selector = isImage ? 'input[type=file]' : "input[type=file][accept*='.pdf']";
-          const up = await invoke<string>('run_browser_persistent', {
-            args: `upload ${selector} ${attachDoc.path}`,
-          });
-          attached = typeof up === 'string' && !/\[|error|not found|failed/i.test(up);
+          // Shared with the email path, and CORRECT: the old check here read the success message —
+          // which echoes the selector, brackets and all — as a failure. See uploadSucceeded.
+          attached = await attachFileInBrowser(attachDoc.path, [selector]);
         } catch { attached = false; }
         setAttachConfirmed(attached);
       }
@@ -1969,17 +1968,16 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       const { invoke } = await import('@tauri-apps/api/core');
       await invoke<string>('run_browser_persistent', { args: `open ${url}` });
       setEmailBusy(`Attaching ${attachDoc.filename}…`);
-      let attached = false;
-      for (const selector of ["input[type=file][name='Filedata']", 'input[type=file][multiple]', 'input[type=file]']) {
-        try {
-          const up = await invoke<string>('run_browser_persistent', { args: `upload ${selector} ${attachDoc.path}` });
-          if (typeof up === 'string' && !/\[|error|not found|failed/i.test(up)) { attached = true; break; }
-        } catch { /* try the next selector */ }
-      }
+      const attached = await attachFileInBrowser(attachDoc.path);
       setAttachConfirmed(attached);
+      // SAY WHAT HAPPENS NEXT, INCLUDING AFTER THEY PRESS SEND.
+      //
+      // Gmail leaves the tab open after sending and only greys the Send button, so the moment
+      // after the click looks identical to nothing having happened — which is exactly how it read
+      // on the first real send. Naming the confirmation to look for turns that into a normal step.
       setOpenNote(attached
-        ? `Gmail is open with your message and ${attachDoc.filename} attached — check it shows in the window, then press Send.`
-        : `Gmail is open with your message. I could not attach ${attachDoc.filename} automatically — use Gmail's paperclip (the file is in your documents folder).`);
+        ? `Gmail is open with your message and ${attachDoc.filename} attached — check the file shows in the window, then press Send. Gmail keeps the tab open afterwards and shows "Message sent" at the bottom left; that means it has gone.`
+        : `Gmail is open with your message, but I could NOT attach ${attachDoc.filename} automatically — use Gmail's paperclip before you send. Do not send it assuming the file is on there.`);
     } catch {
       // The browser route failed entirely; the ordinary compose link still works.
       openLink(url);

@@ -675,6 +675,16 @@ export const SYSTEM_TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'compose_email',
+    description: "Open Gmail with an email fully prepared — recipient, subject, body, AND a real file attached — in the browser window the user is already signed in to. The user reads it and presses Send; nothing is ever sent automatically. Use this whenever you have written an email that needs a document on it (a one-pager, proposal, invoice, report, deck PDF) — it is the difference between the user getting a finished email and getting instructions. Get the file path from generate_document, find_my_file or list_my_folder; never invent one.",
+    parameters: {
+      to:      { type: 'string', description: "The recipient's email address. One address.", required: true },
+      subject: { type: 'string', description: 'The subject line.', required: true },
+      body:    { type: 'string', description: 'The full email body as plain text. Write the real message, not a summary of it.', required: true },
+      attach_path: { type: 'string', description: 'Full path to a file to attach, e.g. what generate_document or save_to_my_folder returned. Leave empty for no attachment.', required: false },
+    },
+  },
+  {
     name: 'save_link',
     description: 'SAVE A WEB PAGE THE USER WILL NEED AGAIN — the Notion page you just created or filled in, the Google Doc/Sheet you built, the Trello board, the profile or article you verified. Call this the moment you finish working on a page, and BEFORE you tell the user about it: a URL that only appears in a chat message is gone as soon as the conversation scrolls, so the user cannot reopen it and the next agent rebuilds it somewhere else. Saved into the Brain\'s "Links" folder, grouped by site, and de-duplicated — saving the same page twice updates it instead of making a mess. Do NOT save every page you happen to open; save the ones with something of the user\'s in them.',
     parameters: {
@@ -1092,6 +1102,57 @@ export const AUTOPILOT_TOOLS: ToolDef[] = [
     },
   },
 ];
+
+// ─── Attaching a real file to a compose box ──────────────────────────────────
+//
+// One implementation, shared by the outreach copilot and by the agent tool below, so the two can
+// never drift apart on the thing that is hardest to get right and easiest to get silently wrong.
+
+/** Gmail's attachment input, most specific first. Verified live: the first one is the real one. */
+export const GMAIL_FILE_SELECTORS = [
+  "input[type=file][name='Filedata']",
+  'input[type=file][multiple]',
+  'input[type=file]',
+];
+
+/**
+ * Did the browser's `upload` command actually attach the file?
+ *
+ * The obvious check — "no error words in the reply" — was wrong in a way only a live send could
+ * show. On success the script echoes the SELECTOR back:
+ *
+ *   Attached "C:\…\one-pager.pdf" to "input[type=file][name='Filedata']". Nothing was submitted…
+ *
+ * and every selector that can find a file input contains a bracket. So a test for `[` matched the
+ * SUCCESS message, the copilot concluded it had failed, and it moved on to the next selector —
+ * which attached the same file a second and third time and then told the user to attach it by hand.
+ * Three copies on the email and a warning that there were none.
+ *
+ * Matched on what the script actually writes instead: "Attached" on success, "upload-error:" or
+ * "upload:" on failure.
+ */
+export function uploadSucceeded(res: unknown): boolean {
+  if (typeof res !== 'string' || !res.trim()) return false;
+  if (/upload(-error)?:/i.test(res)) return false;
+  return /\bAttached\s+"/.test(res);
+}
+
+/**
+ * Stage a file into whatever compose box is open in the agent browser.
+ *
+ * Stops at the FIRST selector that works — with detection that is now correct, that is one upload
+ * and one copy of the file.
+ */
+export async function attachFileInBrowser(filePath: string, selectors = GMAIL_FILE_SELECTORS): Promise<boolean> {
+  if (!filePath.trim()) return false;
+  for (const selector of selectors) {
+    try {
+      const res = await invoke<string>('run_browser_persistent', { args: `upload ${selector} ${filePath}` });
+      if (uploadSucceeded(res)) return true;
+    } catch { /* try the next selector */ }
+  }
+  return false;
+}
 
 // ─── The user's workspace folder ─────────────────────────────────────────────
 //
@@ -2364,6 +2425,27 @@ async function executeToolCore(
   }
 
   // ── Brain (shared knowledge graph) ────────────────────────────────────────
+  if (toolName === 'compose_email') {
+    const to = str(args.to).trim();
+    const subject = str(args.subject).trim();
+    const body = str(args.body);
+    if (!to || !/@/.test(to)) return `[compose_email needs a real recipient address — "${to.slice(0, 60)}" is not one. Nothing was opened.]`;
+    if (!body.trim()) return `[compose_email needs the actual email body, not a description of it. Nothing was opened.]`;
+    const url = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to)}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    return withBrowserLock(async () => {
+      try { await invoke<string>('run_browser_persistent', { args: `open ${url}` }); }
+      catch (e) { return `[Could not open Gmail: ${String(e)}. Nothing was prepared — do not tell the user an email is waiting.]`; }
+      const path = str(args.attach_path).trim();
+      if (!path) return `Gmail is open with the email to ${to} ready. The user reviews it and presses Send — it has NOT been sent. Tell them it is waiting in the browser window.`;
+      const attached = await attachFileInBrowser(path);
+      // Never claim an attachment that is not on the message: the user would send it empty-handed
+      // believing the file went with it, which is the exact failure this whole path exists to stop.
+      return attached
+        ? `Gmail is open with the email to ${to} and ${path.split(/[\\/]/).pop()} attached. It is NOT sent — the user reviews it and presses Send. After they do, Gmail keeps the tab open and shows "Message sent" at the bottom; that is normal and it really has gone.`
+        : `Gmail is open with the email to ${to}, but I could NOT attach ${path.split(/[\\/]/).pop()} automatically. Tell the user plainly to attach it with Gmail's paperclip before sending — do not say it is attached.`;
+    });
+  }
+
   // ── The user's workspace folder ──────────────────────────────────────────────
   if (toolName === 'save_to_my_folder' || toolName === 'find_my_file'
       || toolName === 'list_my_folder' || toolName === 'open_my_folder') {
