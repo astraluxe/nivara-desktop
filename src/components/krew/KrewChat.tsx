@@ -13,7 +13,7 @@ import { StatusGlobe } from './StatusGlobe';
 import { runParallelResearch } from '../../lib/researchSources';
 import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, KREW_AGENTS, type KrewAgent } from '../../lib/krewAgents';
 import { rescuePrintedCalls } from '../../lib/toolCallRescue';
-import { planFromWorkOrder, type Delegation } from '../../lib/workOrder';
+import { planFromWorkOrder, saveTargetFromOrder, type Delegation } from '../../lib/workOrder';
 import { routeTask } from '../../lib/taskRouting';
 import { useAuth } from '../../contexts/AuthContext';
 import { extractTableRows, findLeadHeaderIndex, hasPopulatedLeadTable, mergeLeadTables, parseLeadRows, rowsToMarkdown, leadConnStatusToOutreach, looksLikePersonLead, matchesSeniority, matchesSector, peopleSearchPhrases } from '../../lib/leadTable';
@@ -1189,7 +1189,7 @@ type FastBossResult =
   | { type: 'reply';    text: string }
   | { type: 'delegate'; agentKey: string; task: string }
   /** An approved work order, already split into stages — see planFromWorkOrder. */
-  | { type: 'workflow'; delegations: Delegation[] };
+  | { type: 'workflow'; delegations: Delegation[]; saveAs: string };
 
 /**
  * Is the user asking for ONE specific written thing?
@@ -1223,7 +1223,7 @@ function classifyBossMessage(text: string): FastBossResult | null {
   // same prompt. The user approved a division of labour; the pipeline is built from their own order
   // and injected, so no model decides whether to honour it.
   const wf = planFromWorkOrder(trimmed, (s) => routeTask(s)?.agents ?? []);
-  if (wf && wf.length) return { type: 'workflow', delegations: wf };
+  if (wf && wf.length) return { type: 'workflow', delegations: wf, saveAs: saveTargetFromOrder(trimmed) };
 
   // Greeting-only fast-path — no LLM call at all
   if (/^(hi+|hey+|hello+|howdy|hiya|sup|what'?s up|greetings|good\s*(morning|afternoon|evening|day))[!.,?🙂]*\s*$/i.test(trimmed)) {
@@ -10069,6 +10069,9 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
             fullResponse = `<tool_call>${JSON.stringify({
               tool: 'plan_workflow',
               delegations: JSON.stringify(fastBoss.delegations),
+              // Not part of plan_workflow's published schema — this call is ours, and the handler
+              // treats it as optional, so a model-written workflow simply never sets it.
+              save_as: fastBoss.saveAs,
             })}</tool_call>`;
             wasTruncated = false;
           } else {
@@ -10846,6 +10849,9 @@ Everything you need for follow-ups is in that answer above; read it there rather
               });
               setTaskPhases(phases);
               const wfResults: string[] = [];
+              /** Appended to the boss's tool result: what the app itself saved, so its wrap-up
+               *  reports a fact rather than repeating whichever agent claimed the most. */
+              let toolResultExtra = '';
               // Use the delegation array index directly as the phase index so the
               // progress bar always stays aligned even when a step is skipped.
               for (let phIdx = 0; phIdx < wfDelegations.length; phIdx++) {
@@ -11044,7 +11050,41 @@ Everything you need for follow-ups is in that answer above; read it there rather
               // outreach" plan lost its messages. Save drafts from whichever step produced them.
               const wfDraftSource = wfResults.find((r) => /```(?:email|draft|message|outreach)/i.test(r));
               if (wfDraftSource) { const dt = autoSaveDraftsToBrain(wfDraftSource, wfBrainTitles, text); if (dt) lastAutoSavedListTitleRef.current = dt; }
-              toolResult = wfResults.map((r, i) => { const cap = r.length > 800 ? r.slice(0, 800) + '…' : r; return `[${wfDelegations[i]?.agent_key ?? `Step ${i + 1}`}]\n${cap}`; }).join('\n\n---\n\n');
+
+              // ── THE NAMED DELIVERABLE IS SAVED IN CODE, NOT ON REQUEST ──────────────────────
+              //
+              // "Save the filtered sheet as ICP-Validation-Pool" is the deliverable Days 4, 13 and
+              // 22 go looking for. An agent ended its answer with exactly that save reported as
+              // done — having never called save_to_brain. The rule against saying so was in its
+              // brief, and it said so anyway; the user then goes hunting for a note that does not
+              // exist, which is worse than being told nothing was saved.
+              //
+              // So the order names it, and the app saves it. Only when the order actually asked for
+              // a named save, and only when nothing already holds that title — if an agent DID save
+              // it properly, this must not write a second copy over its work.
+              const wfSaveAs = String(args.save_as ?? '').trim();
+              if (wfSaveAs) {
+                try {
+                  const { brain } = await import('../../lib/knowledgeStore');
+                  if (brain.findByTitle(wfSaveAs)) {
+                    toolResultExtra = `\n\n[The Brain already holds "${wfSaveAs}" — left as it is.]`;
+                  } else {
+                    // The rows, if any step produced a table; otherwise the fullest thing anyone
+                    // wrote. Never a stub: a note containing two lines of apology is not a save.
+                    const wfNamedBody = wfResults.find((r) => looksLikeAnyTable(extractTableRows(r)))
+                      ?? [...wfResults].sort((a, b) => b.length - a.length)[0] ?? '';
+                    if (wfNamedBody.trim().length >= 120) {
+                      brain.addNode({ title: wfSaveAs, kind: 'list', body: wfNamedBody.trim() });
+                      lastAutoSavedListTitleRef.current = wfSaveAs;
+                      toolResultExtra = `\n\n[Saved to the Brain as "${wfSaveAs}" — this really happened, tell the user it is there.]`;
+                    } else {
+                      // Say so rather than creating an empty note the user later finds and trusts.
+                      toolResultExtra = `\n\n[NOT saved: the order asked for "${wfSaveAs}" but no step produced enough content to store. Tell the user plainly that it does not exist yet and why.]`;
+                    }
+                  }
+                } catch { /* the run's output still stands even if the Brain write fails */ }
+              }
+              toolResult = wfResults.map((r, i) => { const cap = r.length > 800 ? r.slice(0, 800) + '…' : r; return `[${wfDelegations[i]?.agent_key ?? `Step ${i + 1}`}]\n${cap}`; }).join('\n\n---\n\n') + toolResultExtra;
               delegationKey = 'plan_workflow';
             }
           } else if (tool === 'council_review') {

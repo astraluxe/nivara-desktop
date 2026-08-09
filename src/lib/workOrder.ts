@@ -397,6 +397,40 @@ const HONESTY = [
  * panel used to name them. Returns null for anything that is not a work order, so ordinary messages
  * are untouched.
  */
+/**
+ * The name the order says the result must be saved under, if it says one.
+ *
+ * "Save the filtered sheet as ICP-Validation-Pool" is a deliverable with a name, and the name is
+ * the whole point: it is what Days 4, 13 and 22 go looking for. An agent reported exactly that
+ * save as done, in those words, having never called save_to_brain — so the rule was in its brief,
+ * the claim was in its answer, and the note was not in the Brain. A rule the model has to remember
+ * is a rule that holds most of the time; this one is worth holding every time, so the name comes
+ * out here and the save happens in code once the pipeline is finished.
+ *
+ * Conservative on purpose. It must not fire on "save time as much as possible", so the captured
+ * name has to look like a name — a capital or a hyphen, and no sentence-punctuation inside it.
+ */
+export function saveTargetFromOrder(text: string): string {
+  const t = text || '';
+  const m =
+    t.match(/\bsav(?:e|ed|ing)\b[^\n]{0,44}?\bas\s+["“']?([^\n"”'(),.;:—–]{3,60})/i)
+    ?? t.match(/\b(?:call|name)\s+it\s+["“']?([^\n"”'(),.;:—–]{3,60})/i)
+    ?? t.match(/\b(?:called|named|titled)\s+["“']([^\n"”']{3,60})["”']/i);
+  const name = (m?.[1] ?? '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    // WHERE it goes is not part of WHAT it is called. "Save the sheet as Tier1-Leads in the Brain"
+    // has no punctuation to stop at, so the destination rides along and the note is created under a
+    // title nobody will ever search for. Narrow on purpose — only a known destination is trimmed,
+    // so a genuine title like "Leads for Q3" survives intact.
+    .replace(/\s+\b(?:in|into|to|on|under|as)\b\s+(?:an?\s+|the\s+)?(?:brain|csv|xlsx?|sheet|spreadsheet|notion|drive|doc|document|file|folder|note)\b.*$/i, '')
+    .trim();
+  if (!name || name.length < 3) return '';
+  // A real title carries a capital or a hyphen. Prose ("much as possible") carries neither.
+  if (!/[A-Z]/.test(name) && !name.includes('-')) return '';
+  return name;
+}
+
 export function planFromWorkOrder(
   text: string,
   routeFor: (s: string) => string[],
