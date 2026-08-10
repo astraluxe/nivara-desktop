@@ -39,6 +39,7 @@ import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill
 import { builtInSkillsBlock, learnSkill } from '../../lib/skillGraph';
 import { describeIntent, toolReceipt, stripToolNoise, setActivity, silenceActivity, resumeActivity, runLogFence, liveFrame } from '../../lib/agentActivity';
 import { dropUngroundedRows, repairAnswer, isUngroundedRecall } from '../../lib/groundTruth';
+import { requiredToolsFor, contractDirective, unmetRequirements, correctionFor, carriesData } from '../../lib/taskContract';
 import { parseLeadRequest } from '../../lib/leadIntent';
 import { parseAnyTable, looksLikeIdentifier, looksLikeHeaderRow, extractContacts } from '../../lib/tableQuery';
 import { observeForRole, roleBlock } from '../../lib/userRole';
@@ -10215,9 +10216,17 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
       '   to paste, export or re-send data they have already given you.',
     ].join('\n');
 
+    // WHAT THIS PARTICULAR REQUEST CANNOT BE DONE WITHOUT.
+    //
+    // A user types a sentence; they will not name a tool and should not have to. Working out what
+    // the job needs is read from the message here, deterministically, and stated to the model as a
+    // rule for this turn — then checked against what actually ran when the turn ends. Empty for
+    // ordinary conversation, so it costs nothing on most messages. See taskContract.ts.
+    const contract = requiredToolsFor(text);
     const systemPrt  = assembleSystemPrompt(
       [agent.systemPrompt, '\n\n', buildKrewSystemPrompt(tools), bossPostfix, workingRules,
-       searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective],
+       searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective,
+       contractDirective(contract)],
       // The two things that make a turn a CONTINUATION rather than a fresh start: what this
       // agent was last working in, and what this user actually chooses when offered options.
       [identityCtx, locationBlock, (agent.key === 'boss' ? '' : userBlock), connectedAppsBlock, mcpSummary,
@@ -10358,6 +10367,8 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
       turnToolsRef.current = [];
       // One correction per turn when the boss answers a research question from memory.
       let bossRecallRetries = 0;
+      // And one correction when it finishes without doing what the request required at all.
+      let bossContractRetries = 0;
       while (steps < MAX_STEPS && !superseded()) {
         steps++;
         // "Thinking… 40%" is a percentage of a step budget, which is not a thing the user has or
@@ -10538,6 +10549,29 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
               + 'Discard it. Either call web_search yourself with a real query, or delegate_to_agent to the specialist whose job this is — then build the answer from what actually comes back.\n\n'
               + 'Never tell the user to go and verify your output themselves, and never explain what you would do instead of doing it. If a real search returns nothing usable, say so in one line — that is a correct answer, and a list from memory is not.' });
             continue;
+          }
+          // ── THE CONTRACT, CHECKED ─────────────────────────────────────────────────────────
+          //
+          // The requirement went into the prompt at the top of the turn. A prompt is advice: the
+          // model can read "you MUST call query_table" and answer anyway, and on the free models
+          // it routinely does. This is where advice becomes a check — what the request needed,
+          // against what actually ran.
+          //
+          // Delegating counts as meeting it (the specialist inherits the same rules and has the
+          // same tools), so this only fires when nothing plausible happened at all. Once per turn:
+          // if it will not use the tool when told exactly which one and why, the honest failure
+          // below is a better answer than a third attempt.
+          if (bossContractRetries < 1 && !stopRef.current) {
+            const unmet = unmetRequirements(contract, turnToolsRef.current.map((x) => x.tool));
+            if (unmet.length) {
+              bossContractRetries++;
+              carried = '';
+              paintWork(`${agentHandle(agent)} answered without doing the work`,
+                `Missing: ${unmet.map((u) => u.what).join(', ')}. Sending it back to actually do it.`);
+              history.push({ role: 'assistant', content: fullResponse });
+              history.push({ role: 'user', content: correctionFor(unmet) });
+              continue;
+            }
           }
           // Strip any partial/orphaned tool block before showing to user
           const stripped = fullResponse
@@ -10743,7 +10777,11 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
               const pipelineRule = PIPELINE_RULE;
               const delegateSystem = assembleSystemPrompt(
                 [targetAgent.systemPrompt, '\n\n', buildKrewSystemPrompt(delegateTools), pipelineRule,
-                 searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective],
+                 searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective,
+                 // The requirement belongs to the JOB, not to whoever is holding it. Handing work
+                 // to a specialist must not be a way out of it — and the delegate is the one with
+                 // the tools, so if anything it binds harder here than on the boss.
+                 contractDirective(requiredToolsFor(`${text}\n${task}`))],
                 [identityCtx, locationBlockAuto, userBlock, connectedAppsBlock, mcpSummary,
                  profileBlock, delegateMemBlock, tierDirective, dateBlock],
               );
@@ -10809,6 +10847,11 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
               let anyToolRan = false;
               // At most one "you can actually search, go and search" correction per delegation.
               let recallRetries = 0;
+              // The tools this delegation really ran, and its own one-shot contract correction.
+              const dToolsUsed: string[] = [];
+              let dContractRetries = 0;
+              const dContract = requiredToolsFor(`${text}
+${task}`);
               // Receipts for this delegation — see RunLog. Deliberately NOT part of delegateAccum,
               // which is the deliverable the boss and the Brain both consume.
               const dLog: string[] = [];
@@ -10935,6 +10978,21 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
                       + 'If a search genuinely returns nothing usable, say that in one line. An honest "I found nothing" is a correct answer; a list from memory is not.' });
                     continue;
                   }
+                  // The contract, checked on the specialist too. It was told what the job needs;
+                  // this is where being told stops being enough. Delegation is not in its own
+                  // anyOf here — it IS the delegate, so the work stops with it.
+                  if (dContractRetries < 1 && !stopRef.current) {
+                    const dUnmet = unmetRequirements(dContract, dToolsUsed, { dataProvided: carriesData(delegateTask) });
+                    if (dUnmet.length) {
+                      dContractRetries++;
+                      delegateAccum = '';
+                      dPaint(statusBlock(Date.now(), `${agentHandle(targetAgent)} finished without doing the work`,
+                        `Missing: ${dUnmet.map((u) => u.what).join(', ')}. Sending it back.`));
+                      delegateMsgsHist.push({ role: 'assistant', content: delegateFinalResp });
+                      delegateMsgsHist.push({ role: 'user', content: correctionFor(dUnmet) });
+                      continue;
+                    }
+                  }
                   // Genuine final answer — but if real tool work already ran this turn and the
                   // model still ended up with nothing accumulated (stream hiccup / empty reply),
                   // treat it the same as running out of budget mid-work: force the wrap-up below
@@ -11039,6 +11097,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
                 if (dResult && !/^Error:/.test(dResult)) groundTruth += '\n' + dResult;
                 // Written before the supersede check on purpose: what the last call returned is
                 // exactly what a user who just pressed Stop wants to see.
+                dToolsUsed.push(dTool);
                 dLog.push(toolReceipt(dTool, dArgs, dResult));
                 dPaint('');
                 if (superseded()) break;   // user stopped while the tool was running — don't re-show the indicator
@@ -11398,7 +11457,9 @@ Everything you need for follow-ups is in that answer above; read it there rather
                 const wfSys = assembleSystemPrompt(
                   [wfAgent.systemPrompt, '\n\n', buildKrewSystemPrompt(wfTools),
                    PIPELINE_RULE,
-                   searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective],
+                   searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective,
+                   // Same as the single-delegate path: the stage inherits what the job requires.
+                   contractDirective(requiredToolsFor(`${text}\n${wfTask}`))],
                   [identityCtx, locationBlockAuto, userBlock, connectedAppsBlock, mcpSummary,
                    profileBlock, wfMemBlock, tierDirective, dateBlock],
                 );
@@ -11442,6 +11503,10 @@ Everything you need for follow-ups is in that answer above; read it there rather
                 // delegation — see toolDeliverable / groundTruth there.
                 let wfDeliverable = '';
                 let wfGround = '';
+                const wfToolsUsed: string[] = [];
+                let wfContractRetries = 0;
+                const wfContract = requiredToolsFor(`${text}
+${wfTask}`);
                 // Did this stage actually look anything up, and has it already been corrected once?
                 let wfAnyTool = false;
                 let wfRecallRetries = 0;
@@ -11526,6 +11591,19 @@ Everything you need for follow-ups is in that answer above; read it there rather
                         + 'If a search genuinely returns nothing usable, say that in one line. An honest "I found nothing" is a correct answer; a list from memory is not.' });
                       continue;
                     }
+                    // The contract, checked on the stage — same as the single-delegate path.
+                    if (wfContractRetries < 1 && !stopRef.current) {
+                      const wfUnmet = unmetRequirements(wfContract, wfToolsUsed, { dataProvided: carriesData(wfFullTask) });
+                      if (wfUnmet.length) {
+                        wfContractRetries++;
+                        wfAccum = '';
+                        wfPaint(statusBlock(Date.now(), `${agentHandle(wfAgent)} finished without doing the work`,
+                          `Missing: ${wfUnmet.map((u) => u.what).join(', ')}. Sending it back.`));
+                        wfHist.push({ role: 'assistant', content: wfFinal });
+                        wfHist.push({ role: 'user', content: correctionFor(wfUnmet) });
+                        continue;
+                      }
+                    }
                     if (!wfAccum.trim()) wfCutOff = true;
                     break; // no tool call anywhere in the text — genuine final answer
                   }
@@ -11579,6 +11657,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
                   // more right to see what the last call returned than anyone — that is usually the
                   // reason they pressed it — and this is the run whose 766 real vendor rows were
                   // discarded on Stop with nothing on screen to show they had ever arrived.
+                  wfToolsUsed.push(dTool);
                   wfLog.push(toolReceipt(dTool, dArgs, dRes));
                   wfPaint('');
                   if (superseded()) break;   // user stopped mid-tool — don't re-show the indicator
