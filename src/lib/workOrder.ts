@@ -441,6 +441,15 @@ export function saveTargetFromOrder(text: string): string {
     t.match(/\bsav(?:e|ed|ing)\b[^\n]{0,44}?\bas\s+["“']?([^\n"”'(),.;:—–]{3,60})/i)
     ?? t.match(/\b(?:call|name)\s+it\s+["“']?([^\n"”'(),.;:—–]{3,60})/i)
     ?? t.match(/\b(?:called|named|titled)\s+["“']([^\n"”']{3,60})["”']/i)
+    // "OUTPUT → NEW BRAIN LIST "X"" IS HOW THE PLAN AND THE COUNCIL ACTUALLY WRITE IT.
+    //
+    // The user's day-1 order says: Output → new Brain list "Vendor master 1 – ICP filtered".
+    // None of the patterns above match that, so no name was found, the deterministic save never
+    // ran under the right title, and the table was filed by the generic fallback as something like
+    // "Table — <date>". The user's words: "idk where it got saved to brain... or to which file".
+    // A deliverable the user cannot find is the same as one that was never produced.
+    ?? t.match(/\b(?:new\s+|a\s+)?brain\s+(?:list|note|file)\s+["“']([^\n"”']{3,60})["”']/i)
+    ?? t.match(/\boutput\s*(?:→|->|:|=)\s*[^\n"”']{0,48}?["“']([^\n"”']{3,60})["”']/i)
     // THE DELIVERABLE IS USUALLY NAMED IN "DONE WHEN", NOT IN A "SAVE IT AS" SENTENCE.
     //
     // The user's own day-3 order ends: "It is finished when: ICP-Qualified-40 (CSV in Brain) —

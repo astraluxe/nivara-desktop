@@ -38,6 +38,7 @@ import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining }
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
 import { builtInSkillsBlock, learnSkill } from '../../lib/skillGraph';
 import { describeIntent, toolReceipt, stripToolNoise, setActivity, silenceActivity, resumeActivity, runLogFence, liveFrame } from '../../lib/agentActivity';
+import { dropUngroundedRows, repairAnswer } from '../../lib/groundTruth';
 import { parseAnyTable, looksLikeIdentifier, looksLikeHeaderRow, extractContacts } from '../../lib/tableQuery';
 import { observeForRole, roleBlock } from '../../lib/userRole';
 import {
@@ -1702,6 +1703,12 @@ function trailingOptions(text: string): string[] {
   return out.length >= 2 && out.length <= 5 ? out : [];
 }
 
+/** Data rows in a tool result, so the model can be told the size of what it is NOT being shown. */
+function countRows(text: string): number {
+  return String(text || '').split(/\r?\n/)
+    .filter((l) => l.trim().startsWith('|') && !/^\|?[\s:|-]+\|?$/.test(l.trim())).length;
+}
+
 /** Stack the pieces of a live bubble — run log, prose so far, status panel — dropping empties. */
 function joinBlocks(...parts: (string | undefined)[]): string {
   return parts.map((p) => (p ?? '').trim()).filter(Boolean).join('\n\n');
@@ -2683,6 +2690,15 @@ function computeSeparateListTitle(text: string): string {
   if (saysContinueExistingList(text)) return '';
   const custom = extractCustomListTitle(text);
   if (custom) return custom;
+  // A WORK ORDER THAT NAMES ITS OUTPUT HAS ALREADY DECIDED THE TITLE.
+  //
+  // extractCustomListTitle only understands "name it X" / "call it X". An order saying
+  // 'Output → new Brain list "Vendor master 1 – ICP filtered"' matched nothing, so the table was
+  // filed under the generic "Table — <date>" fallback and the user could not find it: "idk where
+  // it got saved to brain... or to which file". saveTargetFromOrder reads the shapes the plan and
+  // the council actually write, and is tested against this exact order.
+  const ordered = saveTargetFromOrder(text);
+  if (ordered) return ordered;
   // 2. Settings default of "always start a new file", unless the request already named one.
   if (loadSettings().listMode === 'new') return deriveGenericTableTitle(text);
   const isNonTech = /\bnon[\s-]?tech/i.test(text);
@@ -10663,6 +10679,9 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
               // nothing instead, which used to discard the whole table. Capture it here so we
               // can show it directly if the model doesn't echo it.
               let toolDeliverable = '';
+              // Every byte the tools really returned this run, uncapped — the evidence the final
+              // answer is checked against. See dropUngroundedRows in groundTruth.ts.
+              let groundTruth = '';
               // Verify-heavy agents (research/sales) open a browser page per row, so they
               // need more steps to check a useful batch before answering. Others stay lean.
               const isVerifyHeavy = targetKey === 'research_agent' || targetAgent.category === 'Sales';
@@ -10883,11 +10902,24 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
                   // verify_lead_list / enrich_lead_list return the finished table — keep the FULL
                   // result (drop the leading instruction line) so we can show it even if the model
                   // goes silent (otherwise the work is discarded into the "data sources slow" fallback).
-                  if ((dTool === 'verify_lead_list' || dTool === 'enrich_lead_list') && dResult.includes('|')) {
+                  // THE APP OWNS THE TABLE. THE MODEL IS NEVER ASKED TO RETYPE IT.
+                  //
+                  // query_table joins this list, and it is the reason it had to. It returned 487
+                  // real vendor rows; the model was handed the first 3000 characters — twelve rows
+                  // — and asked to produce the filtered list. It produced twenty-five, and the last
+                  // thirteen were invented, with GST numbers marching AAI→AAH→ABG→ACI and street
+                  // numbers climbing by twelve. A model with a table to finish and no data left
+                  // finishes the table. The fix is not a sterner instruction; it is not asking.
+                  if ((dTool === 'verify_lead_list' || dTool === 'enrich_lead_list' || dTool === 'query_table')
+                      && dResult.includes('|')) {
                     const tblStart = dResult.indexOf('\n| ');
                     toolDeliverable = (tblStart >= 0 ? dResult.slice(tblStart) : dResult).trim();
                   }
                 } catch (e) { dResult = `Error: ${e}`; }
+                // Everything the tools really returned this run, at FULL length — the evidence the
+                // answer is checked against below. Deliberately not the truncated copy the model
+                // saw: a row can be real and still be one the model was never shown.
+                if (dResult && !/^Error:/.test(dResult)) groundTruth += '\n' + dResult;
                 // Written before the supersede check on purpose: what the last call returned is
                 // exactly what a user who just pressed Stop wants to see.
                 dLog.push(toolReceipt(dTool, dArgs, dResult));
@@ -10897,9 +10929,15 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
                 // verify_lead_list's full table is shown to the user directly, so the model only
                 // needs a short ack — feeding it the whole (truncated) table made it try to
                 // re-render it, mangle it, or go silent. Keep its turn cheap and on-rails.
-                const cappedResult = (dTool === 'verify_lead_list' || dTool === 'enrich_lead_list')
-                  ? 'The table has been produced and is ALREADY shown to the user. Reply with ONE short sentence summarising the result and offering a next step. Do NOT re-print the table.'
-                  : (dResult.length > 3000 ? dResult.slice(0, 3000) + '\n…[truncated for context]' : dResult);
+                const cappedResult = (dTool === 'verify_lead_list' || dTool === 'enrich_lead_list' || dTool === 'query_table')
+                  ? `The full result (${countRows(dResult)} rows) has been produced and is ALREADY shown to the user in its entirety. Reply with ONE short sentence saying what it contains and what you will do next. Do NOT re-print the table and do NOT write out any rows — you have not been shown all of them, and writing rows you have not seen would mean inventing them.`
+                  // "…[truncated for context]" did not say what the consequence was, so the model
+                  // treated the cut as cosmetic and carried on writing rows past the end of what it
+                  // had. Say plainly that the missing rows are missing and must not be reconstructed.
+                  : (dResult.length > 3000
+                      ? dResult.slice(0, 3000)
+                        + `\n\n[CUT OFF — you have been shown roughly the first 3000 characters of a ${dResult.length}-character result. The rest exists but you cannot see it. Work ONLY from the rows above. Do NOT continue the list from memory, do NOT extrapolate the pattern, and do NOT invent rows to round the number out — if you need more, call the tool again with a narrower filter.]`
+                      : dResult);
                 delegateMsgsHist.push({ role: 'assistant', content: delegateFinalResp });
                 delegateMsgsHist.push({ role: 'user', content: `<tool_result>${cappedResult}</tool_result>` });
                 // Keep context bounded: preserve initial task + last 6 messages
@@ -11011,9 +11049,28 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
               // of merging into the main lead list. An explicit custom name ("name it as X",
               // "call it X") always wins; non-tech is classified before tech (see helper).
               const separateTitle = computeSeparateListTitle(text);
-              autoSaveLeadTableToBrain(finalDelegateOut, brainTitles, separateTitle, text, wantsBrandNewList(text)).then((r) => { if (r) lastAutoSavedListTitleRef.current = r.title; });
+              // AWAITED, so the answer can NAME the note. This was fire-and-forget, which is why a
+              // finished run could not say where its own output went — the user was left opening
+              // the Brain and guessing which of their notes was the new one.
+              const savedList = await autoSaveLeadTableToBrain(finalDelegateOut, brainTitles, separateTitle, text, wantsBrandNewList(text))
+                .catch(() => undefined);
+              if (savedList) lastAutoSavedListTitleRef.current = savedList.title;
               const draftTitle = autoSaveDraftsToBrain(finalDelegateOut, brainTitles, text); // save any LinkedIn/email drafts too
               if (draftTitle) lastAutoSavedListTitleRef.current = draftTitle;
+              // ── SAY WHERE IT WENT, OR SAY IT DID NOT GO ANYWHERE ────────────────────────────
+              //
+              // Silence here reads as success. The order named an output list, the run produced a
+              // table, and nothing in the answer said whether that note now exists — so the only
+              // way to find out was to go hunting through the Brain. Both outcomes are stated, and
+              // the "not saved" one is stated just as plainly, because a deliverable the user
+              // believes exists and cannot find is worse than one they know is missing.
+              const brainSaves = [savedList?.title, draftTitle].filter(Boolean) as string[];
+              if (brainSaves.length) {
+                finalDelegateOut += `\n\n> **Saved to your Brain** as ${brainSaves.map((t) => `"${t}"`).join(' and ')} — open the Brain to find ${brainSaves.length === 1 ? 'it' : 'them'} under that name.`;
+                dLog.push(`saved to brain · ${brainSaves.join(', ')}`);
+              } else if (separateTitle && extractTableRows(finalDelegateOut).length >= 3) {
+                finalDelegateOut += `\n\n> **Not saved.** The order asked for "${separateTitle}" but nothing was written to your Brain — the table above exists only in this message. Say "save that as ${separateTitle}" and it will be stored.`;
+              }
               // The FULL delegate output is shown to the user in the delegation bubble below.
               // For a long result (e.g. a lead-list table) do NOT feed the truncated text
               // back to the boss — that made the boss re-print a half-cut table ending in
@@ -11089,6 +11146,31 @@ Everything you need for follow-ups is in that answer above; read it there rather
                     .trim());
                   if (rt) finalDelegateOut = rt;
                 } catch { /* the honest failure message below is the fallback */ }
+              }
+              // ── REPAIR THE SHAPE, THEN CHECK EVERY ROW AGAINST WHAT THE TOOLS RETURNED ──────
+              //
+              // repairAnswer first: the same reply came back as one unbroken line with its newlines
+              // spelled out as backslash-n and no leading pipes, so it rendered as a wall of text
+              // rather than a table and could not be read at all.
+              //
+              // Then the grounding check. This is the last line of defence behind "don't ask the
+              // model to retype the table" above — it catches the case where it writes rows anyway,
+              // and it is deterministic, so it cannot itself invent or excuse anything. Rows whose
+              // identifiers appear nowhere in any tool result this run did not come from the user's
+              // data, and the user is told which ones went and why rather than the list quietly
+              // shrinking.
+              finalDelegateOut = repairAnswer(finalDelegateOut);
+              {
+                const g = dropUngroundedRows(finalDelegateOut, groundTruth);
+                if (g.dropped > 0) {
+                  finalDelegateOut = g.text.trim()
+                    + `\n\n> **${g.dropped} row${g.dropped === 1 ? '' : 's'} removed — not in your data.**`
+                    + ` ${agentHandle(targetAgent)} wrote ${g.dropped === 1 ? 'a row' : 'rows'} that no tool result this run can account for`
+                    + `${g.droppedLabels.length ? ` (${g.droppedLabels.slice(0, 6).join(', ')}${g.droppedLabels.length > 6 ? ', …' : ''})` : ''}`
+                    + `. The ${g.kept} row${g.kept === 1 ? '' : 's'} above came from your sheet and are real.`
+                    + ` This usually means the result was too large to show the model in full — ask for a narrower filter to get the rest.`;
+                  dLog.push(`fabrication guard — dropped ${g.dropped} invented row${g.dropped === 1 ? '' : 's'}, kept ${g.kept} real`);
+                }
               }
               // Unusable is the same as nothing — see looksUnusable. A two-word reply in another
               // script is not a deliverable, however non-empty it is.
@@ -11238,6 +11320,11 @@ Everything you need for follow-ups is in that answer above; read it there rather
                 // it would be read by the next agent as part of the work. It is joined in only for
                 // what is drawn.
                 const wfLog: string[] = [];
+                // The table a tool returned (authoritative), and every byte the tools returned
+                // (the evidence the answer is checked against). Same reasoning as the single
+                // delegation — see toolDeliverable / groundTruth there.
+                let wfDeliverable = '';
+                let wfGround = '';
                 const wfPaint = (live: string) => updateLastMsg(
                   [runLogFence(wfLog), wfAccum, live].filter(Boolean).join('\n\n'));
                 for (let ds = 0; ds < wfMax && !superseded(); ds++) {
@@ -11344,6 +11431,12 @@ Everything you need for follow-ups is in that answer above; read it there rather
                   setActivity({ agent: agentHandle(wfAgent), agentKey: wfKey, headline: wfHead, detail: wfDet, startedAt: wfToolT0, phase: 'tool' });
                   wfPaint(statusBlock(wfToolT0, wfHead, wfDet));
                   let dRes = ''; try { dRes = await executeTool(dTool, dArgs, creds, requestTerminalApproval, wfKey, user?.id ?? '', `${sidRef.current ?? 'main'}-${wfKey}`); if (dTool.startsWith('browser_') && dRes.includes('[agent-browser not installed')) setBrowserNudge(true); } catch (e) { dRes = `Error: ${e}`; }
+                  // The app owns the table — see the long note on the single-delegate path.
+                  if ((dTool === 'verify_lead_list' || dTool === 'enrich_lead_list' || dTool === 'query_table') && dRes.includes('|')) {
+                    const wfTblStart = dRes.search(/\n\| /);
+                    wfDeliverable = (wfTblStart >= 0 ? dRes.slice(wfTblStart) : dRes).trim();
+                  }
+                  if (dRes && !/^Error:/.test(dRes)) wfGround += `\n${dRes}`;
                   // The receipt is written BEFORE the supersede check. A user who presses Stop has
                   // more right to see what the last call returned than anyone — that is usually the
                   // reason they pressed it — and this is the run whose 766 real vendor rows were
@@ -11351,7 +11444,12 @@ Everything you need for follow-ups is in that answer above; read it there rather
                   wfLog.push(toolReceipt(dTool, dArgs, dRes));
                   wfPaint('');
                   if (superseded()) break;   // user stopped mid-tool — don't re-show the indicator
-                  const cappedWfRes = dRes.length > 3000 ? dRes.slice(0, 3000) + '\n…[truncated for context]' : dRes;
+                  const cappedWfRes = (dTool === 'verify_lead_list' || dTool === 'enrich_lead_list' || dTool === 'query_table')
+                    ? `The full result (${countRows(dRes)} rows) is ALREADY shown to the user in its entirety. Reply with ONE short sentence saying what it contains and what you will do next. Do NOT re-print the table and do NOT write out any rows — you have not been shown all of them, and writing rows you have not seen would mean inventing them.`
+                    : (dRes.length > 3000
+                        ? dRes.slice(0, 3000)
+                          + `\n\n[CUT OFF — you have been shown roughly the first 3000 characters of a ${dRes.length}-character result. The rest exists but you cannot see it. Work ONLY from the rows above. Do NOT continue the list from memory, do NOT extrapolate the pattern, and do NOT invent rows to round the number out — if you need more, call the tool again with a narrower filter.]`
+                        : dRes);
                   setAgentStep(`${agentHandle(wfAgent)} · reading what came back…`); wfHist.push({ role: 'assistant', content: wfFinal }); wfHist.push({ role: 'user', content: `<tool_result>${cappedWfRes}</tool_result>` });
                   // Keep context bounded: preserve initial task + last 6 messages
                   if (wfHist.length > 7) wfHist.splice(1, wfHist.length - 7);
@@ -11442,6 +11540,27 @@ Everything you need for follow-ups is in that answer above; read it there rather
                       .trim());
                     if (wfRt) wfClean = wfRt;
                   } catch { /* the honest failure line below is the fallback */ }
+                }
+                // When a tool returned the table, THAT is the deliverable — not the model's
+                // re-typing of it. See the long note on the single-delegate path: retyping is
+                // where the thirteen invented vendors came from.
+                if (wfDeliverable) {
+                  const wfProseOnly = wfClean.split('\n').filter((l) => !/^\s*\|/.test(l)).join('\n').trim();
+                  wfClean = wfProseOnly ? `${wfProseOnly}\n\n${wfDeliverable}` : wfDeliverable;
+                }
+                // Repair a table that arrived with its newlines spelled out, then check every row
+                // against what the tools actually returned. Deterministic — see groundTruth.ts.
+                wfClean = repairAnswer(wfClean);
+                {
+                  const g = dropUngroundedRows(wfClean, wfGround);
+                  if (g.dropped > 0) {
+                    wfClean = g.text.trim()
+                      + `\n\n> **${g.dropped} row${g.dropped === 1 ? '' : 's'} removed — not in your data.**`
+                      + ` ${agentHandle(wfAgent)} wrote ${g.dropped === 1 ? 'a row' : 'rows'} that no tool result this run can account for`
+                      + `${g.droppedLabels.length ? ` (${g.droppedLabels.slice(0, 6).join(', ')}${g.droppedLabels.length > 6 ? ', …' : ''})` : ''}`
+                      + `. The ${g.kept} row${g.kept === 1 ? '' : 's'} above came from your sheet and are real.`;
+                    wfLog.push(`fabrication guard — dropped ${g.dropped} invented row${g.dropped === 1 ? '' : 's'}, kept ${g.kept} real`);
+                  }
                 }
                 // "(no response)" told the user nothing and, worse, let the boss narrate its own
                 // version of what must have happened — which is where "the research agent is now
