@@ -3683,6 +3683,34 @@ function MessageRow({ msg, agent }: { msg: DisplayMsg; agent: KrewAgent }) {
 // page. web_search stays (discovery is fine and fast); browser_navigate does the real reading.
 const ADVANCED_DROP_TOOLS = new Set(['research_companies', 'scrape_structured', 'fetch_open_data']);
 
+// ─── Telling a deliverable apart from noise ──────────────────────────────────
+//
+// A real run on a free NVIDIA key: the research stage came back with the single word "وأداة".
+// Non-empty, so every guard we had waved it through as the answer; the delegation bubble showed
+// two Arabic words, and the boss — handed that as the stage result — wrote a confident three-point
+// summary of what "the agent should have" done. Nothing had been done, and the user was told to go
+// and review rows that were never created.
+//
+// Emptiness was never the right test. The test is whether what came back could possibly be the
+// thing that was asked for.
+function looksUnusable(out: string, task: string): boolean {
+  const t = (out || '').replace(/\s+/g, ' ').trim();
+  if (!t) return true;
+  // A finished deliverable is never three words long. Deliberately low: an honest "I could not do
+  // this because the sheet has no email column" is a real answer and must survive.
+  if (t.length < 40) return true;
+  // THE MODEL ANSWERED IN ANOTHER SCRIPT. Small models under a long English brief sometimes emit a
+  // fragment of Arabic, Chinese or Devanagari. Only fires when the TASK was clearly Latin — a user
+  // who writes to their agents in Hindi or Arabic must never trip this.
+  const letters = t.match(/\p{L}/gu) ?? [];
+  const latin = t.match(/\p{Script=Latin}/gu) ?? [];
+  const taskLetters = (task || '').match(/\p{L}/gu) ?? [];
+  const taskLatin = (task || '').match(/\p{Script=Latin}/gu) ?? [];
+  const taskIsLatin = taskLetters.length > 40 && taskLatin.length / taskLetters.length > 0.9;
+  if (taskIsLatin && letters.length > 0 && latin.length / letters.length < 0.5) return true;
+  return false;
+}
+
 // ─── The rules every delegated specialist runs under ─────────────────────────
 //
 // ONE COPY, TWO CALLERS. delegate_to_agent had all of this and plan_workflow had only the first
@@ -10954,7 +10982,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
               // No tools on the retry, deliberately: whatever tool work was going to happen has
               // already had its chance, and asking again for a plain written answer is the thing
               // most likely to succeed.
-              if (!finalDelegateOut.trim() && !delegateChoices && !delegateProposal && !stopRef.current) {
+              if (looksUnusable(finalDelegateOut, delegateTask) && !delegateChoices && !delegateProposal && !stopRef.current) {
                 setAgentStep(`${agentHandle(targetAgent)} · asking the short way…`);
                 updateLastMsg(statusBlock(Date.now(), `${agentHandle(targetAgent)} went quiet — asking again, simply`,
                   'Same task, without the extra instructions a small model can choke on.'));
@@ -10973,6 +11001,9 @@ Everything you need for follow-ups is in that answer above; read it there rather
                   if (rt) finalDelegateOut = rt;
                 } catch { /* the honest failure message below is the fallback */ }
               }
+              // Unusable is the same as nothing — see looksUnusable. A two-word reply in another
+              // script is not a deliverable, however non-empty it is.
+              if (looksUnusable(finalDelegateOut, delegateTask)) finalDelegateOut = '';
               const bubbleContent = finalDelegateOut.trim() ||
                 (delegateChoices ? `Here are ${delegateChoices.choices.length} variants — pick the one you want:` :
                  delegateProposal ? 'Automation plan ready — review the card below.'
@@ -11174,7 +11205,21 @@ Everything you need for follow-ups is in that answer above; read it there rather
                   // Same friendly wording the other two paths use — a pipeline stage saving a file
                   // should read "Saving launch.png to your folder", not "save to my folder".
                   const wfToolLabel = browserActionLabel(dTool, dArgs) ?? dTool.replace(/_/g,' ');
-                  setAgentStep(`${agentHandle(wfAgent)} · ${wfToolLabel}…`); updateLastMsg((wfAccum || '') + `\n\n*${agentHandle(wfAgent)} is using ${wfToolLabel}…*`);
+                  // A LIVE PANEL, NOT A FROZEN ITALIC LINE — the same box the boss gets.
+                  //
+                  // This wrote one static sentence, "Nyx.Research is using query table…", and then
+                  // nothing moved for as long as the tool took. On a free key that is minutes, and
+                  // a line that has not changed in two minutes is indistinguishable from a hung
+                  // app — the user's words: "it doesn't come in that box which comes for arjun.boss
+                  // which tells what is happening, so at least it tells something is going on and
+                  // isn't frozen". statusBlock IS that box: it counts up on its own.
+                  const wfToolT0 = Date.now();
+                  setAgentStep(`${agentHandle(wfAgent)} · ${wfToolLabel}…`);
+                  updateLastMsg((wfAccum ? wfAccum + '\n\n' : '')
+                    + statusBlock(wfToolT0, `${agentHandle(wfAgent)} is using ${wfToolLabel}`,
+                        SLOW_TOOLS.has(dTool)
+                          ? 'This one opens the browser and reads pages, so it can take a minute or two on a free key.'
+                          : 'Waiting for it to come back.'));
                   let dRes = ''; try { dRes = await executeTool(dTool, dArgs, creds, requestTerminalApproval, wfKey, user?.id ?? '', `${sidRef.current ?? 'main'}-${wfKey}`); if (dTool.startsWith('browser_') && dRes.includes('[agent-browser not installed')) setBrowserNudge(true); } catch (e) { dRes = `Error: ${e}`; }
                   if (superseded()) break;   // user stopped mid-tool — don't re-show the indicator
                   const cappedWfRes = dRes.length > 3000 ? dRes.slice(0, 3000) + '\n…[truncated for context]' : dRes;
@@ -11233,7 +11278,9 @@ Everything you need for follow-ups is in that answer above; read it there rather
                 // BRIEF: a persona, a page of rules, a full tool schema and the pipeline rules,
                 // and a small or free-tier model answers with nothing at all. Asked the short
                 // way, with just the task, the same model usually answers fine.
-                if (!wfClean.trim() && !wfChoices && !wfProp && !stopRef.current) {
+                // NOT JUST EMPTY — UNUSABLE. "وأداة" is not an answer, and treating any non-empty
+                // string as the deliverable is what let two Arabic words become the stage result.
+                if (looksUnusable(wfClean, wfFullTask) && !wfChoices && !wfProp && !stopRef.current) {
                   setAgentStep(`${agentHandle(wfAgent)} · asking the short way…`);
                   updateLastMsg(statusBlock(Date.now(), `${agentHandle(wfAgent)} went quiet — asking again, simply`,
                     'Same task, without the extra instructions a small model can choke on.'));
@@ -11255,14 +11302,18 @@ Everything you need for follow-ups is in that answer above; read it there rather
                 // "(no response)" told the user nothing and, worse, let the boss narrate its own
                 // version of what must have happened — which is where "the research agent is now
                 // working on it" came from. Name what actually happened instead.
-                const wfBubble = wfClean.trim() || (wfChoices ? `Here are ${wfChoices.choices.length} variants.` : wfProp ? 'Automation plan ready.'
+                const wfUsable = !looksUnusable(wfClean, wfFullTask);
+                const wfBubble = (wfUsable ? wfClean.trim() : '') || (wfChoices ? `Here are ${wfChoices.choices.length} variants.` : wfProp ? 'Automation plan ready.'
                   : `${wfAgent.name} finished this stage without producing anything to show — the model went quiet rather than returning a result. Nothing from this step was saved. Send it again${mode === 'own_key' ? ', or switch this chat to another model — smaller models sometimes stop mid-task on a long brief' : ''}.`);
                 delegationDisplay = wfBubble; // saved to DB so reload shows this, not the boss note
                 setMessages(prev => { const c = [...prev]; const l = c[c.length - 1]; if (l?.role === 'delegation') c[c.length - 1] = { ...l, content: wfBubble, streaming: false }; return c; });
                 if (wfProp) { addMsg({ role: 'proposal', content: '', proposal: wfProp }); if (sid) { sessionStorage.setItem(`krew-proposal-${sid}`, JSON.stringify(wfProp)); krewDb.saveMessage(sid, 'tool_result', JSON.stringify(wfProp), '__proposal__').catch(() => {}); } }
                 if (wfChoices) { addMsg({ role: 'choices', content: '', choices: wfChoices }); if (sid) krewDb.saveMessage(sid, 'tool_result', JSON.stringify(wfChoices), '__choices__').catch(() => {}); }
-                if (sid) krewDb.saveMessage(sid, 'delegation', wfClean, wfKey).catch(() => {});
-                wfResults.push(wfClean);
+                if (sid) krewDb.saveMessage(sid, 'delegation', wfBubble, wfKey).catch(() => {});
+                // An unusable stage contributes NOTHING to the pipeline: {{prev}} must not carry
+                // two words of noise into the next agent, and the boss must not be handed it as a
+                // result it can then describe as work done.
+                wfResults.push(wfUsable ? wfClean : '');
                 // Mark phase done
                 setTaskPhases((prev) => prev.map((p, i) => i === phIdx ? { ...p, status: 'done' as const } : p));
               }
@@ -11336,8 +11387,13 @@ Everything you need for follow-ups is in that answer above; read it there rather
                 + `\n\n[THE PIPELINE HAS FINISHED. ${wfRan - wfEmpty} of ${wfRan} stage${wfRan === 1 ? '' : 's'} produced a result${wfEmpty ? `; ${wfEmpty} produced nothing` : ''}. `
                 + 'Nothing is still running and nothing will arrive later — there is no background queue and no way to send the user anything after this reply. '
                 + 'So NEVER say an agent "is now working on it", "is running", "will finish shortly", or that you will "let them know when it is complete". '
+                // The boss answered an empty stage with "The agent SHOULD HAVE: 1. queried the
+                // table 2. created the list 3. tagged each row" — a description of the job, written
+                // as if it were a report, sending the user off to review rows that do not exist.
+                + 'And NEVER describe what an agent "should have" done, "would have" produced, or "presumably" did. '
+                + 'You did not watch it work; the ONLY thing you know is what is written above. If a stage produced nothing, the honest sentence is "it came back with nothing" — not a list of what it was supposed to do. '
                 + (wfEmpty
-                  ? 'Tell them plainly which stage came back empty and that it produced nothing, then offer to run it again. Do NOT describe the work as underway or as done.'
+                  ? 'Tell them plainly which stage came back with nothing, that NOTHING was created or saved by it, and offer to run it again. Do not list what it was meant to do as though it did it, and do not send them to review a list that does not exist.'
                   : 'Whatever came back is already displayed above in full — add at most one short sentence about what to do next.')
                 + ']';
               delegationKey = 'plan_workflow';

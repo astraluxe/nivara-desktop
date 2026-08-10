@@ -327,7 +327,15 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
     const d = stepDate(plan, s);
     const isToday = isSameDay(d, new Date());
     return (
-      <div className={`flex items-start gap-2 px-2.5 py-2 rounded-lg ${dim ? 'opacity-55' : ''} ${isToday && !s.done ? 'bg-accent/5 border border-accent/25' : 'border border-transparent'}`}>
+      // TWO TASKS MUST NOT READ AS ONE. Rows were flush against each other with a transparent
+      // border, so a day carrying three steps looked like a single paragraph of checkboxes and the
+      // eye had nothing to separate them on. A gap and a faint surface on every row — not only
+      // today's — is what makes the boundary visible.
+      <div className={`flex items-start gap-2 px-2.5 py-2 rounded-lg mb-1.5 ${dim ? 'opacity-55' : ''} ${
+        isToday && !s.done
+          ? 'bg-accent/5 border border-accent/25'
+          : 'bg-nv-bg/60 border border-nv-border/50'
+      }`}>
         <button
           onClick={() => toggle(s.id)}
           aria-label={s.done ? 'Mark as not done' : 'Mark as done'}

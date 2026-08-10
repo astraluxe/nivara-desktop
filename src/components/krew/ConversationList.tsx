@@ -71,6 +71,32 @@ export default function ConversationList({ activeId, onSelect, onNew, onOpenApps
     return b.last_active - a.last_active;
   });
 
+  // ── WHEN, not just how long ago ────────────────────────────────────────────
+  //
+  // A flat run of forty identical rows, each ending "3d ago", is a list you scan rather than read.
+  // Grouping by day is what turns it back into a history: the two chats from this morning sit
+  // together under a heading, and everything older gets out of their way. Pinned keeps its own
+  // group at the top, because a pin means "regardless of when".
+  const dayBucket = (epoch: number): string => {
+    const d = new Date(epoch * 1000);
+    const now = new Date();
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const t = d.getTime();
+    if (t >= midnight) return 'Today';
+    if (t >= midnight - 86400000) return 'Yesterday';
+    if (t >= midnight - 7 * 86400000) return 'Earlier this week';
+    if (d.getFullYear() === now.getFullYear()) return d.toLocaleDateString(undefined, { month: 'long' });
+    return d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  };
+
+  const groups: Array<{ label: string; rows: KrewSession[] }> = [];
+  for (const s of ordered) {
+    const label = pinned.includes(s.id) ? 'Pinned' : dayBucket(s.last_active);
+    const last = groups[groups.length - 1];
+    if (last && last.label === label) last.rows.push(s);
+    else groups.push({ label, rows: [s] });
+  }
+
   useEffect(() => {
     reload();
     const id = setInterval(reload, 5000);
@@ -85,10 +111,15 @@ export default function ConversationList({ activeId, onSelect, onNew, onOpenApps
   }
 
   return (
-    <aside className="flex flex-col w-[200px] shrink-0 border-r border-nv-border bg-nv-bg h-full">
+    <aside className="flex flex-col w-[224px] shrink-0 border-r border-nv-border bg-nv-bg h-full">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 h-10 border-b border-nv-border shrink-0">
-        <span className="nv-eyebrow text-nv-muted">Krew</span>
+      <div className="flex items-center justify-between px-3 h-11 border-b border-nv-border shrink-0">
+        <div className="min-w-0">
+          <p className="text-[12px] font-semibold text-nv-text leading-none">Chats</p>
+          <p className="text-[9.5px] text-nv-faint leading-none mt-1">
+            {sessions.length === 0 ? 'nothing yet' : `${sessions.length} conversation${sessions.length === 1 ? '' : 's'}`}
+          </p>
+        </div>
         <div className="flex items-center gap-1.5">
           <button
             onClick={onNew}
@@ -112,17 +143,24 @@ export default function ConversationList({ activeId, onSelect, onNew, onOpenApps
       </div>
 
       {/* Conversation list */}
-      <div className="flex-1 overflow-y-auto py-1">
+      <div className="flex-1 overflow-y-auto px-2 py-2">
         {sessions.length === 0 ? (
-          <p className="text-center text-nv-faint text-[10px] pt-6 px-4 leading-relaxed">
-            No conversations yet.<br />Ask Krew anything.
-          </p>
+          <div className="px-2 pt-8 text-center">
+            <p className="text-[11.5px] text-nv-muted leading-relaxed">Nothing here yet.</p>
+            <p className="text-[10.5px] text-nv-faint leading-relaxed mt-1">
+              Every conversation you start is kept here — rename one by double-clicking it, and pin the ones you keep coming back to.
+            </p>
+          </div>
         ) : (
-          ordered.map((s) => (
+          groups.flatMap((g) => [
+            <p key={`h-${g.label}`} className="text-[9px] font-semibold uppercase tracking-[0.08em] text-nv-faint px-1.5 pt-2 pb-1 first:pt-0">
+              {g.label}
+            </p>,
+            ...g.rows.map((s) => (
             editingId === s.id ? (
               // Rendered instead of the row, not inside it — an <input> nested in a <button> is
               // invalid and swallows its own clicks.
-              <div key={s.id} className="px-3 py-2">
+              <div key={s.id} className="px-0.5 py-1 mb-1">
                 <input
                   autoFocus
                   value={draftTitle}
@@ -132,7 +170,7 @@ export default function ConversationList({ activeId, onSelect, onNew, onOpenApps
                     if (e.key === 'Enter') commitRename(s.id);
                     if (e.key === 'Escape') setEditingId(null);
                   }}
-                  className="w-full bg-nv-surface border border-accent/50 rounded px-1.5 py-1 text-[11px] text-nv-text outline-none"
+                  className="w-full bg-nv-surface border border-accent/50 rounded-lg px-2 py-1.5 text-[11.5px] font-medium text-nv-text outline-none"
                   placeholder="Name this chat"
                 />
               </div>
@@ -142,13 +180,15 @@ export default function ConversationList({ activeId, onSelect, onNew, onOpenApps
               onClick={() => onSelect(s.id, s.agent_key)}
               onDoubleClick={(e) => startRename(e, s)}
               className={`
-                w-full text-left px-3 py-2 group flex items-start justify-between gap-1
-                hover:bg-nv-surface transition-fast
-                ${s.id === activeId ? 'bg-nv-surface border-l-2 border-accent' : ''}
+                w-full text-left px-2.5 py-2 mb-1 rounded-lg group flex items-start justify-between gap-1.5
+                border transition-fast
+                ${s.id === activeId
+                  ? 'bg-accent/[0.09] border-accent/35'
+                  : 'bg-transparent border-transparent hover:bg-nv-surface hover:border-nv-border/60'}
               `}
             >
               <div className="flex-1 min-w-0">
-                <p className={`text-[11px] truncate ${s.id === activeId ? 'text-nv-text' : 'text-nv-muted'}`}>
+                <p className={`text-[11.5px] leading-snug truncate ${s.id === activeId ? 'text-nv-text font-semibold' : 'text-nv-text/90 font-medium'}`}>
                   {/* A pin, drawn as a pin. The square bullet read as a status dot rather than
                       "this chat is pinned", which is a lot of meaning to hang on a shape nobody
                       recognises. */}
@@ -160,17 +200,17 @@ export default function ConversationList({ activeId, onSelect, onNew, onOpenApps
                   )}
                   {s.title || 'New Chat'}
                 </p>
-                <div className="flex items-center gap-1.5 mt-0.5">
+                <div className="flex items-center gap-1.5 mt-1">
                   {(() => {
                     const ag = AGENT_BY_KEY[s.agent_key];
                     return ag ? (
-                      <span className={`text-[8px] px-1 py-0.5 rounded font-mono ${CATEGORY_COLOR[ag.category]}`}>
+                      <span className={`text-[8.5px] px-1.5 py-[1px] rounded-full font-medium tracking-wide ${CATEGORY_COLOR[ag.category]}`}>
                         {ag.humanName}
                       </span>
                     ) : null;
                   })()}
-                  <span className="text-[9px] text-nv-faint font-mono">
-                    {s.message_count} msgs · {relTime(s.last_active)}
+                  <span className="text-[9.5px] text-nv-faint tabular-nums truncate">
+                    {s.message_count} {s.message_count === 1 ? 'message' : 'messages'} · {relTime(s.last_active)}
                   </span>
                 </div>
               </div>
@@ -189,17 +229,18 @@ export default function ConversationList({ activeId, onSelect, onNew, onOpenApps
                 <button
                   onClick={(e) => startRename(e, s)}
                   title="Rename (or double-click)"
-                  className="opacity-0 group-hover:opacity-100 text-nv-faint hover:text-nv-text text-[10px] transition-fast"
+                  className="opacity-0 group-hover:opacity-100 text-nv-faint hover:text-nv-text text-[11px] leading-none transition-fast"
                 >✎</button>
                 <button
                   onClick={(e) => del(e, s.id)}
                   title="Delete"
-                  className="opacity-0 group-hover:opacity-100 text-nv-faint hover:text-nv-red text-[10px] transition-fast"
+                  className="opacity-0 group-hover:opacity-100 text-nv-faint hover:text-nv-red text-[13px] leading-none transition-fast"
                 >×</button>
               </span>
             </button>
             )
-          ))
+          )),
+          ])
         )}
       </div>
 
@@ -216,7 +257,7 @@ export default function ConversationList({ activeId, onSelect, onNew, onOpenApps
             <rect x="3" y="13" width="8" height="8" rx="1.5" fill="currentColor" opacity=".6"/>
             <rect x="13" y="13" width="8" height="8" rx="1.5" fill="currentColor" opacity=".4"/>
           </svg>
-          <span className="text-[10px] font-mono">Connect Apps</span>
+          <span className="text-[11px] font-medium">Connect apps</span>
         </button>
       </div>
     </aside>
