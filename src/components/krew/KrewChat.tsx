@@ -45,7 +45,7 @@ import {
 } from '../../lib/councilContext';
 import SkillsPanel from './SkillsPanel';
 import PlanPanel from './PlanPanel';
-import { looksLikeActionPlan, parsePlanSteps, createPlan, savePlan, loadPlan, planProgress, syncPlanToTodos, todayPlanNote, mergeIntoPlan, PLAN_EVENT, councilQuestionFor, describeMerge, type ActionPlan, type PlanStep } from '../../lib/planStore';
+import { looksLikeActionPlan, parsePlanSteps, createPlan, savePlan, loadPlan, planProgress, syncPlanToTodos, todayPlanNote, mergeIntoPlan, keepDatesRequested, PLAN_EVENT, councilQuestionFor, describeMerge, type ActionPlan, type PlanStep } from '../../lib/planStore';
 import { availabilityNote, looksLikeAvailability, parseAvailability, saveAvailability, loadAvailability, describeAvailability } from '../../lib/availability';
 import { workStateNote } from '../../lib/workState';
 import { draftPrompt } from '../../lib/workOrder';
@@ -3507,6 +3507,79 @@ function CopyBtn({ text }: { text: string }) {
  * no buttons at all. A 30-day plan from the research agent sat there with no way to start it,
  * because of where the text happened to be rendered.
  */
+// ─── Finishing an answer the model stopped half-way through ─────────────────
+//
+// MODULE SCOPE, not inside send(). These three were local to the chat turn, so the council —
+// which runs its own five model calls outside that function — had no continuation at all: the
+// Executor's plan simply stopped mid-line ("Day 12 (Thu 19 Jun): Ops") and the days after it
+// never existed. Same helpers, one copy, used by both.
+
+/**
+ * Does this answer LOOK cut off, whatever the provider said?
+ *
+ * Truncation is only reported when a provider sends finish_reason:"length", and that is the
+ * one signal we do not always get: a free-tier stream that simply stops mid-word ends with a
+ * clean [DONE] and no flag at all. So a 30-day plan ended at "offer 10% discount for" and the
+ * app treated it as a finished answer, because as far as it knew, it was.
+ *
+ * Judge the text instead. A finished answer ends on punctuation, a closed table row, or a
+ * fence. Ending on a comma, a preposition, an open bracket or half a table row means the
+ * model stopped mid-thought and there is more to ask for. Deliberately conservative — a
+ * wrong "continue" costs one extra request, a missed one costs the user their answer.
+ */
+const looksCutOff = (t: string): boolean => {
+  const s = (t || '').trimEnd();
+  if (s.length < 200) return false;                       // short replies end abruptly all the time
+  if (/<tool_call>|<tool_code>|CHOICES_BLOCK:/.test(s)) return false;
+  const lines = s.split('\n');
+  const last = (lines[lines.length - 1] || '').trim();
+  // Half a table row — the row opened and never closed.
+  if (last.startsWith('|') && !last.endsWith('|')) return true;
+  // An unterminated code fence means the answer stopped inside a block.
+  if ((s.match(/^ {0,3}```/gm) || []).length % 2 === 1) return true;
+  // Otherwise: finished prose ends on a terminator. Ending on a word, comma, or an open
+  // bracket does not. A closing pipe counts — an answer very often ends on the last complete
+  // row of a table, and re-asking there would append a duplicate row to a finished table.
+  return !/[.!?:;)\]}"'`’”…|]$/.test(s);
+};
+
+/**
+ * Drop the overlap when a continuation restarts from partway back.
+ *
+ * Asked to "continue", models very often re-emit the last paragraph or two before carrying
+ * on -- and some restart from a section heading several screens back. Joining blindly showed
+ * the user the same block of text twice, which is what turned a clean answer into a
+ * duplicated mess. Find the longest run that is both a tail of what we have and a head of
+ * what just arrived, and keep only one copy of it.
+ */
+const trimOverlap = (base: string, next: string): string => {
+  const max = Math.min(base.length, next.length, 4000);
+  for (let n = max; n >= 40; n--) {
+    if (base.endsWith(next.slice(0, n))) return next.slice(n);
+  }
+  // No clean seam: the continuation may have restarted from an earlier HEADING instead.
+  // If its first heading line already appears in what we have, cut everything up to there.
+  const head = next.split('\n').find((l) => /^#{1,6}\s|^\*\*[^*]+\*\*\s*$/.test(l.trim()));
+  if (head && head.trim().length > 8 && base.includes(head.trim())) {
+    const i = base.lastIndexOf(head.trim());
+    const tailOfBase = base.slice(i);
+    if (next.startsWith(tailOfBase.slice(0, Math.min(200, tailOfBase.length)))) {
+      return next.slice(Math.min(tailOfBase.length, next.length));
+    }
+  }
+  return next;
+};
+
+const joinCarried = (base: string, next: string) => {
+  if (!base) return next;
+  if (!next) return base;
+  next = trimOverlap(base, next);
+  if (!next.trim()) return base;
+  // A cut mid-table must not gain a blank line, or the two halves render as two tables.
+  const sep = /\|\s*$/.test(base.trimEnd()) && /^\s*\|/.test(next.trimStart()) ? '\n' : '\n\n';
+  return base + sep + next;
+};
+
 /**
  * What to say to get the REST of a cut-off answer.
  *
@@ -4006,7 +4079,21 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
   // selection moves (before, the box stayed put and the selection scrolled out of sight).
   useEffect(() => { if (slashOpen) activeSlashRef.current?.scrollIntoView({ block: 'nearest' }); }, [slashIdx, slashOpen]);
   const [busy,          setBusy]          = useState(false);
-  const [agentStep,     setAgentStep]     = useState<string | null>(null);
+  const [agentStep,     setAgentStepState] = useState<string | null>(null);
+  /** What the running turn is doing, whichever conversation the user is looking at. */
+  const agentStepRef = useRef<string | null>(null);
+  /**
+   * The status bar describes the turn running in THIS conversation, or it says nothing.
+   *
+   * It was ungated, so a council running in one chat drew "Vikram.Council is working — taking
+   * longer than usual" across the top of a completely different chat, with no card under it and
+   * no way to tell whether an answer was coming. The step is always recorded (so it can be put
+   * back when the user returns to the chat that owns it) and only ever drawn where it is true.
+   */
+  function setAgentStep(step: string | null) {
+    agentStepRef.current = step;
+    if (runSidRef.current === undefined || runSidRef.current === sidRef.current) setAgentStepState(step);
+  }
   // Single invariant: the status bar only ever describes an in-flight turn. Any path that forgets
   // to clear it can no longer strand a permanent "…taking longer than usual" banner.
   useEffect(() => {
@@ -4124,6 +4211,9 @@ const [studioExtracting, setStudioExtracting] = useState(false);
   const deckImagesRef      = useRef<DeckImage[]>([]); // pictures the user attached with the deck request
   const lastDeckSpecRef    = useRef<DeckSpec | null>(null); // the deck currently in the thread, for in-chat edits
   const messagesRef        = useRef<DisplayMsg[]>([]); // live mirror of `messages` for async post-turn checks
+  /** The council card currently being written, and the conversation it belongs to — see
+   *  updateCouncilCard. Null whenever no council is sitting. */
+  const liveCouncilRef     = useRef<{ sid: string | null; card: DisplayMsg } | null>(null);
   sidRef.current           = sessionId;
   messagesRef.current      = messages;   // keep in sync each render for async post-turn checks
 
@@ -4253,15 +4343,30 @@ const [studioExtracting, setStudioExtracting] = useState(false);
       // live box so it visibly picks up again — subsequent chunks write to the last message, so
       // appending it here is what reconnects the stream to the view.
       if (busyRef.current && runSidRef.current === sessionId) {
-        const w = workRef.current;
-        const body = statusBlock(w?.t0 ?? Date.now(), w?.headline ?? 'Still working on this', 'Carried on while you were in another chat.');
-        // Show it under the agent that is ACTUALLY running. A deck is built by Slade, so putting
-        // its progress under the boss's name was simply mislabelling whose work it was.
-        msgs.push(runAgentRef.current
-          ? { role: 'delegation', toolName: runAgentRef.current, content: body, streaming: true }
-          : { role: 'assistant', content: body, streaming: true });
+        // A COUNCIL COMES BACK AS THE COUNCIL, not as a grey box. It is the longest-running thing
+        // in the app and the only one whose result lives purely in memory until it finishes, so
+        // this is the case that actually lost work: five voices mid-argument, replaced on return
+        // by "Still working on this" and never seen again. The ref has the whole card, kept up to
+        // date the entire time the user was elsewhere — put it straight back, still live, and the
+        // paints that follow find it again.
+        const lc = liveCouncilRef.current;
+        if (lc && lc.sid === sessionId && lc.card.councilLive) {
+          msgs.push({ ...lc.card });
+        } else {
+          const w = workRef.current;
+          const body = statusBlock(w?.t0 ?? Date.now(), w?.headline ?? 'Still working on this', 'Carried on while you were in another chat.');
+          // Show it under the agent that is ACTUALLY running. A deck is built by Slade, so putting
+          // its progress under the boss's name was simply mislabelling whose work it was.
+          msgs.push(runAgentRef.current
+            ? { role: 'delegation', toolName: runAgentRef.current, content: body, streaming: true }
+            : { role: 'assistant', content: body, streaming: true });
+        }
       }
       setMessages(msgs);
+      // The strip belongs to the conversation that owns the running turn. Coming back to it shows
+      // what that turn is doing right now; opening any other chat shows nothing at all.
+      setAgentStepState(busyRef.current && runSidRef.current === sessionId ? agentStepRef.current : null);
+      if (!(busyRef.current && runSidRef.current === sessionId)) setTaskPhases([]);
     }).catch(() => {});
   }, [sessionId]);
 
@@ -10038,34 +10143,6 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
       // Held outside the iteration so a continuation appends instead. Cleared whenever a genuinely
       // NEW bubble is opened after a tool result, since that one starts empty on purpose.
       let carried = '';
-      /**
-       * Does this answer LOOK cut off, whatever the provider said?
-       *
-       * Truncation is only reported when a provider sends finish_reason:"length", and that is the
-       * one signal we do not always get: a free-tier stream that simply stops mid-word ends with a
-       * clean [DONE] and no flag at all. So a 30-day plan ended at "offer 10% discount for" and the
-       * app treated it as a finished answer, because as far as it knew, it was.
-       *
-       * Judge the text instead. A finished answer ends on punctuation, a closed table row, or a
-       * fence. Ending on a comma, a preposition, an open bracket or half a table row means the
-       * model stopped mid-thought and there is more to ask for. Deliberately conservative — a
-       * wrong "continue" costs one extra request, a missed one costs the user their answer.
-       */
-      const looksCutOff = (t: string): boolean => {
-        const s = (t || '').trimEnd();
-        if (s.length < 200) return false;                       // short replies end abruptly all the time
-        if (/<tool_call>|<tool_code>|CHOICES_BLOCK:/.test(s)) return false;
-        const lines = s.split('\n');
-        const last = (lines[lines.length - 1] || '').trim();
-        // Half a table row — the row opened and never closed.
-        if (last.startsWith('|') && !last.endsWith('|')) return true;
-        // An unterminated code fence means the answer stopped inside a block.
-        if ((s.match(/^ {0,3}```/gm) || []).length % 2 === 1) return true;
-        // Otherwise: finished prose ends on a terminator. Ending on a word, comma, or an open
-        // bracket does not. A closing pipe counts — an answer very often ends on the last complete
-        // row of a table, and re-asking there would append a duplicate row to a finished table.
-        return !/[.!?:;)\]}"'`’”…|]$/.test(s);
-      };
       let autoContinues = 0;
       /**
        * How many times we will ask for the rest.
@@ -10086,41 +10163,6 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
       const MAX_AUTO_CONTINUE = searchMode === 'advanced' ? 40 : 16;
       /** Length of the answer at the last continuation, to notice when we stop making progress. */
       let lastCarriedLen = -1;
-      /**
-       * Drop the overlap when a continuation restarts from partway back.
-       *
-       * Asked to "continue", models very often re-emit the last paragraph or two before carrying
-       * on -- and some restart from a section heading several screens back. Joining blindly showed
-       * the user the same block of text twice, which is what turned a clean answer into a
-       * duplicated mess. Find the longest run that is both a tail of what we have and a head of
-       * what just arrived, and keep only one copy of it.
-       */
-      const trimOverlap = (base: string, next: string): string => {
-        const max = Math.min(base.length, next.length, 4000);
-        for (let n = max; n >= 40; n--) {
-          if (base.endsWith(next.slice(0, n))) return next.slice(n);
-        }
-        // No clean seam: the continuation may have restarted from an earlier HEADING instead.
-        // If its first heading line already appears in what we have, cut everything up to there.
-        const head = next.split('\n').find((l) => /^#{1,6}\s|^\*\*[^*]+\*\*\s*$/.test(l.trim()));
-        if (head && head.trim().length > 8 && base.includes(head.trim())) {
-          const i = base.lastIndexOf(head.trim());
-          const tailOfBase = base.slice(i);
-          if (next.startsWith(tailOfBase.slice(0, Math.min(200, tailOfBase.length)))) {
-            return next.slice(Math.min(tailOfBase.length, next.length));
-          }
-        }
-        return next;
-      };
-      const joinCarried = (base: string, next: string) => {
-        if (!base) return next;
-        if (!next) return base;
-        next = trimOverlap(base, next);
-        if (!next.trim()) return base;
-        // A cut mid-table must not gain a blank line, or the two halves render as two tables.
-        const sep = /\|\s*$/.test(base.trimEnd()) && /^\s*\|/.test(next.trimStart()) ? '\n' : '\n\n';
-        return base + sep + next;
-      };
       // Everything the model has actually WRITTEN this turn, accumulated across steps. It is what
       // save_to_brain falls back to when a call arrives with a pointer for a body ("full details in
       // previous messages") — the content is right here, and the alternative is losing it. Reset per
@@ -11599,7 +11641,12 @@ Everything you need for follow-ups is in that answer above; read it there rather
     const live: NonNullable<DisplayMsg['council']> = members.map((m) => ({
       key: m.key, name: m.name, human: m.humanName, text: '', status: 'waiting' as const,
     }));
-    addMsg({ role: 'council', content: question, council: live.map((v) => ({ ...v })), councilLive: true, councilStage: 'Opening views — each answers on their own, without hearing the others.' });
+    const openingCard: DisplayMsg = {
+      role: 'council', content: question, council: live.map((v) => ({ ...v })), councilLive: true,
+      councilStage: 'Opening views — each answers on their own, without hearing the others.',
+    };
+    liveCouncilRef.current = { sid: sidRef.current, card: openingCard };
+    addMsg({ ...openingCard });
     const paint = (stage?: string) => updateCouncilCard((m) => ({
       ...m, council: live.map((v) => ({ ...v })), ...(stage !== undefined ? { councilStage: stage } : {}),
     }));
@@ -11629,6 +11676,8 @@ Everything you need for follow-ups is in that answer above; read it there rather
       let last = 0;
       let lastDelta = Date.now();
       let abandoned = false;
+      /** The provider said it stopped because it hit its output limit — see the continuation below. */
+      let truncated = false;
       // A CLOCK FOR THE SILENCE BEFORE THE FIRST WORD.
       //
       // The Executor is handed everybody else's answer, so it reads for a long time before it
@@ -11687,9 +11736,53 @@ Everything you need for follow-ups is in that answer above; read it there rather
           acc = '';
         } else if (r && typeof r === 'object' && 'text' in r) {
           acc = r.text || acc;
+          truncated = !!r.truncated;
         }
       } catch (e) {
         acc = `_${member.humanName} could not answer this time — ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}_`;
+      }
+
+      // ── THE ANSWER WAS ALLOWED TO STOP HALF-WAY, AND THE PLAN IS THE PART THAT LOSES ──
+      //
+      // Every other long answer in this app is continued when the model hits its output limit.
+      // The council was the one place with no continuation at all — so the Executor's revised
+      // month ended mid-line at "**Day 12 (Thu 19 Jun): Ops", the eighteen days after it never
+      // existed, and the card underneath then reported "9 dated steps" for a 28-day plan. The
+      // user paid for five full answers and got four and a half.
+      //
+      // Same rules as the chat loop: keep asking while it keeps adding, stop the instant it does
+      // not. Progress is the real brake, so the ceiling can be generous.
+      if (!abandoned && !gone()) {
+        const MAX_COUNCIL_CONTINUE = 14;
+        for (let c = 0; c < MAX_COUNCIL_CONTINUE && !gone() && (truncated || looksCutOff(acc)); c++) {
+          const before = acc.length;
+          updateCouncilCard((m) => ({
+            ...m,
+            councilStage: `${member.humanName}'s answer ran past the model's limit — asking for the rest (${c + 1}).`,
+          }));
+          let piece = '';
+          const more = await streamTurnWithRetry(
+            [{ role: 'user', content: prompt },
+             { role: 'assistant', content: acc },
+             { role: 'user', content: continueInstruction(acc) }],
+            member.systemPrompt + councilContext(true),
+            (t) => {
+              piece += t;
+              const now = Date.now();
+              if (now - last < 250) return;
+              last = now;
+              onText(joinCarried(acc, piece.replace(/<tool_call>[\s\S]*/g, '')));
+              paint();
+            },
+          ).catch(() => ({ text: '', truncated: false }));
+          const moreClean = (more.text || piece).replace(/<tool_call>[\s\S]*/g, '').trim();
+          if (!moreClean) break;
+          acc = joinCarried(acc, trimOverlap(acc, moreClean));
+          truncated = !!more.truncated;
+          onText(acc);
+          paint();
+          if (acc.length <= before + 20) break;   // no progress — stop asking
+        }
       }
       clearInterval(tick);
       const clean = abandoned ? '' : acc.replace(/<tool_call>[\s\S]*/g, '').trim();
@@ -11811,8 +11904,10 @@ Everything you need for follow-ups is in that answer above; read it there rather
           ? `${executor!.humanName} did not come back with the final plan, even on a second, shorter attempt — so what you have below is four views and no plan. Reply here asking ${executor!.humanName} for it and he will answer on his own.`
           : undefined,
     }));
-    if (!heard.length) return 'The council could not be reached this time — no member returned an answer. Nothing was decided.';
+    if (!heard.length) { liveCouncilRef.current = null; return 'The council could not be reached this time — no member returned an answer. Nothing was decided.'; }
     saveCouncilCard(question, heard);
+    // From here the card is in the database, so the ref has nothing left to protect.
+    liveCouncilRef.current = null;
     // From here the user can just type at them — see the composer chip.
     if (!gone()) setCouncilTalk({ question });
     if (gone()) return 'The council was stopped part-way through. What they had already said is on screen.';
@@ -11971,6 +12066,16 @@ Everything you need for follow-ups is in that answer above; read it there rather
 
   /** Write into the council card currently being filled in. Only one sits at a time. */
   function updateCouncilCard(mut: (m: DisplayMsg) => DisplayMsg) {
+    // THE CARD IS KEPT OUTSIDE THE VIEW AS WELL AS IN IT.
+    //
+    // A council writes for several minutes and is only saved to the database at the very end, so
+    // switching to another chat and back destroyed it: loadMessages rebuilt the conversation from
+    // rows that did not yet include it, every later paint looked for a live card that was no
+    // longer on screen and silently did nothing, and the finished council never appeared at all —
+    // while the status strip at the top went on saying "Vikram.Council is working". The mutation
+    // is applied to this ref FIRST, unconditionally, so the card stays whole whichever chat the
+    // user is looking at and can simply be put back when they return.
+    if (liveCouncilRef.current) liveCouncilRef.current.card = mut(liveCouncilRef.current.card);
     if (!owns()) return;
     setMessages((prev) => {
       for (let i = prev.length - 1; i >= 0; i--) {
@@ -13039,7 +13144,12 @@ Everything you need for follow-ups is in that answer above; read it there rather
                           onClick={() => {
                             const existing = loadPlan();
                             if (existing) {
-                              const r = mergeIntoPlan(existing, dev.text);
+                              // Rebase onto today unless the user asked for the dates to stand —
+                              // their question is msg.content, so that is where they would say it.
+                              const r = mergeIntoPlan(existing, dev.text, {
+                                rebase: !keepDatesRequested(`${msg.content}
+${dev.text}`),
+                              });
                               // Only open the panel when something actually landed in it. Opening
                               // an unchanged plan after pressing "add these steps" reads as if it
                               // worked; describeMerge says plainly when it did not.
@@ -13276,7 +13386,10 @@ Everything you need for follow-ups is in that answer above; read it there rather
                         <>
                           <button
                             onClick={() => {
-                              const r = mergeIntoPlan(loadPlan()!, msg.content);
+                              const r = mergeIntoPlan(loadPlan()!, msg.content, {
+                                rebase: !keepDatesRequested(`${lastUserRequest()}
+${msg.content}`),
+                              });
                               setPlanOpen(true);
                               addMsgHere({ role: 'assistant', content: describeMerge(r, activePlan.title) });
                             }}

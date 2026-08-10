@@ -32,6 +32,16 @@ export default function KrewModule({ onViewOnCanvas, onOpenAutomations }: KrewMo
   // council, open the plan panel. The Office tab unmounts KrewChat, so this cannot be a direct
   // call: it is handed over as state and picked up when the chat comes back on screen.
   const [fromOffice, setFromOffice] = useState<{ kind: 'run' | 'council' | 'plan'; text: string } | null>(null);
+  // PAST CHATS ARE NOT ALWAYS WHAT YOU WANT TO LOOK AT. The column is permanent furniture on a
+  // 200px slice of the window, and when the work is a long council or a plan the user asked to be
+  // able to put it away and bring it back. Remembered per machine, like the pins in that list.
+  const [chatsOpen, setChatsOpen] = useState<boolean>(() => {
+    try { return localStorage.getItem('nv-krew-chats-hidden') !== '1'; } catch { return true; }
+  });
+  function toggleChats(open: boolean) {
+    setChatsOpen(open);
+    try { localStorage.setItem('nv-krew-chats-hidden', open ? '0' : '1'); } catch { /* quota */ }
+  }
 
   function handleSelectAgent(a: KrewAgent) {
     setAgent(a);
@@ -66,14 +76,38 @@ export default function KrewModule({ onViewOnCanvas, onOpenAutomations }: KrewMo
 
   return (
     <div className="flex h-full overflow-hidden">
-      <ConversationList
-        key={refreshToken}
-        activeId={sessionId}
-        onSelect={handleSelectSession}
-        onNew={handleNewSession}
-        onOpenApps={() => setView('apps')}
-        onDelete={handleDelete}
-      />
+      {chatsOpen ? (
+        <ConversationList
+          key={refreshToken}
+          activeId={sessionId}
+          onSelect={handleSelectSession}
+          onNew={handleNewSession}
+          onOpenApps={() => setView('apps')}
+          onDelete={handleDelete}
+          onHide={() => toggleChats(false)}
+        />
+      ) : (
+        // A hairline rail rather than nothing at all — a sidebar with no way back is a sidebar the
+        // user has lost, and "where did my chats go" is a worse problem than the one being solved.
+        <div className="flex flex-col items-center gap-2 w-9 shrink-0 border-r border-nv-border bg-nv-bg h-full pt-2">
+          <button
+            onClick={() => toggleChats(true)}
+            title="Show past chats"
+            aria-label="Show past chats"
+            className="text-nv-faint hover:text-accent transition-fast p-1"
+          >
+            <svg viewBox="0 0 16 16" fill="none" className="w-4 h-4">
+              <path d="M6 3l5 5-5 5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M2.5 2.5v11" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+          </button>
+          <button
+            onClick={handleNewSession}
+            title="New conversation"
+            className="text-nv-faint hover:text-accent transition-fast text-lg leading-none p-1"
+          >+</button>
+        </div>
+      )}
 
       <div className="flex-1 overflow-hidden relative flex flex-col">
 

@@ -350,11 +350,48 @@ export function todayView(plan: ActionPlan): { today: PlanStep[]; overdue: PlanS
  * not a replace. Steps already present on the same day with the same action are left exactly as
  * they are, including their done state; genuinely new ones are added. Returns how many were added.
  */
-export function mergeIntoPlan(plan: ActionPlan, text: string): { added: number; updated: number; unchanged: number; detailed: number; read: number; kept: number } {
-  const incoming = parsePlanSteps(text);
-  if (!incoming.length) return { added: 0, updated: 0, unchanged: 0, detailed: 0, read: 0, kept: plan.steps.length };
+export function mergeIntoPlan(
+  plan: ActionPlan,
+  text: string,
+  opts?: { rebase?: boolean },
+): { added: number; updated: number; unchanged: number; detailed: number; read: number; kept: number; shifted: number } {
+  const incomingRaw = parsePlanSteps(text);
+  if (!incomingRaw.length) return { added: 0, updated: 0, unchanged: 0, detailed: 0, read: 0, kept: plan.steps.length, shifted: 0 };
   const norm = (a: string) => a.toLowerCase().replace(/\s+/g, ' ').trim();
-  let added = 0, updated = 0;
+
+  // ── A NEW PLAN STARTS TODAY, NOT ON A DAY THAT HAS ALREADY GONE ──────────────
+  //
+  // The plan's day numbers are counted from its start date, so "Day 3" on a plan that began last
+  // Thursday means last Saturday. Ask for a re-plan today and the council quite reasonably writes
+  // "Day 3: …" for the first thing to do — which lands three days in the past and arrives in the
+  // calendar already overdue, work the user never had a chance to do. Shift the whole revision so
+  // its FIRST day is today; the order and the spacing between days are untouched.
+  //
+  // Skipped when the revision already starts today or later (nothing to fix), and when the user
+  // has said to keep the dates as they are — see keepDatesRequested.
+  const today = Math.max(1, currentDay(plan));
+  const minDay = Math.min(...incomingRaw.map((s) => s.day));
+  const shift = opts?.rebase === false || minDay >= today ? 0 : today - minDay;
+  const incoming = shift ? incomingRaw.map((s) => ({ ...s, day: s.day + shift })) : incomingRaw;
+
+  // Once the days have moved, day+action can no longer identify a step the plan already has, so
+  // "Day 3: message 20 founders" would be added a second time as "Day 6". Fall back to matching on
+  // the ACTION alone — but only where that is unambiguous on both sides, because a real plan
+  // repeats "Buffer" and "Reply handling" across several days and collapsing those would delete
+  // work. Both counts must be exactly one for a match to be trusted.
+  const countBy = (list: Array<{ action: string }>) => {
+    const m = new Map<string, number>();
+    for (const x of list) m.set(norm(x.action), (m.get(norm(x.action)) ?? 0) + 1);
+    return m;
+  };
+  const inCount = countBy(incoming);
+  const planCount = countBy(plan.steps);
+  const uniqueMatch = (s: { action: string }) =>
+    shift > 0 && inCount.get(norm(s.action)) === 1 && planCount.get(norm(s.action)) === 1
+      ? plan.steps.find((x) => norm(x.action) === norm(s.action))
+      : undefined;
+
+  let added = 0, updated = 0, shifted = 0;
   // Tracked separately from `updated`: filling in a missing "done when" is worth PERSISTING but is
   // not a change the user needs to be told about, and it must not be reported as a reworded step.
   let enriched = false;
@@ -363,6 +400,28 @@ export function mergeIntoPlan(plan: ActionPlan, text: string): { added: number; 
   let detailed = 0;
 
   for (const s of incoming) {
+    // The same step, moved to a new day by the rebase above. Move it rather than clone it — and
+    // never touch one that is already ticked off, because that day really happened.
+    const moved = uniqueMatch(s);
+    if (moved) {
+      if (moved.done) { unchanged++; continue; }
+      if (moved.day !== s.day) { moved.day = s.day; shifted++; }
+      if (s.doneWhen) { moved.doneWhen = s.doneWhen; enriched = true; }
+      if (s.week != null) moved.week = s.week;
+      if (s.brief && s.brief !== moved.brief) {
+        moved.brief = moved.handedOverAt && moved.brief
+          ? `${moved.brief}
+
+— revised plan says —
+${s.brief}`
+          : s.brief;
+        detailed++;
+        enriched = true;
+      }
+      if (norm(moved.action) !== norm(s.action)) { moved.action = s.action; updated++; }
+      else unchanged++;
+      continue;
+    }
     const sameDay = plan.steps.filter((x) => x.day === s.day);
     const identical = sameDay.find((x) => norm(x.action) === norm(s.action));
     if (identical) {
@@ -411,7 +470,7 @@ export function mergeIntoPlan(plan: ActionPlan, text: string): { added: number; 
   // Steps the new plan dropped are KEPT when they are already done (that work really happened) and
   // when they are open (silently deleting someone's plan is not a refinement — they can tick or
   // drop it themselves). Nothing is ever removed here.
-  if (added || updated || enriched) {
+  if (added || updated || shifted || enriched) {
     plan.steps.sort((a, b) => a.day - b.day);
     // THE REASONING BEHIND THE NEW STEPS HAS TO TRAVEL WITH THEM.
     //
@@ -429,7 +488,7 @@ export function mergeIntoPlan(plan: ActionPlan, text: string): { added: number; 
   // sharpened" left them asking "is all of it in?" — and it was not answerable, because a step the
   // revision restated word for word was skipped silently and counted nowhere. Now every incoming
   // step is accounted for: added, sharpened, or already there.
-  return { added, updated, unchanged, detailed, read: incoming.length, kept: plan.steps.length };
+  return { added, updated, unchanged, detailed, read: incoming.length, kept: plan.steps.length, shifted };
 }
 
 /** Write (or clear) the user's note on one step. */
@@ -451,15 +510,30 @@ export function setStepNote(stepId: string, note: string): void {
  * the user gave — "is all of it in?" — and nothing on screen could answer it. Every step read is
  * now accounted for, which is the difference between a report and a number.
  */
-export function describeMerge(r: { added: number; updated: number; unchanged: number; detailed: number; read: number }, title: string): string {
+/**
+ * Did the user ask for the day numbers to stay exactly as they are?
+ *
+ * The default is to rebase a revision onto today, because a plan re-planned this morning should
+ * start this morning. Someone who is deliberately keeping a fixed calendar — a launch date, a
+ * conference — says so, and then the dates are theirs and must not be touched.
+ */
+export function keepDatesRequested(text: string): boolean {
+  const t = text || '';
+  return /\b(keep|same|unchanged|as (?:they|it) (?:are|is)|do ?n[o']?t (?:change|move|shift))\b[^.\n]{0,40}\b(dates?|days?|day numbers?|schedule|calendar)\b/i.test(t)
+      || /\b(dates?|days?|schedule)\b[^.\n]{0,30}\b(stay|remain|unchanged|as (?:they|it) (?:are|is))\b/i.test(t);
+}
+
+export function describeMerge(r: { added: number; updated: number; unchanged: number; detailed: number; read: number; shifted?: number }, title: string): string {
   if (!r.read) return `I could not find any dated steps in that, so **${title}** is unchanged. A plan needs lines like "Day 3: …" to merge.`;
   const bits = [
     r.added ? `**${r.added}** new step${r.added === 1 ? '' : 's'} added` : '',
     r.updated ? `**${r.updated}** rewritten` : '',
+    r.shifted ? `**${r.shifted}** moved to their new day` : '',
     r.unchanged ? `**${r.unchanged}** already matched what you had` : '',
     r.detailed ? `**${r.detailed}** now carry the full detail behind the task` : '',
   ].filter(Boolean);
   return `Read all **${r.read}** steps of that revision into **${title}** — ${bits.join(', ')}. `
+    + (r.shifted ? 'The revision starts from today rather than from a day that has already gone past. ' : '')
     + 'Nothing you had ticked off changed, and nothing was deleted.';
 }
 
@@ -484,16 +558,90 @@ export function describeMerge(r: { added: number; updated: number; unchanged: nu
  */
 const REAL_FACTORS =
   '\n\nANSWER FROM MY REAL SITUATION, NOT A GENERIC ONE:\n'
-  + '- Use what I actually have. My lists, notes, sheets and saved research are in the Brain — recall_from_brain, or query_table for a big sheet. My own product, market and location are in the shared profile. Never ask me to describe my own business back to you.\n'
+  // THE COUNCIL HAS NO TOOLS. Each member is one model call with a briefing — it cannot run
+  // query_table, and telling it that it can produced exactly the wrong ending: a panel that
+  // finished by asking the user to go and count the rows themselves, in an app whose whole promise
+  // is that it does that for them. What it CAN do is name the check and say who runs it.
+  + '- Use what I actually have. My lists, notes and sheets are summarised for you above, with their real columns, and my product, market and location are in the shared profile. Never ask me to describe my own business back to you.\n'
+  + '- You cannot run tools yourself — you are advising, not executing. So never ask me to go and count rows, export a sheet or paste data. If a number would change your answer and it is not in your briefing, say which ONE check settles it and which agent should run it as a plan step (e.g. "Day 1: research_agent runs query_table on <list> to count the rows with an email"), then give your advice both ways.\n'
   + '- Count the real constraints: how many days are genuinely left, which steps are already done, how much of the work needs my hands rather than an agent, and what one person can actually do in a day.\n'
   + '- Recommend things this app can really carry out. The team can browse and fill in sites, read and filter my sheets, draft and send email, research and verify people, generate documents, decks and images, run automations on a schedule, and save files to my own folder. Prefer a plan the agents can execute over one that reads well.\n'
   + '- NEVER invent numbers. No made-up conversion rates, market sizes, CACs or benchmarks. If a figure matters and you do not have it, say it is an estimate and say what it rests on — or say how to measure it this week.\n'
   + '- Disagree with the plan where it is wrong, and say what you would drop. A review that approves everything is worth nothing.';
 
+/**
+ * The month that actually happened, as opposed to the month that was planned.
+ *
+ * A council asked "review my plan" was shown a list of step titles and nothing else — not what the
+ * user had written against those steps, not what the copilot logged (who replied, who asked for a
+ * meeting), not how many days had really gone by. So it reviewed the DOCUMENT and could not review
+ * the MONTH, and its "what would you change" was an opinion about wording rather than a reading of
+ * what worked. All of this is already stored; none of it was ever put in front of them.
+ *
+ * Capped hard: it goes into five prompts at once, so the log is the last 18 entries and the notes
+ * the 8 most recent, both trimmed. Meetings and replies come first because they are the evidence
+ * that anything is landing.
+ */
+export function planHistoryBlock(plan: ActionPlan): string {
+  const out: string[] = [];
+  const day = currentDay(plan);
+  const last = plan.steps.reduce((m, s) => Math.max(m, s.day), 0);
+  const { done, total } = planProgress(plan);
+  const overdue = plan.steps.filter((s) => !s.done && s.day < day).length;
+  out.push(`\nWHERE THIS PLAN ACTUALLY IS: today is day ${day} of a ${last}-day plan that started ${plan.startDate}.`
+    + ` ${done} of ${total} steps are ticked off${overdue ? `, and ${overdue} are open and past their day` : ''}.`
+    + (day > last ? ' THE PLAN HAS RUN OUT — every remaining day is already in the past.' : ''));
+
+  // The log the copilot writes back into the plan: sends, replies, meetings.
+  const notes = (plan.notes || []).slice();
+  if (notes.length) {
+    const rank = (k: string) => (k === 'meeting' ? 0 : k === 'reply' ? 1 : k === 'outreach' ? 2 : 3);
+    const picked = notes
+      .sort((a, b) => (rank(a.kind) - rank(b.kind)) || (b.at - a.at))
+      .slice(0, 18)
+      .sort((a, b) => a.day - b.day);
+    out.push('\nWHAT ACTUALLY HAPPENED (logged by the app while they worked — this is evidence, not opinion):\n'
+      + picked.map((n) => `- Day ${n.day} [${n.kind}]${n.who ? ` ${n.who}:` : ''} ${n.text.slice(0, 160)}`).join('\n'));
+  } else {
+    out.push('\nWHAT ACTUALLY HAPPENED: nothing has been logged against this plan — no sends, replies or meetings recorded.'
+      + ' Either the work has not started or it happened outside the app. Say which you are assuming.');
+  }
+
+  // What the USER wrote against individual steps. Their own words about their own month.
+  const written = plan.steps.filter((s) => (s.note || '').trim()).slice(-8);
+  if (written.length) {
+    out.push('\nTHEIR OWN NOTES ON INDIVIDUAL DAYS (read these before you re-plan anything):\n'
+      + written.map((s) => `- Day ${s.day} (${s.action.slice(0, 60)}): ${s.note!.replace(/\s+/g, ' ').slice(0, 220)}`).join('\n'));
+  }
+
+  // Steps that were handed to the team and carry an agreed work order — the detail behind a title.
+  const handed = plan.steps.filter((s) => s.handedOverAt).slice(-6);
+  if (handed.length) {
+    out.push('\nALREADY HANDED TO THE TEAM (a work order exists for these — do not re-specify them from scratch):\n'
+      + handed.map((s) => `- Day ${s.day}: ${s.action.slice(0, 80)}`).join('\n'));
+  }
+  return out.join('\n');
+}
+
+/**
+ * True when the sensible thing to ask for is the NEXT month, not a tweak to this one.
+ *
+ * A plan whose last day is behind the user cannot be "re-planned" — every day in it is history.
+ * Asked the ordinary review question, the council rewrites days that have already gone past, which
+ * is how a review ends in a calendar full of dates nobody can act on.
+ */
+export function planIsSpent(plan: ActionPlan): boolean {
+  const day = currentDay(plan);
+  const last = plan.steps.reduce((m, s) => Math.max(m, s.day), 0);
+  const { done, total } = planProgress(plan);
+  return day > last || (total > 0 && done === total);
+}
+
 export function councilQuestionFor(plan: ActionPlan, ask = ''): string {
   const done = plan.steps.filter((s) => s.done).map((s) => `- Day ${s.day}: ${s.action}`).join('\n');
   const todo = plan.steps.filter((s) => !s.done).map((s) => `- Day ${s.day}: ${s.action}`).join('\n');
   const q = ask.trim();
+  const spent = planIsSpent(plan);
   return (q
     // The user's own question leads, and is repeated at the end as the thing to actually answer —
     // a specific question buried above a long plan gets answered as "here are my thoughts on the
@@ -505,6 +653,17 @@ export function councilQuestionFor(plan: ActionPlan, ask = ''): string {
     + (done || '- (nothing yet)')
     + '\n\nSTILL TO DO (only these may be re-planned):\n'
     + (todo || '- (nothing left)')
+    + planHistoryBlock(plan)
+    // REVIEW THE MONTH THAT HAPPENED, THEN PLAN THE NEXT ONE.
+    //
+    // Asked to "review the plan" at the end of a month, a council rewrites days that are already
+    // in the past — a calendar full of dates nobody can act on. When the plan has run out (or
+    // everything in it is ticked), the honest question is a different one, and it is asked here.
+    + (spent
+      ? '\n\nTHIS PLAN IS FINISHED OR OUT OF DAYS. So do TWO things, in this order:'
+        + '\n1. REVIEW THE MONTH THAT JUST HAPPENED — from the log and their notes above, not from theory. What actually moved, what produced nothing, and what you now believe that you did not believe at the start. Name the numbers you can see, and say plainly where there are none.'
+        + '\n2. PLAN THE NEXT MONTH from that. Start again at "Day 1:" — it is a new plan, not a continuation — and carry forward only what the evidence supports. Say explicitly what you are dropping from last month and why.'
+      : '\n\nBefore you re-plan anything, READ the log and their notes above and say what they tell you — what is working, what is not, and what has quietly not been done at all. A review that ignores what actually happened is worth nothing.')
     + REAL_FACTORS
     + (q ? `\n\nTHE QUESTION I ACTUALLY WANT ANSWERED: ${q}` : '');
 }

@@ -8,6 +8,8 @@ interface Props {
   onNew:       () => void;
   onOpenApps:  () => void;
   onDelete:    (id: string) => void;
+  /** Fold the whole column away so the chat has the window to itself. */
+  onHide?:     () => void;
 }
 
 function relTime(epoch: number) {
@@ -26,7 +28,7 @@ function readPins(): string[] {
   catch { return []; }
 }
 
-export default function ConversationList({ activeId, onSelect, onNew, onOpenApps, onDelete }: Props) {
+export default function ConversationList({ activeId, onSelect, onNew, onOpenApps, onDelete, onHide }: Props) {
   const [sessions, setSessions] = useState<KrewSession[]>([]);
   const [pinned, setPinned] = useState<string[]>(readPins);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -87,11 +89,26 @@ export default function ConversationList({ activeId, onSelect, onNew, onOpenApps
       {/* Header */}
       <div className="flex items-center justify-between px-3 h-10 border-b border-nv-border shrink-0">
         <span className="nv-eyebrow text-nv-muted">Krew</span>
-        <button
-          onClick={onNew}
-          title="New conversation"
-          className="text-nv-faint hover:text-accent transition-fast text-lg leading-none"
-        >+</button>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={onNew}
+            title="New conversation"
+            className="text-nv-faint hover:text-accent transition-fast text-lg leading-none"
+          >+</button>
+          {onHide && (
+            <button
+              onClick={onHide}
+              title="Hide past chats"
+              aria-label="Hide past chats"
+              className="text-nv-faint hover:text-accent transition-fast leading-none"
+            >
+              <svg viewBox="0 0 16 16" fill="none" className="w-3.5 h-3.5">
+                <path d="M10 3L5 8l5 5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M13.5 2.5v11" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Conversation list */}
