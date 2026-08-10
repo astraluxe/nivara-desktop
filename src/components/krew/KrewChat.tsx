@@ -41,6 +41,7 @@ import { describeIntent, toolReceipt, stripToolNoise, setActivity, silenceActivi
 import { dropUngroundedRows, repairAnswer, isUngroundedRecall } from '../../lib/groundTruth';
 import { requiredToolsFor, contractDirective, clarifyDirective, unmetRequirements, correctionFor, carriesData, endsWithQuestion } from '../../lib/taskContract';
 import { parseLeadRequest } from '../../lib/leadIntent';
+import { sectorDirective, classifyLead, wantsNonTech, wantsTech } from '../../lib/sectorClass';
 import { parseAnyTable, looksLikeIdentifier, looksLikeHeaderRow, extractContacts } from '../../lib/tableQuery';
 import { observeForRole, roleBlock } from '../../lib/userRole';
 import {
@@ -7266,6 +7267,22 @@ The prompt must be production-ready — specific enough for a motion designer to
         '- Engagement rate, audience age and audience location are NOT knowable from a search. Leave them out entirely rather than inventing them — say so in one line under the table if the brief asked for them.',
       ].filter(Boolean).join('\n') : '';
 
+      // WHAT "NON-TECH" MEANS, IN THE SEARCH ITSELF.
+      //
+      // A run for "non-tech SMB founders in Bangalore" returned Zerodha, Byju's, Razorpay, PhonePe,
+      // CRED, Meesho, Swiggy, Ola and Unacademy — because nothing in this app had ever said what
+      // non-tech meant. It went to the model as free text and a model asked for Bangalore companies
+      // reaches for the Bangalore companies it knows, which are the startups.
+      //
+      // Filtering afterwards cannot fix that on its own: drop twenty famous startups from a list of
+      // twenty and nothing is left. The definition has to reach the QUERY, which is what this does;
+      // the filter below is the backstop for when it is ignored anyway.
+      const sectorRules = sectorDirective(`${cfg.what} ${cfg.sector}`);
+      const wantNonTech = wantsNonTech(`${cfg.what} ${cfg.sector}`);
+      const wantTechOnly = !wantNonTech && wantsTech(`${cfg.what} ${cfg.sector}`);
+      const sectorWanted = wantNonTech || wantTechOnly;
+      /** Rows rejected for being on the wrong side of the tech line — reported, never silent. */
+      const sectorDropped: string[] = [];
       const filters = [
         `WHO: ${cfg.what}`,
         peopleMode && srcLabel ? `LOOK ON: ${srcLabel}` : '',
@@ -7512,8 +7529,9 @@ PREFER people and companies that appear above: they are known to exist. You may 
         try {
           ({ text } = await streamTurnWithRetry(
             [{ role: 'user', content: `${filters}\nHOW MANY: exactly ${want} rows${already}${groundingBlock}\n\nReturn the table now.` }],
-            // peopleRules is empty in company mode, so this is byte-identical to `sys` there.
-            sys + peopleRules, onLeadChunk,
+            // peopleRules is empty in company mode, and sectorRules is empty unless the brief
+            // actually asked for tech or non-tech, so this is byte-identical to `sys` otherwise.
+            sys + peopleRules + sectorRules, onLeadChunk,
           ));
         } catch (e) {
           // A RATE LIMIT is not a failed batch — it is "ask me again shortly".
@@ -7554,6 +7572,22 @@ PREFER people and companies that appear above: they are known to exist. You may 
           if (/^name$/i.test(first)) { header = row; continue; }   // a repeated header row
           const k = nameKey(first);
           if (!k || collected.has(k) || existingNames.has(k)) continue;
+          // THE SECTOR FILTER, APPLIED AS ROWS ARRIVE — not at the end.
+          //
+          // Dropping them at the end would leave the user short: filter twenty famous startups out
+          // of a batch of twenty and the run reports two rows. Rejecting them here means the batch
+          // simply did not fill, so the loop goes round again and searches for real ones instead.
+          // The columns are fixed by the prompt: | Name | Company/Role | Sector | City | ...
+          if (sectorWanted) {
+            const c = row.split('|').map((x) => x.trim());
+            const stance = classifyLead({ company: c[2] ?? '', sector: c[3] ?? '' });
+            // Only ever drop what the classifier is SURE about — a thin row is one to fill in, not
+            // a wrong one, and deleting a real lead is worse than letting a doubtful one through.
+            if ((wantNonTech && stance === 'tech') || (wantTechOnly && stance === 'nontech')) {
+              if (sectorDropped.length < 40) sectorDropped.push(`${first}${c[2] && c[2] !== '—' ? ` (${c[2]})` : ''}`);
+              continue;
+            }
+          }
           collected.set(k, row);
         }
         // Two rounds that add nobody means the model has run dry on this brief; keep what we have
@@ -7589,7 +7623,9 @@ PREFER people and companies that appear above: they are known to exist. You may 
           'Name must be a REAL, NAMED PERSON (never a company). Company/Role holds their company and job title.',
           peopleMode
             ? 'Company/Role may instead say in a few words what they do ("runs a 40k SaaS newsletter", "channel manager at an MSP") — that is what makes the row worth having.'
-            : 'Use real, well-known companies and the real people who lead them.',
+            : (wantNonTech
+                ? 'Use real companies that are NOT technology companies — construction, manufacturing, hospitals, logistics, hotels, schools, distributors, trades and services — and the real people who own or run them. Do NOT return startups, app companies, or anything ending in -tech.'
+                : 'Use real, well-known companies and the real people who lead them.'),
           'Put — where you do not know a value.',
           'Never return an empty table and never explain yourself — always give rows.',
         ].join('\n');
@@ -7889,8 +7925,18 @@ PREFER people and companies that appear above: they are known to exist. You may 
       const wentTo = existingNode || savedInfo?.created === false
         ? `Added **${kept2.length}** lead${kept2.length === 1 ? '' : 's'} to your existing **${savedTitle}**`
         : `Saved **${kept2.length}** lead${kept2.length === 1 ? '' : 's'} as a new list, **${savedTitle}**`;
+      // SAY WHAT WAS TURNED AWAY FOR BEING ON THE WRONG SIDE OF THE TECH LINE.
+      //
+      // Dropping them silently would leave a short list and no explanation — and the whole reason
+      // this filter exists is that the user DID get the wrong ones and had to spot the fintechs by
+      // eye. Naming a few makes it visible that the filter ran, and visible what it counted as
+      // tech, so a wrong call can be argued with instead of guessed at.
+      const sectorNote = sectorDropped.length
+        ? `\n\n_Left out ${sectorDropped.length} ${wantNonTech ? 'technology' : 'non-technology'} ${sectorDropped.length === 1 ? 'company' : 'companies'} that came back despite the brief — ${sectorDropped.slice(0, 5).join(', ')}${sectorDropped.length > 5 ? `, and ${sectorDropped.length - 5} more` : ''}._`
+        : '';
       const summary = wentTo
         + `${dropped > 0 ? ` — ${dropped} left out: ${reasonText || 'they didn\'t match what you asked for'}` : ''}.`
+        + sectorNote
         + (kept2.length < cfg.count / 2
           ? `\n\n_You asked for ${cfg.count}. ${dropped > 0 ? 'Loosening whichever filter above dropped the most would get you more' : 'Widening the brief — a bigger city, or fewer requirements — usually gets you more'}, or press "Find more like these"._`
           : '')
