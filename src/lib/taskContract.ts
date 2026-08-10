@@ -165,6 +165,93 @@ export function requiredToolsFor(text: string): TaskContract {
   return { requirements: reqs, needsRealWork: reqs.length > 0 };
 }
 
+// ─── Ask one question, then do it ────────────────────────────────────────────
+//
+// "find 200 companies" means "go and find me leads" — and it also leaves out everything that
+// decides whether those 200 are worth having: which sector, what size of company, aimed at
+// businesses the user could actually sell to or at household names who will never reply.
+//
+// There are two ways to get that wrong and they are both bad. Guessing silently spends a long run
+// on the wrong list and the user only finds out at the end. Asking about everything turns an agent
+// into a form. What is wanted is the thing a good colleague does: one short question about the
+// part that actually changes the outcome, then get on with it.
+//
+// So this names what is genuinely undecidable from the sentence — not everything unstated, only
+// what would change the work — and the boss is told to ask about THAT, once, and then act.
+
+/**
+ * How expensive it would be to have guessed wrong.
+ *
+ * NOT what the request is about. A user can ask for anything in the world, and any list of
+ * topic-specific questions is a list of the cases somebody happened to think of — it would know to
+ * ask about a lead search's sector and have nothing to say about a legal filing, a recipe, a
+ * shipment or a piece of research into a subject nobody here has heard of.
+ *
+ * What generalises is the COST of being wrong, and that is readable without knowing the subject:
+ * how much work is being asked for, whether it reaches outside the app, and whether it can be
+ * undone. The agent decides what to ask; this only decides how much a wrong guess would hurt, and
+ * therefore how hard it should think before assuming.
+ */
+export function guessCost(text: string): 'low' | 'high' {
+  const t = String(text || '');
+  // Bulk. A number this size means a long run, and a long run on a wrong reading is the whole loss.
+  const bulk = /\b([2-9]\d|\d{3,})\b/.test(t) && /\b(find|search|get|gather|collect|source|pull|list|draft|write|send|generate|create|build)\b/i.test(t);
+  // Reaches the outside world, or cannot be taken back.
+  const outward = /\b(send|publish|post|tweet|email|dm|message|book|schedule|pay|buy|order|delete|remove|cancel|submit|apply|sign)\b/i.test(t);
+  // Long-running machinery.
+  const heavy = /\b(all of them|every|entire|whole (list|sheet|database)|bulk|batch|campaign)\b/i.test(t);
+  return (bulk || outward || heavy) ? 'high' : 'low';
+}
+
+/**
+ * The SKILL of asking, not a script of questions.
+ *
+ * The agent knows what it does not know — it has the user's message, their history, their files
+ * and their profile in front of it, and it is the only thing in the system that understands the
+ * subject. What it lacked was permission and a shape: models default to producing SOMETHING,
+ * because a question feels like a failure to answer. So this says plainly when a question is the
+ * better answer, and how to ask one that costs a tap instead of a paragraph.
+ */
+export function clarifyDirective(text: string): string {
+  const high = guessCost(text) === 'high';
+  return [
+    '',
+    '## Asking is allowed, and sometimes it is the job',
+    'You do not have to answer everything immediately. When a reasonable person would ask before',
+    'starting — because they could read the request two ways, and the two readings lead to different',
+    'work — ask. One short question, then act on the answer. A question costs the user five seconds;',
+    'the wrong deliverable costs them the whole run and their trust in the next one.',
+    '',
+    'Ask when:',
+    '- the request could mean two genuinely different jobs, and you cannot tell which from anything',
+    '  they have said or saved',
+    '- an unstated choice would change the OUTPUT, not merely its wording',
+    '- what you are about to do is slow, spends their allowance, or reaches outside the app',
+    '',
+    'Do NOT ask when:',
+    '- you can work it out from their message, this conversation, their files, or their profile —',
+    '  an unnecessary question is as much of a waste as a wrong answer, and more annoying',
+    '- they have already told you, in this conversation or a saved note. Act on it.',
+    '- the answer would not change what you do',
+    '- it is small and reversible. Make the sensible choice, say which choice you made in one',
+    '  clause, and carry on.',
+    '',
+    'HOW to ask, when you do:',
+    '- ONE message, one or two sentences. Never a list of questions, never a form.',
+    '- Offer 2-3 concrete options in a CHOICES_BLOCK so it is answered with a tap, and say what you',
+    '  will do with each. "Which of these?" beats "please provide the following details."',
+    '- Say what you will do the moment they answer, so the question reads as work about to start.',
+    '- Then STOP. Do not begin, do not delegate, and do not produce a partial version anyway.',
+    '- When they answer, continue from exactly there. Never re-ask, and never restart the task.',
+    ...(high ? [
+      '',
+      'THIS request is a big or outward-facing one — a long run, a bulk job, or something that leaves',
+      'the app and cannot simply be undone. The cost of having guessed wrong is high here, so if any',
+      'part of it is genuinely open, this is a time to ask rather than assume.',
+    ] : []),
+  ].join('\n');
+}
+
 /** The block that goes into the system prompt for this turn. Empty when nothing is required. */
 export function contractDirective(c: TaskContract): string {
   if (!c.requirements.length) return '';
@@ -207,6 +294,28 @@ export function unmetRequirements(
     if (opts.dataProvided && (r.what === 'read the user\'s own data' || r.what === 'actually look it up')) return false;
     return !r.anyOf.some((n) => ran.has(n));
   });
+}
+
+/**
+ * Did the turn end by ASKING the user something, rather than by failing to do the work?
+ *
+ * These two guards would otherwise fight, and the check would win: the agent is told it may ask a
+ * question and stop, it asks a good one, and the contract check reads "no tools ran" as a failure
+ * and sends it back to do the work anyway — deleting the question. The user would see it decide to
+ * ask, then plough on regardless, which is worse than either behaviour on its own.
+ *
+ * A question is a legitimate end to a turn. Recognised by an actual question to the user, or by an
+ * options block, and not by a rhetorical one buried mid-answer — so only the tail is examined, and
+ * a long answer that happens to end on a question mark is not mistaken for a request for direction.
+ */
+export function endsWithQuestion(text: string): boolean {
+  const t = String(text || '').trim();
+  if (!t) return false;
+  if (/CHOICES_BLOCK:/.test(t)) return true;          // options offered — waiting on a tap
+  const tail = t.slice(-320);
+  if (!/\?\s*$/.test(tail)) return false;
+  // It has to be a question TO THE USER, not a heading or a rhetorical flourish.
+  return /\b(which|what|who|when|where|do you|would you|shall i|should i|are you|is that|can you confirm|let me know|prefer|instead)\b/i.test(tail);
 }
 
 /** Does this brief already CARRY the data (a real table, or a substantial pasted body)? */

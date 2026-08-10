@@ -104,24 +104,34 @@ const SENIORITY = [
   { key: 'any',     label: 'Anyone' },
 ];
 
-export default function LeadSetupCard({ defaultCity, existingLists = [], onGenerate, onCancel, disabled }: {
+export default function LeadSetupCard({ defaultCity, existingLists = [], prefill, onGenerate, onCancel, disabled }: {
   defaultCity?: string;
   existingLists?: string[];
+  /**
+   * What the user's own sentence already said, when they typed the request instead of opening
+   * this card. The card comes up filled in and asks only about the parts a sentence never
+   * carries — sector, company size, how big a company to aim at, whether to verify each row.
+   *
+   * The alternative was running on those silently, and they are exactly the settings that decide
+   * whether a list is worth having: an unfiltered 200-row run returns household names nobody can
+   * sell to. Asking one short question beats guessing, and beats making the user learn a command.
+   */
+  prefill?: Partial<LeadConfig> & { headline?: string };
   onGenerate: (cfg: LeadConfig) => void;
   onCancel: () => void;
   disabled?: boolean;
 }) {
   const [done, setDone] = useState(false);
-  const [addToList, setAddToList] = useState('');
-  const [what, setWhat] = useState('');
-  const [sizes, setSizes] = useState<string[]>(['11-50', '51-200']);
-  const [seniority, setSeniority] = useState<string[]>(['founder']);
-  const [city, setCity] = useState(defaultCity || '');
-  const [sector, setSector] = useState('');
-  const [count, setCount] = useState(25);
-  const [mustHaveLinkedIn, setMustLI] = useState(true);
-  const [mustHaveContact, setMustContact] = useState(false);
-  const [useMaps, setUseMaps] = useState(false);
+  const [addToList, setAddToList] = useState(prefill?.addToList ?? '');
+  const [what, setWhat] = useState(prefill?.what ?? '');
+  const [sizes, setSizes] = useState<string[]>(prefill?.sizes?.length ? prefill.sizes : ['11-50', '51-200']);
+  const [seniority, setSeniority] = useState<string[]>(prefill?.seniority?.length ? prefill.seniority : ['founder']);
+  const [city, setCity] = useState(prefill?.city ?? defaultCity ?? '');
+  const [sector, setSector] = useState(prefill?.sector ?? '');
+  const [count, setCount] = useState(prefill?.count ?? 25);
+  const [mustHaveLinkedIn, setMustLI] = useState(prefill?.mustHaveLinkedIn ?? true);
+  const [mustHaveContact, setMustContact] = useState(prefill?.mustHaveContact ?? false);
+  const [useMaps, setUseMaps] = useState(prefill?.useMaps ?? false);
   const [reach, setReach] = useState<Reach>('growing');
   // Off by default. Filling in contacts ALREADY opens and confirms each profile, so ticking this
   // as well put every person through a second full browser pass — the single biggest reason a
@@ -129,8 +139,8 @@ export default function LeadSetupCard({ defaultCity, existingLists = [], onGener
   const [verify, setVerify] = useState(false);
   // Companies stays the default: it is what most runs are, and changing the default would change
   // behaviour for everyone who never opens this control.
-  const [find, setFind] = useState<FindKind>('companies');
-  const [sources, setSources] = useState<FindSource[]>(['linkedin', 'web']);
+  const [find, setFind] = useState<FindKind>(prefill?.find ?? 'companies');
+  const [sources, setSources] = useState<FindSource[]>(prefill?.sources?.length ? prefill.sources : ['linkedin', 'web']);
   const [preset, setPreset] = useState('');
 
   const toggle = (arr: string[], set: (v: string[]) => void, k: string) =>
@@ -153,9 +163,17 @@ export default function LeadSetupCard({ defaultCity, existingLists = [], onGener
   return (
     <div className="mx-1 my-1 rounded-xl border border-nv-border bg-nv-surface overflow-hidden">
       <div className="px-3.5 py-2.5 border-b border-nv-border">
-        <div className="text-[12.5px] font-semibold text-nv-text">Find leads</div>
+        <div className="text-[12.5px] font-semibold text-nv-text">
+          {prefill?.headline ? 'Before I start — is this right?' : 'Find leads'}
+        </div>
         <div className="text-[10.5px] text-nv-faint mt-0.5">
-          Set what you actually want — these are applied as filters, not hints, so the list comes back matching.
+          {/* When the request was TYPED, this card is the agent asking back, not a form the user
+              failed to avoid. Say what was understood, and say which part is the open question —
+              the settings below are what a sentence never carries and what decides whether the
+              list is worth having. */}
+          {prefill?.headline
+            ? <>I read that as <span className="text-nv-text font-medium">{prefill.headline}</span>. Everything below is filled in from your message — set the sector and size so the list comes back sellable, then press Find.</>
+            : 'Set what you actually want — these are applied as filters, not hints, so the list comes back matching.'}
         </div>
       </div>
 

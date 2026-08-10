@@ -39,7 +39,7 @@ import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill
 import { builtInSkillsBlock, learnSkill } from '../../lib/skillGraph';
 import { describeIntent, toolReceipt, stripToolNoise, setActivity, silenceActivity, resumeActivity, runLogFence, liveFrame } from '../../lib/agentActivity';
 import { dropUngroundedRows, repairAnswer, isUngroundedRecall } from '../../lib/groundTruth';
-import { requiredToolsFor, contractDirective, unmetRequirements, correctionFor, carriesData } from '../../lib/taskContract';
+import { requiredToolsFor, contractDirective, clarifyDirective, unmetRequirements, correctionFor, carriesData, endsWithQuestion } from '../../lib/taskContract';
 import { parseLeadRequest } from '../../lib/leadIntent';
 import { parseAnyTable, looksLikeIdentifier, looksLikeHeaderRow, extractContacts } from '../../lib/tableQuery';
 import { observeForRole, roleBlock } from '../../lib/userRole';
@@ -314,6 +314,8 @@ interface DisplayMsg {
    *  roster is now drawn the moment it starts, each member carrying their own state, and their
    *  answer streams into the card as it is written. */
   council?: Array<{ key: string; name: string; human: string; text: string; status?: 'waiting' | 'thinking' | 'done'; reply?: string }>;
+  /** What a TYPED lead request already said, so the setup card opens filled in — see leadIntent. */
+  leadPrefill?: Record<string, unknown>;
   /** True while the council is still sitting — drives the header line and the live cursor. */
   councilLive?: boolean;
   /** What the council is doing RIGHT NOW ("Round 2 — they are answering each other"). */
@@ -9665,24 +9667,29 @@ _${plan.advice}_` : ''}`;
           ?? attachedFiles.find((f) => f.fromBrain)?.name ?? '')
           .replace(/\.(md|txt|csv|markdown)$/i, '').trim();
         const wantsExisting = /\b(the|my|this|that|existing|same)\s+list\b/i.test(text) && !!attachedList;
-        runLeadGeneration({
+        // ── ASK ONE QUESTION, THEN DO IT ───────────────────────────────────────────────────────
+        //
+        // This used to launch the run straight from the sentence. That was too eager, and wrong in
+        // a way that only shows up in the result: a sentence names WHO and WHERE and HOW MANY, and
+        // never names the sector, the company size, or how big a company to aim at — and those are
+        // exactly what decides whether the list is sellable or two hundred household names that
+        // will never reply. Running on silent defaults means the user finds out at the end.
+        //
+        // So the card comes up already filled in from their words, saying what was understood, and
+        // asks only about the parts a sentence cannot carry. That is the boss questioning back —
+        // one look, one press — rather than either guessing or making them learn a command.
+        addMsg({ role: 'user', content: text });
+        addMsg({ role: 'lead_setup', content: '', leadPrefill: {
           find: leadAsk.find,
-          sources: leadAsk.find === 'people' ? ['linkedin', 'web'] : ['web'],
+          sources: leadAsk.find === 'people' ? ['linkedin', 'web'] : ['linkedin', 'web'],
           addToList: wantsExisting ? attachedList : '',
           what: leadAsk.what,
-          sizes: [],                       // unstated in the sentence — do not invent a filter
-          seniority: leadAsk.find === 'people' ? ['founder'] : [],
           city: leadAsk.city,
-          sector: '',
           count: leadAsk.count,
-          mustHaveLinkedIn: false,         // a company list must not be thrown away for want of a profile
-          mustHaveContact: false,
           useMaps: leadAsk.useMaps,
-          reach: 'growing',
-          // Verification opens a page per row. On 200 rows that is a very long run, and the user
-          // asked for a list, not a vetted one — /leads is where that choice belongs.
-          verify: false,
-        }, text);
+          mustHaveLinkedIn: leadAsk.find === 'people',
+          headline: `find ${leadAsk.count} ${leadAsk.what}${leadAsk.city ? ` in ${leadAsk.city}` : ''}`,
+        } });
         return;
       }
     }
@@ -10226,7 +10233,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     const systemPrt  = assembleSystemPrompt(
       [agent.systemPrompt, '\n\n', buildKrewSystemPrompt(tools), bossPostfix, workingRules,
        searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective,
-       contractDirective(contract)],
+       contractDirective(contract), clarifyDirective(text)],
       // The two things that make a turn a CONTINUATION rather than a fresh start: what this
       // agent was last working in, and what this user actually chooses when offered options.
       [identityCtx, locationBlock, (agent.key === 'boss' ? '' : userBlock), connectedAppsBlock, mcpSummary,
@@ -10538,6 +10545,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
           // refusal to search is not another try but the honest failure below, which is a better
           // answer than a third round of the same recall.
           if (!turnToolsRef.current.length && bossRecallRetries < 1 && !stopRef.current
+              && !endsWithQuestion(fullResponse)
               && isUngroundedRecall({ request: text, answer: fullResponse, searched: false })) {
             bossRecallRetries++;
             carried = '';   // recalled text is not part of the answer
@@ -10561,7 +10569,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
           // same tools), so this only fires when nothing plausible happened at all. Once per turn:
           // if it will not use the tool when told exactly which one and why, the honest failure
           // below is a better answer than a third attempt.
-          if (bossContractRetries < 1 && !stopRef.current) {
+          if (bossContractRetries < 1 && !stopRef.current && !endsWithQuestion(fullResponse)) {
             const unmet = unmetRequirements(contract, turnToolsRef.current.map((x) => x.tool));
             if (unmet.length) {
               bossContractRetries++;
@@ -10966,6 +10974,7 @@ ${task}`);
                   // not search on the second ask will not search on the fifth, and the honest
                   // failure below is a better answer than a third attempt.
                   if (!anyToolRan && recallRetries < 1 && !stopRef.current
+                      && !endsWithQuestion(delegateAccum || prosePart)
                       && isUngroundedRecall({ request: delegateTask, answer: delegateAccum || prosePart, searched: false })) {
                     recallRetries++;
                     delegateAccum = '';           // recalled text is not part of the deliverable
@@ -10981,7 +10990,7 @@ ${task}`);
                   // The contract, checked on the specialist too. It was told what the job needs;
                   // this is where being told stops being enough. Delegation is not in its own
                   // anyOf here — it IS the delegate, so the work stops with it.
-                  if (dContractRetries < 1 && !stopRef.current) {
+                  if (dContractRetries < 1 && !stopRef.current && !endsWithQuestion(delegateAccum || prosePart)) {
                     const dUnmet = unmetRequirements(dContract, dToolsUsed, { dataProvided: carriesData(delegateTask) });
                     if (dUnmet.length) {
                       dContractRetries++;
@@ -11579,6 +11588,7 @@ ${wfTask}`);
                     // handed one step of someone else's plan, with no conversation around it to
                     // make the point that the looking-up is the work.
                     if (!wfAnyTool && wfRecallRetries < 1 && !stopRef.current
+                        && !endsWithQuestion(wfAccum || prose)
                         && isUngroundedRecall({ request: wfFullTask, answer: wfAccum || prose, searched: false })) {
                       wfRecallRetries++;
                       wfAccum = '';   // recalled text is not part of the deliverable
@@ -11592,7 +11602,7 @@ ${wfTask}`);
                       continue;
                     }
                     // The contract, checked on the stage — same as the single-delegate path.
-                    if (wfContractRetries < 1 && !stopRef.current) {
+                    if (wfContractRetries < 1 && !stopRef.current && !endsWithQuestion(wfAccum || prose)) {
                       const wfUnmet = unmetRequirements(wfContract, wfToolsUsed, { dataProvided: carriesData(wfFullTask) });
                       if (wfUnmet.length) {
                         wfContractRetries++;
@@ -13670,6 +13680,7 @@ ${wfTask}`);
                 <LeadSetupCard
                   key={i}
                   disabled={busy}
+                  prefill={msg.leadPrefill as Parameters<typeof LeadSetupCard>[0]['prefill']}
                   defaultCity={loadUserLocation()?.city || ''}
                   existingLists={brainStore.all().nodes
                     .filter((n) => n.kind === 'list' && !/linkedin connections/i.test(n.title)
