@@ -43,7 +43,19 @@ $latest = [ordered]@{
     platforms = [ordered]@{
         "windows-x86_64" = [ordered]@{
             signature = $sigText
-            url = "https://github.com/astraluxe/nivara-desktop/releases/download/v${version}/adris.tech_${version}_x64-setup.exe"
+            # THE ONE URL THE UPDATER ACTUALLY DOWNLOADS, AND IT HAS TO BE REACHABLE.
+            #
+            # This pointed straight at the GitHub release, which redirects to
+            # release-assets.githubusercontent.com — the host this script already goes out of its
+            # way to route AROUND for the manifest. Measured on a real Indian ISP: the redirect
+            # arrives in 0.8s and the download that follows transfers 0 bytes and hangs. So the app
+            # read latest.json from a mirror, correctly offered the update, and then failed with
+            # "error sending request for url ...x64-setup.exe" every single time.
+            #
+            # www.adris.tech/dl/<file> (api/dl.js in the website repo) fetches the asset from
+            # GitHub server-side and streams the bytes back from a domain that answers. Verified
+            # end to end: 24,569,084 bytes, SHA-256 identical to the local build.
+            url = "https://www.adris.tech/dl/adris.tech_${version}_x64-setup.exe?v=${version}"
         }
     }
 }
