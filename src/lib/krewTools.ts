@@ -2549,7 +2549,12 @@ async function executeToolCore(
 
   if (toolName === 'save_to_brain') {
     const { brain } = await import('./knowledgeStore');
-    const validKind = ['list', 'outreach', 'contact', 'data', 'note', 'source', 'file', 'skill'];
+    // 'skill' is deliberately NOT here. An agent asking to save a skill is asking for the skill
+    // graph, not the knowledge graph — the two are different stores for different things (what the
+    // app has learnt vs. what the user has), and a skill written as a Brain note is dead text: the
+    // prompt selection never reads it. Routed to learnSkill below instead of being silently
+    // downgraded to a note nobody will ever load.
+    const validKind = ['list', 'outreach', 'contact', 'data', 'note', 'source', 'file'];
     const kind = validKind.includes(str(args.kind)) ? (str(args.kind) as 'note') : 'note';
     const title = str(args.title).trim();
     const append = args.append === true || str(args.append) === 'true';
@@ -2566,6 +2571,14 @@ async function executeToolCore(
     // outreach drafts) so this tool firing with broken args is pure downside. Reject and ask for
     // a clean retry instead of writing a stub the user then finds and thinks the app is broken.
     if (!title) return `[save_to_brain needs a "title" — nothing was saved. Retry with a clear, specific title.]`;
+    // A skill goes to the skill graph, where prompt selection can actually find and use it.
+    if (str(args.kind) === 'skill') {
+      const { learnSkill } = await import('./skillGraph');
+      const made = learnSkill({ name: title.replace(/^skill:\s*/i, ''), guide: body, from: title, kind: 'recipe' });
+      return made
+        ? `Saved to the SKILL GRAPH as "${made.name}" (not the Brain — skills live in the Skills tab, where they get loaded into the prompt on a matching request). It will be applied automatically next time.`
+        : `[Not saved: a skill needs a name and at least a couple of sentences of guide. Nothing was written.]`;
+    }
     if (body.length < 10) return `[save_to_brain needs real "body" content (got almost nothing — the call may have been cut off) — nothing was saved. Retry with the full content.]`;
     let finalTitle = title;
     let finalBody = body;

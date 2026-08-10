@@ -37,6 +37,7 @@ import { getImageBudget, unitsForModel } from '../../lib/imageQuota';
 import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining } from '../../lib/tokenTier';
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
 import { builtInSkillsBlock, learnSkill } from '../../lib/skillGraph';
+import { describeIntent, toolReceipt, stripToolNoise, setActivity, silenceActivity, resumeActivity, runLogFence, liveFrame } from '../../lib/agentActivity';
 import { parseAnyTable, looksLikeIdentifier, looksLikeHeaderRow, extractContacts } from '../../lib/tableQuery';
 import { observeForRole, roleBlock } from '../../lib/userRole';
 import {
@@ -1635,6 +1636,39 @@ function StatusBlock({ startedAt, headline, detail, tone }: {
   );
 }
 
+// ─── The trail of what an agent actually touched ─────────────────────────────
+//
+// The status panel above says what is happening NOW and then replaces itself, so a run that made
+// six tool calls left no evidence that any of them happened. When the answer arrived there was no
+// way to check it against the steps behind it — and when the run failed, no way to see how far it
+// got. The receipts stay: one counted line per call, in order, above the answer they produced.
+//
+//   ```runlog
+//   query table · Vendor master 1 — 766 rows × 13 columns
+//   save to brain — Saved "Vendor master 1 – ICP filtered"
+//   ```
+function RunLog({ lines }: { lines: string[] }) {
+  if (!lines.length) return null;
+  return (
+    <div className="my-2 rounded-xl border border-nv-border bg-nv-surface2/40 overflow-hidden font-sans">
+      <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider text-nv-faint">What it did</div>
+      <div className="px-3 pb-2 flex flex-col gap-1">
+        {lines.map((l, i) => {
+          const failed = / — (failed|came back empty)/.test(l);
+          const [head, ...rest] = l.split(' — ');
+          return (
+            <div key={i} className="flex items-baseline gap-2 text-[11px] leading-snug">
+              <span className={`shrink-0 ${failed ? 'text-amber-500' : 'text-accent'}`}>{failed ? '!' : '✓'}</span>
+              <span className="text-nv-text font-medium">{head}</span>
+              {rest.length > 0 && <span className="text-nv-faint min-w-0">{rest.join(' — ')}</span>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /** Build the ```status fence a run writes. `startedAt` is the run's own t0, so the clock is the
  *  true elapsed time of the whole run rather than of the last repaint. */
 // Tools that genuinely take a while — they open a browser, read real pages, or work through a
@@ -1666,6 +1700,11 @@ function trailingOptions(text: string): string[] {
     }
   }
   return out.length >= 2 && out.length <= 5 ? out : [];
+}
+
+/** Stack the pieces of a live bubble — run log, prose so far, status panel — dropping empties. */
+function joinBlocks(...parts: (string | undefined)[]): string {
+  return parts.map((p) => (p ?? '').trim()).filter(Boolean).join('\n\n');
 }
 
 function statusBlock(startedAt: number, headline: string, detail?: string, tone: 'work' | 'halt' | 'wait' = 'work'): string {
@@ -3273,6 +3312,10 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
                 detail={lines.slice(1).join(' ').trim() || undefined} />
             );
           }
+          // ```runlog — the receipts for every tool call this run made, newest last.
+          if (lang.toLowerCase() === 'runlog') {
+            return <RunLog key={i} lines={code.split('\n').map((l) => l.trim()).filter(Boolean)} />;
+          }
           return (
             <div key={i} className="my-1.5 rounded-lg overflow-hidden border border-nv-border/60">
               <div className="flex items-center justify-between px-3 py-1 bg-nv-surface2">
@@ -4119,14 +4162,27 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
    * back when the user returns to the chat that owns it) and only ever drawn where it is true.
    */
   function setAgentStep(step: string | null) {
-    agentStepRef.current = step;
-    if (runSidRef.current === undefined || runSidRef.current === sidRef.current) setAgentStepState(step);
+    // A STOPPED RUN MUST NOT BE ABLE TO SPEAK AGAIN.
+    //
+    // stop() clears the bar, but it cannot stop the calls already in flight from landing. A
+    // delegate stream that resolves two seconds later called setAgentStep on its way out and put
+    // "Arjun.Boss · thinking…" straight back on screen — with busy already false, so the effect
+    // that clears it had run and would not run again. Nothing was running; the app just said it
+    // was, permanently, until the next message. That is the "it still says thinking after I
+    // pressed stop" report, and no amount of clearing at the stop() end can fix it: the fix has
+    // to be here, where the late writes arrive.
+    const dead = stopRef.current;
+    agentStepRef.current = dead ? null : step;
+    if (runSidRef.current === undefined || runSidRef.current === sidRef.current) setAgentStepState(dead ? null : step);
   }
   // Single invariant: the status bar only ever describes an in-flight turn. Any path that forgets
   // to clear it can no longer strand a permanent "…taking longer than usual" banner.
   useEffect(() => {
     busyRef.current = busy;
-    if (!busy) { setAgentStep(null); setAgentTool(null); }
+    // The activity bus rides the same invariant as the step bar: it only ever describes an
+    // in-flight turn. Without this the Office floor kept a desk lit and pulsing long after the
+    // work finished, which is a worse lie than showing nothing.
+    if (!busy) { setAgentStep(null); setAgentTool(null); setActivity(null); }
   }, [busy]);
   const [agentTool,     setAgentTool]     = useState<string | null>(null);
   const [creds,         setCreds]         = useState<Record<string, Record<string, string>>>({});
@@ -5268,6 +5324,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     if (!requestCtx) return;
     setBusy(true);
     stopRef.current = false;
+    resumeActivity();   // clearing Stop restarts work — the activity bus speaks again
     resetToolStop();   // a new run: tools are allowed again
     const sid = sidRef.current;
     // Make sure the managed AI key is loaded BEFORE we stream — otherwise the whole deck runs
@@ -5828,6 +5885,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     if (!base) return;
     setBusy(true);
     stopRef.current = false;
+    resumeActivity();   // clearing Stop restarts work — the activity bus speaks again
     resetToolStop();   // a new run: tools are allowed again
     const sid = sidRef.current;
     addMsg({ role: 'delegation', toolName: 'deck_maker', content: 'Updating your deck…', streaming: true });
@@ -6053,6 +6111,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     // broken until the user happened to send a normal message. That is what "the model didn't
     // return usable rewrites in 0s" was: not the model, a stale Stop.
     stopRef.current = false;
+    resumeActivity();   // clearing Stop restarts work — the activity bus speaks again
     resetToolStop();   // a new run: tools are allowed again
     resetLeadStop();
     resetToolStop();
@@ -6161,6 +6220,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     // broken until the user happened to send a normal message. That is what "the model didn't
     // return usable rewrites in 0s" was: not the model, a stale Stop.
     stopRef.current = false;
+    resumeActivity();   // clearing Stop restarts work — the activity bus speaks again
     resetToolStop();   // a new run: tools are allowed again
     resetLeadStop();
     resetToolStop();
@@ -6724,6 +6784,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     // broken until the user happened to send a normal message. That is what "the model didn't
     // return usable rewrites in 0s" was: not the model, a stale Stop.
     stopRef.current = false;
+    resumeActivity();   // clearing Stop restarts work — the activity bus speaks again
     resetToolStop();   // a new run: tools are allowed again
     resetLeadStop();
     resetToolStop();
@@ -7034,6 +7095,7 @@ The prompt must be production-ready — specific enough for a motion designer to
     // broken until the user happened to send a normal message. That is what "the model didn't
     // return usable rewrites in 0s" was: not the model, a stale Stop.
     stopRef.current = false;
+    resumeActivity();   // clearing Stop restarts work — the activity bus speaks again
     resetToolStop();   // a new run: tools are allowed again
     resetLeadStop();
     resetToolStop();
@@ -8621,6 +8683,7 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     // broken until the user happened to send a normal message. That is what "the model didn't
     // return usable rewrites in 0s" was: not the model, a stale Stop.
     stopRef.current = false;
+    resumeActivity();   // clearing Stop restarts work — the activity bus speaks again
     resetToolStop();   // a new run: tools are allowed again
     resetLeadStop();
     resetToolStop();
@@ -8785,6 +8848,7 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     // broken until the user happened to send a normal message. That is what "the model didn't
     // return usable rewrites in 0s" was: not the model, a stale Stop.
     stopRef.current = false;
+    resumeActivity();   // clearing Stop restarts work — the activity bus speaks again
     resetToolStop();   // a new run: tools are allowed again
     resetLeadStop();
     resetToolStop();
@@ -9658,6 +9722,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     setInput('');
     setBusy(true);
     stopRef.current = false;
+    resumeActivity();   // clearing Stop restarts work — the activity bus speaks again
     resetToolStop();   // a new run: tools are allowed again
     resetLeadStop();
     resetToolStop(); // clear any prior Stop so this run's lead pass can proceed
@@ -10253,20 +10318,20 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
             systemPrt,
             (chunk) => {
               stepText += chunk;
-              // Strip raw XML blocks from streaming display (handle both <tool_call> and <tool_code>)
-              const displayText = stepText
-                .replace(/<tool_call>[\s\S]*/g, '')
-                .replace(/<tool_code>[\s\S]*/g, '')
-                .replace(/CHOICES_BLOCK:[\s\S]*/g, '')
-                .trim();
+              // Strip raw XML blocks from streaming display — including the UNTAGGED `{"tool":…`
+              // form, which used to sail past this and put a half-written call, escaped newlines
+              // and all, on screen as if it were the answer.
+              const displayText = stripToolNoise(stepText);
               // Nothing showable yet means the model is working out what to do — almost always
               // composing a tool call, whose raw XML is (rightly) hidden. Left as-is that renders
               // an empty bubble, which is indistinguishable from a hung app. Show the work box
-              // instead, with a live size so it is visibly moving, and hand back to the real text
-              // the moment there is any.
+              // instead — and say WHICH tool and on what, as soon as the buffer names it, rather
+              // than the word "Thinking…" which tells the user nothing they did not already know.
               if (!displayText) {
-                if (!workRef.current) showWork(`${agentHandle(agent)} is working out the next step`);
-                paintWork(undefined, stepText.length > 40 ? `Deciding which tool to use — ${Math.round(stepText.length / 5)} words in` : 'Thinking…');
+                const f = liveFrame(stepText, agentHandle(agent));
+                if (!workRef.current) showWork(f.headline);
+                paintWork(f.headline, f.detail);
+                setActivity({ agent: agentHandle(agent), agentKey: agent.key, headline: f.headline, detail: f.detail, startedAt: Date.now(), phase: f.onTool ? 'tool' : 'thinking' });
                 return;
               }
               if (workRef.current) workRef.current = null;   // real prose now — the box gives way
@@ -10503,7 +10568,12 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
           // the collapsed JSON bubble sat there looking finished. browserActionLabel already turns
           // a call into plain English ("Searching the web for …"), so say that, and let the
           // agent-progress events from inside the tool fill in the detail line as it goes.
-          showWork(browserActionLabel(tool, args) ?? tool.replace(/_/g, ' '), 'Starting…');
+          // "Starting…" said nothing about WHAT was starting. describeIntent names the sheet, the
+          // filter or the query; browserActionLabel still wins for the browser tools, which it
+          // describes better than any generic rule could.
+          const bIntent = describeIntent(tool, Object.fromEntries(
+            Object.entries(args).map(([k, v]) => [k, String(v ?? '')])));
+          showWork(browserActionLabel(tool, args) ?? bIntent.headline, bIntent.detail ?? 'Starting…');
         }
         // Delegation calls are not saved as tool_call rows: they are never shown live (the
         // delegation bubble is the record), so saving one made a reopened conversation show a raw
@@ -10630,6 +10700,11 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
               // answer" break with nothing to show, silently producing "(no response)" / "couldn't
               // pull that together" and discarding real results.
               let anyToolRan = false;
+              // Receipts for this delegation — see RunLog. Deliberately NOT part of delegateAccum,
+              // which is the deliverable the boss and the Brain both consume.
+              const dLog: string[] = [];
+              const dPaint = (live: string) => updateLastMsg(
+                [runLogFence(dLog), delegateAccum, live].filter(Boolean).join('\n\n'));
               for (let ds = 0; ds < DELEGATE_MAX && !stopRef.current; ds++) {
                 cutOffMidWork = false;
                 let stepText = '';
@@ -10641,14 +10716,18 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
                   const sep = /\|\s*$/.test(base.trimEnd()) || /^\s*\|/.test(next.trimStart()) ? '\n' : '\n\n';
                   return base + sep + next;
                 };
+                // Same live narration as the pipeline path — see the long note there. A specialist
+                // composing a tool call has no showable prose, so this painted an empty string and
+                // the bubble sat on three dots. Read the half-written call and say what it names.
+                const dThinkT0 = Date.now();
                 const { text: delegateRaw, truncated: delegateTruncated } = await streamTurnWithRetry(delegateMsgsHist, delegateSystem, (chunk) => {
                   stepText += chunk;
-                  const cleanStep = stepText
-                    .replace(/<tool_call>[\s\S]*/g, '')
-                    .replace(/<tool_code>[\s\S]*/g, '')
-                    .replace(/CHOICES_BLOCK:[\s\S]*/g, '')
-                    .trim();
-                  updateLastMsg(joinAccum(delegateAccum, cleanStep));
+                  const f = liveFrame(stepText, agentHandle(targetAgent));
+                  setAgentStep(`${agentHandle(targetAgent)} · ${f.step}`);
+                  setActivity({ agent: agentHandle(targetAgent), agentKey: targetKey, headline: f.headline, detail: f.detail, startedAt: dThinkT0, phase: f.onTool ? 'tool' : 'writing' });
+                  // The panel goes UNDER any prose already written, not instead of it — see
+                  // liveFrame. Prose alone sits motionless for the whole tool composition.
+                  dPaint(joinBlocks(f.prose, statusBlock(dThinkT0, f.headline, f.detail)));
                 });
                 delegateFinalResp = delegateRaw;
                 // Auto-continue delegate response if truncated mid-prose
@@ -10785,11 +10864,17 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
                 // visibly tick and the user can see it is alive. It is replaced by the real text
                 // the moment any arrives.
                 const dToolT0 = Date.now();
-                updateLastMsg((delegateAccum ? delegateAccum + '\n\n' : '')
-                  + statusBlock(dToolT0, `${agentDisplayName} is using ${toolDisplayName}`,
-                      SLOW_TOOLS.has(dTool)
-                        ? 'This one opens the browser and reads pages, so it can take a minute or two on a free key.'
-                        : 'Waiting for it to come back.'));
+                // Name the sheet / the filter / the query, not just the tool. browserActionLabel
+                // only knows the browser tools; describeIntent covers the data ones, which is where
+                // "is using query table" was the entire description of a four-condition filter.
+                const dIntent = describeIntent(dTool, Object.fromEntries(
+                  Object.entries(dArgs).map(([k, v]) => [k, String(v ?? '')])));
+                const dHead = `${agentDisplayName} — ${browserActionLabel(dTool, dArgs) ?? dIntent.headline}`;
+                const dDet = SLOW_TOOLS.has(dTool)
+                  ? 'This one opens the browser and reads pages, so it can take a minute or two on a free key.'
+                  : (dIntent.detail ?? 'Waiting for it to come back.');
+                setActivity({ agent: agentDisplayName, agentKey: targetKey, headline: dHead, detail: dDet, startedAt: dToolT0, phase: 'tool' });
+                dPaint(statusBlock(dToolT0, dHead, dDet));
                 anyToolRan = true;
                 let dResult = '';
                 try {
@@ -10803,8 +10888,12 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
                     toolDeliverable = (tblStart >= 0 ? dResult.slice(tblStart) : dResult).trim();
                   }
                 } catch (e) { dResult = `Error: ${e}`; }
+                // Written before the supersede check on purpose: what the last call returned is
+                // exactly what a user who just pressed Stop wants to see.
+                dLog.push(toolReceipt(dTool, dArgs, dResult));
+                dPaint('');
                 if (superseded()) break;   // user stopped while the tool was running — don't re-show the indicator
-                setAgentStep(`${agentDisplayName} · thinking…`);
+                setAgentStep(`${agentDisplayName} · reading what came back…`);
                 // verify_lead_list's full table is shown to the user directly, so the model only
                 // needs a short ack — feeding it the whole (truncated) table made it try to
                 // re-render it, mangle it, or go silent. Keep its turn cheap and on-rails.
@@ -11004,7 +11093,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
               // Unusable is the same as nothing — see looksUnusable. A two-word reply in another
               // script is not a deliverable, however non-empty it is.
               if (looksUnusable(finalDelegateOut, delegateTask)) finalDelegateOut = '';
-              const bubbleContent = finalDelegateOut.trim() ||
+              const bubbleAnswer = finalDelegateOut.trim() ||
                 (delegateChoices ? `Here are ${delegateChoices.choices.length} variants — pick the one you want:` :
                  delegateProposal ? 'Automation plan ready — review the card below.'
                  // Same principle as the boss's "no response" message: name what actually
@@ -11013,6 +11102,10 @@ Everything you need for follow-ups is in that answer above; read it there rather
                  // sent the user off to retry a network that was never the problem, and asking
                  // them to "narrow it down" implies their request was too vague when it wasn't.
                  : `${targetAgent.name} finished without producing anything to show — the model went quiet rather than returning a result. Send it again${mode === 'own_key' ? ', or switch this chat to another model — smaller models sometimes stop mid-task on a long brief' : ''}.`);
+              // The receipts stay on the finished bubble — they are what lets the answer be checked
+              // against the steps that produced it, and on a failure they are the only evidence of
+              // how far it actually got.
+              const bubbleContent = [runLogFence(dLog), bubbleAnswer].filter(Boolean).join('\n\n');
               delegationDisplay = bubbleContent; // saved to DB so reload shows this, not the boss note
               setMessages(prev => {
                 const copy = [...prev];
@@ -11140,13 +11233,37 @@ Everything you need for follow-ups is in that answer above; read it there rather
                 // — it ran out mid-search, which is one of the two ways a stage ends up silent.
                 const wfMax = (wfKey === 'research_agent' || wfAgent.category === 'Sales')
                   ? (searchMode === 'advanced' ? 22 : 14) : 8;
+                // THE RECEIPTS FOR THIS STAGE. Kept OUT of wfAccum on purpose: wfAccum becomes the
+                // stage's deliverable and is passed to the next stage as {{prev}}, so a log line in
+                // it would be read by the next agent as part of the work. It is joined in only for
+                // what is drawn.
+                const wfLog: string[] = [];
+                const wfPaint = (live: string) => updateLastMsg(
+                  [runLogFence(wfLog), wfAccum, live].filter(Boolean).join('\n\n'));
                 for (let ds = 0; ds < wfMax && !superseded(); ds++) {
                   wfCutOff = false;
                   let stepTxt = '';
+                  // WHAT IT IS THINKING, NOT THE WORD "THINKING".
+                  //
+                  // While the model composes a tool call there is no showable prose — the raw XML is
+                  // stripped, rightly — so this painted an empty string and the bubble fell back to
+                  // three dots and "Thinking…" for as long as the call took. On a free key writing a
+                  // long query_table call that is minutes of a screen that says nothing, about a
+                  // task whose sheet, filters and agent were all named in the order.
+                  //
+                  // The tool name arrives in the buffer character by character, well before the JSON
+                  // closes. peekToolIntent reads the half-written call and names it: "Filtering your
+                  // sheet Vendor master 1 — keeping rows where GST is not empty". Same live box the
+                  // boss gets, so the seconds tick and it is visibly alive.
+                  const wfThinkT0 = Date.now();
                   const { text: wfRaw, truncated: wfTrunc } = await streamTurnWithRetry(wfHist, wfSys, (chunk) => {
                     stepTxt += chunk;
-                    const clean = stepTxt.replace(/<tool_call>[\s\S]*/g, '').replace(/<tool_code>[\s\S]*/g, '').replace(/CHOICES_BLOCK:[\s\S]*/g, '').trim();
-                    updateLastMsg(wfAccum ? wfAccum + '\n\n' + clean : clean);
+                    const f = liveFrame(stepTxt, agentHandle(wfAgent));
+                    setAgentStep(`${agentHandle(wfAgent)} · ${f.step}`);
+                    setActivity({ agent: agentHandle(wfAgent), agentKey: wfKey, headline: f.headline, detail: f.detail, startedAt: wfThinkT0, phase: f.onTool ? 'tool' : 'writing' });
+                    // The panel goes UNDER any prose already written, not instead of it — see
+                    // liveFrame. Prose alone would sit motionless for the whole tool composition.
+                    wfPaint(joinBlocks(f.prose, statusBlock(wfThinkT0, f.headline, f.detail)));
                   });
                   wfFinal = wfRaw;
                   if (wfTrunc && !wfRaw.includes('<tool_call>') && !wfRaw.includes('<tool_code>')) {
@@ -11214,16 +11331,28 @@ Everything you need for follow-ups is in that answer above; read it there rather
                   // which tells what is happening, so at least it tells something is going on and
                   // isn't frozen". statusBlock IS that box: it counts up on its own.
                   const wfToolT0 = Date.now();
+                  // Say WHICH sheet, WHICH filter — browserActionLabel covers the browser tools and
+                  // returns null for everything else, which is how "using query table" ended up
+                  // being the whole of what the user was told about a four-condition filter.
+                  const wfIntent = describeIntent(dTool, Object.fromEntries(
+                    Object.entries(dArgs).map(([k, v]) => [k, String(v ?? '')])));
+                  const wfHead = `${agentHandle(wfAgent)} — ${browserActionLabel(dTool, dArgs) ?? wfIntent.headline}`;
+                  const wfDet = SLOW_TOOLS.has(dTool)
+                    ? 'This one opens the browser and reads pages, so it can take a minute or two on a free key.'
+                    : (wfIntent.detail ?? 'Waiting for it to come back.');
                   setAgentStep(`${agentHandle(wfAgent)} · ${wfToolLabel}…`);
-                  updateLastMsg((wfAccum ? wfAccum + '\n\n' : '')
-                    + statusBlock(wfToolT0, `${agentHandle(wfAgent)} is using ${wfToolLabel}`,
-                        SLOW_TOOLS.has(dTool)
-                          ? 'This one opens the browser and reads pages, so it can take a minute or two on a free key.'
-                          : 'Waiting for it to come back.'));
+                  setActivity({ agent: agentHandle(wfAgent), agentKey: wfKey, headline: wfHead, detail: wfDet, startedAt: wfToolT0, phase: 'tool' });
+                  wfPaint(statusBlock(wfToolT0, wfHead, wfDet));
                   let dRes = ''; try { dRes = await executeTool(dTool, dArgs, creds, requestTerminalApproval, wfKey, user?.id ?? '', `${sidRef.current ?? 'main'}-${wfKey}`); if (dTool.startsWith('browser_') && dRes.includes('[agent-browser not installed')) setBrowserNudge(true); } catch (e) { dRes = `Error: ${e}`; }
+                  // The receipt is written BEFORE the supersede check. A user who presses Stop has
+                  // more right to see what the last call returned than anyone — that is usually the
+                  // reason they pressed it — and this is the run whose 766 real vendor rows were
+                  // discarded on Stop with nothing on screen to show they had ever arrived.
+                  wfLog.push(toolReceipt(dTool, dArgs, dRes));
+                  wfPaint('');
                   if (superseded()) break;   // user stopped mid-tool — don't re-show the indicator
                   const cappedWfRes = dRes.length > 3000 ? dRes.slice(0, 3000) + '\n…[truncated for context]' : dRes;
-                  setAgentStep(`${agentHandle(wfAgent)} · thinking…`); wfHist.push({ role: 'assistant', content: wfFinal }); wfHist.push({ role: 'user', content: `<tool_result>${cappedWfRes}</tool_result>` });
+                  setAgentStep(`${agentHandle(wfAgent)} · reading what came back…`); wfHist.push({ role: 'assistant', content: wfFinal }); wfHist.push({ role: 'user', content: `<tool_result>${cappedWfRes}</tool_result>` });
                   // Keep context bounded: preserve initial task + last 6 messages
                   if (wfHist.length > 7) wfHist.splice(1, wfHist.length - 7);
                   wfCutOff = true; // this iteration ended on a tool call, not a final answer
@@ -11238,7 +11367,18 @@ Everything you need for follow-ups is in that answer above; read it there rather
                   // catches steps that never ran a tool, saying plainly that it could not be done
                   // has to be an allowed answer — otherwise the fix for silence is invention.
                   wfHist.push({ role: 'user', content: 'STOP using tools now. From everything you have already found this run, output the COMPLETE final result right now — the full table (and any drafts requested), formatted cleanly. Do NOT call any more tools, do NOT say the data was slow, and do NOT return an empty reply. If some rows are thin, include what you have and note it in one line. If you genuinely could not do your part of this — the data was not there, the step depends on something nobody has done yet, or it needs the user\'s own hands — then say exactly that in one or two lines and stop. That is a real answer and it is the one I want. Never invent rows, names, numbers or results to fill the gap.' });
-                  const wfWrap = await streamTurnWithRetry(wfHist, wfSys, () => {}).catch(() => ({ text: '', truncated: false }));
+                  // The wrap-up is the biggest single response of the stage — it is asked for the
+                  // COMPLETE result — so it is the LONGEST silence of the run, and it was the one
+                  // call with no live paint at all. Show it writing.
+                  const wfWrapT0 = Date.now();
+                  const wfWrap0 = { t: '' };
+                  setActivity({ agent: agentHandle(wfAgent), agentKey: wfKey, headline: `${agentHandle(wfAgent)} is writing up the result`, detail: 'No more tools — putting together everything it found.', startedAt: wfWrapT0, phase: 'writing' });
+                  wfPaint(statusBlock(wfWrapT0, `${agentHandle(wfAgent)} is writing up the result`,
+                    'No more tools — putting together everything it found this run.'));
+                  const wfWrap = await streamTurnWithRetry(wfHist, wfSys, (chunk) => {
+                    const soFar = stripToolNoise((wfWrap0.t += chunk));
+                    if (soFar) wfPaint(soFar);
+                  }).catch(() => ({ text: '', truncated: false }));
                   const wfWrapClean = (wfWrap.text || '').replace(/<tool_call>[\s\S]*/g, '').replace(/<tool_code>[\s\S]*/g, '').replace(/CHOICES_BLOCK:[\s\S]*/g, '').trim();
                   if (wfWrapClean) wfAccum = wfAccum ? wfAccum + '\n\n' + wfWrapClean : wfWrapClean;
                 }
@@ -11263,7 +11403,9 @@ Everything you need for follow-ups is in that answer above; read it there rather
                   if (wfHasUnverifiedLinkedIn && !stopRef.current) {
                     const wfProse = wfClean.split('\n').filter(l => !/^\s*\|/.test(l)).join('\n').trim();
                     setAgentStep(`${agentHandle(wfAgent)} · verifying LinkedIn links…`);
-                    updateLastMsg((wfProse ? wfProse + '\n\n' : '') + `*${agentHandle(wfAgent)} is verifying the LinkedIn links — opening each in the browser…*`);
+                    updateLastMsg([runLogFence(wfLog), wfProse,
+                      statusBlock(Date.now(), `${agentHandle(wfAgent)} is verifying the LinkedIn links`,
+                        'Opening each profile in the browser — nothing it wrote itself is trusted.')].filter(Boolean).join('\n\n'));
                     try {
                       const wfVerified = await executeTool('verify_lead_list', { list: wfClean }, creds, requestTerminalApproval, wfKey, user?.id ?? '', `${sidRef.current ?? 'main'}-${wfKey}-autoverify`);
                       const wfVStart = wfVerified.indexOf('\n| ');
@@ -11282,7 +11424,9 @@ Everything you need for follow-ups is in that answer above; read it there rather
                 // string as the deliverable is what let two Arabic words become the stage result.
                 if (looksUnusable(wfClean, wfFullTask) && !wfChoices && !wfProp && !stopRef.current) {
                   setAgentStep(`${agentHandle(wfAgent)} · asking the short way…`);
-                  updateLastMsg(statusBlock(Date.now(), `${agentHandle(wfAgent)} went quiet — asking again, simply`,
+                  const wfRetryT0 = Date.now();
+                  const wfRetry0 = { t: '' };
+                  wfPaint(statusBlock(wfRetryT0, `${agentHandle(wfAgent)} went quiet — asking again, simply`,
                     'Same task, without the extra instructions a small model can choke on.'));
                   try {
                     const wfRetry = await streamTurnWithRetry(
@@ -11290,7 +11434,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
                       `You are ${wfAgent.humanName}, ${wfAgent.role}. ${wfAgent.description}\n\n`
                       + 'Answer the request directly and completely, in plain markdown. Do NOT call any tools. '
                       + 'Do not describe what you are about to do — produce the deliverable itself. Never reply with nothing.',
-                      () => {},
+                      (chunk) => { const s = stripToolNoise((wfRetry0.t += chunk)); if (s) wfPaint(s); },
                     );
                     const wfRt = cleanForRender((wfRetry.text || '')
                       .replace(/<tool_call>[\s\S]*/g, '')
@@ -11303,8 +11447,15 @@ Everything you need for follow-ups is in that answer above; read it there rather
                 // version of what must have happened — which is where "the research agent is now
                 // working on it" came from. Name what actually happened instead.
                 const wfUsable = !looksUnusable(wfClean, wfFullTask);
-                const wfBubble = (wfUsable ? wfClean.trim() : '') || (wfChoices ? `Here are ${wfChoices.choices.length} variants.` : wfProp ? 'Automation plan ready.'
+                const wfAnswer = (wfUsable ? wfClean.trim() : '') || (wfChoices ? `Here are ${wfChoices.choices.length} variants.` : wfProp ? 'Automation plan ready.'
                   : `${wfAgent.name} finished this stage without producing anything to show — the model went quiet rather than returning a result. Nothing from this step was saved. Send it again${mode === 'own_key' ? ', or switch this chat to another model — smaller models sometimes stop mid-task on a long brief' : ''}.`);
+                // THE RECEIPTS OUTLIVE THE RUN. They are kept on the finished bubble (and saved
+                // with it, so a reopened chat still has them) because the question they answer —
+                // "did it really read my sheet, or is this made up?" — is asked AFTER the answer
+                // arrives, not during. On a stage that produced nothing they matter more, not
+                // less: they are the difference between "it did nothing" and "it read 766 rows
+                // and then the model went quiet".
+                const wfBubble = [runLogFence(wfLog), wfAnswer].filter(Boolean).join('\n\n');
                 delegationDisplay = wfBubble; // saved to DB so reload shows this, not the boss note
                 setMessages(prev => { const c = [...prev]; const l = c[c.length - 1]; if (l?.role === 'delegation') c[c.length - 1] = { ...l, content: wfBubble, streaming: false }; return c; });
                 if (wfProp) { addMsg({ role: 'proposal', content: '', proposal: wfProp }); if (sid) { sessionStorage.setItem(`krew-proposal-${sid}`, JSON.stringify(wfProp)); krewDb.saveMessage(sid, 'tool_result', JSON.stringify(wfProp), '__proposal__').catch(() => {}); } }
@@ -11871,6 +12022,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
       const slot = live.findIndex((v) => v.key === member.key);
       live[slot].status = 'thinking';
       setAgentStep(`${agentHandle(member)} is writing their view — ${slot + 1} of ${members.length}`);
+      setActivity({ agent: agentHandle(member), agentKey: member.key, headline: `${agentHandle(member)} is writing their view`, detail: `Opening round — adviser ${slot + 1} of ${members.length}, answering without hearing the others.`, startedAt: Date.now(), phase: 'writing' });
       paint();
       await ask(member, `THE DECISION IN FRONT OF THE COUNCIL:\n${question}\n\nGive your view, in character, following your rules. Be brief and specific.`,
         slot, (t) => { live[slot].text = t; });
@@ -11893,6 +12045,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
         live[slot].status = 'thinking';
         paint();
         setAgentStep(`${agentHandle(member)} is answering the others`);
+        setActivity({ agent: agentHandle(member), agentKey: member.key, headline: `${agentHandle(member)} is answering the others`, detail: 'Second round — they have read each other now.', startedAt: Date.now(), phase: 'writing' });
         const others = roster.filter((o) => o.key !== member.key)
           .map((o) => `### ${o.name} (${o.humanName})\n${(live.find((v) => v.key === o.key)?.text || '').slice(0, 900)}`).join('\n\n');
         await ask(member,
@@ -11912,6 +12065,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
       live[slot].status = 'thinking';
       updateCouncilCard((m) => ({ ...m, councilStage: `${executor.humanName} is turning all of it into one plan.` }));
       setAgentStep(`${agentHandle(executor)} is writing the final plan`);
+      setActivity({ agent: agentHandle(executor), agentKey: executor.key, headline: `${agentHandle(executor)} is turning it into one plan`, detail: 'Everything the council said, resolved into what happens Monday.', startedAt: Date.now(), phase: 'writing' });
       paint();
       /** The other four, at a given length each. Shorter on a retry — see below. */
       const transcriptAt = (full: number, reply: number) => speakers.map((o) => {
@@ -12047,6 +12201,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
   function askForPlan(goal = '') {
     setBusy(true);
     stopRef.current = false;
+    resumeActivity();   // clearing Stop restarts work — the activity bus speaks again
     const myGen = runGenRef.current;
     void (async () => {
       const sid = await ensureSession('Plan').catch(() => null);
@@ -12156,6 +12311,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
   function startCouncil(question: string, opts?: { debate?: boolean; asked?: string }) {
     setBusy(true);
     stopRef.current = false;
+    resumeActivity();   // clearing Stop restarts work — the activity bus speaks again
     void (async () => {
       const sid = await ensureSession('Council review').catch(() => null);
       // SHOW THEM WHAT THEY ASKED. This was hard-coded, so someone who typed their own question
@@ -12260,6 +12416,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
 
     setBusy(true);
     stopRef.current = false;
+    resumeActivity();   // clearing Stop restarts work — the activity bus speaks again
     const myGen = runGenRef.current;
     const gone = () => stopRef.current || runGenRef.current !== myGen;
     addMsgHere({ role: 'user', content: text });
@@ -12300,6 +12457,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
       if (!member) { live[i].status = 'done'; continue; }
       live[i].status = 'thinking';
       setAgentStep(`${agentHandle(member)} is answering you`);
+      setActivity({ agent: agentHandle(member), agentKey: member.key, headline: `${agentHandle(member)} is answering you`, detail: 'A follow-up straight to one adviser.', startedAt: Date.now(), phase: 'writing' });
       paint();
       const mine = prior.find((v) => v.key === live[i].key)?.text || '';
       const others = wantExecutor && isExec
@@ -12378,6 +12536,8 @@ Everything you need for follow-ups is in that answer above; read it there rather
    */
   function beginRun(): number {
     stopRef.current = false;
+    resumeActivity();   // clearing Stop restarts work — the activity bus speaks again
+
     runGenRef.current += 1;
     return runGenRef.current;
   }
@@ -12396,6 +12556,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
     setAgentStep(null);
     setAgentTool(null);
     setReconnecting(null);
+    silenceActivity();   // the floor goes quiet, and stays quiet through the trailing updates
     // The step ladder ("Vikram is thinking…", "Step 2 of 4") is its own piece of state and kept
     // showing after Stop — which is the "boss is still thinking" the user was looking at even
     // though nothing was running any more. Clear it here too, so stopping LOOKS stopped.

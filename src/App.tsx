@@ -199,6 +199,14 @@ function AppShell() {
     );
     return () => { un.then((f) => f()).catch(() => {}); };
   }, []);
+
+  // Take the app's own notes-to-self out of the user's knowledge graph. Earlier builds mirrored
+  // every learned skill into the Brain as a node; skills live in the skill graph now, and the
+  // Skills tab reads that directly, so these are duplicates cluttering the graph the user opens
+  // to find their own data. Idempotent — after the first run it finds nothing and does nothing.
+  useEffect(() => {
+    import('./lib/skillGraph').then(({ sweepMirroredSkills }) => sweepMirroredSkills()).catch(() => {});
+  }, []);
   const [meshActive, setMeshActive] = useState(false);
   const [announcement, setAnnouncement] = useState<Announcement | null>(null);
   const [showFirstRun, setShowFirstRun] = useState(false);

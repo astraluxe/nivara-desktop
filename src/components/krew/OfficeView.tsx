@@ -10,6 +10,7 @@ import {
   loadPlan, todayView, planProgress, currentDay, PLAN_EVENT,
 } from '../../lib/planStore';
 import { routeTask } from '../../lib/taskRouting';
+import { ACTIVITY_EVENT, getActivity, type AgentActivity } from '../../lib/agentActivity';
 
 // ─── Stage constants ──────────────────────────────────────────────────────────
 const STAGE_W = 1240, STAGE_H = 860;
@@ -163,19 +164,25 @@ function Edges({ layout, activeDept, showLinks }: {
 }
 
 // ─── Agent box ────────────────────────────────────────────────────────────────
-function AgentBox({ la, active, dim, onDuty, onEnter, onLeave, onClick }: {
+function AgentBox({ la, active, dim, onDuty, working, onEnter, onLeave, onClick }: {
   la: LayoutAgent; active: boolean; dim: boolean;
   /** This agent is the one today's plan work would actually go to — see TodayStrip. */
   onDuty?: boolean;
+  /** This agent is running RIGHT NOW, in the chat — see the activity bus. */
+  working?: boolean;
   onEnter: () => void; onLeave: () => void; onClick: () => void;
 }) {
   return (
     <button
       className="absolute -translate-x-1/2 -translate-y-1/2 ov-node-pop"
       style={{
-        left: la.x, top: la.y, zIndex: active ? 25 : 8,
+        left: la.x, top: la.y, zIndex: working ? 26 : active ? 25 : 8,
         animationDelay: `${220 + la.idx * 18}ms`,
-        opacity: dim ? (onDuty ? 0.6 : 0.25) : 1,
+        // A working agent is never dimmed. The whole point of the floor plan is to be able to
+        // glance at the room and see who is at their desk; fading out the one person actually
+        // working, because the pointer happens to be over another department, is the one case
+        // where the hover effect is telling you the opposite of what you need to know.
+        opacity: working ? 1 : dim ? (onDuty ? 0.6 : 0.25) : 1,
         transition: 'opacity .25s',
       }}
       onMouseEnter={onEnter} onMouseLeave={onLeave} onClick={onClick}>
@@ -183,24 +190,28 @@ function AgentBox({ la, active, dim, onDuty, onEnter, onLeave, onClick }: {
         className="flex items-center gap-1.5 rounded-lg pl-2 pr-2.5 py-1 whitespace-nowrap transition-all duration-150"
         style={{
           background: 'var(--nv-surface)',
-          border: `1.5px solid ${active || onDuty ? la.color : 'var(--nv-border)'}`,
-          boxShadow: active
-            ? `0 6px 20px ${la.color}44`
-            : onDuty
-              ? `0 0 0 3px ${la.color}22, 0 3px 10px rgba(0,0,0,.18)`
-              : '0 3px 10px rgba(0,0,0,.18)',
-          transform: active ? 'scale(1.1)' : 'scale(1)',
+          border: `1.5px solid ${working || active || onDuty ? la.color : 'var(--nv-border)'}`,
+          boxShadow: working
+            ? `0 0 0 4px ${la.color}33, 0 8px 24px ${la.color}55`
+            : active
+              ? `0 6px 20px ${la.color}44`
+              : onDuty
+                ? `0 0 0 3px ${la.color}22, 0 3px 10px rgba(0,0,0,.18)`
+                : '0 3px 10px rgba(0,0,0,.18)',
+          transform: working || active ? 'scale(1.1)' : 'scale(1)',
         }}>
-        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: la.color }} />
+        <span className={`w-2 h-2 rounded-full shrink-0 ${working ? 'animate-pulse' : ''}`} style={{ background: la.color }} />
         <span className="text-[11.5px] font-medium" style={{ color: 'var(--nv-text)' }}>
           {la.agent.humanName}
         </span>
         {/* WHO TODAY'S WORK BELONGS TO, ON THE FLOOR PLAN ITSELF. Until now the Office was a
             picture of the org and the Plan was a list of jobs, and nothing joined them: you could
             not look at the room and see who was on the hook today. */}
-        {onDuty && (
+        {working ? (
+          <span className="text-[9px] font-mono px-1 rounded" style={{ background: `${la.color}33`, color: la.color }}>working</span>
+        ) : onDuty ? (
           <span className="text-[9px] font-mono px-1 rounded" style={{ background: `${la.color}22`, color: la.color }}>today</span>
-        )}
+        ) : null}
       </span>
     </button>
   );
@@ -640,6 +651,23 @@ export default function OfficeView({ userId, onSelectAgent, onClose, onOpenAutom
     return () => window.removeEventListener(PLAN_EVENT, on);
   }, []);
 
+  // ── WHO IS ACTUALLY WORKING, RIGHT NOW ────────────────────────────────────
+  //
+  // The Office was a diagram: it drew the org chart and, since the plan landed, who was on the
+  // hook today. What it could never show is the thing that makes it an office rather than a chart
+  // — somebody at a desk, doing a specific job, this second. A work order would run for minutes in
+  // the chat while this screen sat perfectly still, so the two halves of the product looked
+  // unrelated even when one was executing the other's plan.
+  //
+  // The chat already knows: it names the agent and the tool on every step. It now says so on a
+  // shared bus, and the floor reads it. One fact, two surfaces, no way for them to disagree.
+  const [live, setLive] = useState<AgentActivity | null>(() => getActivity());
+  useEffect(() => {
+    const on = (e: Event) => setLive((e as CustomEvent<AgentActivity | null>).detail ?? null);
+    window.addEventListener(ACTIVITY_EVENT, on);
+    return () => window.removeEventListener(ACTIVITY_EVENT, on);
+  }, []);
+
   const dutyKeys = useMemo(() => {
     if (!plan) return [] as string[];
     const { today, overdue } = todayView(plan);
@@ -754,6 +782,20 @@ export default function OfficeView({ userId, onSelectAgent, onClose, onOpenAutom
         />
       )}
 
+      {/* ── Live: what the floor is doing this second ──────────────────── */}
+      {live && live.phase !== 'idle' && (
+        <div className="shrink-0 flex items-start gap-2.5 px-5 py-2"
+          style={{ borderBottom: '1px solid var(--nv-border)', background: 'var(--nv-surface2)' }}>
+          <span className="mt-1 w-2 h-2 rounded-full shrink-0 animate-pulse" style={{ background: 'var(--nv-accent, #7C5CFF)' }} />
+          <div className="min-w-0">
+            <p className="text-[12px] font-medium truncate" style={{ color: 'var(--nv-text)' }}>{live.headline}</p>
+            {live.detail && (
+              <p className="text-[10.5px] leading-snug" style={{ color: 'var(--nv-faint)' }}>{live.detail}</p>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ── Graph stage ────────────────────────────────────────────────── */}
       <div ref={stageRef} className="relative flex-1 overflow-hidden">
         <div
@@ -770,6 +812,7 @@ export default function OfficeView({ userId, onSelectAgent, onClose, onOpenAutom
               active={activeDept === la.dept}
               dim={!!activeDept && activeDept !== la.dept}
               onDuty={dutyKeys.includes(la.agent.key)}
+              working={live?.agentKey === la.agent.key}
               onEnter={() => setHoverDept(la.dept)}
               onLeave={() => setHoverDept(null)}
               onClick={() => setPanel({ dept: la.dept, handle: agentHandle(la.agent) })}

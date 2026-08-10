@@ -434,15 +434,22 @@ export function learnSkill(input: { name: string; guide: string; from: string; k
     ? { ...ex, guide, triggerWords: [...new Set([...ex.triggerWords, ...words])].slice(0, 24), updatedAt: now }
     : { id, name, guide, triggerWords: words, kind: input.kind ?? 'recipe', createdAt: now, updatedAt: now, uses: 0 };
   writeLearned([skill, ...list.filter((s) => s.id !== id)]);
-  // Mirror into the Brain so it is visible, editable and deletable where the user already looks
-  // for what the app knows. Failure here is not fatal — the skill still works from localStorage.
-  import('./knowledgeStore').then(({ brain }) => {
-    brain.addNode({
-      title: `Skill: ${name}`,
-      kind: 'skill',
-      body: `${skill.kind === 'rule' ? 'A standing instruction from the user.' : 'Learned from a task that worked — followed instead of working it out again.'}\n\nWHEN: ${skill.triggerWords.slice(0, 10).join(', ')}\n\n${guide}`,
-    });
-  }).catch(() => { /* Brain optional */ });
+  // A SKILL BELONGS IN THE SKILL GRAPH. NOWHERE ELSE.
+  //
+  // This used to mirror every learned skill into the Brain as a `kind: 'skill'` node, on the
+  // reasoning that the user should be able to see it where they already look. That was the wrong
+  // place, and it made the knowledge graph worse in two ways at once.
+  //
+  // The Brain is what the USER has — their sheets, lists, contacts, notes, files. A skill is what
+  // the APP has learnt about how to work with them. Mixing the two means the graph the user opens
+  // to find their vendor master is padded with the app's own notes-to-self, every one of which is
+  // a node, an edge and a search hit competing with their actual data. And it was a second copy
+  // with its own lifetime: edit the Brain node and nothing changes, because the recipe that is
+  // really used is the one in this store.
+  //
+  // The Skills tab of the Brain already reads THIS store directly, so nothing is hidden by the
+  // removal — the same skill shows in the same window, in the panel that is actually about skills,
+  // and editing it there edits the copy that runs.
   return skill;
 }
 
@@ -450,12 +457,30 @@ export function forgetSkill(id: string): void {
   const gone = learnedSkills().find((x) => x.id === id);
   writeLearned(learnedSkills().filter((s) => s.id !== id));
   if (!gone) return;
-  // Take the Brain note with it — a skill the user deleted must not still be sitting in the graph
-  // looking like something the app will do.
+  // Skills are no longer mirrored into the Brain (see learnSkill), but earlier versions DID write
+  // them there, so anyone upgrading has stale `Skill: …` nodes sitting in their knowledge graph.
+  // Deleting a skill still sweeps its old node away, so the two can never drift apart — and
+  // sweepMirroredSkills below clears the rest in one pass at startup.
   import('./knowledgeStore').then(({ brain }) => {
     const node = brain.all().nodes.find((n) => n.kind === 'skill' && n.title.trim().toLowerCase() === `skill: ${gone.name}`.toLowerCase());
     if (node) brain.deleteNode(node.id);
   }).catch(() => { /* Brain optional */ });
+}
+
+/**
+ * Clear skill nodes an older build mirrored into the knowledge graph.
+ *
+ * Not a migration in the usual sense — nothing is moved, because the skills themselves never left
+ * this store. These nodes were always duplicates; they are just being taken out of the graph they
+ * did not belong in. Runs once, idempotent, and silent when there is nothing to do.
+ */
+export async function sweepMirroredSkills(): Promise<number> {
+  try {
+    const { brain } = await import('./knowledgeStore');
+    const stale = brain.all().nodes.filter((n) => n.kind === 'skill' && /^skill:\s/i.test(n.title.trim()));
+    for (const n of stale) brain.deleteNode(n.id);
+    return stale.length;
+  } catch { return 0; }
 }
 
 /**

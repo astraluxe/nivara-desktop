@@ -16,7 +16,11 @@ const KIND_LABEL: Record<BrainNodeKind, string> = {
   note: 'Note', file: 'File', data: 'Data', list: 'List', outreach: 'Outreach', contact: 'Contact', source: 'Source', image: 'Picture', skill: 'Skill',
   link: 'Link',
 };
-const KINDS: BrainNodeKind[] = ['note', 'file', 'data', 'list', 'outreach', 'contact', 'source', 'image', 'skill', 'link'];
+// 'skill' is gone from the filter row: skills live in the SKILLS tab of this same screen, not in
+// the knowledge graph, so a Skill filter here is a button that can only ever show an empty graph.
+// The kind stays in the type and in KIND_LABEL so any node left behind by an older build still
+// renders with a proper name until the startup sweep clears it.
+const KINDS: BrainNodeKind[] = ['note', 'file', 'data', 'list', 'outreach', 'contact', 'source', 'image', 'link'];
 
 const NODE_W = 150, NODE_H = 38;
 
