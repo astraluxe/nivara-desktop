@@ -185,3 +185,75 @@ export function repairTableShape(text: string): string {
 export function repairAnswer(text: string): string {
   return repairTableShape(unescapeStrayNewlines(text));
 }
+
+// ─── "As an AI, I cannot perform live web searches" ──────────────────────────
+//
+// Asked to find 200 non-tech companies in Bangalore, an agent holding web_search and a browser
+// replied: "As an AI, I cannot perform live web searches or access real-time business registries…
+// based on established business presence up to my knowledge cutoff", and then listed a hundred and
+// fifty companies from memory, telling the user to go and verify them against the MCA database
+// themselves.
+//
+// Every part of that is wrong. It CAN search — the tools were attached to that very turn. The list
+// is unverified recall presented as a deliverable. And the work was handed back to the user, which
+// is the one thing the app exists not to do.
+//
+// This is a different failure from inventing rows to finish a table: nothing was truncated and no
+// tool ran at all. The model simply believed it could not search, which is a belief no instruction
+// reliably removes — small models say this reflexively. So it is caught after the fact, by what the
+// answer says about itself, and the turn is sent back with the tool it forgot it had.
+const NO_ACCESS_CLAIMS = [
+  /\bas an ai\b[^.]{0,80}\b(cannot|can't|can not|unable)\b/i,
+  /\bI (cannot|can't|can not|am unable to|do not have the ability to)\b[^.]{0,60}\b(search|browse|access|retrieve|look up|crawl|scrape)\b[^.]{0,40}\b(web|internet|online|real[- ]time|live|current)\b/i,
+  /\bI (do|does) not have (access to|the ability)\b[^.]{0,60}\b(real[- ]time|live|current|internet|web|browsing)\b/i,
+  /\b(knowledge|training) cut[- ]?off\b/i,
+  /\bas of my (last|latest) (update|training)\b/i,
+  /\bbased on (my )?(training data|pre[- ]existing knowledge)\b/i,
+  /\bI (cannot|can't) (verify|confirm) (current|real[- ]time|live)\b/i,
+];
+
+/**
+ * Does this answer excuse itself for not having looked anything up?
+ *
+ * Used ONLY together with "and no search tool ran this turn" — the phrase alone can appear in a
+ * perfectly honest answer about what the app can and cannot do, and that answer must survive.
+ */
+export function disclaimsLiveAccess(text: string): boolean {
+  const t = String(text || '');
+  return NO_ACCESS_CLAIMS.some((re) => re.test(t));
+}
+
+/**
+ * Is this request asking for real-world facts that have to be looked up?
+ *
+ * Deliberately about the SHAPE of the ask, not its topic: "find/list/research N real things" is a
+ * research job whatever the things are. A request to write, plan, summarise or explain is not —
+ * those are legitimately answered from what the model already knows, and forcing a search on them
+ * would waste the user's quota on every message.
+ */
+export function needsRealResearch(request: string): boolean {
+  const t = String(request || '');
+  if (!/\b(find|search|look ?up|research|gather|collect|source|list|pull|compile|scout|identify)\b/i.test(t)) return false;
+  if (!/\b(compan(y|ies)|business(es)?|firms?|startups?|brands?|vendors?|suppliers?|founders?|ceos?|people|prospects?|leads?|competitors?|customers?|clients?|investors?|creators?|influencers?|contacts?)\b/i.test(t)) return false;
+  // Writing ABOUT them is not finding them.
+  if (/\b(blog|article|essay|deck|presentation|slides?|script|outline|strategy|plan|summary|explain)\b/i.test(t)) return false;
+  return true;
+}
+
+/**
+ * The verdict for a finished research turn: was this actually researched, or recalled?
+ *
+ * `searched` is whether any real lookup tool ran. When it did not and the answer either excuses
+ * itself or hands back a list of named things, the answer is not a deliverable — it is the model's
+ * memory wearing the shape of one.
+ */
+export function isUngroundedRecall(opts: { request: string; answer: string; searched: boolean }): boolean {
+  if (opts.searched) return false;
+  if (!needsRealResearch(opts.request)) return false;
+  const a = String(opts.answer || '');
+  if (disclaimsLiveAccess(a)) return true;
+  // A long list of named entities, produced without a single lookup, is recall whether or not it
+  // admits as much. Counted from numbered or bulleted lines carrying a capitalised name.
+  const named = a.split('\n').filter((l) => /^\s*(?:\d+[.)]|[-*•])\s+\**\s*[A-Z][A-Za-z&.' -]{3,}/.test(l)).length;
+  return named >= 8;
+}

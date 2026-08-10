@@ -38,7 +38,8 @@ import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining }
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
 import { builtInSkillsBlock, learnSkill } from '../../lib/skillGraph';
 import { describeIntent, toolReceipt, stripToolNoise, setActivity, silenceActivity, resumeActivity, runLogFence, liveFrame } from '../../lib/agentActivity';
-import { dropUngroundedRows, repairAnswer } from '../../lib/groundTruth';
+import { dropUngroundedRows, repairAnswer, isUngroundedRecall } from '../../lib/groundTruth';
+import { parseLeadRequest } from '../../lib/leadIntent';
 import { parseAnyTable, looksLikeIdentifier, looksLikeHeaderRow, extractContacts } from '../../lib/tableQuery';
 import { observeForRole, roleBlock } from '../../lib/userRole';
 import {
@@ -7102,7 +7103,13 @@ The prompt must be production-ready — specific enough for a motion designer to
    * work, so this behaves identically on adris.tech, a BYOK key, or a local model — only the short
    * "who fits" step uses the model at all.
    */
-  async function runLeadGeneration(cfg: LeadConfig) {
+  /**
+   * @param typedMessage The user's own words, when they TYPED the request instead of filling in
+   *   the card. Shown as their message so the chat reads like the conversation it was, with the
+   *   app's reading of it directly underneath — which is also how a misread gets caught early,
+   *   while Stop is still one press away.
+   */
+  async function runLeadGeneration(cfg: LeadConfig, typedMessage = '') {
     if (busy) return;
     const sid = await ensureSession('Lead list');
     // A new user-initiated run must clear the Stop flag. It was only reset by the main chat
@@ -7178,7 +7185,14 @@ The prompt must be production-ready — specific enough for a motion designer to
     const askLine = cfg.find === 'people'
       ? `Find ${cfg.count} people — ${cfg.what}${cfg.city ? ` in ${cfg.city}` : ''}${srcLabelForEcho ? ` (on ${srcLabelForEcho})` : ''}`
       : `Find ${cfg.count} leads — ${cfg.what}${cfg.city ? ` in ${cfg.city}` : ''} (${sizeLabel}, ${senLabel})`;
-    post({ role: 'user', content: askLine });
+    if (typedMessage) {
+      post({ role: 'user', content: typedMessage });
+      // Say what was understood BEFORE spending anything, in one line. A typed request was read by
+      // code rather than chosen on a form, so the reading itself is a claim that has to be visible.
+      post({ role: 'assistant', content: `Reading that as: **${askLine}**. Searching now — press Stop if that is not what you meant.` });
+    } else {
+      post({ role: 'user', content: askLine });
+    }
     post({ role: 'assistant', content: `Finding ${cfg.count} ${cfg.find === 'people' ? 'people' : 'leads'}…`, streaming: true });
 
     try {
@@ -9624,6 +9638,53 @@ _${plan.advice}_` : ''}`;
       launchOutreachFromConnections(count, focus, text);   // pass the user's real message so it shows
       return;
     }
+    // ── A TYPED LEAD SEARCH IS STILL A LEAD SEARCH ─────────────────────────────────────────────
+    //
+    // "search for non tech companies in bangalore try to get 200 of them and put them in the list"
+    // names the thing, the place, the number and the destination. The app has a deterministic run
+    // that does exactly that — real searches, real pages, saved to the Brain — and the only door
+    // to it was typing /leads and filling in a form.
+    //
+    // Typed as a sentence it fell through to the boss, which handed it to a model, which answered
+    // out of its own memory: "As an AI, I cannot perform live web searches… up to my knowledge
+    // cutoff", and then listed a hundred and fifty companies nobody had looked up. The tools were
+    // attached to that agent the entire time. A slash command is a shortcut, not a requirement —
+    // understanding the sentence is the app's job.
+    //
+    // parseLeadRequest only returns something when the sentence is complete enough to act on (verb,
+    // target, and an explicit number), and is tested against fourteen things it must NOT catch —
+    // questions, inbox reads, decks, and searches over the user's own Brain sheets.
+    if (isDirectCommand && !skipShortcuts) {
+      const leadAsk = parseLeadRequest(text);
+      if (leadAsk) {
+        setInput('');
+        // "put them in the list" means the list they attached. Falling back to a new one is right
+        // when nothing was attached — never guess at an existing list the user did not name.
+        const attachedList = (attachedFiles.find((f) => f.fromBrain && /\|/.test(f.content))?.name
+          ?? attachedFiles.find((f) => f.fromBrain)?.name ?? '')
+          .replace(/\.(md|txt|csv|markdown)$/i, '').trim();
+        const wantsExisting = /\b(the|my|this|that|existing|same)\s+list\b/i.test(text) && !!attachedList;
+        runLeadGeneration({
+          find: leadAsk.find,
+          sources: leadAsk.find === 'people' ? ['linkedin', 'web'] : ['web'],
+          addToList: wantsExisting ? attachedList : '',
+          what: leadAsk.what,
+          sizes: [],                       // unstated in the sentence — do not invent a filter
+          seniority: leadAsk.find === 'people' ? ['founder'] : [],
+          city: leadAsk.city,
+          sector: '',
+          count: leadAsk.count,
+          mustHaveLinkedIn: false,         // a company list must not be thrown away for want of a profile
+          mustHaveContact: false,
+          useMaps: leadAsk.useMaps,
+          reach: 'growing',
+          // Verification opens a page per row. On 200 rows that is a very long run, and the user
+          // asked for a list, not a vetted one — /leads is where that choice belongs.
+          verify: false,
+        }, text);
+        return;
+      }
+    }
     // Proactively suggest a relevant skill the user hasn't installed yet.
     if (text) {
       const sk = detectSkill(text);
@@ -10295,9 +10356,13 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
       // turn so one turn's deliverable can never be saved under a later, unrelated turn's title.
       turnProseRef.current = '';
       turnToolsRef.current = [];
+      // One correction per turn when the boss answers a research question from memory.
+      let bossRecallRetries = 0;
       while (steps < MAX_STEPS && !superseded()) {
         steps++;
-        setAgentStep(`Thinking… ${Math.round((steps / MAX_STEPS) * 100)}%`);
+        // "Thinking… 40%" is a percentage of a step budget, which is not a thing the user has or
+        // wants. The live panel below says what it is actually doing; this only needs to not lie.
+        setAgentStep(`${agentHandle(agent)} · working`);
         setAgentTool(null);
 
         let stepText = '';
@@ -10451,6 +10516,29 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
           continue;
         }
         if (!match) {
+          // ── ARJUN MUST NOT ANSWER A RESEARCH QUESTION OUT OF HIS OWN HEAD ─────────────────
+          //
+          // The boss exists so a plain sentence gets DONE, not narrated. Asked to find 200
+          // Bangalore companies he replied "As an AI, I cannot perform live web searches" and
+          // listed a hundred and fifty from memory — holding web_search, a browser, and eleven
+          // specialists he could have handed it to.
+          //
+          // Same catch as the delegates, at the top of the tree, and once only. What follows a
+          // refusal to search is not another try but the honest failure below, which is a better
+          // answer than a third round of the same recall.
+          if (!turnToolsRef.current.length && bossRecallRetries < 1 && !stopRef.current
+              && isUngroundedRecall({ request: text, answer: fullResponse, searched: false })) {
+            bossRecallRetries++;
+            carried = '';   // recalled text is not part of the answer
+            paintWork(`${agentHandle(agent)} answered from memory — sending it back`,
+              'It has a live web search, a browser and eleven specialists. Asking it to actually do this.');
+            history.push({ role: 'assistant', content: fullResponse });
+            history.push({ role: 'user', content:
+              'STOP. You answered from your own memory and said you cannot search the web. That is FALSE — you have a live web_search tool, a real browser, and specialists you can delegate to, all in this turn. Everything you just wrote is unverified recall.\n\n'
+              + 'Discard it. Either call web_search yourself with a real query, or delegate_to_agent to the specialist whose job this is — then build the answer from what actually comes back.\n\n'
+              + 'Never tell the user to go and verify your output themselves, and never explain what you would do instead of doing it. If a real search returns nothing usable, say so in one line — that is a correct answer, and a list from memory is not.' });
+            continue;
+          }
           // Strip any partial/orphaned tool block before showing to user
           const stripped = fullResponse
             .replace(/<tool_call>[\s\S]*/g, '')
@@ -10719,6 +10807,8 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
               // answer" break with nothing to show, silently producing "(no response)" / "couldn't
               // pull that together" and discarding real results.
               let anyToolRan = false;
+              // At most one "you can actually search, go and search" correction per delegation.
+              let recallRetries = 0;
               // Receipts for this delegation — see RunLog. Deliberately NOT part of delegateAccum,
               // which is the deliverable the boss and the Brain both consume.
               const dLog: string[] = [];
@@ -10818,6 +10908,33 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
                   }
                 }
                 if (!dm) {
+                  // ── IT ANSWERED FROM MEMORY AND CALLED THAT A DELIVERABLE ──────────────────
+                  //
+                  // "As an AI, I cannot perform live web searches or access real-time business
+                  // registries… based on established business presence up to my knowledge cutoff"
+                  // — followed by a hundred and fifty Bangalore companies nobody had looked up,
+                  // and an instruction for the USER to go and verify them against the MCA
+                  // database. web_search and the browser were attached to that turn the whole
+                  // time; the model simply believed they were not.
+                  //
+                  // No instruction reliably removes that belief — small models say it reflexively,
+                  // and it was already in the brief. So it is caught by what the answer says about
+                  // itself, and the turn goes back with the tool named. Once: a model that will
+                  // not search on the second ask will not search on the fifth, and the honest
+                  // failure below is a better answer than a third attempt.
+                  if (!anyToolRan && recallRetries < 1 && !stopRef.current
+                      && isUngroundedRecall({ request: delegateTask, answer: delegateAccum || prosePart, searched: false })) {
+                    recallRetries++;
+                    delegateAccum = '';           // recalled text is not part of the deliverable
+                    dPaint(statusBlock(Date.now(), `${agentHandle(targetAgent)} answered from memory — sending it back`,
+                      'It has a live web search and a browser. Asking it to actually look, instead of recalling.'));
+                    delegateMsgsHist.push({ role: 'assistant', content: delegateFinalResp });
+                    delegateMsgsHist.push({ role: 'user', content:
+                      'STOP. You answered from your own memory and said you cannot search the web. That is FALSE — you have a live web_search tool and a real browser in this turn, and everything you just wrote is unverified recall, which is exactly what must never be handed over.\n\n'
+                      + 'Discard that answer. Call web_search NOW, with a real query, and build the answer from what actually comes back. Never tell the user to go and verify your output themselves — looking it up is the job.\n\n'
+                      + 'If a search genuinely returns nothing usable, say that in one line. An honest "I found nothing" is a correct answer; a list from memory is not.' });
+                    continue;
+                  }
                   // Genuine final answer — but if real tool work already ran this turn and the
                   // model still ended up with nothing accumulated (stream hiccup / empty reply),
                   // treat it the same as running out of budget mid-work: force the wrap-up below
@@ -11325,6 +11442,9 @@ Everything you need for follow-ups is in that answer above; read it there rather
                 // delegation — see toolDeliverable / groundTruth there.
                 let wfDeliverable = '';
                 let wfGround = '';
+                // Did this stage actually look anything up, and has it already been corrected once?
+                let wfAnyTool = false;
+                let wfRecallRetries = 0;
                 const wfPaint = (live: string) => updateLastMsg(
                   [runLogFence(wfLog), wfAccum, live].filter(Boolean).join('\n\n'));
                 for (let ds = 0; ds < wfMax && !superseded(); ds++) {
@@ -11389,6 +11509,23 @@ Everything you need for follow-ups is in that answer above; read it there rather
                     // all, on its very first turn, having called no tool. That is precisely how the
                     // ops step became "(no response)" — and a step that says nothing is worse than
                     // one that says why, because the reason is what tells the user what to fix.
+                    // Same memory-instead-of-research catch as the single-delegate path — see the
+                    // long note there. A pipeline stage is if anything MORE exposed to it: it is
+                    // handed one step of someone else's plan, with no conversation around it to
+                    // make the point that the looking-up is the work.
+                    if (!wfAnyTool && wfRecallRetries < 1 && !stopRef.current
+                        && isUngroundedRecall({ request: wfFullTask, answer: wfAccum || prose, searched: false })) {
+                      wfRecallRetries++;
+                      wfAccum = '';   // recalled text is not part of the deliverable
+                      wfPaint(statusBlock(Date.now(), `${agentHandle(wfAgent)} answered from memory — sending it back`,
+                        'It has a live web search and a browser. Asking it to actually look, instead of recalling.'));
+                      wfHist.push({ role: 'assistant', content: wfFinal });
+                      wfHist.push({ role: 'user', content:
+                        'STOP. You answered from your own memory and said you cannot search the web. That is FALSE — you have a live web_search tool and a real browser in this turn, and everything you just wrote is unverified recall, which is exactly what must never be handed over.\n\n'
+                        + 'Discard that answer. Call web_search NOW, with a real query, and build the answer from what actually comes back. Never tell the user to go and verify your output themselves — looking it up is the job.\n\n'
+                        + 'If a search genuinely returns nothing usable, say that in one line. An honest "I found nothing" is a correct answer; a list from memory is not.' });
+                      continue;
+                    }
                     if (!wfAccum.trim()) wfCutOff = true;
                     break; // no tool call anywhere in the text — genuine final answer
                   }
@@ -11437,6 +11574,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
                     wfDeliverable = (wfTblStart >= 0 ? dRes.slice(wfTblStart) : dRes).trim();
                   }
                   if (dRes && !/^Error:/.test(dRes)) wfGround += `\n${dRes}`;
+                  wfAnyTool = true;   // this stage really did look something up
                   // The receipt is written BEFORE the supersede check. A user who presses Stop has
                   // more right to see what the last call returned than anyone — that is usually the
                   // reason they pressed it — and this is the run whose 766 real vendor rows were
