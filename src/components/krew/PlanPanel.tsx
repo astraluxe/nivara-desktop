@@ -9,7 +9,7 @@ import PlanCalendar from './PlanCalendar';
 import TaskHandover from './TaskHandover';
 import { routeTask, routeTeam } from '../../lib/taskRouting';
 import { workOrderInstruction, parseWorkOrder, blankWorkOrder, deriveSteps } from '../../lib/workOrder';
-import { AGENT_BY_KEY, agentHandle } from '../../lib/krewAgents';
+import { AGENT_BY_KEY, KREW_AGENTS, agentHandle } from '../../lib/krewAgents';
 import { loadAvailability, freeSlotsOn, to24h, describeAvailability, AVAIL_EVENT } from '../../lib/availability';
 
 // ─── The plan you actually work through ──────────────────────────────────────
@@ -29,7 +29,135 @@ function localISO(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, onDraftBrief }: {
+// ─── The work order, drawn instead of written ────────────────────────────────
+//
+// The detail behind a task was a block of pre-wrapped prose. It is the most useful thing in the
+// panel and nobody reads it, which makes it worth nothing — "reading all that is boring", and a
+// 380px column of grey text is exactly the shape people skip.
+//
+// So it is drawn as what it actually is: an ordered handover. One row per stage, each saying who
+// does it, what they do it with, and what comes out the other end — a note in the Brain, a file in
+// the folder, a page saved, messages sent. Nothing here calls a model: parseWorkOrder already
+// splits the order into steps, routeTask already knows who suits a step, and the outcome is read
+// off the step's own wording. A panel should answer, not ask.
+
+/**
+ * What a step LEAVES BEHIND, read from how it is written. Null when it produces nothing lasting.
+ *
+ * ORDER MATTERS AND IS NOT ALPHABETICAL. "Filter the sheet and keep the rows with an email" is a
+ * list step that happens to contain the word "email"; checked in the wrong order it came out as
+ * "messages ready to send", which is the opposite of what that day produces. So the specific
+ * artefacts are tested first, and messaging last — and only when a sending verb is present.
+ */
+function outcomeOf(step: string): { label: string; tone: string } | null {
+  const t = step.toLowerCase();
+  if (/\bsave[sd]? (it |them |the )?(to|in|into) (the )?brain\b|\bsave_to_brain\b|\bbrain note\b/.test(t)) return { label: 'saved in your Brain', tone: '#7C5CFF' };
+  if (/\b(video|youtube|short|reel|thumbnail|record|film)\b/.test(t)) return { label: 'a video, uploaded', tone: '#e15ba8' };
+  if (/\b(pdf|one[- ]?pager|docx|deck|presentation|slides?)\b/.test(t)) return { label: 'a document you can send', tone: '#e0a317' };
+  if (/\b(csv|xlsx?|spreadsheet)\b/.test(t)) return { label: 'a spreadsheet', tone: '#e0a317' };
+  if (/\b(filter|qualif\w*|enrich\w*|verif\w*|research\w*|scrape|build (a|the) list|shortlist)\b/.test(t)) return { label: 'a list you can act on', tone: '#7C5CFF' };
+  if (/\b(draft|write|send|reply|launch|sequence)\b/.test(t) && /\b(email|dm|message|outreach|whatsapp|linkedin)\b/.test(t)) return { label: 'messages ready to send', tone: '#2bb673' };
+  if (/\b(publish|upload|post it|list(ed)? on|website|landing page)\b/.test(t)) return { label: 'published, link saved', tone: '#3f8cf5' };
+  if (/\b(call|meeting|book|calendar|schedule)\b/.test(t)) return { label: 'in your calendar', tone: '#15b8c4' };
+  return null;
+}
+
+/**
+ * The agent the step NAMES, if it names one.
+ *
+ * The router is a guess from wording; a step that says "research_agent enriches the top 200 rows"
+ * is not a guess, it is an instruction. Guessing over the top of it got that step assigned to
+ * nobody at all, while the answer was written in the step itself.
+ */
+function agentNamedIn(step: string): string | undefined {
+  const t = step.toLowerCase();
+  const byKey = KREW_AGENTS.find((a) => a.key !== 'boss' && new RegExp(`\b${a.key}\b`).test(t));
+  if (byKey) return byKey.key;
+  const byHandle = KREW_AGENTS.find((a) => a.key !== 'boss' && t.includes(agentHandle(a).toLowerCase()));
+  return byHandle?.key;
+}
+
+/** The one or two things a stage actually works WITH — named tools beat a generic sentence. */
+function toolsFor(step: string): string[] {
+  const r = routeTask(step);
+  return (r?.tools ?? []).slice(0, 2).map((t) => t.name);
+}
+
+function WorkOrderFlow({ brief, action }: { brief: string; action: string }) {
+  const order = parseWorkOrder(brief, action);
+  // A brief with no recognisable steps is still worth drawing: derive them from its prose the same
+  // way the pipeline does, so an order written as a paragraph is not left as a paragraph.
+  const steps = order.steps.length ? order.steps : deriveSteps(order.summary || brief, 7);
+  if (!steps.length) {
+    return <p className="text-[10px] text-nv-muted leading-relaxed whitespace-pre-wrap mt-0.5">{brief}</p>;
+  }
+  return (
+    <div className="mt-1">
+      {order.summary.trim() && steps.length > 0 && order.summary.trim() !== brief.trim() && (
+        <p className="text-[10px] text-nv-muted leading-relaxed mb-1.5">{order.summary.trim()}</p>
+      )}
+      <div className="flex flex-col">
+        {steps.map((st, i) => {
+          const who = agentNamedIn(st) ?? (routeTask(st)?.agents ?? [])[0];
+          const agent = who ? AGENT_BY_KEY[who] : undefined;
+          const out = outcomeOf(st);
+          const tools = toolsFor(st);
+          return (
+            <div key={i} className="flex gap-1.5">
+              {/* the spine — a number and the line joining it to the next stage */}
+              <div className="flex flex-col items-center shrink-0 w-4">
+                <span
+                  className="w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold"
+                  style={{ background: 'rgba(124,92,255,.16)', color: '#7C5CFF' }}
+                >{i + 1}</span>
+                {i < steps.length - 1 && <span className="flex-1 w-px my-0.5" style={{ background: 'var(--nv-border)' }} />}
+              </div>
+              <div className="min-w-0 flex-1 pb-2">
+                <p className="text-[10.5px] text-nv-text leading-snug">{st}</p>
+                <div className="flex flex-wrap items-center gap-1 mt-0.5">
+                  {agent && (
+                    <span className="text-[9px] px-1.5 py-[1px] rounded-md border border-accent/30 bg-accent/[0.07] text-accent">
+                      {agentHandle(agent)}
+                    </span>
+                  )}
+                  {tools.map((t) => (
+                    <span key={t} className="text-[9px] font-mono px-1.5 py-[1px] rounded-md border border-nv-border text-nv-faint">{t}</span>
+                  ))}
+                  {out && (
+                    <span className="text-[9px] px-1.5 py-[1px] rounded-md" style={{ border: `1px solid ${out.tone}44`, color: out.tone }}>
+                      → {out.label}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {order.uses.length > 0 && (
+        <p className="text-[9.5px] text-nv-faint leading-snug mt-0.5">
+          <span className="uppercase tracking-wide font-semibold">Works from </span>
+          {order.uses.slice(0, 5).join(' · ')}
+        </p>
+      )}
+      {order.doneWhen.trim() && (
+        <p className="text-[9.5px] leading-snug mt-1 px-1.5 py-1 rounded-md"
+          style={{ background: 'rgba(43,182,115,.08)', color: '#2bb673' }}>
+          ✔ Finished when: {order.doneWhen.trim()}
+        </p>
+      )}
+      {order.asks.length > 0 && (
+        <p className="text-[9.5px] text-nv-muted leading-snug mt-1">
+          <span className="uppercase tracking-wide font-semibold text-nv-faint">Needs you </span>
+          {order.asks.slice(0, 3).join(' · ')}
+        </p>
+      )}
+    </div>
+  );
+}
+
+export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, onAskForPlan, onDraftBrief }: {
   onClose: () => void;
   /** Hand a step to Krew so it can actually DO it — with the browser, the apps, the lot. */
   onRunStep: (instruction: string) => void;
@@ -49,6 +177,8 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
    * not run the tool. A button has to do the thing it says.
    */
   onCouncil: (question: string, asked?: string) => void;
+  /** Write the first plan — a direct call with everything the app already knows, not a chat message. */
+  onAskForPlan: (goal: string) => void;
 }) {
   const [plan, setPlan] = useState<ActionPlan | null>(() => loadPlan());
   const [showAll, setShowAll] = useState(false);
@@ -65,6 +195,8 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
   /** The "ask the council my own question" box: open, and what has been typed into it. */
   const [askOpen, setAskOpen] = useState(false);
   const [askText, setAskText] = useState('');
+  /** What the user is trying to achieve — the only thing the plan writer cannot work out itself. */
+  const [goal, setGoal] = useState('');
 
   const [avail, setAvail] = useState(() => loadAvailability());
 
@@ -99,13 +231,24 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
             panel shows what today's job is, keeps your To-do updated by date, and logs what actually got done —
             including anyone who asked for a meeting while you were in the copilot.
           </p>
+          {/* THE ONE THING IT CANNOT KNOW IS WHAT YOU ARE TRYING TO DO. Everything else — the
+              product note, the lists and their columns, the working hours, the campaigns already
+              running — is already here, so the button asks for the goal and nothing else. */}
+          <textarea
+            value={goal}
+            onChange={(e) => setGoal(e.target.value)}
+            rows={2}
+            placeholder="What are you trying to achieve? e.g. 20 paying clients on the ₹5k plan this month, non-tech companies of 50–200 people"
+            className="mt-3 w-full rounded-lg px-2.5 py-2 text-[11px] bg-nv-bg border border-nv-border focus:border-accent outline-none text-nv-text resize-y"
+          />
           <button
-            onClick={() => onRunStep('Write me a day-by-day action plan I can actually work through. Ask me anything you need about my business, my goal and how much time I have each day before you write it. Lay it out as "Day 1: …", "Day 2: …" with one concrete action per day and how I know it is finished.')}
-            className="mt-3 w-full text-[11px] font-semibold px-3 py-2 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-fast"
+            onClick={() => { onAskForPlan(goal.trim()); onClose(); }}
+            className="mt-2 w-full text-[11px] font-semibold px-3 py-2 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-fast"
           >Ask for a plan →</button>
           <p className="text-[10px] text-nv-faint leading-relaxed mt-3">
-            It will ask about your goal first rather than guessing — a plan built on the wrong assumption wastes
-            the whole month.
+            It already has your product note, your saved lists and their columns, the outreach you have
+            running and the hours you work — so it will not ask you to type any of that out again. Leave the
+            box empty and it will plan from what it can see.
           </p>
         </div>
       </div>
@@ -212,7 +355,7 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
                   <p className="text-[9px] font-semibold uppercase tracking-wide text-accent">
                     {s.handedOverAt ? 'The work order · handed over' : 'The work order'}
                   </p>
-                  <p className="text-[10px] text-nv-muted leading-relaxed whitespace-pre-wrap mt-0.5">{s.brief}</p>
+                  <WorkOrderFlow brief={s.brief} action={s.action} />
                 </div>
               )}
               {stepContext(s) && (

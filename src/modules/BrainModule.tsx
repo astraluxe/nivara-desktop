@@ -682,6 +682,129 @@ function DeckPreview({ path, onCopySaved }: { path: string; onCopySaved?: (nodeI
 }
 
 // ─── Main module ──────────────────────────────────────────────────────────────
+// ─── Everything the agents actually made, in one list ─────────────────────────
+//
+// Links and Files have both existed in the Brain for a while — an agent that builds a Notion page
+// or exports a PDF records it — but the only way to SEE them was to find their hub node in the
+// graph and follow the edges. So the user's honest question was "what has actually been saved?"
+// and the app's answer was a spider diagram. This is the flat answer: every saved page and every
+// file path, newest first, one click to open.
+function SavedPanel({ onClose, onJump }: { onClose: () => void; onJump: (id: string) => void }) {
+  const [tab, setTab] = useState<'links' | 'files'>('links');
+  const [q, setQ] = useState('');
+  const [rows, setRows] = useState<{ links: BrainNode[]; files: BrainNode[] }>(
+    () => ({ links: brain.listLinks(), files: brain.listFiles() }),
+  );
+  useEffect(() => {
+    const on = () => setRows({ links: brain.listLinks(), files: brain.listFiles() });
+    window.addEventListener(BRAIN_EVENT, on);
+    return () => window.removeEventListener(BRAIN_EVENT, on);
+  }, []);
+
+  const open = async (u: string) => {
+    if (!u) return;
+    try { await invoke<string>('run_browser_persistent', { args: `open "${u}"` }); }
+    catch { try { window.open(u, '_blank', 'noreferrer'); } catch { /* nothing left to try */ } }
+  };
+  const reveal = async (path: string) => {
+    if (!path) return;
+    // Show it where it LIVES. Opening the file itself is a guess about which app should own it;
+    // opening the folder around it is right for every kind.
+    try { await invoke('open_path', { path: path.replace(/[\\/][^\\/]+$/, '') }); }
+    catch { try { await navigator.clipboard.writeText(path); } catch { /* nothing left to try */ } }
+  };
+
+  const needle = q.trim().toLowerCase();
+  const match = (n: BrainNode) => !needle
+    || n.title.toLowerCase().includes(needle)
+    || (n.body || '').toLowerCase().includes(needle)
+    || (n.url || '').toLowerCase().includes(needle)
+    || (n.filePath || '').toLowerCase().includes(needle);
+  const list = (tab === 'links' ? rows.links : rows.files).filter(match);
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-stretch justify-end" style={{ background: 'rgba(0,0,0,.55)' }} onClick={onClose}>
+      <div
+        className="w-full max-w-lg h-full flex flex-col min-h-0"
+        style={{ background: 'var(--nv-surface)', borderLeft: '1px solid var(--nv-border)' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-4 py-3 shrink-0" style={{ borderBottom: '1px solid var(--nv-border)' }}>
+          <div className="flex items-center gap-2">
+            <p className="text-[13px] font-semibold flex-1" style={{ color: 'var(--nv-text)' }}>Saved by your agents</p>
+            <button onClick={onClose} className="text-[13px] leading-none px-1" style={{ color: 'var(--nv-faint)' }} aria-label="Close">×</button>
+          </div>
+          <p className="text-[10.5px] mt-0.5" style={{ color: 'var(--nv-faint)' }}>
+            Every page they built or verified, and every file they wrote to your folder — with where it is.
+          </p>
+          <div className="flex items-center gap-1 mt-2">
+            {([['links', `Links (${rows.links.length})`], ['files', `Files (${rows.files.length})`]] as const).map(([k, label]) => (
+              <button key={k} onClick={() => setTab(k)}
+                className="text-[11px] px-2.5 py-1 rounded-md font-medium transition-fast"
+                style={tab === k
+                  ? { background: '#7C5CFF', color: '#fff' }
+                  : { background: 'transparent', color: 'var(--nv-muted)', border: '1px solid var(--nv-border)' }}>{label}</button>
+            ))}
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search…"
+              className="ml-auto text-[11px] px-2 py-1 rounded-md outline-none"
+              style={{ background: 'var(--nv-bg)', border: '1px solid var(--nv-border)', color: 'var(--nv-text)', width: 140 }}
+            />
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto min-h-0 p-3 flex flex-col gap-1.5">
+          {list.length === 0 ? (
+            <p className="text-[11.5px] leading-relaxed px-1 pt-4" style={{ color: 'var(--nv-faint)' }}>
+              {tab === 'links'
+                ? 'No pages saved yet. When an agent builds or verifies a page it keeps the link here, so the next task reopens it instead of rebuilding it.'
+                : 'No files recorded yet. Switch your workspace folder on in Settings → Files, and anything an agent makes or downloads is filed here with its path.'}
+            </p>
+          ) : list.map((n) => (
+            <div key={n.id} className="rounded-lg px-2.5 py-2"
+              style={{ background: 'var(--nv-bg)', border: '1px solid var(--nv-border)' }}>
+              <div className="flex items-start gap-2">
+                <span className="w-2 h-2 rounded-full shrink-0 mt-1.5" style={{ background: KIND_COLOR[n.kind] }} />
+                <div className="min-w-0 flex-1">
+                  <p className="text-[12px] font-medium truncate" style={{ color: 'var(--nv-text)' }}>{n.title}</p>
+                  <p className="text-[10px] font-mono break-all" style={{ color: 'var(--nv-faint)' }}>
+                    {tab === 'links' ? n.url : n.filePath}
+                  </p>
+                  {(n.body || '').trim() && (
+                    <p className="text-[10.5px] mt-0.5" style={{ color: 'var(--nv-muted)' }}>{n.body.slice(0, 160)}</p>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 mt-1.5">
+                <button
+                  onClick={() => (tab === 'links' ? open(n.url ?? '') : reveal(n.filePath ?? ''))}
+                  className="text-[10px] px-2 py-0.5 rounded-md font-medium transition-fast"
+                  style={{ border: '1px solid #7C5CFF44', color: '#7C5CFF' }}
+                >{tab === 'links' ? 'Open' : 'Show in folder'}</button>
+                <button
+                  onClick={() => { void navigator.clipboard.writeText((tab === 'links' ? n.url : n.filePath) ?? ''); }}
+                  className="text-[10px] px-2 py-0.5 rounded-md transition-fast"
+                  style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-faint)' }}
+                >Copy</button>
+                <button
+                  onClick={() => { onJump(n.id); onClose(); }}
+                  className="text-[10px] px-2 py-0.5 rounded-md transition-fast"
+                  style={{ border: '1px solid var(--nv-border)', color: 'var(--nv-faint)' }}
+                >Show in graph</button>
+                <span className="ml-auto text-[9.5px] font-mono" style={{ color: 'var(--nv-faint)' }}>
+                  {new Date(n.updatedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function BrainModule() {
   const [data, setData] = useState<BrainData>(() => brain.all());
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -696,6 +819,8 @@ export default function BrainModule() {
   // The node to jump to and flash. `key` is bumped every time so asking for the same node twice
   // still flashes — pressing "Open in Brain" again must not look like a dead button.
   const [focus, setFocus] = useState<{ id: string; key: number } | null>(null);
+  /** The flat "what has actually been saved" list — see SavedPanel. */
+  const [savedOpen, setSavedOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -923,6 +1048,21 @@ export default function BrainModule() {
             ))}
           </div>
 
+          {/* WHAT HAS ACTUALLY BEEN SAVED. Links and Files were only reachable by finding their hub
+              in the graph and following the edges, so "show me what you built" had no answer. */}
+          <button
+            onClick={() => setSavedOpen(true)}
+            className="flex items-center gap-1.5 text-[11px] px-2.5 py-1.5 rounded-lg font-medium transition-fast ml-1"
+            style={{ border: '1px solid var(--nv-border)', background: 'var(--nv-surface)', color: 'var(--nv-muted)' }}
+            title="Every link and file your agents saved"
+          >
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1" />
+              <path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" />
+            </svg>
+            Links &amp; files
+          </button>
+
           <div className="flex-1" />
           {view === 'knowledge' && (
             <div className="relative">
@@ -1043,6 +1183,8 @@ export default function BrainModule() {
         <BrainPanel key={selected.id} node={selected} allNodes={data.nodes} edges={data.edges}
           onClose={() => setSelectedId(null)} onJump={setSelectedId} />
       )}
+
+      {savedOpen && <SavedPanel onClose={() => setSavedOpen(false)} onJump={jumpTo} />}
     </div>
   );
 }

@@ -523,7 +523,7 @@ function TodayStrip({ plan, onRun, onCouncil, onOpenPlan }: {
           No plan running — this room has nothing to work on yet.
         </span>
         <button
-          onClick={() => onRun('Write me a day-by-day action plan I can actually work through. Ask me anything you need about my business, my goal and how much time I have each day before you write it. Lay it out as "Day 1: …", "Day 2: …" with one concrete action per day and how I know it is finished.')}
+          onClick={onOpenPlan}
           className="text-[10px] font-medium px-2 py-1 rounded-lg border transition-fast"
           style={{ borderColor: 'var(--nv-border)', color: 'var(--nv-muted)' }}
         >Ask for a plan →</button>

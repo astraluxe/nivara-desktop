@@ -18,6 +18,7 @@ import { brain, nodeToMarkdown } from './knowledgeStore';
 import { loadPlan } from './planStore';
 import { roleGuess, ROLE_LABEL, ROLE_GUIDANCE } from './userRole';
 import { loadAvailability, describeAvailability } from './availability';
+import { KREW_AGENTS, agentHandle } from './krewAgents';
 
 /** The commands a user can actually run, described by what they DO rather than what they are called. */
 const CAPABILITIES = [
@@ -196,6 +197,122 @@ function timing(): string {
   return lines.join('\n');
 }
 
+// ─── The people who would actually do the work ────────────────────────────────
+//
+// A council wrote a whole month of steps addressed to `data_agent`, `content_agent`,
+// `outreach_agent`, `sales_agent`, `automation_agent`, `leads_agent` and `browser_agent`. Not one
+// of those exists. delegate_to_agent resolves an agent_key by exact lookup, so every one of those
+// steps would have come back "Unknown agent key" — a plan that cannot be handed to anybody, which
+// is the one thing a plan in this app has to be able to do.
+//
+// The names were invented because the briefing said "a team of ~40 named specialists" and never
+// said who they were. So here they are, with the exact key the tool takes.
+function roster(max = 60): string {
+  try {
+    // NOT A SLICE OF THE FIRST FEW. Capped at 26, the list stopped before Nyx.Research
+    // [research_agent] — the single agent most plan steps need — so the council could not name the
+    // one specialist it was most likely to want, and invented "data_agent" instead.
+    const useful = KREW_AGENTS.filter((a) => a.key !== 'boss' && !a.key.startsWith('council_'));
+    const byCat = new Map<string, string[]>();
+    for (const a of useful.slice(0, max)) {
+      byCat.set(a.category, [...(byCat.get(a.category) ?? []), `${agentHandle(a)} [${a.key}]`]);
+    }
+    if (!byCat.size) return '';
+    return '\nWHO WOULD ACTUALLY DO IT — the real team, with the exact key each step must name:\n'
+      + [...byCat.entries()].map(([cat, names]) => `- ${cat}: ${names.join(', ')}`).join('\n')
+      + '\nUSE ONLY THESE. A step addressed to an agent that does not exist cannot be handed to anyone and simply fails — "data_agent", "content_agent", "outreach_agent" and "sales_agent" are NOT real names here. Write a step as: research_agent (Nyx.Research) runs query_table on "<list>". Arjun.Boss can also bring in a specialist that is not on this list when the work genuinely needs one — say so explicitly if that is what you want.';
+  } catch { return ''; }
+}
+
+/**
+ * What the product IS, in the user's own words.
+ *
+ * Every member of a five-voice council asked the same question — "what is the 5k plan exactly?",
+ * "I still cannot tell what the product does for a factory owner" — and then wrote a month of
+ * outreach for a product none of them could describe. The answer was sitting in the Brain the
+ * whole time, in PRODUCT.md. The inventory listed its TITLE. A title is not a product.
+ */
+function productBrief(limit = 2600): string {
+  try {
+    const nodes = brain.all().nodes.filter((n) => (n.body || '').trim().length > 200);
+    const hit = nodes.find((n) => /^product(\.md)?$/i.test(n.title.trim()))
+      ?? nodes.find((n) => /\bproduct\b|\bpricing\b|\bplans?\b|\boffering\b|what we (do|sell)/i.test(n.title))
+      ?? null;
+    if (!hit) return '';
+    const md = (() => { try { return nodeToMarkdown(hit.body); } catch { return hit.body; } })();
+    return `\nTHE PRODUCT THEY ARE SELLING — from their own note "${hit.title}". This answers "what does`
+      + ' it do" and "what is in the plan", so do NOT ask them for it and do NOT invent a different'
+      + ` pitch:\n"""\n${md.replace(/\n{3,}/g, '\n\n').slice(0, limit)}\n"""`;
+  } catch { return ''; }
+}
+
+/**
+ * The outreach actually running right now, and how far through it is.
+ *
+ * "Launch Campaign 1" is a strange thing to advise someone who is already three campaigns in with
+ * forty people waiting on a reply. Read straight out of localStorage rather than through the
+ * copilot module, so a lib does not have to import a component to find out what is happening.
+ */
+function liveOutreach(): string {
+  try {
+    const seen = new Map<string, { title: string; total: number; done: number; purpose: string; list: string; at: number }>();
+    const take = (c: unknown) => {
+      const x = c as { title?: string; purpose?: string; sourceList?: string; updatedAt?: number;
+                       contacts?: Array<{ status?: string }> } | null;
+      if (!x || !Array.isArray(x.contacts) || !x.contacts.length || !x.title) return;
+      const done = x.contacts.filter((pp) => ['sent', 'accepted', 'replied', 'skip', 'meeting', 'met'].includes(pp.status || '')).length;
+      const at = x.updatedAt || 0;
+      const prev = seen.get(x.title);
+      if (prev && prev.at >= at) return;
+      seen.set(x.title, { title: x.title, total: x.contacts.length, done, purpose: x.purpose || '', list: x.sourceList || '', at });
+    };
+    try { take(JSON.parse(localStorage.getItem('nv-outreach-v1') || 'null')); } catch { /* none saved */ }
+    try {
+      const arch = JSON.parse(localStorage.getItem('nv-outreach-campaigns-v1') || '{}');
+      if (arch && typeof arch === 'object') for (const c of Object.values(arch)) take(c);
+    } catch { /* none saved */ }
+    if (!seen.size) return '\nOUTREACH RUNNING RIGHT NOW: none — no campaign has been started yet, so "launch the first campaign" really is a step.';
+    const rows = [...seen.values()].sort((a, b) => b.at - a.at).slice(0, 5);
+    return '\nOUTREACH ALREADY RUNNING (do NOT tell them to start from zero — continue, fix or finish these):\n'
+      + rows.map((r) => `- "${r.title}" — ${r.done}/${r.total} contacted${r.list ? `, built from "${r.list}"` : ''}${r.purpose ? `, purpose: ${r.purpose.slice(0, 80)}` : ''}`).join('\n');
+  } catch { return ''; }
+}
+
+/**
+ * The brief behind "Ask for a plan".
+ *
+ * The button used to send: "Write me a day-by-day action plan I can actually work through. Ask me
+ * anything you need about my business, my goal and how much time I have each day before you write
+ * it." Every one of those things is already known here — the product note, the lists with their
+ * columns, the working hours, the campaigns already running, the location — so the button opened
+ * by asking the user to type out what the app was holding, and then the boss delegated it to
+ * somebody and started work nobody had approved.
+ *
+ * This is the same briefing the council gets, with a writing instruction on top. What it must NOT
+ * do is ask questions it can answer itself; the one thing it genuinely cannot know is the goal, so
+ * that is the single thing it is allowed to state an assumption about and carry on.
+ */
+export function planRequestPrompt(goal = ''): string {
+  const g = goal.trim();
+  return [
+    g ? `Write me a day-by-day plan for this: ${g}` : 'Write me a day-by-day plan for the next 30 days.',
+    '',
+    'RULES FOR THIS PLAN:',
+    '- Do NOT ask me questions first. Everything about my business, my lists, my hours and my tools is in the briefing below — use it. If one thing is genuinely missing, state your assumption in one line and carry on.',
+    '- One concrete action per day, in my real working hours, on days I actually work.',
+    '- Name MY real lists, notes and campaigns — the ones in the briefing — never a placeholder or a list I do not have. If a campaign is already running, continue it rather than telling me to start from zero.',
+    '- Say which days are for RESEARCH/building and which are for CONTACTING people, and keep them apart.',
+    '- Every step names the agent who does it, using the exact key from the roster below.',
+    // MINIMAL WORK FOR THE PERSON. A plan that says "record a video, edit it, upload it, write the
+    // description" has handed a full-time job back to the one person it was supposed to help.
+    '- THE AGENTS DO THE WORK, NOT ME. Default every step to an agent with a real tool: they research, filter my sheets, draft, verify, generate the documents and decks, drive the browser to fill in and publish on sites I am already signed in to, and use the free web tools they know. Only put something in MY hands when it genuinely cannot be done without me — my face on camera, my voice, a password, a payment, or a decision. Say in one line what I personally have to do that day, and keep it under 30 minutes wherever you can.',
+    '- Split anything I do have to do: the agent prepares everything around it (script, shot list, thumbnail, title, description, tags, the upload itself, the follow-up email that links it), so my part is the smallest piece in the middle.',
+    '- Lay it out as "Day 1: …", "Day 2: …" so it can go straight into my calendar, and under each day write the two or three lines that say what actually has to be done — which list, filtered to what, sent to whom.',
+    '- Day 1 is TODAY. Do not plan anything into a day that has already gone past.',
+    councilContext(false),
+  ].join('\n');
+}
+
 /**
  * The briefing appended to every council member's prompt.
  *
@@ -219,6 +336,11 @@ export function councilContext(includePlan = true): string {
     '',
     'WHAT THIS PERSON ALREADY HAS — advice must use these rather than inventing new machinery:',
     ...CAPABILITIES.map((c) => `- ${c}`),
+    // WHAT THE PRODUCT ACTUALLY IS comes first: every other line in this briefing is only useful
+    // once you know what is being sold. Then who would do the work, then what is already running.
+    productBrief(),
+    roster(),
+    liveOutreach(),
     inventory.length
       ? `\nTHEIR OWN SAVED LISTS AND NOTES (name the real one in your advice):\n${inventory.map((t) => `- ${t}`).join('\n')}`
         + '\nA LIST TITLE IS NOT ITS CONTENTS. Judge what a list is by its COLUMNS, not by a word in its name — a sheet called "Vendor master" may be a bought prospect list, not the user\'s own suppliers. If a list decides your argument and you cannot tell what it is, ASK rather than assume.'

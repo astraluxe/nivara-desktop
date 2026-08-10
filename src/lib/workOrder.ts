@@ -71,7 +71,16 @@ function bare(line: string): string {
     .trim();
 }
 
-const strip = (s: string) => s.replace(/^\*\*|\*\*$/g, '').replace(/[*_`]/g, '').trim();
+// UNDERSCORES ARE NOT ALWAYS EMPHASIS. Stripping every `_` turned "research_agent" into
+// "researchagent" and "query_table" into "querytable" — so a work order naming the exact agent key
+// and the exact tool came out of the parser naming neither, and the step could no longer be routed
+// or handed to anybody. Only a matched _pair_ around a word is markdown; an underscore inside an
+// identifier is part of the identifier.
+const strip = (s: string) => s
+  .replace(/^\*\*|\*\*$/g, '')
+  .replace(/(^|[\s(])_([^_\s][^_]*?)_(?=[\s).,;:!?]|$)/g, '$1$2')
+  .replace(/[*`]/g, '')
+  .trim();
 
 /**
  * Read a drafted work order, however loosely it was written.

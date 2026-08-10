@@ -40,7 +40,7 @@ import { builtInSkillsBlock, learnSkill } from '../../lib/skillGraph';
 import { parseAnyTable, looksLikeIdentifier, looksLikeHeaderRow, extractContacts } from '../../lib/tableQuery';
 import { observeForRole, roleBlock } from '../../lib/userRole';
 import {
-  councilContext, addCouncilFact, loadCouncilFacts, clearCouncilFacts, type CouncilFact,
+  councilContext, planRequestPrompt, addCouncilFact, loadCouncilFacts, clearCouncilFacts, type CouncilFact,
   COUNCIL_KEYS, firstSentences, looksLikeCorrection, pickCouncilTargets,
 } from '../../lib/councilContext';
 import SkillsPanel from './SkillsPanel';
@@ -8120,7 +8120,10 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     // the stream resolves on the first chunk when stopRef is set, with no error — and stayed
     // broken until the user happened to send a normal message. That is what "the model didn't
     // return usable rewrites in 0s" was: not the model, a stale Stop.
-    stopRef.current = false;
+    // A NEW OUTREACH RUN CANCELS THE OLD ONE. Clearing the flag alone revived whatever the
+    // user had just stopped — see beginRun.
+    const myGen = beginRun();
+    const gone = () => stopRef.current || runGenRef.current !== myGen;
     resetToolStop();   // a new run: tools are allowed again
     resetLeadStop();
     resetToolStop();
@@ -8180,7 +8183,7 @@ _None of them had everything you ticked, so I've saved them rather than lose the
       // same reason; this matches it.
       const B = mode === 'local' ? 3 : mode === 'own_key' ? 8 : 30;
       for (let i = 0; i < pickConn.length; i += B) {
-        if (stopRef.current) break;
+        if (gone()) break;
         const batch = pickConn.slice(i, i + B);
         const range = `${i + 1}–${Math.min(i + batch.length, pickConn.length)} of ${pickConn.length}`;
         // Once-a-second heartbeat + live word count, so a slow local model (incl. the ~40s cold-load
@@ -8204,7 +8207,7 @@ _None of them had everything you ticked, so I've saved them rather than lose the
           // dropped everyone in the batch and the user was left wondering why some contacts had
           // no draft.
           const em = e instanceof Error ? e.message : String(e);
-          if (/\b429\b|rate.?limit|too many requests|quota/i.test(em) && !stopRef.current) {
+          if (/\b429\b|rate.?limit|too many requests|quota/i.test(em) && !gone()) {
             await new Promise((r) => setTimeout(r, 20000));
             i -= B;   // retry this same batch rather than losing it
           }
@@ -8242,12 +8245,12 @@ _None of them had everything you ticked, so I've saved them rather than lose the
           'Return ONLY a valid JSON array: [{"name":"<exact name as given>","message":"<the note>"}] — one object per person, EXACT names, nothing else.',
         ].join('\n');
         for (let i = 0; i < pickLeads.length; i += B) {
-          if (stopRef.current) break;
+          if (gone()) break;
           const batch = pickLeads.slice(i, i + B);
           const range = `${i + 1}–${Math.min(i + batch.length, pickLeads.length)} of ${pickLeads.length}`;
           let chars = 0;
-          const tick = () => updateLastMsg(statusBlock(draftStart, `Writing connection notes ${range}`,
-            chars ? `~${Math.round(chars / 5)} words written so far` : 'Working…'));
+          const tick = () => { if (gone()) return; updateLastMsg(statusBlock(draftStart, `Writing connection notes ${range}`,
+            chars ? `~${Math.round(chars / 5)} words written so far` : 'Working…')); };
           tick();
           const hb = setInterval(tick, 1000);
           const usr = `WHY I'M REACHING OUT:\n${goal || 'Start a genuine conversation with people in my space.'}\n\nWHAT I DO / WHAT I'M BUILDING:\n${productCtx || '(not specified — keep the note about them)'}\n\nWrite one connection-request note for EACH of these ${batch.length} people (use their exact name). Return the JSON array of exactly ${batch.length} objects:\n${batch.map((c) => `- ${c.name} — ${c.headline || '(no details)'}`).join('\n')}`;
@@ -8260,7 +8263,7 @@ _None of them had everything you ticked, so I've saved them rather than lose the
           // dropped everyone in the batch and the user was left wondering why some contacts had
           // no draft.
           const em = e instanceof Error ? e.message : String(e);
-          if (/\b429\b|rate.?limit|too many requests|quota/i.test(em) && !stopRef.current) {
+          if (/\b429\b|rate.?limit|too many requests|quota/i.test(em) && !gone()) {
             await new Promise((r) => setTimeout(r, 20000));
             i -= B;   // retry this same batch rather than losing it
           }
@@ -8297,12 +8300,12 @@ _None of them had everything you ticked, so I've saved them rather than lose the
           'Return ONLY a valid JSON array: [{"name":"<exact company name as given>","subject":"<subject>","message":"<the email body>"}] — one object per company, EXACT names, nothing else.',
         ].join('\n');
         for (let i = 0; i < pickCos.length; i += B) {
-          if (stopRef.current) break;
+          if (gone()) break;
           const batch = pickCos.slice(i, i + B);
           const range = `${i + 1}–${Math.min(i + batch.length, pickCos.length)} of ${pickCos.length}`;
           let chars = 0;
-          const tick = () => updateLastMsg(statusBlock(draftStart, `Writing company emails ${range}`,
-            chars ? `~${Math.round(chars / 5)} words written so far` : 'Working…'));
+          const tick = () => { if (gone()) return; updateLastMsg(statusBlock(draftStart, `Writing company emails ${range}`,
+            chars ? `~${Math.round(chars / 5)} words written so far` : 'Working…')); };
           tick();
           const hb = setInterval(tick, 1000);
           const usr = `WHY I'M REACHING OUT:\n${goal || 'Open a conversation about working together.'}\n\nWHAT I DO / WHAT I'M BUILDING:\n${productCtx || '(not specified — keep it about them)'}\n\nWrite one email for EACH of these ${batch.length} businesses. Return the JSON array of exactly ${batch.length} objects:\n${batch.map((c) => `- ${c.name} — ${c.headline || '(no details)'}`).join('\n')}`;
@@ -8311,7 +8314,7 @@ _None of them had everything you ticked, so I've saved them rather than lose the
           catch (e) {
             clearInterval(hb);
             const em = e instanceof Error ? e.message : String(e);
-            if (/\b429\b|rate.?limit|too many requests|quota/i.test(em) && !stopRef.current) {
+            if (/\b429\b|rate.?limit|too many requests|quota/i.test(em) && !gone()) {
               await new Promise((r) => setTimeout(r, 20000));
               i -= B;
             }
@@ -8454,6 +8457,11 @@ _None of them had everything you ticked, so I've saved them rather than lose the
         sourceList: attachedConn.map((f) => f.name)[0] || onlyLeadList || samePrior?.sourceList,
         createdAt: samePrior?.createdAt,
       };
+      // A CANCELLED RUN MUST NOT OPEN ITS PANEL OVER THE NEW ONE. This is the last thing a run
+      // does, and the run that was stopped reached it seconds after the replacement had already
+      // opened — so the old campaign took the panel back and the box flipped between two sets of
+      // numbers. Nothing this run built is lost: it was saved incrementally as it went.
+      if (gone()) return;
       setOutreachCampaign(campaign); // opens the popup deterministically, positioned on the first to-do
       // Say what is actually waiting for them. "0 messages to send" was true of the new drafts and
       // completely wrong as a summary — there were dozens already written and ready, and the user
@@ -8936,7 +8944,10 @@ _${plan.advice}_` : ''}`, streaming: true });
     // the stream resolves on the first chunk when stopRef is set, with no error — and stayed
     // broken until the user happened to send a normal message. That is what "the model didn't
     // return usable rewrites in 0s" was: not the model, a stale Stop.
-    stopRef.current = false;
+    // Same generation guard as the launcher: a refine the user stopped must not come back to
+    // life when the next run clears the flag, writing its progress line over the new one.
+    const myGen = beginRun();
+    const gone = () => stopRef.current || runGenRef.current !== myGen;
     resetToolStop();   // a new run: tools are allowed again
     resetLeadStop();
     resetToolStop();
@@ -8948,7 +8959,7 @@ _${plan.advice}_` : ''}`, streaming: true });
     let refined = 0;
     try {
       for (let b = 0; b < slice.length; b += BATCH) {
-        if (stopRef.current) break;
+        if (gone()) break;
         const batch = slice.slice(b, b + BATCH);
         const range = `${b + 1}–${Math.min(b + batch.length, slice.length)} of ${slice.length}`;
         // LIVE feedback via a once-a-second HEARTBEAT (not just on tokens): a local model spends the
@@ -8956,9 +8967,11 @@ _${plan.advice}_` : ''}`, streaming: true });
         // frozen and look hung. The heartbeat ticks the elapsed time regardless, and the word count
         // climbs once generation starts — so it's always visibly alive.
         let chars = 0;
-        const tick = () => updateLastMsg(
+        // "Refining 9-16 of 50" painted over the new campaign's panel is the flicker the user
+        // saw. A superseded run stops drawing immediately, even mid-batch.
+        const tick = () => { if (gone()) return; updateLastMsg(
           `Refining ${range}${guidance ? ` — ${guidance}` : ''}\n\n_Working… ${elapsed()}s${chars ? `, ~${Math.round(chars / 5)} words written` : (local ? ' — loading the model on first use can take up to a minute' : '')}. Press Stop to keep what's done._`,
-        );
+        ); };
         tick();
         const hb = setInterval(tick, 1000);
         let text = '';
@@ -8970,7 +8983,7 @@ _${plan.advice}_` : ''}`, streaming: true });
           // dropped everyone in the batch and the user was left wondering why some contacts had
           // no draft.
           const em = e instanceof Error ? e.message : String(e);
-          if (/\b429\b|rate.?limit|too many requests|quota/i.test(em) && !stopRef.current) {
+          if (/\b429\b|rate.?limit|too many requests|quota/i.test(em) && !gone()) {
             await new Promise((r) => setTimeout(r, 20000));
             b -= BATCH;   // retry this same batch rather than losing it
           }
@@ -8993,6 +9006,9 @@ _${plan.advice}_` : ''}`, streaming: true });
           return m && m !== c.linkedin_message ? { ...c, linkedin_message: m } : c;
         });
         refined = partial.filter((c, i) => c.linkedin_message !== campaign.contacts[i].linkedin_message).length;
+        // A superseded refine must stop WRITING, not just stop looping — this save is what put the
+        // cancelled run's contacts back over the campaign the user had just rebuilt.
+        if (gone()) break;
         saveCampaign({ ...campaign, contacts: partial });
       }
     } catch (e) {
@@ -9021,6 +9037,7 @@ _${plan.advice}_` : ''}`;
       return;
     }
     const updated = { ...campaign, contacts };
+    if (runGenRef.current !== myGen) { setBusy(false); setAgentStep(null); setAgentTool(null); return; }
     saveCampaign(updated);
     const remaining = targets.length - (stopped ? refined : slice.length);
     const summary = `Refined **${refined}** message${refined === 1 ? '' : 's'} to be more personal${guidance ? ` (${guidance})` : ''} in ${elapsed()}s${stopped ? ' (stopped early — kept what was done)' : ''} — reopening the copilot so you can review each and send. Nothing was sent, and only untouched contacts were changed.${remaining > 0 ? ` ${remaining} still to do — run **/refine** again for the next batch.` : ''}${local && !stopped ? ' _Tip: a free NVIDIA or Groq key (Connect Apps) refines this in seconds instead of minutes, at no token cost._' : ''}`;
@@ -11958,6 +11975,73 @@ Everything you need for follow-ups is in that answer above; read it there rather
   }
 
   /**
+   * "Ask for a plan" — a button, not a request to a model that might route it somewhere.
+   *
+   * It used to send a chat message beginning "Write me a day-by-day action plan… Ask me anything
+   * you need about my business, my goal and how much time I have each day". Two things went wrong
+   * with that, both reported: the app asked the user to type out facts it was already holding (the
+   * product note, the lists, the working hours, the campaigns already running), and the boss read
+   * a long message full of steps and DELEGATED it — so work nobody had approved started running
+   * and the user had to stop it.
+   *
+   * So it is a direct call with the full briefing, like the council and the work-order drafter.
+   * Nothing routes, nothing delegates, and the answer arrives as an ordinary assistant message —
+   * which means the "Start this plan" button appears under it exactly as it does for any plan.
+   */
+  function askForPlan(goal = '') {
+    setBusy(true);
+    stopRef.current = false;
+    const myGen = runGenRef.current;
+    void (async () => {
+      const sid = await ensureSession('Plan').catch(() => null);
+      const shown = goal.trim()
+        ? `Write me a day-by-day plan for this: ${goal.trim()}`
+        : 'Write me a day-by-day plan for the next 30 days, using what you already know about my business.';
+      addMsgHere({ role: 'user', content: shown });
+      if (sid) krewDb.saveMessage(sid, 'user', shown).catch(() => {});
+      addMsg({ role: 'assistant', content: '', streaming: true });
+      setAgentStep('Reading your lists, your product note and your hours…');
+      try {
+        const sys = 'You write day-by-day working plans for one person running a small business with an AI team. '
+          + 'You are specific, you name only things that really exist, and you never pad. '
+          + 'You never ask the reader for information that is already in the briefing you were given.';
+        const prompt = planRequestPrompt(goal);
+        let acc = '';
+        let raw = '';
+        const { text, truncated } = await streamTurnWithRetry([{ role: 'user', content: prompt }], sys, (t) => {
+          raw += t;
+          updateLastMsg(raw.replace(/<tool_call>[\s\S]*/g, '').trim());
+        });
+        acc = (text || raw).replace(/<tool_call>[\s\S]*/g, '').trim();
+        // A 30-day plan is long enough to hit the output limit almost every time — the same reason
+        // the council needed this. Keep asking while it keeps adding.
+        let cut = truncated;
+        for (let c = 0; c < 20 && !stopRef.current && runGenRef.current === myGen && (cut || looksCutOff(acc)); c++) {
+          const before = acc.length;
+          setAgentStep(`Writing the rest of the plan (${c + 2})…`);
+          const more = await streamTurnWithRetry(
+            [{ role: 'user', content: prompt }, { role: 'assistant', content: acc }, { role: 'user', content: continueInstruction(acc) }],
+            sys, () => {},
+          ).catch(() => ({ text: '', truncated: false }));
+          const clean = (more.text || '').replace(/<tool_call>[\s\S]*/g, '').trim();
+          if (!clean) break;
+          acc = joinCarried(acc, trimOverlap(acc, clean));
+          cut = more.truncated;
+          updateLastMsg(acc);
+          if (acc.length <= before + 20) break;
+        }
+        finaliseLastMsg(acc || 'The model returned nothing for this. Try again, or ask for the plan in the chat.');
+        if (sid && acc) krewDb.saveMessage(sid, 'assistant', acc).catch(() => {});
+      } catch (e) {
+        finaliseLastMsg(`Could not write the plan: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        setBusy(false);
+        setAgentStep(null);
+      }
+    })();
+  }
+
+  /**
    * Put something to the council — the ONE entry point, shared by the Plan button and /council.
    *
    * On adris.tech credit it shows what this will spend first; on the user's own key or a local
@@ -12221,6 +12305,25 @@ Everything you need for follow-ups is in that answer above; read it there rather
       if (m.role === 'council' && m.council?.length) return m.council;
     }
     return [];
+  }
+
+  /**
+   * Start a NEW user-initiated run, and supersede everything that was already going.
+   *
+   * Stop was a single boolean, and every one of these flows begins by clearing it — for a good
+   * reason: after a Stop press, a stale flag made the next run stream back empty. But clearing it
+   * also UN-STOPS whatever the user just stopped. That is what the flickering outreach box was:
+   * a cancelled draft run and the new one both alive, both writing to the same message and the
+   * same campaign, so the panel alternated between "33 of 40 done" and "9–16 of 50" and the wrong
+   * list kept overwriting the right one.
+   *
+   * Bumping the generation is what actually ends the old run: it captured its own number when it
+   * started, and every check it makes against runGenRef now fails, whatever the boolean says.
+   */
+  function beginRun(): number {
+    stopRef.current = false;
+    runGenRef.current += 1;
+    return runGenRef.current;
   }
 
   function stop() {
@@ -14170,6 +14273,8 @@ ${msg.content}`),
           /* Straight to the council — no chat message, no routing, no chance of an ops agent
              deciding this is work to delegate and writing its own review instead. */
           onCouncil={(question, asked) => { setPlanOpen(false); openCouncil(question, asked); }}
+          /* Not a chat message: the boss read the old one as work and delegated it. */
+          onAskForPlan={(goal) => { setPlanOpen(false); askForPlan(goal); }}
         />
       )}
       {outreachCampaign && (
