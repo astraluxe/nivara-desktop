@@ -37,7 +37,7 @@ import { getImageBudget, unitsForModel } from '../../lib/imageQuota';
 import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining } from '../../lib/tokenTier';
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
 import { builtInSkillsBlock, learnSkill } from '../../lib/skillGraph';
-import { describeIntent, toolReceipt, stripToolNoise, setActivity, silenceActivity, resumeActivity, runLogFence, liveFrame } from '../../lib/agentActivity';
+import { describeIntent, toolReceipt, stripToolNoise, setActivity, silenceActivity, resumeActivity, runLogFence, liveFrame, ACTIVITY_EVENT, getActivity, type AgentActivity } from '../../lib/agentActivity';
 import { dropUngroundedRows, repairAnswer, isUngroundedRecall, deniesCapability } from '../../lib/groundTruth';
 import { requiredToolsFor, contractDirective, clarifyDirective, unmetRequirements, correctionFor, carriesData, endsWithQuestion } from '../../lib/taskContract';
 import { parseLeadRequest } from '../../lib/leadIntent';
@@ -3253,6 +3253,14 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
   // repaint. A ref, not state: it must never itself cause a render.
   const bubbleT0 = useRef(Date.now());
   const bubbleStartedAt = bubbleT0.current;
+  // What the run is doing right now — the same feed the Office floor reads, so the waiting box and
+  // the office desk can never disagree about what is happening.
+  const [live, setLive] = useState<AgentActivity | null>(() => getActivity());
+  useEffect(() => {
+    const on = (e: Event) => setLive((e as CustomEvent<AgentActivity | null>).detail ?? null);
+    window.addEventListener(ACTIVITY_EVENT, on);
+    return () => window.removeEventListener(ACTIVITY_EVENT, on);
+  }, []);
 
   function saveToBrainManually() {
     import('../../lib/knowledgeStore').then(({ brain }) => {
@@ -3384,12 +3392,17 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
           Asked for twice: "remove this thinking and keep that box as the default so the user knows
           something is working". Three dots say nothing and do not move, so a run that is working
           and a run that has died look identical — and after two minutes of it the only move left
-          is Stop, which throws the work away. The box carries a clock that counts up on its own,
-          so it is visibly alive even when the agent has not written a word yet. */}
+          is Stop, which throws the work away.
+
+          And the box says what is ACTUALLY happening, not "Working on it". It reads the same
+          activity bus the Office floor reads, so while the agent is composing a call this bubble
+          says "Filtering your sheet Vendor master 1 — keeping rows where GST is not empty" rather
+          than a generic line that is true of every turn ever run. Falls back to something honest
+          and vague only in the first moment, before there is anything specific to report. */}
       {streaming && !content && (
         <StatusBlock startedAt={bubbleStartedAt} tone="work"
-          headline="Working on it"
-          detail="Reading the request and choosing what to do first." />
+          headline={live?.headline || 'Working on it'}
+          detail={live?.detail || 'Reading the request and choosing what to do first.'} />
       )}
       {streaming && content && <span className="inline-block w-1.5 h-3.5 bg-accent animate-pulse ml-0.5 rounded-sm" />}
       {!streaming && extractVideoUrls(content).map(url => (

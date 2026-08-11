@@ -419,17 +419,48 @@ export default function ConnectionBar(props: Props) {
                   </p>
                 )}
 
-                {/* Custom base URL (only for custom provider) */}
-                {provider === 'custom' && (
+                {/* Base URL — for a self-hosted gateway or any OpenAI-compatible endpoint */}
+                {(provider === 'custom' || provider === 'omniroute') && (
                   <>
-                    <label className="text-nv-faint text-[11px] block mb-1.5">Base URL</label>
+                    <label className="text-nv-faint text-[11px] block mb-1.5">
+                      {provider === 'omniroute' ? 'Your OmniRoute address' : 'Base URL'}
+                    </label>
                     <input
                       value={baseUrl}
                       onChange={(e) => onBaseUrlChange(e.target.value)}
-                      placeholder="https://your-api.com/v1/chat/completions"
+                      placeholder={provider === 'omniroute'
+                        ? 'http://localhost:3000/v1/chat/completions'
+                        : 'https://your-api.com/v1/chat/completions'}
                       className="w-full bg-nv-bg border border-nv-border rounded-lg px-3 py-2
-                        text-[12px] text-nv-text outline-none focus:border-accent transition-fast mb-3"
+                        text-[12px] text-nv-text outline-none focus:border-accent transition-fast mb-2"
                     />
+                    {/* WRITTEN FOR SOMEONE WHO HAS NEVER RUN A SERVER.
+                        The whole point of listing OmniRoute separately is that a non-technical user
+                        can get there. A bare URL box helps only someone who already knows what to
+                        put in it, so this says what the thing is, where the address comes from, and
+                        what they get — without pretending we host it or support it. */}
+                    {provider === 'omniroute' && (
+                      <div className="mb-3 rounded-lg border border-nv-border bg-nv-bg px-3 py-2.5">
+                        <p className="text-[11px] leading-relaxed text-nv-faint">
+                          <span className="text-nv-text font-medium">OmniRoute is a free, open-source
+                          gateway you run yourself.</span> It puts one address in front of hundreds of
+                          AI providers and moves to another automatically when one runs out of free
+                          quota — which is what stops you being stuck on whichever model still answers.
+                        </p>
+                        <p className="text-[11px] leading-relaxed text-nv-faint mt-1.5">
+                          Install it from <span className="font-mono text-nv-text">github.com/diegosouzapw/OmniRoute</span>,
+                          start it, and it prints its own address — usually
+                          <span className="font-mono text-nv-text"> http://localhost:3000</span>. Paste that
+                          here with <span className="font-mono text-nv-text">/v1/chat/completions</span> on the end,
+                          then your OmniRoute key above.
+                        </p>
+                        <p className="text-[10.5px] leading-relaxed text-nv-faint mt-1.5">
+                          It is not ours and we do not host it: your gateway, your keys, your machine.
+                          Nothing is sent to adris.tech. Once connected, type the model name you want
+                          in the box below — OmniRoute decides which provider serves it.
+                        </p>
+                      </div>
+                    )}
                   </>
                 )}
 

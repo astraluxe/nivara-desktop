@@ -51,7 +51,7 @@ export async function fetchRankedModels(provider: Provider, apiKey: string): Pro
 
 export type Provider =
   | 'openai' | 'groq' | 'nvidia' | 'mistral' | 'perplexity'
-  | 'together' | 'deepseek' | 'claude' | 'gemini' | 'custom';
+  | 'together' | 'deepseek' | 'claude' | 'gemini' | 'omniroute' | 'custom';
 
 export interface ProviderMeta {
   label: string;
@@ -70,6 +70,18 @@ export const PROVIDERS: Record<Provider, ProviderMeta> = {
   deepseek:   { label: 'DeepSeek',     defaultModel: 'deepseek-chat',                                keyPlaceholder: 'sk-…',      endpoint: 'https://api.deepseek.com/v1/chat/completions' },
   claude:     { label: 'Claude',       defaultModel: 'claude-3-5-haiku-20241022',                    keyPlaceholder: 'sk-ant-…',  endpoint: null },
   gemini:     { label: 'Gemini',       defaultModel: 'gemini-2.5-flash-lite',                        keyPlaceholder: 'AIzaSy…',   endpoint: null },
+  // A GATEWAY THE USER RUNS THEMSELVES, not a service we resell.
+  //
+  // OmniRoute is an MIT-licensed AI gateway: one OpenAI-compatible endpoint in front of hundreds of
+  // providers, with quota-aware fallback when one runs dry. That is the exact shape of the problem
+  // here — a free NVIDIA key where most large models return 404 and the rest time out, so the user
+  // is stuck on whatever still answers.
+  //
+  // It is listed separately from "Custom" on purpose. Functionally it IS a custom OpenAI-compatible
+  // endpoint, but a named entry with its own help text is the difference between a feature a
+  // developer can find and one anybody can use — and nothing about it is supplied by us: the user
+  // runs their own instance and holds their own keys.
+  omniroute:  { label: 'OmniRoute (your own gateway)', defaultModel: '',                              keyPlaceholder: 'Your OmniRoute key…', endpoint: null },
   custom:     { label: 'Custom (OpenAI-compatible)', defaultModel: '',                                keyPlaceholder: 'API key…',  endpoint: null },
 };
 

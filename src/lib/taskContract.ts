@@ -175,6 +175,22 @@ export function requiredToolsFor(text: string): TaskContract {
           why: 'The user asked for a real asset, not a description of one. You cannot render video or images yourself, but open_content_studio opens free tools that can — NotebookLM for video and audio overviews built from the user’s own documents, ImageFX for images — signed in, in their browser. Call it. Never say you are "a text-based AI" and hand the work back: that is false here, and offering a template instead of opening the tool is exactly what must not happen.' });
   }
 
+  // ── ANYTHING ABOUT "MY PRODUCT" ────────────────────────────────────────────
+  //
+  // Asked for a script explaining "my product", the boss produced a template — [Product Name],
+  // [key feature 1], [key benefit 2] — and then asked the user to supply the product details, with
+  // eight numbered questions. The app already holds them: what_they_sell went into the shared
+  // profile at onboarding, and a product note is one of the first things people put in the Brain.
+  //
+  // This is the same failure as answering from memory, wearing a politer face: instead of inventing
+  // the facts it demanded them, and either way the user does the work. A deliverable full of square
+  // brackets is not a deliverable.
+  if (/\b(my|our)\s+(product|service|app|tool|platform|offering|business|company)\b/i.test(t)
+      || /\b(explain|describe|pitch|sell|market|position)\b[^.]{0,30}\b(my|our)\b/i.test(t)) {
+    add({ anyOf: [...OWN_DATA, ...HANDOFF], what: 'read what the user actually sells',
+          why: 'This is about the user\u2019s own product, and the app already knows what it is: recall_from_brain finds their product note, and the shared profile holds what they sell. Read it FIRST. Do not hand back a template with [Product Name] and [key feature] in it, and do not ask them to describe their own product \u2014 they already told this app once, and being asked again is the work coming straight back to them. If after looking there is genuinely nothing saved, say so in one line and ask ONE question, not eight.' });
+  }
+
   return { requirements: reqs, needsRealWork: reqs.length > 0 };
 }
 

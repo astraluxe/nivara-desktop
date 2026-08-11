@@ -1281,6 +1281,20 @@ async fn ai_stream(
                     emit_error(format!("No API key set for {}. Open the connection bar above and paste your key.", prov));
                     return Ok(());
                 }
+                // A GATEWAY WITH NO ADDRESS IS NOT A GATEWAY.
+                //
+                // omniroute and custom both mean "the user supplies the endpoint". With none given,
+                // the match above falls through to its OpenAI default — so the request would go to
+                // OpenAI carrying an OmniRoute key and come back as a 401 about an invalid API key,
+                // sending the user off to check a key that was never the problem. Name what is
+                // actually missing instead.
+                if (prov == "omniroute" || prov == "custom")
+                    && !endpoint.contains("/v1/") && !endpoint.contains("/chat/completions") {
+                    emit_error(format!(
+                        "{} needs the address of your own gateway. Open the connection panel and paste it in the address box — for OmniRoute that is usually http://localhost:3000/v1/chat/completions once it is running.",
+                        if prov == "omniroute" { "OmniRoute" } else { "A custom endpoint" }));
+                    return Ok(());
+                }
                 let resp = reqwest::Client::new()
                     .post(&endpoint)
                     .header(header::AUTHORIZATION, format!("Bearer {}", key))
