@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import OnboardingSteps from './OnboardingSteps';
+import { saveOnboarding, hasAnything } from '../lib/onboarding';
 
 const setupKey = (uid?: string) => uid ? `nv-first-run-done-v1-${uid}` : 'nv-first-run-done-v1';
 
@@ -13,6 +15,14 @@ export function needsFirstRun(userId?: string): boolean {
 }
 
 export default function FirstRunSetup({ onDone, userId }: Props) {
+  // THE QUESTIONS COME FIRST, THE DOWNLOAD SECOND.
+  //
+  // This screen already existed and already ran once, after sign-in — it just had nothing to ask.
+  // Everything that makes the app behave well (who they are, how big they are, where they are)
+  // lived in Settings, which a new user has no reason to open, so the app guessed instead. The
+  // onboarding is added as a phase of THIS component rather than anywhere near the login flow,
+  // which is deliberately left alone.
+  const [phase, setPhase] = useState<'ask' | 'setup'>('ask');
   const [voiceStatus, setVoiceStatus] = useState<'idle' | 'downloading' | 'done' | 'skip'>('idle');
   const [voicePct,    setVoicePct]    = useState(0);
   const [voiceStep,   setVoiceStep]   = useState('');
@@ -41,6 +51,20 @@ export default function FirstRunSetup({ onDone, userId }: Props) {
   function finish() {
     localStorage.setItem(setupKey(userId), '1');
     onDone();
+  }
+
+  if (phase === 'ask') {
+    return (
+      <OnboardingSteps
+        onDone={(answers) => {
+          // Fire-and-forget on purpose: every write inside is independently guarded, and a slow or
+          // unavailable store must never hold the user on a loading screen at first launch.
+          if (hasAnything(answers)) void saveOnboarding(answers);
+          setPhase('setup');
+        }}
+        onSkip={() => setPhase('setup')}
+      />
+    );
   }
 
   return (

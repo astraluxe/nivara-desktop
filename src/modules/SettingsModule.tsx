@@ -6,6 +6,7 @@ import { useAuth } from '../contexts/AuthContext';
 import AiSourcePicker from '../components/AiSourcePicker';
 import { loadUserLocation, saveUserLocation, clearUserLocation, locationLabel, type UserLocation } from '../lib/userLocation';
 import { loadUserIdentity, saveUserIdentity, clearUserIdentity } from '../lib/userIdentity';
+import { SCALE_OPTIONS } from '../lib/onboarding';
 
 interface NvSettings {
   automationAutoRun: boolean;
@@ -146,8 +147,23 @@ export default function SettingsModule() {
   const [locCity, setLocCity]         = useState(() => loadUserLocation()?.city ?? '');
   const [locRegion, setLocRegion]     = useState(() => loadUserLocation()?.region ?? '');
   const [locCountry, setLocCountry]   = useState(() => loadUserLocation()?.country ?? '');
+  // Hydrate the saved business size once, so the screen shows what the agents actually hold
+  // rather than an empty control that looks like it was never set.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const { krewMemoryDb } = await import('../lib/krewDb');
+        const { KREW_PROFILE_KEY } = await import('../lib/krewTools');
+        const rows = await krewMemoryDb.getAll(KREW_PROFILE_KEY);
+        const hit = rows.find((r) => r.key === 'business_scale');
+        if (hit?.value) setBizScale(hit.value);
+      } catch { /* nothing saved yet, or the store is unavailable */ }
+    })();
+  }, []);
   const [locErr, setLocErr]           = useState('');
   const [locSaved, setLocSaved]       = useState(false);
+  // Read from the shared Krew profile, which is where the agents and the lead search both look.
+  const [bizScale, setBizScale]       = useState<string>('');
   // Who the user is — so an agent never mistakes them for the person they are meeting.
   const [idName, setIdName]           = useState(() => loadUserIdentity()?.name ?? '');
   const [idRole, setIdRole]           = useState(() => loadUserIdentity()?.role ?? '');
@@ -603,6 +619,51 @@ export default function SettingsModule() {
               {locSaved && <span className="text-[10px] text-accent">Saved — Krew will search here from now on.</span>}
             </div>
           </div>
+        </Section>
+
+        {/* THE ANSWER THAT DECIDES WHETHER A LEAD LIST IS USABLE.
+            business_scale was already being written by the agents when they happened to learn it,
+            already read by the lead search to size prospects — and had nowhere the user could set
+            or correct it. So most people had none, and a lead run with no scale returns the
+            companies a model knows best, which are the famous ones: "yes true they are in bangalore
+            but i cant deal with them na". Asked at first launch now, and editable here for anyone
+            who skipped it or has grown since. */}
+        <Section title="Your business size" wide>
+          <p className="text-[11px] text-nv-muted leading-[1.6] pb-1">
+            This sets how big a company your lead searches aim at. Selling sideways works; selling
+            to someone ten times your size usually does not, and every one of those rows is a reply
+            that never comes.
+          </p>
+          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+            {SCALE_OPTIONS.map((sc) => (
+              <button
+                key={sc.key}
+                onClick={() => {
+                  setBizScale(sc.key);
+                  void (async () => {
+                    try {
+                      const { krewMemoryDb } = await import('../lib/krewDb');
+                      const { KREW_PROFILE_KEY } = await import('../lib/krewTools');
+                      await krewMemoryDb.save(KREW_PROFILE_KEY, 'business_scale', sc.key);
+                    } catch { /* the choice still shows; it just did not persist */ }
+                  })();
+                }}
+                className={`text-left px-3 py-2 rounded-lg border transition-fast ${
+                  bizScale === sc.key
+                    ? 'border-accent bg-accent/10'
+                    : 'border-nv-border hover:border-accent/50'
+                }`}
+              >
+                <span className="block text-[11.5px] font-medium" style={{ color: 'var(--nv-text)' }}>{sc.label}</span>
+                <span className="block text-[10px] text-nv-faint mt-0.5 leading-snug">{sc.blurb}</span>
+              </button>
+            ))}
+          </div>
+          {bizScale && (
+            <p className="text-[10px] text-accent pt-1.5">
+              Saved — lead searches will aim at companies you can realistically win.
+            </p>
+          )}
         </Section>
 
         {/* ONE FOLDER, GRANTED ON PURPOSE.
