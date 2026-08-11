@@ -664,6 +664,23 @@ export default function SettingsModule() {
               Saved — lead searches will aim at companies you can realistically win.
             </p>
           )}
+          {/* A WAY BACK INTO THE SETUP QUESTIONS.
+              They appear once, which is right — but "once" with no way back is a trap: skip them
+              while finding your feet and the app keeps guessing your size forever, with nothing
+              telling you what you missed. Everything they ask is editable on this screen anyway;
+              this is simply the quicker route through all of it. */}
+          <div className="pt-2 mt-1" style={{ borderTop: '1px solid var(--nv-border)' }}>
+            <button
+              onClick={() => { void import('../lib/onboarding').then((m) => m.reopenOnboarding(uid)); }}
+              className="px-3 py-2 rounded-lg text-[11px] font-medium border border-nv-border text-nv-muted transition-fast hover:border-accent hover:text-accent"
+            >
+              Run the setup questions again
+            </button>
+            <p className="text-[10px] text-nv-faint mt-1.5 leading-relaxed">
+              Walks through your name, what you do, your size and your city — the answers the agents
+              use. Nothing is lost: it starts from what is already saved.
+            </p>
+          </div>
         </Section>
 
         {/* ONE FOLDER, GRANTED ON PURPOSE.

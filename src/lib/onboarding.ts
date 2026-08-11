@@ -31,6 +31,21 @@
 // quietly applying the last person's.
 const askedKey = (uid?: string) => (uid ? `nv-onboarding-v1-${uid}` : 'nv-onboarding-v1');
 
+/** Fired when the user asks to go through the setup questions again. */
+export const ONBOARDING_REOPEN_EVENT = 'nv-onboarding-reopen';
+
+/**
+ * Forget that we asked, and reopen the questions now.
+ *
+ * The screen shows once, which is right — but "once" with no way back is a trap: skip it while
+ * finding your feet and the app quietly keeps guessing your size forever, with nothing anywhere
+ * telling you what you missed. Settings can send you back through it.
+ */
+export function reopenOnboarding(userId?: string): void {
+  try { localStorage.removeItem(askedKey(userId)); } catch { /* ignore */ }
+  try { window.dispatchEvent(new Event(ONBOARDING_REOPEN_EVENT)); } catch { /* no window */ }
+}
+
 /** Have we ever asked this user? */
 export function needsOnboarding(userId?: string): boolean {
   try { return !localStorage.getItem(askedKey(userId)); } catch { return false; }

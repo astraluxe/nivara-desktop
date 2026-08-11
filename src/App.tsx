@@ -24,7 +24,7 @@ import HeadModule from "./modules/HeadModule";
 import { AppSkeleton } from "./components/Skeleton";
 import TourOverlay, { isTourDone } from "./components/TourOverlay";
 import FirstRunSetup, { needsFirstRun } from "./components/FirstRunSetup";
-import { needsOnboarding } from "./lib/onboarding";
+import { needsOnboarding, ONBOARDING_REOPEN_EVENT } from "./lib/onboarding";
 import type { Node, Edge } from "@xyflow/react";
 import { executeAutomation, type AutomationRow } from "./lib/automationRunner";
 import { supabase } from "./lib/supabase";
@@ -288,6 +288,14 @@ function AppShell() {
       setShowFirstRun(true);
     }
   }, [session]);
+
+  // "Run setup again" from Settings. The session has not changed, so the effect above will not
+  // re-fire on its own — this is the one thing that reopens it on demand.
+  useEffect(() => {
+    const on = () => setShowFirstRun(true);
+    window.addEventListener(ONBOARDING_REOPEN_EVENT, on);
+    return () => window.removeEventListener(ONBOARDING_REOPEN_EVENT, on);
+  }, []);
 
   // Fetch session key for direct Gemini calls (adris.tech AI fast path)
   useEffect(() => {
