@@ -19,35 +19,37 @@ import { credentialStore } from './krewDb';
 
 /** Known-good, general-purpose chat/agent models, best first. Matched against the LIVE catalogue,
  *  so a retired entry here is simply skipped rather than becoming the next dead model. */
-// Swept all 76 chat models in NVIDIA's catalogue against a real free-tier key: only 16 answered,
-// 13 accepted the request and never replied (including meta/llama-3.3-70b, meta/llama-3.1-70b,
-// deepseek-v4-pro, z-ai/glm-5.2, openai/gpt-oss-120b) and 47 returned "not found for account".
-// NVIDIA's OWN nemotron builds were the ones consistently available on their own endpoint, so they
-// lead here. The list is a starting order only — every candidate is still probed before use, because
-// availability moves: meta/llama-3.1-70b answered in 4.3s early in one session and hung an hour later.
 const PREFERRED: Partial<Record<Provider, string[]>> = {
-  // MEASURED, not assumed. Benchmarked on a real free-tier key: time to first token, and whether the
-  // model actually returned the JSON it was asked for — this app runs on JSON (reply plans, deck
-  // specs, verification results), so a model that answers in prose is useless however clever it is.
+  // RE-MEASURED 2026-08-11 against a live free-tier key. Every number below was observed, not
+  // assumed, on two tests that matter more than benchmarks: can it return clean JSON, and can it
+  // emit a tool call this app can parse. A model that answers beautifully in prose is useless here.
   //
-  //   nemotron-3-super-120b   813ms   JSON ok   <- big model AND fast: the right default
-  //   llama-3.1-8b            191ms   JSON ok   <- fastest of all
-  //   inkling                3258ms   JSON ok
-  //   llama-3.2-3b            619ms   JSON ok
-  //   nemotron-3-ultra-550b 26741ms   JSON FAIL <- was first here; slow and unusable in practice
-  //   step-3.7-flash        24096ms   JSON FAIL <- reasoning model, thinks for 24s
-  //   nano-30b / nano-9b / gpt-oss-20b / nemotron-super-49b   fast but JSON FAIL
+  //   model                                    JSON    tool call   time
+  //   nvidia/nemotron-3.5-lightning-30b-a3b    ok      YES         0.9s   <- fastest AND correct
+  //   openai/gpt-oss-20b                       ok      YES         1.5s
+  //   meta/llama-3.1-8b-instruct               ok      YES         2.1s
+  //   nvidia/nemotron-3-nano-30b-a3b           ok      YES         3.3s
+  //   nvidia/nemotron-3-super-120b-a12b        ok      -          24.8s   <- was FIRST here
+  //   meta/muse-glimmer-30b                    -       no          9.9s   (returned empty)
+  //   nvidia/llama-3.3-nemotron-super-49b-v1.5 ok      TIMEOUT     40s
+  //   meta/llama-3.2-3b-instruct               TIMEOUT -           40s    <- gone
+  //   thinkingmachines/inkling                 prose   no          7.6s
+  //   nvidia/nemotron-3-ultra-550b-a55b        -       TIMEOUT     45s
+  //   z-ai/glm-5.2                             -       TIMEOUT     45s
+  //   deepseek-ai/deepseek-v4-pro              410 Gone (withdrawn from the free endpoint)
   //
-  // Ultra keeps its 1M window in contextBudget for the rare long job, but it must never be the
-  // everyday pick. Order below is: reliable JSON first, then fastest.
+  // The old first choice took TWENTY-FIVE SECONDS to answer "give me a JSON object", and every
+  // agent step in the app waits on a call like that. It is kept only as a last resort for its size.
+  // llama-3.2-3b and inkling are removed: one no longer answers, the other cannot emit a tool call.
+  //
+  // This is a starting ORDER, not a guarantee — availability moves, which is the whole reason
+  // every candidate is still probed before use.
   nvidia: [
-    'nvidia/nemotron-3-super-120b-a12b',
-    'meta/llama-3.1-8b-instruct',
-    'thinkingmachines/inkling',
-    'meta/llama-3.2-3b-instruct',
-    'nvidia/llama-3.3-nemotron-super-49b-v1.5',
-    'nvidia/nemotron-3-nano-30b-a3b',
+    'nvidia/nemotron-3.5-lightning-30b-a3b',
     'openai/gpt-oss-20b',
+    'meta/llama-3.1-8b-instruct',
+    'nvidia/nemotron-3-nano-30b-a3b',
+    'nvidia/nemotron-3-super-120b-a12b',
   ],
   groq: [
     'llama-3.3-70b-versatile',

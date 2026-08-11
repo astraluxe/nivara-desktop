@@ -590,6 +590,22 @@ function McpSection() {
               className="w-full bg-nv-surface border border-nv-border rounded-lg px-3 py-1.5 text-[12px] text-nv-text outline-none focus:border-accent transition-fast placeholder:text-nv-faint"
             />
             {error && <p className="text-[10px] text-nv-bad leading-snug font-mono">{error}</p>}
+            {/* WHAT TO ACTUALLY PLUG IN HERE.
+                A blank URL box is only useful to someone who already knows an MCP server exists and
+                what its address is. Naming a real one that suits this app's users turns the field
+                from a developer feature into something with an obvious first use — and a connected
+                server's tools reach the boss, every delegation and every pipeline stage, so it is
+                usable inside a task rather than only from the chat.
+                No URL is hardcoded on purpose: it belongs to the provider, it changes, and a
+                plausible-looking address that turns out to be wrong is worse than none. */}
+            <p className="text-[10px] leading-relaxed" style={{ color: 'var(--nv-faint)' }}>
+              Any MCP server works here, and its tools become available to every agent — including
+              inside a plan or a work order. For lead work, <span className="text-nv-text">Vibe
+              Prospecting</span> (Explorium) is a good one: conversational access to a large B2B
+              contact and company database. Its free tier is a limited trial rather than an ongoing
+              free allowance, so it sits here as a connection rather than inside the built-in lead
+              search — copy the server URL from the provider's own setup page and paste it above.
+            </p>
             <div className="flex items-center gap-2">
               <button
                 onClick={add}

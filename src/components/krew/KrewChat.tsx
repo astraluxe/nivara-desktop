@@ -42,6 +42,7 @@ import { dropUngroundedRows, repairAnswer, isUngroundedRecall, deniesCapability 
 import { requiredToolsFor, contractDirective, clarifyDirective, unmetRequirements, correctionFor, carriesData, endsWithQuestion } from '../../lib/taskContract';
 import { parseLeadRequest } from '../../lib/leadIntent';
 import { sectorDirective, classifyLead, wantsNonTech, wantsTech } from '../../lib/sectorClass';
+import { scaleFromProfile, scaleDirective, registrySources, targetSizesFor } from '../../lib/prospectScale';
 import { parseAnyTable, looksLikeIdentifier, looksLikeHeaderRow, extractContacts } from '../../lib/tableQuery';
 import { observeForRole, roleBlock } from '../../lib/userRole';
 import {
@@ -97,6 +98,12 @@ const SLASH_COMMANDS: SlashCmd[] = [
   { cmd: 'verify',   label: 'Verify LinkedIn',   desc: 'Open & check every LinkedIn in your lead list',   run: 'prompt', value: 'Go to <file name> and verify each and every LinkedIn — open and check each one, and fill it in properly if it exists.' },
   { cmd: 'enrich',   label: 'Fill contacts',     desc: 'Add missing LinkedIn, phone & email',             run: 'prompt', value: 'Fill in the missing LinkedIn, phone and email for the people already in <file name>.' },
   { cmd: 'leads',    label: 'Find leads (guided)', desc: 'Pick size, city, seniority — get a verified list you can send straight to outreach', run: 'leads', value: '' },
+  // DOCUMENTED, SO IT HAS TO EXIST. The Info page tells the user about /findleads and
+  // /repair-table; neither was in this list, so typing them showed an empty palette and the
+  // page was quietly wrong. /findleads was folded into /leads a while ago and kept as an
+  // alias here rather than deleted from the docs, because it is the name people learned.
+  { cmd: 'findleads', label: 'Find leads (same as /leads)', desc: 'Opens the same guided lead search — kept because the older name is in the guide', run: 'leads', value: '' },
+  { cmd: 'repair-table', label: 'Repair a broken table', desc: 'Rebuilds a Brain table whose rows have run together onto one line — line breaks only, no cell is changed', run: 'prompt', value: 'Repair the table in ' },
   { cmd: 'scan',     label: 'Scan LinkedIn connections', desc: 'List who you\'re already connected with as warm leads', run: 'scan', value: '' },
   { cmd: 'draft',    label: 'Draft outreach',    desc: 'Write DMs / emails for your list',                run: 'prompt', value: 'Write a LinkedIn DM and a short cold email for the people in <file name>, tailored by sector.' },
   { cmd: 'outreach', label: 'Send outreach (copilot)', desc: 'Draft LinkedIn messages & walk through sending them', run: 'outreach', value: '' },
@@ -7297,6 +7304,11 @@ The prompt must be production-ready — specific enough for a motion designer to
       // twenty and nothing is left. The definition has to reach the QUERY, which is what this does;
       // the filter below is the backstop for when it is ignored anyway.
       const sectorRules = sectorDirective(`${cfg.what} ${cfg.sector}`);
+      // WHO THIS USER CAN SELL TO. business_scale is already in the shared profile and the lead
+      // run never read it, so a solo founder and a fifty-person company got the same brief and
+      // both got the companies a model knows best — the famous ones. See prospectScale.ts.
+      const userScale = scaleFromProfile(profileMemories.map((m) => ({ key: m.key, value: m.value })));
+      const scaleRules = scaleDirective(userScale, cfg.city);
       const wantNonTech = wantsNonTech(`${cfg.what} ${cfg.sector}`);
       const wantTechOnly = !wantNonTech && wantsTech(`${cfg.what} ${cfg.sector}`);
       const sectorWanted = wantNonTech || wantTechOnly;
@@ -7470,6 +7482,34 @@ ${text}`;
         }
         // Keep it tight. A free key caps tokens per minute (Groq at 12k) and this block rides on
         // EVERY round below, so an unbounded dump would trade one failure for another.
+        // ── THE DIRECTORIES SMALL BUSINESSES LIST THEMSELVES IN ───────────────────────────────
+        //
+        // Google's answer to "small companies in Bangalore founder" is an article about Bangalore's
+        // biggest startups, because articles are written about the companies you cannot sell to.
+        // IndiaMART, Justdial, Udyam/MSME and Startup India are where ordinary businesses put
+        // themselves to BE FOUND by buyers — which is exactly why they hold the ones nobody writes
+        // about. Only worth the page load when the run is aimed at reachable companies, and skipped
+        // entirely once there is already enough to work from.
+        if (!peopleMode && cfg.reach !== 'known' && grounding.length < 3500 && mine()) {
+          const country = (loadUserLocation()?.country) || 'India';
+          for (const q of registrySources(cfg.city, cfg.sector || cfg.what, country).slice(0, 2)) {
+            if (!mine() || grounding.length >= 3500) break;
+            say(statusBlock(t0, 'Finding leads — checking business directories',
+              `Where small firms list themselves, not where journalists write about big ones: "${q}"`));
+            try {
+              setAgentBrowserHold(true); setBrowserActive(true);
+              const raw = await invoke<string>('run_browser_persistent',
+                { args: `openmany https://www.google.com/search?q=${encodeURIComponent(q)}` }).catch(() => '');
+              const body = raw.includes('===BATCH===') ? raw.slice(raw.indexOf('===BATCH===') + 11) : raw;
+              const text = body.replace(/===URL:[\s\S]*?===[\s]*===STATUS:[a-z]+===[\s]*/g, ' ').trim();
+              if (text.length > 200 && !/our systems have detected|unusual traffic|not a robot/i.test(text.slice(0, 400))) {
+                grounding += `
+${text}`;
+              }
+            } catch { /* a directory miss must never sink the run */ }
+          }
+        }
+
         // ── WIDEN THE SEARCH RATHER THAN GIVE UP ──────────────────────────────────────────────
         //
         // A city query can come back nearly empty — a bot challenge, a thin Maps page, or a niche
@@ -7617,7 +7657,7 @@ PREFER people and companies that appear above: they are known to exist. You may 
             [{ role: 'user', content: `${filters}\nHOW MANY: exactly ${want} rows${already}${groundingBlock}\n\nReturn the table now.` }],
             // peopleRules is empty in company mode, and sectorRules is empty unless the brief
             // actually asked for tech or non-tech, so this is byte-identical to `sys` otherwise.
-            sys + peopleRules + sectorRules, onLeadChunk,
+            sys + peopleRules + sectorRules + scaleRules, onLeadChunk,
           ));
         } catch (e) {
           // A RATE LIMIT is not a failed batch — it is "ask me again shortly".
@@ -9822,7 +9862,14 @@ _${plan.advice}_` : ''}`;
           ...(leadAsk.count ? { count: leadAsk.count } : {}),
           // "50-200 employee" is a SIZE, and it used to be read as the quantity — which is how a
           // request for more companies became "Find 50 leads". It now lands where it belongs.
-          ...(leadAsk.sizes.length ? { sizes: leadAsk.sizes } : {}),
+          //
+          // When the sentence names no size, fall back to what this user can actually SELL to,
+          // read from their business_scale in the shared profile — not to a fixed default that
+          // gave a solo founder the same targets as a fifty-person company. See prospectScale.ts.
+          ...(leadAsk.sizes.length
+            ? { sizes: leadAsk.sizes }
+            : { sizes: targetSizesFor(scaleFromProfile(profileMemories.map((m) => ({ key: m.key, value: m.value })))).sizes }),
+          reach: targetSizesFor(scaleFromProfile(profileMemories.map((m) => ({ key: m.key, value: m.value })))).reach,
           // A non-tech hunt in a city is a Google Maps job: Maps lists the fabricators, clinics and
           // logistics yards that make up the real economy, and a web search lists whoever gets
           // written about — which is how the last run came back full of famous startups.

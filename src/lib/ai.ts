@@ -63,7 +63,7 @@ export interface ProviderMeta {
 export const PROVIDERS: Record<Provider, ProviderMeta> = {
   openai:     { label: 'OpenAI',       defaultModel: 'gpt-4o',                                       keyPlaceholder: 'sk-…',      endpoint: 'https://api.openai.com/v1/chat/completions' },
   groq:       { label: 'Groq',         defaultModel: 'llama-3.3-70b-versatile',                      keyPlaceholder: 'gsk_…',     endpoint: 'https://api.groq.com/openai/v1/chat/completions' },
-  nvidia:     { label: 'NVIDIA (free)', defaultModel: 'meta/llama-3.1-8b-instruct',                  keyPlaceholder: 'nvapi-…',   endpoint: 'https://integrate.api.nvidia.com/v1/chat/completions' },
+  nvidia:     { label: 'NVIDIA (free)', defaultModel: 'nvidia/nemotron-3.5-lightning-30b-a3b',                  keyPlaceholder: 'nvapi-…',   endpoint: 'https://integrate.api.nvidia.com/v1/chat/completions' },
   mistral:    { label: 'Mistral',      defaultModel: 'mistral-large-latest',                         keyPlaceholder: 'API key…',  endpoint: 'https://api.mistral.ai/v1/chat/completions' },
   perplexity: { label: 'Perplexity',   defaultModel: 'sonar-pro',                                    keyPlaceholder: 'pplx-…',    endpoint: 'https://api.perplexity.ai/chat/completions' },
   together:   { label: 'Together.ai',  defaultModel: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',      keyPlaceholder: 'API key…',  endpoint: 'https://api.together.xyz/v1/chat/completions' },
