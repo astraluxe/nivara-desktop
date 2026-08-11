@@ -132,3 +132,83 @@ export function normaliseToolCall(parsed: unknown): { tool: string; args: Record
 
   return { tool, args };
 }
+
+// ─── Finding the call, whatever the model wrapped it in ──────────────────────
+//
+// MEASURED against the live NVIDIA endpoint, one system prompt, six models. Every one was told to
+// reply with exactly `<tool_call>{…}</tool_call>`. What actually came back:
+//
+//   nemotron-3.5-lightning-30b   <tool_call>{…}</tool_call>     as asked
+//   meta/llama-3.1-70b           <tool_call>{…}</tool_call>     as asked
+//   minimax-m3                   <tool_call>{…}</tool_call>     as asked
+//   nemotron-super-49b-v1        <TOOL>{…}                      a tag of its own invention
+//   nemotron-3-super-120b        { "tool": … }                  NO TAG AT ALL, pretty-printed
+//
+// The app required one of two exact tags, so the last two were read as final answers. The 120B —
+// the biggest model on the account that answers — could never call a tool at all, and its bare
+// JSON was then stripped from the visible text as machinery, leaving an empty turn.
+//
+// No prompt fixes this: the models were told, and a large model's habits beat an instruction.
+// So the search is widened to what they really do. The JSON object itself is the reliable part —
+// a `"tool"` or `"name"` key with a known tool name — and the wrapper is treated as decoration.
+
+/** Tags models actually use, beyond the two the prompt asks for. */
+const CALL_TAGS = ['tool_call', 'tool_code', 'TOOL', 'tool', 'function_call', 'function', 'invoke', 'action'];
+
+/**
+ * Pull the tool-call JSON out of a reply, however it is wrapped — or not wrapped.
+ *
+ * Returns the raw JSON text, for the caller's existing parser to handle. Deliberately does NOT
+ * parse: the callers already have layered recovery for truncated and malformed JSON, and this is
+ * about FINDING the call, not understanding it.
+ */
+export function findToolCallJson(text: string): string | null {
+  const s = String(text || '');
+  // 1. A properly closed tag, in any of the spellings seen in the wild.
+  for (const tag of CALL_TAGS) {
+    const m = s.match(new RegExp(`<${tag}>\s*([\s\S]*?)\s*</${tag}>`, 'i'));
+    if (m?.[1]?.trim().startsWith('{')) return m[1].trim();
+  }
+  // 2. An OPEN tag with no closing one — common when a stop sequence clipped the end.
+  for (const tag of CALL_TAGS) {
+    const at = s.toLowerCase().indexOf(`<${tag.toLowerCase()}>`);
+    if (at < 0) continue;
+    const after = s.slice(at + tag.length + 2).trim();
+    if (after.startsWith('{')) {
+      const bal = balanced(after);
+      if (bal) return bal;
+    }
+  }
+  // 3. No tag whatsoever. Accept a bare object ONLY when it names a tool — a JSON example inside a
+  //    prose answer must not be executed, so the key has to be there and the value a plain
+  //    identifier, not a sentence.
+  // LOWERCASE AND UNDERSCORES ONLY, for the untagged case. Every tool this app has is named that
+  // way (query_table, save_to_brain, browser_navigate), and the restriction is what stops a JSON
+  // EXAMPLE inside a prose answer from being executed: {"name":"Amogh","city":"Pune"} is a person
+  // in a sentence, not a call, and it matched happily until this was tightened. With no tag to go
+  // on, the name itself is the only evidence there is.
+  const bare = s.match(/\{[\s\S]*?"(?:tool|name|tool_name)"\s*:\s*"[a-z][a-z0-9_]{2,48}"[\s\S]*?\}/);
+  if (bare) {
+    const bal = balanced(s.slice(s.indexOf(bare[0])));
+    if (bal) return bal;
+  }
+  return null;
+}
+
+/** The first complete {...} from the start of a string, counting braces outside of strings. */
+function balanced(src: string): string | null {
+  const s = String(src || '');
+  const start = s.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+    if (esc) { esc = false; continue; }
+    if (c === '\\') { esc = true; continue; }
+    if (c === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (c === '{') depth++;
+    else if (c === '}') { depth--; if (depth === 0) return s.slice(start, i + 1); }
+  }
+  return null;   // never closed — the caller's truncation recovery handles it
+}

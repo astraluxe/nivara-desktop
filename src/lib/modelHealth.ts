@@ -44,12 +44,27 @@ const PREFERRED: Partial<Record<Provider, string[]>> = {
   //
   // This is a starting ORDER, not a guarantee — availability moves, which is the whole reason
   // every candidate is still probed before use.
+  // BIGGER MODELS, RE-SWEPT 2026-08-11 across the whole catalogue (102 on the key, 30 large).
+  // Most are listed and NOT callable — eight of thirteen returned 404 "Function Not Found", which
+  // is what "NVIDIA lists models your account cannot actually call" looks like at scale. These are
+  // the ones that answered AND produced a usable tool call:
+  //
+  //   meta/llama-3.1-70b-instruct              4.3s   <- a real 70B that works
+  //   nvidia/nemotron-3-super-120b-a12b       15.6s   (emits BARE JSON, no tag — see findToolCallJson)
+  //   nvidia/llama-3.3-nemotron-super-49b-v1.5 17.7s
+  //   minimaxai/minimax-m3                    19.9s
+  //
+  // 70b sits after the fast small models rather than first: it is three times slower than
+  // lightning-30b for the same tool call, and most agent steps are routing, not reasoning.
   nvidia: [
     'nvidia/nemotron-3.5-lightning-30b-a3b',
     'openai/gpt-oss-20b',
     'meta/llama-3.1-8b-instruct',
     'nvidia/nemotron-3-nano-30b-a3b',
+    'meta/llama-3.1-70b-instruct',
     'nvidia/nemotron-3-super-120b-a12b',
+    'nvidia/llama-3.3-nemotron-super-49b-v1.5',
+    'minimaxai/minimax-m3',
   ],
   groq: [
     'llama-3.3-70b-versatile',

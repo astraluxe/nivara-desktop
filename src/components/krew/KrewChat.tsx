@@ -12,7 +12,7 @@ import { TaskProgress, type TaskPhase } from './TaskProgress';
 import { StatusGlobe } from './StatusGlobe';
 import { runParallelResearch } from '../../lib/researchSources';
 import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, KREW_AGENTS, type KrewAgent } from '../../lib/krewAgents';
-import { rescuePrintedCalls, normaliseToolCall } from '../../lib/toolCallRescue';
+import { rescuePrintedCalls, normaliseToolCall, findToolCallJson } from '../../lib/toolCallRescue';
 import { planFromWorkOrder, saveTargetFromOrder, type Delegation } from '../../lib/workOrder';
 import { routeTask } from '../../lib/taskRouting';
 import { useAuth } from '../../contexts/AuthContext';
@@ -10695,6 +10695,15 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
         let match: RegExpMatchArray | null =
           fullResponse.match(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/) ??
           fullResponse.match(/<tool_code>\s*([\s\S]*?)\s*<\/tool_code>/);
+        // WHATEVER THE MODEL WRAPPED IT IN — OR DIDN'T. Measured on six NVIDIA models given the
+        // same instruction: three obeyed, one invented <TOOL>, and nemotron-3-super-120b emitted
+        // bare pretty-printed JSON with no tag at all. The biggest model on the account that
+        // answers could therefore never call a tool, and its JSON was then stripped as machinery,
+        // leaving an empty turn. See findToolCallJson.
+        if (!match) {
+          const found = findToolCallJson(fullResponse);
+          if (found) match = ['', found] as unknown as RegExpMatchArray;
+        }
         if (!match) {
           const openTag = OPEN_TAGS.find(t => fullResponse.includes(t));
           if (openTag) {
