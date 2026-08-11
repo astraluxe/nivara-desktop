@@ -18,6 +18,34 @@
 // Settings screen writes to — nothing here is a parallel copy — so a user who does open Settings
 // later sees exactly what they said, and can change it.
 
+// ─── Who still needs asking ──────────────────────────────────────────────────
+//
+// The questions get their OWN key, separate from the first-run screen's.
+//
+// That screen has existed for a long time and set `nv-first-run-done-v1-<uid>` the first time
+// anybody opened the app, back when all it did was offer a voice download. Gating the new questions
+// on the same key would mean every existing user — everyone who has ever run this app — silently
+// skips them forever, and the whole point is that the app stops guessing their size and their city.
+//
+// Keyed per user, so signing in as somebody else asks them for their own answers rather than
+// quietly applying the last person's.
+const askedKey = (uid?: string) => (uid ? `nv-onboarding-v1-${uid}` : 'nv-onboarding-v1');
+
+/** Have we ever asked this user? */
+export function needsOnboarding(userId?: string): boolean {
+  try { return !localStorage.getItem(askedKey(userId)); } catch { return false; }
+}
+
+/**
+ * Remember that we asked — whether they answered or skipped.
+ *
+ * Skipping counts. Being asked again on every launch after saying no is worse than never asking,
+ * and Settings holds all of it for anyone who changes their mind.
+ */
+export function markOnboardingAsked(userId?: string): void {
+  try { localStorage.setItem(askedKey(userId), '1'); } catch { /* quota — they get asked once more */ }
+}
+
 export type OnboardingRole = 'founder' | 'sales' | 'marketing' | 'coding' | 'ops' | 'research' | 'student';
 
 export interface OnboardingAnswers {

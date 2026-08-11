@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import OnboardingSteps from './OnboardingSteps';
-import { saveOnboarding, hasAnything } from '../lib/onboarding';
+import { saveOnboarding, hasAnything, needsOnboarding, markOnboardingAsked } from '../lib/onboarding';
 
 const setupKey = (uid?: string) => uid ? `nv-first-run-done-v1-${uid}` : 'nv-first-run-done-v1';
 
@@ -22,7 +22,10 @@ export default function FirstRunSetup({ onDone, userId }: Props) {
   // lived in Settings, which a new user has no reason to open, so the app guessed instead. The
   // onboarding is added as a phase of THIS component rather than anywhere near the login flow,
   // which is deliberately left alone.
-  const [phase, setPhase] = useState<'ask' | 'setup'>('ask');
+  // Each phase runs only if it is still owed. An existing user has long since done the voice
+  // screen, so they get the questions and nothing else; a brand-new user gets both; anyone who has
+  // done both never sees this component at all (App decides that).
+  const [phase, setPhase] = useState<'ask' | 'setup'>(() => (needsOnboarding(userId) ? 'ask' : 'setup'));
   const [voiceStatus, setVoiceStatus] = useState<'idle' | 'downloading' | 'done' | 'skip'>('idle');
   const [voicePct,    setVoicePct]    = useState(0);
   const [voiceStep,   setVoiceStep]   = useState('');
@@ -60,9 +63,14 @@ export default function FirstRunSetup({ onDone, userId }: Props) {
           // Fire-and-forget on purpose: every write inside is independently guarded, and a slow or
           // unavailable store must never hold the user on a loading screen at first launch.
           if (hasAnything(answers)) void saveOnboarding(answers);
-          setPhase('setup');
+          markOnboardingAsked(userId);
+          // Someone who has already done the voice screen is finished here — do not show it twice.
+          if (needsFirstRun(userId)) setPhase('setup'); else finish();
         }}
-        onSkip={() => setPhase('setup')}
+        onSkip={() => {
+          markOnboardingAsked(userId);   // skipping counts; asking again every launch is worse
+          if (needsFirstRun(userId)) setPhase('setup'); else finish();
+        }}
       />
     );
   }

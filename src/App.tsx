@@ -24,6 +24,7 @@ import HeadModule from "./modules/HeadModule";
 import { AppSkeleton } from "./components/Skeleton";
 import TourOverlay, { isTourDone } from "./components/TourOverlay";
 import FirstRunSetup, { needsFirstRun } from "./components/FirstRunSetup";
+import { needsOnboarding } from "./lib/onboarding";
 import type { Node, Edge } from "@xyflow/react";
 import { executeAutomation, type AutomationRow } from "./lib/automationRunner";
 import { supabase } from "./lib/supabase";
@@ -220,7 +221,7 @@ function AppShell() {
     if (!session) return;
     const uid = session.user.id;
     // Don't start tour while FirstRunSetup is showing — wait until it finishes
-    if (!isTourDone(uid) && !needsFirstRun(uid)) {
+    if (!isTourDone(uid) && !needsFirstRun(uid) && !needsOnboarding(uid)) {
       setShowTour(true);
     }
   }, [session]);
@@ -280,7 +281,10 @@ function AppShell() {
   // First-run setup — show once per user (new install or new Google account)
   useEffect(() => {
     if (!session) return;
-    if (needsFirstRun(session.user.id)) {
+    // EITHER phase being owed is a reason to open this. Gating on needsFirstRun alone meant every
+    // existing user — who did the voice screen long ago — would never be asked the questions, which
+    // is exactly the group the app has been guessing about.
+    if (needsFirstRun(session.user.id) || needsOnboarding(session.user.id)) {
       setShowFirstRun(true);
     }
   }, [session]);
