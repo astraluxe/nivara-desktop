@@ -3388,6 +3388,154 @@ fn get_node_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
 }
 
 /// Path to OUR provisioned node.exe, if it is there.
+// ─── OmniRoute: installed and started from inside the app ────────────────────
+//
+// OmniRoute is a free MIT AI gateway — one OpenAI-compatible address in front of hundreds of
+// providers, with automatic fallback when one runs out of free quota. That is the exact shape of
+// the problem a free NVIDIA key creates: most large models return 404 on the account and the rest
+// time out, so the user is stuck on whichever one still answers.
+//
+// Telling somebody to "install it from GitHub" is not a feature. It is a feature for people who
+// already know how, and everyone else stops there. So the app does it.
+//
+// WHY npm AND NOT GITHUB. Measured before writing any of this: omniroute is published to npm
+// (registry.npmjs.org), and npm is a different network path from GitHub release assets — which are
+// blocked outright on this user's ISP, the same block that broke the app's own updater. Installing
+// from the registry therefore works where a release download would silently return zero bytes.
+//
+// Node comes from the copy the app already provisions for the browser tooling, so a machine with
+// no Node at all still works and nothing is installed system-wide.
+
+/// Where OmniRoute lives: inside our own app-data, never a global npm install.
+///
+/// A global install would need elevation on some machines, would collide with a version the user
+/// keeps for their own work, and would survive uninstalling this app. A private prefix is ours to
+/// create and ours to delete.
+fn omniroute_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
+    app.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).join("omniroute")
+}
+
+fn omniroute_bin(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    let base = omniroute_dir(app).join("node_modules").join("omniroute");
+    let entry = base.join("bin").join("omniroute.mjs");
+    if entry.is_file() { Some(entry) } else { None }
+}
+
+/// Is it installed already?
+#[tauri::command]
+fn omniroute_status(app: tauri::AppHandle) -> serde_json::Value {
+    serde_json::json!({
+        "installed": omniroute_bin(&app).is_some(),
+        "dir": omniroute_dir(&app).to_string_lossy(),
+    })
+}
+
+/// Install OmniRoute from npm into our own folder. Progress is emitted so the UI can show it.
+#[tauri::command]
+async fn omniroute_install(app: tauri::AppHandle) -> Result<String, String> {
+    let say = |step: &str, pct: u8| {
+        let _ = app.emit("omniroute_progress", serde_json::json!({ "step": step, "pct": pct }));
+    };
+    if omniroute_bin(&app).is_some() {
+        say("Already installed", 100);
+        return Ok("already-installed".into());
+    }
+
+    say("Checking Node…", 5);
+    // Reuses the same provisioning the browser tooling uses: if Node is missing it is downloaded
+    // into app-data. Nothing is installed system-wide and nothing needs admin rights.
+    let _node = provision_node(&app).await.map_err(|e| format!("Node could not be set up: {e}"))?;
+    let npm = bundled_npm_path(&app)
+        .ok_or_else(|| "Node was set up but npm was not where expected.".to_string())?;
+
+    let dir = omniroute_dir(&app);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    // A package.json makes npm treat this as a project and keeps the install local to it.
+    let pkg = dir.join("package.json");
+    if !pkg.is_file() {
+        std::fs::write(&pkg, "{\"name\":\"adris-omniroute-host\",\"private\":true,\"version\":\"1.0.0\"}")
+            .map_err(|e| format!("could not write package.json: {e}"))?;
+    }
+
+    say("Downloading OmniRoute from npm — this takes a few minutes the first time…", 20);
+    let mut cmd = std::process::Command::new(&npm);
+    cmd.current_dir(&dir)
+        .args(["install", "omniroute", "--no-audit", "--no-fund", "--loglevel=error"]);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW — no console flash
+    }
+    let out = tokio::task::spawn_blocking(move || cmd.output())
+        .await.map_err(|e| e.to_string())?
+        .map_err(|e| format!("npm could not be started: {e}"))?;
+
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(format!(
+            "The install failed. npm said:\n{}",
+            err.lines().rev().take(6).collect::<Vec<_>>().join("\n")
+        ));
+    }
+    if omniroute_bin(&app).is_none() {
+        return Err("npm reported success but the OmniRoute program is not where expected.".into());
+    }
+    say("Installed", 100);
+    Ok("installed".into())
+}
+
+/// Start OmniRoute and wait until it actually answers. Returns the address to paste.
+#[tauri::command]
+async fn omniroute_start(app: tauri::AppHandle, port: Option<u16>) -> Result<String, String> {
+    let port = port.unwrap_or(3000);
+    let base = format!("http://127.0.0.1:{port}");
+    let health = format!("{base}/v1/models");
+    let client = reqwest::Client::new();
+
+    // ALREADY RUNNING IS A SUCCESS, NOT A CONFLICT. The user may have started it themselves, or
+    // left it running from last time — spawning a second copy would just fail on the bound port
+    // and read as our bug.
+    if let Ok(r) = client.get(&health).timeout(std::time::Duration::from_secs(3)).send().await {
+        if r.status().is_success() || r.status().as_u16() == 401 {
+            return Ok(format!("{base}/v1/chat/completions"));
+        }
+    }
+
+    let entry = omniroute_bin(&app).ok_or_else(|| "OmniRoute is not installed yet.".to_string())?;
+    let node = provision_node(&app).await.map_err(|e| format!("Node could not be set up: {e}"))?;
+
+    let mut cmd = std::process::Command::new(&node);
+    cmd.arg(&entry)
+        .current_dir(omniroute_dir(&app))
+        .env("PORT", port.to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000 | 0x00000008); // no window, detached
+    }
+    cmd.spawn().map_err(|e| format!("OmniRoute could not be started: {e}"))?;
+
+    // Wait for it to actually answer rather than reporting success at spawn time. A first start
+    // builds its database, so this is generous — but bounded, and it says what it is waiting for.
+    for i in 0..60u32 {
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        let _ = app.emit("omniroute_progress", serde_json::json!({
+            "step": format!("Starting the gateway… {}s", i + 1), "pct": 100u8 }));
+        if let Ok(r) = client.get(&health).timeout(std::time::Duration::from_secs(3)).send().await {
+            if r.status().is_success() || r.status().as_u16() == 401 {
+                return Ok(format!("{base}/v1/chat/completions"));
+            }
+        }
+    }
+    Err(format!(
+        "OmniRoute was started but did not answer on port {port} within a minute. It may still be \
+         setting itself up on a first run — wait a moment and press Start again, or open {base} in \
+         a browser to see what it says."
+    ))
+}
+
 fn bundled_node_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
     let dir = get_node_dir(app);
     #[cfg(target_os = "windows")]
@@ -7497,6 +7645,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            // OmniRoute — a gateway the user runs, installed from npm by the app itself
+            omniroute_status,
+            omniroute_install,
+            omniroute_start,
             // OAuth — Supabase
             start_oauth_server,
             poll_oauth_code,

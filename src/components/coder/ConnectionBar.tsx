@@ -1,5 +1,6 @@
 ﻿import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { ConnectionMode, Provider, PROVIDERS, fetchRankedModels, type RankedModel } from '../../lib/ai';
 import { contextWindowFor } from '../../lib/contextBudget';
 import { rankScan } from '../../lib/modelHealth';
@@ -43,6 +44,113 @@ const MODES: { id: ConnectionMode; label: string; dotClass: string }[] = [
 const PROVIDER_ORDER: Provider[] = [
   'openai', 'groq', 'mistral', 'perplexity', 'together', 'deepseek', 'claude', 'gemini', 'custom',
 ];
+
+/**
+ * OmniRoute, set up by the app rather than by the user.
+ *
+ * "Install it from GitHub and paste the address" is a feature for people who already know how, and
+ * everyone else stops reading at "install". This is the same one-button shape as connecting a key:
+ * press it, watch it, done — and the address it produces is filled in automatically, because
+ * asking someone to copy a localhost URL is exactly the step that loses them.
+ *
+ * It installs from npm, not GitHub: measured, omniroute is on registry.npmjs.org, and npm is a
+ * different network path from GitHub release assets — which are blocked outright on this user's
+ * ISP. Node comes from the copy the app already provisions, so a machine with no Node still works
+ * and nothing lands system-wide.
+ */
+function OmniRouteSetup({ onBaseUrlChange }: {
+  /** Filled in for the user once the gateway answers — copying a localhost URL by hand is exactly
+   *  the step that loses people. */
+  onBaseUrlChange: (v: string) => void;
+}) {
+  const [state, setState] = useState<'checking' | 'absent' | 'installing' | 'installed' | 'starting' | 'running' | 'error'>('checking');
+  const [msg, setMsg] = useState('');
+  const [pct, setPct] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    invoke<{ installed: boolean }>('omniroute_status')
+      .then((s) => { if (alive) setState(s.installed ? 'installed' : 'absent'); })
+      .catch(() => { if (alive) setState('absent'); });
+    const un = listen<{ step: string; pct: number }>('omniroute_progress', (e) => {
+      if (!alive) return;
+      setMsg(e.payload.step);
+      setPct(e.payload.pct);
+    });
+    return () => { alive = false; un.then((f) => f()).catch(() => {}); };
+  }, []);
+
+  async function install() {
+    setState('installing'); setMsg('Starting…'); setPct(0);
+    try {
+      await invoke('omniroute_install');
+      setState('installed'); setMsg('Installed.');
+      await start();
+    } catch (e) { setState('error'); setMsg(String(e)); }
+  }
+
+  async function start() {
+    setState('starting'); setMsg('Starting the gateway…');
+    try {
+      const url = await invoke<string>('omniroute_start', { port: 3000 });
+      onBaseUrlChange(url);            // fill the address in for them
+      setState('running');
+      setMsg(`Running — address filled in below. Now paste your OmniRoute key above and pick a model.`);
+    } catch (e) { setState('error'); setMsg(String(e)); }
+  }
+
+  const busy = state === 'installing' || state === 'starting';
+
+  return (
+    <div className="mb-3 rounded-lg border border-nv-border bg-nv-bg px-3 py-2.5">
+      <p className="text-[11px] leading-relaxed text-nv-faint">
+        <span className="text-nv-text font-medium">One address, hundreds of AI providers.</span>{' '}
+        OmniRoute is a free, open-source gateway that moves to another provider automatically when
+        one runs out of free quota — so you are not stuck on whichever model still answers.
+        It runs on your machine: your gateway, your keys, nothing sent to adris.tech.
+      </p>
+
+      {state === 'running' ? (
+        <p className="text-[11px] text-emerald-400 mt-2 leading-relaxed">✓ {msg}</p>
+      ) : (
+        <div className="flex items-center gap-2 mt-2.5">
+          <button
+            onClick={() => (state === 'installed' ? start() : install())}
+            disabled={busy}
+            className="text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent/85 transition-fast font-medium disabled:opacity-50"
+          >
+            {state === 'installing' ? 'Installing…'
+              : state === 'starting' ? 'Starting…'
+              : state === 'installed' ? 'Start OmniRoute'
+              : 'Install & start OmniRoute'}
+          </button>
+          {state === 'absent' && !busy && (
+            <span className="text-[10px] text-nv-faint">≈2 min, one time</span>
+          )}
+        </div>
+      )}
+
+      {busy && (
+        <div className="mt-2">
+          <div className="h-1 bg-nv-border rounded-full overflow-hidden">
+            <div className="h-full bg-accent rounded-full transition-all duration-500" style={{ width: `${Math.max(pct, 8)}%` }} />
+          </div>
+          <p className="text-[10px] text-nv-faint mt-1">{msg}</p>
+        </div>
+      )}
+
+      {state === 'error' && (
+        <p className="text-[10.5px] text-nv-bad mt-2 leading-relaxed whitespace-pre-wrap">{msg}</p>
+      )}
+
+      {/* The manual route stays, for anyone already running their own copy elsewhere. */}
+      <p className="text-[10px] text-nv-faint mt-2 leading-relaxed">
+        Already running it yourself, or on another machine? Just type that address in the box below
+        instead — anything ending in <span className="font-mono text-nv-text">/v1/chat/completions</span>.
+      </p>
+    </div>
+  );
+}
 
 export default function ConnectionBar(props: Props) {
   const { mode, onModeChange, apiKey, onApiKeyChange, provider, onProviderChange,
@@ -434,32 +542,9 @@ export default function ConnectionBar(props: Props) {
                       className="w-full bg-nv-bg border border-nv-border rounded-lg px-3 py-2
                         text-[12px] text-nv-text outline-none focus:border-accent transition-fast mb-2"
                     />
-                    {/* WRITTEN FOR SOMEONE WHO HAS NEVER RUN A SERVER.
-                        The whole point of listing OmniRoute separately is that a non-technical user
-                        can get there. A bare URL box helps only someone who already knows what to
-                        put in it, so this says what the thing is, where the address comes from, and
-                        what they get — without pretending we host it or support it. */}
+                    {/* Installed and started by the app — see OmniRouteSetup. */}
                     {provider === 'omniroute' && (
-                      <div className="mb-3 rounded-lg border border-nv-border bg-nv-bg px-3 py-2.5">
-                        <p className="text-[11px] leading-relaxed text-nv-faint">
-                          <span className="text-nv-text font-medium">OmniRoute is a free, open-source
-                          gateway you run yourself.</span> It puts one address in front of hundreds of
-                          AI providers and moves to another automatically when one runs out of free
-                          quota — which is what stops you being stuck on whichever model still answers.
-                        </p>
-                        <p className="text-[11px] leading-relaxed text-nv-faint mt-1.5">
-                          Install it from <span className="font-mono text-nv-text">github.com/diegosouzapw/OmniRoute</span>,
-                          start it, and it prints its own address — usually
-                          <span className="font-mono text-nv-text"> http://localhost:3000</span>. Paste that
-                          here with <span className="font-mono text-nv-text">/v1/chat/completions</span> on the end,
-                          then your OmniRoute key above.
-                        </p>
-                        <p className="text-[10.5px] leading-relaxed text-nv-faint mt-1.5">
-                          It is not ours and we do not host it: your gateway, your keys, your machine.
-                          Nothing is sent to adris.tech. Once connected, type the model name you want
-                          in the box below — OmniRoute decides which provider serves it.
-                        </p>
-                      </div>
+                      <OmniRouteSetup onBaseUrlChange={onBaseUrlChange} />
                     )}
                   </>
                 )}

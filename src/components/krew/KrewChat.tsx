@@ -9513,6 +9513,18 @@ _${plan.advice}_` : ''}`;
     // ours, so nothing ever capped them. This is what makes "bring your own key and try the whole
     // thing" a real offer instead of an unlimited one.
     if (isPowerCommand(c.run) || isPowerCommand(c.cmd)) {
+      // DELIBERATELY KEYED ON THE PLAN, NOT ON WHICH AI IS CONNECTED.
+      //
+      // The token allowance is the opposite: it only ever applies to adris.tech's own hosted AI,
+      // because own-key and local cost us nothing. OmniRoute is a gateway the user installs and
+      // runs on their own machine with their own keys, so it is own-key by any sensible reading
+      // and must stay free — the app even installs it for them.
+      //
+      // The power commands are where the plan actually bites, and they bite whatever is connected:
+      // they spend OUR browser automation, OUR verification passes and hours of real work per run.
+      // Someone who needs those regularly is exactly who a paid plan is for. Do not "fix" this into
+      // a mode check — that would either make the commands free forever or make a user's own
+      // hardware billable, and both are wrong.
       const budget = commandBudget(profile?.plan ?? 'explore');
       if (budget.exhausted) {
         setInput('');
