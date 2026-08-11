@@ -77,14 +77,18 @@ export const CONTENT_STUDIOS: ContentStudio[] = [
   },
   {
     id: 'imagefx',
-    name: 'ImageFX (Google Labs)',
+    name: 'ImageFX / Flow (Google Labs)',
+    // MEASURED 2026-08-11: this redirects to labs.google/fx/tools/flow?from=imagefx. Google has
+    // folded ImageFX into Flow, which generates VIDEO as well as stills. The old address still
+    // works because Google forwards it, so it is kept — but the description has to say what really
+    // opens, or an agent looking for a way to make a video will never consider this one.
     url: 'https://labs.google/fx/tools/image-fx',
-    makes: 'Images from a written prompt — illustrations, backgrounds, concept art, social graphics.',
-    outputs: 'Downloadable image files, watermarked with SynthID.',
+    makes: 'Images and short generated VIDEO from a written prompt — illustrations, backgrounds, concept art, social graphics, and clips.',
+    outputs: 'Downloadable image and video files, watermarked with SynthID.',
     countries: 'all',
     needs: 'A Google account, signed in.',
     limits: 'Free with a daily generation allowance that Google changes without notice.',
-    useWhen: /\b(image|illustration|graphic|artwork|picture|visual|thumbnail|hero (image|shot)|background|icon set)\b/i,
+    useWhen: /\b(image|illustration|graphic|artwork|picture|visual|thumbnail|hero (image|shot)|background|icon set|video|clip|animation|reel)\b/i,
     notes: 'A Google Labs product, and Labs rolls out country by country — if the page will not open, that is why rather than anything the user has done wrong. Say so plainly instead of retrying. Not a design tool: it makes pictures, not laid-out posts with text on them.',
   },
   {
@@ -102,7 +106,10 @@ export const CONTENT_STUDIOS: ContentStudio[] = [
   {
     id: 'gbp',
     name: 'Google Business Profile',
-    url: 'https://business.google.com',
+    // MEASURED 2026-08-11: the bare domain redirects to support.google.com/business/answer/3420286
+    // — a help article, not the tool. Anyone sent there has to work out for themselves where their
+    // own listing actually is. /dashboard reaches the real profile manager (via sign-in if needed).
+    url: 'https://business.google.com/dashboard',
     makes: 'The free listing that decides whether a local business appears in Maps and in "near me" searches at all.',
     outputs: 'A public profile, posts, photos, and a review flow — plus the search terms people used to find it.',
     countries: 'all',
