@@ -90,6 +90,28 @@ fn pct_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// Turn OFF a reasoning model's visible chain-of-thought.
+///
+/// MEASURED against the live NVIDIA endpoint, same key, same question ("What is 2+2?"):
+///
+///   as we sent it        content 1 char,   reasoning_content 845 chars,  3.1s
+///   enable_thinking off  content "four",   reasoning_content 0,          0.3s
+///
+/// Nemotron 3.5 puts its whole working into `reasoning_content` and leaves `content` all but
+/// empty. We only ever read `delta.content`, so the app saw nothing arrive and reported "the model
+/// accepted the request and sent nothing back" — which was true, and looked exactly like an outage
+/// or a quota problem. On a real prompt the reasoning eats the token budget before a single word of
+/// answer is written, so the turn genuinely ends empty.
+///
+/// It must go at the TOP LEVEL of the body. The Python SDK takes `extra_body={...}` and unwraps it;
+/// sending a literal `extra_body` key over HTTP is not the same thing, and measured worse than
+/// doing nothing at all — content 0, reasoning 0, an entirely empty response.
+///
+/// Harmless on models that do not reason: an unknown key in an OpenAI-compatible body is ignored.
+fn thinking_off() -> serde_json::Value {
+    serde_json::json!({ "enable_thinking": false })
+}
+
 #[tauri::command]
 fn start_oauth_server(app: tauri::AppHandle) -> Result<(), String> {
     use std::io::{Read, Write};
@@ -1247,6 +1269,9 @@ async fn ai_stream(
                 });
                 let body = serde_json::json!({
                     "model": model, "messages": messages, "stream": true,
+                    // See thinking_off(): without this a Nemotron reasoning model spends its whole
+                    // budget on reasoning_content and returns an empty `content`.
+                    "chat_template_kwargs": thinking_off(),
                 });
                 // A key pasted from a provider's website routinely carries a trailing newline, and a
                 // newline is not legal in a header value — reqwest reports that as "builder error"
@@ -1280,19 +1305,47 @@ async fn ai_stream(
                 }
 
                 let mut stream = resp.bytes_stream();
+                // Did any real answer text arrive, and what did the model think out loud instead?
+                let mut got_content = false;
+                let mut reasoning_only = String::new();
                 while let Some(chunk) = stream.next().await {
                     let bytes = chunk.map_err(|e| e.to_string())?;
                     let text = String::from_utf8_lossy(&bytes);
                     for line in text.lines() {
                         if let Some(data) = line.strip_prefix("data: ") {
-                            if data.trim() == "[DONE]" { emit_done(); return Ok(()); }
+                            if data.trim() == "[DONE]" {
+                                // Nothing but working-out came back. Show it rather than ending the
+                                // turn blank and blaming the provider for an outage that never was.
+                                if !got_content && !reasoning_only.trim().is_empty() {
+                                    emit_chunk(reasoning_only.trim().to_string());
+                                }
+                                emit_done();
+                                return Ok(());
+                            }
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
                                 if let Some(t) = v["choices"][0]["delta"]["content"].as_str() {
-                                    if !t.is_empty() { emit_chunk(t.to_string()); }
+                                    if !t.is_empty() { got_content = true; emit_chunk(t.to_string()); }
+                                }
+                                // A REASONING MODEL THAT WRITES ONLY ITS WORKING MUST NOT LOOK SILENT.
+                                //
+                                // Measured on nvidia/nemotron-3.5-lightning-30b-a3b with the live key: as we sent it, one
+                                // character of `content` and 845 of `reasoning_content`. We read only `content`, so the app
+                                // saw nothing and said "the model accepted the request and sent nothing back" — which was
+                                // literally true and read like an outage. chat_template_kwargs now turns that off at the
+                                // source; this is the belt-and-braces for a model or provider that ignores it.
+                                //
+                                // Collected, never streamed: working-out is not an answer, and showing it live would put
+                                // the model's scratchpad in the chat. It is only used if the response ends with no content
+                                // at all — better a visible train of thought than a blank turn and a false outage message.
+                                if let Some(t) = v["choices"][0]["delta"]["reasoning_content"].as_str() {
+                                    if !t.is_empty() { reasoning_only.push_str(t); }
                                 }
                             }
                         }
                     }
+                }
+                if !got_content && !reasoning_only.trim().is_empty() {
+                    emit_chunk(reasoning_only.trim().to_string());
                 }
                 emit_done();
             }
@@ -5081,7 +5134,7 @@ async fn krew_ai_stream(
                 // Ask for real room explicitly. Left unset, the ceiling is whatever the provider
                 // happens to default to, which on some OpenAI-compatible endpoints is tiny — and a
                 // free-tier user doing a long piece of work is exactly who gets cut off by it.
-                let body = serde_json::json!({ "model": model, "messages": all_msgs, "stream": true, "max_tokens": 4096, "stop": ["</tool_call>", "</tool_code>"] });
+                let body = serde_json::json!({ "model": model, "messages": all_msgs, "stream": true, "max_tokens": 4096, "stop": ["</tool_call>", "</tool_code>"], "chat_template_kwargs": thinking_off() });
                 let resp = reqwest::Client::new().post(&endpoint)
                     .header(header::AUTHORIZATION, format!("Bearer {}", key))
                     .header(header::CONTENT_TYPE, "application/json").json(&body).send().await

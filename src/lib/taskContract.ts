@@ -162,6 +162,19 @@ export function requiredToolsFor(text: string): TaskContract {
           why: 'The user asked for a real file. generate_document writes an actual .pdf/.xlsx/.docx/.pptx — text in the chat that describes the document is not the document.' });
   }
 
+  // ── A real asset: video, image, audio ──────────────────────────────────────
+  // Asked for a video explaining the product, the boss replied "I can't create videos directly —
+  // I'm a text-based AI" and offered a script template. open_content_studio was attached to that
+  // turn: it opens NotebookLM (which makes video and audio overviews from the user's own
+  // documents) and ImageFX, signed in, in the user's browser. The capability was there; the model
+  // simply asserted it was not, which is the same failure as "I cannot search the web".
+  if (/\b(make|create|build|generate|produce|design|record|shoot|do)\b[^.]{0,40}\b(video|explainer|demo reel|animation|image|graphic|banner|poster|thumbnail|logo|audio|podcast|voice ?over)\b/i.test(t)
+      || /\bi (need|want)\b[^.]{0,30}\b(a )?(video|explainer|image|graphic|banner|podcast)\b/i.test(t)) {
+    add({ anyOf: ['open_content_studio', 'generate_document', 'browser_navigate', 'browser_open', ...HANDOFF],
+          what: 'use the tools that actually make it',
+          why: 'The user asked for a real asset, not a description of one. You cannot render video or images yourself, but open_content_studio opens free tools that can — NotebookLM for video and audio overviews built from the user’s own documents, ImageFX for images — signed in, in their browser. Call it. Never say you are "a text-based AI" and hand the work back: that is false here, and offering a template instead of opening the tool is exactly what must not happen.' });
+  }
+
   return { requirements: reqs, needsRealWork: reqs.length > 0 };
 }
 

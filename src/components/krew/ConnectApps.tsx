@@ -332,8 +332,33 @@ function ServiceCard({ service, isConnected, onConnect, onDisconnect }: {
       setTestState('ok');
       setTestMsg(result);
     } catch (err: unknown) {
+      const msg = String(err);
+      // ── A DEAD MODEL SHOULD BE SWAPPED, NOT JUST REPORTED ──────────────────────────────────
+      //
+      // The test already worked out the truth: "Your API key is VALID, but the selected model
+      // nvidia/nemotron-3-ultra-550b-a55b never answered ... choose another". Measured against the
+      // live endpoint, that model does not respond inside sixty seconds while the same key answers
+      // in under two on others. But the test only SAID so — the dead model stayed selected, so the
+      // next message went straight back to it and came back "the model accepted the request and
+      // sent nothing back". The user was left reading a diagnosis and being asked to go and fix it
+      // by hand, having already pressed the button whose whole job is to find this out.
+      //
+      // The working model the test just proved is now written to the credential, so the next
+      // message actually works. Said plainly, because silently changing someone's model would be
+      // its own kind of wrong.
+      const dead = msg.match(/selected model "([^"]+)" never answered/i);
+      const alive = msg.match(/choose another — "([^"]+)" works/i);
+      if (dead && alive) {
+        try {
+          const { setByokModel } = await import('../../lib/byokKeys');
+          await setByokModel(service.id, alive[1]);
+          setTestState('ok');
+          setTestMsg(`"${dead[1]}" never answers on your account — NVIDIA lists models it will not actually serve. Switched you to "${alive[1]}", which answered. You can pick a different one in the model list any time.`);
+          return;
+        } catch { /* fall through to the plain error below */ }
+      }
       setTestState('error');
-      setTestMsg(String(err));
+      setTestMsg(msg);
     }
   }
 

@@ -257,3 +257,27 @@ export function isUngroundedRecall(opts: { request: string; answer: string; sear
   const named = a.split('\n').filter((l) => /^\s*(?:\d+[.)]|[-*•])\s+\**\s*[A-Z][A-Za-z&.' -]{3,}/.test(l)).length;
   return named >= 8;
 }
+
+/**
+ * Did the answer refuse on the grounds of being unable, when it is not?
+ *
+ * "I can't create videos directly — I'm a text-based AI" was the reply to a request for a product
+ * video, from an agent holding open_content_studio: a tool that opens NotebookLM and ImageFX,
+ * signed in, in the user's own browser. It then offered a script template and a list of eight
+ * questions, which is the work handed straight back.
+ *
+ * This is the same shape as "I cannot search the web" — a model reciting a limitation of plain
+ * chat models while sitting inside an app built to remove exactly that limitation. No instruction
+ * reliably stops it, because it is not reasoning about its tools; it is completing a familiar
+ * sentence. So it is caught afterwards, by what the answer says about itself.
+ */
+const CAPABILITY_DENIALS: RegExp[] = [
+  /\bI(?:'m| am)\s+(?:just\s+|only\s+)?a\s+(?:text[- ]based|language|conversational)\s+(?:ai|model|assistant)\b/i,
+  /\bas an ai\b[^.]{0,60}\b(cannot|can't|can not|unable|do not have the ability)\b/i,
+  /\bI (cannot|can't|can not|am unable to|do not have the ability to)\b[^.]{0,50}\b(create|make|generate|produce|render|record|edit|design|build)\b[^.]{0,40}\b(video|image|graphic|audio|podcast|file|picture|animation)\b/i,
+  /\bI (cannot|can't|can not) (directly )?(create|make|produce|generate)\b[^.]{0,30}\b(video|image|audio)/i,
+];
+
+export function deniesCapability(text: string): boolean {
+  return CAPABILITY_DENIALS.some((re) => re.test(String(text || '')));
+}

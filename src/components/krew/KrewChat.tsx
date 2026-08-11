@@ -38,7 +38,7 @@ import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining }
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
 import { builtInSkillsBlock, learnSkill } from '../../lib/skillGraph';
 import { describeIntent, toolReceipt, stripToolNoise, setActivity, silenceActivity, resumeActivity, runLogFence, liveFrame } from '../../lib/agentActivity';
-import { dropUngroundedRows, repairAnswer, isUngroundedRecall } from '../../lib/groundTruth';
+import { dropUngroundedRows, repairAnswer, isUngroundedRecall, deniesCapability } from '../../lib/groundTruth';
 import { requiredToolsFor, contractDirective, clarifyDirective, unmetRequirements, correctionFor, carriesData, endsWithQuestion } from '../../lib/taskContract';
 import { parseLeadRequest } from '../../lib/leadIntent';
 import { sectorDirective, classifyLead, wantsNonTech, wantsTech } from '../../lib/sectorClass';
@@ -3241,6 +3241,11 @@ function deriveQuickTitle(content: string): string {
 function AssistantBubble({ content, streaming }: { content: string; streaming?: boolean }) {
   const [copied, setCopied] = useState(false);
   const [savedToBrain, setSavedToBrain] = useState(false);
+  // When this bubble first appeared with nothing in it — the clock in the waiting box counts from
+  // here, so it shows how long the user has actually been waiting rather than resetting on every
+  // repaint. A ref, not state: it must never itself cause a render.
+  const bubbleT0 = useRef(Date.now());
+  const bubbleStartedAt = bubbleT0.current;
 
   function saveToBrainManually() {
     import('../../lib/knowledgeStore').then(({ brain }) => {
@@ -3368,14 +3373,16 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
           </div>
         );
       })}
+      {/* AN EMPTY STREAMING BUBBLE GETS THE LIVE BOX, NEVER THREE DOTS AND THE WORD "THINKING".
+          Asked for twice: "remove this thinking and keep that box as the default so the user knows
+          something is working". Three dots say nothing and do not move, so a run that is working
+          and a run that has died look identical — and after two minutes of it the only move left
+          is Stop, which throws the work away. The box carries a clock that counts up on its own,
+          so it is visibly alive even when the agent has not written a word yet. */}
       {streaming && !content && (
-        <span className="flex items-center gap-1 py-1">
-          {[0,1,2].map(i => (
-            <span key={i} className="w-1.5 h-1.5 rounded-full bg-accent/70"
-              style={{ animation: `pulse 1.2s ease-in-out ${i*0.2}s infinite` }} />
-          ))}
-          <span className="text-[11px] text-nv-faint ml-1">Thinking…</span>
-        </span>
+        <StatusBlock startedAt={bubbleStartedAt} tone="work"
+          headline="Working on it"
+          detail="Reading the request and choosing what to do first." />
       )}
       {streaming && content && <span className="inline-block w-1.5 h-3.5 bg-accent animate-pulse ml-0.5 rounded-sm" />}
       {!streaming && extractVideoUrls(content).map(url => (
@@ -10679,7 +10686,8 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
           // answer than a third round of the same recall.
           if (!turnToolsRef.current.length && bossRecallRetries < 1 && !stopRef.current
               && !endsWithQuestion(fullResponse)
-              && isUngroundedRecall({ request: text, answer: fullResponse, searched: false })) {
+              && (isUngroundedRecall({ request: text, answer: fullResponse, searched: false })
+                  || deniesCapability(fullResponse))) {
             bossRecallRetries++;
             carried = '';   // recalled text is not part of the answer
             paintWork(`${agentHandle(agent)} answered from memory — sending it back`,
@@ -10688,7 +10696,8 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
             history.push({ role: 'user', content:
               'STOP. You answered from your own memory and said you cannot search the web. That is FALSE — you have a live web_search tool, a real browser, and specialists you can delegate to, all in this turn. Everything you just wrote is unverified recall.\n\n'
               + 'Discard it. Either call web_search yourself with a real query, or delegate_to_agent to the specialist whose job this is — then build the answer from what actually comes back.\n\n'
-              + 'Never tell the user to go and verify your output themselves, and never explain what you would do instead of doing it. If a real search returns nothing usable, say so in one line — that is a correct answer, and a list from memory is not.' });
+              + 'Never tell the user to go and verify your output themselves, and never explain what you would do instead of doing it. If a real search returns nothing usable, say so in one line — that is a correct answer, and a list from memory is not.\n\n'
+              + 'And if you just said you CANNOT do something — that you are "a text-based AI", that you cannot make a video, an image or a file — read your tool list again before saying it. open_content_studio opens NotebookLM (video and audio overviews built from the user’s own documents) and ImageFX, signed in, in their browser. generate_document writes real .pdf/.xlsx/.docx/.pptx files. Offering a template instead of opening the tool is handing the work back, which is the one thing you must never do.' });
             continue;
           }
           // ── THE CONTRACT, CHECKED ─────────────────────────────────────────────────────────
