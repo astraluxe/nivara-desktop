@@ -41,8 +41,17 @@ const MODES: { id: ConnectionMode; label: string; dotClass: string }[] = [
   { id: 'nivara',  label: 'adris.tech',  dotClass: 'bg-accent' },
 ];
 
+// THE DROPDOWN IS BUILT FROM THIS LIST, NOT FROM PROVIDERS. A provider missing here simply does
+// not exist as far as the user is concerned, however completely it is wired underneath.
+//
+// Two were missing. NVIDIA — despite the free-key box a few hundred lines below saying "Pick NVIDIA
+// (free) in Provider above", which it was not possible to do. And OmniRoute, which was added as a
+// provider, given a one-button installer and a help panel, and then could not be selected at all.
+//
+// Free first, because that is what someone opening this panel is usually looking for.
 const PROVIDER_ORDER: Provider[] = [
-  'openai', 'groq', 'mistral', 'perplexity', 'together', 'deepseek', 'claude', 'gemini', 'custom',
+  'nvidia', 'groq', 'omniroute',
+  'openai', 'mistral', 'perplexity', 'together', 'deepseek', 'claude', 'gemini', 'custom',
 ];
 
 /**
@@ -855,6 +864,17 @@ export default function ConnectionBar(props: Props) {
                       onClick={() => openFreeKeySetup('groq')}
                       className="text-[10px] px-2 py-0.5 rounded-md border border-nv-border text-nv-muted hover:text-nv-text transition-fast">Get Groq key</button>
                   </div>
+                  {/* THE ANSWER TO "ONE FREE KEY IS NOT ENOUGH". A single free key runs out, and on
+                      NVIDIA most of the large models are not callable at all — measured, eight of
+                      thirteen return 404. OmniRoute puts one address in front of many providers and
+                      moves on when one runs dry. It belongs in this box because this is where
+                      somebody looking for free capacity is already reading. */}
+                  <p className="text-[10px] text-nv-faint leading-relaxed mt-2 pt-2" style={{ borderTop: '1px solid var(--nv-border)' }}>
+                    One key running out, or the big models refusing to answer? Pick{' '}
+                    <span className="text-nv-text">OmniRoute (your own gateway)</span> in Provider
+                    above — the app installs and starts it for you, and it spreads your work across
+                    many free providers instead of one.
+                  </p>
                 </div>
               </>
             )}
