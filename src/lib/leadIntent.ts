@@ -24,7 +24,10 @@ export interface LeadRequest {
   /** What to look for, in the user's own words. */
   what: string;
   city: string;
-  count: number;
+  /** How many to find. Absent when the sentence never said — the card's default then applies. */
+  count?: number;
+  /** Employee bands the sentence named: "50-200 employees" -> ['51-200']. */
+  sizes: string[];
   /** Local businesses are found on Maps, not LinkedIn. */
   useMaps: boolean;
   /** What the sentence actually said, for showing back before the run starts. */
@@ -54,13 +57,50 @@ function isExcluded(text: string): boolean {
   return false;
 }
 
-/** How many to find. Honours an explicit number; refuses to invent one. */
-function readCount(text: string): number | null {
-  // "200 of them", "200 companies", "get me 200", "top 50", "around 100"
-  const m = text.match(/\b(?:top|first|around|about|roughly|approx(?:imately)?|up to|at least|get(?: me)?|find(?: me)?|need)?\s*(\d{2,4})\b/i);
+/**
+ * An employee-size band, if the sentence names one, mapped onto the card's own bands.
+ *
+ * This MUST be read before the count, because "50-200 employee" is two numbers that look exactly
+ * like a quantity — and were read as one. "find more non tech companies … mainly targeting 50-200
+ * employee" became "Find 50 leads": a number the user never asked for, taken from the size filter
+ * they did ask for, which was then thrown away.
+ */
+const SIZE_BANDS: Array<{ lo: number; hi: number; key: string }> = [
+  { lo: 1, hi: 10, key: '1-10' },
+  { lo: 11, hi: 50, key: '11-50' },
+  { lo: 51, hi: 200, key: '51-200' },
+  { lo: 201, hi: 1000, key: '201-1000' },
+  { lo: 1001, hi: Infinity, key: '1000+' },
+];
+
+function readSizes(text: string): { sizes: string[]; span: string } {
+  const range = text.match(/\b(\d{1,5})\s*(?:[-\u2013\u2014]|to)\s*(\d{1,5})\s*\+?\s*(?:employees?|people|staff|headcount|emp\b)/i);
+  const single = text.match(/\b(\d{1,5})\s*\+\s*(?:employees?|people|staff|headcount)/i);
+  const m = range ?? single;
+  if (!m) return { sizes: [], span: '' };
+  const lo = Number(m[1]);
+  const hi = range ? Number(m[2]) : Infinity;
+  // Strict at the lower edge: "50-200" must not drag in the 11-50 band just because the two touch
+  // at exactly 50. Overlapping on a single value is not what the user meant by a range.
+  const keys = SIZE_BANDS.filter((b) => b.hi > lo && b.lo <= hi).map((b) => b.key);
+  return { sizes: keys, span: m[0] };
+}
+
+/**
+ * How many to find. Honours an explicit number; refuses to invent one.
+ *
+ * The size band is cut out of the text first, so a headcount can never be mistaken for a quantity.
+ * A number also has to READ as a quantity of things — after a fetch word ("get me 200") or before
+ * a noun the search is for ("50 companies") — so a year, a pincode or a price cannot become the
+ * size of the run.
+ */
+function readCount(text: string, sizeSpan: string): number | null {
+  const t = sizeSpan ? text.split(sizeSpan).join(' ') : text;
+  const m = t.match(/\b(?:top|first|around|about|roughly|approx(?:imately)?|up ?to|at least|for|get(?: me)?|find(?: me)?|need|want|give me)\s+(\d{1,4})\b/i)
+    ?? t.match(/\b(\d{1,4})\s+(?:\w+\s+)?(?:of them\b|more\b|compan|business|firm|startup|brand|vendor|supplier|manufactur|founder|ceo|owner|people\b|person\b|prospect|lead|contact|creator|client|customer|shop|store|restaurant|hotel|clinic|school|college|agenc|distributor|dealer)/i);
   if (!m) return null;
   const n = Number(m[1]);
-  if (!Number.isFinite(n) || n < 5 || n > 2000) return null;
+  if (!Number.isFinite(n) || n < 3 || n > 2000) return null;
   return n;
 }
 
@@ -70,7 +110,8 @@ function readCity(text: string): string {
   if (!m) return '';
   let city = m[1].trim();
   // Trim trailing verbs the greedy capture swallowed: "in bangalore try to get" -> "bangalore".
-  city = city.replace(/\s+\b(try|and|then|also|with|for|to|get|find|who|that|which|make|put|so)\b.*$/i, '').trim();
+  city = city.replace(/\s+\b(try|and|then|also|with|for|to|get|find|who|that|which|make|put|so|please|thanks|thank)\b.*$/i, '').trim();
+  city = city.replace(/\s+\b(please|thanks|thank you|now|today|asap)\b\.?$/i, '').trim();
   const head = city.split(/\s+/)[0].toLowerCase();
   if (NOT_A_PLACE.has(head)) return '';
   if (city.length < 3 || city.length > 40) return '';
@@ -80,9 +121,11 @@ function readCity(text: string): string {
 /**
  * Read a lead-search instruction, or return null.
  *
- * Requires all three of: an action verb, a thing to find, and a number. The number is what makes
- * this safe to run without asking — "find some companies in Bangalore" is a conversation, "find
- * 200 non-tech companies in Bangalore" is a job with a defined end.
+ * Needs an action verb and a thing to find. A COUNT is no longer required: "find more non-tech
+ * companies for my list" is a real, complete instruction, and demanding a number meant it fell
+ * through to the boss and was answered from memory. Since this now opens the setup card rather
+ * than launching a run, an unstated count is simply the card's default, which the user can see
+ * and change — nothing is spent on a guess.
  */
 export function parseLeadRequest(text: string): LeadRequest | null {
   const raw = String(text || '').trim();
@@ -91,32 +134,45 @@ export function parseLeadRequest(text: string): LeadRequest | null {
   if (isExcluded(raw)) return null;
 
   // An action verb aimed at finding things.
-  if (!/\b(search|find|get|pull|gather|collect|source|look up|scrape|build|make|give)\b/i.test(raw)) return null;
+  if (!/\b(search|find|get|pull|gather|collect|source|look up|scrape|build|make|give|add)\b/i.test(raw)) return null;
   // The thing being found has to be nameable as an organisation or a person.
   const targetsCompanies = /\b(compan(y|ies)|business(es)?|firms?|startups?|brands?|vendors?|suppliers?|manufacturers?|agencies|agency|shops?|stores?|restaurants?|hotels?|clinics?|schools?|colleges?)\b/i.test(raw);
   const targetsPeople = /\b(founders?|ceos?|cto|cxo|directors?|managers?|heads?|owners?|people|persons?|prospects?|leads?|creators?|influencers?|consultants?|freelancers?|recruiters?)\b/i.test(raw);
   if (!targetsCompanies && !targetsPeople) return null;
 
-  const count = readCount(raw);
-  if (count === null) return null;   // no number => not a job, just a conversation
-
+  const { sizes, span: sizeSpan } = readSizes(raw);
+  const count = readCount(raw, sizeSpan);
   const city = readCity(raw);
 
-  // WHAT to look for, in the user's words: everything between the verb and the place/count, with
-  // the scaffolding stripped. "search for non tech companies in bangalore try to get 200 of them
-  // and put them in the list" -> "non tech companies".
+  // It has to read as a JOB, not a musing. A number, a size filter, a place, or an explicit "more
+  // / another / add to the list" all say the user wants a run; none of them and it is conversation.
+  const soundsLikeAJob = count !== null || sizes.length > 0 || !!city
+    || /\b(more|another|add|extend|expand|top up|build (me )?a list|to the list)\b/i.test(raw);
+  if (!soundsLikeAJob) return null;
+
+  // WHAT to look for, in the user's words. Strip the scaffolding — the verb, the place, the size
+  // band, the count, and the trailing "to be added to the list / who I can sell to" clauses that
+  // describe the PURPOSE rather than the target. Left in, they became the search query itself:
+  // "more non tech companies to be added whom i can sell my product to... mainly targeting -
+  // employee" is what actually went out, and it is not a description of anybody.
   let what = raw
-    .replace(/^[^a-z]*/i, '')
-    .replace(/\b(search|find|get|pull|gather|collect|source|look up|scrape|build|make|give)\b\s*(?:me\s+|for\s+|out\s+)?/i, '')
+    .replace(/^[^a-zA-Z]*/, '')
+    .replace(/\b(search|find|get|pull|gather|collect|source|look up|scrape|build|make|give|add)\b\s*(?:me\s+|for\s+|out\s+|up\s+|together\s+)?/i, '')
+    .split(sizeSpan || '\u0000').join(' ')
+    .replace(/\b(?:and\s+)?(?:put|add|save|store)\s+(?:them|these|it)\b.*$/i, ' ')
     .replace(/\bin\s+[A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*){0,2}\b/i, ' ')
-    .replace(/\b(?:try(?:ing)?\s+to\s+)?(?:get|find|reach|make it)\b.*$/i, ' ')
+    // Purpose clauses — why they want them, not who they are.
+    .replace(/\b(to|who|whom|which|that)\b[^.]{0,60}\b(sell|pitch|approach|target|reach out|contact|offer)\b.*$/i, ' ')
+    .replace(/\bto be added\b.*$/i, ' ')
+    .replace(/\bmainly targeting\b/gi, ' ')
     .replace(/\band\s+put\s+them.*$/i, ' ')
+    .replace(/\b(?:try(?:ing)?\s+to\s+)?(?:get|find|reach)\s+\d+.*$/i, ' ')
     .replace(/\b\d{1,4}\b/g, ' ')
-    .replace(/\b(of them|them|please|thanks|ok|okay)\b/gi, ' ')
+    .replace(/\b(of them|them|please|thanks|ok|okay|more|for my list|to the list|in the list)\b/gi, ' ')
+    .replace(/[.,;:]+/g, ' ')
     .replace(/\s{2,}/g, ' ')
-    .replace(/[.,;:]+$/, '')
     .trim();
-  if (what.length < 3) what = targetsPeople ? 'decision makers' : 'companies';
+  if (what.length < 3) what = targetsPeople && !targetsCompanies ? 'decision makers' : 'companies';
 
   // Local, physical businesses live on Maps; everything else is LinkedIn + the web.
   const useMaps = /\b(local|near ?by|near me|shops?|stores?|restaurants?|cafes?|clinics?|salons?|gyms?|dealers?|showrooms?)\b/i.test(raw);
@@ -125,7 +181,8 @@ export function parseLeadRequest(text: string): LeadRequest | null {
     find: targetsPeople && !targetsCompanies ? 'people' : 'companies',
     what,
     city,
-    count,
+    ...(count !== null ? { count } : {}),
+    sizes,
     useMaps,
     echo: raw,
   };

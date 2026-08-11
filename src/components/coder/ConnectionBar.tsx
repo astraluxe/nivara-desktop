@@ -582,7 +582,14 @@ export default function ConnectionBar(props: Props) {
                                               // credential — so picking a big model changed the
                                               // label and nothing else, and the model auto-picked at
                                               // connect time went on answering every message.
-                                              if (provider === 'nvidia' || provider === 'groq') {
+                                              // EVERY provider, not just the two free ones.
+                                              // setByokModel is provider-agnostic — it writes the
+                                              // model onto whichever credential is named — so this
+                                              // guard only meant a Gemini or OpenAI user's choice
+                                              // was lifted into React state and forgotten on the
+                                              // next reload, while the model auto-picked at connect
+                                              // time kept answering.
+                                              {
                                                 const { setByokModel } = await import('../../lib/byokKeys');
                                                 await setByokModel(provider, m.id).catch(() => {});
                                               }
@@ -681,7 +688,10 @@ export default function ConnectionBar(props: Props) {
                   // Save when they finish typing, not on every keystroke — a half-typed model id
                   // written to the credential would be used by the next call.
                   onBlur={async () => {
-                    if ((provider === 'nvidia' || provider === 'groq') && modelName.trim()) {
+                    // EVERY provider. This was gated to nvidia/groq, so a Gemini or OpenAI user who
+                    // typed a model name had it live in React state only — gone on the next reload,
+                    // with the auto-picked model quietly answering again.
+                    if (modelName.trim()) {
                       const { setByokModel } = await import('../../lib/byokKeys');
                       await setByokModel(provider, modelName.trim()).catch(() => {});
                     }

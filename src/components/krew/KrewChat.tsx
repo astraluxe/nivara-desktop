@@ -4858,6 +4858,18 @@ const [studioExtracting, setStudioExtracting] = useState(false);
       // No one-off key typed → use a CONNECTED provider. Prefer the one the user SELECTED in the
       // dropdown (so with several keys they can choose), else the first connected (free NVIDIA/Groq
       // first). This is what lets a user with both Gemini and NVIDIA pick which one to run on.
+      // THE MODEL THE USER JUST PICKED WINS OVER THE ONE ON RECORD.
+      //
+      // `src[svc].model` is the model stored against the credential, usually chosen automatically
+      // when the key was first connected. `modelName` is what the user has selected in the
+      // connection panel right now. The stored one was read FIRST, so picking a 550B model in the
+      // panel changed the label and nothing else — the auto-picked model went on answering every
+      // message, and the corner then showed a third thing again. Persisting the choice only covers
+      // NVIDIA and Groq, and the free-text model box does not persist at all, so precedence has to
+      // be right here rather than relying on the write having happened.
+      //
+      // The live choice only applies to the provider it was made FOR: picking a Groq model must not
+      // rename the model on a Gemini key.
       if (!effectiveKey) {
         // Prefer the ref: it holds the last known-good credentials even while a reload is in flight.
         const src = Object.keys(credsRef.current).length ? credsRef.current : creds;
@@ -4865,7 +4877,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
           if (src[svc]?.api_key) {
             effectiveKey       = src[svc].api_key;
             effectiveProvider  = svc as Provider;
-            effectiveModelName = src[svc].model || (svc !== provider ? '' : modelName);
+            effectiveModelName = (svc === provider && modelName) ? modelName : (src[svc].model || '');
             effectiveBaseUrl   = '';
             break;
           }
@@ -4880,7 +4892,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
           if (d?.api_key) {
             effectiveKey       = d.api_key;
             effectiveProvider  = svc as Provider;
-            effectiveModelName = d.model || (svc !== provider ? '' : modelName);
+            effectiveModelName = (svc === provider && modelName) ? modelName : (d.model || '');
             effectiveBaseUrl   = '';
             break;
           }
@@ -7390,21 +7402,47 @@ The prompt must be production-ready — specific enough for a motion designer to
           if (on('web') || !out.length) out.push(`best ${base} influencers${cityWord}`, `${base} newsletters and podcasts${cityWord}`);
           return out.slice(0, 4);
         })();
-        const queries = peopleMode ? peopleQueries : (cfg.reach === 'local' ? mapsQueries : webQueries);
+        // ── A NON-TECH SEARCH IN A CITY BELONGS ON MAPS, NOT ON GOOGLE ────────────────────────
+        //
+        // Maps was reachable only through reach === 'local'. Every other run went to plain Google
+        // search, which is why a hunt for non-tech SMB founders in Bangalore came back with
+        // Zerodha, Byju's and Swiggy: Google's answer to "small companies in Bangalore founder" is
+        // an article about Bangalore startups, and an article about Bangalore startups is the last
+        // place a construction firm or a diagnostics chain will ever appear.
+        //
+        // Maps lists what is actually THERE — the fabricators, clinics, logistics yards, printers
+        // and dealerships that make up a city's real economy and never get written about. That is
+        // precisely the population the user is trying to sell to, so a non-tech brief with a city
+        // in it goes to Maps regardless of the reach setting.
+        const nonTechLocal = !peopleMode && wantNonTech && !!cfg.city;
+        const useMapsGrounding = !peopleMode && (cfg.reach === 'local' || nonTechLocal || cfg.useMaps);
+        // For a non-tech run, ask Maps for the KINDS of business the definition names, rather than
+        // one generic query — "businesses in Bangalore" returns cafes and ATMs.
+        const nonTechMapsQueries = [
+          `manufacturing companies${cityWord}`,
+          `construction companies${cityWord}`,
+          `logistics and transport companies${cityWord}`,
+          `hospitals and diagnostic centres${cityWord}`,
+          `hotels and event venues${cityWord}`,
+          `distributors and wholesalers${cityWord}`,
+        ];
+        const queries = peopleMode ? peopleQueries
+          : nonTechLocal ? nonTechMapsQueries
+          : useMapsGrounding ? mapsQueries : webQueries;
         // People are never a Maps lookup — Maps lists businesses, not creators.
-        groundingKind = peopleMode ? 'web' : (cfg.reach === 'local' ? 'maps' : 'web');
+        groundingKind = peopleMode ? 'web' : (useMapsGrounding ? 'maps' : 'web');
 
         for (let qi = 0; qi < queries.length && mine(); qi++) {
           const q = queries[qi];
           say(statusBlock(t0,
-            `Finding leads — looking up real ${cfg.reach === 'local' ? 'local businesses' : 'companies'}${cfg.city ? ` in ${cfg.city}` : ''}`,
-            cfg.reach === 'local' ? `Searching Google Maps: "${q}"` : `Searching the web: "${q}"`));
+            `Finding leads — looking up real ${groundingKind === 'maps' ? 'local businesses' : 'companies'}${cfg.city ? ` in ${cfg.city}` : ''}`,
+            groundingKind === 'maps' ? `Searching Google Maps: "${q}"` : `Searching the web: "${q}"`));
           try {
             // Run this in the SAME browser window the user watches for everything else. It used to
             // go through web_search, which falls back to a separately-spawned browser session — so
             // on the user's machine no window ever appeared and the search quietly produced
             // nothing, leaving the run on pure recall while the panel claimed it was searching.
-            const url = cfg.reach === 'local'
+            const url = groundingKind === 'maps'
               ? `https://www.google.com/maps/search/${encodeURIComponent(q)}`
               : `https://www.google.com/search?q=${encodeURIComponent(q)}`;
             setAgentBrowserHold(true); setBrowserActive(true);
@@ -7419,6 +7457,41 @@ ${text}`;
         }
         // Keep it tight. A free key caps tokens per minute (Groq at 12k) and this block rides on
         // EVERY round below, so an unbounded dump would trade one failure for another.
+        // ── WIDEN THE SEARCH RATHER THAN GIVE UP ──────────────────────────────────────────────
+        //
+        // A city query can come back nearly empty — a bot challenge, a thin Maps page, or a niche
+        // that simply is not dense in that one district. Until now that silently set grounding to
+        // 'none' and the run fell back on the model's memory, which is the exact path that produced
+        // famous startups instead of real local firms.
+        //
+        // So when the first pass is thin, go round again with the area widened: industrial estates
+        // and suburbs by name where we know them, and the surrounding region otherwise. This is the
+        // "increase the radius" step — done automatically, and said out loud so the user can see
+        // why the second pass is running.
+        if (grounding.replace(/\s+/g, ' ').trim().length < 600 && cfg.city && mine()) {
+          const wider = [
+            `${topic || (wantNonTech ? 'manufacturing and industrial companies' : 'companies')} near ${cfg.city}`,
+            `${topic || (wantNonTech ? 'industrial estate companies' : 'companies')} ${cfg.city} outskirts industrial area`,
+          ];
+          for (const q of wider) {
+            if (!mine() || grounding.length > 2000) break;
+            say(statusBlock(t0, `Finding leads — widening the search around ${cfg.city}`,
+              `The first pass came back thin, so I am looking further out: "${q}"`));
+            try {
+              const url = groundingKind === 'maps'
+                ? `https://www.google.com/maps/search/${encodeURIComponent(q)}`
+                : `https://www.google.com/search?q=${encodeURIComponent(q)}`;
+              setAgentBrowserHold(true); setBrowserActive(true);
+              const raw = await invoke<string>('run_browser_persistent', { args: `openmany ${url}` }).catch(() => '');
+              const body = raw.includes('===BATCH===') ? raw.slice(raw.indexOf('===BATCH===') + 11) : raw;
+              const text = body.replace(/===URL:[\s\S]*?===[\s]*===STATUS:[a-z]+===[\s]*/g, ' ').trim();
+              if (text.length > 200 && !/our systems have detected|unusual traffic|not a robot/i.test(text.slice(0, 400))) {
+                grounding += `
+${text}`;
+              }
+            } catch { /* still fine to continue on recall */ }
+          }
+        }
         grounding = grounding.replace(/\s+/g, ' ').trim().slice(0, mode === 'own_key' || mode === 'local' ? 2600 : 5000);
         if (grounding.length < 200) groundingKind = 'none';
       }
@@ -9731,10 +9804,18 @@ _${plan.advice}_` : ''}`;
           addToList: wantsExisting ? attachedList : '',
           what: leadAsk.what,
           city: leadAsk.city,
-          count: leadAsk.count,
-          useMaps: leadAsk.useMaps,
+          // Only when the sentence actually said a number. Otherwise the card keeps its own
+          // default, visible and editable, rather than a figure lifted out of a size filter.
+          ...(leadAsk.count ? { count: leadAsk.count } : {}),
+          // "50-200 employee" is a SIZE, and it used to be read as the quantity — which is how a
+          // request for more companies became "Find 50 leads". It now lands where it belongs.
+          ...(leadAsk.sizes.length ? { sizes: leadAsk.sizes } : {}),
+          // A non-tech hunt in a city is a Google Maps job: Maps lists the fabricators, clinics and
+          // logistics yards that make up the real economy, and a web search lists whoever gets
+          // written about — which is how the last run came back full of famous startups.
+          useMaps: leadAsk.useMaps || (wantsNonTech(leadAsk.what) && !!leadAsk.city),
           mustHaveLinkedIn: leadAsk.find === 'people',
-          headline: `find ${leadAsk.count} ${leadAsk.what}${leadAsk.city ? ` in ${leadAsk.city}` : ''}`,
+          headline: `find ${leadAsk.count ?? 'some'} ${leadAsk.what}${leadAsk.city ? ` in ${leadAsk.city}` : ''}${leadAsk.sizes.length ? ` (${leadAsk.sizes.join(', ')} employees)` : ''}`,
         } });
         return;
       }

@@ -323,6 +323,20 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
     return lines.slice(i, i + 4).join('\n').trim().slice(0, 600);
   };
 
+  /**
+   * A step row. CALLED AS A FUNCTION, not rendered as <StepRow/> — and that is load-bearing.
+   *
+   * Typing "cant" into a step note produced "tnac". The cause: this is defined inside PlanPanel,
+   * so every render creates a NEW function identity, React sees a different component type, and
+   * unmounts and remounts the whole row. The note textarea is autoFocus, so on each remount the
+   * caret snapped back to position 0 and the next character landed in front of the last one — the
+   * word came out backwards. Every keystroke re-rendered PlanPanel, because noteDraft lives here.
+   *
+   * Calling it inlines the JSX into the parent's tree, where it is reconciled by key like any
+   * other element — no component instance, no remount, no lost caret. Safe precisely because this
+   * function has no hooks of its own; if one is ever added here, it must be hoisted to module
+   * scope with props instead, and NOT turned back into <StepRow/>.
+   */
   const StepRow = ({ s, dim }: { s: PlanStep; dim?: boolean }) => {
     const d = stepDate(plan, s);
     const isToday = isSameDay(d, new Date());
@@ -331,7 +345,7 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
       // border, so a day carrying three steps looked like a single paragraph of checkboxes and the
       // eye had nothing to separate them on. A gap and a faint surface on every row — not only
       // today's — is what makes the boundary visible.
-      <div className={`flex items-start gap-2 px-2.5 py-2 rounded-lg mb-1.5 ${dim ? 'opacity-55' : ''} ${
+      <div key={s.id} className={`flex items-start gap-2 px-2.5 py-2 rounded-lg mb-1.5 ${dim ? 'opacity-55' : ''} ${
         isToday && !s.done
           ? 'bg-accent/5 border border-accent/25'
           : 'bg-nv-bg/60 border border-nv-border/50'
@@ -673,7 +687,7 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
           </p>
           {today.length === 0
             ? <p className="text-[10.5px] text-nv-faint px-1">Nothing scheduled for today. {prog.done === prog.total ? 'The whole plan is done.' : 'Pull something forward from below if you have time.'}</p>
-            : today.map((s) => <StepRow key={s.id} s={s} />)}
+            : today.map((s) => StepRow({ s }))}
         </div>
 
         {/* YOUR HOURS, SHOWN BACK TO YOU. Scheduling silently reads this, so it has to be visible
@@ -718,7 +732,7 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
         {overdue.length > 0 && (
           <div>
             <p className="text-[9.5px] uppercase tracking-wide text-amber-600 mb-1 px-1">Still open · {overdue.length}</p>
-            {overdue.map((s) => <StepRow key={s.id} s={s} />)}
+            {overdue.map((s) => StepRow({ s }))}
             <p className="text-[9.5px] text-nv-faint px-1 mt-1 leading-snug">
               Behind is normal. Tick what you did, and drop what stopped mattering — a plan you are lying to is worse than no plan.
             </p>
@@ -733,7 +747,7 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
           {showAll && [...byWeek.entries()].sort((a, b) => a[0] - b[0]).map(([w, steps]) => (
             <div key={w} className="mb-2">
               <p className="text-[9.5px] font-mono text-nv-faint px-1 mb-0.5">Week {w}</p>
-              {steps.map((s) => <StepRow key={s.id} s={s} dim={s.done} />)}
+              {steps.map((s) => StepRow({ s, dim: s.done }))}
             </div>
           ))}
         </div>
