@@ -65,3 +65,70 @@ export function rescuePrintedCalls(text: string, resolve: (name: string) => stri
     delegations: JSON.stringify(calls.map((c) => ({ agent_key: c.agentKey, task: c.task }))),
   })}</tool_call>`;
 }
+
+// ─── One shape out, whatever shape came in ───────────────────────────────────
+//
+// "I tried to use a tool but the response could not be parsed. Please try rephrasing your request."
+//
+// The user hit that on a 550B model, and rephrasing was never going to help. The system prompt
+// asks for parameters alongside "tool":
+//
+//   {"tool":"web_search","query":"weather in Bangalore"}
+//
+// …but the retry sent when a call fails to parse told the model something else entirely:
+//
+//   {"name":"<tool>","arguments":{…}}
+//
+// So the recovery path TAUGHT the model a shape the parser cannot read. One malformed call became
+// a permanent failure: the model obeyed the correction, emitted name/arguments, `parsed.tool` came
+// back undefined, and the turn died with an apology and a suggestion to rephrase.
+//
+// The retry text is fixed, but that alone would be brittle. {"name":…,"arguments":…} is the shape
+// OpenAI-compatible models emit natively, and a big model will produce it whatever the prompt says
+// — it is what it was trained on. So both are simply accepted, along with the "function" wrapper
+// some providers add. Being liberal here costs nothing and removes a whole class of dead turn.
+
+/** Every key a model might use for the tool's name. */
+const NAME_KEYS = ['tool', 'name', 'tool_name', 'function_name', 'recipient_name', 'action'];
+/** Every key a model might nest the parameters under. */
+const ARG_KEYS = ['args', 'arguments', 'parameters', 'params', 'input', 'tool_input'];
+
+/**
+ * Read a parsed tool-call object into { tool, args }, whatever shape it arrived in.
+ *
+ * Returns null when there is no recognisable tool name, so callers keep their existing
+ * "could not parse" path for genuine rubbish.
+ */
+export function normaliseToolCall(parsed: unknown): { tool: string; args: Record<string, unknown> } | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+  let obj = parsed as Record<string, unknown>;
+
+  // Some providers wrap it: {"type":"function","function":{"name":…,"arguments":…}}
+  const wrapper = obj.function ?? obj.tool_call ?? obj.toolCall;
+  if (wrapper && typeof wrapper === 'object') obj = wrapper as Record<string, unknown>;
+
+  let tool = '';
+  for (const k of NAME_KEYS) {
+    const v = obj[k];
+    if (typeof v === 'string' && v.trim()) { tool = v.trim(); break; }
+  }
+  if (!tool) return null;
+
+  // Parameters: nested under one of the arg keys, or spread across the root alongside the name.
+  let args: Record<string, unknown> = {};
+  for (const k of ARG_KEYS) {
+    const v = obj[k];
+    if (v && typeof v === 'object' && !Array.isArray(v)) { args = { ...(v as Record<string, unknown>) }; break; }
+    // Some models send `arguments` as a JSON STRING rather than an object.
+    if (typeof v === 'string' && v.trim().startsWith('{')) {
+      try { args = { ...(JSON.parse(v) as Record<string, unknown>) }; break; } catch { /* fall through */ }
+    }
+  }
+  // Root-level parameters are merged UNDER the nested ones, so an explicit `arguments` block wins
+  // over a stray root key of the same name.
+  const root: Record<string, unknown> = { ...obj };
+  for (const k of [...NAME_KEYS, ...ARG_KEYS, 'type', 'function', 'tool_call', 'toolCall']) delete root[k];
+  args = { ...root, ...args };
+
+  return { tool, args };
+}

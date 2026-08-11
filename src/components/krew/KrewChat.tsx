@@ -12,7 +12,7 @@ import { TaskProgress, type TaskPhase } from './TaskProgress';
 import { StatusGlobe } from './StatusGlobe';
 import { runParallelResearch } from '../../lib/researchSources';
 import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, KREW_AGENTS, type KrewAgent } from '../../lib/krewAgents';
-import { rescuePrintedCalls } from '../../lib/toolCallRescue';
+import { rescuePrintedCalls, normaliseToolCall } from '../../lib/toolCallRescue';
 import { planFromWorkOrder, saveTargetFromOrder, type Delegation } from '../../lib/workOrder';
 import { routeTask } from '../../lib/taskRouting';
 import { useAuth } from '../../contexts/AuthContext';
@@ -7418,12 +7418,13 @@ The prompt must be production-ready — specific enough for a motion designer to
         const useMapsGrounding = !peopleMode && (cfg.reach === 'local' || nonTechLocal || cfg.useMaps);
         // For a non-tech run, ask Maps for the KINDS of business the definition names, rather than
         // one generic query — "businesses in Bangalore" returns cafes and ATMs.
+        // Four, not six. Every one is a real page load before the first row is written, and these
+        // four cover most of a city's non-tech economy; the loop also stops as soon as it has
+        // enough text, so a dense city usually costs two.
         const nonTechMapsQueries = [
           `manufacturing companies${cityWord}`,
           `construction companies${cityWord}`,
           `logistics and transport companies${cityWord}`,
-          `hospitals and diagnostic centres${cityWord}`,
-          `hotels and event venues${cityWord}`,
           `distributors and wholesalers${cityWord}`,
         ];
         const queries = peopleMode ? peopleQueries
@@ -7432,7 +7433,12 @@ The prompt must be production-ready — specific enough for a motion designer to
         // People are never a Maps lookup — Maps lists businesses, not creators.
         groundingKind = peopleMode ? 'web' : (useMapsGrounding ? 'maps' : 'web');
 
+        // Enough grounding text to build the first batches from. Past this, another page load
+        // is pure delay: the prompt is capped at 5000 characters anyway, so the extra text is
+        // trimmed off before the model ever sees it.
+        const GROUNDING_ENOUGH = 4500;
         for (let qi = 0; qi < queries.length && mine(); qi++) {
+          if (grounding.length >= GROUNDING_ENOUGH) break;
           const q = queries[qi];
           say(statusBlock(t0,
             `Finding leads — looking up real ${groundingKind === 'maps' ? 'local businesses' : 'companies'}${cfg.city ? ` in ${cfg.city}` : ''}`,
@@ -10656,7 +10662,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
           history.push({ role: 'assistant', content: fullResponse });
           history.push({
             role: 'user',
-            content: 'That tool call could not be read — it was not valid JSON inside a single <tool_call>…</tool_call> block. Send it again as exactly:\n<tool_call>\n{"name":"<tool>","arguments":{…}}\n</tool_call>\nNothing before or after the block. If you do not actually need a tool, just answer in plain text instead.',
+            content: 'That tool call could not be read — it was not valid JSON inside a single <tool_call>…</tool_call> block. Send it again as exactly:\n<tool_call>\n{"tool":"<tool_name>", "<param>":"<value>"}\n</tool_call>\nNothing before or after the block. If you do not actually need a tool, just answer in plain text instead.',
           });
           continue;
         }
@@ -10809,13 +10815,17 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
           break;
         }
 
-        const { tool } = parsed!;
+        // Whatever shape it arrived in — tool/name/function wrapper, args/arguments/parameters,
+        // arguments as a JSON string — read it into one. See normaliseToolCall.
+        const norm = normaliseToolCall(parsed);
+        const tool = norm ? norm.tool : String((parsed as Record<string, unknown>).tool ?? '');
         // Params are at root level (flat format) — fall back to nested args if present
         const rootParams = { ...parsed! } as Record<string, unknown>;
         delete rootParams.tool;
-        const args: Record<string, unknown> = (parsed!.args && typeof parsed!.args === 'object')
-          ? { ...rootParams, ...(parsed!.args as Record<string, unknown>) }
-          : rootParams;
+        const args: Record<string, unknown> = norm ? norm.args
+          : (parsed!.args && typeof parsed!.args === 'object')
+            ? { ...rootParams, ...(parsed!.args as Record<string, unknown>) }
+            : rootParams;
         // A run the user has stopped must not start a NEW tool, however far through it was.
         if (superseded()) break;
         // "Arjun.Boss · plan workflow…" is the machine's word for it. Say what is happening.
@@ -11174,10 +11184,12 @@ ${task}`);
                   delegateMsgsHist.push({ role: 'user', content: 'Your last tool call was incomplete or invalid JSON and did not run — nothing was searched yet. Call the SAME tool again with valid, complete JSON. Do NOT give up, do NOT say the data was slow, and do NOT write a plain-text answer without actually calling the tool first.' });
                   continue;
                 }
-                const dTool = String(dParsed.tool ?? '');
+                const dNorm = normaliseToolCall(dParsed);
+                const dTool = dNorm ? dNorm.tool : String(dParsed.tool ?? '');
                 const dRoot = { ...dParsed } as Record<string, unknown>; delete dRoot.tool;
-                const dArgs = (dParsed.args && typeof dParsed.args === 'object')
-                  ? { ...dRoot, ...(dParsed.args as Record<string, unknown>) } : dRoot;
+                const dArgs = dNorm ? dNorm.args
+                  : (dParsed.args && typeof dParsed.args === 'object')
+                    ? { ...dRoot, ...(dParsed.args as Record<string, unknown>) } : dRoot;
                 // The same friendly wording the main path uses. Without it a delegate narrated
                 // itself as "save to my folder" while the boss said "Saving launch.png to your
                 // folder" for the identical action.
@@ -11756,8 +11768,9 @@ ${wfTask}`);
                     wfHist.push({ role: 'user', content: 'Your last tool call was incomplete or invalid JSON and did not run — nothing was searched yet. Call the SAME tool again with valid, complete JSON. Do NOT give up, do NOT say the data was slow, and do NOT write a plain-text answer without actually calling the tool first.' });
                     continue;
                   }
-                  const dTool = String(dParsed.tool ?? ''); const dRoot = { ...dParsed } as Record<string, unknown>; delete dRoot.tool;
-                  const dArgs = (dParsed.args && typeof dParsed.args === 'object') ? { ...dRoot, ...(dParsed.args as Record<string, unknown>) } : dRoot;
+                  const wNorm = normaliseToolCall(dParsed);
+                  const dTool = wNorm ? wNorm.tool : String(dParsed.tool ?? ''); const dRoot = { ...dParsed } as Record<string, unknown>; delete dRoot.tool;
+                  const dArgs = wNorm ? wNorm.args : (dParsed.args && typeof dParsed.args === 'object') ? { ...dRoot, ...(dParsed.args as Record<string, unknown>) } : dRoot;
                   // Same friendly wording the other two paths use — a pipeline stage saving a file
                   // should read "Saving launch.png to your folder", not "save to my folder".
                   const wfToolLabel = browserActionLabel(dTool, dArgs) ?? dTool.replace(/_/g,' ');
@@ -12554,7 +12567,16 @@ ${wfTask}`);
         + 'YOUR OWN JUDGEMENT COUNTS TOO. You are the fifth member, not a secretary for the other four — so say plainly what YOU think should happen, including where you disagree with all of them. A plan that is only an average of other people\'s views is the weakest thing this council can produce.\n'
         + 'Open with **What the council agreed** (3–5 bullets), then **Where they still split** — the real disagreements, named. Do not smooth them over; say which way you came down and why.\n'
         + 'Then give the plan. Every substantive point any member raised must be either FOLDED IN — naming who raised it — or explicitly rejected in one line with the reason. Do not silently drop anyone.\n'
-        + 'Give the steps as "Day N: action" lines so they can go straight into the plan panel, re-planning ONLY the unfinished ones. Under each day, write the two or three lines that say what actually has to be done — which list, filtered to what, sent to whom — because the day heading on its own is not something anyone can work from.';
+        + 'Then the plan itself, as "Day N: action" lines so it drops straight into the plan panel — re-planning ONLY the unfinished steps.\n\n'
+        + 'HOW TO WRITE A DAY SO IT CAN BE READ AND ACTED ON. The person opening this on Tuesday morning has not read the transcript and will not read it. The plan is all they get, so it has to stand on its own:\n'
+        + '- Start the day with a VERB and a real object: "Day 3: Call the 12 vendors on the Tier 1 list", never "Day 3: Outreach" or "Day 3: Sales motion". A label is not a task.\n'
+        + '- Under it, two to four short lines saying exactly what to do: which list, filtered to what, said to whom, in which tool. Name the actual thing — the sheet, the note, the person — not a category.\n'
+        + '- End every day with a line beginning "Done when:" describing what EXISTS at the end of it, in a form you could look at: a note with N rows, twelve sent messages, a booked call. Not "outreach started". If you cannot say what will exist, the day is too vague to be in the plan.\n'
+        + '- Put the time it takes in brackets after the action, honestly: (20 min), (2 hrs). A day nobody can fit into their evening is a day that will not happen.\n'
+        + '- NO INVENTED PROPER NOUNS. Do not name a framework, a tier system, a pool or a phase that exists only in this plan unless you define it in plain words the first time it appears. "Tag each row Tier 1/2/3" means nothing on its own; "mark each row 1 (ready to buy), 2 (worth a call), 3 (later)" can be acted on.\n'
+        + '- No consultant vocabulary. Write it the way you would say it across a table: short sentences, ordinary words, no "leverage", "synergies", "go-to-market motion" or "operationalise".\n'
+        + '- One outcome per day. If a day needs three unrelated things it is three days, or two of them are not important enough to be in the plan at all.\n'
+        + '- Never schedule work that cannot be started: if a day depends on something that does not exist yet, the day that creates it comes first.';
 
       const t1 = transcriptAt(1400, 500);
       let out = await ask(executor,
