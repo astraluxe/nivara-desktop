@@ -350,10 +350,17 @@ export default function ConnectionBar(props: Props) {
   function handleProviderChange(p: Provider) {
     onProviderChange(p);
     const meta = PROVIDERS[p];
-    if (meta.defaultModel && !modelName) {
+    if (meta.defaultModel) {
       onModelNameChange(meta.defaultModel);
-    } else if (meta.defaultModel) {
-      onModelNameChange(meta.defaultModel);
+    } else {
+      // A PROVIDER WITH NO DEFAULT MUST NOT INHERIT THE LAST ONE'S MODEL.
+      //
+      // Both branches above did the same thing, and neither fired when defaultModel was empty — so
+      // switching from NVIDIA to OmniRoute kept "nvidia/nemotron-3.5-lightning-30b-a3b" and sent
+      // an NVIDIA model id to a gateway that has never heard of it. Blank is also the right
+      // default for OmniRoute: naming a model defeats the point, which is that it picks whichever
+      // provider is actually up.
+      onModelNameChange('');
     }
   }
 
@@ -411,7 +418,7 @@ export default function ConnectionBar(props: Props) {
             <div className="flex items-center justify-between px-5 pt-4 pb-2.5 border-b border-nv-border shrink-0 bg-nv-surface">
               <p className="text-[11px] font-semibold text-nv-text uppercase tracking-wider">
                 {popup === 'local'   && 'Local Model'}
-                {popup === 'own_key' && 'Own API Key'}
+                {popup === 'own_key' && (provider === 'omniroute' ? 'OmniRoute' : 'Own API Key')}
                 {popup === 'nivara'  && 'adris.tech Plan'}
               </p>
               <button onClick={() => setPopup(null)} className="text-nv-faint hover:text-nv-text -mr-1 p-1" aria-label="Close">
@@ -455,7 +462,59 @@ export default function ConnectionBar(props: Props) {
               </>
             )}
 
-            {popup === 'own_key' && (
+            {/* OMNIROUTE GETS ITS OWN SCREEN, NOT A ROW BURIED IN THE OWN-KEY FORM.
+                Pressing the OmniRoute button opened the Own Key panel: the title said "Own API
+                Key", the first thing under it was a list of NVIDIA and Groq keys, and the actual
+                OmniRoute setup was a hundred lines further down, below the fold. Nothing had gone
+                wrong — it just looked like the button did nothing.
+                A choice on the top row should land on a screen about that choice. */}
+            {popup === 'own_key' && provider === 'omniroute' && (
+              <>
+                <OmniRouteSetup onBaseUrlChange={onBaseUrlChange} />
+
+                <label className="text-nv-faint text-[11px] block mb-1.5">Gateway address</label>
+                <input
+                  value={baseUrl}
+                  onChange={(e) => onBaseUrlChange(e.target.value)}
+                  placeholder="http://localhost:3000/v1/chat/completions"
+                  className="w-full bg-nv-bg border border-nv-border rounded-lg px-3 py-2
+                    text-[12px] text-nv-text outline-none focus:border-accent transition-fast mb-3 font-mono"
+                />
+
+                <label className="text-nv-faint text-[11px] block mb-1.5">OmniRoute key</label>
+                <input
+                  value={apiKey}
+                  onChange={(e) => onApiKeyChange(e.target.value)}
+                  type="password"
+                  placeholder="Your OmniRoute key…"
+                  className="w-full bg-nv-bg border border-nv-border rounded-lg px-3 py-2
+                    text-[12px] text-nv-text outline-none focus:border-accent transition-fast mb-3"
+                />
+
+                <label className="text-nv-faint text-[11px] block mb-1.5">Model (optional)</label>
+                <input
+                  value={modelName}
+                  onChange={(e) => onModelNameChange(e.target.value)}
+                  placeholder="Leave blank — OmniRoute picks a working provider"
+                  className="w-full bg-nv-bg border border-nv-border rounded-lg px-3 py-2
+                    text-[12px] text-nv-text outline-none focus:border-accent transition-fast mb-2"
+                />
+                <p className="text-nv-faint text-[10px] leading-relaxed">
+                  Blank is usually right: choosing for it defeats the point, which is that it moves
+                  to another provider when one runs out. Name a model only if you want that exact one.
+                </p>
+
+                {/* A way out that does not require knowing OmniRoute lives inside Own Key. */}
+                <button
+                  onClick={() => handleProviderChange('nvidia')}
+                  className="mt-3 text-[10.5px] text-nv-faint hover:text-nv-text transition-fast"
+                >
+                  ← Use a normal API key instead
+                </button>
+              </>
+            )}
+
+            {popup === 'own_key' && provider !== 'omniroute' && (
               <>
                 {/* Your connected providers — the clear "which one do I use?" choice when more than
                     one key is connected (e.g. Gemini AND NVIDIA). Tapping one selects it. */}
@@ -554,25 +613,20 @@ export default function ConnectionBar(props: Props) {
                   </p>
                 )}
 
-                {/* Base URL — for a self-hosted gateway or any OpenAI-compatible endpoint */}
-                {(provider === 'custom' || provider === 'omniroute') && (
+                {/* Base URL — for any OpenAI-compatible endpoint the user hosts themselves.
+                    OmniRoute is no longer handled here: it has its own screen above, because a
+                    single row buried under the NVIDIA and Groq blocks read as the button not
+                    working at all. */}
+                {provider === 'custom' && (
                   <>
-                    <label className="text-nv-faint text-[11px] block mb-1.5">
-                      {provider === 'omniroute' ? 'Your OmniRoute address' : 'Base URL'}
-                    </label>
+                    <label className="text-nv-faint text-[11px] block mb-1.5">Base URL</label>
                     <input
                       value={baseUrl}
                       onChange={(e) => onBaseUrlChange(e.target.value)}
-                      placeholder={provider === 'omniroute'
-                        ? 'http://localhost:3000/v1/chat/completions'
-                        : 'https://your-api.com/v1/chat/completions'}
+                      placeholder="https://your-api.com/v1/chat/completions"
                       className="w-full bg-nv-bg border border-nv-border rounded-lg px-3 py-2
-                        text-[12px] text-nv-text outline-none focus:border-accent transition-fast mb-2"
+                        text-[12px] text-nv-text outline-none focus:border-accent transition-fast mb-3"
                     />
-                    {/* Installed and started by the app — see OmniRouteSetup. */}
-                    {provider === 'omniroute' && (
-                      <OmniRouteSetup onBaseUrlChange={onBaseUrlChange} />
-                    )}
                   </>
                 )}
 
