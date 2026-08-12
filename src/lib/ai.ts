@@ -81,7 +81,7 @@ export const PROVIDERS: Record<Provider, ProviderMeta> = {
   // endpoint, but a named entry with its own help text is the difference between a feature a
   // developer can find and one anybody can use — and nothing about it is supplied by us: the user
   // runs their own instance and holds their own keys.
-  omniroute:  { label: 'OmniRoute (your own gateway)', defaultModel: '',                              keyPlaceholder: 'Your OmniRoute key…', endpoint: null },
+  omniroute:  { label: 'OmniRoute (your own gateway)', defaultModel: '',                              keyPlaceholder: 'Not needed — keys live inside OmniRoute', endpoint: null },
   custom:     { label: 'Custom (OpenAI-compatible)', defaultModel: '',                                keyPlaceholder: 'API key…',  endpoint: null },
 };
 

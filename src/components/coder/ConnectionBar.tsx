@@ -104,7 +104,10 @@ function OmniRouteSetup({ onBaseUrlChange }: {
       const url = await invoke<string>('omniroute_start', { port: 3000 });
       onBaseUrlChange(url);            // fill the address in for them
       setState('running');
-      setMsg(`Running — address filled in below. Now paste your OmniRoute key above and pick a model.`);
+      // Says the step that is actually next. Measured: the local gateway answers /v1/models with
+      // no Authorization header, so there is no key to paste here — the keys go to the PROVIDERS,
+      // inside OmniRoute's own dashboard, and until at least one is added it routes nowhere.
+      setMsg('Running, and the address is filled in below. Next: open its dashboard and add a provider key or two — it has nothing to route to until you do.');
     } catch (e) { setState('error'); setMsg(String(e)); }
   }
 
@@ -480,33 +483,39 @@ export default function ConnectionBar(props: Props) {
                 <input
                   value={baseUrl}
                   onChange={(e) => onBaseUrlChange(e.target.value)}
-                  placeholder="http://localhost:3000/v1/chat/completions"
+                  placeholder="http://127.0.0.1:20128/v1/chat/completions"
                   className="w-full bg-nv-bg border border-nv-border rounded-lg px-3 py-2
                     text-[12px] text-nv-text outline-none focus:border-accent transition-fast mb-3 font-mono"
                 />
 
-                <label className="text-nv-faint text-[11px] block mb-1.5">OmniRoute key</label>
-                <input
-                  value={apiKey}
-                  onChange={(e) => onApiKeyChange(e.target.value)}
-                  type="password"
-                  placeholder="Your OmniRoute key…"
-                  className="w-full bg-nv-bg border border-nv-border rounded-lg px-3 py-2
-                    text-[12px] text-nv-text outline-none focus:border-accent transition-fast mb-3"
-                />
-
-                <label className="text-nv-faint text-[11px] block mb-1.5">Model (optional)</label>
-                <input
-                  value={modelName}
-                  onChange={(e) => onModelNameChange(e.target.value)}
-                  placeholder="Leave blank — OmniRoute picks a working provider"
-                  className="w-full bg-nv-bg border border-nv-border rounded-lg px-3 py-2
-                    text-[12px] text-nv-text outline-none focus:border-accent transition-fast mb-2"
-                />
-                <p className="text-nv-faint text-[10px] leading-relaxed">
-                  Blank is usually right: choosing for it defeats the point, which is that it moves
-                  to another provider when one runs out. Name a model only if you want that exact one.
-                </p>
+                {/* NO KEY FIELD, AND NO MODEL FIELD — both were asked for and neither is needed.
+                    Measured against a running instance: GET /v1/models on the local gateway returns
+                    200 with no Authorization header at all. The keys belong to the PROVIDERS and
+                    live inside OmniRoute's own dashboard, which is also the only place they can be
+                    entered. And the model is its whole purpose: it picks whichever provider is up,
+                    so naming one here would fight the thing we installed it for.
+                    Asking for either would have been asking for something the user cannot supply
+                    from this screen and does not need. */}
+                <div className="rounded-lg border border-nv-border bg-nv-bg px-3 py-2.5">
+                  <p className="text-[11px] text-nv-text font-medium">One more step, in OmniRoute itself</p>
+                  <p className="text-[10.5px] text-nv-faint leading-relaxed mt-1">
+                    The gateway is empty until you add provider keys to it — free ones from NVIDIA,
+                    Groq, Gemini and others. That happens on its own dashboard, not here. No key or
+                    model is needed on this screen: the local gateway does not ask for one, and
+                    choosing a model would defeat the point of letting it pick a provider that works.
+                  </p>
+                  <button
+                    onClick={() => {
+                      const dash = (baseUrl || 'http://127.0.0.1:20128').replace(/\/v1\/chat\/completions\/?$/, '');
+                      import('@tauri-apps/plugin-shell')
+                        .then(({ open }) => open(dash))
+                        .catch(() => window.open(dash, '_blank'));
+                    }}
+                    className="mt-2 text-[10.5px] px-2.5 py-1 rounded-md border border-accent/50 text-accent hover:bg-accent/10 transition-fast"
+                  >
+                    Open the OmniRoute dashboard →
+                  </button>
+                </div>
 
                 {/* A way out that does not require knowing OmniRoute lives inside Own Key. */}
                 <button

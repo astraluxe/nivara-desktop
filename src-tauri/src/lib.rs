@@ -3457,7 +3457,30 @@ async fn omniroute_install(app: tauri::AppHandle) -> Result<String, String> {
             .map_err(|e| format!("could not write package.json: {e}"))?;
     }
 
-    say("Downloading OmniRoute from npm — this takes a few minutes the first time…", 20);
+    say("Downloading OmniRoute from npm — a few minutes the first time…", 20);
+    // A PROGRESS BAR THAT DOES NOT MOVE IS A HANG.
+    //
+    // npm install for this package takes minutes and says nothing while it works, so the panel sat
+    // at one frozen line and the honest reading was that it had stuck. It had not — the install
+    // completed and node_modules was on disk. A ticking counter costs nothing and is the difference
+    // between waiting and giving up.
+    let ticking = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    {
+        let app2 = app.clone();
+        let ticking2 = ticking.clone();
+        tokio::spawn(async move {
+            let mut secs = 0u32;
+            while ticking2.load(std::sync::atomic::Ordering::Relaxed) {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                secs += 2;
+                let _ = app2.emit("omniroute_progress", serde_json::json!({
+                    "step": format!("Downloading from npm… {}m {:02}s — this is normal, it is a large package", secs / 60, secs % 60),
+                    // Creeps toward 90 so the bar visibly moves without ever claiming to be finished.
+                    "pct": 20u8 + (secs.min(240) as u8 / 4).min(70),
+                }));
+            }
+        });
+    }
     let mut cmd = std::process::Command::new(&npm);
     cmd.current_dir(&dir)
         .args(["install", "omniroute", "--no-audit", "--no-fund", "--loglevel=error"]);
@@ -3470,6 +3493,7 @@ async fn omniroute_install(app: tauri::AppHandle) -> Result<String, String> {
         .await.map_err(|e| e.to_string())?
         .map_err(|e| format!("npm could not be started: {e}"))?;
 
+    ticking.store(false, std::sync::atomic::Ordering::Relaxed);
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         return Err(format!(
@@ -3530,9 +3554,9 @@ async fn omniroute_start(app: tauri::AppHandle, port: Option<u16>) -> Result<Str
         }
     }
     Err(format!(
-        "OmniRoute was started but did not answer on port {port} within a minute. It may still be \
-         setting itself up on a first run — wait a moment and press Start again, or open {base} in \
-         a browser to see what it says."
+        "OmniRoute was started but has not answered on port {port} after three minutes. Open {base} \
+         in a browser to see what it says — that page is its own dashboard and usually explains the \
+         problem better than we can from out here."
     ))
 }
 
