@@ -378,6 +378,24 @@ export default function ConnectionBar(props: Props) {
             </button>
           );
         })}
+        {/* OMNIROUTE BELONGS ON THIS ROW, NOT THREE CLICKS INSIDE OWN KEY.
+            It was added as a provider, wired to Rust, given a one-button installer — and then
+            looked for on this row twice by the person who asked for it. If the author of the app
+            cannot find it, nobody will: the top row is where people decide what their AI runs on,
+            and "a gateway I install" is that kind of decision, not a brand of API key.
+            Underneath it IS own_key — same credentials, same free treatment, no new mode in the
+            backend — so this button simply says "own key, and specifically this one". */}
+        <button
+          onClick={() => { onModeChange('own_key'); handleProviderChange('omniroute'); setPopup('own_key'); }}
+          title="A free gateway you run yourself — one address in front of many AI providers"
+          className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded border transition-fast
+            ${mode === 'own_key' && provider === 'omniroute'
+              ? 'border-accent/50 text-accent bg-accent/10'
+              : 'border-nv-border text-nv-faint hover:text-nv-muted hover:border-nv-muted'}`}
+        >
+          <span className={`w-1.5 h-1.5 rounded-full ${mode === 'own_key' && provider === 'omniroute' ? 'bg-nv-green' : 'bg-nv-faint'}`} />
+          OmniRoute
+        </button>
       </div>
 
       {popup && (
