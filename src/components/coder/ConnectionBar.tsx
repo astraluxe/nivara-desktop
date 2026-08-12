@@ -165,7 +165,10 @@ export default function ConnectionBar(props: Props) {
   const { mode, onModeChange, apiKey, onApiKeyChange, provider, onProviderChange,
           modelName, onModelNameChange, baseUrl, onBaseUrlChange,
           localModel, onLocalModelChange, currentPlan } = props;
-  const [popup, setPopup] = useState<ConnectionMode | null>(null);
+  // 'omniroute' is a popup in its own right, not a mode. Rendering it off `provider` meant any
+  // effect that corrected the provider — and one did, whenever the chosen provider had no key
+  // yet — silently replaced this panel with the NVIDIA one while the user was looking at it.
+  const [popup, setPopup] = useState<ConnectionMode | 'omniroute' | null>(null);
   const [installedModels, setInstalledModels] = useState<InstalledModel[] | null>(null);
   const [engineStatus, setEngineStatus] = useState<'idle' | 'starting' | 'running' | 'error'>('idle');
   const [rankedModels, setRankedModels] = useState<RankedModel[] | null>(null);
@@ -393,7 +396,7 @@ export default function ConnectionBar(props: Props) {
             Underneath it IS own_key — same credentials, same free treatment, no new mode in the
             backend — so this button simply says "own key, and specifically this one". */}
         <button
-          onClick={() => { onModeChange('own_key'); handleProviderChange('omniroute'); setPopup('own_key'); }}
+          onClick={() => { onModeChange('own_key'); handleProviderChange('omniroute'); setPopup('omniroute'); }}
           title="A free gateway you run yourself — one address in front of many AI providers"
           className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded border transition-fast
             ${mode === 'own_key' && provider === 'omniroute'
@@ -418,7 +421,8 @@ export default function ConnectionBar(props: Props) {
             <div className="flex items-center justify-between px-5 pt-4 pb-2.5 border-b border-nv-border shrink-0 bg-nv-surface">
               <p className="text-[11px] font-semibold text-nv-text uppercase tracking-wider">
                 {popup === 'local'   && 'Local Model'}
-                {popup === 'own_key' && (provider === 'omniroute' ? 'OmniRoute' : 'Own API Key')}
+                {popup === 'own_key' && 'Own API Key'}
+                {popup === 'omniroute' && 'OmniRoute'}
                 {popup === 'nivara'  && 'adris.tech Plan'}
               </p>
               <button onClick={() => setPopup(null)} className="text-nv-faint hover:text-nv-text -mr-1 p-1" aria-label="Close">
@@ -468,7 +472,7 @@ export default function ConnectionBar(props: Props) {
                 OmniRoute setup was a hundred lines further down, below the fold. Nothing had gone
                 wrong — it just looked like the button did nothing.
                 A choice on the top row should land on a screen about that choice. */}
-            {popup === 'own_key' && provider === 'omniroute' && (
+            {popup === 'omniroute' && (
               <>
                 <OmniRouteSetup onBaseUrlChange={onBaseUrlChange} />
 
@@ -506,7 +510,7 @@ export default function ConnectionBar(props: Props) {
 
                 {/* A way out that does not require knowing OmniRoute lives inside Own Key. */}
                 <button
-                  onClick={() => handleProviderChange('nvidia')}
+                  onClick={() => { handleProviderChange('nvidia'); setPopup('own_key'); }}
                   className="mt-3 text-[10.5px] text-nv-faint hover:text-nv-text transition-fast"
                 >
                   ← Use a normal API key instead
@@ -514,7 +518,7 @@ export default function ConnectionBar(props: Props) {
               </>
             )}
 
-            {popup === 'own_key' && provider !== 'omniroute' && (
+            {popup === 'own_key' && (
               <>
                 {/* Your connected providers — the clear "which one do I use?" choice when more than
                     one key is connected (e.g. Gemini AND NVIDIA). Tapping one selects it. */}

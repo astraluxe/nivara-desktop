@@ -4608,7 +4608,14 @@ const [studioExtracting, setStudioExtracting] = useState(false);
       if (cred.model && cred.model !== modelName) setModelName(cred.model);
       // Also correct the provider when the dropdown points at one with no key behind it — otherwise
       // the panel names the wrong company as well as the wrong model.
-      if (svc !== provider && !src[provider]?.api_key) setProvider(svc as Provider);
+      //
+      // EXCEPT for the two that legitimately have no key YET. omniroute and custom are gateways the
+      // user sets up: they choose the provider first, and only then install it and paste an
+      // address and a key. This rule fired in that gap and threw them straight back to NVIDIA — so
+      // pressing OmniRoute appeared to open the NVIDIA panel, because by the time it rendered the
+      // provider had already been changed back underneath it.
+      const userIsSettingUp = provider === 'omniroute' || provider === 'custom';
+      if (svc !== provider && !src[provider]?.api_key && !userIsSettingUp) setProvider(svc as Provider);
       // Measure this key's whole catalogue in the background, at most once every 12 hours. Users who
       // connected a key long before this existed get the measured ranking too, without having to
       // reconnect or find a button — and a model NVIDIA adds shows up on its own merits at the next

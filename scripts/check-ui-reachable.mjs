@@ -39,6 +39,20 @@ const userSupplied = ['omniroute', 'custom'];
 const unguarded = userSupplied.filter(p => !rs.includes(`"${p}"`));
 if (unguarded.length) console.log(`  NOT HANDLED IN RUST: ${unguarded.join(', ')}`);
 
-const bad = unreachable.length + phantom.length + unguarded.length;
+// A PROVIDER YOU SET UP MUST SURVIVE BEING CHOSEN.
+//
+// The chat corrects the provider when the selected one has no key behind it — sensible, until the
+// user picks a gateway they are about to install. omniroute and custom have no key until the setup
+// is finished, so that rule fired in the gap and snapped them back to NVIDIA. Pressing OmniRoute
+// appeared to open the NVIDIA panel: by the time it rendered, the provider had already changed
+// underneath it. Nothing errored, which is what made it hard to see.
+const chat = fs.readFileSync(root + 'src/components/krew/KrewChat.tsx', 'utf8');
+const correctLine = chat.split(String.fromCharCode(10)).find((l) => /setProvider\(svc as Provider\)/.test(l)) ?? '';
+const exempted = /userIsSettingUp|omniroute/.test(correctLine);
+if (!exempted) {
+  console.log('  PROVIDER AUTO-CORRECT HAS NO EXEMPTION: omniroute/custom will snap back before setup finishes');
+}
+
+const bad = unreachable.length + phantom.length + unguarded.length + (exempted ? 0 : 1);
 console.log(`\n${bad === 0 ? 'ALL PROVIDERS REACHABLE' : bad + ' PROBLEMS'}`);
 process.exit(bad ? 1 : 0);
