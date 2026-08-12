@@ -184,6 +184,45 @@ export function parsePlanSteps(text: string): PlanStep[] {
         const key = day + '|' + action.toLowerCase().slice(0, 40);
         if (!seen.has(key)) { seen.add(key); steps.push({ id: uid(), day, week, action, done: false }); }
       }
+      continue;
+    }
+
+    // ── A DAY HEADER WITH NOTHING AFTER THE COLON ─────────────────────────────────────────────
+    //
+    // The rule above needs an action on the SAME line. The council's Executor does not write that
+    // way; it writes a heading and puts the work underneath:
+    //
+    //     Day 1 (today, Wed 13 Aug):
+    //
+    //     research_agent runs /enrich on "Mainly Non-tech Indian companies"
+    //     research_agent runs /verify on the same list
+    //
+    // Measured on a real council answer naming Days 1, 2, 3, 4 and 6: this parsed TWO steps, and
+    // the two it found were a buffer day and a bare "LAUNCH DAY:" heading — every day whose work
+    // sat on the lines below was dropped. The user watched the app say "5 new steps added" and then
+    // found their plan essentially unchanged, because what landed was the empty days.
+    //
+    // So a bare header adopts the first real line beneath it as its action. attachDetail below then
+    // gathers the remaining lines as the brief, exactly as it does for a single-line day.
+    const bare = line.match(/^(?:#{1,6}\s*)?[-•*]?\s*\**day\s*(\d{1,2})(?:\s*[-–—]\s*\d{1,2})?\s*(?:\([^)]*\))?\s*\**\s*[:—–-]?\s*\**\s*$/i);
+    if (bare) {
+      const day = Number(bare[1]);
+      if (day < 1 || day > 120) continue;
+      // The next line that is actual work — skipping blanks, and anything that is plainly the
+      // user's own note or a completion test rather than the task itself.
+      let action = '';
+      for (let k = lines.indexOf(raw) + 1; k < lines.length; k++) {
+        const t = clean(lines[k].trim().replace(/^[-•*]\s*/, ''));
+        if (!t) continue;
+        if (endsDetail(lines[k])) break;                       // ran into the next day
+        if (/^(you|done when|deliverable|output)\b/i.test(t)) continue;
+        if (t.length > 3) { action = t; }
+        break;
+      }
+      if (action) {
+        const key = day + '|' + action.toLowerCase().slice(0, 40);
+        if (!seen.has(key)) { seen.add(key); steps.push({ id: uid(), day, week, action, done: false }); }
+      }
     }
   }
 

@@ -855,7 +855,12 @@ function SchedulePicker({ value, onChange }: { value: string; onChange: (cron: s
 // ─── Workflow Builder constants ───────────────────────────────────────────────
 
 const TRIGGER_OPTIONS = [
-  { type: 'schedule'        as TriggerType, icon: 'clock', label: 'Schedule',        desc: 'Run at a set time — daily, weekly, hourly' },
+  // SAYS THE CONDITION IN THE DESCRIPTION, because it is the whole difference between a schedule
+  // that fires and one that quietly does not. The scheduler is a task inside this app's own
+  // process (run_schedule_trigger in lib.rs) — nothing runs on a server, because nothing about
+  // the user's lists or keys is stored on one. Somebody who sets an 8:30am outreach batch and
+  // shuts the laptop gets no sends and no error, which is the worst of both.
+  { type: 'schedule'        as TriggerType, icon: 'clock', label: 'Schedule',        desc: 'Run at a set time — daily, weekly, hourly. Runs on this computer, so adris.tech must be open at that time.' },
   { type: 'file_watch'      as TriggerType, icon: 'folder', label: 'File added',      desc: 'New file lands in a folder you choose' },
   { type: 'email'           as TriggerType, icon: 'mail',  label: 'Email received',  desc: 'Incoming email matches your filters' },
   { type: 'webhook'         as TriggerType, icon: 'link', label: 'Webhook',         desc: 'Another app sends a signal to adris.tech' },

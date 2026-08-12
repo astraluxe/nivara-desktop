@@ -75,6 +75,9 @@ function OmniRouteSetup({ onBaseUrlChange }: {
   const [state, setState] = useState<'checking' | 'absent' | 'installing' | 'installed' | 'starting' | 'running' | 'error'>('checking');
   const [msg, setMsg] = useState('');
   const [pct, setPct] = useState(0);
+  /** How many providers the gateway can actually route to. Zero means it is running and useless. */
+  const [providers, setProviders] = useState<number | null>(null);
+  const dashUrl = 'http://127.0.0.1:20128';
 
   useEffect(() => {
     let alive = true;
@@ -89,6 +92,16 @@ function OmniRouteSetup({ onBaseUrlChange }: {
     return () => { alive = false; un.then((f) => f()).catch(() => {}); };
   }, []);
 
+  /** Ask the gateway what it can route to. An empty list is the difference between "running" and
+   *  "working", and it is the one thing the old panel never told anybody. */
+  async function countProviders() {
+    try {
+      const r = await fetch(dashUrl + '/v1/models');
+      const j = await r.json();
+      setProviders(Array.isArray(j?.data) ? j.data.length : 0);
+    } catch { setProviders(null); }
+  }
+
   async function install() {
     setState('installing'); setMsg('Starting…'); setPct(0);
     try {
@@ -101,65 +114,110 @@ function OmniRouteSetup({ onBaseUrlChange }: {
   async function start() {
     setState('starting'); setMsg('Starting the gateway…');
     try {
-      const url = await invoke<string>('omniroute_start', { port: 3000 });
-      onBaseUrlChange(url);            // fill the address in for them
+      const url = await invoke<string>('omniroute_start', {});
+      onBaseUrlChange(url);
       setState('running');
-      // Says the step that is actually next. Measured: the local gateway answers /v1/models with
-      // no Authorization header, so there is no key to paste here — the keys go to the PROVIDERS,
-      // inside OmniRoute's own dashboard, and until at least one is added it routes nowhere.
-      setMsg('Running, and the address is filled in below. Next: open its dashboard and add a provider key or two — it has nothing to route to until you do.');
+      await countProviders();
     } catch (e) { setState('error'); setMsg(String(e)); }
   }
 
   const busy = state === 'installing' || state === 'starting';
 
+  // THREE NUMBERED STEPS, AND ONLY ONE IS EVER LIVE.
+  //
+  // This was a paragraph explaining what OmniRoute is, and a button. The honest reaction to it was
+  // "idk if its working or not... or wht exactly i need to do". Somebody who has never run a server
+  // needs to see where they are, what is already done, and the single next thing — not a
+  // description of the software. Each step shows its own control only while it is the current one.
+  const Step = ({ n, title, done, active, children }: {
+    n: number; title: string; done: boolean; active: boolean; children?: React.ReactNode;
+  }) => (
+    <div className={`flex gap-2.5 px-2.5 py-2 rounded-lg ${active ? 'bg-accent/5 border border-accent/25' : 'border border-transparent'}`}>
+      <span className={`shrink-0 w-5 h-5 rounded-full grid place-items-center text-[10px] font-semibold ${
+        done ? 'bg-emerald-500 text-white' : active ? 'bg-accent text-white' : 'bg-nv-border text-nv-faint'
+      }`}>{done ? '✓' : n}</span>
+      <div className="min-w-0 flex-1">
+        <p className={`text-[11.5px] font-medium ${done || active ? 'text-nv-text' : 'text-nv-faint'}`}>{title}</p>
+        {active && children}
+      </div>
+    </div>
+  );
+
   return (
-    <div className="mb-3 rounded-lg border border-nv-border bg-nv-bg px-3 py-2.5">
-      <p className="text-[11px] leading-relaxed text-nv-faint">
-        <span className="text-nv-text font-medium">One address, hundreds of AI providers.</span>{' '}
-        OmniRoute is a free, open-source gateway that moves to another provider automatically when
-        one runs out of free quota — so you are not stuck on whichever model still answers.
-        It runs on your machine: your gateway, your keys, nothing sent to adris.tech.
+    <div className="mb-3 rounded-lg border border-nv-border bg-nv-bg px-2.5 py-2.5">
+      <p className="text-[11px] leading-relaxed text-nv-faint mb-2">
+        <span className="text-nv-text font-medium">One address, many AI providers.</span> When one
+        runs out of free quota it moves to another, so you are not stuck on whichever model still
+        answers. It runs on your machine — your keys, nothing sent to adris.tech.
       </p>
 
-      {state === 'running' ? (
-        <p className="text-[11px] text-emerald-400 mt-2 leading-relaxed">✓ {msg}</p>
-      ) : (
-        <div className="flex items-center gap-2 mt-2.5">
-          <button
-            onClick={() => (state === 'installed' ? start() : install())}
-            disabled={busy}
-            className="text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent/85 transition-fast font-medium disabled:opacity-50"
-          >
-            {state === 'installing' ? 'Installing…'
-              : state === 'starting' ? 'Starting…'
-              : state === 'installed' ? 'Start OmniRoute'
-              : 'Install & start OmniRoute'}
-          </button>
-          {state === 'absent' && !busy && (
-            <span className="text-[10px] text-nv-faint">≈2 min, one time</span>
-          )}
-        </div>
-      )}
-
-      {busy && (
-        <div className="mt-2">
-          <div className="h-1 bg-nv-border rounded-full overflow-hidden">
-            <div className="h-full bg-accent rounded-full transition-all duration-500" style={{ width: `${Math.max(pct, 8)}%` }} />
+      <Step n={1} title="Install it — about 2 minutes, once"
+        done={state === 'installed' || state === 'starting' || state === 'running'}
+        active={state === 'absent' || state === 'installing' || state === 'checking'}>
+        <button
+          onClick={install}
+          disabled={busy || state === 'checking'}
+          className="mt-1.5 text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent/85 transition-fast font-medium disabled:opacity-50"
+        >
+          {state === 'installing' ? 'Installing…' : state === 'checking' ? 'Checking…' : 'Install OmniRoute'}
+        </button>
+        {state === 'installing' && (
+          <div className="mt-2">
+            <div className="h-1 bg-nv-border rounded-full overflow-hidden">
+              <div className="h-full bg-accent rounded-full transition-all duration-500" style={{ width: `${Math.max(pct, 8)}%` }} />
+            </div>
+            <p className="text-[10px] text-nv-faint mt-1">{msg}</p>
+            <p className="text-[10px] text-nv-faint mt-0.5">Nothing for you to do. You can close this and come back.</p>
           </div>
-          <p className="text-[10px] text-nv-faint mt-1">{msg}</p>
+        )}
+      </Step>
+
+      <Step n={2} title="Start it" done={state === 'running'}
+        active={state === 'installed' || state === 'starting' || state === 'error'}>
+        {state !== 'starting' && (
+          <button
+            onClick={start}
+            disabled={busy}
+            className="mt-1.5 text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent/85 transition-fast font-medium disabled:opacity-50"
+          >Start OmniRoute</button>
+        )}
+        {state === 'starting' && (
+          <>
+            <p className="text-[10.5px] text-nv-faint mt-1">{msg}</p>
+            <p className="text-[10px] text-nv-faint mt-0.5">A first start builds its database — up to three minutes. Leave it running.</p>
+          </>
+        )}
+        {state === 'error' && <p className="text-[10.5px] text-nv-bad mt-1 leading-relaxed whitespace-pre-wrap">{msg}</p>}
+      </Step>
+
+      <Step n={3} title="Add a free provider key inside it"
+        done={providers !== null && providers > 0} active={state === 'running'}>
+        <p className="text-[10.5px] text-nv-faint mt-1 leading-relaxed">
+          {providers === 0
+            ? 'Running, but it has no providers yet — so it cannot answer anything. Open it and paste a free key; NVIDIA or Groq take about a minute.'
+            : providers !== null && providers > 0
+              ? `Ready — ${providers} model${providers === 1 ? '' : 's'} available. Nothing else to do here.`
+              : 'Open it and paste a free provider key. NVIDIA or Groq take about a minute.'}
+        </p>
+        <div className="flex items-center gap-2 mt-1.5">
+          <button
+            onClick={() => {
+              import('@tauri-apps/plugin-shell').then(({ open }) => open(dashUrl)).catch(() => window.open(dashUrl, '_blank'));
+            }}
+            className="text-[10.5px] px-2.5 py-1 rounded-md border border-accent/50 text-accent hover:bg-accent/10 transition-fast"
+          >Open OmniRoute →</button>
+          <button
+            onClick={countProviders}
+            className="text-[10.5px] text-nv-faint hover:text-nv-text transition-fast"
+          >Check again</button>
         </div>
-      )}
+      </Step>
 
-      {state === 'error' && (
-        <p className="text-[10.5px] text-nv-bad mt-2 leading-relaxed whitespace-pre-wrap">{msg}</p>
+      {state === 'running' && (
+        <p className="text-[10.5px] text-emerald-400 mt-1.5 px-2.5">
+          Gateway running at {dashUrl} — the address below is filled in for you.
+        </p>
       )}
-
-      {/* The manual route stays, for anyone already running their own copy elsewhere. */}
-      <p className="text-[10px] text-nv-faint mt-2 leading-relaxed">
-        Already running it yourself, or on another machine? Just type that address in the box below
-        instead — anything ending in <span className="font-mono text-nv-text">/v1/chat/completions</span>.
-      </p>
     </div>
   );
 }
