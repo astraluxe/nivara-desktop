@@ -1,11 +1,11 @@
 {
-    "version":  "1.33.2",
+    "version":  "1.33.3",
     "notes":  "Bug fixes and improvements",
-    "pub_date":  "2026-08-12T09:48:10Z",
+    "pub_date":  "2026-08-12T10:19:05Z",
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUUWNjQ0laVXZRdVZWQWFkZFByekFyRUErU3VhUGRDSkxGMWpzL1QrTER2cy9BOEFJRHRETm9TT3dsL21CNFVIY1QzRlJuMi9WOWpkcnRmdnRJUkdTU2VzV2M0SzdGY2dNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NTA4MjkwCWZpbGU6YWRyaXMudGVjaF8xLjMzLjJfeDY0LXNldHVwLmV4ZQpLb2gzbldIWlYrQzQ2VDdJb1JtVGprbEJ0TGYzSW45ZHFlWnY2S2krUE9qQzlHOHJWMnJ1SVByeWZHRUZlT04yKzQxZkZtV0FobEVGSkxoTHVaWWZEZz09Cg==",
-                                             "url":  "https://www.adris.tech/dl/adris.tech_1.33.2_x64-setup.exe?v=1.33.2"
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUUWNjQ0laVXZRdWZwNEJpU1pTc1AveEQ4eE91L1dxNDdYaTN4VEFYRW9TRmRmR05nVVovdldXNncyV0xObHowUWt5VVBVRFlqb3pVYmw5NmNWOXJTdkU5UU44WlNDSVFvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NTEwMTQ1CWZpbGU6YWRyaXMudGVjaF8xLjMzLjNfeDY0LXNldHVwLmV4ZQp3clNGYWU4OHZUQnErYWpwVkRHNmVvMDVkTkFBYXEwcVE5RklINnQvZEFXYmxCaGNVYnVQbDhsK2JwZEdxYldpVHhzSU9HV0k1OUhWTkFXRURKM3dEQT09Cg==",
+                                             "url":  "https://www.adris.tech/dl/adris.tech_1.33.3_x64-setup.exe?v=1.33.3"
                                          }
                   }
 }
