@@ -9,7 +9,6 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow, currentMonitor, LogicalSize, PhysicalPosition } from '@tauri-apps/api/window';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { credentialStore } from './lib/krewDb';
 import { brain, nodeToMarkdown } from './lib/knowledgeStore';
 
 const win = getCurrentWindow();
@@ -109,17 +108,21 @@ function sessionToken(): string | null {
   } catch { return null; }
 }
 
-async function resolveAuth(): Promise<{ mode: string; apiKey: string | null; provider: string | null; token: string | null }> {
+/**
+ * The same connection the rest of the app is on.
+ *
+ * This walked gemini → openai → claude and took the first key it found, so the Quick Bar answered
+ * on a different model from the main window whenever the user had more than one key — and could
+ * never reach a user-run gateway, since it neither knew about omniroute nor passed an address.
+ */
+async function resolveAuth(): Promise<{ mode: string; apiKey: string | null; provider: string | null; modelName: string | null; baseUrl: string | null; localModel: string | null; token: string | null }> {
   try {
-    const services = await credentialStore.list().catch(() => [] as string[]);
-    for (const [svc, p] of [['gemini', 'gemini'], ['openai', 'openai'], ['claude', 'claude']]) {
-      if (services.includes(svc)) {
-        const d = await credentialStore.get(svc).catch(() => null) as Record<string, string> | null;
-        if (d?.api_key) return { mode: 'own_key', apiKey: d.api_key, provider: p, token: null };
-      }
-    }
+    const { resolveAiSource } = await import('./lib/aiSource');
+    const r = await resolveAiSource();
+    return { mode: r.mode, apiKey: r.apiKey, provider: r.provider, modelName: r.modelName,
+             baseUrl: r.baseUrl, localModel: r.localModel, token: r.sessionToken ?? sessionToken() };
   } catch { /* fall through to adris AI */ }
-  return { mode: 'nivara', apiKey: null, provider: null, token: sessionToken() };
+  return { mode: 'nivara', apiKey: null, provider: null, modelName: null, baseUrl: null, localModel: null, token: sessionToken() };
 }
 
 // ── Send ─────────────────────────────────────────────────────────────────────
@@ -175,9 +178,9 @@ async function send() {
         messages: history.slice(-8),
         apiKey: auth.apiKey,
         provider: auth.provider,
-        localModel: null,
-        modelName: null,
-        baseUrl: null,
+        localModel: auth.localModel,
+        modelName: auth.modelName,
+        baseUrl: auth.baseUrl,
         sessionToken: auth.token,
       }).catch((e) => { done.cleanup(); reject(e as Error); });
     });

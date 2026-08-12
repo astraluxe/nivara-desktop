@@ -177,7 +177,7 @@ async function callAiOnce(userMessage: string, systemPrompt: string, modelOverri
       messages: [{ role: 'user', content: userMessage }],
       apiKey, provider, modelName,
       localModel,
-      baseUrl: null, sessionToken,
+      baseUrl: src.baseUrl ?? null, sessionToken,
     }).catch(e => { cleanup(); reject(e); });
   });
 }

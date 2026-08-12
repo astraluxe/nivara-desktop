@@ -5325,7 +5325,7 @@ The prompt must be production-ready — specific enough for a motion designer to
             callId, mode, systemPrompt: EXTRACT_SYS,
             messages: [{ role: 'user', content: `Product content:\n\n${content.slice(0, 8000)}` }],
             apiKey: apiKey || null, provider,
-            localModel: null, modelName: null, baseUrl: null,
+            localModel: localModel || null, modelName: modelName || null, baseUrl: baseUrl || null,
             sessionToken: await freshSessionToken(session?.access_token ?? null),
           }).catch((e: unknown) => { done.cleanup(); reject(e); });
         })();

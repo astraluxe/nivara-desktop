@@ -271,17 +271,37 @@ function CoderSlashIcon({ name }: { name: string }) {
   );
 }
 
+/** Shared with the Krew chat: one connection choice across both chat surfaces. */
+const CODER_CONN_KEY = 'nv-krew-connection';
+
 export default function AIChat({
   projectPath, currentFileContent, currentFilePath, dirContext,
   getTerminalContext, onRunInTerminal, onInsertAtCursor,
   onApplyToFile, onRevert, canRevert, protectedFiles,
 }: Props) {
-  const [mode, setMode]               = useState<ConnectionMode>('nivara');
+  // THE SAME CONNECTION THE REST OF THE APP IS USING.
+  //
+  // This was hardcoded to adris.tech / OpenAI on every mount, and never read or wrote the choice
+  // the connection bar persists — so picking OmniRoute, or a particular NVIDIA model, changed the
+  // Krew chat and left Coder quietly on the hosted AI. Coder uses the very same ConnectionBar
+  // component, so having the two disagree was never intended; nobody had wired the store up.
+  const savedConn = (() => {
+    try {
+      const v = JSON.parse(localStorage.getItem(CODER_CONN_KEY) || '{}');
+      return (v && typeof v === 'object') ? v as Partial<{ mode: ConnectionMode; provider: Provider; modelName: string; baseUrl: string; localModel: string }> : {};
+    } catch { return {}; }
+  })();
+  const [mode, setMode]               = useState<ConnectionMode>(savedConn.mode ?? 'nivara');
   const [apiKey, setApiKey]           = useState('');
-  const [provider, setProvider]       = useState<Provider>('openai');
-  const [modelName, setModelName]     = useState('gpt-4o');
-  const [baseUrl, setBaseUrl]         = useState('');
-  const [localModel, setLocalModel]   = useState('llama3');
+  const [provider, setProvider]       = useState<Provider>(savedConn.provider ?? 'openai');
+  const [modelName, setModelName]     = useState(savedConn.modelName ?? 'gpt-4o');
+  const [baseUrl, setBaseUrl]         = useState(savedConn.baseUrl ?? '');
+  const [localModel, setLocalModel]   = useState(savedConn.localModel ?? 'llama3');
+  // Remembered across restarts, exactly as the Krew chat does it.
+  useEffect(() => {
+    try { localStorage.setItem(CODER_CONN_KEY, JSON.stringify({ mode, provider, modelName, baseUrl, localModel })); }
+    catch { /* quota — the choice still holds for this session */ }
+  }, [mode, provider, modelName, baseUrl, localModel]);
   const [messages, setMessages]           = useState<DisplayMessage[]>([]);
   const [input, setInput]                 = useState('');
   const [busy, setBusy]                   = useState(false);

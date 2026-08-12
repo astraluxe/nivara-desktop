@@ -11,7 +11,9 @@ import { supabase } from './supabase';
 export type AiSourceMode = 'auto' | 'nivara' | 'own_key' | 'local';
 // nvidia + groq are free, OpenAI-compatible cloud providers — the fast alternative to a slow local
 // model, at no adris.tech token cost. The Rust own_key path routes them by name to their endpoints.
-export type ByokProvider = 'gemini' | 'openai' | 'claude' | 'nvidia' | 'groq';
+// omniroute is a gateway the user installs and runs themselves — own-key in every sense that
+// matters, and the answer when one free key runs dry or a provider stops serving its big models.
+export type ByokProvider = 'gemini' | 'openai' | 'claude' | 'nvidia' | 'groq' | 'omniroute';
 
 export interface AiSourcePref {
   mode: AiSourceMode;
@@ -27,8 +29,14 @@ const BYOK_MODEL: Record<ByokProvider, string> = {
   gemini: 'gemini-2.5-flash-lite',
   openai: 'gpt-4o-mini',
   claude: 'claude-3-5-haiku-20241022',
-  nvidia: 'meta/llama-3.3-70b-instruct',  // free on build.nvidia.com; 70B — strong at agent tools, closest to the hosted default
+  // MEASURED 2026-08-11 on a live free key: llama-3.3-70b TIMED OUT at 35s, and every background
+  // task here — Guard scans, automations, contract reads — was pointed at it. The lightning model
+  // answered the same tool-call prompt in 0.5s with clean JSON.
+  nvidia: 'nvidia/nemotron-3.5-lightning-30b-a3b',
   groq:   'llama-3.3-70b-versatile',      // free on console.groq.com; 70B, and Groq runs it extremely fast
+  // Chosen inside OmniRoute itself, which is the whole point of it — it routes to whichever
+  // provider is available. Sending a model name from here would fight that.
+  omniroute: '',
 };
 
 export function getAiSource(): AiSourcePref {
@@ -54,7 +62,7 @@ export async function getAiAvailability(): Promise<AiAvailability> {
   const byokProviders: ByokProvider[] = [];
   try {
     const services = await credentialStore.list();
-    for (const p of ['gemini', 'openai', 'claude', 'nvidia', 'groq'] as ByokProvider[]) {
+    for (const p of ['gemini', 'openai', 'claude', 'nvidia', 'groq', 'omniroute'] as ByokProvider[]) {
       if (!services.includes(p)) continue;
       const d = await credentialStore.get(p).catch(() => null) as { api_key?: string; access_token?: string } | null;
       if (d?.api_key || d?.access_token) byokProviders.push(p);
@@ -78,6 +86,9 @@ export interface ResolvedAiSource {
   apiKey: string | null;
   provider: string | null;
   modelName: string | null;
+  /** The address of a gateway the user runs. Mandatory for omniroute — without it the Rust side
+   *  falls through to its OpenAI default and the key comes back rejected. */
+  baseUrl: string | null;
   localModel: string | null;
   sessionToken: string | null;
   /** Set when the user's choice could not be honoured and we fell back. */
@@ -98,10 +109,13 @@ export async function resolveAiSource(): Promise<ResolvedAiSource> {
   const byok = async (want?: ByokProvider): Promise<ResolvedAiSource | null> => {
     const provider = want && avail.byokProviders.includes(want) ? want : avail.byokProviders[0];
     if (!provider) return null;
-    const d = await credentialStore.get(provider).catch(() => null) as { api_key?: string; access_token?: string } | null;
+    const d = await credentialStore.get(provider).catch(() => null) as { api_key?: string; access_token?: string; base_url?: string } | null;
     const key = d?.api_key || d?.access_token;
     if (!key) return null;
-    return { mode: 'own_key', apiKey: key, provider, modelName: BYOK_MODEL[provider], localModel: null, sessionToken: null };
+    // A user-run gateway carries its own address, stored beside the key.
+    const baseUrl = provider === 'omniroute' ? (d?.base_url || null) : null;
+    return { mode: 'own_key', apiKey: key, provider, modelName: BYOK_MODEL[provider] || null,
+             baseUrl, localModel: null, sessionToken: null };
   };
 
   const nivara = async (): Promise<ResolvedAiSource | null> => {
@@ -118,7 +132,7 @@ export async function resolveAiSource(): Promise<ResolvedAiSource> {
       if (expMs && expMs - Date.now() < 90_000) {
         try { const { data: r } = await supabase.auth.refreshSession(); token = r.session?.access_token ?? token; } catch { /* keep the existing token */ }
       }
-      return { mode: 'nivara', apiKey: null, provider: null, modelName: null, localModel: null, sessionToken: token };
+      return { mode: 'nivara', apiKey: null, provider: null, modelName: null, baseUrl: null, localModel: null, sessionToken: token };
     } catch { return null; }
   };
 
@@ -128,7 +142,7 @@ export async function resolveAiSource(): Promise<ResolvedAiSource> {
     const chosen = (want && avail.localModels.find((m) => m.filename === want || m.name === want))
       ?? avail.localModels[0];
     if (!chosen) return null;
-    return { mode: 'local', apiKey: null, provider: null, modelName: null, localModel: chosen.filename, sessionToken: null };
+    return { mode: 'local', apiKey: null, provider: null, modelName: null, baseUrl: null, localModel: chosen.filename, sessionToken: null };
   };
 
   if (pref.mode === 'own_key') {
@@ -152,7 +166,7 @@ export async function resolveAiSource(): Promise<ResolvedAiSource> {
 
   // 'auto' — and the last resort for every branch above.
   return (await byok()) ?? (await nivara()) ?? local()
-    ?? { mode: 'nivara', apiKey: null, provider: null, modelName: null, localModel: null, sessionToken: null };
+    ?? { mode: 'nivara', apiKey: null, provider: null, modelName: null, baseUrl: null, localModel: null, sessionToken: null };
 }
 
 /** Short label for the current choice, for headers and status lines. */

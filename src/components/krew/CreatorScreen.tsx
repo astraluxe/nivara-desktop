@@ -1,9 +1,9 @@
 import { useState, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { resolveAiSource } from '../../lib/aiSource';
 import { listen } from '@tauri-apps/api/event';
 import { useAuth } from '../../contexts/AuthContext';
 import { credentialStore } from '../../lib/krewDb';
-import type { Provider } from '../../lib/ai';
 
 // ─── Formats & Styles ──────────────────────────────────────────────────────────
 
@@ -138,18 +138,12 @@ export default function CreatorScreen() {
       if (d) creds[s] = d as Record<string, string>;
     }
 
-    let mode: string = 'nivara';
-    let apiKey: string | null = null;
-    let provider: Provider | null = null;
-
-    for (const [svc, p] of [['gemini', 'gemini'], ['openai', 'openai'], ['claude', 'claude']] as [string, Provider][]) {
-      if (creds[svc]?.api_key) {
-        mode     = 'own_key';
-        apiKey   = creds[svc].api_key;
-        provider = p;
-        break;
-      }
-    }
+    // ONE CHOICE, HONOURED EVERYWHERE. This used to walk a hardcoded provider list and take the
+    // first credential it found, ignoring the app-wide AI Source picker entirely. See aiSource.ts.
+    const conn = await resolveAiSource();
+    const mode = conn.mode as string;
+    const apiKey = conn.apiKey;
+    const provider = conn.provider;
 
     return new Promise<string>(async (resolve, reject) => {
       const u1 = await listen<{ id: string; text: string }>('krew-chunk', (e) => {
@@ -170,7 +164,7 @@ export default function CreatorScreen() {
       invoke('krew_ai_stream', {
         callId, mode, systemPrompt, messages,
         apiKey, provider,
-        localModel: null, modelName: null, baseUrl: null,
+        localModel: conn.localModel ?? null, modelName: conn.modelName ?? null, baseUrl: conn.baseUrl ?? null,
         sessionToken: session?.access_token ?? null,
       }).catch((e: unknown) => { done.cleanup(); reject(e); });
     });

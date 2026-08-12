@@ -1,10 +1,9 @@
 ﻿import { useState, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { resolveAiSource } from '../lib/aiSource';
 import { listen } from '@tauri-apps/api/event';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { credentialStore } from '../lib/krewDb';
-import type { Provider } from '../lib/ai';
 import { callAutomationAI } from '../lib/automationRunner';
 
 // ─── Project types & formats ────────────────────────────────────────────────
@@ -499,15 +498,6 @@ function applyEmojiStyle(html: string, style: 'color' | 'infill' | 'outline'): s
 
 // ─── AI helpers ──────────────────────────────────────────────────────────────
 
-async function loadAllCreds(): Promise<Record<string, Record<string, string>>> {
-  const services = await credentialStore.list().catch(() => [] as string[]);
-  const out: Record<string, Record<string, string>> = {};
-  for (const s of services) {
-    const d = await credentialStore.get(s).catch(() => null);
-    if (d) out[s] = d as Record<string, string>;
-  }
-  return out;
-}
 
 // ─── Prompts ─────────────────────────────────────────────────────────────────
 
@@ -1738,16 +1728,13 @@ export default function StudioModule({ initialRequest, onRequestConsumed }: Stud
     setShowCode(false);
   }
 
+  /** Whatever the user chose in the connection picker — not whichever key happens to exist. */
   async function resolveMode() {
-    const creds = await loadAllCreds();
-    for (const [svc, p] of [['gemini', 'gemini'], ['openai', 'openai'], ['claude', 'claude']] as [string, Provider][]) {
-      if (creds[svc]?.api_key) {
-        setConnMode(`Own Key · ${svc.charAt(0).toUpperCase() + svc.slice(1)}`);
-        return { mode: 'own_key' as const, apiKey: creds[svc].api_key, provider: p };
-      }
-    }
-    setConnMode('adris.tech AI');
-    return { mode: 'nivara' as const, apiKey: null as string | null, provider: null as Provider | null };
+    const c = await resolveAiSource();
+    setConnMode(c.mode === 'own_key' ? `Own Key · ${c.provider ?? ''}`.trim()
+              : c.mode === 'local' ? `Local · ${c.localModel ?? ''}`.trim()
+              : 'adris.tech AI');
+    return c;
   }
 
   async function streamAI(
@@ -1758,7 +1745,7 @@ export default function StudioModule({ initialRequest, onRequestConsumed }: Stud
     const callId = String(++callIdRef.current);
     let full = '';
     const done = { cleanup: () => {} };
-    const { mode, apiKey, provider } = await resolveMode();
+    const { mode, apiKey, provider, modelName: mName, baseUrl: bUrl, localModel: lModel } = await resolveMode();
 
     return new Promise<string>(async (resolve, reject) => {
       const u1 = await listen<{ id: string; text: string }>('krew-chunk', (e) => {
@@ -1783,7 +1770,7 @@ export default function StudioModule({ initialRequest, onRequestConsumed }: Stud
         callId, mode, systemPrompt,
         messages: [{ role: 'user', content: userMessage }],
         apiKey, provider,
-        localModel: null, modelName: null, baseUrl: null,
+        localModel: lModel ?? null, modelName: mName ?? null, baseUrl: bUrl ?? null,
         sessionToken: session?.access_token ?? null,
       }).catch((e: unknown) => { done.cleanup(); reject(e); });
     });
@@ -1892,11 +1879,11 @@ The prompt must be specific enough for a motion designer to execute without ques
             done.cleanup(); reject(new Error(e.payload.error));
           });
           done.cleanup = () => { u1(); u2(); u3(); };
-          const { mode, apiKey, provider } = await resolveMode();
+          const { mode, apiKey, provider, modelName: mName, baseUrl: bUrl, localModel: lModel } = await resolveMode();
           invoke('krew_ai_stream', {
             callId, mode, systemPrompt: sysPrompt,
             messages: [{ role: 'user', content: `Brand content:\n\n${contextFile.content.slice(0, 20000)}` }],
-            apiKey, provider, localModel: null, modelName: null, baseUrl: null,
+            apiKey, provider, localModel: lModel ?? null, modelName: mName ?? null, baseUrl: bUrl ?? null,
             sessionToken: session?.access_token ?? null,
           }).catch((e: unknown) => { done.cleanup(); reject(e); });
         })();
@@ -1938,11 +1925,11 @@ The prompt must be specific enough for a motion designer to execute without ques
             done.cleanup(); reject(new Error(e.payload.error));
           });
           done.cleanup = () => { u1(); u2(); u3(); };
-          const { mode, apiKey, provider } = await resolveMode();
+          const { mode, apiKey, provider, modelName: mName, baseUrl: bUrl, localModel: lModel } = await resolveMode();
           invoke('krew_ai_stream', {
             callId, mode, systemPrompt: agent.prompt,
             messages: [{ role: 'user', content: `Review this marketing video scene code:\n\`\`\`js\n${codeSnippet}\n\`\`\`` }],
-            apiKey, provider, localModel: null, modelName: null, baseUrl: null,
+            apiKey, provider, localModel: lModel ?? null, modelName: mName ?? null, baseUrl: bUrl ?? null,
             sessionToken: session?.access_token ?? null,
           }).catch((e: unknown) => { done.cleanup(); reject(e); });
         })();

@@ -1,6 +1,7 @@
 ﻿import { useState, useEffect, useCallback, useRef } from 'react';
 import Icon, { type IconName } from '../components/Icon';
 import { invoke } from '@tauri-apps/api/core';
+import { resolveAiSource } from '../lib/aiSource';
 import { useAuth } from '../contexts/AuthContext';
 import { getPlanConfig } from '../lib/planConfig';
 import UpgradeModal from '../components/UpgradeModal';
@@ -243,11 +244,15 @@ async function callAI(
         if (e.payload.id !== callId) return; cleanup(); reject(new Error(e.payload.error));
       });
       cleanup = () => { u1(); u2(); u3(); };
+      // Was pinned to a local llama3 run, ignoring the AI Source picker — the one screen whose
+      // whole job is deciding this. A user on OmniRoute or their own key got a local model they
+      // may not even have downloaded.
+      const src = await resolveAiSource();
       invoke('krew_ai_stream', {
-        callId, mode: 'local', systemPrompt,
+        callId, mode: src.mode, systemPrompt,
         messages: [{ role: 'user', content: userMessage }],
-        apiKey: null, provider: null, modelName: null,
-        localModel: 'llama3', baseUrl: null, sessionToken: null,
+        apiKey: src.apiKey, provider: src.provider, modelName: src.modelName,
+        localModel: src.localModel, baseUrl: src.baseUrl, sessionToken: src.sessionToken,
       }).catch(e => { cleanup(); reject(e); });
     });
   }
