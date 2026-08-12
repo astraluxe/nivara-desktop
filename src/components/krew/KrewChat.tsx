@@ -51,7 +51,7 @@ import {
 } from '../../lib/councilContext';
 import SkillsPanel from './SkillsPanel';
 import PlanPanel from './PlanPanel';
-import { looksLikeActionPlan, parsePlanSteps, createPlan, savePlan, loadPlan, planProgress, syncPlanToTodos, todayPlanNote, mergeIntoPlan, keepDatesRequested, PLAN_EVENT, councilQuestionFor, describeMerge, type ActionPlan, type PlanStep } from '../../lib/planStore';
+import { looksLikeActionPlan, parsePlanSteps, createPlan, savePlan, loadPlan, planProgress, syncPlanToTodos, todayPlanNote, mergeIntoPlan, keepDatesRequested, launchDateRequested, namedDayOfMonth, PLAN_EVENT, councilQuestionFor, describeMerge, type ActionPlan, type PlanStep } from '../../lib/planStore';
 import { availabilityNote, looksLikeAvailability, parseAvailability, saveAvailability, loadAvailability, describeAvailability } from '../../lib/availability';
 import { workStateNote } from '../../lib/workState';
 import { draftPrompt } from '../../lib/workOrder';
@@ -12659,6 +12659,28 @@ ${wfTask}`);
       }).filter(Boolean).join('\n\n');
 
       // The brief is the same whichever size of transcript it gets.
+
+      // A DATE THE USER NAMED IS THE SPINE OF THE PLAN, NOT A DETAIL.
+      //
+      // "from 20th i want to start mailing" was said plainly and the plan came back anchored to
+      // today, with the launch wherever the arithmetic landed. Told once, in the brief, with the
+      // day number worked out for it, the Executor plans backwards from that date instead — which
+      // is how a person would do it.
+      const askedDay = namedDayOfMonth(question);
+      const dateRule = askedDay ? (() => {
+        const now = new Date();
+        const target = new Date(now.getFullYear(), now.getMonth(), askedDay);
+        if (target < new Date(now.getFullYear(), now.getMonth(), now.getDate())) target.setMonth(target.getMonth() + 1);
+        const days = Math.round((target.getTime() - new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()) / 86400000);
+        const dayNo = days + 1;
+        return '\n\nTHE USER HAS FIXED A DATE, AND IT IS THE SPINE OF THIS PLAN. They said the '
+          + askedDay + 'th. Today is day 1, so the ' + askedDay + 'th is DAY ' + dayNo + '. '
+          + 'Put the thing they named on Day ' + dayNo + ' exactly, and work BACKWARDS from it: everything that has to '
+          + 'exist first goes on the days before, and the follow-up goes on the days after. Do not '
+          + 'quietly move it because the preparation looks tight — if it genuinely cannot be ready, '
+          + 'say so in one line and name what has to be cut, rather than sliding the date.';
+      })() : '';
+
       const brief =
         'You speak LAST, and the plan you write is the one the user acts on.\n'
         + 'YOUR OWN JUDGEMENT COUNTS TOO. You are the fifth member, not a secretary for the other four — so say plainly what YOU think should happen, including where you disagree with all of them. A plan that is only an average of other people\'s views is the weakest thing this council can produce.\n'
@@ -12673,7 +12695,8 @@ ${wfTask}`);
         + '- NO INVENTED PROPER NOUNS. Do not name a framework, a tier system, a pool or a phase that exists only in this plan unless you define it in plain words the first time it appears. "Tag each row Tier 1/2/3" means nothing on its own; "mark each row 1 (ready to buy), 2 (worth a call), 3 (later)" can be acted on.\n'
         + '- No consultant vocabulary. Write it the way you would say it across a table: short sentences, ordinary words, no "leverage", "synergies", "go-to-market motion" or "operationalise".\n'
         + '- One outcome per day. If a day needs three unrelated things it is three days, or two of them are not important enough to be in the plan at all.\n'
-        + '- Never schedule work that cannot be started: if a day depends on something that does not exist yet, the day that creates it comes first.';
+        + '- Never schedule work that cannot be started: if a day depends on something that does not exist yet, the day that creates it comes first.'
+        + dateRule;
 
       const t1 = transcriptAt(1400, 500);
       let out = await ask(executor,
@@ -14059,9 +14082,17 @@ ${wfTask}`);
                             if (existing) {
                               // Rebase onto today unless the user asked for the dates to stand —
                               // their question is msg.content, so that is where they would say it.
+                              // A DATE THE USER NAMED IS NOT A DATE TO REBASE.
+                              //
+                              // Rebasing shifts a revision so it starts today — right for a plan
+                              // that has drifted into the past, and wrong the moment somebody says
+                              // "from the 20th I want to start mailing". The Executor wrote Day 9 =
+                              // 20 Aug; rebasing moved every day and the launch quietly left the
+                              // 20th. That is the one instruction they had repeated.
+                              const said = `${msg.content}
+${dev.text}`;
                               const r = mergeIntoPlan(existing, dev.text, {
-                                rebase: !keepDatesRequested(`${msg.content}
-${dev.text}`),
+                                rebase: !keepDatesRequested(said) && !launchDateRequested(said),
                               });
                               // Only open the panel when something actually landed in it. Opening
                               // an unchanged plan after pressing "add these steps" reads as if it

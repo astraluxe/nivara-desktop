@@ -541,6 +541,11 @@ export function setStepNote(stepId: string, note: string): void {
   savePlan(plan);
 }
 
+/** "20 Aug" — a day number immediately before a month. */
+const DAY_MONTH_RE = /\b(\d{1,2})\s*(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i;
+/** "August 20" — a month immediately before a day number. */
+const MONTH_DAY_RE = /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s*(\d{1,2})\b/i;
+
 /**
  * Say what actually happened to a revision, in one sentence the user can check.
  *
@@ -556,6 +561,52 @@ export function setStepNote(stepId: string, note: string): void {
  * start this morning. Someone who is deliberately keeping a fixed calendar — a launch date, a
  * conference — says so, and then the dates are theirs and must not be touched.
  */
+/**
+ * A date the user has FIXED, in their own words.
+ *
+ * "from 20th i want to start mailing" is a hard constraint, and the plan quietly moved it. The
+ * merge rebases a revision so its first day is today — right when a council re-plans a schedule
+ * that has drifted into the past, and completely wrong when the user has named the day the work
+ * must land on. The Executor wrote Day 9 = 20 Aug; rebasing shifted every day, and the launch left
+ * the 20th without anyone saying so.
+ *
+ * So a named date turns rebasing OFF. The dates the plan was written with are the dates the user
+ * asked for, and moving them is not a refinement — it is losing the one instruction they repeated.
+ *
+ * Deliberately narrow: a bare number is not a date. It has to read like a day somebody is planning
+ * around — an ordinal, a month name, or an explicit "launch/start/send on".
+ */
+export function launchDateRequested(text: string): boolean {
+  const t = String(text || '');
+  // "on the 20th", "from 20th", "by the 3rd" — an ordinal is almost always a calendar day.
+  if (/\b(on|from|by|starting|start|launch(?:ing)?|send(?:ing)?|go live)\b[^.\n]{0,24}\b\d{1,2}(st|nd|rd|th)\b/i.test(t)) return true;
+  // "20 Aug", "on August 20", "launch 20/08"
+  // WHOLE-WORD MONTHS ONLY. `dec` with a loose suffix matched inside "deck", so "make the deck
+  // 10 slides" was read as a launch date and would have frozen the whole schedule.
+  // WHOLE-WORD MONTHS ONLY. A loose suffix let `dec` match inside "deck", so "make the deck 10
+  // slides" read as a launch date and would have frozen the entire schedule in place.
+  if (DAY_MONTH_RE.test(t)) return true;
+  if (MONTH_DAY_RE.test(t)) return true;
+  if (/\b(on|from|by|launch(?:ing)?|start(?:ing)?)\b[^.\n]{0,16}\b\d{1,2}[/-]\d{1,2}\b/i.test(t)) return true;
+  return false;
+}
+
+/**
+ * The day of the month the user named, if they named one. Null when they did not.
+ *
+ * Used to tell the plan what "the 20th" means rather than making the reader work it out, and to
+ * check afterwards that the launch really did land there.
+ */
+export function namedDayOfMonth(text: string): number | null {
+  const t = String(text || '');
+  const m = t.match(/\b(?:on|from|by|starting|start|launch(?:ing)?|send(?:ing)?|go live)\b[^.\n]{0,24}?\b(\d{1,2})(?:st|nd|rd|th)\b/i)
+    ?? t.match(DAY_MONTH_RE)
+    ?? (() => { const m = t.match(MONTH_DAY_RE); return m ? ([m[0], m[2]] as unknown as RegExpMatchArray) : null; })();
+  if (!m) return null;
+  const d = Number(m[1]);
+  return d >= 1 && d <= 31 ? d : null;
+}
+
 export function keepDatesRequested(text: string): boolean {
   const t = text || '';
   return /\b(keep|same|unchanged|as (?:they|it) (?:are|is)|do ?n[o']?t (?:change|move|shift))\b[^.\n]{0,40}\b(dates?|days?|day numbers?|schedule|calendar)\b/i.test(t)
