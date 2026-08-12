@@ -53,7 +53,10 @@ const RULES: Rule[] = [
     why: 'is spreadsheet work',
   },
   {
-    re: /\b(outreach|cold (email|dm|message)|reach out|send (the )?(batch|messages|dms)|prospect(ing)?|follow[- ]?up (non-?repliers|the list))\b/i,
+    // 'email sequence', 'Email 1', '3-email', 'drip', 'nurture' — the words every council plan
+    // actually uses. The rule knew 'cold email' and nothing else, so the single most common step
+    // in a launch plan ('drafts the 3-email sequence') routed to NOBODY and fell to the boss.
+    re: /\b(outreach|cold (email|dm|message)|reach out|send (the )?(batch|messages|dms)|prospect(ing)?|follow[- ]?up (non-?repliers|the list|email)|email sequence|\d[- ]?email|email [1-9]\b|drip( campaign)?|nurture)\b/i,
     agents: ['cold_outreach', 'email_marketer', 'social_manager'],
     tools: [
       ['linkedin_outreach', 'drafts per person and opens the copilot that tracks who replied'],

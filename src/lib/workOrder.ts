@@ -475,6 +475,8 @@ export function saveTargetFromOrder(text: string): string {
 export function planFromWorkOrder(
   text: string,
   routeFor: (s: string) => string[],
+  /** Turn a display handle ("Nyx.Research") into its agent key. Optional so old callers stand. */
+  resolveHandle?: (handle: string) => string | null,
 ): Delegation[] | null {
   const t = text || '';
   if (!/^\s*WORK ORDER\b/.test(t)) return null;
@@ -487,6 +489,17 @@ export function planFromWorkOrder(
   // A single-owner order says it in prose instead.
   const solo = t.match(/agent_key exactly "([a-z_0-9]+)"/i);
   if (!keys.length && solo) keys.push(solo[1]);
+  // HANDLES ARE HOW HUMANS NAME THE TEAM. The app’s own orders carry a `- "key" (Handle)`
+  // list, but an order the user writes — or edits — says "This is for Nyx.Research and
+  // Kai.Ops" and stops there. That order returned null here and fell back to free-text
+  // handling, silently losing the pipeline the user explicitly asked for. When the caller
+  // can resolve handles, use them.
+  if (!keys.length && resolveHandle) {
+    for (const m of t.matchAll(/\b([A-Z][a-z]+)\.([A-Z][a-zA-Z]+)\b/g)) {
+      const k = resolveHandle(`${m[1]}.${m[2]}`);
+      if (k && !keys.includes(k)) keys.push(k);
+    }
+  }
   if (!keys.length) return null;
 
   // The numbered steps, if the order has them.

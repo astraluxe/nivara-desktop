@@ -1239,7 +1239,10 @@ function classifyBossMessage(text: string): FastBossResult | null {
   // two rounds of sharpening the work order's wording could not beat a rule sitting above it in the
   // same prompt. The user approved a division of labour; the pipeline is built from their own order
   // and injected, so no model decides whether to honour it.
-  const wf = planFromWorkOrder(trimmed, (s) => routeTask(s)?.agents ?? []);
+  const wf = planFromWorkOrder(trimmed, (s) => routeTask(s)?.agents ?? [],
+    // "Nyx.Research" in a hand-written order resolves to research_agent instead of the whole
+    // order falling back to free text and losing its pipeline.
+    (h) => KREW_AGENTS.find((a) => agentHandle(a).toLowerCase() === h.toLowerCase())?.key ?? null);
   if (wf && wf.length) return { type: 'workflow', delegations: wf, saveAs: saveTargetFromOrder(trimmed) };
 
   // Greeting-only fast-path — no LLM call at all
