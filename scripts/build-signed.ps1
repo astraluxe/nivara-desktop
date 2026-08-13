@@ -63,6 +63,28 @@ $json = $latest | ConvertTo-Json -Depth 5
 [System.IO.File]::WriteAllText((Join-Path (Get-Location).Path "latest.json"), $json, (New-Object System.Text.UTF8Encoding $false))
 Write-Host "Generated latest.json" -ForegroundColor Green
 
+# -- The tag must point at a commit that KNOWS its own version ---------------------------------
+#
+# `gh release create` below tags whatever the remote's default branch currently points at. This
+# script only ever committed latest.json, so the version bump in tauri.conf.json sat uncommitted and
+# the tag landed on a commit still carrying the PREVIOUS version. Harmless for Windows, because the
+# installer is built locally from the working tree -- and quietly wrong for Linux, which is built by
+# .github/workflows/linux-build.yml from the tagged commit and reads its version out of
+# tauri.conf.json. Measured: tag v1.37.0 pointed at a commit saying 1.35.1, so release v1.37.0 was
+# published carrying adris-setup-linux-1.35.1.deb. Windows and Linux drifted two versions apart and
+# nothing in the process noticed.
+#
+# So: push the bump first, and only then cut the tag.
+Write-Host "Pushing the version bump so the tag carries it..." -ForegroundColor Cyan
+git add src-tauri/tauri.conf.json package.json 2>$null
+git commit -m "chore(release): v$version" --only src-tauri/tauri.conf.json package.json 2>$null | Out-Null
+git push 2>$null | Out-Null
+$tagged = (git rev-parse HEAD 2>$null)
+$remote = (git rev-parse "@{u}" 2>$null)
+if ($tagged -ne $remote) {
+    Write-Host "  WARNING: local and remote HEAD differ -- the Linux build may tag the wrong commit." -ForegroundColor Yellow
+}
+
 # Create release if needed, then upload
 $gh  = "C:\Program Files\GitHub CLI\gh.exe"
 $tag = "v$version"

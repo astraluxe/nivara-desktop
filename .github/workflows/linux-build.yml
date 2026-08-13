@@ -69,11 +69,21 @@ jobs:
           VERSION=${{ steps.version.outputs.version }}
           DEB=$(find src-tauri/target/release/bundle/deb -name "*.deb" | head -1)
           APPIMAGE=$(find src-tauri/target/release/bundle/appimage -name "*.AppImage" | head -1)
+          # A VERSIONED NAME AND A STABLE ONE, because they answer different questions.
+          #
+          # The versioned copy is the archive: which build was this. The stable copy is what the
+          # website can link to and never revisit -- exactly what adris-setup.exe already does for
+          # Windows. download.html used to hardcode a versioned Linux filename, so every release
+          # silently broke the button: the /dl proxy resolves against the LATEST release, and last
+          # release's filename is not in it. Measured: /dl/adris-setup-linux-1.6.2.deb returned 404
+          # while the page was still offering it.
           if [ -n "$DEB" ]; then
             cp "$DEB" "adris-setup-linux-$VERSION.deb"
+            cp "$DEB" "adris-setup-linux.deb"
           fi
           if [ -n "$APPIMAGE" ]; then
             cp "$APPIMAGE" "adris-setup-linux-$VERSION.AppImage"
+            cp "$APPIMAGE" "adris-setup-linux.AppImage"
           fi
 
       - name: Upload .deb artifact
@@ -95,6 +105,8 @@ jobs:
           files: |
             adris-setup-linux-*.deb
             adris-setup-linux-*.AppImage
+            adris-setup-linux.deb
+            adris-setup-linux.AppImage
           fail_on_unmatched_files: false
           # NEVER take the "latest release" slot — the Windows auto-updater and the
           # website download button resolve releases/latest/download/latest.json and
