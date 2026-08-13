@@ -33,12 +33,23 @@ export default function PlanCalendar({ plan, avail, onRunStep, onHandOver }: {
   const [picked, setPicked] = useState<Date | null>(today);
 
   // Steps bucketed by date so a cell is one lookup rather than a scan of the whole plan.
+  //
+  // A step that covers a RANGE is written into every cell it spans. Agents finish a long plan with
+  // "Day 18-30: keep the pipeline running (daily)", and bucketing that on its first day only is why
+  // a thirty-day plan appeared to stop in the third week — the last twelve days were in the answer,
+  // in the parse, and nowhere the user could see them. It is one step, shown on each day it is
+  // actually being worked, so ticking it anywhere ticks it everywhere.
   const byDate = new Map<string, PlanStep[]>();
   for (const s of plan.steps) {
-    const d = stepDate(plan, s);
-    const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-    if (!byDate.has(k)) byDate.set(k, []);
-    byDate.get(k)!.push(s);
+    const start = stepDate(plan, s);
+    const span = Math.max(0, (s.throughDay ?? s.day) - s.day);
+    for (let i = 0; i <= span; i++) {
+      const d = new Date(start);
+      d.setDate(d.getDate() + i);
+      const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      if (!byDate.has(k)) byDate.set(k, []);
+      byDate.get(k)!.push(s);
+    }
   }
   const stepsOn = (d: Date) => byDate.get(`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`) || [];
 

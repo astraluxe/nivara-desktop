@@ -233,6 +233,59 @@ export function measuredMsFor(modelId: string): number | null {
   return best;
 }
 
+/**
+ * Did a scan probe this model and give up waiting?
+ *
+ * This is the missing half of measuredMsFor, and the reason a 550B kept being retired. The scan
+ * probes with a ten-second budget, so the biggest models — the ones a user picks precisely because
+ * they are big — never finish it and end up with `ok: false, reason: 'timeout'`. measuredMsFor then
+ * returns null, which the streaming path reads as "never seen it work", which earns it the SHORTEST
+ * patience of any model in the app. The slowest models were being given the least time.
+ *
+ * A probe that timed out is not ignorance. It is evidence of slowness, and it should buy patience.
+ */
+export function probeTimedOut(modelId: string): boolean {
+  if (!modelId) return false;
+  const id = modelId.toLowerCase();
+  return allScans().some((s) => s.rows.some((r) =>
+    r.id.toLowerCase() === id && !r.ok && (r.reason === 'timeout' || r.reason === 'unknown')));
+}
+
+// ─── A MODEL THE USER PICKED ON PURPOSE IS NOT OURS TO REPLACE ────────────────
+//
+// The self-heal below exists for a real failure: a provider retires a model and every AI path in
+// the app dead-ends. But it fired on SILENCE too, and silence is also what a big model does while
+// it reads a long prompt. So someone who deliberately chose a 550B watched it get swapped for a
+// mid-size model in the middle of a session, with no way to say "no, I meant that one".
+//
+// Choosing a model in the connection panel records it here, and that choice outranks our judgement:
+// a genuine "410 Gone" still replaces it, because there is nothing else to do, but "it hasn't spoken
+// yet" never does.
+const CHOSEN_KEY = 'nv-model-chosen';
+
+export function markUserChosen(provider: string, model: string): void {
+  if (!provider || !model) return;
+  try {
+    const v = JSON.parse(localStorage.getItem(CHOSEN_KEY) || '{}') as Record<string, string>;
+    v[provider] = model;
+    localStorage.setItem(CHOSEN_KEY, JSON.stringify(v));
+  } catch { /* quota */ }
+}
+
+export function isUserChosen(provider: string, model: string): boolean {
+  if (!provider || !model) return false;
+  try {
+    const v = JSON.parse(localStorage.getItem(CHOSEN_KEY) || '{}') as Record<string, string>;
+    return (v[provider] || '').toLowerCase() === model.toLowerCase();
+  } catch { return false; }
+}
+
+/** The model said nothing at all, as opposed to failing with a reason. Slow and dead look identical
+ *  from here, which is exactly why this is kept apart from isDeadModelError. */
+export function isSilenceError(msg: string): boolean {
+  return /no_model_response|hasn't started answering|has not started answering/i.test(msg || '');
+}
+
 /** Beyond this, a model is "slow" no matter how clever — a user waiting 25 seconds for a chat reply
  *  has already decided the app is broken. Measured: the models that felt unusable were 24–27s. */
 const SLOW_MS = 8_000;
@@ -343,7 +396,13 @@ export async function scanModels(
   for (let i = 0; i < ids.length; i += batch) {
     const chunk = ids.slice(i, i + batch);
     const measured = await Promise.all(chunk.map(async (id) => {
-      const r = await probeModelDetailed(provider, apiKey, id, timeoutMs);
+      // BIG MODELS NEED LONGER, and giving everything the same ten seconds is why they were all
+      // recorded as failures. The sweep that built the preference list above measured the large
+      // ones at 15s, 17s, 20s, 25s — every one of those is a model that WORKS and that this scan
+      // was filing under "did not answer", so it vanished from the picker and from the ranking, and
+      // the app then handed the user the smallest thing on the list. The probe is six at a time, so
+      // a longer leash on the big ones costs a few seconds per batch and nothing else.
+      const r = await probeModelDetailed(provider, apiKey, id, tierById.get(id) === 'smart' ? timeoutMs * 4 : timeoutMs);
       return { id, ms: r.ms, jsonOk: r.jsonOk, ok: r.ok, reason: r.reason, window: contextWindowFor(id), tier: tierById.get(id) } as ModelScanRow;
     }));
     for (const row of measured) {

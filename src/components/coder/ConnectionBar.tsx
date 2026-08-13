@@ -1,9 +1,9 @@
-﻿import { useState, useEffect } from 'react';
+﻿import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { ConnectionMode, Provider, PROVIDERS, fetchRankedModels, type RankedModel } from '../../lib/ai';
 import { contextWindowFor } from '../../lib/contextBudget';
-import { rankScan } from '../../lib/modelHealth';
+import { rankScan, markUserChosen } from '../../lib/modelHealth';
 import { credentialStore } from '../../lib/krewDb';
 import { PLAN_CONFIG, Plan } from '../../lib/planConfig';
 
@@ -77,30 +77,48 @@ function OmniRouteSetup({ onBaseUrlChange }: {
   const [pct, setPct] = useState(0);
   /** How many providers the gateway can actually route to. Zero means it is running and useless. */
   const [providers, setProviders] = useState<number | null>(null);
+  /** A key the user has already connected in this app, offered for pasting into OmniRoute. */
+  const [ownKey, setOwnKey] = useState<{ provider: string; key: string } | null>(null);
+  const [copied, setCopied] = useState(false);
   const dashUrl = 'http://127.0.0.1:20128';
+
+  /** Ask the machine, not our own memory, what is true — see omniroute_status in Rust. */
+  const refresh = useCallback(async (): Promise<void> => {
+    try {
+      const s = await invoke<{ installed: boolean; running: boolean; providers: number | null }>('omniroute_status');
+      setProviders(s.providers ?? null);
+      // A RUNNING GATEWAY MUST NOT LOOK STOPPED. Reopening the panel used to offer "Start" for a
+      // process that had been up the whole time, which is why closing the popup read as stopping
+      // it. If it answers, it is running, whatever this component last remembered.
+      if (s.running) {
+        setState('running');
+        onBaseUrlChange(`${dashUrl}/v1/chat/completions`);
+        return;
+      }
+      setState(s.installed ? 'installed' : 'absent');
+    } catch { setState('absent'); }
+  }, [onBaseUrlChange]);
 
   useEffect(() => {
     let alive = true;
-    invoke<{ installed: boolean }>('omniroute_status')
-      .then((s) => { if (alive) setState(s.installed ? 'installed' : 'absent'); })
-      .catch(() => { if (alive) setState('absent'); });
+    void refresh();
     const un = listen<{ step: string; pct: number }>('omniroute_progress', (e) => {
       if (!alive) return;
       setMsg(e.payload.step);
       setPct(e.payload.pct);
     });
+    // The key the user already connected here is almost always the key OmniRoute wants, and
+    // hunting for it again on a provider's website is exactly where people give up.
+    void (async () => {
+      try {
+        for (const p of ['nvidia', 'groq', 'gemini', 'openai', 'claude']) {
+          const c = await credentialStore.get(p).catch(() => null);
+          if (c?.api_key) { if (alive) setOwnKey({ provider: p, key: c.api_key }); return; }
+        }
+      } catch { /* no key saved — the panel just says where to get one */ }
+    })();
     return () => { alive = false; un.then((f) => f()).catch(() => {}); };
-  }, []);
-
-  /** Ask the gateway what it can route to. An empty list is the difference between "running" and
-   *  "working", and it is the one thing the old panel never told anybody. */
-  async function countProviders() {
-    try {
-      const r = await fetch(dashUrl + '/v1/models');
-      const j = await r.json();
-      setProviders(Array.isArray(j?.data) ? j.data.length : 0);
-    } catch { setProviders(null); }
-  }
+  }, [refresh]);
 
   async function install() {
     setState('installing'); setMsg('Starting…'); setPct(0);
@@ -117,7 +135,7 @@ function OmniRouteSetup({ onBaseUrlChange }: {
       const url = await invoke<string>('omniroute_start', {});
       onBaseUrlChange(url);
       setState('running');
-      await countProviders();
+      await refresh();
     } catch (e) { setState('error'); setMsg(String(e)); }
   }
 
@@ -190,15 +208,48 @@ function OmniRouteSetup({ onBaseUrlChange }: {
         {state === 'error' && <p className="text-[10.5px] text-nv-bad mt-1 leading-relaxed whitespace-pre-wrap">{msg}</p>}
       </Step>
 
-      <Step n={3} title="Add a free provider key inside it"
+      {/* "ADD A FREE PROVIDER KEY INSIDE IT" MEANT NOTHING, and the honest reaction was "wht is
+          tht key now?? idk wht tht means". It reads as though the app is asking for something new.
+          It is not. OmniRoute is an empty switchboard: it routes to AI providers, and until one of
+          those providers' keys is inside it there is nothing on the other end of any wire. The key
+          in question is the ordinary API key from NVIDIA or Groq — and if one is already connected
+          in this app, it is the same key, so it is offered here rather than sent off to find it
+          again. */}
+      <Step n={3} title="Give it a provider key — the same kind you connect here"
         done={providers !== null && providers > 0} active={state === 'running'}>
         <p className="text-[10.5px] text-nv-faint mt-1 leading-relaxed">
-          {providers === 0
-            ? 'Running, but it has no providers yet — so it cannot answer anything. Open it and paste a free key; NVIDIA or Groq take about a minute.'
-            : providers !== null && providers > 0
-              ? `Ready — ${providers} model${providers === 1 ? '' : 's'} available. Nothing else to do here.`
-              : 'Open it and paste a free provider key. NVIDIA or Groq take about a minute.'}
+          {providers !== null && providers > 0
+            ? `Ready — ${providers} model${providers === 1 ? '' : 's'} available. Nothing else to do here.`
+            : <>
+                OmniRoute doesn&apos;t come with any AI of its own — it forwards your messages to
+                providers like NVIDIA or Groq, so it needs one of their API keys before it can
+                answer anything. Open it, go to <span className="text-nv-text">Connections → Add</span>,
+                and paste a key.
+              </>}
         </p>
+        {/* The key they already have, one press away. Hunting for it again on a provider's website
+            is exactly the step people stop at. */}
+        {ownKey && !(providers && providers > 0) && (
+          <div className="mt-1.5 flex items-center gap-2">
+            <button
+              onClick={async () => {
+                try { await invoke('copy_text', { text: ownKey.key }); }
+                catch { try { await navigator.clipboard.writeText(ownKey.key); } catch { /* no clipboard */ } }
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2500);
+              }}
+              className="text-[10.5px] px-2.5 py-1 rounded-md border border-nv-border text-nv-text hover:border-accent/50 transition-fast"
+            >{copied ? '✓ Copied — now paste it in OmniRoute' : `Copy my ${ownKey.provider} key`}</button>
+            <span className="text-[10px] text-nv-faint">
+              …{ownKey.key.slice(-6)} — already connected here
+            </span>
+          </div>
+        )}
+        {!ownKey && !(providers && providers > 0) && (
+          <p className="text-[10px] text-nv-faint mt-1">
+            No key saved in this app yet — NVIDIA and Groq both give one free in about a minute.
+          </p>
+        )}
         <div className="flex items-center gap-2 mt-1.5">
           <button
             onClick={() => {
@@ -207,15 +258,16 @@ function OmniRouteSetup({ onBaseUrlChange }: {
             className="text-[10.5px] px-2.5 py-1 rounded-md border border-accent/50 text-accent hover:bg-accent/10 transition-fast"
           >Open OmniRoute →</button>
           <button
-            onClick={countProviders}
+            onClick={refresh}
             className="text-[10.5px] text-nv-faint hover:text-nv-text transition-fast"
           >Check again</button>
         </div>
       </Step>
 
       {state === 'running' && (
-        <p className="text-[10.5px] text-emerald-400 mt-1.5 px-2.5">
-          Gateway running at {dashUrl} — the address below is filled in for you.
+        <p className="text-[10.5px] text-emerald-400 mt-1.5 px-2.5 leading-relaxed">
+          Gateway running at {dashUrl} — the address below is filled in for you. It keeps running on
+          its own; closing this panel doesn&apos;t stop it.
         </p>
       )}
     </div>
@@ -841,7 +893,29 @@ export default function ConnectionBar(props: Props) {
                                             // seconds and cannot return JSON passed exactly like a
                                             // fast reliable one — and the user found out over the
                                             // following days, task by task.
-                                            const res = await probeModelDetailed(provider, key, m.id, 30_000);
+                                            // NINETY SECONDS, AND A SECOND GO — not a flat thirty.
+                                            //
+                                            // Thirty seconds is shorter than several of these
+                                            // models take on a good day: the sweep that built this
+                                            // list measured 40s and 45s on the big ones. So a model
+                                            // sitting right there in the list, shown as available,
+                                            // answered a press with "didn't answer within 30
+                                            // seconds" — the app telling the user something untrue
+                                            // about their own key because it ran out of patience
+                                            // first. It is a single call the user asked for and is
+                                            // watching; there is no cost to waiting properly, and
+                                            // the cost of not waiting is that a working model looks
+                                            // broken.
+                                            //
+                                            // A timeout or a rate limit also gets one retry, because
+                                            // on a free key the first of those is usually just a
+                                            // busy minute.
+                                            let res = await probeModelDetailed(provider, key, m.id, 90_000);
+                                            if (!res.ok && (res.reason === 'timeout' || res.reason === 'rate_limit' || res.reason === 'unknown')) {
+                                              setCheckNote(`${short} was slow to answer — giving it one more go…`);
+                                              await new Promise((r) => setTimeout(r, res.reason === 'rate_limit' ? 6_000 : 1_500));
+                                              res = await probeModelDetailed(provider, key, m.id, 90_000);
+                                            }
                                             setChecking(null);
                                             if (res.ok) {
                                               onModelNameChange(m.id);
@@ -860,6 +934,14 @@ export default function ConnectionBar(props: Props) {
                                               {
                                                 const { setByokModel } = await import('../../lib/byokKeys');
                                                 await setByokModel(provider, m.id).catch(() => {});
+                                                // AND RECORD THAT IT WAS A CHOICE, not a guess.
+                                                // The self-heal replaces a model that stops
+                                                // answering, and a big model going quiet while it
+                                                // reads looks identical to one that has died — so
+                                                // it demoted the 550B someone had just picked. This
+                                                // is what tells it to leave a deliberate choice
+                                                // alone. See markUserChosen in modelHealth.
+                                                markUserChosen(provider, m.id);
                                               }
                                               // Record what we just learned so the ranking and the
                                               // chips reflect it without waiting for a full rescan.
@@ -888,7 +970,11 @@ export default function ConnectionBar(props: Props) {
                                             if (res.reason === 'rate_limit') {
                                               setCheckNote(`${short} is rate-limited on your key right now — that is your provider's per-minute cap, not a problem with the model. Wait a moment and press it again.`);
                                             } else if (res.reason === 'timeout' || res.reason === 'unknown') {
-                                              setCheckNote(`${short} didn't answer within 30 seconds. It may just be slow or busy — try it again, and if it keeps happening pick another.`);
+                                              // Say what we waited and what it means, and do not
+                                              // imply the model is at fault — twice past ninety
+                                              // seconds is a busy provider far more often than a
+                                              // broken model, and it stays in the list either way.
+                                              setCheckNote(`${short} didn't answer within 90 seconds, twice. That is usually the provider being busy rather than anything wrong with the model — it's still in your list, so try again in a few minutes.`);
                                             } else {
                                               blockModel(provider, m.id);
                                               // Record the failure rather than deleting the model.

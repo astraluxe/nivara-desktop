@@ -1291,7 +1291,7 @@ async fn ai_stream(
                 if (prov == "omniroute" || prov == "custom")
                     && !endpoint.contains("/v1/") && !endpoint.contains("/chat/completions") {
                     emit_error(format!(
-                        "{} needs the address of your own gateway. Open the connection panel and paste it in the address box — for OmniRoute that is usually http://localhost:3000/v1/chat/completions once it is running.",
+                        "{} needs the address of your own gateway. Open the connection panel and paste it in the address box — for OmniRoute that is usually http://127.0.0.1:20128/v1/chat/completions once it is running.",
                         if prov == "omniroute" { "OmniRoute" } else { "A custom endpoint" }));
                     return Ok(());
                 }
@@ -3415,17 +3415,300 @@ fn omniroute_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
     app.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).join("omniroute")
 }
 
+/// The port OmniRoute itself chooses when nothing overrides it. Its own bin reads
+/// `process.env.PORT || "20128"`, and its dashboard, its API and every URL it prints use that
+/// number. We used to pass PORT=3000 from here while the panel linked to 20128, so "Open OmniRoute"
+/// opened a dead page and the provider count never came back — the gateway was fine and the app was
+/// looking in the wrong place. Agree with OmniRoute instead of arguing with it.
+const OMNIROUTE_PORT: u16 = 20128;
+
+// ─── OmniRoute needs a NEWER Node than the rest of the app ───────────────────
+//
+// This is the whole reason "Start OmniRoute" did nothing. Measured on the user's machine, not
+// guessed:
+//
+//   * OmniRoute ships `better_sqlite3.node` built for NODE_MODULE_VERSION 137 — that is Node 24.
+//     Started under the Node 20 the app provisions for its browser tooling, its own preflight
+//     check prints "✖ better-sqlite3 native module is incompatible with this platform" and it
+//     exits immediately. We piped stderr to null, so that sentence went nowhere and the user got a
+//     three-minute wait ending in a generic timeout.
+//   * Its server is Next.js 16, which calls `worker_threads.markAsUncloneable` — a Node 22+ API.
+//     So even with a Node-20-shaped sqlite binary it dies with "markAsUncloneable is not a
+//     function". Node 20 cannot run this program at all; there is no combination that works.
+//   * Its bin spawns the server as bare `spawn("node", …)`, i.e. whatever is first on PATH. On a
+//     machine with a different system Node that is a SECOND runtime, and the parent's ABI and the
+//     child's ABI then disagree no matter what we hand the parent.
+//
+// So OmniRoute gets its own pinned Node 24, kept apart from `tools/node` (which the browser tooling
+// is proven against and which nothing here should disturb), and it is put at the front of PATH so
+// the child process resolves to the same runtime as the parent.
+fn omniroute_node_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
+    app.path().app_local_data_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .join("tools").join("node24")
+}
+
+fn omniroute_node_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    let dir = omniroute_node_dir(app);
+    #[cfg(target_os = "windows")]
+    let exe = dir.join("node.exe");
+    #[cfg(not(target_os = "windows"))]
+    let exe = dir.join("bin").join("node");
+    if exe.is_file() { Some(exe) } else { None }
+}
+
+/// The directory to put on PATH so a bare `node` resolves to the copy above.
+fn omniroute_node_bin_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
+    let dir = omniroute_node_dir(app);
+    #[cfg(target_os = "windows")]
+    { dir }
+    #[cfg(not(target_os = "windows"))]
+    { dir.join("bin") }
+}
+
+/// Download and unpack Node 24 for OmniRoute. Same shape as `provision_node`, different version and
+/// a different folder — deliberately not shared, so a future change to one cannot break the other.
+async fn provision_omniroute_node(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    if let Some(p) = omniroute_node_path(app) { return Ok(p); }
+    let dir = omniroute_node_dir(app);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+
+    let _ = app.emit("omniroute_progress", serde_json::json!({
+        "step": "Setting up the runtime OmniRoute needs (Node 24) — about a minute…", "pct": 8u8 }));
+
+    // Pinned. nodejs.org is reachable on connections where GitHub release assets are not, which is
+    // the same reason the updater downloads through adris.tech.
+    #[cfg(target_os = "windows")]
+    let (url, is_zip) = ("https://nodejs.org/dist/v24.9.0/node-v24.9.0-win-x64.zip", true);
+    #[cfg(target_os = "macos")]
+    let (url, is_zip) = ("https://nodejs.org/dist/v24.9.0/node-v24.9.0-darwin-x64.tar.gz", false);
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let (url, is_zip) = ("https://nodejs.org/dist/v24.9.0/node-v24.9.0-linux-x64.tar.gz", false);
+
+    let bytes = reqwest::get(url).await
+        .map_err(|e| format!("download failed: {e}"))?
+        .bytes().await
+        .map_err(|e| format!("download failed: {e}"))?;
+
+    if is_zip {
+        let reader = std::io::Cursor::new(bytes);
+        let mut zip = zip::ZipArchive::new(reader).map_err(|e| format!("bad archive: {e}"))?;
+        for i in 0..zip.len() {
+            let mut f = zip.by_index(i).map_err(|e| format!("bad archive entry: {e}"))?;
+            let name = f.name().to_string();
+            let rel = match name.split_once('/') { Some((_, r)) => r, None => continue };
+            if rel.is_empty() { continue; }
+            let out = dir.join(rel);
+            if f.is_dir() { let _ = std::fs::create_dir_all(&out); continue; }
+            if let Some(parent) = out.parent() { let _ = std::fs::create_dir_all(parent); }
+            let mut dest = std::fs::File::create(&out).map_err(|e| format!("write {}: {e}", out.display()))?;
+            std::io::copy(&mut f, &mut dest).map_err(|e| format!("extract {}: {e}", out.display()))?;
+        }
+    } else {
+        let tmp = dir.join("node.tar.gz");
+        std::fs::write(&tmp, &bytes).map_err(|e| format!("write temp: {e}"))?;
+        let _ = std::process::Command::new("tar")
+            .args(["-xzf", &tmp.to_string_lossy(), "-C", &dir.to_string_lossy(), "--strip-components=1"])
+            .status();
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    omniroute_node_path(app).ok_or_else(|| "Node 24 was downloaded but the binary was not where expected.".to_string())
+}
+
+/// Does OmniRoute's sqlite addon load under the Node we are about to run it with — and if not, put
+/// a matching one in place.
+///
+/// Even with the right Node version this is worth checking, because the ABI OmniRoute ships against
+/// is theirs to change and a mismatch is invisible until the gateway dies on startup. The repair
+/// downloads the prebuilt addon for OUR node's exact ABI.
+///
+/// It comes from registry.npmmirror.com, not GitHub. `prebuild-install` fetches these from GitHub
+/// release assets, and on this user's ISP that is the same block that broke the app's own updater:
+/// github.com answers with a 302 and following it downloads zero bytes. Measured just now — the
+/// GitHub URL returned 0 bytes, the mirror returned the identical 1 MB tarball. Building from source
+/// is not an option either: node-gyp needs Visual Studio, which no ordinary user has.
+async fn omniroute_fix_native(app: &tauri::AppHandle, node: &std::path::Path) -> Result<(), String> {
+    let app_dir = omniroute_dir(app).join("node_modules").join("omniroute").join("app");
+    let bs3 = app_dir.join("node_modules").join("better-sqlite3");
+    if !bs3.is_dir() { return Ok(()); }   // nothing shipped there — not our problem to invent
+
+    // Ask THIS node whether it can load it, rather than reasoning about version numbers.
+    //
+    // It has to OPEN a database, not merely `require` the package. Checked both ways on the real
+    // install: a plain require succeeds under a Node whose ABI does not match, because the addon is
+    // only dlopen'd when a Database is constructed — so a require-only probe passes cleanly and the
+    // gateway still dies on startup. Opening `:memory:` costs nothing and is the actual question.
+    let probe = |node: &std::path::Path| -> (bool, String) {
+        let mut c = std::process::Command::new(node);
+        c.arg("-e").arg("const D=require(process.argv[1]);new D(':memory:').close();console.log('ok:'+process.versions.modules)")
+            .arg(bs3.to_string_lossy().to_string())
+            .current_dir(&app_dir);
+        #[cfg(target_os = "windows")]
+        { use std::os::windows::process::CommandExt; c.creation_flags(0x08000000); }
+        match c.output() {
+            Ok(o) => {
+                let s = String::from_utf8_lossy(&o.stdout).to_string();
+                (o.status.success() && s.contains("ok:"), s)
+            }
+            Err(e) => (false, e.to_string()),
+        }
+    };
+    if probe(node).0 { return Ok(()); }
+
+    // Which ABI does our node want? Ask it.
+    let abi = {
+        let mut c = std::process::Command::new(node);
+        c.arg("-p").arg("process.versions.modules");
+        #[cfg(target_os = "windows")]
+        { use std::os::windows::process::CommandExt; c.creation_flags(0x08000000); }
+        let out = c.output().map_err(|e| format!("could not run Node: {e}"))?;
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    if abi.is_empty() { return Err("Node did not report which addon version it needs.".into()); }
+
+    let version = {
+        let p = bs3.join("package.json");
+        let txt = std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?;
+        serde_json::from_str::<serde_json::Value>(&txt).ok()
+            .and_then(|v| v.get("version").and_then(|s| s.as_str()).map(str::to_string))
+            .ok_or_else(|| "could not read the sqlite addon's version".to_string())?
+    };
+    let plat = if cfg!(target_os = "windows") { "win32" } else if cfg!(target_os = "macos") { "darwin" } else { "linux" };
+    let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
+    let name = format!("better-sqlite3-v{version}-node-v{abi}-{plat}-{arch}.tar.gz");
+    let url = format!("https://registry.npmmirror.com/-/binary/better-sqlite3/v{version}/{name}");
+
+    let _ = app.emit("omniroute_progress", serde_json::json!({
+        "step": "Fetching the database module OmniRoute needs…", "pct": 94u8 }));
+
+    let bytes = reqwest::get(&url).await
+        .map_err(|e| format!("could not fetch {name}: {e}"))?
+        .bytes().await
+        .map_err(|e| format!("could not fetch {name}: {e}"))?;
+    if bytes.len() < 100_000 {
+        return Err(format!("the download for {name} came back empty — the mirror may not have a build for this platform."));
+    }
+    let tmp = bs3.join(&name);
+    std::fs::write(&tmp, &bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    // tar is present on Windows 10+, macOS and Linux alike, and the archive holds exactly one path:
+    // build/Release/better_sqlite3.node, which is where it needs to land.
+    let mut t = std::process::Command::new("tar");
+    t.args(["-xzf", &tmp.to_string_lossy()]).current_dir(&bs3);
+    #[cfg(target_os = "windows")]
+    { use std::os::windows::process::CommandExt; t.creation_flags(0x08000000); }
+    let st = t.status().map_err(|e| format!("could not unpack {name}: {e}"))?;
+    let _ = std::fs::remove_file(&tmp);
+    if !st.success() { return Err(format!("could not unpack {name}.")); }
+
+    let (ok, why) = probe(node);
+    if ok { Ok(()) } else { Err(format!("the replacement database module still would not load: {}", why.trim())) }
+}
+
 fn omniroute_bin(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
     let base = omniroute_dir(app).join("node_modules").join("omniroute");
     let entry = base.join("bin").join("omniroute.mjs");
     if entry.is_file() { Some(entry) } else { None }
 }
 
-/// Is it installed already?
+/// The Next.js server itself — what OmniRoute's own launcher ends up running.
+///
+/// WE RUN THIS DIRECTLY AND SKIP THEIR LAUNCHER, and that one decision removes three separate
+/// problems the user hit, all of them caused by the wrapper rather than by OmniRoute:
+///
+///   * A CONSOLE WINDOW AND A "DO YOU WANT TO ALLOW THIS" PROMPT. Their launcher hardcodes
+///     `HOSTNAME: "0.0.0.0"`, so the server listens on every network interface and Windows Defender
+///     asks permission for node.exe to talk to the network. Nothing here needs to be reachable from
+///     another machine — it is a gateway for this app, on this laptop. Bound to 127.0.0.1 the
+///     firewall has no reason to ask, and it never appears.
+///   * A SECOND NODE PROCESS chosen by PATH. Their launcher re-spawns the server as bare
+///     `spawn("node", …)`, so it picks up whatever Node is installed system-wide instead of ours,
+///     and the two disagree about the native addon ABI. Launching the server ourselves means there
+///     is one process and one runtime, with nothing to disagree with.
+///   * Their preflight refusing to start on a Node its own shipped binary was built for.
+///
+/// If the layout ever changes, `omniroute_bin` is still the fallback.
+fn omniroute_server_js(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    let p = omniroute_dir(app).join("node_modules").join("omniroute").join("app").join("server.js");
+    if p.is_file() { Some(p) } else { None }
+}
+
+/// Take the password wall off a gateway running on this machine, for this user.
+///
+/// The user's words: "its telling wrong password or smth on the website I never created any account
+/// also in omniroute". They are right, and it is not their mistake. On first boot OmniRoute writes
+/// `setupComplete = true` and `requireLogin = true` into its settings — and, read directly, its
+/// database contains no user, no account and no password row of any kind. So it demands a password
+/// that was never chosen, on a service reachable only from this laptop, and there is no way in.
+///
+/// The wall protects nothing here: the port is bound to 127.0.0.1, so the only thing it can keep out
+/// is the person who installed it. It is switched off once, and a marker is left behind so that if
+/// the user later turns login on themselves we never quietly undo their choice.
+fn omniroute_unlock(app: &tauri::AppHandle, node: &std::path::Path) {
+    let app_dir = omniroute_dir(app).join("node_modules").join("omniroute").join("app");
+    let bs3 = app_dir.join("node_modules").join("better-sqlite3");
+    if !bs3.is_dir() { return; }
+    // Uses OmniRoute's own sqlite addon — already proven loadable by omniroute_fix_native, and the
+    // only copy guaranteed to match this Node.
+    let script = r#"
+const path = process.argv[1];
+const D = require(path);
+const os = require('os');
+const db = new D(os.homedir() + '/.omniroute/storage.sqlite');
+db.exec("CREATE TABLE IF NOT EXISTS key_value (key TEXT PRIMARY KEY, value TEXT)");
+const done = db.prepare("SELECT value FROM key_value WHERE key='adrisUnlockedOnce'").get();
+if (done) { console.log('already-done'); }
+else {
+  db.prepare("INSERT INTO key_value (key,value) VALUES ('requireLogin','false') "
+           + "ON CONFLICT(key) DO UPDATE SET value='false'").run();
+  db.prepare("INSERT INTO key_value (key,value) VALUES ('adrisUnlockedOnce','1') "
+           + "ON CONFLICT(key) DO UPDATE SET value='1'").run();
+  console.log('unlocked');
+}
+db.close();
+"#;
+    let mut c = std::process::Command::new(node);
+    c.arg("-e").arg(script).arg(bs3.to_string_lossy().to_string()).current_dir(&app_dir);
+    #[cfg(target_os = "windows")]
+    { use std::os::windows::process::CommandExt; c.creation_flags(0x08000000); }
+    // Best effort on purpose. If the database is not there yet this is a no-op and the next start
+    // does it — never a reason to stop the gateway coming up.
+    let _ = c.output();
+}
+
+/// Is it installed — and is it running RIGHT NOW?
+///
+/// The second half is new and it is the whole answer to "I clicked Start OmniRoute and I removed
+/// that popup and it stopped". Nothing stopped: the gateway is spawned detached and outlives both
+/// the panel and the app. What died was the panel's memory of it — every bit of state lived in
+/// React, so closing the popup reset it to "not started" and reopening it offered a Start button
+/// for something already running. State that matters belongs to the machine, not to a component,
+/// so the panel now asks.
 #[tauri::command]
-fn omniroute_status(app: tauri::AppHandle) -> serde_json::Value {
+async fn omniroute_status(app: tauri::AppHandle) -> serde_json::Value {
+    let base = format!("http://127.0.0.1:{OMNIROUTE_PORT}");
+    let client = reqwest::Client::new();
+    let mut running = false;
+    let mut providers: Option<usize> = None;
+    if let Ok(r) = client.get(format!("{base}/v1/models"))
+        .timeout(std::time::Duration::from_secs(3)).send().await
+    {
+        // 401 means "up, and asking who you are" — still up.
+        if r.status().is_success() || r.status().as_u16() == 401 {
+            running = true;
+            // How many providers it can route to. Running with none is running and useless, and
+            // that difference is the one thing the panel never used to say.
+            if let Ok(j) = r.json::<serde_json::Value>().await {
+                providers = j.get("data").and_then(|d| d.as_array()).map(|a| a.len());
+            }
+        }
+    }
     serde_json::json!({
         "installed": omniroute_bin(&app).is_some(),
+        "running": running,
+        "providers": providers,
+        "dashUrl": base,
+        "apiUrl": format!("{base}/v1/chat/completions"),
         "dir": omniroute_dir(&app).to_string_lossy(),
     })
 }
@@ -3442,11 +3725,19 @@ async fn omniroute_install(app: tauri::AppHandle) -> Result<String, String> {
     }
 
     say("Checking Node…", 5);
-    // Reuses the same provisioning the browser tooling uses: if Node is missing it is downloaded
-    // into app-data. Nothing is installed system-wide and nothing needs admin rights.
-    let _node = provision_node(&app).await.map_err(|e| format!("Node could not be set up: {e}"))?;
-    let npm = bundled_npm_path(&app)
-        .ok_or_else(|| "Node was set up but npm was not where expected.".to_string())?;
+    // OmniRoute's own runtime — Node 24, its own folder. See provision_omniroute_node for why it
+    // cannot share the Node 20 the browser tooling uses. Installing with the SAME node it will run
+    // under also means any addon npm builds here is built for the right ABI from the start.
+    let node = provision_omniroute_node(&app).await
+        .map_err(|e| format!("The runtime OmniRoute needs could not be set up: {e}"))?;
+    let npm_dir = omniroute_node_bin_dir(&app);
+    #[cfg(target_os = "windows")]
+    let npm = npm_dir.join("npm.cmd");
+    #[cfg(not(target_os = "windows"))]
+    let npm = npm_dir.join("npm");
+    if !npm.is_file() {
+        return Err("Node was set up but npm was not where expected.".into());
+    }
 
     let dir = omniroute_dir(&app);
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
@@ -3504,6 +3795,13 @@ async fn omniroute_install(app: tauri::AppHandle) -> Result<String, String> {
     if omniroute_bin(&app).is_none() {
         return Err("npm reported success but the OmniRoute program is not where expected.".into());
     }
+    // Make the sqlite addon match the Node we will run it with, BEFORE the first start rather than
+    // after a three-minute wait that ends in a timeout. A failure here is not fatal — start() checks
+    // again and reports it with the gateway's own words, which are usually clearer than ours.
+    if let Err(e) = omniroute_fix_native(&app, &node).await {
+        say(&format!("Installed, with one thing to sort out on first start: {e}"), 100);
+        return Ok("installed".into());
+    }
     say("Installed", 100);
     Ok("installed".into())
 }
@@ -3511,7 +3809,7 @@ async fn omniroute_install(app: tauri::AppHandle) -> Result<String, String> {
 /// Start OmniRoute and wait until it actually answers. Returns the address to paste.
 #[tauri::command]
 async fn omniroute_start(app: tauri::AppHandle, port: Option<u16>) -> Result<String, String> {
-    let port = port.unwrap_or(3000);
+    let port = port.unwrap_or(OMNIROUTE_PORT);
     let base = format!("http://127.0.0.1:{port}");
     let health = format!("{base}/v1/models");
     let client = reqwest::Client::new();
@@ -3525,15 +3823,77 @@ async fn omniroute_start(app: tauri::AppHandle, port: Option<u16>) -> Result<Str
         }
     }
 
-    let entry = omniroute_bin(&app).ok_or_else(|| "OmniRoute is not installed yet.".to_string())?;
-    let node = provision_node(&app).await.map_err(|e| format!("Node could not be set up: {e}"))?;
+    let node = provision_omniroute_node(&app).await
+        .map_err(|e| format!("The runtime OmniRoute needs could not be set up: {e}"))?;
+    // Cheap, and it turns the commonest failure — a sqlite addon built for a different Node — from
+    // a silent exit into something already fixed by the time we spawn.
+    if let Err(e) = omniroute_fix_native(&app, &node).await {
+        return Err(format!("OmniRoute cannot start yet: {e}"));
+    }
+    // Before it comes up, not after: a gateway that boots straight into a password nobody set is
+    // the same dead end whether we clear it early or late.
+    omniroute_unlock(&app, &node);
+
+    // Prefer the server itself; fall back to their launcher only if the layout has moved.
+    let direct = omniroute_server_js(&app);
+    let entry = match &direct {
+        Some(p) => p.clone(),
+        None => omniroute_bin(&app).ok_or_else(|| "OmniRoute is not installed yet.".to_string())?,
+    };
+    let work_dir = match &direct {
+        // Next resolves its build output relative to the working directory, so the server must run
+        // from the app folder, not from our install root.
+        Some(p) => p.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| omniroute_dir(&app)),
+        None => omniroute_dir(&app),
+    };
+
+    // KEEP WHAT IT SAYS ON ITS WAY OUT.
+    //
+    // Both streams went to null, and OmniRoute is a program that explains itself: the run that
+    // looked to the user like "I pressed Start and nothing happened" actually printed
+    // "✖ better-sqlite3 native module is incompatible with this platform" and exited in under a
+    // second. We threw that away and then waited three minutes for a port that was never going to
+    // open. A log file costs nothing and turns the timeout below into a real diagnosis.
+    let log_path = omniroute_dir(&app).join("omniroute.log");
+    let log = std::fs::File::create(&log_path).ok();
+    let (out, err) = match log.as_ref().and_then(|f| f.try_clone().ok().map(|c| (f.try_clone().ok(), c))) {
+        Some((Some(a), b)) => (std::process::Stdio::from(a), std::process::Stdio::from(b)),
+        _ => (std::process::Stdio::null(), std::process::Stdio::null()),
+    };
+
+    // PATH FIRST, because OmniRoute's bin spawns its server as bare `spawn("node", …)`. Handing the
+    // parent our Node 24 is only half the job: without this the child picks up whatever Node is
+    // installed system-wide, and on this machine that was a different version — parent and child
+    // then disagree about the addon ABI and it dies on a mismatch we appear to have caused.
+    let path_prefix = omniroute_node_bin_dir(&app);
+    let merged_path = match std::env::var_os("PATH") {
+        Some(p) => {
+            let mut dirs = vec![path_prefix.clone()];
+            dirs.extend(std::env::split_paths(&p));
+            std::env::join_paths(dirs).unwrap_or(p)
+        }
+        None => path_prefix.clone().into_os_string(),
+    };
 
     let mut cmd = std::process::Command::new(&node);
     cmd.arg(&entry)
-        .current_dir(omniroute_dir(&app))
+        .current_dir(&work_dir)
         .env("PORT", port.to_string())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .env("PATH", &merged_path)
+        // LOOPBACK ONLY — this is the line that stops Windows asking permission for node.exe. Their
+        // launcher sets 0.0.0.0, which makes the firewall prompt unavoidable; nothing outside this
+        // machine has any business reaching the gateway.
+        .env("HOSTNAME", "127.0.0.1")
+        .env("HOST", "127.0.0.1")
+        // Their launcher derives these three from PORT. Running the server directly means we set
+        // them ourselves, so the dashboard and the API agree on one number.
+        .env("DASHBOARD_PORT", port.to_string())
+        .env("API_PORT", port.to_string())
+        .env("OMNIROUTE_PORT", port.to_string())
+        .env("NODE_ENV", "production")
+        .stdin(std::process::Stdio::null())
+        .stdout(out)
+        .stderr(err);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -3553,11 +3913,44 @@ async fn omniroute_start(app: tauri::AppHandle, port: Option<u16>) -> Result<Str
             }
         }
     }
-    Err(format!(
-        "OmniRoute was started but has not answered on port {port} after three minutes. Open {base} \
-         in a browser to see what it says — that page is its own dashboard and usually explains the \
-         problem better than we can from out here."
-    ))
+    // Give its own words, not ours. The last few lines of the log are almost always the answer.
+    let said = std::fs::read_to_string(&log_path).ok()
+        .map(|s| {
+            let strip = regex_free_strip_ansi(&s);
+            strip.lines().filter(|l| !l.trim().is_empty()).rev().take(8)
+                .collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n")
+        })
+        .filter(|s| !s.trim().is_empty());
+    Err(match said {
+        Some(s) => format!(
+            "OmniRoute did not come up on port {port}. It said:\n\n{s}\n\nIts full log is at {}.",
+            log_path.display()),
+        None => format!(
+            "OmniRoute was started but has not answered on port {port} after three minutes. Open {base} \
+             in a browser to see what it says — that page is its own dashboard and usually explains the \
+             problem better than we can from out here."),
+    })
+}
+
+/// Drop the colour codes a console program writes, so its output is readable inside a panel.
+/// Hand-rolled because pulling in a regex crate for one escape sequence is not worth it.
+fn regex_free_strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(&n) = chars.peek() {
+                    chars.next();
+                    if n.is_ascii_alphabetic() { break; }
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn bundled_node_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {

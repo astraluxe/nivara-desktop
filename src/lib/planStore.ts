@@ -18,6 +18,18 @@ export interface PlanStep {
   day: number;
   /** Week heading it sat under, when the plan had them. */
   week?: number;
+  /**
+   * The LAST day of a step that covers a stretch rather than a single day.
+   *
+   * Agents end a long plan with a range — "Day 18-30: Continuous pipeline or orderly wind-down
+   * (daily 30-45 min)" — and the parser matched that range and then threw the end of it away, so
+   * one step landed on day 18 and days 19 to 30 simply did not exist. A user who watched their
+   * council reason out a thirty-day plan opened the calendar and found it stopped in the third
+   * week. The work was never missing from the answer; it was missing from the plan.
+   *
+   * Absent on ordinary single-day steps, so everything saved before this still loads unchanged.
+   */
+  throughDay?: number;
   action: string;
   /** The plan's own definition of finished ("Videos in Drive"), when it gave one. */
   doneWhen?: string;
@@ -89,6 +101,28 @@ function dayOf(cell: string): number | null {
   const n = Number(m[1]);
   return n >= 1 && n <= 120 ? n : null;
 }
+
+/** The END of a "28-30" cell, so a table row covering a stretch keeps its stretch — see throughDay. */
+function dayEndOf(cell: string): number | undefined {
+  const m = (cell || '').replace(/–|—/g, '-').match(/(?:day\s*)?(\d{1,2})\s*-\s*(\d{1,2})\s*$/i);
+  return m ? spanEnd(Number(m[1]), m[2]) : undefined;
+}
+
+/**
+ * The end of a "Day 18-30" range, or undefined for an ordinary single day.
+ *
+ * Guarded rather than trusted: a range that runs backwards, repeats the same number, or stretches
+ * past the horizon is not a span, it is a typo, and turning one of those into a step that occupies
+ * the rest of the calendar would be worse than dropping the end entirely.
+ */
+function spanEnd(day: number, raw: string | undefined): number | undefined {
+  if (!raw) return undefined;
+  const end = Number(raw);
+  return Number.isFinite(end) && end > day && end <= 120 ? end : undefined;
+}
+
+/** A day (or day range) heading with no work on the same line — the work is on the lines below. */
+const BARE_DAY = /^(?:#{1,6}\s*)?[-•*]?\s*\**day\s*(\d{1,2})(?:\s*[-–—]\s*(\d{1,2}))?\s*(?:\([^)]*\))?\s*\**\s*[:—–-]?\s*\**\s*$/i;
 
 function splitRow(line: string): string[] {
   let c = line.split('|').map((x) => x.trim());
@@ -163,6 +197,7 @@ export function parsePlanSteps(text: string): PlanStep[] {
       seen.add(key);
       steps.push({
         id: uid(), day, week, action,
+        throughDay: dayEndOf(cells[dayCol] ?? ''),
         doneWhen: doneCol >= 0 ? clean(cells[doneCol] ?? '') || undefined : undefined,
         done: false,
       });
@@ -176,13 +211,21 @@ export function parsePlanSteps(text: string): PlanStep[] {
     // window, and requiring the dash to follow the NUMBER meant an entire 30-day plan written as
     // "**Day 1 (Mon) — …**" parsed to zero steps, so no button appeared under it at all. Leading
     // #'s are allowed for the same reason — a plan whose days are headings is still a plan.
-    const bullet = line.match(/^(?:#{1,6}\s*)?[-•*]?\s*\**day\s*(\d{1,2})(?:\s*[-–—]\s*\d{1,2})?\s*(?:\([^)]*\))?\s*\**\s*[:—–-]\s*(.+)$/i);
+    // A HEADER MUST NOT BE MISREAD AS A ONE-LINE STEP. The separator class below includes the
+    // dashes, so "Day 18-30 (1-12 Sep):" — a header for a range, with the work on the lines under
+    // it — matched the single-line rule with 18 as the day and the literal text "30 (1-12 Sep):"
+    // as the action. A step named after the tail of its own date range, and the twelve days it
+    // covered thrown away with it. If the line is a bare header, it belongs to the rule further
+    // down, which reads the work from underneath it.
+    const bullet = BARE_DAY.test(line)
+      ? null
+      : line.match(/^(?:#{1,6}\s*)?[-•*]?\s*\**day\s*(\d{1,2})(?:\s*[-–—]\s*(\d{1,2}))?\s*(?:\([^)]*\))?\s*\**\s*[:—–-]\s*(.+)$/i);
     if (bullet) {
       const day = Number(bullet[1]);
-      const action = clean(bullet[2]);
+      const action = clean(bullet[3]);
       if (day >= 1 && day <= 120 && action.length > 3) {
         const key = day + '|' + action.toLowerCase().slice(0, 40);
-        if (!seen.has(key)) { seen.add(key); steps.push({ id: uid(), day, week, action, done: false }); }
+        if (!seen.has(key)) { seen.add(key); steps.push({ id: uid(), day, week, action, done: false, throughDay: spanEnd(day, bullet[2]) }); }
       }
       continue;
     }
@@ -204,7 +247,7 @@ export function parsePlanSteps(text: string): PlanStep[] {
     //
     // So a bare header adopts the first real line beneath it as its action. attachDetail below then
     // gathers the remaining lines as the brief, exactly as it does for a single-line day.
-    const bare = line.match(/^(?:#{1,6}\s*)?[-•*]?\s*\**day\s*(\d{1,2})(?:\s*[-–—]\s*\d{1,2})?\s*(?:\([^)]*\))?\s*\**\s*[:—–-]?\s*\**\s*$/i);
+    const bare = line.match(BARE_DAY);
     if (bare) {
       const day = Number(bare[1]);
       if (day < 1 || day > 120) continue;
@@ -221,7 +264,7 @@ export function parsePlanSteps(text: string): PlanStep[] {
       }
       if (action) {
         const key = day + '|' + action.toLowerCase().slice(0, 40);
-        if (!seen.has(key)) { seen.add(key); steps.push({ id: uid(), day, week, action, done: false }); }
+        if (!seen.has(key)) { seen.add(key); steps.push({ id: uid(), day, week, action, done: false, throughDay: spanEnd(day, bare[2]) }); }
       }
     }
   }
@@ -363,6 +406,26 @@ export function stepDate(plan: ActionPlan, step: PlanStep): Date {
   return d;
 }
 
+/** The last calendar date a step covers — the same as stepDate for an ordinary one-day step. */
+export function stepEndDate(plan: ActionPlan, step: PlanStep): Date {
+  const d = new Date(plan.startDate + 'T09:00:00');
+  d.setDate(d.getDate() + ((step.throughDay ?? step.day) - 1));
+  return d;
+}
+
+/** Does this step occupy the given date? True on every day of a span. */
+export function stepCoversDate(plan: ActionPlan, step: PlanStep, d: Date): boolean {
+  if (isSameDay(stepDate(plan, step), d)) return true;
+  if (!step.throughDay) return false;
+  const day = startOfDay(d).getTime();
+  return day >= startOfDay(stepDate(plan, step)).getTime()
+      && day <= startOfDay(stepEndDate(plan, step)).getTime();
+}
+
+function startOfDay(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
 export function isSameDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
@@ -375,7 +438,10 @@ export function todayView(plan: ActionPlan): { today: PlanStep[]; overdue: PlanS
   for (const s of plan.steps) {
     if (s.done) continue;
     const d = stepDate(plan, s);
-    if (isSameDay(d, now)) today.push(s);
+    // A step that covers a stretch is DUE for the whole stretch. Judging it by its first day alone
+    // turned "Day 18-30: keep the pipeline running" into something overdue on day 19 and nagging
+    // for the rest of the month, which is the opposite of what the plan says.
+    if (isSameDay(d, now) || (s.throughDay && d <= now && stepEndDate(plan, s) >= startOfDay(now))) today.push(s);
     else if (d < now) overdue.push(s);
   }
   return { today, overdue };

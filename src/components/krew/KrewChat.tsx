@@ -26,7 +26,7 @@ import UpgradeModal from '../UpgradeModal';
 import { type AutomationProposal } from './AutomationProposalModal';
 import AgentStatus from './AgentStatus';
 import { type ConnectionMode, type Provider } from '../../lib/ai';
-import { isDeadModelError, repairDeadModel, blockModel, scanModelsIfStale, measuredMsFor } from '../../lib/modelHealth';
+import { isDeadModelError, isSilenceError, isUserChosen, probeTimedOut, repairDeadModel, blockModel, scanModelsIfStale, measuredMsFor } from '../../lib/modelHealth';
 import { noteActiveModel, bulkPlan } from '../../lib/contextBudget';
 import { normaliseScore, scoreValue, decisionBias, recordDecision, decisionStyleNote, workingFileNote, setWorkingFile, EFFORT_LABEL, IMPACT_LABEL } from '../../lib/agentBrain';
 import { slugLooksLikeName } from '../../lib/outreachConnections';
@@ -4876,10 +4876,24 @@ const [studioExtracting, setStudioExtracting] = useState(false);
   }
 
   // Stream one AI turn — returns { text, truncated }
+  /**
+   * How long to wait for the FIRST word, when the caller knows better than the default.
+   *
+   * The council is the reason this exists. It sets its own 300-second budget per member, because a
+   * member is handed everybody else's answer and reads for a long time before it writes anything —
+   * but the budget inside streamTurn is calculated for a single interactive chat message and fired
+   * first, at seventy-odd seconds, throwing before the council's own clock had got going. Two
+   * watchdogs on one call, the tighter one invisible to the code that set the looser one, and the
+   * user saw "Vikram could not answer this time — hasn't started answering after 78s" on a council
+   * that was supposed to allow five minutes.
+   */
+  type TurnOpts = { minFirstTokenMs?: number };
+
   async function streamTurn(
     msgs: { role: string; content: string }[],
     systemPrompt: string,
     onChunk: (t: string) => void,
+    opts: TurnOpts = {},
   ): Promise<{ text: string; truncated: boolean }> {
     const callId  = String(++callIdRef.current);
     let   fullText = '';
@@ -5002,17 +5016,32 @@ const [studioExtracting, setStudioExtracting] = useState(false);
       // from the prompt actually being sent, plus what the model has been seen to do, plus an
       // allowance for reasoning models — which are silent while they think by design, not fault.
       const measured = measuredMsFor(effectiveModelName);
+      // …and one more correction, which is the one that actually bit. The scan probes with a ten
+      // second budget, so the LARGEST models never finish it and are recorded as timed out, not
+      // measured. `measured === null` therefore meant two opposite things — "never tried" and
+      // "tried, and it is slower than ten seconds" — and both collapsed onto the 60 s floor, the
+      // shortest patience in the app. The biggest model on the key got the least time to think,
+      // failed, and was replaced by a smaller one. Known-slow now buys patience instead of costing
+      // it, and a model the user picked by hand is trusted to be worth waiting for.
+      const knownSlow = probeTimedOut(effectiveModelName);
+      const chosen = isUserChosen(lastByokRef.current.provider || '', effectiveModelName);
+      const floorMs = measured !== null ? measured * 3 + 20_000
+        : knownSlow || chosen ? 150_000
+        : 60_000;
       const promptChars = systemPrompt.length + msgs.reduce((n, m) => n + (m.content?.length || 0), 0);
       // ~1 s per 1,000 characters of prompt. Generous on purpose: the cost of waiting too long is
       // a slower failure, and the cost of not waiting long enough is a working model declared dead.
       const readAllowance = Math.min(120_000, promptChars);
       const reasoner = /nemotron|reason|thinking|deepseek-r[1-9]|qwen[3-9]|magistral|\bo[1-9]\b/i.test(effectiveModelName || '');
-      const firstTokenMs = mode === 'local'
-        ? 300_000
-        : Math.min(300_000,
-            Math.max(60_000, measured === null ? 60_000 : measured * 3 + 20_000)
-            + readAllowance
-            + (reasoner ? 60_000 : 0));
+      const firstTokenMs = Math.max(
+        opts.minFirstTokenMs ?? 0,
+        mode === 'local'
+          ? 300_000
+          : Math.min(300_000,
+              Math.max(60_000, floorMs)
+              + readAllowance
+              + (reasoner ? 60_000 : 0)),
+      );
       let gotFirst = false;
       // A HIDDEN WINDOW IS NOT A DEAD MODEL.
       //
@@ -5050,7 +5079,11 @@ const [studioExtracting, setStudioExtracting] = useState(false);
                 // A model we have SEEN answer is not dead just because it is slow today. Word it so
                 // it does NOT match isDeadModelError, so the self-heal leaves the user's chosen
                 // model alone instead of silently demoting them to whatever answers fastest.
-                : measured !== null
+                // A model we have seen answer, one we have seen be slow, or one the user picked on
+                // purpose — all three are SLOW, not dead, and the wording matters because it is
+                // what keeps the self-heal from demoting them (isDeadModelError deliberately does
+                // not match this sentence).
+                : measured !== null || knownSlow || chosen
                   // Quoting the probe time next to the real one invited the obvious objection —
                   // "you allowed 40s and it answered in 4.4s" — because the two measure different
                   // things: a few words versus this whole prompt. Say what was actually sent.
@@ -5135,6 +5168,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     msgs: { role: string; content: string }[],
     systemPrompt: string,
     onChunk: (t: string) => void,
+    opts: TurnOpts = {},
   ): Promise<{ text: string; truncated: boolean }> {
     const MAX_ATTEMPTS = 10;
     let authRetried = false;
@@ -5155,7 +5189,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
         const r = await streamTurn(msgs, systemPrompt, (t) => {
           if (!alive) { alive = true; setReconnecting(null); }
           onChunk(t);
-        });
+        }, opts);
         // Clear unconditionally. This used to be `if (attempt > 1)`, so a banner raised by one call
         // was left on screen by every OTHER call that succeeded first time — which is why the chat
         // sat on "Reconnecting…" for ages while the outreach copilot was answering perfectly well
@@ -5168,7 +5202,14 @@ const [studioExtracting, setStudioExtracting] = useState(false);
         // "410 Gone — the model '…' is no longer available". Nothing the user can fix by retrying,
         // and it used to kill the whole task (a follow-up draft, a scan, an automation). Re-pick a
         // live model from the provider's own catalogue, save it, and run the SAME turn again.
-        if (mode === 'own_key' && !modelRepaired && isDeadModelError(msg) && !stopRef.current) {
+        // …but SILENCE is not retirement, and a model the user picked by hand is never swapped for
+        // it. Wording alone used to carry this rule, one sentence away from the regex that reads
+        // it, which is far too fragile for something that quietly changes which AI does the work.
+        // Say it here as well, in terms that cannot drift: a hard "410 Gone" still replaces the
+        // model, a model that simply hasn't spoken yet does not.
+        const silentButChosen = isSilenceError(msg)
+          && isUserChosen(lastByokRef.current.provider || '', lastByokRef.current.model || '');
+        if (mode === 'own_key' && !modelRepaired && isDeadModelError(msg) && !silentButChosen && !stopRef.current) {
           modelRepaired = true;
           const { provider: prov, apiKey: usedKey, model: deadModel } = lastByokRef.current;
           if (prov) {
@@ -12531,14 +12572,39 @@ ${wfTask}`);
             onText(acc.replace(/<tool_call>[\s\S]*/g, ''));
             paint();
           },
+          // THE SAME BUDGET THE WATCHDOG BELOW USES. Without this the wait inside streamTurn — sized
+          // for a single chat message — expired first and threw, so a member died at ~78s on a
+          // council that had decided to allow five minutes, and the card read "could not answer"
+          // about a model that was still reading. One clock, set once, in one place.
+          { minFirstTokenMs: firstTokenMs },
         );
+        // A MINIMISED WINDOW IS NOT A SILENT MODEL — the same rule the chat path already follows,
+        // which the council never got. Chromium throttles background timers hard, so this interval
+        // can fire minutes late on a stream that is perfectly healthy, and the member is written off
+        // for a silence that was really our own clock skipping. The user reported exactly this
+        // alongside "i had minimised the screen". Forgive one full window per spell away, three at
+        // most, so a genuinely hung member still gets left behind.
+        let hiddenWhileWaiting = document.visibilityState === 'hidden';
+        let forgiven = 0;
+        const onVis = () => { if (document.visibilityState === 'hidden') hiddenWhileWaiting = true; };
+        document.addEventListener('visibilitychange', onVis);
         const watchdog = new Promise<null>((resolve) => {
           const t = setInterval(() => {
-            if (gone() || Date.now() - lastDelta > silenceMs()) { clearInterval(t); resolve(null); }
+            if (gone()) { clearInterval(t); resolve(null); return; }
+            if (Date.now() - lastDelta <= silenceMs()) return;
+            if (hiddenWhileWaiting && forgiven < 3) {
+              forgiven++;
+              hiddenWhileWaiting = document.visibilityState === 'hidden';  // still away? keep forgiving
+              lastDelta = Date.now();                                      // and restart the clock
+              return;
+            }
+            clearInterval(t); resolve(null);
           }, 2000);
           void answer.finally(() => clearInterval(t));
         });
-        const r = await Promise.race([answer, watchdog]);
+        const r = await Promise.race([answer, watchdog]).finally(() => {
+          document.removeEventListener('visibilitychange', onVis);
+        });
         if (r === null && !acc.trim()) {
           // Nothing at all, and nothing coming. Say so on their card rather than leaving a spinner
           // that never resolves, and let the next member start.
@@ -12584,6 +12650,9 @@ ${wfTask}`);
               onText(joinCarried(acc, piece.replace(/<tool_call>[\s\S]*/g, '')));
               paint();
             },
+            // A continuation carries the whole answer so far back up as context, so it has MORE to
+            // read than the first call, not less. Same patience.
+            { minFirstTokenMs: firstTokenMs },
           ).catch(() => ({ text: '', truncated: false }));
           const moreClean = (more.text || piece).replace(/<tool_call>[\s\S]*/g, '').trim();
           if (!moreClean) break;
@@ -13107,6 +13176,10 @@ ${wfTask}`);
             live[i].text = acc.replace(/<tool_call>[\s\S]*/g, '');
             paint();
           },
+          // A council follow-up is a council call: the Executor is handed everyone else's answer
+          // again and reads for a long time before it writes. Same patience as the first round,
+          // for the same reason.
+          { minFirstTokenMs: mode === 'local' ? 480_000 : 300_000 },
         );
         acc = out || acc;
       } catch (e) {
