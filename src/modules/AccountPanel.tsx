@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useAuth } from "../contexts/AuthContext";
 import { getMonthlyUsage } from "../lib/tokenTracker";
+import { supabase } from "../lib/supabase";
 
 const PLAN_LABEL: Record<string, string> = {
   free:     "Free",
@@ -36,6 +37,35 @@ export default function AccountPanel() {
   const [diagResult, setDiagResult] = useState<string | null>(null);
   const [diagRunning, setDiagRunning] = useState(false);
   const [tokenUsed, setTokenUsed] = useState<number | null>(null);
+  /**
+   * The two billing facts the profile does not carry: when a cancelled plan actually stops, and
+   * whether there is a Razorpay subscription behind it at all.
+   *
+   * Read here rather than added to AuthContext on purpose — the auth path is deliberately left
+   * alone, and this is the only screen that needs the dates.
+   */
+  const [billing, setBilling] = useState<{ graceEnd: string | null; hasSub: boolean } | null>(null);
+
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session?.user) return;
+        const { data } = await supabase.from('users')
+          .select('grace_period_end, razorpay_subscription_id')
+          .eq('id', session.user.id).single();
+        if (dead) return;
+        setBilling({
+          graceEnd: (data?.grace_period_end as string | null) ?? null,
+          hasSub: !!data?.razorpay_subscription_id,
+        });
+      } catch { /* offline — the panel simply omits the dates */ }
+    })();
+    return () => { dead = true; };
+    // Re-read when the plan or status changes: a webhook or a cancellation arrives over realtime,
+    // and the date underneath it moves with them.
+  }, [profile?.plan, profile?.subscription_status]);
 
   useEffect(() => {
     // Free/explore quotas are LIFETIME, not monthly. Passing the flag matters: without it this
@@ -127,7 +157,45 @@ export default function AccountPanel() {
               {profile?.subscription_status ?? "free"}
             </span>
           </div>
+          {/* WHEN A CANCELLED PLAN ACTUALLY ENDS. "Cancelled" on its own reads as "it is gone", and
+              it is not — the plan runs to the end of the period already paid for. Without the date
+              the honest reaction is to assume access has already been lost and to pay again. */}
+          {profile?.subscription_status === "cancelled" && billing?.graceEnd && (
+            <div className="flex items-center justify-between px-5 py-4">
+              <span className="text-nv-muted text-sm">Access until</span>
+              <span className="text-nv-text text-sm font-medium">
+                {new Date(billing.graceEnd).toLocaleDateString(undefined, {
+                  day: "numeric", month: "long", year: "numeric",
+                })}
+              </span>
+            </div>
+          )}
         </div>
+
+        {/* Managing the subscription — renewal date, and cancelling — lives on the website, which
+            is where the payment was made and where the card details are. Duplicating it in here
+            would mean two places to keep correct about someone's money. */}
+        {!["free", "explore"].includes(profile?.plan ?? "explore") && (
+          <button
+            onClick={async () => {
+              const url = "https://www.adris.tech/pricing.html";
+              try {
+                const { open } = await import("@tauri-apps/plugin-shell");
+                await open(url);
+              } catch { window.open(url, "_blank"); }
+            }}
+            className="w-full py-2.5 rounded-lg border border-nv-border text-nv-text text-sm font-medium hover:border-accent/50 transition-fast"
+          >
+            Manage subscription
+            <span className="block text-[11px] text-nv-faint font-normal mt-0.5">
+              {profile?.subscription_status === "cancelled"
+                ? "See when access ends, or resubscribe"
+                : billing?.hasSub === false
+                  ? "This plan was set up manually — contact support to change it"
+                  : "Renewal date, payment method, or cancel"}
+            </span>
+          </button>
+        )}
 
         {/* Sign out */}
         <button
