@@ -25,7 +25,7 @@ const PLANS: Plan[] = [
     sub:        "/ month",
     tokens:     "~4,000 tasks / month",
     prevTokens: "~2,000 tasks / month",
-    features:   ["All 6 modules", "4M tokens/mo", "500 cloud automations", "10 Mesh devices"],
+    features:   ["All 8 modules", "4M tokens/mo", "500 cloud automations", "10 Mesh devices"],
     accent:     false,
   },
   {
@@ -41,9 +41,12 @@ const PLANS: Plan[] = [
   },
   {
     key:        "business",
-    label:      "Business",
-    price:      "₹14,999",
-    paise:      1499900,
+    // Shown as "Team" because that is what pricing.html sells and what a buyer arrives having read.
+    // The KEY stays "business": razorpay-webhook's PAID_PLANS is solo/builder/business, and renaming
+    // it here would simply stop the webhook recognising the plan it just took money for.
+    label:      "Team",
+    price:      "₹19,999",
+    paise:      1999900,
     sub:        "/ month",
     tokens:     "~50,000 tasks / month",
     prevTokens: "~30,000 tasks / month",

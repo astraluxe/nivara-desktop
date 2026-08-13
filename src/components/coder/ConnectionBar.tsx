@@ -32,7 +32,7 @@ interface InstalledModel {
 
 const PLAN_ORDER: Plan[] = ['explore', 'solo', 'builder', 'business', 'custom'];
 const PLAN_LABELS: Record<Plan, string> = {
-  explore: 'Free', free: 'Free', solo: 'Solo', builder: 'Builder', business: 'Business', custom: 'Custom',
+  explore: 'Free', free: 'Free', solo: 'Solo', builder: 'Builder', business: 'Team', custom: 'Custom',
 };
 
 const MODES: { id: ConnectionMode; label: string; dotClass: string }[] = [
