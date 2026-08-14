@@ -44,7 +44,7 @@ export default function AccountPanel() {
    * Read here rather than added to AuthContext on purpose — the auth path is deliberately left
    * alone, and this is the only screen that needs the dates.
    */
-  const [billing, setBilling] = useState<{ graceEnd: string | null; hasSub: boolean } | null>(null);
+  const [billing, setBilling] = useState<{ graceEnd: string | null; hasSub: boolean; teamSize: number } | null>(null);
 
   useEffect(() => {
     let dead = false;
@@ -53,12 +53,25 @@ export default function AccountPanel() {
         const { data: { session } } = await supabase.auth.getSession();
         if (!session?.user) return;
         const { data } = await supabase.from('users')
-          .select('grace_period_end, razorpay_subscription_id')
+          .select('grace_period_end, razorpay_subscription_id, team_id')
           .eq('id', session.user.id).single();
         if (dead) return;
+        // HOW MANY PEOPLE SHARE THIS ALLOWANCE. A Team subscription buys one pot of tokens and the
+        // server divides it across the active seats — so a member of a three-person workspace has a
+        // third of it. Showing the undivided plan figure here meant the app promised 50,000,000
+        // while the server cut them off at 16,666,666, and the person in front of it had no way to
+        // know which number was real.
+        let teamSize = 1;
+        if (data?.team_id) {
+          const { count } = await supabase.from('team_members')
+            .select('id', { count: 'exact', head: true })
+            .eq('team_id', String(data.team_id)).eq('status', 'active');
+          teamSize = Math.max(1, Number(count ?? 1) || 1);
+        }
         setBilling({
           graceEnd: (data?.grace_period_end as string | null) ?? null,
           hasSub: !!data?.razorpay_subscription_id,
+          teamSize,
         });
       } catch { /* offline — the panel simply omits the dates */ }
     })();
@@ -106,7 +119,12 @@ export default function AccountPanel() {
   const initial    = (fullName ?? email)[0]?.toUpperCase() ?? "N";
   const planLabel  = PLAN_LABEL[plan] ?? plan;
   const planColor  = PLAN_COLOR[plan] ?? PLAN_COLOR.explore;
-  const tokenLimit   = PLAN_LIMIT[plan] ?? 100_000;
+  // Mirrors the division in get-session-key. Floor, so the figure shown is never larger than the
+  // one enforced — being told you have slightly less than you do is survivable; the reverse is how
+  // someone ends up believing they were cut off early.
+  const teamSize     = billing?.teamSize ?? 1;
+  const planLimit    = PLAN_LIMIT[plan] ?? 100_000;
+  const tokenLimit   = planLimit > 0 && teamSize > 1 ? Math.floor(planLimit / teamSize) : planLimit;
   const isUnlimited  = tokenLimit === 0;
   const tokenFmt     = (n: number) => n.toLocaleString();
 
@@ -151,6 +169,14 @@ export default function AccountPanel() {
                 : '—'}
             </span>
           </div>
+          {teamSize > 1 && (
+            <div className="flex items-center justify-between px-5 py-4">
+              <span className="text-nv-muted text-sm">Team</span>
+              <span className="text-nv-text text-sm">
+                {teamSize} members · sharing {tokenFmt(planLimit)} tokens
+              </span>
+            </div>
+          )}
           <div className="flex items-center justify-between px-5 py-4">
             <span className="text-nv-muted text-sm">Status</span>
             <span className="text-nv-text text-sm font-medium capitalize">
