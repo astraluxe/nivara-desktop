@@ -224,6 +224,16 @@ export function toolReceipt(tool: string, args: Record<string, unknown>, result:
   if (/^\s*(error|\[error)/i.test(r) || /^\[[a-z_ -]+ (not installed|failed|unavailable)/i.test(r)) {
     return `${label}${on} — failed: ${clip(r.replace(/^error:?\s*/i, ''), 110)}`;
   }
+  // THE REAL SIZE, NOT THE PREVIEW'S.
+  //
+  // countTableRows counts the markdown rows in the result, and a shape preview prints five
+  // of them — so a 766-row vendor sheet was reported to the user, in every run log, as
+  // "5 rows x 13 columns". describeTable states the true figure on its first line, so read
+  // that when it is there and fall back to counting only when it is not.
+  const stated = /^\s*(\d[\d,]*) rows?, (\d+) columns?\./m.exec(r);
+  if (stated) {
+    return `${label}${on} — ${stated[1]} rows × ${stated[2]} columns`;
+  }
   const tbl = countTableRows(r);
   if (tbl) return `${label}${on} — ${tbl.rows} row${tbl.rows === 1 ? '' : 's'} × ${tbl.cols} columns`;
   if (/^\s*(saved|added|created|updated)\b/i.test(r)) return `${label} — ${clip(r, 120)}`;

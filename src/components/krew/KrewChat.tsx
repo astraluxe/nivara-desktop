@@ -103,7 +103,6 @@ const SLASH_COMMANDS: SlashCmd[] = [
   // page was quietly wrong. /findleads was folded into /leads a while ago and kept as an
   // alias here rather than deleted from the docs, because it is the name people learned.
   { cmd: 'findleads', label: 'Find leads (same as /leads)', desc: 'Opens the same guided lead search — kept because the older name is in the guide', run: 'leads', value: '' },
-  { cmd: 'repair-table', label: 'Repair a broken table', desc: 'Rebuilds a Brain table whose rows have run together onto one line — line breaks only, no cell is changed', run: 'prompt', value: 'Repair the table in ' },
   { cmd: 'scan',     label: 'Scan LinkedIn connections', desc: 'List who you\'re already connected with as warm leads', run: 'scan', value: '' },
   { cmd: 'draft',    label: 'Draft outreach',    desc: 'Write DMs / emails for your list',                run: 'prompt', value: 'Write a LinkedIn DM and a short cold email for the people in <file name>, tailored by sector.' },
   { cmd: 'outreach', label: 'Send outreach (copilot)', desc: 'Draft LinkedIn messages & walk through sending them', run: 'outreach', value: '' },

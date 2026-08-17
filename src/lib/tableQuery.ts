@@ -719,12 +719,27 @@ export function describeTable(t: Table, sample = 5): string {
     // company names tells the reader nothing and costs a great deal to print.
     return vals.length <= 12 ? ` (values: ${vals.join(', ')})` : ` (${vals.length} distinct)`;
   };
+  // HOW MANY ROWS ACTUALLY HAVE A VALUE IN THIS COLUMN.
+  //
+  // Counting was impossible before. A work order asked for "total rows, rows with email,
+  // rows with LinkedIn, rows with Company" across seven lists; the only thing query_table
+  // returned without a filter was the column names and five sample rows, so three agents
+  // called it fifteen times between them, got the same preview each time, and produced
+  // nothing. The count is one pass over data already in memory — it costs nothing and it
+  // is the single most common question anyone asks of a list.
+  const filled = (i: number) =>
+    t.rows.reduce((n, r) => n + ((r[i] ?? '').trim() && (r[i] ?? '').trim() !== '—' ? 1 : 0), 0);
+
   return [
     `${t.rows.length} rows, ${t.headers.length} columns.`,
-    'Columns:',
-    ...t.headers.map((h, i) => `- ${h}${uniq(i)}`),
+    'Columns (filled = rows with a value in that column):',
+    ...t.headers.map((h, i) => `- ${h} — ${filled(i)}/${t.rows.length} filled${uniq(i)}`),
     '',
     `First ${Math.min(sample, t.rows.length)} rows:`,
     tableToMarkdown({ headers: t.headers, rows: t.rows.slice(0, sample) }),
+    '',
+    `NOTE: the ${Math.min(sample, t.rows.length)} rows above are a SAMPLE for shape. The counts `
+      + `on each column are over all ${t.rows.length} rows and are what you should quote. `
+      + `Add a "where" filter only when you need specific rows back.`,
   ].join('\n');
 }

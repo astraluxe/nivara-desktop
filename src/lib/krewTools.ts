@@ -576,7 +576,7 @@ function nlScheduleToCron(text: string): string {
 export const SYSTEM_TOOLS: ToolDef[] = [
   {
     name: 'read_file',
-    description: 'Read the full contents of any file on the user\'s machine.',
+    description: 'Read a file on the user\'s machine and get its TEXT — including PDFs, Word (.docx), Excel (.xlsx/.xls), PowerPoint (.pptx), CSV, code and plain text. Use the exact absolute path; if you are unsure of it, call search_local_files first and use the path it returns. If this comes back saying it could not read or extract, say so plainly — never invent what a document contains.',
     parameters: {
       path: { type: 'string', description: 'Absolute file path to read.', required: true },
     },
@@ -785,6 +785,15 @@ export const SYSTEM_TOOLS: ToolDef[] = [
     description: "Add one or more items to the user's To-do panel — a real task list they see and check off, separate from chat. Use it whenever real-world follow-up now exists: a meeting got confirmed, someone is waiting on a reply, a multi-step task is left half-done, a form needs the user's review before it can be submitted. You can create SEVERAL at once (e.g. one per pending conversation) — don't limit yourself to one call per turn. If a to-do is about a specific page (a LinkedIn chat, a form waiting for approval, a doc), pass its url so the user's \"Continue\" button takes them straight there.",
     parameters: {
       items: { type: 'string', description: 'JSON array of to-dos: [{"text":"Reply to Kevin once he confirms Wednesday","priority":"high","url":"https://www.linkedin.com/in/...","due":"2026-07-22"}]. Only "text" is required. priority is one of high/med/low. due is an ISO date (YYYY-MM-DD) or omitted. url is optional — an external link the Continue button should open.', required: true },
+    },
+  },
+  {
+    name: 'edit_document',
+    description: "Open a Word document (.docx) the user ALREADY has, change specific passages, and save the edited copy — keeping every style, heading, font, table, image and page layout exactly as it was. Use this whenever they want an existing document changed rather than a new one written: fixing a reference list, correcting names, updating figures, rewording sections. Read the file first with read_file so you match the real text; each edit finds a paragraph by a distinctive phrase from it and replaces that whole paragraph. Never invent what the document says. The original file is NOT modified — the edited version is written to Downloads under a new name.",
+    parameters: {
+      path:    { type: 'string', description: 'Absolute path to the .docx to edit. If unsure, call search_local_files first and use the exact path it returns.', required: true },
+      edits:   { type: 'string', description: 'JSON array of edits: [{"find":"a distinctive phrase from the paragraph to change","replace":"the full text that paragraph should say instead"}]. "find" is matched against the paragraph\'s visible text, case-insensitive, and need only be long enough to be unique. "replace" is the ENTIRE new paragraph, not a fragment.', required: true },
+      save_as: { type: 'string', description: 'Optional filename for the edited copy (without .docx). Defaults to the original name plus " (edited)".', required: false },
     },
   },
   {
@@ -3430,8 +3439,69 @@ async function executeToolCore(
   }
 
   // ── System tools ──────────────────────────────────────────────────────────
+  if (toolName === 'edit_document') {
+    const path = str(args.path);
+    let edits: { find: string; replace: string }[] = [];
+    try {
+      const parsed = JSON.parse(str(args.edits));
+      if (!Array.isArray(parsed)) throw new Error('not an array');
+      edits = parsed
+        .filter((e: unknown) => e && typeof e === 'object')
+        .map((e: Record<string, unknown>) => ({ find: String(e.find ?? ''), replace: String(e.replace ?? '') }))
+        .filter((e) => e.find.trim());
+    } catch {
+      return '[edit_document needs "edits" as a JSON array like [{"find":"...","replace":"..."}].]';
+    }
+    if (!edits.length) return '[edit_document needs at least one edit with a non-empty "find".]';
+    try {
+      const { editDocx } = await import('./docEdit');
+      const res = await editDocx(path, edits, str(args.save_as) || undefined);
+      const lines = res.applied.map((a, n) =>
+        `${n + 1}. was: ${a.before.slice(0, 160)}${a.before.length > 160 ? '…' : ''}\n   now: ${a.after.slice(0, 160)}${a.after.length > 160 ? '…' : ''}`);
+      return [
+        `Edited ${res.applied.length} of ${edits.length} passage${edits.length === 1 ? '' : 's'} `
+          + `in a ${res.paragraphs}-paragraph document. Saved as "${res.filename}" in Downloads `
+          + `(the original file is unchanged). Formatting, headings, tables and images are untouched.`,
+        '',
+        ...lines,
+        res.missed.length
+          ? `\nNOT FOUND, so NOT changed — tell the user these were not applied and why: `
+            + res.missed.map((m) => `"${m.slice(0, 80)}"`).join(', ')
+          : '',
+      ].filter(Boolean).join('\n');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return `[Could not edit ${path}: ${msg} — do NOT claim the document was changed.]`;
+    }
+  }
+
   if (toolName === 'read_file') {
-    return await invoke<string>('read_file', { path: str(args.path) });
+    // READS REAL DOCUMENTS, NOT JUST TEXT FILES.
+    //
+    // This called the Rust `read_file`, which is read_to_string — it cannot read a PDF, a
+    // Word file or a spreadsheet at all, while the tool description promised "any file".
+    // Asked to fix the references in a PDF, the agent got "The system cannot find the path
+    // specified", tried `pdftotext` (not installed), tried `ls` (not a Windows command),
+    // and then invented five placeholder references — "J. Smith", "M. Brown" — and
+    // presented them as the document's contents. That is the worst failure this app can
+    // have, and it started here.
+    //
+    // brain_extract_text already handled pdf/docx/xlsx/pptx and had done since the Brain
+    // was built; it was simply never wired to the agents. Now it is.
+    const path = str(args.path);
+    try {
+      const text = await invoke<string>('brain_extract_text', { path });
+      if (text && text.trim()) return text;
+      // A file that reads as nothing is usually a scanned PDF (pictures of text, no text
+      // layer). Say which, so the agent asks instead of guessing at the contents.
+      return `[${path} opened but contains no extractable text. If it is a scanned PDF or an `
+        + `image-only document, the text cannot be read directly — say so and ask the user, `
+        + `and do NOT invent what it might say.]`;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return `[Could not read ${path}: ${msg}. Do NOT guess at the contents. If the path may be `
+        + `wrong, call search_local_files with the file name and use the exact path it returns.]`;
+    }
   }
 
   if (toolName === 'execute_terminal') {
