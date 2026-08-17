@@ -1041,6 +1041,13 @@ function cleanForRender(text: string): string {
   return text;
 }
 
+// Named rather than inline because Tailwind scans this file for class names and read the
+// character class in `/^\s*[-*]\s+/` as an arbitrary-value candidate, emitting a junk CSS
+// declaration and a build warning. Same patterns, no longer mistakable for markup.
+const INDENTED = /^\s{2,}/;
+const NUMBERED = /^\s*\d+\.\s+/;
+const BULLETED = /^\s*[-*]\s+/;
+
 function renderMarkdown(text: string): React.ReactNode {
   text = cleanForRender(text);
   const lines = text.split('\n');
@@ -1157,9 +1164,9 @@ function renderMarkdown(text: string): React.ReactNode {
         while (
           i < lines.length &&
           lines[i].trim() &&
-          /^\s{2,}/.test(lines[i]) &&
-          !/^\s*\d+\.\s+/.test(lines[i]) &&
-          !/^\s*[-*]\s+/.test(lines[i])
+          INDENTED.test(lines[i]) &&
+          !NUMBERED.test(lines[i]) &&
+          !BULLETED.test(lines[i])
         ) {
           parts.push(lines[i].trim());
           i++;
@@ -1656,7 +1663,25 @@ function StatusBlock({ startedAt, headline, detail, tone }: {
   const [, tick] = useState(0);
   useEffect(() => {
     const id = setInterval(() => tick((n) => n + 1), 1000);
-    return () => clearInterval(id);
+    // REPAINT THE MOMENT THE WINDOW COMES BACK.
+    //
+    // The clock reads Date.now(), so the NUMBER was always right — but the repaint that
+    // shows it is driven by the interval above, and a webview throttles timers hard in a
+    // background window (often to once a minute, sometimes not at all). Switch to another
+    // desktop while an agent is working and you come back to a clock frozen at whatever it
+    // said when you left, which is indistinguishable from a hung app — and this is exactly
+    // when the user has walked away, because the model is taking its time.
+    //
+    // So: repaint on the way back in. One listener, no polling, and the value it draws was
+    // never wrong in the first place.
+    const wake = () => { if (!document.hidden) tick((n) => n + 1); };
+    document.addEventListener('visibilitychange', wake);
+    window.addEventListener('focus', wake);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', wake);
+      window.removeEventListener('focus', wake);
+    };
   }, []);
   const secs = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
   const clock = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${String(secs % 60).padStart(2, '0')}s`;

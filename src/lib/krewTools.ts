@@ -1,6 +1,8 @@
 ﻿import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { krewMemoryDb } from './krewDb';
+import { setActivity } from './agentActivity';
+import { activeContextTokens, CHARS_PER_TOKEN } from './contextBudget';
 import { delegationRoster } from './krewAgents';
 import { isMcpTool, executeMcpTool } from './krewMcp';
 import { runParallelResearch } from './researchSources';
@@ -3489,7 +3491,11 @@ async function executeToolCore(
     //    challenge to the HTTP fetch above AND renders blank in this browser, so the old
     //    DuckDuckGo-in-the-browser attempt here could never succeed; it was two more failing
     //    round-trips on the way to giving up. Real Chrome on Google returns real results.
-    for (const searchUrl of [`https://www.google.com/search?q=${q}`, ddgUrl]) {
+    // GOOGLE ONLY. The note above says DuckDuckGo "renders blank in this browser", and the
+    // loop then tried it anyway — two more browser round-trips, on a path only reached when
+    // things are already going badly, for a page known in advance to come back empty. A cold
+    // Chrome start alone measured ~21s here.
+    for (const searchUrl of [`https://www.google.com/search?q=${q}`]) {
       try {
         const opened = await invoke<string>('run_agent_browser_session', { sessionId, args: `open "${searchUrl}"` });
         if (opened.includes('[agent-browser not installed]')) break;
@@ -3513,6 +3519,14 @@ async function executeToolCore(
     // too long gets abandoned by the bridge underneath it.
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
+        setActivity({
+          agent: 'Search', agentKey: 'web_search',
+          headline: 'Waiting for you to clear a check in the browser',
+          detail: `Google wants to confirm a person is here before it will answer "${query.slice(0, 60)}". `
+                + 'A Chrome window is open with the check — tick it and this carries on by itself.'
+                + (attempt ? ' (second and final try)' : ''),
+          startedAt: Date.now(), phase: 'tool',
+        });
         // Put GOOGLE in front of them, not DuckDuckGo: clearing a DuckDuckGo duck-puzzle still
         // leaves a page this browser renders blank, so the user would have solved it for nothing.
         const res = await invoke<string>('run_agent_browser_session', { sessionId, args: `humancheck "https://www.google.com/search?q=${q}"` });
@@ -3524,7 +3538,9 @@ async function executeToolCore(
         }
         if (!res.includes('HUMANCHECK:PENDING')) break;   // crashed or not installed — stop asking
       } catch { break; }
+      finally { setActivity(null); }
     }
+    setActivity(null);
 
     // 5) Still blocked (or the user didn't complete it) — tell the model PLAINLY that
     // search is blocked right now, rather than staying silent about it (silence is what let
@@ -6053,5 +6069,27 @@ async function executeToolCore(
 
 export function needsCompression(messages: { role: string; content: string }[]): boolean {
   const totalChars = messages.reduce((sum, m) => sum + m.content.length, 0);
-  return totalChars > 80_000; // ~20K tokens, compresses before exceeding typical context limits
+
+  // COMPRESSING COSTS A WHOLE EXTRA MODEL CALL, so it must only happen when the window
+  // genuinely demands it.
+  //
+  // This used to be a flat 80,000 characters — about 20k tokens — whatever model was
+  // answering. On a million-token model that is 2% of the window, so a long conversation
+  // would stop and summarise itself for no reason at all: one more full round-trip,
+  // invisible in the run log, on a model slow enough that the user is already waiting.
+  // It also loses detail that the window had ample room to keep. On an 8k local model the
+  // same fixed number was the opposite mistake — far too late.
+  //
+  // activeContextTokens() already knows the real window of the model about to be called
+  // (it is what the evidence budgeter uses), so the threshold now follows it: summarise
+  // once the thread is using about half the room, and never before 80k characters, which
+  // keeps today's behaviour as the floor for small models rather than compressing them
+  // more aggressively than before.
+  //
+  // The reply and the system prompt also have to fit, hence the halving rather than
+  // filling the window to the brim: a prompt that overflows is not slow, it is wrong,
+  // because the front of it gets cut.
+  const windowChars = activeContextTokens() * CHARS_PER_TOKEN;
+  const threshold = Math.max(80_000, Math.floor(windowChars * 0.5));
+  return totalChars > threshold;
 }

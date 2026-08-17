@@ -132,6 +132,11 @@ function renderInline(text: string): React.ReactNode[] {
   return result;
 }
 
+// Hoisted for the same reason as in KrewChat: Tailwind scans this file for class names and
+// reads a character class inside an inline regex as an arbitrary-value candidate, which emits
+// a junk CSS declaration and a build warning. Same pattern, just not inline.
+const NUMBERED_LINE = /^(\d+)[.)]\s+(.*)/;
+
 function renderMarkdown(
   content: string,
   onRun: (c: string) => void,
@@ -198,7 +203,7 @@ function renderMarkdown(
       }
       const bm = line.match(/^[*\-+]\s+(.*)/);
       if (bm) { flushNumbered(); bullets.push(bm[1]); continue; }
-      const nm = line.match(/^(\d+)[.)]\s+(.*)/);
+      const nm = line.match(NUMBERED_LINE);
       if (nm) {
         flushBullets();
         if (!numbered.length) numberedStart = parseInt(nm[1], 10);   // first item sets the offset
