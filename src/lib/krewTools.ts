@@ -1,6 +1,7 @@
 ﻿import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { krewMemoryDb } from './krewDb';
+import { delegationRoster } from './krewAgents';
 import { isMcpTool, executeMcpTool } from './krewMcp';
 import { runParallelResearch } from './researchSources';
 import { loadUserLocation, saveUserLocation, locationLabel, userCity, countryCodeFor } from './userLocation';
@@ -1242,7 +1243,27 @@ export const BOSS_TOOLS: ToolDef[] = [
   },
   {
     name: 'delegate_to_agent',
-    description: 'Delegate a task to ONE specialist agent. Use this when the request clearly maps to a single specialist. Valid agent_key values:\n- caption_writer → social media captions (LinkedIn, Instagram, Twitter)\n- email_marketer → email campaigns, drip sequences, subject lines\n- cold_outreach → cold email/DM templates for sales prospecting\n- blog_writer → blog posts and articles\n- content_planner → content strategy, content calendars, growth content planning, organic marketing plan\n- seo_agent → SEO copy, keywords, meta descriptions\n- ad_copywriter → ad copy, paid acquisition strategy (Facebook, Google, LinkedIn ads)\n- social_scheduler → posting schedules and platform strategy\n- researcher → market research, growth strategy research, user acquisition research, competitor analysis, data gathering\n- competitor_watcher → deep competitor breakdowns, what competitors are doing for marketing, pricing and differentiation analysis\n- product_describer → product descriptions and landing page copy\n- coder → code writing, scripts, technical implementation\n- bug_hunter → debugging and error fixing\n- docs_writer → documentation and READMEs\n- data_analyst → data analysis and insights\n- proposal_writer → business proposals and pitches\n- cfo → ALL financial work: pricing strategy, revenue modelling, P&L, unit economics, affiliate commission structures, cost analysis, financial projections, profit breakdowns, budget planning — the dedicated CFO agent\n- translator → language translation\n- ops_agent → automation setup, listing automations, running/pausing automations, workflow management\n- automation_strategist → designing complex multi-step automation workflows\n- visual_creator → HTML/CSS visual assets: social banners, animated graphics, thumbnails, promo cards\n- research_agent → find companies, startup lists, market research, ICP research, lead generation',
+    // THE LIST OF AGENTS IS GENERATED, NOT TYPED HERE.
+    //
+    // It used to be a 22-key string in this file. The roster in krewAgents.ts had grown to
+    // 55, so 33 agents were unreachable no matter how plainly the user asked — the entire
+    // Support department among them — and one key on the list, blog_writer, named an agent
+    // that had never been defined and failed every time the boss picked it. Nothing in
+    // either file looked wrong on its own.
+    //
+    // AND THE CHOICE IS THE MODEL'S. There is no keyword table deciding that "marketing
+    // strategy" means the researcher. People do not describe their work in the words a
+    // regex was written for — "we need more people to know about adris.tech" is the same
+    // request as "customer acquisition" and matched nothing. The boss is given the roster,
+    // grouped by department, and picks; that is the part a language model is actually good
+    // at, and it is why every agent below is described by what they do rather than by the
+    // words that should trigger them.
+    description:
+      'Delegate a task to ONE specialist agent. Use this when the request maps to a single specialist.\n\n'
+      + 'Pick by what the person actually needs done, not by the words they used — someone who says '
+      + '"nobody knows about us" wants the same work as someone who says "user acquisition".\n\n'
+      + 'THE ROSTER — agent_key (who they are) — what they do:\n\n'
+      + delegationRoster(),
     parameters: {
       agent_key: { type: 'string', description: 'Exact agent key from the list above (e.g. "cold_outreach", "caption_writer").', required: true },
       task:      { type: 'string', description: 'A clear, self-contained task description with all context the specialist needs.', required: true },

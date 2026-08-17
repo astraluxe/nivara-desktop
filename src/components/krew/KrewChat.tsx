@@ -1288,60 +1288,34 @@ function classifyBossMessage(text: string): FastBossResult | null {
   // Falling through to the normal boss loop means the request is answered as written.
   if (namedArtifact(trimmed)) return null;
 
-  // Email READING tasks → ops_agent (not compose/send/reply tasks)
-  const isEmailRead  = /\b(read|check|fetch|show|get|see|view|open|list|browse)\b[^.]*\bemail|\bemail[^.]*\b(brief|summary|digest|update|recent|latest|last|unread|inbox)\b|\binbox\b|\blast\s+\d+\s+email|recent.*email/i.test(trimmed);
-  const isEmailWrite = /\b(send|compose|draft|write\s+an?\s+email|reply\s+to)\b/i.test(trimmed);
-  if (isEmailRead && !isEmailWrite) {
-    return {
-      type: 'delegate', agentKey: 'ops_agent',
-      task: `User request: ${trimmed}\n\nUse gmail_search to fetch the requested emails, read their content, and give a clear brief/summary as requested.`,
-    };
-  }
-
-  // Calendar / schedule reading tasks → ops_agent
-  const isCalRead = /\b(check|show|list|get|see|what.*on)\b[^.]*\b(calendar|schedule|meetings?|events?)\b|\btoday.*meeting|meeting.*today|\bupcoming\s+meeting/i.test(trimmed);
-  if (isCalRead) {
-    return {
-      type: 'delegate', agentKey: 'ops_agent',
-      task: `User request: ${trimmed}\n\nCheck the calendar and provide the requested meeting/event information.`,
-    };
-  }
-
-  // GTM / sales strategy → researcher
-  const isGTM = /\b(go[\s-]?to[\s-]?market|gtm|how\s+(do\s+i|to)\s+(sell|market|pitch|grow|get\s+(users?|customers?|clients?))|product[\s-]market[\s-]fit|b2b|b2c|icp|ideal\s+customer|target\s+(market|audience|customers?)|sell\s+(my|this|the)\s+product|customer\s+acquisition|sales\s+strategy|marketing\s+strategy|growth\s+strategy|user\s+acquisition|get\s+my\s+first|launch\s+(plan|strategy)|how\s+to\s+grow)\b/i.test(trimmed);
-  if (isGTM) {
-    return {
-      type: 'delegate', agentKey: 'researcher',
-      task: `User request: ${trimmed}\n\nResearch and deliver a practical go-to-market / sales strategy. Cover: (1) ideal customer profile, (2) positioning and messaging, (3) acquisition channels (organic + paid), (4) B2B vs B2C approach if relevant, (5) 30-day action plan. Be specific and actionable.`,
-    };
-  }
-
-  // Cold outreach / email sequences → cold_outreach
-  const isColdOutreach = /\b(cold\s+(email|outreach|dm|message|pitch)|outreach\s+(sequence|campaign|template)|sales\s+email|prospecting|linkedin\s+(outreach|message)|reach\s+out\s+to|pitch\s+email)\b/i.test(trimmed);
-  if (isColdOutreach) {
-    return {
-      type: 'delegate', agentKey: 'cold_outreach',
-      task: `User request: ${trimmed}\n\nWrite high-converting cold outreach copy as requested. Include subject lines, opening hooks, value proposition, and CTA.`,
-    };
-  }
-
-  // Pricing / revenue / financial strategy → cfo
-  const isPricing = /\b(pric(e|ing|ed)|revenue\s+model|monetis|monetiz|subscription\s+(model|pricing)|how\s+(much\s+to\s+charge|to\s+price)|freemium|tier(ed)?\s+pricing|profit\s+margin|unit\s+economics|arr|mrr|ltv|cac)\b/i.test(trimmed);
-  if (isPricing) {
-    return {
-      type: 'delegate', agentKey: 'cfo',
-      task: `User request: ${trimmed}\n\nProvide financial strategy and pricing recommendations as requested. Be specific with numbers, models, and rationale.`,
-    };
-  }
-
-  // Competitor research → competitor_watcher
-  const isCompetitor = /\b(competitor|competition|alternative(s)?|vs\.?\s+\w+|compare\s+(to|with)|market\s+landscape|who\s+(else|are\s+the\s+competitors?)|competitive\s+analysis)\b/i.test(trimmed);
-  if (isCompetitor) {
-    return {
-      type: 'delegate', agentKey: 'competitor_watcher',
-      task: `User request: ${trimmed}\n\nResearch and analyse the competitive landscape as requested.`,
-    };
-  }
+  // ── NO KEYWORD ROUTING. THE BOSS PICKS. ─────────────────────────────────────────────────────
+  //
+  // Six rules used to sit here, each matching a regex and forcing an agent: "marketing
+  // strategy" → researcher, "pricing" → cfo, "competitor" → competitor_watcher, and so on.
+  // They were wrong in both directions.
+  //
+  // They MISSED. "should we focus on marketing?", "give me a plan for marketing", "we need
+  // more people to know about adris.tech", "how do i get the word out" and "what should my
+  // content strategy be" all matched nothing, because the pattern wanted the phrase
+  // "marketing strategy". People do not describe their own work in the words a regex was
+  // written for. Those requests fell through to the model with no guidance at all, which is
+  // how one marketing question reached a specialist and the next was answered by the boss.
+  //
+  // They also FIRED WRONGLY. The competitor rule matched a bare "vs" anywhere in a sentence;
+  // the pricing rule matched the word "price" in a request that was not about pricing.
+  //
+  // And when they did fire they were often pointing at the wrong desk: every marketing and
+  // GTM question went to `researcher`, in the PM department, while the marketing department
+  // sat unused.
+  //
+  // The boss now receives the whole roster — every agent, grouped by department, described by
+  // what they do — in the delegate_to_agent tool, and chooses. Matching an intent to a person
+  // is the one part of this a language model is genuinely better at than a table, and it is
+  // the only approach that treats two phrasings of the same request the same way.
+  //
+  // What is left above this point is deliberate: an approved work order is an instruction, not
+  // a guess; a greeting needs no model call; a named artifact must not be inflated into a
+  // strategy document. None of those choose an agent from the words in a sentence.
 
   return null;
 }
@@ -10468,7 +10442,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     // bossPostfix comes AFTER buildKrewSystemPrompt so it is the absolute last instruction Gemini reads —
     // it overrides the "respond normally in clear markdown" final-answer rule that would otherwise let the boss answer directly.
     const bossPostfix = agent.key === 'boss'
-      ? '\n\n## BOSS OVERRIDE — HIGHEST PRIORITY — THIS OVERRIDES EVERYTHING ABOVE\nYou have tools: delegate_to_agent, plan_workflow, browser_open, AND browser_navigate. For CLEAR tasks: output a <tool_call> immediately. For VAGUE engineering/creative tasks: ask 2-3 focused questions first, then delegate.\n\nWHEN TO USE EACH:\n- Single agent needed → delegate_to_agent\n- Task needs 2-4 specialists → plan_workflow (list ALL agents at once — faster, no back-and-forth)\n- Do NOT call researcher unless the task genuinely requires current facts/research\n\nPLAN FIRST FOR COMPOUND TASKS (CRITICAL): If the request has MORE THAN ONE distinct deliverable — e.g. "add companies to the list AND draft messages", "find leads AND write emails", "research X AND build Y", "make a site AND launch it" — do NOT try to do it in one delegation (that is what goes empty or garbles). ALWAYS use plan_workflow with an ORDERED pipeline, one agent per step, and pass each step\'s output to the next with {{prev}}. Example for "add 15 tech companies to the list and draft outreach": plan_workflow([{agent_key:"research_agent", task:"Find 15 NEW Bangalore tech companies that need adris.tech (dedupe against the attached list), verify them, return the table"}, {agent_key:"cold_outreach", task:"Using this list {{prev}}, write a LinkedIn DM and an email per sector as ```email fences"}]). Each step is small and reliable; the pipeline is the workflow you plan first.\n\nBROWSER RULE — CRITICAL:\n• To SHOW a website to the user (they want to see/visit it) → call browser_open directly with the URL. The user is logged in to all their accounts in Chrome.\n• To READ content from a website (notifications, feed, articles, inbox, etc.) → call browser_navigate directly with the URL. It returns the page text. First use of private sites (LinkedIn, Gmail) may need a one-time login in the browser window that opens.\n• NEVER delegate browser tasks. NEVER suggest "connect in Connect Apps" for browsing. Example: "check my LinkedIn notifications" → browser_navigate("https://www.linkedin.com/notifications/").\n• PROFILE URL RULE: When user says "my LinkedIn / my Twitter / my GitHub" — NEVER search Google to find them. Many people share the same name. Always check memories first for a saved URL (keys: linkedin_url, founder_profile, twitter_url, etc.). If not in memory, ask the user for their exact URL, then navigate to it and save it to memory.\n\nWRITE-IT-YOURSELF EXCEPTION (IMPORTANT): If the task is to WRITE, EXPLAIN, ADVISE, ANALYSE, DRAFT, SUMMARISE, or STRATEGISE using knowledge you already have — a strategy, a guide, a plan, an essay, a proposal, an analysis, talking points, an outline — then just WRITE the full answer yourself as plain text. Do NOT delegate and do NOT plan_workflow for these, EVEN when the request has several sections/areas (e.g. "cover these 4 areas", "give me options A/B/C"). Multiple sections in a writing task is NOT a "compound task" — it is one write-up. Only delegate/plan when the task genuinely needs real TOOLS: live research/browsing, lead-gen, code execution, sending/posting, file/document generation. When in doubt on a pure knowledge/writing request, answer it directly and completely.\n\nGREETING EXCEPTION: If the user\'s entire message is ONLY a greeting (hi / hello / hey) with no task, respond with ONE friendly sentence — no tool_call.\n\nCLARIFICATION EXCEPTION: For vague engineering/coding/creative tasks missing key details (e.g. "build me a website", "write some code", "create a banner"), ask 2-3 focused questions as plain text. Delegate ONLY after the user provides the details.\n\nLOOK IT UP BEFORE YOU ASK — OVERRIDES THE CLARIFICATION EXCEPTION: never ask the user for something already sitting in their own calendar, inbox, connections or files. "I have a meeting with someone tomorrow, research them properly" is NOT a vague task: call read_my_calendar, take the name from the event title, then research_person on that name, and come back with the briefing. Asking "what is the full name of the person?" when the calendar says "Amogh x Keshav intro call" is the single most annoying thing you can do — they came to you so they would not have to look it up. Same for "what is on today" (read_my_calendar), "reply to my messages" (read the inbox), "message my connections" (read the saved connections). Ask only for what genuinely cannot be looked up — their intent, their preference, a decision only they can make — and even then, do the lookup FIRST and ask alongside real progress, never instead of it.'
+      ? '\n\n## BOSS OVERRIDE — HIGHEST PRIORITY — THIS OVERRIDES EVERYTHING ABOVE\nYou have tools: delegate_to_agent, plan_workflow, browser_open, AND browser_navigate. For CLEAR tasks: output a <tool_call> immediately. For VAGUE engineering/creative tasks: ask 2-3 focused questions first, then delegate.\n\nWHEN TO USE EACH:\n- Single agent needed → delegate_to_agent\n- Task needs 2-4 specialists → plan_workflow (list ALL agents at once — faster, no back-and-forth)\n- Do NOT call researcher unless the task genuinely requires current facts/research\n\nPLAN FIRST FOR COMPOUND TASKS (CRITICAL): If the request has MORE THAN ONE distinct deliverable — e.g. "add companies to the list AND draft messages", "find leads AND write emails", "research X AND build Y", "make a site AND launch it" — do NOT try to do it in one delegation (that is what goes empty or garbles). ALWAYS use plan_workflow with an ORDERED pipeline, one agent per step, and pass each step\'s output to the next with {{prev}}. Example for "add 15 tech companies to the list and draft outreach": plan_workflow([{agent_key:"research_agent", task:"Find 15 NEW Bangalore tech companies that need adris.tech (dedupe against the attached list), verify them, return the table"}, {agent_key:"cold_outreach", task:"Using this list {{prev}}, write a LinkedIn DM and an email per sector as ```email fences"}]). Each step is small and reliable; the pipeline is the workflow you plan first.\n\nBROWSER RULE — CRITICAL:\n• To SHOW a website to the user (they want to see/visit it) → call browser_open directly with the URL. The user is logged in to all their accounts in Chrome.\n• To READ content from a website (notifications, feed, articles, inbox, etc.) → call browser_navigate directly with the URL. It returns the page text. First use of private sites (LinkedIn, Gmail) may need a one-time login in the browser window that opens.\n• NEVER delegate browser tasks. NEVER suggest "connect in Connect Apps" for browsing. Example: "check my LinkedIn notifications" → browser_navigate("https://www.linkedin.com/notifications/").\n• PROFILE URL RULE: When user says "my LinkedIn / my Twitter / my GitHub" — NEVER search Google to find them. Many people share the same name. Always check memories first for a saved URL (keys: linkedin_url, founder_profile, twitter_url, etc.). If not in memory, ask the user for their exact URL, then navigate to it and save it to memory.\n\nWHO OWNS THIS WORK (IMPORTANT): You run an office of specialists. Before answering a request yourself, ask whether one of them owns it — the roster is in delegate_to_agent, with every agent and what they do. If somebody owns it, DELEGATE to that one person, whatever words the user used to describe it: content strategy and calendars are Meera\'s, posts and captions are Zara\'s and Remy\'s, articles are Ira\'s, ads are Vikram\'s, SEO is Sid\'s, pricing and unit economics are Arya\'s, competitors are Anika\'s, contracts are Raj\'s and Nora\'s. "What should I focus on in my content?" and "give me a content plan" are the same job and both belong to Meera, not to you.\n\nONE JOB, ONE PERSON. Several sections is still one piece of work: a strategy covering four areas, or options A/B/C, goes to ONE specialist who writes the whole thing. Do NOT use plan_workflow to split a single write-up across agents — that is what produces a stitched-together document nobody asked for. plan_workflow is for genuinely different jobs in sequence (research THEN write, find leads THEN draft outreach).\n\nANSWER IT YOURSELF when no specialist owns it: a direct question about their own business or something they told you, a decision, an explanation, a comparison, a summary of work already done, or anything conversational. Also answer yourself when delegating would be slower than useful — a one-line factual answer does not need a specialist. If you are genuinely unsure whether someone owns it, delegate: an expert answer from the right desk beats a competent one from yours.\n\nGREETING EXCEPTION: If the user\'s entire message is ONLY a greeting (hi / hello / hey) with no task, respond with ONE friendly sentence — no tool_call.\n\nCLARIFICATION EXCEPTION: For vague engineering/coding/creative tasks missing key details (e.g. "build me a website", "write some code", "create a banner"), ask 2-3 focused questions as plain text. Delegate ONLY after the user provides the details.\n\nLOOK IT UP BEFORE YOU ASK — OVERRIDES THE CLARIFICATION EXCEPTION: never ask the user for something already sitting in their own calendar, inbox, connections or files. "I have a meeting with someone tomorrow, research them properly" is NOT a vague task: call read_my_calendar, take the name from the event title, then research_person on that name, and come back with the briefing. Asking "what is the full name of the person?" when the calendar says "Amogh x Keshav intro call" is the single most annoying thing you can do — they came to you so they would not have to look it up. Same for "what is on today" (read_my_calendar), "reply to my messages" (read the inbox), "message my connections" (read the saved connections). Ask only for what genuinely cannot be looked up — their intent, their preference, a decision only they can make — and even then, do the lookup FIRST and ask alongside real progress, never instead of it.'
       : '';
     // Inject connected services so every agent knows what's available and can recommend missing ones
     const connectedList = Object.keys(creds);

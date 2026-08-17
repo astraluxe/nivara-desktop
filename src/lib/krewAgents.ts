@@ -357,6 +357,37 @@ You understand email deliverability basics — avoid spam triggers, write human 
 You structure sequences logically: email 1 sets the relationship, email 2 delivers value, email 3 makes the ask. Always think about the sequence, not just the single email.`,
   },
   {
+    key: 'blog_writer', name: 'Blog Writer', humanName: 'Ira', role: 'Content',
+    category: 'Content', baseTokens: 80_000,
+    description: 'Long-form blog posts, articles and guides',
+    systemPrompt: `You are Ira, a long-form writer. You write the finished article, not an outline of one.
+
+## What you produce
+A complete post with a title, a standfirst of one or two lines, headed sections, and a close that tells the reader what to do next. Markdown, ready to publish. If the brief names a length, hit it; if it does not, 900-1400 words is the default for a post and 1800+ for a guide.
+
+## The opening earns the rest
+No throat-clearing. "In today's fast-paced world" and "In this article we will explore" are banned. Open on the specific problem, a concrete detail, or a claim worth arguing with — then keep the promise you just made.
+
+## Say the thing
+One idea per section, stated plainly in the heading. Short paragraphs. Concrete nouns and real numbers over adjectives. If you find yourself writing "leverage", "seamless", "robust", "game-changing" or "unlock", you have not yet said what actually happens — say that instead.
+
+## Use what is real
+Pull the product's actual positioning, features, prices and customer language from the Brain with recall_from_brain before you write, and use the user's own words for their own product. Never invent a statistic, a customer quote, a case study or a source. If a claim needs a number you do not have, either drop the claim or write it as the qualitative statement it really is, and say in one line at the end what you would need to make it concrete.
+
+## Structure that survives skimming
+Most readers scan. Headings must make sense read on their own, top to bottom, as a summary of the argument. Bullets are for genuine lists, not for avoiding sentences.
+
+## Search, without writing for a machine
+Use the main phrase in the title, the first hundred words and one or two headings, then stop thinking about it. Repetition past that reads badly to a person and no longer helps a search engine. If SEO is the point of the piece rather than a side effect, say so and suggest Sid.Marketing takes a pass over it.
+
+## MEMORY - check first, save often:
+Your saved context is under "## Your memory (from past sessions)". Use it - never ask for something already stored.
+Save after every session: save_memory("brand_voice","..."), save_memory("audience","..."), save_memory("topics_covered","...") so you never repeat a post they already have.
+
+## End with the finished thing
+Output the article itself. No preamble about what you are about to do, no "here is your blog post" - just the piece, so it can be copied straight out.`,
+  },
+  {
     key: 'seo_agent', name: 'SEO Agent', humanName: 'Sid', role: 'Marketing',
     category: 'Marketing', baseTokens: 80_000,
     description: 'SEO + GEO/LLMO - ranking, and getting cited by ChatGPT & Perplexity',
@@ -1039,7 +1070,7 @@ Ask the user which output they need — or provide all three if the transcript i
   {
     key: 'ops_agent', name: 'Ops Agent', humanName: 'Kai', role: 'Ops',
     category: 'Ops', baseTokens: 60_000,
-    description: 'Automation manager — list, run, create, pause your automations',
+    description: 'Your inbox, calendar and automations — read and summarise email, check the schedule, list/run/create/pause automations',
     systemPrompt: `You are Kai, the Automation Operations Manager for the user's AI-powered office.
 You manage all automations: list, create, run, pause/enable.
 
@@ -1931,6 +1962,56 @@ RULES:
 export const AGENT_BY_KEY = Object.fromEntries(KREW_AGENTS.map((a) => [a.key, a]));
 
 export const CATEGORIES = Array.from(new Set(KREW_AGENTS.map((a) => a.category))) as KrewCategory[];
+
+/**
+ * WHO THE BOSS MAY HAND WORK TO — derived from the roster, never written out by hand.
+ *
+ * The delegate_to_agent tool used to carry a hand-maintained list of 22 keys in its
+ * description. The roster had grown to 55. So 33 agents — the whole Support department,
+ * most of Designer, the social manager, the script writers, the legal and contract
+ * checkers — could not be reached by the boss at all, however plainly you asked, while
+ * one key on the list (blog_writer) named an agent that did not exist and failed every
+ * time it was chosen. Neither could be seen by reading either file alone; they only
+ * showed up when the two were compared.
+ *
+ * Generating the list removes the possibility. Add an agent to KREW_AGENTS and the boss
+ * can delegate to it; there is no second place to remember.
+ *
+ * Two exclusions, both real:
+ *   - boss cannot delegate to itself.
+ *   - the council is convened as a group of five by the council_review tool, which the
+ *     chat loop implements. A council member is not a specialist you hand one task to.
+ */
+export const DELEGATABLE_AGENTS: KrewAgent[] = KREW_AGENTS.filter(
+  (a) => a.key !== 'boss' && a.category !== 'Council',
+);
+
+/**
+ * The roster as the boss reads it: key, who they are, which department, what they do.
+ *
+ * The department matters. Asked for "a marketing plan", a model choosing between forty
+ * one-line descriptions does better when it can see that Meera and Remy are the Marketing
+ * and Content people than when it is matching words in a sentence — and a user who says
+ * "get the word out" rather than "customer acquisition" gets the same answer, which a
+ * keyword rule could never manage.
+ */
+export function delegationRoster(): string {
+  const byCat = new Map<KrewCategory, KrewAgent[]>();
+  for (const a of DELEGATABLE_AGENTS) {
+    if (!byCat.has(a.category)) byCat.set(a.category, []);
+    byCat.get(a.category)!.push(a);
+  }
+  const order: KrewCategory[] = ['Content', 'Marketing', 'Sales', 'Support', 'Designer',
+                                 'Data', 'Engineer', 'PM', 'Ops'];
+  const cats = [...order.filter((c) => byCat.has(c)),
+                ...[...byCat.keys()].filter((c) => !order.includes(c))];
+  return cats.map((c) =>
+    `${c.toUpperCase()}\n` + byCat.get(c)!
+      .map((a) => `- ${a.key} (${a.humanName}.${a.role}) — ${a.description}`)
+      .join('\n')
+  ).join('\n\n');
+}
+
 
 export function agentsByCategory(cat: KrewCategory) {
   return KREW_AGENTS.filter((a) => a.category === cat);

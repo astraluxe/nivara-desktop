@@ -1,12 +1,13 @@
 {
   "name": "nivara-desktop",
   "private": true,
-  "version": "1.40.0",
+  "version": "1.41.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "check:colours": "node scripts/check-dept-colours.mjs",
-    "build": "node scripts/check-dept-colours.mjs && tsc && vite build",
+    "check:roster": "node scripts/check-agent-roster.mjs",
+    "build": "node scripts/check-dept-colours.mjs && node scripts/check-agent-roster.mjs && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "bundle-exo": "node scripts/bundle-exo.js",
