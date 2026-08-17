@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { krewDb, type KrewSession } from '../../lib/krewDb';
-import { AGENT_BY_KEY, CATEGORY_COLOR } from '../../lib/krewAgents';
+import { AGENT_BY_KEY, deptColor, deptTint } from '../../lib/krewAgents';
 
 interface Props {
   activeId: string | null;
@@ -204,7 +204,8 @@ export default function ConversationList({ activeId, onSelect, onNew, onOpenApps
                   {(() => {
                     const ag = AGENT_BY_KEY[s.agent_key];
                     return ag ? (
-                      <span className={`text-[8.5px] px-1.5 py-[1px] rounded-full font-medium tracking-wide ${CATEGORY_COLOR[ag.category]}`}>
+                      <span className="text-[8.5px] px-1.5 py-[1px] rounded-full font-medium tracking-wide"
+                            style={{ background: deptTint(ag.category, 0.18), color: deptColor(ag.category) }}>
                         {ag.humanName}
                       </span>
                     ) : null;

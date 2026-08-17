@@ -1,4 +1,4 @@
-import { KREW_AGENTS, CATEGORIES, CATEGORY_COLOR, agentHandle, agentInitials, type KrewAgent, type KrewCategory } from '../../lib/krewAgents';
+import { KREW_AGENTS, CATEGORIES, deptStyle, agentHandle, agentInitials, type KrewAgent, type KrewCategory } from '../../lib/krewAgents';
 
 interface Props {
   onSelect: (agent: KrewAgent) => void;
@@ -7,7 +7,7 @@ interface Props {
 
 function CategorySection({ cat, onSelect }: { cat: KrewCategory; onSelect: (a: KrewAgent) => void }) {
   const agents = KREW_AGENTS.filter((a) => a.category === cat);
-  const colorCls = CATEGORY_COLOR[cat];
+  const dept = deptStyle(cat);
 
   return (
     <div className="mb-5">
@@ -21,7 +21,8 @@ function CategorySection({ cat, onSelect }: { cat: KrewCategory; onSelect: (a: K
               bg-nv-surface hover:border-accent/60 hover:bg-nv-surface2 transition-fast text-left group"
           >
             {/* Avatar */}
-            <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-[11px] font-bold shrink-0 ${colorCls}`}>
+            <div className="w-8 h-8 rounded-lg flex items-center justify-center text-[11px] font-bold shrink-0"
+                 style={{ background: dept.chip, color: dept.color }}>
               {agentInitials(agent)}
             </div>
             <div className="flex-1 min-w-0">

@@ -11,7 +11,7 @@ import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOL
 import { TaskProgress, type TaskPhase } from './TaskProgress';
 import { StatusGlobe } from './StatusGlobe';
 import { runParallelResearch } from '../../lib/researchSources';
-import { agentHandle, agentInitials, CATEGORY_COLOR, AGENT_BY_KEY, KREW_AGENTS, type KrewAgent } from '../../lib/krewAgents';
+import { agentHandle, agentInitials, deptColor, deptTint, deptStyle, AGENT_BY_KEY, KREW_AGENTS, type KrewAgent } from '../../lib/krewAgents';
 import { rescuePrintedCalls, normaliseToolCall, findToolCallJson } from '../../lib/toolCallRescue';
 import { planFromWorkOrder, saveTargetFromOrder, type Delegation } from '../../lib/workOrder';
 import { routeTask } from '../../lib/taskRouting';
@@ -125,7 +125,7 @@ const SLASH_COMMANDS: SlashCmd[] = [
   { cmd: 'skills',   label: 'Learned skills',    desc: 'See what Krew has learned to do on its own',      run: 'nav', value: 'brain' },
   { cmd: 'repair-table', label: 'Repair a broken table', desc: 'Fix a Brain note whose table rows ran together onto one line', run: 'prompt', value: 'Repair the table in <file name>' },
   // ── The office: your plan, your advisers, the free tools on the web ──────
-  { cmd: 'council',  label: 'Ask the council',   desc: 'Five advisers argue it out — contrarian, first principles, expansionist, outsider, executor', run: 'council', value: '' },
+  { cmd: 'council',  label: 'Ask the council',   desc: 'Bring them any decision — a plan, a price, a project. Five advisers argue it out using your Brain', run: 'council', value: '' },
   { cmd: 'plan',     label: 'Open my plan',      desc: 'The month day by day — or ask for one if you have none yet', run: 'plan', value: '' },
   { cmd: 'newplan',  label: 'Build a new plan',  desc: 'Have an agent write a day-by-day plan you can work through', run: 'prompt', value: 'Write me a day-by-day action plan I can actually work through. Ask me anything you need about my business, my goal and how much time I have each day before you write it. Lay it out as "Day 1: …", "Day 2: …" with one concrete action per day and how I know it is finished.' },
   { cmd: 'handover', label: 'Hand a task to the team', desc: 'Open a task\'s work order — edit it, then the agents run it', run: 'plan', value: '' },
@@ -364,13 +364,13 @@ function CouncilCostNotice({ hasOwnKey, onRun, onCancel }: {
   const [debate, setDebate] = useState(true);
   const calls = debate ? 9 : 5;
   return (
-    <div className="mx-1 my-1.5 rounded-xl border overflow-hidden" style={{ borderColor: '#e8a33d50', background: '#e8a33d0a' }}>
+    <div className="mx-1 my-1.5 rounded-xl border overflow-hidden" style={{ borderColor: deptTint('Council', 0.314), background: deptTint('Council', 0.039) }}>
       <div className="px-3.5 py-2.5">
         <div className="flex items-center gap-1.5">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#e8a33d" strokeWidth="1.8" strokeLinecap="round">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={deptColor('Council')} strokeWidth="1.8" strokeLinecap="round">
             <circle cx="12" cy="5" r="2" /><circle cx="5" cy="9" r="2" /><circle cx="19" cy="9" r="2" /><circle cx="7.5" cy="19" r="2" /><circle cx="16.5" cy="19" r="2" />
           </svg>
-          <span className="text-[12px] font-semibold" style={{ color: '#e8a33d' }}>The council is expensive to run</span>
+          <span className="text-[12px] font-semibold" style={{ color: deptColor('Council') }}>The council is expensive to run</span>
         </div>
         <p className="text-[11px] text-nv-muted leading-relaxed mt-1.5">
           Five advisers each write a full answer, and in a debate they also read and answer each other before
@@ -391,9 +391,9 @@ function CouncilCostNotice({ hasOwnKey, onRun, onCancel }: {
               key={label}
               onClick={() => setDebate(val)}
               className="w-full text-left px-2.5 py-1.5 rounded-lg border transition-fast"
-              style={{ borderColor: debate === val ? '#e8a33d80' : 'var(--nv-border)', background: debate === val ? '#e8a33d14' : 'transparent' }}
+              style={{ borderColor: debate === val ? deptTint('Council', 0.502) : 'var(--nv-border)', background: debate === val ? deptTint('Council', 0.078) : 'transparent' }}
             >
-              <span className="text-[11px] font-medium" style={{ color: debate === val ? '#e8a33d' : undefined }}>
+              <span className="text-[11px] font-medium" style={{ color: debate === val ? deptColor('Council') : undefined }}>
                 {debate === val ? '● ' : '○ '}{label}
               </span>
               <span className="block text-[10px] text-nv-faint leading-snug mt-0.5 pl-3.5">{blurb}</span>
@@ -406,13 +406,13 @@ function CouncilCostNotice({ hasOwnKey, onRun, onCancel }: {
             <button
               onClick={() => onRun(debate, true)}
               className="text-[10.5px] font-medium px-2.5 py-1 rounded-lg text-white transition-fast"
-              style={{ background: '#e8a33d' }}
+              style={{ background: deptColor('Council') }}
             >Run it on my own key</button>
           )}
           <button
             onClick={() => onRun(debate, false)}
             className="text-[10.5px] font-medium px-2.5 py-1 rounded-lg border transition-fast"
-            style={{ borderColor: '#e8a33d66', color: '#e8a33d' }}
+            style={{ borderColor: deptTint('Council', 0.4), color: deptColor('Council') }}
           >{hasOwnKey ? 'Use adris.tech anyway' : 'Run it on adris.tech'}</button>
           <button
             onClick={onCancel}
@@ -1131,12 +1131,44 @@ function renderMarkdown(text: string): React.ReactNode {
       continue;
     }
     if (line.match(/^\s*\d+\.\s+/)) {
+      // NUMBERED LISTS KEEP THE NUMBERS THEY WERE WRITTEN WITH.
+      //
+      // A 50-question set numbered 1-50 came out as "1." fifty times over. Two separate
+      // faults, both here:
+      //
+      //   1. <ol> always restarts at 1 unless given `start`. Any list that did not begin
+      //      at 1 — "Section B" starting at 16 — was silently renumbered from 1.
+      //   2. The loop below only continued while the NEXT line was itself numbered. A
+      //      question whose options sat on an indented line under it ("    A) …") ended
+      //      the list after a single item, so every question became its own one-item list
+      //      — and every one of those, by fault 1, printed "1.".
+      //
+      // Both are fixed by reading the real number off the first item and passing it to
+      // `start`, and by absorbing indented continuation lines into the item they belong
+      // to instead of breaking the list. A wrapped line is part of the question, not the
+      // end of the list.
+      const startAt = parseInt(line.match(/^\s*(\d+)\./)![1], 10);
       const items: React.ReactNode[] = [];
       while (i < lines.length && lines[i].match(/^\s*\d+\.\s+/)) {
-        items.push(<li key={i} className="mb-0.5">{renderInline(lines[i].replace(/^\s*\d+\.\s+/, ''))}</li>);
+        const parts = [lines[i].replace(/^\s*\d+\.\s+/, '')];
         i++;
+        // Continuation: indented, not itself a list item, not blank. Anything else ends
+        // the item — and a blank line ends the whole list, as it always did.
+        while (
+          i < lines.length &&
+          lines[i].trim() &&
+          /^\s{2,}/.test(lines[i]) &&
+          !/^\s*\d+\.\s+/.test(lines[i]) &&
+          !/^\s*[-*]\s+/.test(lines[i])
+        ) {
+          parts.push(lines[i].trim());
+          i++;
+        }
+        items.push(<li key={i} className="mb-0.5">{renderInline(parts.join(' '))}</li>);
       }
-      els.push(<ol key={`ol-${i}`} className="list-decimal list-outside ml-4 my-1">{items}</ol>);
+      els.push(
+        <ol key={`ol-${i}`} start={startAt} className="list-decimal list-outside ml-4 my-1">{items}</ol>
+      );
       continue;
     }
     if (!line.trim()) { if (els.length && i < lines.length - 1) els.push(<div key={i} className="h-1.5" />); i++; continue; }
@@ -1318,6 +1350,22 @@ function classifyBossMessage(text: string): FastBossResult | null {
 
 function DelegationBubble({ agentKey, content, streaming }: { agentKey: string; content: string; streaming?: boolean }) {
   const agent = AGENT_BY_KEY[agentKey];
+  // EVERY AGENT NOW ANSWERS IN ITS OWN BOX, IN ITS DEPARTMENT'S COLOUR.
+  //
+  // This was a bare left rule in the accent colour, identical for all thirty-odd agents:
+  // scrolling back through a long conversation, there was nothing to tell you at a glance
+  // who had said what, and a delegated answer looked much like the boss's own. The council
+  // card already solved this — a tinted, bordered box per voice — and it is the piece of
+  // this UI that reads best, so the same treatment is used here with the department's
+  // colour instead of the council's gold.
+  //
+  // No agent identity is stored on a message beyond the key that was always saved, and the
+  // colour comes from a CSS variable resolved at paint time, so EVERY OLD CONVERSATION gets
+  // this the next time it is opened. Nothing is migrated and nothing needs to be.
+  //
+  // An unknown key (an agent removed since the chat was saved) falls back to Boss purple
+  // rather than to grey: a colourless box among coloured ones reads as broken.
+  const d = deptStyle(agent?.category);
   return (
     <div className="my-3">
       {/* "called by boss" label */}
@@ -1327,26 +1375,38 @@ function DelegationBubble({ agentKey, content, streaming }: { agentKey: string; 
           <path d="M2 5h6M5 2l3 3-3 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
         </svg>
       </div>
-      <div className="flex items-center gap-2 mb-2">
-        <div className={`w-7 h-7 rounded-md flex items-center justify-center text-[10px] font-bold shrink-0 ${agent ? CATEGORY_COLOR[agent.category] : 'bg-accent/20 text-accent'}`}>
-          {agent ? agentInitials(agent) : agentKey.slice(0, 2).toUpperCase()}
-        </div>
-        <div className="flex flex-col">
-          <div className="flex items-center gap-1.5">
-            <span className="text-[13px] font-semibold text-nv-text leading-tight">
-              {agent ? agentHandle(agent) : agentKey}
-            </span>
-            {streaming && (
-              <span className="text-[9px] font-mono text-accent animate-pulse">working…</span>
+      <div className="rounded-xl border overflow-hidden" style={{ borderColor: d.border, background: d.tint }}>
+        <div className="flex items-center gap-2 px-3 pt-2.5 pb-1.5">
+          <div className="w-7 h-7 rounded-md flex items-center justify-center text-[10px] font-bold shrink-0"
+               style={{ background: d.chip, color: d.color }}>
+            {agent ? agentInitials(agent) : agentKey.slice(0, 2).toUpperCase()}
+          </div>
+          <div className="flex flex-col min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[13px] font-semibold text-nv-text leading-tight truncate">
+                {agent ? agentHandle(agent) : agentKey}
+              </span>
+              {/* The department, named. The colour alone cannot be read by someone who does
+                  not already know the palette — and colour is never the only carrier of
+                  meaning for anyone who cannot distinguish these hues. */}
+              {agent && (
+                <span className="text-[9px] font-mono px-1.5 py-[1px] rounded-full shrink-0"
+                      style={{ background: d.chip, color: d.color }}>
+                  {agent.category}
+                </span>
+              )}
+              {streaming && (
+                <span className="text-[9px] font-mono animate-pulse shrink-0" style={{ color: d.color }}>working…</span>
+              )}
+            </div>
+            {agent?.description && (
+              <span className="text-[10px] text-nv-faint leading-tight truncate">{agent.description}</span>
             )}
           </div>
-          {agent?.description && (
-            <span className="text-[10px] text-nv-faint leading-tight">{agent.description}</span>
-          )}
         </div>
-      </div>
-      <div className="ml-9 pl-3 border-l-2 border-accent/40">
-        <AssistantBubble content={content} streaming={streaming} />
+        <div className="px-3 pb-2 -mt-1">
+          <AssistantBubble content={content} streaming={streaming} />
+        </div>
       </div>
     </div>
   );
@@ -3297,10 +3357,13 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
   }
 
   return (
-    // Assistant prose reads like a well-set article: serif, a touch larger, generous line-height,
-    // and FULL-contrast text (was text-nv-muted grey — the "light text" the user flagged). Code
-    // blocks and tables set their own font/size below, so they stay crisp and monospace/sans.
-    <div className="font-serif text-[13.5px] leading-[1.72] text-nv-text my-2 group">
+    // SANS, NOT SERIF. This was set in Source Serif to read like a well-typeset article, and
+    // for an essay it did — but the great majority of what this chat returns is not an essay. It
+    // is numbered questions, tables, option lists, short factual answers and code, sitting inside
+    // an app whose every other surface is Space Grotesk. The serif made the chat look like a
+    // different application, and it set figures and single-line answers noticeably worse.
+    // Size and line-height are unchanged, so nothing reflows; only the family moves.
+    <div className="font-sans text-[13.5px] leading-[1.72] text-nv-text my-2 group">
       {parts.map((part, i) => {
         if (part.startsWith('```')) {
           const m    = part.match(/^```(\w*)\n?([\s\S]*?)```$/);
@@ -3757,7 +3820,8 @@ function MessageRow({ msg, agent }: { msg: DisplayMsg; agent: KrewAgent }) {
   return (
     <div className="my-3">
       <div className="flex items-center gap-2 mb-1.5">
-        <div className={`w-6 h-6 rounded-md flex items-center justify-center text-[9px] font-bold shrink-0 ${CATEGORY_COLOR[agent.category]}`}>
+        <div className="w-6 h-6 rounded-md flex items-center justify-center text-[9px] font-bold shrink-0"
+             style={{ background: deptTint(agent.category, 0.18), color: deptColor(agent.category) }}>
           {agentInitials(agent)}
         </div>
         <span className="text-[11px] font-semibold text-nv-text">{agentHandle(agent)}</span>
@@ -9614,14 +9678,38 @@ _${plan.advice}_` : ''}`;
       return;
     }
     if (c.run === 'verifylinks') { setInput(''); verifyOutreachLinks(); return; }
-    // THE COUNCIL, from the composer. With a plan running the question is the plan — the same
-    // thing the Plan panel's button asks — because that is what people actually want reviewed. With
-    // no plan there is nothing to review, so the phrasing is dropped in for the user to finish and
-    // send(), which routes "ask the council: …" straight to them without a model deciding anything.
+    // THE COUNCIL WILL ARGUE ABOUT ANYTHING YOU BRING THEM.
+    //
+    // This used to check for a plan and, if it found one, immediately convene the council to
+    // review that plan — so once you had a plan, /council could not be pointed at anything
+    // else. Five advisers who can only ever discuss your calendar are a fraction of what they
+    // are for: the decision worth taking to them is usually "should I build this", "is this
+    // price wrong", "which of these two customers is the real business".
+    //
+    // So the command now asks what you want reviewed instead of assuming. The phrasing is
+    // dropped into the composer for you to finish; the boss routes it to the council from
+    // there, and they answer with the full briefing — who you are, what you sell, your saved
+    // lists and notes from the Brain, the roster, and anything you have corrected them on
+    // before — so "look at the project I'm working on" already has something to look at.
+    //
+    // Plan review is not lost: it is one click in the Plan panel, where the plan actually is,
+    // and it is offered below whenever a plan exists.
     if (c.run === 'council') {
       setInput('');
       const plan = loadPlan();
-      if (plan) { askCouncilAboutPlan(plan); return; }
+      const examples = [
+        '**Ask the council anything you would take to five sharp advisers.** They see your Brain — your saved lists, notes and campaigns — plus what you sell and who is on your roster, so you can point them at real work rather than describing it first.',
+        '',
+        'For example:',
+        '- *Look at what I am working on and tell me what I am getting wrong.*',
+        '- *Is this price too low for what it does?*',
+        '- *Should I build this next, or finish what is half-built?*',
+        '- *Read my outreach list and tell me if I am chasing the wrong people.*',
+        plan
+          ? `\nYou also have a plan running — **${plan.title}**. To have them review that specifically, use the **Ask the council** button in the Plan panel, or just say *review my plan*.`
+          : '',
+      ].filter(Boolean).join('\n');
+      addMsgHere({ role: 'assistant', content: examples });
       setInput('Ask the council: ');
       setTimeout(() => { const el = inputRef.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0);
       return;
@@ -13625,7 +13713,8 @@ ${wfTask}`);
           onClick={onBrowseAgents}
           title={onBrowseAgents ? 'Click to switch agent' : undefined}
         >
-          <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-bold shrink-0 ${CATEGORY_COLOR[agent.category]}`}>
+          <div className="w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-bold shrink-0"
+               style={{ background: deptTint(agent.category, 0.18), color: deptColor(agent.category) }}>
             {agentInitials(agent)}
           </div>
           <div className="flex-1 min-w-0">
@@ -13946,7 +14035,8 @@ ${wfTask}`);
         >
           {messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full gap-3 select-none">
-              <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-[14px] font-bold ${CATEGORY_COLOR[agent.category]}`}>
+              <div className="w-12 h-12 rounded-xl flex items-center justify-center text-[14px] font-bold"
+                   style={{ background: deptTint(agent.category, 0.18), color: deptColor(agent.category) }}>
                 {agentInitials(agent)}
               </div>
               <div className="text-center">
@@ -14057,10 +14147,10 @@ ${wfTask}`);
                    the thing worth reading, and it disappears the moment they are merged. */
                 <div key={i} className="mx-1 my-1.5 space-y-1.5">
                   <div className="flex items-center gap-1.5 px-1">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#e8a33d" strokeWidth="1.8" strokeLinecap="round" className={msg.councilLive ? 'animate-pulse' : ''}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={deptColor('Council')} strokeWidth="1.8" strokeLinecap="round" className={msg.councilLive ? 'animate-pulse' : ''}>
                       <circle cx="12" cy="5" r="2" /><circle cx="5" cy="9" r="2" /><circle cx="19" cy="9" r="2" /><circle cx="7.5" cy="19" r="2" /><circle cx="16.5" cy="19" r="2" />
                     </svg>
-                    <span className="text-[11px] font-semibold" style={{ color: '#e8a33d' }}>
+                    <span className="text-[11px] font-semibold" style={{ color: deptColor('Council') }}>
                       {msg.councilFollowUp ? 'The council answers you' : 'Your council'}
                       {' · '}
                       {msg.councilLive
@@ -14073,24 +14163,24 @@ ${wfTask}`);
                       for minutes — a hang and a slow model looked identical, and the user was
                       paying either way. */}
                   {msg.councilStage && (
-                    <p className="px-1 text-[9.5px] flex items-center gap-1.5" style={{ color: '#e8a33d' }}>
+                    <p className="px-1 text-[9.5px] flex items-center gap-1.5" style={{ color: deptColor('Council') }}>
                       {msg.councilLive && (
-                        <span className="w-1.5 h-1.5 rounded-full animate-pulse shrink-0" style={{ background: '#e8a33d' }} />
+                        <span className="w-1.5 h-1.5 rounded-full animate-pulse shrink-0" style={{ background: deptColor('Council') }} />
                       )}
                       {msg.councilStage}
                     </p>
                   )}
                   {msg.council.map((v) => (
-                    <details key={v.key} open={v.status !== 'waiting'} className="rounded-xl border overflow-hidden" style={{ borderColor: '#e8a33d40', background: '#e8a33d0a', opacity: v.status === 'waiting' ? 0.5 : 1 }}>
+                    <details key={v.key} open={v.status !== 'waiting'} className="rounded-xl border overflow-hidden" style={{ borderColor: deptTint('Council', 0.251), background: deptTint('Council', 0.039), opacity: v.status === 'waiting' ? 0.5 : 1 }}>
                       <summary className="cursor-pointer select-none px-3 py-2 flex items-center gap-2">
-                        <span className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0" style={{ background: '#e8a33d25', color: '#e8a33d' }}>
+                        <span className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0" style={{ background: deptTint('Council', 0.145), color: deptColor('Council') }}>
                           {v.human.slice(0, 2).toUpperCase()}
                         </span>
                         <span className="text-[11.5px] font-semibold text-nv-text">{v.name}</span>
                         <span className="text-[10px] text-nv-faint">{v.human}</span>
                         {v.status === 'thinking' && (
-                          <span className="text-[9.5px] flex items-center gap-1" style={{ color: '#e8a33d' }}>
-                            <span className="w-1 h-1 rounded-full animate-pulse" style={{ background: '#e8a33d' }} />
+                          <span className="text-[9.5px] flex items-center gap-1" style={{ color: deptColor('Council') }}>
+                            <span className="w-1 h-1 rounded-full animate-pulse" style={{ background: deptColor('Council') }} />
                             writing…
                           </span>
                         )}
@@ -14124,7 +14214,7 @@ ${wfTask}`);
                                   setTimeout(() => inputRef.current?.focus(), 0);
                                 }}
                                 className="mt-1 text-[10px] px-2 py-0.5 rounded-md border transition-fast"
-                                style={{ borderColor: '#e8a33d66', color: '#e8a33d' }}
+                                style={{ borderColor: deptTint('Council', 0.4), color: deptColor('Council') }}
                               >Ask {v.human} again</button>
                             </div>
                           )}
@@ -14132,8 +14222,8 @@ ${wfTask}`);
                           apart from the opening view, because a concession is a different kind of
                           statement from an opening argument and reads wrong merged into it. */}
                       {v.reply && (
-                        <div className="mx-3 mb-2.5 px-2.5 py-1.5 rounded-lg border-l-2" style={{ borderColor: '#e8a33d80', background: '#e8a33d0d' }}>
-                          <div className="text-[9.5px] font-semibold mb-0.5" style={{ color: '#e8a33d' }}>After hearing the others</div>
+                        <div className="mx-3 mb-2.5 px-2.5 py-1.5 rounded-lg border-l-2" style={{ borderColor: deptTint('Council', 0.502), background: deptTint('Council', 0.051) }}>
+                          <div className="text-[9.5px] font-semibold mb-0.5" style={{ color: deptColor('Council') }}>After hearing the others</div>
                           <div className="text-[11px] leading-relaxed text-nv-muted">{renderMarkdown(v.reply)}</div>
                         </div>
                       )}
@@ -14188,7 +14278,7 @@ ${dev.text}`;
                             }
                           }}
                           className="text-[10px] font-medium px-2.5 py-1 rounded-lg border transition-fast"
-                          style={{ borderColor: '#e8a33d66', color: '#e8a33d' }}
+                          style={{ borderColor: deptTint('Council', 0.4), color: deptColor('Council') }}
                         >＋ Add the Executor's steps to my plan</button>
                       );
                     })()}
@@ -14203,7 +14293,7 @@ ${dev.text}`;
                       <button
                         onClick={() => { setCouncilTalk({ question: msg.content }); inputRef.current?.focus(); }}
                         className="text-[10px] font-medium px-2.5 py-1 rounded-lg border transition-fast"
-                        style={{ borderColor: '#e8a33d66', color: '#e8a33d' }}
+                        style={{ borderColor: deptTint('Council', 0.4), color: deptColor('Council') }}
                       >↩ Reply to the council</button>
                     )}
                   </div>
@@ -14534,11 +14624,11 @@ ${msg.content}`),
               the user cannot see is a trap; this one names itself, says how to talk to one member
               cheaply, and leaves on one click. */}
           {councilTalk && (
-            <div className="flex items-center gap-2 mb-2 px-2.5 py-1.5 rounded-lg border" style={{ borderColor: '#e8a33d55', background: '#e8a33d12' }}>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#e8a33d" strokeWidth="1.8" strokeLinecap="round" className="shrink-0">
+            <div className="flex items-center gap-2 mb-2 px-2.5 py-1.5 rounded-lg border" style={{ borderColor: deptTint('Council', 0.333), background: deptTint('Council', 0.071) }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={deptColor('Council')} strokeWidth="1.8" strokeLinecap="round" className="shrink-0">
                 <circle cx="12" cy="5" r="2" /><circle cx="5" cy="9" r="2" /><circle cx="19" cy="9" r="2" /><circle cx="7.5" cy="19" r="2" /><circle cx="16.5" cy="19" r="2" />
               </svg>
-              <span className="text-[11px] flex-1 min-w-0 truncate" style={{ color: '#e8a33d' }}>
+              <span className="text-[11px] flex-1 min-w-0 truncate" style={{ color: deptColor('Council') }}>
                 Talking to your council
                 <span className="text-nv-faint"> · correct them, push back, or ask one of them by name</span>
                 {/* WHAT THEY REMEMBER, WHERE YOU CAN SEE IT. A correction silently shapes every

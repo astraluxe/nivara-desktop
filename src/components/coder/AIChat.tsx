@@ -156,6 +156,10 @@ function renderMarkdown(
     const lines = seg.split('\n');
     let bullets:  string[] = [];
     let numbered: string[] = [];
+    // The number the list was WRITTEN with. <ol> restarts at 1 unless told otherwise, so a
+    // section numbered from 16 was silently renumbered from 1 — see the note in KrewChat's
+    // renderMarkdown, which had the same fault and where it was first found.
+    let numberedStart = 1;
 
     const flushBullets = () => {
       if (!bullets.length) return;
@@ -171,13 +175,14 @@ function renderMarkdown(
     const flushNumbered = () => {
       if (!numbered.length) return;
       nodes.push(
-        <ol key={key++} className="list-decimal pl-4 mb-1.5 space-y-0.5">
+        <ol key={key++} start={numberedStart} className="list-decimal pl-4 mb-1.5 space-y-0.5">
           {numbered.map((n, i) => (
             <li key={i} className="text-nv-muted text-[12px] leading-relaxed">{renderInline(n)}</li>
           ))}
         </ol>
       );
       numbered = [];
+      numberedStart = 1;
     };
 
     for (const line of lines) {
@@ -193,8 +198,13 @@ function renderMarkdown(
       }
       const bm = line.match(/^[*\-+]\s+(.*)/);
       if (bm) { flushNumbered(); bullets.push(bm[1]); continue; }
-      const nm = line.match(/^\d+[.)]\s+(.*)/);
-      if (nm) { flushBullets(); numbered.push(nm[1]); continue; }
+      const nm = line.match(/^(\d+)[.)]\s+(.*)/);
+      if (nm) {
+        flushBullets();
+        if (!numbered.length) numberedStart = parseInt(nm[1], 10);   // first item sets the offset
+        numbered.push(nm[2]);
+        continue;
+      }
       const qm = line.match(/^>\s*(.*)/);
       if (qm) {
         flushBullets(); flushNumbered();

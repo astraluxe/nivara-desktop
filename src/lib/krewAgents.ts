@@ -15,19 +15,54 @@ export type KrewCategory =
   | 'Ops'
   | 'Council';
 
-export const CATEGORY_COLOR: Record<KrewCategory, string> = {
-  Boss:      'bg-accent/20 text-accent',
-  Content:   'bg-orange-500/20 text-orange-400',
-  Marketing: 'bg-blue-500/20 text-blue-400',
-  Sales:     'bg-green-500/20 text-green-400',
-  Support:   'bg-teal-500/20 text-teal-400',
-  Designer:  'bg-pink-500/20 text-pink-400',
-  Data:      'bg-yellow-500/20 text-yellow-400',
-  Engineer:  'bg-cyan-500/20 text-cyan-400',
-  PM:        'bg-indigo-500/20 text-indigo-400',
-  Ops:       'bg-violet-500/20 text-violet-400',
-  Council:   'bg-amber-500/20 text-amber-400',
+/** The CSS variable holding each department's colour, as space-separated RGB channels.
+ *
+ *  WHY A VARIABLE AND NOT A HEX. These colours differ per theme — one value cannot be
+ *  readable on both #0a0a0a and #ffffff — and the theme is a class on <html>, so CSS is
+ *  the only place that knows which is active. Returning a var() means a department's
+ *  colour follows the theme with no React state, no listener and no re-render, and it is
+ *  correct the instant a message paints. That is also what makes this work on OLD chats:
+ *  nothing is stored with a message, so every conversation ever saved picks up the new
+ *  palette the next time it is drawn.
+ *
+ *  The palette itself, and why it was replaced, is documented in index.css. */
+export const DEPT_VAR: Record<KrewCategory, string> = {
+  Boss:      '--nv-dept-boss',
+  Content:   '--nv-dept-content',
+  Marketing: '--nv-dept-marketing',
+  Sales:     '--nv-dept-sales',
+  Support:   '--nv-dept-support',
+  Designer:  '--nv-dept-designer',
+  Data:      '--nv-dept-data',
+  Engineer:  '--nv-dept-engineer',
+  PM:        '--nv-dept-pm',
+  Ops:       '--nv-dept-ops',
+  Council:   '--nv-dept-council',
 };
+
+/** Solid department colour, e.g. for text or a border. */
+export function deptColor(cat?: KrewCategory | null): string {
+  return `rgb(var(${DEPT_VAR[cat ?? 'Boss'] ?? DEPT_VAR.Boss}))`;
+}
+
+/** Department colour at an alpha — for a tinted box, a rule, a chip.
+ *  Anything without a department (a plain boss reply, an unknown agent key) falls back
+ *  to Boss, which is the product's own purple, rather than to a neutral grey: an
+ *  uncoloured box among coloured ones reads as broken. */
+export function deptTint(cat: KrewCategory | null | undefined, alpha: number): string {
+  return `rgb(var(${DEPT_VAR[cat ?? 'Boss'] ?? DEPT_VAR.Boss}) / ${alpha})`;
+}
+
+/** Everything needed to paint one agent's box, in one call. */
+export function deptStyle(cat?: KrewCategory | null) {
+  return {
+    color:  deptColor(cat),
+    border: deptTint(cat, 0.32),
+    tint:   deptTint(cat, 0.07),
+    chip:   deptTint(cat, 0.18),
+    rule:   deptTint(cat, 0.5),
+  };
+}
 
 export interface KrewAgent {
   key:          string;          // role_key from the spec

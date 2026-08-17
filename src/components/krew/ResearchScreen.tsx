@@ -130,10 +130,13 @@ function renderMarkdown(text: string): React.ReactNode[] {
   const out: React.ReactNode[] = [];
   let i = 0;
 
-  const listBlock = (ordered: boolean, items: ListItem[], key: number) => {
+  const listBlock = (ordered: boolean, items: ListItem[], key: number, start = 1) => {
     const Tag = ordered ? 'ol' : 'ul';
     return (
-      <Tag key={key} className={`${ordered ? 'list-decimal' : 'list-disc'} pl-5 my-2 space-y-1`}>
+      // start is only meaningful on <ol>; React drops it on <ul> anyway, and passing 1
+      // changes nothing. Without it a list written from 16 renumbered itself from 1.
+      <Tag key={key} start={ordered ? start : undefined}
+           className={`${ordered ? 'list-decimal' : 'list-disc'} pl-5 my-2 space-y-1`}>
         {items.map((it, n) => (
           <li key={n} className="nv-prose" style={it.depth > 0 ? { marginLeft: it.depth * 16 } : undefined}>
             {renderInline(it.text)}
@@ -217,7 +220,9 @@ function renderMarkdown(text: string): React.ReactNode[] {
           i++;                                   // blank line inside the list
         } else break;
       }
-      out.push(listBlock(isOrdered, items, i));
+      // The number this run was written with, so a list starting at 16 prints from 16.
+      const firstNum = isOrdered ? parseInt(line.match(/^\s*(\d+)/)?.[1] ?? '1', 10) : 1;
+      out.push(listBlock(isOrdered, items, i, firstNum));
       continue;
     }
 

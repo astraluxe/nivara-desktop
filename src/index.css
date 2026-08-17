@@ -34,6 +34,42 @@
   --nv-red:      239 68 68;   /* space-separated for Tailwind opacity */
   --scrollbar:   #333333;
   --scrollbar-h: #555555;
+
+  /* ── Department colours ─────────────────────────────────────────────────────
+     One palette, used by the office floor plan, the agent grid, the conversation
+     list and every agent's message box, so a department is the same colour
+     everywhere it appears.
+
+     WHY THESE VALUES. The previous eleven were picked by eye and six pairs were
+     too close to tell apart: Support #15b8c4 and Engineer #10b0c9 measured 8.5
+     apart in CIE Lab, which is the same colour to a reader; Boss, PM and Ops were
+     three purples. These are >= 41 apart on dark and >= 31 on light, chosen by
+     farthest-point selection over the sRGB gamut rather than by eye. Signal red
+     (Lab hue 18-42) is excluded so no department permanently looks like an error.
+
+     Boss is the website accent #7C5CFF and is fixed: Arjun.Boss belongs to no
+     department, so he wears the product's own colour.
+
+     Each department has a DIFFERENT value per theme, same hue. One colour cannot
+     be readable on both #0a0a0a and #ffffff -- five of the old eleven fell below
+     3:1 on the light theme, which would leave an agent's name unreadable inside
+     its own box. Identity is carried by hue, which never changes; only lightness
+     flips. Written as space-separated channels so they can take an alpha through
+     rgb(var(--x) / .12) -- see the note at the top of this file about why a raw
+     var() with a slash is dropped silently.
+     Verified by scripts/check-dept-colours.mjs, which fails the build if any two
+     drift back together. */
+  --nv-dept-boss:      124 92 255;
+  --nv-dept-content:   230 82 35;
+  --nv-dept-marketing: 0 142 245;
+  --nv-dept-sales:     142 205 51;
+  --nv-dept-support:   0 159 111;
+  --nv-dept-designer:  248 42 114;
+  --nv-dept-data:      255 165 134;
+  --nv-dept-engineer:  0 204 244;
+  --nv-dept-pm:        255 157 210;
+  --nv-dept-ops:       210 75 200;
+  --nv-dept-council:   241 176 16;
 }
 
 /* ── Paper (light) theme ─────────────────────────── */
@@ -56,6 +92,19 @@
   --nv-red:      220 38 38;
   --scrollbar:   #d4d4d8;
   --scrollbar-h: #a1a1aa;
+
+  /* Department colours — same hues, darkened so they read on white. */
+  --nv-dept-boss:      61 44 183;
+  --nv-dept-content:   137 31 0;
+  --nv-dept-marketing: 0 79 141;
+  --nv-dept-sales:     82 133 0;
+  --nv-dept-support:   0 89 60;
+  --nv-dept-designer:  144 0 60;
+  --nv-dept-data:      221 61 7;
+  --nv-dept-engineer:  0 131 157;
+  --nv-dept-pm:        226 0 159;
+  --nv-dept-ops:       131 0 125;
+  --nv-dept-council:   156 112 0;
 }
 
 /* The plain --nv-x vars every hand-written CSS rule and inline style already uses, derived from the

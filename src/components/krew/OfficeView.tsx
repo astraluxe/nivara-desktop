@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
-  KREW_AGENTS, CATEGORIES, agentHandle, agentInitials,
+  KREW_AGENTS, CATEGORIES, agentHandle, agentInitials, deptColor, deptTint,
   type KrewAgent, type KrewCategory,
 } from '../../lib/krewAgents';
 import { executeAutomation, type AutomationRow } from '../../lib/automationRunner';
@@ -20,21 +20,36 @@ const R_IN    = 285;
 const TAU     = Math.PI * 2;
 
 // ─── Per-department metadata ──────────────────────────────────────────────────
+// COLOURS COME FROM THE SHARED TABLE, NOT FROM HERE.
+//
+// These eleven hexes used to live in this file alone, which is how the office and the
+// chat ended up able to disagree about what colour a department is. Six pairs were also
+// too close to tell apart — Support #15b8c4 against Engineer #10b0c9 measured 8.5 in CIE
+// Lab, which is the same colour — and five were unreadable on the light theme. The
+// replacements, and the measurements, are documented in index.css.
+//
+// deptColor/deptTint return CSS variables, so these follow the theme with no work here.
 const DEPT_META: Record<KrewCategory, { color: string; tagline: string; icon: string }> = {
-  Boss:      { color: '#7C5CFF', tagline: 'Strategy & routing',   icon: 'zap' },
-  Content:   { color: '#f5853f', tagline: 'Writing & captions',   icon: 'pen' },
-  Marketing: { color: '#3f8cf5', tagline: 'Ads, email & SEO',     icon: 'megaphone' },
-  Sales:     { color: '#2bb673', tagline: 'Outreach & proposals', icon: 'trending' },
-  Support:   { color: '#15b8c4', tagline: 'DMs & replies',        icon: 'chat' },
-  Designer:  { color: '#e15ba8', tagline: 'Visuals & prompts',    icon: 'palette' },
-  Data:      { color: '#e0a317', tagline: 'Analysis & reports',   icon: 'bars' },
-  Engineer:  { color: '#10b0c9', tagline: 'Code & debugging',     icon: 'code' },
-  PM:        { color: '#6c63f5', tagline: 'Research & planning',  icon: 'clipboard' },
-  Ops:       { color: '#9b6cf5', tagline: 'Automation control',   icon: 'zap' },
-  // The council is not a department that DOES work — it is the one you take a decision to. Amber
-  // rather than another cool colour, so it reads as a different kind of thing on the floor plan.
-  Council:   { color: '#e8a33d', tagline: 'Five ways to be wrong', icon: 'council' },
+  Boss:      { color: deptColor('Boss'),      tagline: 'Strategy & routing',   icon: 'zap' },
+  Content:   { color: deptColor('Content'),   tagline: 'Writing & captions',   icon: 'pen' },
+  Marketing: { color: deptColor('Marketing'), tagline: 'Ads, email & SEO',     icon: 'megaphone' },
+  Sales:     { color: deptColor('Sales'),     tagline: 'Outreach & proposals', icon: 'trending' },
+  Support:   { color: deptColor('Support'),   tagline: 'DMs & replies',        icon: 'chat' },
+  Designer:  { color: deptColor('Designer'),  tagline: 'Visuals & prompts',    icon: 'palette' },
+  Data:      { color: deptColor('Data'),      tagline: 'Analysis & reports',   icon: 'bars' },
+  Engineer:  { color: deptColor('Engineer'),  tagline: 'Code & debugging',     icon: 'code' },
+  PM:        { color: deptColor('PM'),        tagline: 'Research & planning',  icon: 'clipboard' },
+  Ops:       { color: deptColor('Ops'),       tagline: 'Automation control',   icon: 'zap' },
+  // The council is not a department that DOES work — it is the one you take a decision to.
+  Council:   { color: deptColor('Council'),   tagline: 'Five ways to be wrong', icon: 'council' },
 };
+
+/** Department colour at an alpha, for a node that only knows its category.
+ *  Everything below used to build these by gluing a hex suffix onto the colour string
+ *  (`${color}33`), which cannot work now that the colour is a var() — and would have
+ *  produced invalid CSS that browsers drop in silence, leaving backgrounds simply
+ *  missing rather than visibly wrong. */
+const deptAlpha = (cat: KrewCategory, a: number) => deptTint(cat, a);
 
 // ─── SVG icon paths ───────────────────────────────────────────────────────────
 const ICON_PATHS: Record<string, string> = {
@@ -192,11 +207,11 @@ function AgentBox({ la, active, dim, onDuty, working, onEnter, onLeave, onClick 
           background: 'var(--nv-surface)',
           border: `1.5px solid ${working || active || onDuty ? la.color : 'var(--nv-border)'}`,
           boxShadow: working
-            ? `0 0 0 4px ${la.color}33, 0 8px 24px ${la.color}55`
+            ? `0 0 0 4px ${deptAlpha(la.dept, 0.2)}, 0 8px 24px ${deptAlpha(la.dept, 0.33)}`
             : active
-              ? `0 6px 20px ${la.color}44`
+              ? `0 6px 20px ${deptAlpha(la.dept, 0.27)}`
               : onDuty
-                ? `0 0 0 3px ${la.color}22, 0 3px 10px rgba(0,0,0,.18)`
+                ? `0 0 0 3px ${deptAlpha(la.dept, 0.13)}, 0 3px 10px rgba(0,0,0,.18)`
                 : '0 3px 10px rgba(0,0,0,.18)',
           transform: working || active ? 'scale(1.1)' : 'scale(1)',
         }}>
@@ -208,9 +223,9 @@ function AgentBox({ la, active, dim, onDuty, working, onEnter, onLeave, onClick 
             picture of the org and the Plan was a list of jobs, and nothing joined them: you could
             not look at the room and see who was on the hook today. */}
         {working ? (
-          <span className="text-[9px] font-mono px-1 rounded" style={{ background: `${la.color}33`, color: la.color }}>working</span>
+          <span className="text-[9px] font-mono px-1 rounded" style={{ background: deptAlpha(la.dept, 0.2), color: la.color }}>working</span>
         ) : onDuty ? (
-          <span className="text-[9px] font-mono px-1 rounded" style={{ background: `${la.color}22`, color: la.color }}>today</span>
+          <span className="text-[9px] font-mono px-1 rounded" style={{ background: deptAlpha(la.dept, 0.13), color: la.color }}>today</span>
         ) : null}
       </span>
     </button>
@@ -294,7 +309,7 @@ function SidePanel({ dept, focusHandle, onClose, onSelectAgent }: {
               <div className="flex items-center gap-3">
                 <div
                   className="rounded-xl flex items-center justify-center shrink-0"
-                  style={{ width: 42, height: 42, background: `${meta.color}20`, color: meta.color }}>
+                  style={{ width: 42, height: 42, background: deptAlpha(dept!, 0.12), color: meta.color }}>
                   <SvgIcon name={meta.icon} size={20} />
                 </div>
                 <div>
@@ -322,12 +337,12 @@ function SidePanel({ dept, focusHandle, onClose, onSelectAgent }: {
                     onClick={() => onSelectAgent(a)}
                     className="w-full flex items-start gap-3 p-3 rounded-xl text-left transition-fast"
                     style={{
-                      background: hot ? `${meta.color}18` : 'transparent',
+                      background: hot ? deptAlpha(dept!, 0.09) : 'transparent',
                       boxShadow: hot ? `inset 0 0 0 1.5px ${meta.color}` : 'none',
                     }}>
                     <div
                       className="rounded-lg flex items-center justify-center font-bold text-[11px] shrink-0 mt-0.5"
-                      style={{ width: 32, height: 32, background: `${meta.color}20`, color: meta.color }}>
+                      style={{ width: 32, height: 32, background: deptAlpha(dept!, 0.12), color: meta.color }}>
                       {agentInitials(a)}
                     </div>
                     <div className="min-w-0">
