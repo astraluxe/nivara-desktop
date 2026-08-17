@@ -42,7 +42,27 @@ function cleanBody(text: string): string {
     .trim();
 }
 function looksLikeHtml(text: string): boolean {
-  return /<(table|p|h[1-6]|ul|ol|li|strong|em|div|br|a)\b/i.test(text);
+  const t = String(text || '');
+
+  // MARKDOWN STRUCTURE WINS, whatever inline tags are sprinkled through it.
+  //
+  // This used to return true for ANY of <table|p|h1..6|ul|ol|li|strong|em|div|br|a>, and
+  // `br` is the one agents use most: a table row is a single line, so <br> is the only way
+  // to write a multi-line cell, and inlineHtml below exists precisely to support that. The
+  // result was that one <br> in one cell of a 5,000-word document declared the whole thing
+  // HTML — so it went to cleanBody instead of mdToHtml and every pipe, heading and
+  // separator rendered as literal characters. The note was stored perfectly; only the
+  // choice of renderer was wrong, which is why /repair-table found nothing to fix.
+  const lines = t.split('\n');
+  const mdTableRows = lines.filter((l) => l.trim().startsWith('|') && (l.match(/\|/g) || []).length >= 2).length;
+  const mdHeadings  = lines.filter((l) => /^#{1,6}\s+\S/.test(l.trim())).length;
+  const mdBullets   = lines.filter((l) => /^\s*[-*]\s+\S/.test(l)).length;
+  const mdFences    = lines.filter((l) => /^```/.test(l.trim())).length;
+  if (mdTableRows >= 2 || mdHeadings >= 1 || mdFences >= 2 || mdBullets >= 3) return false;
+
+  // Only BLOCK-level markup means "this came from the editor as HTML". Inline tags — br,
+  // strong, em, a — appear inside markdown all the time and prove nothing either way.
+  return /<(table|thead|tbody|tr|td|th|p|h[1-6]|ul|ol|li|div|blockquote|pre)\b/i.test(t);
 }
 function escHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
