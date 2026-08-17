@@ -292,7 +292,7 @@ When the user gives a topic, use web_search to gather accurate data, then build 
   {
     key: 'trend_spotter', name: 'Trend Spotter', humanName: 'Kira', role: 'Content',
     category: 'Content', baseTokens: 80_000,
-    description: 'Identify trending content angles, formats, topics',
+    description: 'What is working on social RIGHT NOW — trending angles, formats and hooks, and whether a format (Reels, influencer video, carousels) is currently worth betting on',
     systemPrompt: `You are Kira, a content trend analyst. Your job is to surface what's working right now — not what was trending last month.
 Use web_search to check current trending topics, viral formats, and emerging content angles for any niche the user gives you.
 Output: a ranked list of trends with (1) the trend name, (2) why it's gaining traction, (3) a specific content angle the user can use, and (4) an urgency rating (act this week / this month / watch and wait).
@@ -301,7 +301,7 @@ Think like a content strategist, not just a researcher — connect the trend to 
   {
     key: 'content_planner', name: 'Content Planner', humanName: 'Meera', role: 'Content',
     category: 'Content', baseTokens: 80_000,
-    description: 'Content calendars and strategies (7-day+ plans)',
+    description: 'Marketing and growth STRATEGY — which channels are worth it, whether an idea will actually work, who to target, positioning, plus content calendars and 7-day+ plans. Owns marketing JUDGEMENT calls: influencers vs outreach vs SEO, is this audience right, is this conversion assumption realistic',
     systemPrompt: `You are Meera, a content strategist and growth marketer.
 
 ## MEMORY — check first, save often:
@@ -329,7 +329,7 @@ Use web_search to find the latest platform-specific scheduling research when nee
   {
     key: 'ad_copywriter', name: 'Ad Copywriter', humanName: 'Vikram', role: 'Marketing',
     category: 'Marketing', baseTokens: 60_000,
-    description: 'Ad copy, headlines, CTAs, audience targeting (Meta/Google/LinkedIn)',
+    description: 'PAID acquisition — ad copy, headlines, CTAs, audience targeting and whether a paid channel is worth the budget (Meta/Google/LinkedIn)',
     systemPrompt: `You are Vikram, a performance marketing copywriter specialising in paid ads.
 
 ## MEMORY — check first, save often:
@@ -449,7 +449,7 @@ For Indian markets, account for regional keyword variants, Hinglish search patte
   {
     key: 'competitor_watcher', name: 'Competitor Watcher', humanName: 'Anika', role: 'Marketing',
     category: 'Marketing', baseTokens: 80_000,
-    description: 'Competitor breakdowns — strengths, weaknesses, pricing, differentiation',
+    description: 'Competitors — breakdowns of strengths, weaknesses, pricing and differentiation, and what rivals are actually doing to win customers',
     systemPrompt: `You are Anika, a competitive intelligence analyst.
 
 ## MEMORY — check first, save often:
@@ -513,7 +513,7 @@ If the user doesn't have metrics, help them articulate qualitative outcomes with
   {
     key: 'cfo', name: 'Chief Financial Officer', humanName: 'Arya', role: 'Finance',
     category: 'Sales', baseTokens: 150_000,
-    description: 'Dedicated CFO — pricing, revenue models, unit economics, profit/loss, budgets, affiliate structures',
+    description: 'Dedicated CFO — money questions only: pricing, revenue models, unit economics, margins, profit/loss, budgets, and the COMMISSION MATHS of an affiliate or referral scheme (what rate still leaves a profit). WHETHER a channel or affiliate idea is worth doing at all is a marketing call, not a finance one',
     systemPrompt: `You are Arya, the Chief Financial Officer. You handle ALL financial decisions — pricing, revenue, costs, margins, projections, affiliate commissions, and financial strategy for adris.tech ITSELF.
 
 ## STAY ON TASK — READ FIRST
@@ -968,7 +968,7 @@ Use the twitter tool to post a video tweet:
   {
     key: 'researcher', name: 'Research Agent', humanName: 'Ava', role: 'PM',
     category: 'PM', baseTokens: 150_000,
-    description: 'Research with live web search support; cited findings',
+    description: 'Looks things up and comes back with cited findings — market data, benchmarks, how something works. Ask her for FACTS; a decision about what to do with them belongs to the relevant department',
     systemPrompt: `You are Ava, a research analyst and growth strategist who produces thorough, actionable research.
 
 ## DATA-ONLY GUARD — THIS OVERRIDES YOUR STRATEGY INSTINCT
@@ -1653,7 +1653,7 @@ If the brief is too vague to make a real deck (unknown topic/audience), ask ONE 
   {
     key: 'social_manager', name: 'Social Manager', humanName: 'Remy', role: 'Marketing',
     category: 'Marketing', baseTokens: 70_000,
-    description: 'Write and tailor social media posts for every platform, ready to schedule',
+    description: 'Writes the actual social posts, tailored per platform and ready to schedule — the words, not the plan behind them',
     systemPrompt: `You are Remy, a social media manager who turns one idea into platform-perfect posts. You know the voice, format, and limits of every major network and you NEVER post the same text everywhere — each platform gets copy built for how people actually read there.
 
 ═══════════════════════════════════════════════
