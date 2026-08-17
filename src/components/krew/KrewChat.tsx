@@ -13,6 +13,7 @@ import { StatusGlobe } from './StatusGlobe';
 import { runParallelResearch } from '../../lib/researchSources';
 import { agentHandle, agentInitials, deptColor, deptTint, deptStyle, AGENT_BY_KEY, KREW_AGENTS, type KrewAgent } from '../../lib/krewAgents';
 import { rescuePrintedCalls, normaliseToolCall, findToolCallJson } from '../../lib/toolCallRescue';
+import { repairToolJson, extractToolFields } from '../../lib/toolJson';
 import { planFromWorkOrder, saveTargetFromOrder, type Delegation } from '../../lib/workOrder';
 import { routeTask } from '../../lib/taskRouting';
 import { useAuth } from '../../contexts/AuthContext';
@@ -3849,6 +3850,15 @@ const ADVANCED_DROP_TOOLS = new Set(['research_companies', 'scrape_structured', 
 //
 // Emptiness was never the right test. The test is whether what came back could possibly be the
 // thing that was asked for.
+/** The tools that genuinely put a Chrome window on screen. Anything else — a web search
+ *  that answers from the HTTP endpoint, a Brain recall, a file read — must not raise the
+ *  browser banner, or the banner goes back to being decoration. */
+const BROWSER_DRIVING_TOOLS = new Set([
+  'browser_open', 'browser_navigate', 'browser_snapshot', 'browser_get_text', 'browser_click',
+  'browser_type', 'browser_upload_file', 'linkedin_outreach', 'linkedin_scan_connections',
+  'verify_outreach_links', 'research_person',
+]);
+
 function looksUnusable(out: string, task: string): boolean {
   const t = (out || '').replace(/\s+/g, ' ').trim();
   if (!t) return true;
@@ -4295,7 +4305,7 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
     // The activity bus rides the same invariant as the step bar: it only ever describes an
     // in-flight turn. Without this the Office floor kept a desk lit and pulsing long after the
     // work finished, which is a worse lie than showing nothing.
-    if (!busy) { setAgentStep(null); setAgentTool(null); setActivity(null); }
+    if (!busy) { setAgentStep(null); setAgentTool(null); setActivity(null); setBrowserActive(false); }
   }, [busy]);
   const [agentTool,     setAgentTool]     = useState<string | null>(null);
   const [creds,         setCreds]         = useState<Record<string, Record<string, string>>>({});
@@ -11024,17 +11034,20 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
           // 3b. Extract outermost {...} block (last resort)
           const objMatch = stripped.match(/\{[\s\S]*\}/);
           if (objMatch) { try { return JSON.parse(objMatch[0]); } catch {} }
-          // 4. Fix literal newlines inside string values (model writes multi-line task)
-          const fixed = stripped.replace(/"([^"\\]*(\\.[^"\\]*)*)"/g, (m) =>
-            m.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')
-          );
-          try { return JSON.parse(fixed); } catch {}
-          // 5. Regex field extraction — last resort when JSON is structurally broken
-          const tool      = stripped.match(/"tool"\s*:\s*"([^"]+)"/)?.[1];
-          const agentKey  = stripped.match(/"agent_key"\s*:\s*"([^"]+)"/)?.[1];
-          const taskMatch = stripped.match(/"task"\s*:\s*"([\s\S]+?)"\s*[,}]/);
-          const task      = taskMatch?.[1]?.replace(/\\n/g, '\n');
-          if (tool) return { tool, ...(agentKey ? { agent_key: agentKey } : {}), ...(task ? { task } : {}) };
+          // 4. REPAIR the JSON — literal newlines and unescaped quotes inside string values.
+          //    Both are what a model produces when a value is a document, and both used to be
+          //    handled by a regex that only reached the first of them.
+          const repaired = repairToolJson(stripped);
+          if (repaired) { try { return JSON.parse(repaired); } catch {} }
+          // 5. Last resort: every top-level field, not three known names.
+          //
+          //    This used to recover `tool`, `agent_key` and `task` only. A save_to_brain
+          //    carrying a long document — precisely the call most likely to break the JSON —
+          //    therefore arrived with NO title and NO body, and the Brain quietly stored the
+          //    fallback prose under that name instead. Whole pieces of work were replaced by
+          //    an unrelated document that happened to be in the turn.
+          const fields = extractToolFields(stripped);
+          if (fields && fields.tool) return fields as { tool: string } & Record<string, unknown>;
           return null;
         })();
         if (!parsed) {
@@ -11062,6 +11075,14 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
           : (browserActionLabel(tool, args) ?? tool.replace(/_/g, ' '));
         setAgentStep(`${agentHandle(agent)} · ${toolLabel}…`);
         setAgentTool(tool);
+        // THE BROWSER BANNER, DRIVEN BY FACT.
+        //
+        // browserActive was declared and rendered and never set anywhere, so the banner
+        // ("Using the browser window — leave it open") could not appear at all. What the user
+        // saw on screen was the MODEL saying it was using the browser, in a run where no
+        // window ever opened. Now the flag follows the tools that actually drive Chrome, and
+        // is cleared when the turn ends — so the banner is evidence rather than narration.
+        if (BROWSER_DRIVING_TOOLS.has(tool)) setBrowserActive(true);
         // Hand the turn's real output to the tool layer, so a save_to_brain call whose body is a
         // pointer rather than the content can store what was actually written instead of a stub.
         setBrainSaveFallback(turnProseRef.current);
@@ -12245,7 +12266,17 @@ ${wfTask}`);
               toolResult = wfResults.map((r, i) => {
                 const who = wfDelegations[i]?.agent_key ?? `Step ${i + 1}`;
                 if (!r.trim()) return `[${who}] PRODUCED NOTHING — this stage returned no result at all. Nothing from it was saved.`;
-                const cap = r.length > 800 ? r.slice(0, 800) + '…' : r;
+                // WHAT THE BOSS IS ALLOWED TO SEE OF EACH STAGE.
+                //
+                // This was a flat 800 characters, which is about five rows of a markdown
+                // table. A stage that returned a 7-row count table or a 40-row lead list was
+                // therefore shown to the boss as a fragment ending in an ellipsis, and the
+                // boss — reasonably — reported that the pipeline had produced nothing usable.
+                // The budget now scales with how many stages there are, so a short pipeline
+                // passes its work through nearly intact and a long one still cannot flood the
+                // context. 12,000 characters shared out, floor of 1,500 so no stage is a stub.
+                const wfCapEach = Math.max(1_500, Math.floor(12_000 / Math.max(1, wfDelegations.length)));
+                const cap = r.length > wfCapEach ? r.slice(0, wfCapEach) + '…[truncated for length]' : r;
                 return `[${who}]\n${cap}`;
               }).join('\n\n---\n\n') + toolResultExtra
                 + `\n\n[THE PIPELINE HAS FINISHED. ${wfRan - wfEmpty} of ${wfRan} stage${wfRan === 1 ? '' : 's'} produced a result${wfEmpty ? `; ${wfEmpty} produced nothing` : ''}. `
@@ -13339,6 +13370,25 @@ ${wfTask}`);
     // though nothing was running any more. Clear it here too, so stopping LOOKS stopped.
     setTaskPhases([]);
     hideWork();
+    setBrowserActive(false);
+    // STOPPED HAS TO LOOK STOPPED, AND STAY LOOKING STOPPED.
+    //
+    // The clear above runs once, synchronously. A turn that is already mid-flight can land one
+    // more update after it — finalising a bubble, opening the next one — and a bubble that is
+    // streaming with no content yet renders the "Working on it / Reading the request" box. So
+    // the user pressed Stop, watched everything go quiet, and then watched the box come back.
+    // Re-clearing on the next tick and once more shortly after catches those stragglers; the
+    // run itself is already refusing new work via stopRef, runGenRef and requestToolStop.
+    for (const delay of [0, 300, 900]) {
+      setTimeout(() => {
+        if (!stopRef.current) return;          // a new run has started — leave it alone
+        setMessages((prev) => prev.some((m) => m.streaming)
+          ? prev.map((m) => (m.streaming ? { ...m, streaming: false } : m))
+          : prev);
+        setAgentStep(null);
+        setTaskPhases([]);
+      }, delay);
+    }
   }
 
   // ── Message helpers ───────────────────────────────────────────────────────

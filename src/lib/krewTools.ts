@@ -11,6 +11,7 @@ import { lastDeckPdfBase64 } from './deckStore';
 import { parseAvailability, saveAvailability, loadAvailability, describeAvailability, nextFreeSlots, fmtMins, to24h } from './availability';
 import { availabilityNote } from './availability';
 import { workStateNote } from './workState';
+import { repairAnswer } from './groundTruth';
 import { todayPlanNote } from './planStore';
 
 // ─── Email (MIME) helpers — used by gmail_send_email / gmail_send_bulk ─────────
@@ -43,6 +44,15 @@ export const KREW_PROFILE_KEY = '__krew_profile__';
 // variable rather than a tool argument: every caller of executeTool would otherwise have to be
 // changed to thread it through, and the value is only ever read microseconds later, in the same
 // turn, by a tool the same turn invoked.
+// DuckDuckGo rate-limits its HTML endpoint after a single request: the first search of a
+// task succeeds and the rest come back as a "bots use DuckDuckGo" challenge in a couple of
+// hundred milliseconds. Measured, four in a row: 1 ok, 3 challenged. Once that starts there
+// is no point paying for the request — it is a known-bad answer — so it is skipped for a
+// short window. Short, because the limit lifts on its own and the endpoint is the cheapest
+// path when it works.
+let ddgThrottledUntil = 0;
+const DDG_COOLDOWN_MS = 150_000;
+
 let brainSaveFallback = '';
 /** Called by the chat before running a turn's tools, with whatever the model has actually written. */
 export function setBrainSaveFallback(text: string): void {
@@ -2613,6 +2623,7 @@ async function executeToolCore(
     }
     if (body.length < 10) return `[save_to_brain needs real "body" content (got almost nothing — the call may have been cut off) — nothing was saved. Retry with the full content.]`;
     let finalTitle = title;
+    let substituted = false;   // did we store the turn's output instead of the given body?
     let finalBody = body;
     // ── A NOTE THAT POINTS AT THE CONTENT IS NOT THE CONTENT ──────────────────────────────────
     //
@@ -2625,13 +2636,27 @@ async function executeToolCore(
     // A body that refers to where the content is, instead of containing it, is always a mistake.
     // Detected here rather than trusted to prompt wording, because the model believed it had saved
     // the list — it said so.
+    // ── LAND AS A TABLE, NOT AS A WALL OF PIPES ──────────────────────────────────────────────
+    //
+    // Models routinely emit a table into a JSON string with its line breaks flattened, so the
+    // note stores `| A | B | |---|---| | 1 | 2 |` on one line and the Brain renders a
+    // paragraph. That is why /repair-table exists — the app already knew this happened and
+    // was asking the user to fix it by hand after the fact. These two only add line breaks,
+    // leading pipes and a missing separator row; neither can alter a cell's contents.
+    finalBody = repairAnswer(finalBody);
+
     if (isPlaceholderBody(finalBody)) {
       // The turn's real output is sitting right there. Save THAT under the title the user asked
       // for, rather than failing and hoping a retry does better (a retry that re-emits 30 blocks
       // costs the user the whole generation again, and may truncate a second time).
-      const real = getBrainSaveFallback();
+      const real = repairAnswer(getBrainSaveFallback());
       if (real && real.length > finalBody.length * 2 && real.length >= 400) {
+        // SAY THAT THIS HAPPENED. Substituting the turn's output for a pointer body is a
+        // guess — a good one, but a guess, and the user has no way to know it was made. A
+        // note that silently contains something other than what the agent described is how
+        // an unrelated document ends up filed under a title the user then trusts.
         finalBody = real;
+        substituted = true;
       } else {
         return `[save_to_brain refused: the "body" you passed is a pointer ("${finalBody.slice(0, 60)}…"), not the content. A Brain note must CONTAIN the material — the chat it refers to is not stored. Nothing was saved. Call it again with the full text/table/blocks in "body".]`;
       }
@@ -2675,7 +2700,16 @@ async function executeToolCore(
     const node = brain.addNode({ title: finalTitle, body: finalBody, kind });
     const ct = str(args.connect_to);
     if (ct) { const t = brain.findByTitle(ct); if (t) brain.link(t.id, node.id, 'related'); }
-    return `${append ? 'Updated' : 'Saved'} "${node.title}" in the Brain${ct ? ` and linked it to "${ct}"` : ''}. It is visible in the Brain screen and recallable by any agent.`;
+    // If the turn's output was stored in place of the body that was passed, SAY SO. The
+    // substitution is a good guess but it is still a guess, and a note that quietly holds
+    // something other than what the agent described is how the wrong document ends up filed
+    // under a title the user then trusts.
+    return `${append ? 'Updated' : 'Saved'} "${node.title}" in the Brain${ct ? ` and linked it to "${ct}"` : ''}. It is visible in the Brain screen and recallable by any agent.`
+      + (substituted
+        ? ' NOTE: the "body" you passed only pointed at the content, so what was stored is this'
+          + ' turn\'s own output instead. Check the note says what you meant, and tell the user'
+          + ' plainly that this is what was saved.'
+        : '');
   }
   if (toolName === 'extract_contacts') {
     const { brain, nodeToMarkdown } = await import('./knowledgeStore');
@@ -3546,15 +3580,28 @@ async function executeToolCore(
       } catch { /* fall through to DDG */ }
     }
 
-    // 2) Plain HTTP fetch of DuckDuckGo HTML — no browser process, so it can't be
-    //    blocked by Chrome not being ready. Most reliable + cheapest path.
-    try {
-      const fetched = await invoke<string>('fetch_page_text', { url: ddgUrl });
-      const text = cleanBrowserText(fetched);
-      if (text && text.length > 80 && !looksBlockedPage(text)) {
-        return fenceUntrusted('web search results', text.length > 5000 ? text.slice(0, 5000) + '\n…[truncated]' : text);
-      }
-    } catch { /* fall through to browser path */ }
+    // 2) Plain HTTP search — no browser process, so it cannot be blocked by Chrome not being
+    //    ready, and it answers in about a second. TWO engines, because one is not enough:
+    //    DuckDuckGo throttles after a single request, which is why the first search of a task
+    //    was instant and every one after it fell through to a 21-second browser start.
+    const httpEngines: { name: string; url: string; skip?: boolean }[] = [
+      { name: 'duckduckgo', url: ddgUrl, skip: Date.now() < ddgThrottledUntil },
+      { name: 'bing',       url: `https://www.bing.com/search?q=${q}&format=rss` },
+      { name: 'bing-html',  url: `https://www.bing.com/search?q=${q}` },
+    ];
+    for (const eng of httpEngines) {
+      if (eng.skip) continue;
+      try {
+        const fetched = await invoke<string>('fetch_page_text', { url: eng.url });
+        const text = cleanBrowserText(fetched);
+        if (text && text.length > 80 && !looksBlockedPage(text)) {
+          return fenceUntrusted('web search results', text.length > 5000 ? text.slice(0, 5000) + '\n…[truncated]' : text);
+        }
+        // A challenge from DuckDuckGo means the rest of this task's searches will be
+        // challenged too. Remember it rather than re-learning it on every single search.
+        if (eng.name === 'duckduckgo') ddgThrottledUntil = Date.now() + DDG_COOLDOWN_MS;
+      } catch { /* try the next engine, then the browser */ }
+    }
 
     // 3) GOOGLE, in the browser session — the step that actually works when the plain fetch is
     //    walled, which is now the normal case rather than the exception. DuckDuckGo serves a bot
