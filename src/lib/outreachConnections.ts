@@ -266,3 +266,39 @@ export function waitingLabel(since?: number): string {
   const weeks = Math.floor(days / 7);
   return `waiting ${weeks} weeks`;
 }
+
+// ─── "Has this contact already been written to?" ─────────────────────────────
+//
+// WHY THIS IS ITS OWN FUNCTION. A drafting run spends a fixed batch (50) on people who have no
+// message yet, and decides that with this predicate. It used to live inline in KrewChat and only
+// ever checked `linkedin_message` / `connect_note` — but a COMPANY is not messaged on LinkedIn at
+// all: its draft is written into `email_subject` / `email_body`, and its `linkedin_message` is
+// deliberately left empty.
+//
+// So for a list of companies the predicate answered "no draft" for every company it had ALREADY
+// written. Each run re-picked the same first 50, re-wrote them, and rebuilt the campaign from just
+// those 50 — so a 562-company list stayed at 50 for ever and the batch was burned re-doing work.
+// That is the bug this fixes; it is pure and exported so it can be tested without React or Tauri.
+//
+// The rule is simply: whichever text THIS contact actually needs is the one that must exist.
+//   company                        -> an email (subject or body)
+//   lead, not yet accepted         -> a connection note (LinkedIn's 300-char request)
+//   everyone else                  -> the normal LinkedIn message
+export interface DraftedLike {
+  source?: string;
+  status?: string;
+  entityKind?: 'person' | 'company';
+  linkedin_message?: string;
+  connect_note?: string;
+  email_subject?: string;
+  email_body?: string;
+}
+
+export function hasWrittenMessage(prior: DraftedLike | undefined, isCompany = false): boolean {
+  if (!prior) return false;
+  const filled = (s?: string) => !!s && !!s.trim();
+  // The row's own kind wins, but a campaign saved earlier may only carry it on the stored contact.
+  if (isCompany || prior.entityKind === 'company') return filled(prior.email_body) || filled(prior.email_subject);
+  if (prior.source === 'leads' && prior.status !== 'accepted') return filled(prior.connect_note);
+  return filled(prior.linkedin_message);
+}

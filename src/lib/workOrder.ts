@@ -472,6 +472,23 @@ export function saveTargetFromOrder(text: string): string {
   return name;
 }
 
+/**
+ * Is this text an approved WORK ORDER?
+ *
+ * A work order is an explicit, user-approved division of labour, and it must reach the pipeline
+ * builder intact — so every shortcut that runs BEFORE the boss has to recognise one and stand
+ * down. The lead-fill short-circuit could not: an order whose step 3 read "runs /verify on any
+ * LinkedIn URLs" matched its "verify … linkedin" intent, so a four-stage pipeline over a 675-row
+ * vendor sheet was silently replaced by an enrich pass over an unrelated lead list — and the user
+ * was told their Tech lead list had been filled in, which was neither what they asked for nor
+ * where the work belonged.
+ *
+ * Exported so planFromWorkOrder and every pre-boss shortcut share ONE definition and cannot drift.
+ */
+export function isWorkOrder(text: string): boolean {
+  return /^\s*WORK ORDER\b/.test(text || '');
+}
+
 export function planFromWorkOrder(
   text: string,
   routeFor: (s: string) => string[],
@@ -479,7 +496,7 @@ export function planFromWorkOrder(
   resolveHandle?: (handle: string) => string | null,
 ): Delegation[] | null {
   const t = text || '';
-  if (!/^\s*WORK ORDER\b/.test(t)) return null;
+  if (!isWorkOrder(t)) return null;
 
   // The team, in the order the panel listed them: `- "content_planner"  (Meera.Content)`
   const keys: string[] = [];

@@ -14,7 +14,7 @@ import { runParallelResearch } from '../../lib/researchSources';
 import { agentHandle, agentInitials, deptColor, deptTint, deptStyle, AGENT_BY_KEY, KREW_AGENTS, type KrewAgent } from '../../lib/krewAgents';
 import { rescuePrintedCalls, normaliseToolCall, findToolCallJson } from '../../lib/toolCallRescue';
 import { repairToolJson, extractToolFields } from '../../lib/toolJson';
-import { planFromWorkOrder, saveTargetFromOrder, type Delegation } from '../../lib/workOrder';
+import { planFromWorkOrder, saveTargetFromOrder, isWorkOrder, type Delegation } from '../../lib/workOrder';
 import { routeTask } from '../../lib/taskRouting';
 import { useAuth } from '../../contexts/AuthContext';
 import { extractTableRows, findLeadHeaderIndex, hasPopulatedLeadTable, mergeLeadTables, parseLeadRows, rowsToMarkdown, leadConnStatusToOutreach, looksLikePersonLead, matchesSeniority, matchesSector, peopleSearchPhrases } from '../../lib/leadTable';
@@ -30,7 +30,7 @@ import { type ConnectionMode, type Provider } from '../../lib/ai';
 import { isDeadModelError, isSilenceError, isUserChosen, probeTimedOut, repairDeadModel, blockModel, scanModelsIfStale, measuredMsFor } from '../../lib/modelHealth';
 import { noteActiveModel, bulkPlan } from '../../lib/contextBudget';
 import { normaliseScore, scoreValue, decisionBias, recordDecision, decisionStyleNote, workingFileNote, setWorkingFile, EFFORT_LABEL, IMPACT_LABEL } from '../../lib/agentBrain';
-import { slugLooksLikeName } from '../../lib/outreachConnections';
+import { slugLooksLikeName, hasWrittenMessage } from '../../lib/outreachConnections';
 import { auditPromises, cleanOutboundMessage, stripOngoingWorkClaims, type PromiseIssue } from '../../lib/verify';
 import ConnectionBar from '../coder/ConnectionBar';
 import { getMonthlyUsage } from '../../lib/tokenTracker';
@@ -8520,14 +8520,14 @@ _None of them had everything you ticked, so I've saved them rather than lose the
     // "Already written" means whichever text THIS person actually needs: a message for a
     // connection, a connection note for a lead. Checking only linkedin_message would re-draft every
     // lead on every run, quietly spending the batch on work already done.
-    const hasDraft = (name: string) => {
-      const p = priorByName.get(nrm(name));
-      if (!p) return false;
-      return p.source === 'leads' && p.status !== 'accepted'
-        ? !!p.connect_note?.trim()
-        : !!p.linkedin_message?.trim();
-    };
-    const needsDraft = todoAll.filter((c) => !hasDraft(c.name));
+    // A COMPANY IS NOT MESSAGED ON LINKEDIN — its draft lives in email_subject/email_body and its
+    // linkedin_message is left empty on purpose. This predicate used to read linkedin_message for
+    // everyone, so it answered "not written yet" for every company it had already written: each run
+    // re-picked the same first 50, and a 562-company list never grew past its first batch. The rule
+    // now lives in hasWrittenMessage(), pure and unit-tested.
+    const hasDraft = (c: ParsedContact) =>
+      hasWrittenMessage(priorByName.get(nrm(c.name)), c.entityKind === 'company');
+    const needsDraft = todoAll.filter((c) => !hasDraft(c));
     const alreadyDrafted = todoAll.length - needsDraft.length;
     // Profile-URL people first ("Copy & open chat" opens their chat box directly), URL-less last.
     const draftQueue = [...needsDraft].sort((a, b) => (b.url && /linkedin\.com\/in\//i.test(b.url) ? 1 : 0) - (a.url && /linkedin\.com\/in\//i.test(a.url) ? 1 : 0));
@@ -8814,7 +8814,7 @@ _None of them had everything you ticked, so I've saved them rather than lose the
           acceptedAt: priorC?.acceptedAt,
         };
         if (isDone(c.name)) {
-          built.push({ ...meta, name: c.name, company: c.headline || priorC?.company, linkedin_url: c.url || priorC?.linkedin_url, linkedin_message: priorC?.linkedin_message || '', status: st });
+          built.push({ ...meta, name: c.name, company: c.headline || priorC?.company, linkedin_url: c.url || priorC?.linkedin_url, linkedin_message: priorC?.linkedin_message || '', email_subject: priorC?.email_subject, email_body: priorC?.email_body, status: st });
           usedNames.add(k);
         } else if (pickSet.has(k) && isCompany(c)) {
           // A business: an email with a subject, and never a connection note.
@@ -8837,11 +8837,11 @@ _None of them had everything you ticked, so I've saved them rather than lose the
             status: st,
           });
           usedNames.add(k);
-        } else if (hasDraft(c.name)) {
+        } else if (hasDraft(c)) {
           // Already had a message from an earlier run and wasn't re-drafted this time — keep them
           // in the campaign with the text they already have, or they would silently vanish from
           // the copilot the moment the batch got spent on other people.
-          built.push({ ...meta, name: c.name, company: c.headline || priorC?.company, linkedin_url: c.url || priorC?.linkedin_url, linkedin_message: priorC?.linkedin_message || '', status: st });
+          built.push({ ...meta, name: c.name, company: c.headline || priorC?.company, linkedin_url: c.url || priorC?.linkedin_url, linkedin_message: priorC?.linkedin_message || '', email_subject: priorC?.email_subject, email_body: priorC?.email_body, status: st });
           usedNames.add(k);
         }
         // an undrafted to-do beyond the cap is left for a later "draft the rest" run
@@ -10433,7 +10433,15 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     // evidence of anything.
     const leadTableInHand = [...nonImageFiles.map((f) => f.content), focusedFile?.content || '']
       .some((c) => c.includes('|') && /\bname\b/i.test(c) && (/\blinkedin\b/i.test(c) || /\bcompany\b/i.test(c)));
-    if (leadSourceText && text && (leadTableInHand || refsList) && fillIntent.test(text) && !expandIntent.test(text)) {
+    // AN APPROVED WORK ORDER IS NEVER A LEAD-FILL. It is a division of labour the user already
+    // agreed to, and it belongs to the pipeline builder further down (classifyBossMessage). A real
+    // order — four stages over a 675-row vendor sheet — said in step 3 "runs /verify on any
+    // LinkedIn URLs present", which is exactly what fillIntent matches, so the whole pipeline was
+    // thrown away and replaced by an enrich pass over an unrelated lead list; the user was told
+    // their Tech lead list had been filled in and none of the four steps ever ran. Not firing here
+    // costs nothing — every agent already carries LEAD_TOOLS, so the enrich still happens if the
+    // order actually calls for it, from inside the stage that owns it.
+    if (leadSourceText && text && (leadTableInHand || refsList) && fillIntent.test(text) && !expandIntent.test(text) && !isWorkOrder(text)) {
       const handled = await runDirectLeadFill(leadSourceText, sid, verifyAll);
       if (handled) { setBusy(false); setAgentStep(null); setAgentTool(null); return; }
     }
