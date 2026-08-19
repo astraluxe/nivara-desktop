@@ -138,7 +138,46 @@ function looksLikeEditorHtml(body: string): boolean {
   return /<(table|p|h[1-6]|ul|ol|li|div)\b/i.test(body);
 }
 
+/**
+ * Un-escape a note whose own HTML has been turned into visible text.
+ *
+ * THE DAMAGE THIS UNDOES. A note body is sometimes markdown and sometimes editor HTML, and the
+ * renderer picks between them. Put an HTML body through the MARKDOWN path once and every tag is
+ * escaped for display: `<table>` becomes `&lt;table&gt;` and, because escaping runs over text that
+ * already contains entities, `&amp;` becomes `&amp;amp;`. Save that and the note now literally
+ * contains its own source code. What the user sees is a wall of `<td>` and `&amp;` — the 5,000-word
+ * strategy note that arrived unreadable.
+ *
+ * It also defeats every repair downstream: nodeToMarkdown asks looksLikeEditorHtml first, an
+ * escaped body has no real tags, so it is returned untouched and /repair-table reports "0 rows"
+ * about a note that is nothing but table markup.
+ *
+ * So the decode happens at READ time, not by rewriting anything: notes already sitting damaged in
+ * the Brain display correctly the next time they are opened, with no migration and no edit.
+ *
+ * Deliberately conservative, and it CANNOT be decided by "are there real tags too". The markdown
+ * renderer wraps what it escapes in real `<p>` tags, so a damaged body carries both: genuine
+ * wrappers around escaped markup. What separates the two cases is how MUCH escaped structure there
+ * is — prose explaining a `&lt;div&gt;` mentions one, a document whose own markup was escaped
+ * carries dozens. Three is comfortably above the first and far below the second.
+ *
+ * `&amp;amp;` is collapsed one level only, never to a bare `&`: an ampersand that was always
+ * correctly encoded must survive untouched.
+ */
+export function decodeEscapedHtml(body: string): string {
+  const t = body || '';
+  const escaped = t.match(/&lt;\s*\/?\s*(?:table|thead|tbody|tr|td|th|p|h[1-6]|ul|ol|li|div|pre|blockquote)\b/gi);
+  if (!escaped || escaped.length < 3) return t;
+  return t
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    // One level only. The body was escaped once too often, so &amp;amp; is the doubled form of
+    // &amp; — collapsing all the way to "&" would corrupt an ampersand that was always correct.
+    .replace(/&amp;(amp|lt|gt|quot|#39|nbsp);/gi, '&$1;');
+}
+
 export function nodeToMarkdown(body: string): string {
+  body = decodeEscapedHtml(body);
   if (!looksLikeEditorHtml(body)) return body.trim();
   const mdNode = (node: Node): string => {
     if (node.nodeType === 3) return node.textContent || '';

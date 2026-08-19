@@ -6892,7 +6892,16 @@ The prompt must be production-ready — specific enough for a motion designer to
         rowsRecovered ? `recovered **${rowsRecovered}** row${rowsRecovered === 1 ? '' : 's'} that had been crushed onto one line` : '',
         wasHtml ? 'converted the note back to clean markdown' : '',
       ].filter(Boolean).join(', and ');
-      const msg = `Repaired **${node.title}** — ${parts}. It now has ${dataRows - 1} data rows, each on its own line.\n\nOnly the line breaks were rebuilt: no cell text was edited, reordered or removed. Open the Brain to check it over.`;
+      // COUNT WHAT IS THERE, AND DO NOT CLAIM A TABLE THAT ISN'T. `dataRows - 1` assumed a header
+      // row was among them, so a note with no table at all reported "-1 data rows" — which is what
+      // a user saw after a repair that had in fact converted a table-less note and left it no more
+      // readable than before. A negative count is the note telling you the repair did not do what
+      // the sentence says it did, so say that instead.
+      const bodyRows = Math.max(0, dataRows - 1);
+      const tail = bodyRows > 0
+        ? ` It now has ${bodyRows} data row${bodyRows === 1 ? '' : 's'}, each on its own line.\n\nOnly the line breaks were rebuilt: no cell text was edited, reordered or removed. Open the Brain to check it over.`
+        : `\n\nNo pipe table was found in it, so there were no rows to rebuild — the note's text is unchanged apart from the formatting above. If it still reads wrongly, tell me what it should look like and I'll take another pass.`;
+      const msg = `Repaired **${node.title}** — ${parts}.${tail}`;
       addMsg({ role: 'assistant', content: msg });
       if (sid) krewDb.saveMessage(sid, 'assistant', msg).catch(() => {});
     } catch (e) {

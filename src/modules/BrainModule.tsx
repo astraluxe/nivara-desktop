@@ -1,7 +1,7 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
-import { brain, BRAIN_EVENT, BRAIN_FOCUS_EVENT, takeBrainFocus, nodeToMarkdown, type BrainNode, type BrainNodeKind, type BrainData } from '../lib/knowledgeStore';
+import { brain, BRAIN_EVENT, BRAIN_FOCUS_EVENT, takeBrainFocus, nodeToMarkdown, decodeEscapedHtml, type BrainNode, type BrainNodeKind, type BrainData } from '../lib/knowledgeStore';
 import SkillsView from '../components/brain/SkillsView';
 import { renderDeckHtml, extractDeckSpec, applyDeckEdits, type DeckSpec, type DeckPalette } from '../lib/deck';
 import { todos, type TodoItem } from '../lib/todoStore';
@@ -40,6 +40,18 @@ function cleanBody(text: string): string {
     .replace(/<\/?(?:tool_call|tool_code|res|tool_result)[^>]*>?/gi, '')
     .replace(/^\s*\{\s*"tool"\s*:[\s\S]*?\}\s*$/gim, '')
     .trim();
+}
+/**
+ * The one place that turns a stored note body into display HTML.
+ *
+ * Every surface that shows a note goes through here, so a body that arrived damaged — its own tags
+ * escaped into visible text by an earlier trip through the markdown renderer — is healed on read
+ * rather than left for the user to find. See decodeEscapedHtml: nothing is rewritten in storage,
+ * so this costs nothing and applies to every note already in the Brain.
+ */
+function renderNoteBody(body: string): string {
+  const text = decodeEscapedHtml(String(body || ''));
+  return looksLikeHtml(text) ? cleanBody(text) : mdToHtml(text);
 }
 function looksLikeHtml(text: string): boolean {
   const t = String(text || '');
@@ -1286,7 +1298,7 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
   // markdown symbols. Existing markdown (e.g. an agent's lead list) is converted to
   // HTML for display; what the user types is stored as HTML.
   const initialHtml = useMemo(
-    () => looksLikeHtml(node.body) ? cleanBody(node.body) : mdToHtml(node.body),
+    () => renderNoteBody(node.body),
     [node.id], // eslint-disable-line react-hooks/exhaustive-deps
   );
   // Add JS column-resize handles to every table (CSS resize doesn't work on table
@@ -1604,7 +1616,7 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
     setNarrowed('');
     setViewMsg('All rows are back.');
     // The editor holds the narrowed DOM; re-render it from the restored body.
-    if (editorRef.current) editorRef.current.innerHTML = looksLikeHtml(fresh.fullBody) ? cleanBody(fresh.fullBody) : mdToHtml(fresh.fullBody);
+    if (editorRef.current) editorRef.current.innerHTML = renderNoteBody(fresh.fullBody);
     setTimeout(() => { enhanceTables(); setViewMsg(''); }, 0);
   };
   // For a PDF/deck/image the editor isn't rendered, so readBody() would return '' and WIPE the
@@ -1733,7 +1745,10 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
     if (path) setFilePath(path);
     // Store the extracted text as the node body (agents recall it) regardless of whether the
     // editor is shown — for a PDF the panel shows the actual PDF, not this text.
-    const html = mdToHtml(content.slice(0, 2000000));
+    // renderNoteBody, not mdToHtml: an attached file whose text is already HTML would otherwise be
+    // escaped tag by tag and stored that way — the note then shows its own source instead of a
+    // table, and every later repair reads it as prose. Markdown files are unaffected.
+    const html = renderNoteBody(content.slice(0, 2000000));
     const cur = editorRef.current;
     if (cur && !cur.innerText.trim()) cur.innerHTML = html;
     brain.updateNode(node.id, { kind: 'file', title: newTitle, body: html, ...(path ? { filePath: path } : {}) });
