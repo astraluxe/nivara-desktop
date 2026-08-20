@@ -561,8 +561,22 @@ function colourFromText(text: string): string | null {
 // add/remove a slide). Only consulted when a deck already exists in the thread.
 function looksLikeDeckEdit(text: string): boolean {
   const t = text.toLowerCase();
+  // AN EDIT INSTRUCTION IS SHORT. "put my logo on slide 1" is twenty-two characters; a pasted
+  // spec, brief or research document is thousands. This gate is what stopped a 4,400-character
+  // paper on API security from being treated as a deck edit — it qualified because it contained
+  // the word "title" once, in "PROJECT TITLE:", and "change" twice.
+  //
+  // This runs only when a deck already exists in the thread, which is why the failure appeared a
+  // few messages in and not on the first one: make a deck, then ask about anything else, and the
+  // next request went to the deck maker instead of whoever owned it.
+  if (t.length > 400) return false;
   if (colourFromText(t) && /\b(make|change|turn|recolou?r|set|use)\b/.test(t)) return true;
-  if (!/\b(slide|deck|presentation|ppt|logo|pics?|picture|image|photo|colou?r|accent|title|bullet|heading|subtitle|text)\b/.test(t)) return false;
+  // THE NOUN HAS TO BE ABOUT A DECK. This list used to also accept title, text, image, heading,
+  // bullet, subtitle, accent and colour — ordinary English words that appear in almost any
+  // request. Paired with equally ordinary verbs (use, make, set, add, update, change) it matched
+  // "change the title of the blog post", "update the text on the pricing page" and "add an image
+  // to the report", none of which are about slides.
+  if (!/\b(slides?|decks?|presentations?|ppt|pptx|keynote)\b/.test(t)) return false;
   return /\b(change|edit|replace|update|set|rename|put|add|insert|remove|delete|drop|swap|move|use|make|recolou?r|colou?r|turn)\b/.test(t);
 }
 
@@ -10354,8 +10368,11 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     // Once a deck exists in the thread, follow-ups like "put my logo on slide 1",
     // "use this pic on slide 3", "make it blue", "remove slide 4" or "change slide 2
     // title to …" edit that deck in place instead of running the boss.
+    // The image branch needs a DECK word too, not merely a word for the thing being attached.
+    // "picture|image|photo" describe the file the user just dropped in, so with a deck anywhere in
+    // the thread "add this image to the blog post" was pulled into editing the deck instead.
     if (lastDeckSpecRef.current && (looksLikeDeckEdit(text) ||
-        (imageFiles.length > 0 && /\b(slide|deck|logo|presentation|ppt|pics?|picture|image|photo)\b/i.test(text)))) {
+        (imageFiles.length > 0 && /\b(slides?|decks?|presentations?|ppt|pptx|logo)\b/i.test(text)))) {
       await runDeckEdit(text, imageFiles);
       return;
     }
@@ -10420,7 +10437,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     // that and get me all the details about the person" read as an enrich instruction. Asking for
     // details about someone is the most ordinary sentence in the language; it cannot be a routing
     // signal. Naming linkedin/phone/email, or "missing" something, is.
-    const fillIntent = /\b(add|fill|complete|update|get|find|put|check|sort|verify)\b[\s\S]{0,60}\b(linkedin|phone|e-?mail|contact details?|contact info)\b|\bmissing\s+(linkedin|contact|phone|e-?mail|details?|info|fields?|cells?)\b|fill (it|them|the rest|this) in\b|proper linkedin|their linkedin|update the (list|rest)|verify (each|every|all|the)\s+(row|lead|contact|compan|person|people)/i;
+    const fillIntent = /\b(add|fill|complete|update|get|find|put|check|sort|verify)\b[\s\S]{0,60}\b(linkedin|phone|e-?mail|contact details?|contact info)\b|\bmissing\s+(linkedin|contact|phone|e-?mail|details?|info|fields?|cells?)\b|fill (it|them|these|those|the rest|this) in\b|proper linkedin|their linkedin|update the (list|rest)|verify (each|every|all|the)\s+(row|lead|contact|compan|person|people)/i;
     const expandIntent = /\b(more|new|additional|expand|others?|another)\b[\s\S]{0,30}\b(people|compan|founder|lead|prospect|name)|find (me )?(more|new|additional)|add \d+ (more|new)/i;
     // "verify each and every / check the whole list / re-verify everything" → process ALL rows, not
     // just the ones missing a LinkedIn.
@@ -10450,7 +10467,16 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     // their Tech lead list had been filled in and none of the four steps ever ran. Not firing here
     // costs nothing — every agent already carries LEAD_TOOLS, so the enrich still happens if the
     // order actually calls for it, from inside the stage that owns it.
-    if (leadSourceText && text && (leadTableInHand || refsList) && fillIntent.test(text) && !expandIntent.test(text) && !isWorkOrder(text)) {
+    // AN INSTRUCTION IS SHORT; A PASTED DOCUMENT IS NOT. "fill in the missing linkedin" is a few
+    // words. A brief that merely MENTIONS contacts and emails somewhere in twelve hundred
+    // characters is not asking for an enrich, and treating it as one sends the whole message to
+    // the wrong place — the same failure as the deck-edit hijack above.
+    //
+    // Measured on the PROSE only: table rows and fenced code are stripped first, so pasting a lead
+    // table with "fill these in" underneath still works, which is the case this path exists for.
+    const instructionProse = text.replace(/```[\s\S]*?```/g, '').replace(/^\s*\|.*$/gm, '').trim();
+    if (leadSourceText && text && (leadTableInHand || refsList) && fillIntent.test(text)
+        && !expandIntent.test(text) && !isWorkOrder(text) && instructionProse.length <= 600) {
       const handled = await runDirectLeadFill(leadSourceText, sid, verifyAll);
       if (handled) { setBusy(false); setAgentStep(null); setAgentTool(null); return; }
     }
