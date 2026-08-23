@@ -3,6 +3,7 @@ node_modules/
 
 # Build output
 dist/
+dist-harness/
 src-tauri/target/
 
 # Environment files

@@ -15,6 +15,11 @@ import {
 import { listAttachableDocs, isAttachableFile, generateDocument, type GeneratedDoc } from '../../lib/docgen';
 import { addPlanNote, outreachTargetToday, loadPlan, currentDay, notesForDay } from '../../lib/planStore';
 import { availabilityNote, loadAvailability, nextFreeSlots, fmtMins } from '../../lib/availability';
+import { parseEmailRewrite, bulkEmailTargets, type BulkScope } from '../../lib/emailDraft';
+import {
+  loadMailSetup, saveMailSetup, composeTarget, mailSetupIncomplete,
+  MAIL_PROVIDERS, COMPOSE_PRESETS, type MailSetup, type MailProviderId,
+} from '../../lib/mailProviders';
 
 // Assemble what the strategist/verifier needs to know about the USER's side: their pitch and any
 // stated availability, pulled from the Brain (product notes, meeting notes) so the drafted reply is
@@ -501,10 +506,17 @@ export function dmUrl(c: OutreachContact, ch: 'x' | 'instagram'): string {
 export const CHANNEL_LABEL: Record<ContactChannel, string> = {
   linkedin: 'LinkedIn', email: 'Email', x: 'X', instagram: 'Instagram', none: 'No contact yet',
 };
-function gmailComposeUrl(c: OutreachContact): string {
-  const su = encodeURIComponent(fillTokens(c.email_subject || '', c));
-  const body = encodeURIComponent(fillTokens(c.email_body || c.linkedin_message || '', c));
-  return `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(c.email || '')}&su=${su}&body=${body}`;
+/**
+ * Where THIS contact's email should open — Gmail, Outlook, the machine's mail app, or the webmail
+ * the user told us about. See lib/mailProviders: nothing here is guessed, and a destination that
+ * cannot be prefilled says so instead of opening an empty window and letting the user assume.
+ */
+function composeFor(setup: MailSetup, c: OutreachContact, address?: string) {
+  return composeTarget(setup, {
+    to: address || c.email || '',
+    subject: fillTokens(c.email_subject || '', c),
+    body: fillTokens(c.email_body || c.linkedin_message || '', c),
+  });
 }
 function fillTokens(t: string, c: OutreachContact): string {
   return (t || '').replace(/\{name\}/gi, c.name || 'there').replace(/\{company\}/gi, c.company || 'your company');
@@ -1678,6 +1690,50 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   const [msgRefineNote, setMsgRefineNote] = useState('');
   const [msgUndo, setMsgUndo] = useState<string | null>(null);
 
+  // ── THE EMAIL DRAFT: EDIT IT, IMPROVE IT, AND CARRY THE CHANGE TO THE REST ──────────────────
+  //
+  // The LinkedIn message has had a textarea and an "Improve with AI" box for a while. The email
+  // had neither: subject and body were printed as read-only paragraphs, so the ONE thing you
+  // cannot avoid wanting to do — fix a line before sending — had nowhere to happen at all. And
+  // fixing one is rarely the whole job: the same wrong sentence is usually in all forty drafts,
+  // and re-typing it forty times is not a workflow. So the same instruction can be pushed out to
+  // everyone still untouched, or to a handful of people picked by hand, with one Undo covering
+  // the lot.
+  const [emailRefineInput, setEmailRefineInput] = useState('');
+  const [emailRefining, setEmailRefining] = useState(false);
+  const [emailRefineNote, setEmailRefineNote] = useState('');
+  /** Previous subject+body for the person on screen, so a single rewrite is reversible. */
+  const [emailUndo, setEmailUndo] = useState<{ subject: string; body: string } | null>(null);
+
+  const [bulkOpen, setBulkOpen] = useState(false);
+  /** The bulk panel's own instruction box. Deliberately NOT shared with the single-email one:
+   *  a successful single rewrite clears that box, and sharing state meant the instruction you were
+   *  about to apply to everyone else vanished at the exact moment you wanted it. It is SEEDED from
+   *  the single rewrite instead, so typing it twice is never necessary either. */
+  const [bulkInput, setBulkInput] = useState('');
+  const [bulkScope, setBulkScope] = useState<BulkScope>('untouched');
+  /** Indices ticked in the "pick people" list. */
+  const [bulkPicked, setBulkPicked] = useState<number[]>([]);
+  /** Live progress: which person of how many is being rewritten right now. */
+  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number; who: string } | null>(null);
+  const [bulkNote, setBulkNote] = useState('');
+  /** Every draft as it was before the bulk run, so one press puts them all back. */
+  const [bulkUndo, setBulkUndo] = useState<{ idx: number; subject: string; body: string }[] | null>(null);
+  /** Set by the Stop button; the loop checks it between people. */
+  const bulkStopRef = useRef(false);
+
+  // ── WHICH MAILBOX "Compose" OPENS ───────────────────────────────────────────────────────────
+  //
+  // Was hard-wired to Gmail. Most B2B mail in India and elsewhere is sent from a domain mailbox —
+  // Hostinger/Titan, Zoho, a cPanel Roundcube, a Microsoft 365 tenant — and those users were sent
+  // to a Gmail window that was either the wrong account or an account they do not have. The
+  // provider is now theirs to choose, and anything not on the list is theirs to describe: we ask
+  // for the link rather than inventing one. See lib/mailProviders for why nothing is guessed.
+  const [mailSetup, setMailSetupState] = useState<MailSetup>(() => loadMailSetup());
+  const [mailPanelOpen, setMailPanelOpen] = useState(false);
+  const [mailTestNote, setMailTestNote] = useState('');
+  const setMailSetup = (s: MailSetup) => { setMailSetupState(s); saveMailSetup(s); setMailTestNote(''); };
+
   /**
    * Check THIS person's saved profile, and correct it if it belongs to somebody else.
    *
@@ -1779,6 +1835,157 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     } catch (e) {
       setMsgRefineNote(`Couldn't refine: ${(e instanceof Error ? e.message : String(e)).slice(0, 160)}`);
     } finally { setMsgRefining(false); }
+  }
+
+  // ── Rewriting an EMAIL (subject + body), not just a LinkedIn message ───────────────────────
+  //
+  // An email is two fields, and refineMessage returns one string — so the subject travels with the
+  // body as a leading `Subject:` line and is split back off afterwards. That split, and the rule
+  // for who a bulk change reaches, both live in lib/emailDraft: they are the two places this can
+  // go quietly wrong across forty drafts at once, so they are pure and unit-tested rather than
+  // buried in a component that needs a model and a campaign to exercise.
+  /**
+   * Rewrite one contact's email from a plain-English instruction. Returns the new draft, or null
+   * when the model gave back nothing usable — the caller decides whether that is worth a message.
+   *
+   * Separated from the button handler so the bulk pass can reuse the exact same call. One code
+   * path means "apply to everyone" cannot quietly behave differently from "apply to this one",
+   * which is the failure mode that makes bulk actions untrustworthy.
+   */
+  async function refineOneEmail(c: OutreachContact, instruction: string, example?: { before: string; after: string }):
+    Promise<{ subject: string; body: string } | null> {
+    const subject = (c.email_subject || '').trim();
+    const body = (c.email_body || c.linkedin_message || '').trim();
+    if (!body && !subject) return null;
+    const current = `Subject: ${subject}\n\n${body}`;
+    // When the user has already fixed ONE draft by hand, that edit is a far better brief than any
+    // sentence they could write about it — so it is shown as a worked example and the instruction
+    // becomes "do that, to this one".
+    const exampleBlock = example
+      ? `\n\nHERE IS THE SAME CHANGE I ALREADY MADE TO ANOTHER EMAIL — match it in spirit, not word for word, and keep everything specific to THIS recipient:\n--- BEFORE ---\n${example.before.slice(0, 1200)}\n--- AFTER ---\n${example.after.slice(0, 1200)}`
+      : '';
+    const out = await refineMessage({
+      current,
+      instruction:
+        `${instruction}\n\nThis is an EMAIL. Return it in exactly this shape: the first line "Subject: <subject>", then a blank line, then the body. `
+        + `Keep it addressed to this specific person — never make it generic, and never introduce placeholders like [Name] or [Company].${exampleBlock}`,
+      person: c.name,
+      thread: c.company ? `${c.name || 'They'} — ${c.company}` : '',
+      ownerContext: buildOwnerContext(),
+      aiCall,
+    });
+    if (!out || !out.trim()) return null;
+    const next = parseEmailRewrite(out, subject);
+    // A rewrite that came back with no body is not a rewrite — leave the draft alone rather than
+    // replacing a real email with a subject line.
+    if (!next.body.trim()) return null;
+    if (next.subject === subject && next.body === body) return null;   // nothing actually changed
+    return next;
+  }
+
+  /** The "Rewrite" button under the email on screen. */
+  async function refineEmail(instructionRaw: string) {
+    const instruction = instructionRaw.trim();
+    if (!instruction || !cur || emailRefining) return;
+    if (!(cur.email_body || cur.linkedin_message || '').trim() && !(cur.email_subject || '').trim()) {
+      setEmailRefineNote('There is no email to improve yet — type one first, or let Krew draft it.');
+      return;
+    }
+    setEmailRefining(true); setEmailRefineNote('');
+    const before = { subject: cur.email_subject || '', body: cur.email_body || cur.linkedin_message || '' };
+    try {
+      const next = await refineOneEmail(cur, instruction);
+      if (!next) {
+        setEmailRefineNote('The AI came back with the same email (or nothing). Try saying more specifically what to change.');
+        return;
+      }
+      setEmailUndo(before);
+      setContacts((prev) => prev.map((c, i) => (i === idx ? { ...c, email_subject: next.subject, email_body: next.body } : c)));
+      setEmailRefineInput('');
+      // The change is on screen and it worked — so offer the obvious next thought before they have
+      // to go looking for it, with the instruction already carried across.
+      setBulkInput(instruction);
+      setBulkNote(`Changed ${cur.name || 'this one'}. Want the same change on the others?`);
+      setBulkOpen(true);
+    } catch (e) {
+      setEmailRefineNote(`Couldn't rewrite: ${(e instanceof Error ? e.message : String(e)).slice(0, 160)}`);
+    } finally { setEmailRefining(false); }
+  }
+
+  /** Everyone a bulk change would touch right now, given the chosen scope. See lib/emailDraft. */
+  function bulkTargets(): number[] {
+    return bulkEmailTargets(contacts, idx, bulkScope, bulkPicked);
+  }
+
+  /**
+   * Push the same change across the other drafts, one person at a time.
+   *
+   * One at a time on purpose. Asking a model for forty rewrites in a single reply is how bulk
+   * passes truncate and come back unparseable — and a partial failure there loses everything,
+   * whereas here each person is saved the moment they come back. It also means the panel can name
+   * WHO it is on right now, which is the difference between watching it work and wondering.
+   */
+  async function applyToOthers(instructionRaw: string, useExample: boolean) {
+    const instruction = instructionRaw.trim();
+    if (!instruction || bulkProgress) return;
+    const targets = bulkTargets();
+    if (!targets.length) {
+      setBulkNote(bulkScope === 'picked'
+        ? 'Nobody is ticked yet — choose who this should apply to.'
+        : 'There are no other drafts this would apply to.');
+      return;
+    }
+    // The worked example is the edit the user just made to the person on screen — only offered
+    // when there IS a before to compare against, so it can never be a fabricated "example".
+    const example = useExample && emailUndo
+      ? { before: `Subject: ${emailUndo.subject}\n\n${emailUndo.body}`,
+          after: `Subject: ${cur.email_subject || ''}\n\n${cur.email_body || ''}` }
+      : undefined;
+
+    bulkStopRef.current = false;
+    setBulkNote('');
+    setBulkProgress({ done: 0, total: targets.length, who: contacts[targets[0]]?.name || '' });
+    const undo: { idx: number; subject: string; body: string }[] = [];
+    let changed = 0, skipped = 0;
+    try {
+      for (let n = 0; n < targets.length; n++) {
+        if (bulkStopRef.current) break;
+        const i = targets[n];
+        const c = contacts[i];
+        if (!c) continue;
+        setBulkProgress({ done: n, total: targets.length, who: c.name || `contact ${i + 1}` });
+        let next: { subject: string; body: string } | null = null;
+        try { next = await refineOneEmail(c, instruction, example); }
+        catch { next = null; }          // one bad row must not end the run for the other thirty-nine
+        if (!next) { skipped++; continue; }
+        undo.push({ idx: i, subject: c.email_subject || '', body: c.email_body || c.linkedin_message || '' });
+        // Written per person rather than in one batch at the end, so a Stop (or a crash) keeps
+        // everything already done instead of throwing the whole pass away.
+        setContacts((prev) => prev.map((x, j) => (j === i ? { ...x, email_subject: next!.subject, email_body: next!.body } : x)));
+        changed++;
+      }
+    } finally {
+      setBulkProgress(null);
+      setBulkUndo(undo.length ? undo : null);
+      const stopped = bulkStopRef.current;
+      setBulkNote(
+        changed === 0
+          ? (stopped ? 'Stopped before anything changed.' : 'Nothing changed — the AI returned the same text for everyone. Try a more specific instruction.')
+          : `${stopped ? 'Stopped — ' : ''}${changed} draft${changed === 1 ? '' : 's'} updated${skipped ? `, ${skipped} left alone (the AI returned nothing usable for ${skipped === 1 ? 'one' : 'those'})` : ''}.`,
+      );
+    }
+  }
+
+  /** Put every draft the bulk pass changed back exactly as it was. */
+  function undoBulk() {
+    if (!bulkUndo) return;
+    const back = bulkUndo;
+    setContacts((prev) => prev.map((c, i) => {
+      const was = back.find((b) => b.idx === i);
+      return was ? { ...c, email_subject: was.subject, email_body: was.body } : c;
+    }));
+    setBulkUndo(null);
+    setBulkNote(`Put ${back.length} draft${back.length === 1 ? '' : 's'} back.`);
   }
 
   // Reshape the current draft from a plain-English instruction the user types ("say yes to the call
@@ -1958,9 +2165,39 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   async function openEmailCompose(address: string) {
     const contact = contacts[idx];
     if (!contact) return;
-    const url = gmailComposeUrl({ ...contact, email: address });
+    const target = composeFor(mailSetup, contact, address);
+
+    // The user picked "other webmail" and has not said where it is. Opening nothing and saying
+    // nothing is how a button becomes untrustworthy — send them to the one-time setup instead.
+    if (target.prefill === 'unset' || !target.url) {
+      setMailPanelOpen(true);
+      setOpenNote(target.note);
+      return;
+    }
+
+    // A destination we cannot prefill: put the draft on the clipboard, open the mailbox, and say
+    // plainly that it has to be pasted. Never let it look like the email was written for them.
+    if (target.copyDraft) {
+      const draft = `Subject: ${fillTokens(contact.email_subject || '', contact)}\n\n${fillTokens(contact.email_body || contact.linkedin_message || '', contact)}`;
+      const copied = await copyText(draft);
+      openLink(target.url);
+      setOpenNote(copied
+        ? `${target.label} is open and the draft is on your clipboard — start a new message to ${address} and paste it.`
+        : `${target.label} is open. I could NOT copy the draft to your clipboard, so copy it from the box above before you write the message.`);
+      return;
+    }
+
     // No attachment: nothing to drive a browser for — the plain compose window is faster.
-    if (!attachDoc?.path) { openLink(url); return; }
+    // Only Gmail's compose DOM is known well enough to attach into; everywhere else the file is
+    // named and the user attaches it, rather than being told it went when it did not.
+    if (!attachDoc?.path || !target.canAttach) {
+      openLink(target.url);
+      if (attachDoc?.path && !target.canAttach) {
+        setOpenNote(`${target.label} is open with your message. I can only attach files automatically in Gmail, so add ${attachDoc.filename} yourself with ${target.label}'s attach button before you send.`);
+      }
+      return;
+    }
+    const url = target.url;
 
     setEmailBusy('Opening Gmail…');
     setAgentBrowserHold(true); setBrowserOpen(true);
@@ -2025,7 +2262,25 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     setMsgRefineNote('');
     setMsgUndo(null);
     setVerifyProfileNote('');   // a verdict about one person must never linger over the next
+    // The EMAIL side has exactly the same hazard, and worse: emailUndo holds one person's subject
+    // AND body, so an Undo pressed after paging to the next contact would paste the previous
+    // person's email over theirs. Cleared with everything else.
+    setEmailRefineInput('');
+    setEmailRefineNote('');
+    setEmailUndo(null);
   }, [idx]);
+
+  // A BULK RUN IS ABOUT THE WHOLE CAMPAIGN, NOT THE PERSON ON SCREEN — so its Undo deliberately
+  // survives paging around (that is the point: change forty, look through a few, change your
+  // mind). It is dropped when a DIFFERENT campaign is opened, because those indexes belong to a
+  // list that is no longer loaded and applying them would corrupt the new one.
+  useEffect(() => {
+    setBulkUndo(null);
+    setBulkPicked([]);
+    setBulkNote('');
+    setBulkInput('');
+    setBulkOpen(false);
+  }, [campaign]);
 
   /**
    * Take a profile link the user typed, check it, and make it the saved one.
@@ -2754,12 +3009,196 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                     not visible at all — so "send them the one-pager" was a thing you hoped had
                     happened. Shown here, before anything opens, with the attachment named. */}
                 <div className="rounded-lg border border-nv-border bg-nv-bg/60 p-2 mb-1.5">
+                  {/* EDITABLE, NOT A PREVIEW.
+                      These were two read-only <p> tags, so the most ordinary thing anyone wants to
+                      do — fix a line before sending — could not be done here at all. Same
+                      treatment as the LinkedIn box above: type straight into it, and the auto-save
+                      effect persists it exactly like any other change to the contact. */}
                   <p className="text-[9.5px] text-nv-faint uppercase tracking-wide">Subject</p>
-                  <p className="text-[11px] text-nv-text truncate">{fillTokens(cur.email_subject || '', cur) || <span className="text-nv-faint">— none —</span>}</p>
+                  <input
+                    value={cur.email_subject || ''}
+                    onChange={(e) => { const v = e.target.value; setContacts((prev) => prev.map((c, i) => (i === idx ? { ...c, email_subject: v } : c))); }}
+                    placeholder="No subject yet — type one, or ask Krew to draft it."
+                    className="w-full text-[11px] bg-nv-bg border border-nv-border rounded-md px-2 py-1 mt-0.5 focus:outline-none focus:border-accent/40 select-text"
+                  />
                   <p className="text-[9.5px] text-nv-faint uppercase tracking-wide mt-1.5">Message</p>
-                  <p className="text-[10.5px] text-nv-muted whitespace-pre-wrap leading-snug max-h-24 overflow-y-auto">
-                    {fillTokens(cur.email_body || cur.linkedin_message || '', cur) || '— nothing drafted yet —'}
-                  </p>
+                  <textarea
+                    value={cur.email_body || ''}
+                    onChange={(e) => { const v = e.target.value; setContacts((prev) => prev.map((c, i) => (i === idx ? { ...c, email_body: v } : c))); }}
+                    rows={7}
+                    placeholder={cur.linkedin_message
+                      ? 'No separate email body — the LinkedIn message above will be sent. Type here to write a different one.'
+                      : 'Nothing drafted yet — type the email, or ask Krew to draft it.'}
+                    className="w-full text-[11px] bg-nv-bg border border-nv-border rounded-md px-2 py-1.5 mt-0.5 leading-relaxed resize-none focus:outline-none focus:border-accent/40 select-text"
+                  />
+                  {/* What will REALLY be sent once {name}/{company} are filled in. Only shown when
+                      the draft actually has tokens in it — otherwise it is the same text twice. */}
+                  {/\{(name|company)\}/i.test(`${cur.email_subject || ''} ${cur.email_body || cur.linkedin_message || ''}`) && (
+                    <p className="text-[9.5px] text-nv-faint mt-1 leading-snug">
+                      Sends as: <span className="text-nv-muted">{fillTokens(cur.email_subject || '', cur)}</span>
+                      {' — '}<span className="text-nv-muted">{fillTokens(cur.email_body || cur.linkedin_message || '', cur).replace(/\s+/g, ' ').slice(0, 90)}…</span>
+                    </p>
+                  )}
+
+                  {/* ── Improve this email with the AI, then carry the change to the rest ────── */}
+                  <div className="mt-2 rounded-lg border border-nv-border bg-nv-surface2/40 p-2">
+                    <div className="flex items-center gap-1.5 flex-wrap mb-1.5">
+                      <span className="text-[9.5px] text-nv-faint uppercase tracking-wide shrink-0">Improve with AI</span>
+                      {([
+                        ['Shorter', 'Cut it to under 90 words. Keep the specific detail and the ask; drop the setup and anything that could be said to anyone.'],
+                        ['More personal', 'Make it specific to this recipient — reference their actual company or role concretely, and remove anything template-shaped.'],
+                        ['Less salesy', 'Remove the pitch, the buzzwords and the flattery. One human writing to another, with a low-pressure ask.'],
+                        ['Stronger subject', 'Rewrite the SUBJECT LINE so it is specific and worth opening — under 8 words, no clickbait, no "Quick question". Leave the body as it is unless it contradicts the new subject.'],
+                      ] as const).map(([label, prompt]) => (
+                        <button
+                          key={label}
+                          disabled={emailRefining || !!bulkProgress}
+                          onClick={() => void refineEmail(prompt)}
+                          className="text-[9.5px] px-1.5 py-0.5 rounded-full border border-nv-border text-nv-faint hover:text-nv-text hover:bg-nv-surface2 transition-fast disabled:opacity-40"
+                        >{label}</button>
+                      ))}
+                      {emailUndo && !emailRefining && (
+                        <button
+                          onClick={() => {
+                            const back = emailUndo;
+                            setContacts((prev) => prev.map((c, i) => (i === idx ? { ...c, email_subject: back.subject, email_body: back.body } : c)));
+                            setEmailUndo(null); setEmailRefineNote('');
+                          }}
+                          className="ml-auto text-[9.5px] px-1.5 py-0.5 rounded-full border border-amber-500/40 text-amber-600 hover:bg-amber-500/10 transition-fast"
+                        >Undo</button>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        value={emailRefineInput}
+                        onChange={(e) => { setEmailRefineInput(e.target.value); setEmailRefineNote(''); }}
+                        onKeyDown={(e) => { if (e.key === 'Enter' && emailRefineInput.trim() && !emailRefining) void refineEmail(emailRefineInput); }}
+                        disabled={emailRefining || !!bulkProgress}
+                        placeholder={emailRefining ? 'Rewriting…' : 'Tell it what to change — "mention the pilot price", "ask for 15 minutes"'}
+                        className="flex-1 min-w-0 text-[11px] bg-nv-bg border border-nv-border rounded-md px-2 py-1 focus:outline-none focus:border-accent/40 select-text disabled:opacity-60"
+                      />
+                      <button
+                        onClick={() => void refineEmail(emailRefineInput)}
+                        disabled={emailRefining || !!bulkProgress || !emailRefineInput.trim()}
+                        className="shrink-0 text-[10px] px-2.5 py-1 rounded-md bg-accent text-white font-medium hover:bg-accent-dim transition-fast disabled:opacity-40"
+                      >{emailRefining ? '…' : 'Rewrite'}</button>
+                    </div>
+                    {emailRefineNote && <p className="text-[9.5px] text-amber-600 mt-1 leading-snug">{emailRefineNote}</p>}
+
+                    {/* ── The same change, on everyone else ─────────────────────────────────
+                        Fixing one draft is almost never the job: the same wrong line is in all
+                        forty. This is that, with the scope stated before it runs, live progress
+                        naming the person it is on, a Stop, and one Undo for the whole pass. */}
+                    <button
+                      onClick={() => { setBulkOpen((o) => !o); setBulkNote(''); }}
+                      className="mt-1.5 w-full text-[9.5px] px-2 py-1 rounded-md border border-nv-border text-nv-faint hover:text-nv-text hover:bg-nv-surface2 transition-fast text-left"
+                    >
+                      {bulkOpen ? '▾' : '▸'} Apply a change to the other drafts too
+                    </button>
+                    {bulkOpen && (
+                      <div className="mt-1.5 rounded-md border border-nv-border bg-nv-bg/70 p-2 space-y-1.5">
+                        <div className="flex items-center gap-1 flex-wrap">
+                          {([
+                            ['untouched', 'Everyone not contacted yet'],
+                            ['all', 'Everyone (except already sent)'],
+                            ['picked', 'Pick people'],
+                          ] as const).map(([id, label]) => (
+                            <button
+                              key={id}
+                              disabled={!!bulkProgress}
+                              onClick={() => { setBulkScope(id); setBulkNote(''); }}
+                              className={`text-[9.5px] px-1.5 py-0.5 rounded-full border transition-fast disabled:opacity-40 ${
+                                bulkScope === id ? 'border-accent/50 text-accent bg-accent/10' : 'border-nv-border text-nv-faint hover:bg-nv-surface2'}`}
+                            >{label}</button>
+                          ))}
+                          <span className="ml-auto text-[9.5px] text-nv-faint">
+                            {bulkTargets().length} will change
+                          </span>
+                        </div>
+
+                        {bulkScope === 'picked' && (
+                          <div className="max-h-28 overflow-y-auto rounded-md border border-nv-border divide-y divide-nv-border/60">
+                            {contacts.map((c, i) => ({ c, i })).filter(({ i }) => i !== idx).map(({ c, i }) => (
+                              <label key={i} className="flex items-center gap-1.5 px-1.5 py-1 text-[10px] text-nv-muted hover:bg-nv-surface2 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={bulkPicked.includes(i)}
+                                  disabled={!!bulkProgress}
+                                  onChange={(e) => setBulkPicked((p) => (e.target.checked ? [...p, i] : p.filter((x) => x !== i)))}
+                                  className="accent-current"
+                                />
+                                <span className="truncate flex-1">{c.name || `Contact ${i + 1}`}</span>
+                                {c.status && c.status !== 'todo' && (
+                                  <span className="shrink-0 text-[9px] text-nv-faint">{STATUS_META[c.status].label}</span>
+                                )}
+                              </label>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Two ways to say what the change is, and the first one is the honest
+                            default: the edit already made to the draft on screen, shown to the
+                            model as a before/after. Only offered when there IS a before. */}
+                        {emailUndo && (
+                          <button
+                            disabled={!!bulkProgress}
+                            onClick={() => void applyToOthers(
+                              bulkInput.trim() || 'Apply the same kind of change I made to the example email below.', true)}
+                            className="w-full text-[10px] px-2 py-1.5 rounded-md border border-accent/40 text-accent bg-accent/5 hover:bg-accent/10 transition-fast disabled:opacity-40"
+                          >
+                            Make the same change I just made to {cur.name?.split(' ')[0] || 'this one'}
+                          </button>
+                        )}
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            value={bulkInput}
+                            onChange={(e) => { setBulkInput(e.target.value); setBulkNote(''); }}
+                            disabled={!!bulkProgress}
+                            onKeyDown={(e) => { if (e.key === 'Enter' && bulkInput.trim() && !bulkProgress && bulkTargets().length) void applyToOthers(bulkInput, false); }}
+                            placeholder='Or describe it — "drop the discount line", "sign off as Amogh"'
+                            className="flex-1 min-w-0 text-[10px] bg-nv-bg border border-nv-border rounded-md px-2 py-1 focus:outline-none focus:border-accent/40 select-text disabled:opacity-60"
+                          />
+                          <button
+                            onClick={() => void applyToOthers(bulkInput, false)}
+                            disabled={!!bulkProgress || !bulkInput.trim() || !bulkTargets().length}
+                            className="shrink-0 text-[10px] px-2.5 py-1 rounded-md bg-accent text-white font-medium hover:bg-accent-dim transition-fast disabled:opacity-40"
+                          >Apply</button>
+                        </div>
+
+                        {/* LIVE PROGRESS, WITH A NAME ON IT — never a bare spinner. */}
+                        {bulkProgress && (
+                          <div className="rounded-md border border-accent/40 bg-accent/5 p-1.5">
+                            <div className="flex items-center gap-1.5">
+                              <span className="w-2.5 h-2.5 rounded-full border border-accent/40 border-t-accent animate-spin shrink-0" />
+                              <span className="text-[10px] text-nv-text truncate flex-1">
+                                Rewriting {bulkProgress.done + 1} of {bulkProgress.total} — {bulkProgress.who}
+                              </span>
+                              <button
+                                onClick={() => { bulkStopRef.current = true; }}
+                                className="shrink-0 text-[9.5px] px-1.5 py-0.5 rounded-md border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
+                              >Stop</button>
+                            </div>
+                            <div className="mt-1 h-0.5 rounded-full bg-nv-border overflow-hidden">
+                              <div className="h-full bg-accent transition-all" style={{ width: `${Math.round((bulkProgress.done / Math.max(1, bulkProgress.total)) * 100)}%` }} />
+                            </div>
+                            <p className="text-[9px] text-nv-faint mt-1">Each one is saved as it finishes — stopping keeps everything done so far.</p>
+                          </div>
+                        )}
+                        {bulkNote && !bulkProgress && (
+                          <div className="flex items-center gap-1.5">
+                            <p className="text-[9.5px] text-nv-muted leading-snug flex-1">{bulkNote}</p>
+                            {bulkUndo && (
+                              <button
+                                onClick={undoBulk}
+                                className="shrink-0 text-[9.5px] px-1.5 py-0.5 rounded-full border border-amber-500/40 text-amber-600 hover:bg-amber-500/10 transition-fast"
+                              >Undo all</button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
                   <p className="text-[9.5px] text-nv-faint uppercase tracking-wide mt-1.5">Attachment</p>
                   {attachDoc ? (
                     <div className="flex items-center gap-1.5">
@@ -2785,6 +3224,122 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                   </div>
                   {collateralNote && <p className="text-[9.5px] text-nv-muted mt-1 leading-snug">{collateralNote}</p>}
                 </div>
+                {/* ── WHICH MAILBOX THIS OPENS ───────────────────────────────────────────────
+                    Every compose button here used to be a Gmail link, full stop. Anyone whose work
+                    mail is a domain mailbox — Hostinger/Titan, Zoho, a cPanel Roundcube, a company
+                    Microsoft 365 — was sent to the wrong account, or to an account they do not
+                    have. Now the destination is stated on screen before anything opens, and it is
+                    theirs to change. Nothing is guessed: a provider we do not know is a provider
+                    we ASK about. */}
+                <div className="flex items-center gap-1.5 mb-1">
+                  <span className="text-[9.5px] text-nv-faint uppercase tracking-wide shrink-0">Send from</span>
+                  <select
+                    value={mailSetup.provider}
+                    onChange={(e) => {
+                      const provider = e.target.value as MailProviderId;
+                      setMailSetup({ ...mailSetup, provider });
+                      // "Other webmail" is useless until they tell us where it is — so open the
+                      // setup there and then rather than leaving a button that cannot work.
+                      if (provider === 'custom') setMailPanelOpen(true);
+                    }}
+                    className="min-w-0 flex-1 text-[10px] bg-nv-bg border border-nv-border rounded-md px-1.5 py-1 focus:outline-none focus:border-accent/40"
+                  >
+                    {MAIL_PROVIDERS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+                  </select>
+                  <button
+                    onClick={() => setMailPanelOpen((o) => !o)}
+                    className="shrink-0 text-[9.5px] px-1.5 py-1 rounded-md border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
+                  >{mailSetupIncomplete(mailSetup) ? 'Set up' : mailPanelOpen ? 'Close' : 'Details'}</button>
+                </div>
+                {mailSetupIncomplete(mailSetup) && !mailPanelOpen && (
+                  <p className="text-[9.5px] text-amber-600 mb-1 leading-snug">
+                    Tell me where your webmail is before using Compose — press <b>Set up</b>.
+                  </p>
+                )}
+                {mailPanelOpen && (
+                  <div className="rounded-lg border border-nv-border bg-nv-bg/70 p-2 mb-1.5 space-y-1.5">
+                    <p className="text-[9.5px] text-nv-muted leading-snug">
+                      {MAIL_PROVIDERS.find((p) => p.id === mailSetup.provider)?.hint}
+                    </p>
+                    {mailSetup.provider === 'custom' && (
+                      <>
+                        <div>
+                          <p className="text-[9px] text-nv-faint uppercase tracking-wide">What is it called?</p>
+                          <input
+                            value={mailSetup.label || ''}
+                            onChange={(e) => setMailSetup({ ...mailSetup, label: e.target.value })}
+                            placeholder="Hostinger / Titan, Zoho, company mail…"
+                            className="w-full text-[10px] bg-nv-bg border border-nv-border rounded-md px-2 py-1 mt-0.5 focus:outline-none focus:border-accent/40 select-text"
+                          />
+                        </div>
+                        <div>
+                          <p className="text-[9px] text-nv-faint uppercase tracking-wide">The address you open your mail at</p>
+                          <input
+                            value={mailSetup.webmailUrl || ''}
+                            onChange={(e) => setMailSetup({ ...mailSetup, webmailUrl: e.target.value.trim() })}
+                            placeholder="https://hostinger.titan.email/"
+                            className="w-full text-[10px] bg-nv-bg border border-nv-border rounded-md px-2 py-1 mt-0.5 focus:outline-none focus:border-accent/40 select-text"
+                          />
+                          <p className="text-[9px] text-nv-faint mt-0.5 leading-snug">
+                            Paste the page you normally log in to. It opens in the ADRIS browser, so once you
+                            sign in there it stays signed in — I never ask for your password.
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-[9px] text-nv-faint uppercase tracking-wide">Compose link (optional — for filling the email in for you)</p>
+                          <div className="flex items-center gap-1 mt-0.5">
+                            <select
+                              value=""
+                              onChange={(e) => {
+                                const preset = COMPOSE_PRESETS[Number(e.target.value)];
+                                if (preset) setMailSetup({ ...mailSetup, composeTemplate: preset.template });
+                              }}
+                              className="shrink-0 text-[9.5px] bg-nv-bg border border-nv-border rounded-md px-1 py-1 focus:outline-none focus:border-accent/40"
+                            >
+                              <option value="">Use a known format…</option>
+                              {COMPOSE_PRESETS.map((p, i) => <option key={p.label} value={i}>{p.label}</option>)}
+                            </select>
+                          </div>
+                          <input
+                            value={mailSetup.composeTemplate || ''}
+                            onChange={(e) => setMailSetup({ ...mailSetup, composeTemplate: e.target.value })}
+                            placeholder="Leave blank if you don't know it"
+                            className="w-full text-[10px] font-mono bg-nv-bg border border-nv-border rounded-md px-2 py-1 mt-1 focus:outline-none focus:border-accent/40 select-text"
+                          />
+                          <p className="text-[9px] text-nv-faint mt-0.5 leading-snug">
+                            Use <span className="font-mono">{'{to}'}</span> <span className="font-mono">{'{subject}'}</span>{' '}
+                            <span className="font-mono">{'{body}'}</span> where those go. Blank is fine — then I open your
+                            webmail and copy the draft for you to paste, and I'll say so rather than pretend it was filled in.
+                          </p>
+                        </div>
+                        {/* CHECK IT WITH YOUR OWN EYES, BEFORE IT MATTERS.
+                            A compose link that is subtly wrong opens a blank window, and the place
+                            you find that out should not be with a real prospect's draft in it. */}
+                        <button
+                          disabled={mailSetupIncomplete(mailSetup)}
+                          onClick={() => {
+                            const t = composeTarget(mailSetup, {
+                              to: 'test@example.com', subject: 'Test from ADRIS',
+                              body: 'This is a test — if you can see this text in the message box, your compose link works.',
+                            });
+                            if (!t.url) { setMailTestNote(t.note); return; }
+                            openLink(t.url);
+                            setMailTestNote(t.prefill === 'full'
+                              ? 'Opened a test message. If the To, Subject and body are filled in, this is set up correctly. If the window is blank, clear the compose link and leave it empty.'
+                              : 'Opened your webmail. There is no compose link saved, so nothing is filled in — that is expected, and real emails will have the draft copied to your clipboard instead.');
+                          }}
+                          className="w-full text-[10px] px-2 py-1 rounded-md border border-accent/40 text-accent hover:bg-accent/10 transition-fast disabled:opacity-40"
+                        >Test it with a dummy email</button>
+                        {mailTestNote && <p className="text-[9.5px] text-nv-muted leading-snug">{mailTestNote}</p>}
+                      </>
+                    )}
+                    {mailSetup.provider !== 'custom' && (
+                      <p className="text-[9.5px] text-nv-faint leading-snug">
+                        {composeFor(mailSetup, cur, addrs[0]).note}
+                      </p>
+                    )}
+                  </div>
+                )}
                 {addrs.length > 1 ? (
                   <div className="space-y-1">
                     {addrs.map((a) => (
@@ -2795,7 +3350,9 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                         className="w-full flex items-center gap-2 text-[11px] px-2.5 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast disabled:opacity-50"
                       >
                         <span className="min-w-0 flex-1 truncate text-left select-text">{a}</span>
-                        <span className="shrink-0 text-accent text-[10px]">{attachDoc ? 'Compose + attach →' : 'Compose →'}</span>
+                        <span className="shrink-0 text-accent text-[10px]">
+                          {attachDoc && composeFor(mailSetup, cur, a).canAttach ? 'Compose + attach →' : 'Compose →'}
+                        </span>
                       </button>
                     ))}
                   </div>
@@ -2805,7 +3362,14 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                     onClick={() => void openEmailCompose(addrs[0])}
                     className="w-full text-[11px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast disabled:opacity-50"
                   >
-                    {emailBusy || (attachDoc ? `Open Gmail with ${attachDoc.filename} attached` : 'Open in Gmail compose')}
+                    {/* The button says where it is going, so "Compose" can never be a surprise. */}
+                    {emailBusy || (() => {
+                      const t = composeFor(mailSetup, cur, addrs[0]);
+                      if (t.prefill === 'unset') return 'Tell me where your webmail is first';
+                      if (t.copyDraft) return `Open ${t.label} & copy the draft`;
+                      if (attachDoc && t.canAttach) return `Open ${t.label} with ${attachDoc.filename} attached`;
+                      return `Open in ${t.label}`;
+                    })()}
                   </button>
                 )}
                 {emailBusy && addrs.length > 1 && <p className="text-[9.5px] text-accent mt-1">{emailBusy}</p>}

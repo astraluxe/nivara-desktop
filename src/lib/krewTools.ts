@@ -2473,18 +2473,40 @@ async function executeToolCore(
     const body = str(args.body);
     if (!to || !/@/.test(to)) return `[compose_email needs a real recipient address — "${to.slice(0, 60)}" is not one. Nothing was opened.]`;
     if (!body.trim()) return `[compose_email needs the actual email body, not a description of it. Nothing was opened.]`;
-    const url = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to)}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    // THE USER'S OWN MAILBOX, NOT ALWAYS GMAIL.
+    //
+    // This was a hard-coded Gmail link, so an agent asked to email a prospect opened Gmail even for
+    // someone whose whole business runs on a Hostinger/Titan or Microsoft 365 domain mailbox — the
+    // wrong account, or an account they do not have. The destination is whatever the user chose in
+    // the outreach copilot's "Send from"; nothing here guesses a provider's URL, and a destination
+    // that cannot be prefilled is reported as such instead of being described as ready to send.
+    const { loadMailSetup, composeTarget } = await import('./mailProviders');
+    const setup = loadMailSetup();
+    const target = composeTarget(setup, { to, subject, body });
+    if (target.prefill === 'unset' || !target.url) {
+      return `[The user picked "other webmail" as their mail provider but has not said where it is yet, so nothing could be opened. Tell them to open the outreach copilot, press "Set up" next to "Send from", and paste the address they open their mail at. Do NOT say an email is waiting.]`;
+    }
+    const where = target.label;
     return withBrowserLock(async () => {
-      try { await invoke<string>('run_browser_persistent', { args: `open ${url}` }); }
-      catch (e) { return `[Could not open Gmail: ${String(e)}. Nothing was prepared — do not tell the user an email is waiting.]`; }
+      try { await invoke<string>('run_browser_persistent', { args: `open ${target.url}` }); }
+      catch (e) { return `[Could not open ${where}: ${String(e)}. Nothing was prepared — do not tell the user an email is waiting.]`; }
+      // No prefill possible for this provider: the window is their inbox, not a written email.
+      // Saying otherwise is how a blank message gets sent.
+      if (target.copyDraft) {
+        return `${where} is open at the user's mailbox, but this provider has no compose link saved, so the message is NOT written for them. Give them the full email here in your reply — subject on one line, then the body — and tell them to paste it into a new message to ${to}. Do NOT say the email is ready or waiting.`;
+      }
       const path = str(args.attach_path).trim();
-      if (!path) return `Gmail is open with the email to ${to} ready. The user reviews it and presses Send — it has NOT been sent. Tell them it is waiting in the browser window.`;
+      if (!path) return `${where} is open with the email to ${to} ready. The user reviews it and presses Send — it has NOT been sent. Tell them it is waiting in the browser window.`;
+      // Only Gmail's compose DOM is known well enough to drive; anywhere else, say so.
+      if (!target.canAttach) {
+        return `${where} is open with the email to ${to}, but I can only attach files automatically in Gmail. Tell the user plainly to attach ${path.split(/[\\/]/).pop()} themselves with ${where}'s attach button before sending — do NOT say it is attached.`;
+      }
       const attached = await attachFileInBrowser(path);
       // Never claim an attachment that is not on the message: the user would send it empty-handed
       // believing the file went with it, which is the exact failure this whole path exists to stop.
       return attached
-        ? `Gmail is open with the email to ${to} and ${path.split(/[\\/]/).pop()} attached. It is NOT sent — the user reviews it and presses Send. After they do, Gmail keeps the tab open and shows "Message sent" at the bottom; that is normal and it really has gone.`
-        : `Gmail is open with the email to ${to}, but I could NOT attach ${path.split(/[\\/]/).pop()} automatically. Tell the user plainly to attach it with Gmail's paperclip before sending — do not say it is attached.`;
+        ? `${where} is open with the email to ${to} and ${path.split(/[\\/]/).pop()} attached. It is NOT sent — the user reviews it and presses Send. After they do, Gmail keeps the tab open and shows "Message sent" at the bottom; that is normal and it really has gone.`
+        : `${where} is open with the email to ${to}, but I could NOT attach ${path.split(/[\\/]/).pop()} automatically. Tell the user plainly to attach it with Gmail's paperclip before sending — do not say it is attached.`;
     });
   }
 

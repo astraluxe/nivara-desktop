@@ -39,6 +39,7 @@ import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining }
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
 import { builtInSkillsBlock, learnSkill } from '../../lib/skillGraph';
 import { describeIntent, toolReceipt, stripToolNoise, setActivity, silenceActivity, resumeActivity, runLogFence, liveFrame, ACTIVITY_EVENT, getActivity, type AgentActivity } from '../../lib/agentActivity';
+import { trimRunHistory } from '../../lib/runHistory';
 import { dropUngroundedRows, repairAnswer, isUngroundedRecall, deniesCapability } from '../../lib/groundTruth';
 import { requiredToolsFor, contractDirective, clarifyDirective, unmetRequirements, correctionFor, carriesData, endsWithQuestion } from '../../lib/taskContract';
 import { parseLeadRequest } from '../../lib/leadIntent';
@@ -6085,7 +6086,14 @@ The prompt must be production-ready — specific enough for a motion designer to
     resumeActivity();   // clearing Stop restarts work — the activity bus speaks again
     resetToolStop();   // a new run: tools are allowed again
     const sid = sidRef.current;
-    addMsg({ role: 'delegation', toolName: 'deck_maker', content: 'Updating your deck…', streaming: true });
+    // The clock starts with the run, not with whichever branch happens to report first — so the
+    // elapsed time on screen is the time the user has actually been waiting.
+    const runT0 = Date.now();
+    addMsg({
+      role: 'delegation', toolName: 'deck_maker', streaming: true,
+      content: statusBlock(runT0, `Slade.Design — reading your change`,
+        `${base.slides.length} slide${base.slides.length === 1 ? '' : 's'} in "${(base.title || 'your deck').slice(0, 40)}". Working out whether this is a picture, a colour, a slide edit, or a rewrite.`),
+    });
     const setStatus = (t: string) => setMessages((prev) => {
       const c = [...prev]; const l = c[c.length - 1];
       if (l?.role === 'delegation') c[c.length - 1] = { ...l, content: t };
@@ -6141,11 +6149,45 @@ The prompt must be production-ready — specific enough for a motion designer to
       // the deck. Images/logo are stripped before sending (base64 is huge) and re-applied by
       // slide index afterwards so the user's pictures survive a text edit.
       if (changed === 0) {
-        setStatus('Applying your changes…');
+        // SAY WHICH DECK, HOW BIG, AND SHOW IT ARRIVING.
+        //
+        // "Applying your changes…" was one motionless line for the whole rewrite — no clock, no
+        // deck name, no slide count, and nothing streaming underneath it, because this call passed
+        // a no-op chunk handler. The user's words: "idk wht exactly it is doing or wht page or wht
+        // slide its working on nth… so idk if its dead or working". It was working; there was just
+        // no way to tell. Now it names the deck and the slide count, counts up, and paints the
+        // rewrite as the model writes it.
+        const editT0 = Date.now();
+        const deckLabel = spec.title ? `"${spec.title.slice(0, 44)}"` : 'your deck';
+        const editHead = `Slade.Design — rewriting ${deckLabel}`;
+        // The slide the instruction actually mentions, when it names one. Nothing is guessed: no
+        // number in the message means no slide is claimed.
+        const namedSlide = text.match(/\bslide\s+#?(\d{1,2})\b/i)?.[1];
+        const editDetail = `${spec.slides.length} slide${spec.slides.length === 1 ? '' : 's'} in, `
+          + (namedSlide ? `working on slide ${namedSlide}. ` : 'every slide you did not mention is kept as-is. ')
+          + `Your change: ${text.replace(/\s+/g, ' ').trim().slice(0, 110)}`;
+        setStatus(statusBlock(editT0, editHead, editDetail));
         const stripped = { ...spec, logo: undefined, slides: spec.slides.map((s) => ({ ...s, imageData: undefined })) };
         const editSys = AGENT_BY_KEY['deck_maker'].systemPrompt +
           `\n\n## EDIT AN EXISTING DECK\nBelow is the current deck as JSON. Apply ONLY the user's requested change and return the FULL updated deck as ONE compact, strictly-valid JSON object with the same structure. Keep every slide the user did NOT mention EXACTLY as-is and in the same order (slide 3 stays slide 3). Do NOT add imagePrompt or imageData fields. No markdown, no comments.\n\nCURRENT DECK:\n${JSON.stringify(stripped)}`;
-        const { text: outText } = await streamTurnWithRetry([{ role: 'user', content: text }], editSys, () => {});
+        // The rewrite comes back as one long JSON object, which is not something to show a user —
+        // so instead of the raw text, report the SHAPE of what has arrived: how many slides of the
+        // deck have been rewritten so far. Counting `"title"` keys in the partial buffer is exact
+        // enough to be honest (it is the count of slide objects that have opened) and it moves,
+        // which is the whole point.
+        let editBuf = '';
+        let lastSeen = -1;
+        const { text: outText } = await streamTurnWithRetry([{ role: 'user', content: text }], editSys, (chunk) => {
+          editBuf += chunk;
+          // -1 for the deck's own title, floored at 0 — never report a slide it has not reached.
+          const seen = Math.max(0, (editBuf.match(/"title"\s*:/g) || []).length - 1);
+          if (seen === lastSeen) return;
+          lastSeen = seen;
+          setStatus(statusBlock(editT0, editHead,
+            `${editDetail}\nRewritten ${Math.min(seen, spec.slides.length)} of ${spec.slides.length} slides so far.`));
+        });
+        setStatus(statusBlock(editT0, `Slade.Design — checking the rewritten deck`,
+          'Making sure every slide came back intact before it replaces the one you have.'));
         const edited = parseDeckSpec(outText);
         if (edited && edited.slides.length) {
           edited.logo = spec.logo;
@@ -6168,7 +6210,8 @@ The prompt must be production-ready — specific enough for a motion designer to
         setBusy(false); return;
       }
 
-      setStatus('Rendering deck…');
+      setStatus(statusBlock(runT0, 'Slade.Design — rendering the updated deck',
+        `${spec.slides.length} slide${spec.slides.length === 1 ? '' : 's'}, then saving it to your Brain.`));
       const html = renderDeckHtml(spec);
       lastDeckSpecRef.current = spec;
       setLastDeck(spec);
@@ -11568,7 +11611,25 @@ ${task}`);
                 const strip = (t: string) => (t || '')
                   .replace(/<tool_call>[\s\S]*/g, '').replace(/<tool_code>[\s\S]*/g, '')
                   .replace(/CHOICES_BLOCK:[\s\S]*/g, '').trim();
-                const wrap = await streamTurnWithRetry(delegateMsgsHist, delegateSystem, () => {}).catch(() => ({ text: '', truncated: false }));
+                // WRITE IT WHERE THE USER CAN SEE IT ARRIVING.
+                //
+                // This passed a no-op chunk handler, so the biggest single response of the whole
+                // run — "output the COMPLETE final result" — was assembled off-screen while the
+                // bubble sat on a frozen line. From the outside that is indistinguishable from a
+                // hang, which is why the run got stopped: and because streamTurn resolves with
+                // whatever it has when Stop lands, the entire answer then appeared at once, all in
+                // one go, the instant Stop was pressed. Same live paint the main loop uses.
+                const wrapT0 = Date.now();
+                let wrapBuf = '';
+                const wrap = await streamTurnWithRetry(delegateMsgsHist, delegateSystem, (chunk) => {
+                  wrapBuf += chunk;
+                  const f = liveFrame(wrapBuf, agentHandle(targetAgent));
+                  setAgentStep(`${agentHandle(targetAgent)} · writing the final answer…`);
+                  setActivity({ agent: agentHandle(targetAgent), agentKey: targetKey,
+                    headline: `${agentHandle(targetAgent)} — writing the final answer`, detail: f.detail,
+                    startedAt: wrapT0, phase: 'writing' });
+                  dPaint(joinBlocks(f.prose, statusBlock(wrapT0, `${agentHandle(targetAgent)} — writing the final answer`, f.detail)));
+                }).catch(() => ({ text: '', truncated: false }));
                 let wrapClean = strip(wrap.text);
                 let wrapRaw = wrap.text || '';
                 let wrapTrunc = wrap.truncated;
@@ -11587,7 +11648,16 @@ ${task}`);
                   setAgentStep(`${agentHandle(targetAgent)} · finishing up (${w + 2})…`);
                   delegateMsgsHist.push({ role: 'assistant', content: wrapRaw });
                   delegateMsgsHist.push({ role: 'user', content: continueInstruction(wrapClean) });
-                  const more = await streamTurnWithRetry(delegateMsgsHist, delegateSystem, () => {})
+                  // Live too — a continuation is more text for the same answer, and the user has
+                  // already been staring at a still screen for one whole response by this point.
+                  const contT0 = Date.now();
+                  let contBuf = '';
+                  const more = await streamTurnWithRetry(delegateMsgsHist, delegateSystem, (chunk) => {
+                    contBuf += chunk;
+                    const f = liveFrame(contBuf, agentHandle(targetAgent));
+                    const head = `${agentHandle(targetAgent)} — continuing the answer (part ${w + 2})`;
+                    dPaint(joinBlocks(joinCarried(wrapClean, f.prose), statusBlock(contT0, head, f.detail)));
+                  })
                     .catch(() => ({ text: '', truncated: false }));
                   const moreClean = strip(more.text);
                   if (!moreClean) break;
@@ -11745,15 +11815,31 @@ Everything you need for follow-ups is in that answer above; read it there rather
               // most likely to succeed.
               if (looksUnusable(finalDelegateOut, delegateTask) && !delegateChoices && !delegateProposal && !stopRef.current) {
                 setAgentStep(`${agentHandle(targetAgent)} · asking the short way…`);
-                updateLastMsg(statusBlock(Date.now(), `${agentHandle(targetAgent)} went quiet — asking again, simply`,
-                  'Same task, without the extra instructions a small model can choke on.'));
+                const retryT0 = Date.now();
+                const retryHead = `${agentHandle(targetAgent)} went quiet — asking again, simply`;
+                const retryDet = 'Same task, without the extra instructions a small model can choke on.';
+                updateLastMsg(statusBlock(retryT0, retryHead, retryDet));
                 try {
+                  // PAINT THIS ONE AS IT ARRIVES.
+                  //
+                  // The pipeline-stage version of this retry has always streamed; this one passed a
+                  // no-op and did not, which is the whole of "sometimes it writes in front of me and
+                  // sometimes it doesn't" — same app, two paths, one of them silent. Silent is also
+                  // what makes the retry look hung: the box says "asking again, simply", the clock
+                  // ticks, and the answer is being written somewhere the user cannot see. Pressing
+                  // Stop then flushes the buffer, which is why the whole answer landed at once
+                  // AFTER the Stop rather than before it.
+                  let retryBuf = '';
                   const retry = await streamTurnWithRetry(
                     [{ role: 'user', content: delegateTask }],
                     `You are ${targetAgent.humanName}, ${targetAgent.role}. ${targetAgent.description}\n\n`
                     + 'Answer the request directly and completely, in plain markdown. Do NOT call any tools. '
                     + 'Do not describe what you are about to do — produce the deliverable itself. Never reply with nothing.',
-                    () => {},
+                    (chunk) => {
+                      retryBuf += chunk;
+                      const f = liveFrame(retryBuf, agentHandle(targetAgent));
+                      updateLastMsg(joinBlocks(f.prose, statusBlock(retryT0, retryHead, f.detail)));
+                    },
                   );
                   const rt = cleanForRender((retry.text || '')
                     .replace(/<tool_call>[\s\S]*/g, '')
@@ -12453,8 +12539,16 @@ ${wfTask}`);
           : (toolResult.length > 2000 ? toolResult.slice(0, 2000) + '\n…[truncated]' : toolResult);
         history.push({ role: 'assistant', content: fullResponse });
         history.push({ role: 'user', content: `<tool_result>${cappedResult}</tool_result>` });
-        // Keep history bounded: first user message + last 8 entries (4 tool-call pairs)
-        if (history.length > 9) history.splice(1, history.length - 9);
+        // Keep history bounded: THE REQUEST BEING WORKED ON + the last 8 entries (4 tool-call pairs).
+        //
+        // This used to keep `history[0]`, on the assumption that index 0 was the current request.
+        // It is for a delegation, whose array starts at the task — and it is not here: this array
+        // is the whole conversation with the new message pushed on the END. So the trim protected
+        // whatever was said first in the chat and spliced out what the user had just asked for,
+        // two tool calls in. That is the "it forgets the task after the first or second message,
+        // or does something else" report, and why it only ever showed up in a chat that already
+        // had some history in it. trimRunHistory anchors on the request instead of a position.
+        history = trimRunHistory(history, apiText);
 
         // Add next streaming placeholder — and forget the carried text, because this is a NEW
         // bubble rather than a continuation of the one above.
@@ -13465,9 +13559,23 @@ ${wfTask}`);
     // Never write into a conversation this turn does not belong to — that used to overwrite the
     // last message of whichever chat the user had just opened.
     if (!owns()) return;
+    // AND NEVER RE-OPEN A BUBBLE THE USER ALREADY STOPPED.
+    //
+    // This sets `streaming: true` unconditionally, which is right while a run is alive and is
+    // exactly wrong on the way out of one. stop() finalises every streaming bubble and then
+    // re-finalises at 300 ms and 900 ms to catch stragglers — but a single late write from a turn
+    // still unwinding flipped streaming back on, and a streaming bubble with no content renders
+    // the "Working on it / Reading the request and choosing what to do first" box, which then
+    // counts up from its own start time forever. That is the box that sat there for a minute and
+    // a half after Stop with nothing behind it.
+    //
+    // The content is still written — whatever the run had produced stays visible, which is the
+    // whole reason those late writes are allowed at all. Only the "still working" claim is
+    // refused, because after Stop it is not true.
+    const live = !stopRef.current;
     setMessages((prev) => {
       const copy = [...prev];
-      if (copy.length) copy[copy.length - 1] = { ...copy[copy.length - 1], content, streaming: true };
+      if (copy.length) copy[copy.length - 1] = { ...copy[copy.length - 1], content, streaming: live };
       return copy;
     });
   }
