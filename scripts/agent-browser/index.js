@@ -661,7 +661,7 @@ async function main() {
       && cmd !== 'connections' && cmd !== 'logincheck' && cmd !== 'message' && cmd !== 'printpdf'
       && cmd !== 'findprofile' && cmd !== 'messages' && cmd !== 'typemsg' && cmd !== 'meetlink' && cmd !== 'whatsapp'
       && cmd !== 'readthread' && cmd !== 'gcalcheck' && cmd !== 'sentinvites' && cmd !== 'humancheck'
-      && cmd !== 'gmailthread') {
+      && cmd !== 'gmailthread' && cmd !== 'sendmsg' && cmd !== 'sendmail') {
     var state   = readState();
 
     var conn    = await ensureChrome();
@@ -1924,6 +1924,228 @@ async function main() {
     } catch (_) {}
     if (!tTyped) { process.stdout.write('PROFILE_OPENED_NO_BOX The compose box opened but typing into it failed. The draft was NOT sent — tell the user to paste it manually.'); return; }
     process.stdout.write('MESSAGE_DRAFTED — the reply is now sitting in the open chat box, unsent. Tell the user to review it and press Enter (or click Send) themselves.');
+    return;
+  }
+
+  // ── sendmsg <url> ::: <text> ────────────────────────────────────────────────
+  // typemsg, and then actually press Send.
+  //
+  // This is the one command in the file that does something irreversible, so it is the one that
+  // has to be hardest to get wrong. Three rules:
+  //
+  //   1. TYPE IT THE SAME WAY typemsg DOES. Real per-character keystrokes into the real editable.
+  //      A .fill() on a contenteditable does not fire the input events LinkedIn's React state
+  //      listens to, so Send stays disabled and a "sent" message was never in the box at all.
+  //
+  //   2. CONFIRM THE TEXT IS IN THE BOX BEFORE PRESSING SEND. If typing half-landed, sending
+  //      transmits half a message to a real person and there is no unsend.
+  //
+  //   3. CONFIRM IT LEFT. The box going empty is necessary but not sufficient — a failed send can
+  //      also clear it — so the message must be found in the thread afterwards. Anything less and
+  //      the caller marks somebody "sent" who never heard from you, which is worse than a failure:
+  //      a failure gets retried, a false success never does.
+  if (cmd === 'sendmsg') {
+    var sRaw = argv.slice(1).join(' ').replace(/^"|"$/g, '').trim();
+    var sSplit = sRaw.indexOf(' ::: ');
+    var sUrlRaw = sSplit >= 0 ? sRaw.slice(0, sSplit).trim() : sRaw;
+    var sText = sSplit >= 0 ? sRaw.slice(sSplit + 5).trim() : '';
+    var sUrl = sUrlRaw.indexOf('http') === 0 ? sUrlRaw : 'https://' + sUrlRaw;
+    if (!sText) { process.stdout.write('[sendmsg-error] NO_TEXT — no message was given, so nothing was sent.'); return; }
+    var sConn = await ensureChrome();
+    var sCtx = sConn.context;
+    if (!sCtx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
+    var sPage = sCtx.pages().at(-1) || await sCtx.newPage();
+    try { await sPage.goto(sUrl, { waitUntil: 'domcontentloaded', timeout: 25000 }); } catch (_) {}
+    if (isAuthWall(sPage.url())) {
+      var sTok = await pollForLoginCompletion(sPage, 30000);
+      if (!sTok) { writeState({ url: sPage.url() }); process.stdout.write('[SIGN_IN_REQUIRED] Please sign in to LinkedIn in the ADRIS browser window, then run this again.'); return; }
+    }
+    var sMissing = await sPage.evaluate(function () {
+      var t = (document.body && document.body.innerText) || '';
+      return /this page doesn.{0,3}t exist|page not found|check your URL/i.test(t);
+    }).catch(function () { return false; });
+    if (sMissing) {
+      writeState({ url: sPage.url() });
+      process.stdout.write('[sendmsg-error] PROFILE_NOT_FOUND — LinkedIn says that profile does not exist (' + sPage.url() + '). Nothing was sent.');
+      return;
+    }
+    await showBanner(sPage, 'ADRIS is sending a message you approved. Do not close this window.');
+    try { await sPage.waitForLoadState('networkidle', { timeout: 4000 }); } catch (_) {}
+    await new Promise(function (r) { setTimeout(r, 1200); });
+    var sOpened = await openLinkedInComposeBox(sPage);
+    var sBox = sOpened.box;
+    writeState({ url: sPage.url() });
+    if (!sBox) { process.stdout.write('SEND_FAILED NO_BOX ' + sOpened.why + ' Nothing was typed and nothing was sent.'); return; }
+    // Rule 1 + 2: type it, then read it back out of the box.
+    var sLanded = '';
+    try {
+      await sBox.click({ timeout: 3000 });
+      await sBox.pressSequentially(sText, { delay: 12, timeout: 30000 });
+      sLanded = (await sBox.innerText().catch(function () { return ''; })) || '';
+    } catch (_) {}
+    var normalise = function (t) { return String(t || '').replace(/\s+/g, ' ').trim(); };
+    var wantN = normalise(sText);
+    var gotN = normalise(sLanded);
+    if (!gotN) { process.stdout.write('SEND_FAILED TYPING_FAILED The compose box opened but nothing could be typed into it. Nothing was sent.'); return; }
+    // A short message must match outright; a long one is allowed to differ at the tail only if the
+    // overwhelming majority landed (LinkedIn trims trailing whitespace and can lazily re-render).
+    if (gotN !== wantN && gotN.length < Math.floor(wantN.length * 0.9)) {
+      process.stdout.write('SEND_FAILED PARTIAL_TEXT Only ' + gotN.length + ' of ' + wantN.length
+        + ' characters reached the box, so NOTHING was sent — a half-written message to a real person cannot be taken back. The draft is sitting in the box for the user to finish by hand.');
+      return;
+    }
+    // Press Send. The button first (it is the one LinkedIn itself wires up), Ctrl+Enter after —
+    // plain Enter is deliberately NOT used: on some layouts it inserts a newline instead, and on
+    // others it sends, so it cannot be told afterwards which one happened.
+    var sPressed = false;
+    try {
+      var sBtn = sPage.locator('button.msg-form__send-button, button[type="submit"].msg-form__send-btn, form.msg-form button:has-text("Send")').first();
+      if (await sBtn.count() > 0 && await sBtn.isEnabled({ timeout: 2000 }).catch(function () { return false; })) {
+        await sBtn.click({ timeout: 5000 });
+        sPressed = true;
+      }
+    } catch (_) {}
+    if (!sPressed) {
+      try { await sPage.getByRole('button', { name: /^Send$/ }).first().click({ timeout: 4000 }); sPressed = true; } catch (_) {}
+    }
+    if (!sPressed) {
+      try { await sBox.press('Control+Enter'); sPressed = true; } catch (_) {}
+    }
+    if (!sPressed) {
+      process.stdout.write('SEND_FAILED NO_SEND_BUTTON The message is typed into the chat box but the Send button could not be found or was disabled. Nothing was sent — the user can press Send themselves in the open window.');
+      return;
+    }
+    await new Promise(function (r) { setTimeout(r, 2200); });
+    // Rule 3: it is only sent if it is now IN THE THREAD. Checking the box emptied is not enough.
+    var sVerdict = await sPage.evaluate(function (payload) {
+      function norm(t) { return String(t || '').replace(/\s+/g, ' ').trim(); }
+      var want = norm(payload.want);
+      var box = document.querySelector('.msg-form__contenteditable, [contenteditable="true"][role="textbox"]');
+      var boxText = box ? norm(box.innerText) : '';
+      // The sent bubbles in the open conversation.
+      var bubbles = document.querySelectorAll('.msg-s-event-listitem__body, .msg-s-event__content, li.msg-s-message-list__event');
+      var found = false;
+      // Compare on a healthy chunk of the message, not the whole of it: LinkedIn re-flows
+      // whitespace and can truncate very long bubbles behind a "see more".
+      var probe = want.slice(0, Math.min(60, want.length));
+      for (var i = 0; i < bubbles.length; i++) {
+        if (norm(bubbles[i].innerText).indexOf(probe) >= 0) { found = true; break; }
+      }
+      return { boxEmpty: boxText.length === 0, inThread: found, bubbles: bubbles.length };
+    }, { want: sText }).catch(function () { return null; });
+    await hideBanner(sPage).catch(function () {});
+    writeState({ url: sPage.url() });
+    if (sVerdict && sVerdict.inThread) {
+      process.stdout.write('MESSAGE_SENT — confirmed in the conversation thread.');
+      return;
+    }
+    if (sVerdict && sVerdict.boxEmpty) {
+      // Box cleared but we could not find the bubble. Probably sent; say so in those words and let
+      // the caller decide, rather than recording a certainty nobody checked.
+      process.stdout.write('SEND_UNCONFIRMED The compose box cleared, which usually means it went, but the message could not be found in the thread to prove it. Do NOT record this as sent without the user checking the conversation.');
+      return;
+    }
+    process.stdout.write('SEND_FAILED NOT_IN_THREAD The Send button was pressed but the message is still in the box and not in the conversation. Nothing appears to have gone.');
+    return;
+  }
+
+  // ── sendmail <to> ::: <subject> ::: <body> ──────────────────────────────────
+  // Gmail: open a compose window with the message in it, check the fields really carry what we
+  // meant, press Send, and confirm Gmail said it went.
+  //
+  // Same discipline as sendmsg, and one extra check that matters here: the compose deeplink is a
+  // URL, and a URL can silently drop or mangle a field. Sending a message whose body arrived empty
+  // — or whose recipient did not — is the failure this verification exists to prevent.
+  if (cmd === 'sendmail') {
+    var mRaw = argv.slice(1).join(' ').replace(/^"|"$/g, '').trim();
+    var mParts = mRaw.split(' ::: ');
+    var mTo = (mParts[0] || '').trim();
+    var mSubj = (mParts[1] || '').trim();
+    var mBody = mParts.slice(2).join(' ::: ').trim();
+    if (!mTo || mTo.indexOf('@') < 0) { process.stdout.write('[sendmail-error] NO_RECIPIENT — "' + mTo.slice(0, 60) + '" is not an email address. Nothing was sent.'); return; }
+    if (!mBody) { process.stdout.write('[sendmail-error] NO_BODY — no message body was given, so nothing was sent.'); return; }
+    var mConn = await ensureChrome();
+    var mCtx = mConn.context;
+    if (!mCtx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
+    var mPage = mCtx.pages().at(-1) || await mCtx.newPage();
+    var mUrl = 'https://mail.google.com/mail/?view=cm&fs=1&to=' + encodeURIComponent(mTo)
+      + '&su=' + encodeURIComponent(mSubj) + '&body=' + encodeURIComponent(mBody);
+    try { await mPage.goto(mUrl, { waitUntil: 'domcontentloaded', timeout: 25000 }); } catch (_) {}
+    if (isAuthWall(mPage.url()) || /accounts\.google\.com/i.test(mPage.url())) {
+      var mTok = await pollForLoginCompletion(mPage, 30000);
+      if (!mTok) { writeState({ url: mPage.url() }); process.stdout.write('[SIGN_IN_REQUIRED] Please sign in to Gmail in the ADRIS browser window, then run this again.'); return; }
+    }
+    await showBanner(mPage, 'ADRIS is sending an email you approved. Do not close this window.');
+    try { await mPage.waitForSelector('textarea[name="to"], input[name="to"], div[role="textbox"][aria-label*="Message Body"], div[aria-label="Message Body"]', { timeout: 12000 }); } catch (_) {}
+    await new Promise(function (r) { setTimeout(r, 1200); });
+    // Did the deeplink really fill the compose window in?
+    var mCheck = await mPage.evaluate(function (payload) {
+      function norm(t) { return String(t || '').replace(/\s+/g, ' ').trim(); }
+      function val(el) { if (!el) return ''; return norm(el.value !== undefined && el.value !== null && el.value !== '' ? el.value : el.innerText); }
+      var toEl = document.querySelector('textarea[name="to"], input[name="to"]');
+      // Gmail also renders confirmed recipients as chips rather than raw text in the field.
+      var chips = document.querySelectorAll('div[email], span[email]');
+      var chipMails = [];
+      for (var c = 0; c < chips.length; c++) { chipMails.push(String(chips[c].getAttribute('email') || '').toLowerCase()); }
+      var subjEl = document.querySelector('input[name="subjectbox"]');
+      var bodyEl = document.querySelector('div[role="textbox"][aria-label*="Message Body"], div[aria-label="Message Body"], div[g_editable="true"]');
+      return {
+        to: val(toEl).toLowerCase(),
+        chips: chipMails,
+        subject: val(subjEl),
+        body: bodyEl ? norm(bodyEl.innerText) : '',
+        hasCompose: !!bodyEl,
+      };
+    }, {}).catch(function () { return null; });
+    if (!mCheck || !mCheck.hasCompose) {
+      await hideBanner(mPage).catch(function () {});
+      writeState({ url: mPage.url() });
+      process.stdout.write('SEND_FAILED NO_COMPOSE Gmail did not open a compose window, so nothing was written and nothing was sent.');
+      return;
+    }
+    var mToOk = mCheck.to.indexOf(mTo.toLowerCase()) >= 0 || mCheck.chips.indexOf(mTo.toLowerCase()) >= 0;
+    if (!mToOk) {
+      await hideBanner(mPage).catch(function () {});
+      process.stdout.write('SEND_FAILED WRONG_RECIPIENT The compose window is addressed to "' + String(mCheck.to).slice(0, 80)
+        + '" rather than ' + mTo + '. Nothing was sent — sending to the wrong person cannot be undone.');
+      return;
+    }
+    var mBodyN = String(mBody).replace(/\s+/g, ' ').trim();
+    var mGotN = String(mCheck.body || '').replace(/\s+/g, ' ').trim();
+    if (mGotN.length < Math.floor(mBodyN.length * 0.9)) {
+      await hideBanner(mPage).catch(function () {});
+      process.stdout.write('SEND_FAILED BODY_INCOMPLETE Only ' + mGotN.length + ' of ' + mBodyN.length
+        + ' characters of the message reached the compose window, so nothing was sent. The window is open for the user to finish by hand.');
+      return;
+    }
+    // Send. Gmail's own button first; Ctrl+Enter is the documented shortcut and the fallback.
+    var mPressed = false;
+    try {
+      var mBtn = mPage.locator('div[role="button"][data-tooltip^="Send"], div[role="button"][aria-label^="Send"], div.T-I.J-J5-Ji.aoO').first();
+      if (await mBtn.count() > 0) { await mBtn.click({ timeout: 5000 }); mPressed = true; }
+    } catch (_) {}
+    if (!mPressed) { try { await mPage.keyboard.press('Control+Enter'); mPressed = true; } catch (_) {} }
+    if (!mPressed) {
+      await hideBanner(mPage).catch(function () {});
+      process.stdout.write('SEND_FAILED NO_SEND_BUTTON The email is written in the compose window but Gmail\'s Send button could not be found. Nothing was sent.');
+      return;
+    }
+    await new Promise(function (r) { setTimeout(r, 2500); });
+    // Gmail confirms with a "Message sent" toast and closes the compose window. Require one of them.
+    var mVerdict = await mPage.evaluate(function () {
+      var t = (document.body && document.body.innerText) || '';
+      var toast = /message sent|your message has been sent/i.test(t);
+      var stillOpen = !!document.querySelector('div[role="textbox"][aria-label*="Message Body"], div[aria-label="Message Body"]');
+      return { toast: toast, stillOpen: stillOpen };
+    }).catch(function () { return null; });
+    await hideBanner(mPage).catch(function () {});
+    writeState({ url: mPage.url() });
+    if (mVerdict && mVerdict.toast) { process.stdout.write('EMAIL_SENT — Gmail confirmed "Message sent" to ' + mTo + '.'); return; }
+    if (mVerdict && !mVerdict.stillOpen) {
+      process.stdout.write('SEND_UNCONFIRMED The compose window closed, which usually means it went, but Gmail\'s "Message sent" confirmation was not seen. Do NOT record this as sent without the user checking their Sent folder.');
+      return;
+    }
+    process.stdout.write('SEND_FAILED STILL_OPEN Send was pressed but the compose window is still open, so the email does not appear to have gone.');
     return;
   }
 

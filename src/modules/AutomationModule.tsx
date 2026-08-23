@@ -16,7 +16,10 @@ import { useResize } from '../hooks/useResize';
 
 type TriggerType = 'schedule' | 'file_watch' | 'email' | 'webhook' | 'twitter_mention' | 'rss' | 'github' | 'stripe' | 'google_calendar' | 'canvas_flow';
 type OutputType  = 'notification' | 'file' | 'email_reply' | 'notion' | 'slack' | 'twitter_post' | 'twitter_reply' | 'linkedin_post' | 'discord' | 'google_sheets' | 'twilio_sms' | 'telegram' | 'hubspot';
-type ActionType  = 'summarise' | 'reply' | 'extract' | 'classify' | 'report' | 'translate';
+// `outreach_send` is deliberately NOT an AI action: it delivers drafts the user already approved
+// rather than asking a model to produce anything. It lives in this union because it is a step, and
+// the runner branches on it before the model is ever called.
+type ActionType  = 'summarise' | 'reply' | 'extract' | 'classify' | 'report' | 'translate' | 'outreach_send';
 
 interface TriggerConfig {
   cron?: string;
@@ -148,6 +151,7 @@ const TRIGGER_LABELS: Record<TriggerType, string> = {
 const ACTION_LABELS: Record<ActionType, string> = {
   summarise: 'Summarise', reply: 'Draft reply', extract: 'Extract data',
   classify: 'Classify', report: 'Generate report', translate: 'Translate',
+  outreach_send: 'Send my outreach',
 };
 
 // ─── Schedule helpers ─────────────────────────────────────────────────────────
@@ -355,6 +359,47 @@ function templateToFlow(t: Template) {
   return buildFlow(t.trigger_type, t.trigger_config, t.steps);
 }
 
+/**
+ * What this template still needs from the user before it can do anything.
+ *
+ * Several ship with a deliberately blank field — a folder to watch, an RSS URL, a Notion database,
+ * a Discord webhook — because only the user knows the value. That is fine; what was not fine is
+ * that the card said nothing about it, so "Use template" produced a flow that looked complete,
+ * saved happily, ran on schedule and quietly delivered nothing. Naming the gap on the card is the
+ * difference between a template and a trap.
+ */
+function templateSetupNeeds(t: Template): string[] {
+  const c = t.trigger_config;
+  const needs: string[] = [];
+  if (t.trigger_type === 'file_watch' && !c.folder) needs.push('a folder to watch');
+  if (t.trigger_type === 'rss' && !c.rss_url) needs.push('an RSS feed URL');
+  if (t.trigger_type === 'webhook' && !c.webhook_path) needs.push('a webhook path');
+  if (t.trigger_type === 'github' && !c.github_repo) needs.push('a GitHub repo');
+  if (c.notion_crm_db === '') needs.push('a Notion database');
+  if (c.pitch_file_path === '') needs.push('your product/pitch file');
+  for (const s of t.steps) {
+    const oc = s.output_config ?? {};
+    if (oc.notion_db_url === '') needs.push('a Notion database');
+    if (oc.discord_webhook === '') needs.push('a Discord webhook');
+    if (oc.sheet_id === '') needs.push('a Google Sheet');
+    if (oc.slack_channel === '') needs.push('a Slack channel');
+    if (oc.telegram_chat_id === '') needs.push('a Telegram chat');
+    if (oc.sms_to === '') needs.push('a phone number');
+    // The one that is not a blank field but is still a hard prerequisite — and the one most likely
+    // to be discovered at 10am on a Monday by nothing happening.
+    if (s.action === 'outreach_send') needs.push('your mailbox set up for sending (Send from → Test)');
+  }
+  // Connected-account requirements, which are just as blocking as an empty field.
+  const outs = t.steps.map((s) => s.output);
+  if (outs.includes('email_reply')) needs.push('Google connected');
+  if (outs.includes('linkedin_post')) needs.push('LinkedIn connected');
+  if (outs.includes('twitter_post') || outs.includes('twitter_reply')) needs.push('X connected');
+  if (t.trigger_type === 'email' || t.trigger_type === 'twitter_mention') {
+    needs.push(t.trigger_type === 'email' ? 'Gmail connected' : 'X connected');
+  }
+  return Array.from(new Set(needs));
+}
+
 const AUTOMATION_CAPABILITY_CONTEXT = `
 ## adris.tech Automation — Full Capability Reference
 
@@ -369,7 +414,8 @@ TRIGGERS — ONLY these exist, nothing else:
 - stripe: Stripe payment events (payment_intent.succeeded, charge.failed, etc.)
 - google_calendar: Upcoming calendar events — lookahead window in minutes
 
-AI ACTIONS — ONLY these exist:
+STEP ACTIONS — ONLY these exist:
+- outreach_send: NOT an AI step. Sends the messages already drafted and approved in the outreach copilot — by email from the user's own mailbox (their SMTP must be set up and tested first), and optionally LinkedIn. It never writes or rewrites anything, because those drafts were already approved. The step's prompt IS its settings, in plain words: a number is the per-run cap ("Send up to 20 approved outreach emails"), and including the word "LinkedIn" opts that channel in. It skips any draft with an unfilled placeholder, no subject line or no profile link, and stops at the daily limits.
 - summarise: Condense content into key points
 - reply: Draft a reply/response to the content
 - extract: Pull structured data (names, emails, numbers, dates) as JSON
@@ -561,6 +607,51 @@ interface Template {
 }
 
 const TEMPLATES: Template[] = [
+  // ── THE ONE PEOPLE ACTUALLY ASK FOR ───────────────────────────────────────
+  //
+  // The outreach copilot writes the messages and the user approves them; until now the only way to
+  // deliver them was to sit there pressing two buttons per contact. This is that job, on a timer.
+  //
+  // It sends what is ALREADY in the campaign — no model runs, nothing is re-written. That is the
+  // point: the drafts were read and approved days ago, and an automation that regenerated them
+  // would be sending something nobody signed off. Everything else it inherits from the copilot:
+  // the same refusal to send a draft with a placeholder in it, the same daily caps, the same
+  // human pacing, and the same rule that only a confirmed send marks somebody contacted.
+  {
+    id: 'outreach-daily-send', name: 'Send my outreach every morning',
+    description: 'Every weekday at 10am, send the next batch of approved messages from your outreach campaign — by email from your own work mailbox. Nothing is re-written: it sends exactly the drafts you approved, skips anything unfinished, and stops at your daily limit.',
+    trigger_type: 'schedule', trigger_config: { cron: '0 10 * * 1-5', weekdays_only: true, business_hours: true },
+    steps: [
+      {
+        action: 'outreach_send',
+        // This line IS the configuration, in plain words — the number is the per-run cap, and
+        // adding "LinkedIn" opts that channel in. Kept as prose so it edits like every other step.
+        prompt: 'Send up to 20 approved outreach emails from the saved campaign.',
+        output: 'notification',
+        output_config: { notif_title: 'Outreach sent' },
+      },
+    ],
+    tags: ['Schedule', 'Sales', 'Outreach'],
+  },
+  {
+    id: 'outreach-send-and-report', name: 'Outreach send + end-of-day report',
+    description: 'Sends your approved outreach in the morning, then writes you a plain-English summary of who got contacted, who was skipped and why.',
+    trigger_type: 'schedule', trigger_config: { cron: '0 10 * * 1-5', weekdays_only: true },
+    steps: [
+      {
+        action: 'outreach_send',
+        prompt: 'Send up to 15 approved outreach emails from the saved campaign.',
+        output: 'notification',
+      },
+      {
+        action: 'report',
+        prompt: 'Turn the send report above into three short lines for the person who owns this list: how many actually went, anything that failed and what it means in practical terms, and the single most useful thing to fix before tomorrow\'s run. No preamble, no bullet symbols, plain sentences.',
+        output: 'notification',
+        output_config: { notif_title: 'Outreach — how it went' },
+      },
+    ],
+    tags: ['Schedule', 'Sales', 'Outreach'],
+  },
   {
     id: 'auto-reply-leads', name: 'Auto-reply to leads',
     description: 'When a new email arrives, research the sender and draft a personalised reply.',
@@ -2720,6 +2811,19 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
                     {t.tags.map(tag => <span key={tag} className="px-2 py-0.5 rounded-full bg-nv-surface2 text-nv-muted text-[10px] font-mono">{tag}</span>)}
                     <span className="px-2 py-0.5 rounded-full bg-accent/10 text-accent text-[10px] font-mono ml-auto">{TRIGGER_LABELS[t.trigger_type]}</span>
                   </div>
+                  {/* WHAT IT STILL NEEDS FROM YOU — said before you pick it, not discovered after
+                      a week of it running and delivering nothing. See templateSetupNeeds. */}
+                  {(() => {
+                    const needs = templateSetupNeeds(t);
+                    if (!needs.length) {
+                      return <p className="text-[10px] text-nv-green/80 leading-snug">Ready to use as-is.</p>;
+                    }
+                    return (
+                      <p className="text-[10px] text-nv-yellow/90 leading-snug">
+                        You'll need to add: {needs.join(', ')}.
+                      </p>
+                    );
+                  })()}
                   <button onClick={() => useTemplate(t)} className="w-full py-1.5 rounded-md bg-nv-bg border border-nv-border hover:border-accent hover:text-accent text-nv-muted text-xs font-mono transition-fast">
                     Use template
                   </button>

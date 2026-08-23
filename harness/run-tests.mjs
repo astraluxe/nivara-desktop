@@ -37,6 +37,7 @@ const UNITS = [
   ['runHistory',    'src/lib/runHistory.ts'],
   ['mailProviders', 'src/lib/mailProviders.ts'],
   ['emailDraft',    'src/lib/emailDraft.ts'],
+  ['outreachSender','src/lib/outreachSender.ts'],
 ];
 
 let failed = 0;
@@ -59,6 +60,13 @@ if (!process.argv.includes('--unit')) {
   }
   console.log('\n### OutreachCopilot, in a real browser');
   try { execFileSync(process.execPath, [path.join(here, 'drive.mjs')], { stdio: 'inherit' }); }
+  catch { failed++; }
+
+  // The send run gets its own pass: it is the only feature in the app that does something to a
+  // real stranger, so its failure paths — a refused SMTP login, an unconfirmed delivery, a Stop
+  // mid-run — are driven explicitly rather than hoped about.
+  console.log('\n### Automatic sending, in a real browser');
+  try { execFileSync(process.execPath, [path.join(here, 'drive-send.mjs')], { stdio: 'inherit' }); }
   catch { failed++; }
 }
 

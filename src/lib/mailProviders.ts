@@ -39,8 +39,38 @@ export type MailProviderId =
   | 'mailto'
   | 'custom';
 
+/**
+ * How to send WITHOUT a human pressing Send.
+ *
+ * The compose links above are for a person: they open a window with the message in it and someone
+ * reviews it. An automation has nobody to do that, and driving a webmail's Send button is only
+ * possible where we know its DOM — which is Gmail and nothing else. SMTP is the way every other
+ * mailbox can be sent from, it is what a work address is FOR, and the server answers with a plain
+ * accepted-or-refused instead of something we would have to infer from the page.
+ *
+ * The password is NEVER stored here. This object goes to localStorage; the password goes to the OS
+ * keychain through the existing credential store, under the service name `smtp`.
+ */
+export interface SmtpSetup {
+  host: string;
+  port: number;
+  username: string;
+  /** true = TLS from the first byte (port 465); false = STARTTLS (port 587). Providers document
+   *  one or the other, and picking the wrong one is the usual reason a correct password still
+   *  fails to connect — so it is a setting rather than something inferred from the port. */
+  implicitTls: boolean;
+  /** The name recipients see. Blank sends from the bare address. */
+  fromName?: string;
+  /** The address it comes FROM, when that differs from the login (aliases, shared mailboxes). */
+  fromAddress?: string;
+  /** Set once a Test send has really succeeded, so nothing claims this works untested. */
+  verifiedAt?: number;
+}
+
 export interface MailSetup {
   provider: MailProviderId;
+  /** Optional. Present = this mailbox can be sent from automatically. */
+  smtp?: SmtpSetup;
   /**
    * For `custom`: the compose URL template, with {to} {subject} {body} {cc} tokens. Empty when the
    * user does not know one — then we can only open the mailbox and copy the draft.
@@ -229,4 +259,65 @@ export function mailSetupIncomplete(setup: MailSetup): boolean {
   return setup.provider === 'custom'
     && !(setup.composeTemplate || '').trim()
     && !(setup.webmailUrl || '').trim();
+}
+
+// ─── Sending on the user's behalf ─────────────────────────────────────────────
+
+/**
+ * Common SMTP settings, per provider.
+ *
+ * Unlike a compose deeplink, these ARE published by the providers themselves and are stable, so
+ * offering them saves the user a support-page hunt. They are still only a STARTING POINT: every
+ * field stays editable, nothing is used until a Test send actually succeeds, and a provider that
+ * is not on this list is typed in by hand rather than guessed at.
+ */
+export const SMTP_PRESETS: { id: string; label: string; host: string; port: number; implicitTls: boolean; note: string }[] = [
+  { id: 'gmail', label: 'Gmail / Google Workspace', host: 'smtp.gmail.com', port: 465, implicitTls: true,
+    note: 'Needs an App Password (Google account → Security → 2-Step Verification → App passwords), not your normal password.' },
+  { id: 'titan', label: 'Titan / Hostinger email', host: 'smtp.titan.email', port: 465, implicitTls: true,
+    note: 'Your full email address and its password. Turn on third-party email access in Titan first. Port 587 with STARTTLS is the alternative if 465 is blocked.' },
+  { id: 'hostinger', label: 'Hostinger (non-Titan mailbox)', host: 'smtp.hostinger.com', port: 465, implicitTls: true,
+    note: 'Use the mailbox address and password from hPanel → Emails.' },
+  { id: 'zoho_in', label: 'Zoho Mail (India — .in)', host: 'smtp.zoho.in', port: 465, implicitTls: true,
+    note: 'Zoho needs an app-specific password when 2FA is on. Use smtp.zoho.com instead if your account is on the global data centre.' },
+  { id: 'zoho_com', label: 'Zoho Mail (global — .com)', host: 'smtp.zoho.com', port: 465, implicitTls: true,
+    note: 'Zoho needs an app-specific password when 2FA is on.' },
+  { id: 'outlook', label: 'Outlook / Microsoft 365', host: 'smtp-mail.outlook.com', port: 587, implicitTls: false,
+    note: 'STARTTLS on 587. Many tenants now require an app password or block basic SMTP entirely — if Test fails, your admin has turned SMTP AUTH off.' },
+  { id: 'custom', label: 'Something else — I will type it in', host: '', port: 465, implicitTls: true,
+    note: 'Your provider calls this "outgoing mail server" or "SMTP". Port 465 usually means SSL/TLS; 587 usually means STARTTLS.' },
+];
+
+/** Keychain service name for the SMTP password. Never localStorage. */
+export const SMTP_CREDENTIAL_SERVICE = 'smtp';
+
+/**
+ * Can this mailbox send on its own, right now?
+ *
+ * Requires a host, a username AND a successful Test. The last one is the point: a configuration
+ * that has never connected is a configuration that will fail in the middle of a run of forty, at
+ * which time nobody is watching.
+ */
+export function canAutoSendEmail(setup: MailSetup): boolean {
+  const s = setup.smtp;
+  return !!(s && s.host.trim() && s.username.trim() && s.verifiedAt);
+}
+
+/** Why it cannot, in words the UI can show. */
+export function autoSendBlocker(setup: MailSetup): string {
+  const s = setup.smtp;
+  if (!s || !s.host.trim() || !s.username.trim()) {
+    return 'Automatic sending needs your mailbox\'s outgoing (SMTP) details. Add them under "Send from", then press Test.';
+  }
+  if (!s.verifiedAt) {
+    return 'These SMTP details have not connected successfully yet. Press Test — a run must never start on settings that have never worked.';
+  }
+  return '';
+}
+
+/** The address an automated send will really come from. */
+export function sendingAddress(setup: MailSetup): string {
+  const s = setup.smtp;
+  if (!s) return '';
+  return (s.fromAddress || '').trim() || (s.username || '').trim();
 }

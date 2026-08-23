@@ -656,28 +656,77 @@ const cfgInputCls = 'w-full px-2.5 py-1.5 rounded-lg bg-nv-bg border border-nv-b
 const cfgSelectCls = 'w-full px-2.5 py-1.5 rounded-lg bg-nv-bg border border-nv-border text-nv-text text-[11px] focus:outline-none focus:border-accent transition-fast';
 const cfgLabelCls = 'text-[9px] font-mono text-nv-muted uppercase tracking-wider block';
 
+/** The name shown ON the block, so changing what a step does renames the block with it — a node
+ *  still labelled "Summarise" while set to something else is the canvas lying about itself. */
+const ACTION_NODE_LABELS: Record<string, string> = {
+  summarise: 'Summarise', reply: 'Draft reply', extract: 'Extract data',
+  classify: 'Classify', report: 'Generate report', translate: 'Translate',
+  outreach_send: 'Send my outreach',
+};
+
 // ─── Node Config Panel ─────────────────────────────────────────────────────
 function NodeConfig({
   node, onUpdate, onDelete,
 }: { node: Node | null; onUpdate: (id: string, data: Record<string, any>) => void; onDelete: (id: string) => void }) {
+  // AN EMPTY PANEL SHOULD STILL TEACH SOMETHING.
+  //
+  // "Click a node to configure it" is true and useless: it is the state a first-time user spends
+  // the longest looking at, and it told them nothing about what a flow is made of or what they
+  // could do next. Naming the pieces turns dead space into the only documentation anyone reads.
   if (!node) {
     return (
-      <div className="w-[196px] shrink-0 border-l border-nv-border bg-nv-surface flex items-center justify-center">
-        <p className="text-[10px] text-nv-muted font-mono text-center px-4 leading-relaxed">
-          Click a node<br/>to configure it
-        </p>
+      <div className="w-[240px] shrink-0 border-l border-nv-border bg-nv-surface overflow-y-auto">
+        <div className="px-3 py-2.5 border-b border-nv-border">
+          <p className="text-[10px] font-mono text-nv-muted uppercase tracking-widest">Inspector</p>
+        </div>
+        <div className="px-3 py-3 space-y-2.5">
+          <p className="text-[10.5px] text-nv-text leading-relaxed">Click any block to set it up.</p>
+          <div className="space-y-1.5">
+            {([
+              ['#22c55e', 'Trigger', 'when it runs — a time, an email, a file, a webhook'],
+              ['#7c5cff', 'Action', 'what happens — send your outreach, or ask the AI'],
+              ['#eab308', 'Condition', 'only carry on if something is true'],
+              ['#38bdf8', 'Output', 'where the result goes — notification, file, Slack, email'],
+            ] as const).map(([colour, name, what]) => (
+              <div key={name} className="flex items-start gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full mt-1 shrink-0" style={{ background: colour }} />
+                <p className="text-[9.5px] text-nv-muted leading-snug">
+                  <span className="text-nv-text font-medium">{name}</span> — {what}
+                </p>
+              </div>
+            ))}
+          </div>
+          <p className="text-[9px] text-nv-faint leading-relaxed pt-1 border-t border-nv-border">
+            Drag from a block's right edge to the next one to connect them. A flow runs left to right.
+          </p>
+        </div>
       </div>
     );
   }
 
   const d = node.data as Record<string, any>;
   const type = node.type as string;
+  const TYPE_TINT: Record<string, string> = {
+    trigger: '#22c55e', ai_action: '#7c5cff', condition: '#eab308', loop: '#f97316',
+    http_request: '#06b6d4', data_transform: '#a855f7', human_approval: '#ec4899',
+    sub_agent: '#14b8a6', output: '#38bdf8',
+  };
 
   return (
-    <div className="w-[196px] shrink-0 border-l border-nv-border bg-nv-surface overflow-y-auto">
-      <div className="px-3 py-2.5 border-b border-nv-border flex items-center justify-between">
-        <p className="text-[10px] font-mono text-nv-muted uppercase tracking-widest">{type.replace('_', ' ')}</p>
-        <button onClick={() => onDelete(node.id)} className="text-[9px] font-mono text-nv-muted hover:text-nv-red transition-fast">delete</button>
+    <div className="w-[240px] shrink-0 border-l border-nv-border bg-nv-surface overflow-y-auto">
+      {/* The block's OWN name, not just its category. With a dozen "AI ACTION" nodes on a canvas,
+          a panel headed "AI ACTION" gives no way to tell which one you are editing. */}
+      <div className="px-3 py-2.5 border-b border-nv-border">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: TYPE_TINT[type] ?? '#7c5cff' }} />
+            <p className="text-[10px] font-mono text-nv-muted uppercase tracking-widest truncate">{type.replace(/_/g, ' ')}</p>
+          </div>
+          <button onClick={() => onDelete(node.id)} className="text-[9px] font-mono text-nv-muted hover:text-nv-red transition-fast shrink-0">delete</button>
+        </div>
+        {!!String(d.label ?? '') && (
+          <p className="text-[11px] text-nv-text font-medium truncate mt-0.5" title={String(d.label)}>{String(d.label)}</p>
+        )}
       </div>
       <div className="px-3 py-3 space-y-3">
         <div className="space-y-1">
@@ -863,25 +912,86 @@ function NodeConfig({
             report:    'e.g. Weekly summary with key metrics and next steps',
             translate: 'e.g. Translate to Hindi, keep a professional tone',
           };
+          // "Send my outreach" is the one step here that is not an AI step — it delivers drafts
+          // the user already approved. So it gets real controls (how many, which channel) instead
+          // of a free-text prompt box, and the prompt is WRITTEN from those controls, because the
+          // runner reads its settings out of that sentence.
+          const isSend = action === 'outreach_send';
+          const sendCap = (/\b(\d{1,3})\b/.exec(String(d.prompt ?? '')) || [, '20'])[1];
+          const sendLi = /linkedin/i.test(String(d.prompt ?? ''));
+          const writeSend = (cap: string, li: boolean) =>
+            onUpdate(node.id, {
+              ...d, action: 'outreach_send',
+              label: 'Send my outreach',
+              prompt: `Send up to ${cap} approved outreach ${li ? 'messages by email and LinkedIn' : 'emails'} from the saved campaign.`,
+            });
           return (
             <>
               <div className="space-y-1">
-                <label className={cfgLabelCls}>What should AI do?</label>
-                <select value={action} onChange={e => onUpdate(node.id, { ...d, action: e.target.value })} className={cfgSelectCls}>
-                  <option value="summarise">Summarise the content</option>
-                  <option value="reply">Draft a reply</option>
-                  <option value="extract">Extract key data</option>
-                  <option value="classify">Classify / label it</option>
-                  <option value="report">Generate a report</option>
-                  <option value="translate">Translate</option>
+                <label className={cfgLabelCls}>What should this step do?</label>
+                <select
+                  value={action}
+                  onChange={e => {
+                    const next = e.target.value;
+                    if (next === 'outreach_send') writeSend('20', false);
+                    else onUpdate(node.id, { ...d, action: next, label: ACTION_NODE_LABELS[next] ?? next });
+                  }}
+                  className={cfgSelectCls}>
+                  <optgroup label="Do a real thing">
+                    <option value="outreach_send">Send my outreach</option>
+                  </optgroup>
+                  <optgroup label="Ask the AI">
+                    <option value="summarise">Summarise the content</option>
+                    <option value="reply">Draft a reply</option>
+                    <option value="extract">Extract key data</option>
+                    <option value="classify">Classify / label it</option>
+                    <option value="report">Generate a report</option>
+                    <option value="translate">Translate</option>
+                  </optgroup>
                 </select>
               </div>
-              <div className="space-y-1">
-                <label className={cfgLabelCls}>Extra instructions (optional)</label>
-                <textarea value={String(d.prompt ?? '')} onChange={e => onUpdate(node.id, { ...d, prompt: e.target.value })}
-                  rows={4} placeholder={placeholders[action] ?? 'Add any extra instructions…'}
-                  className={`${cfgInputCls} resize-none leading-relaxed`} style={{ height: 'auto' }} />
-              </div>
+
+              {isSend ? (
+                <>
+                  <p className="text-[9.5px] text-nv-muted leading-relaxed">
+                    Sends the messages you already approved in the outreach copilot. Nothing is re-written.
+                  </p>
+                  <div className="space-y-1">
+                    <label className={cfgLabelCls}>Most to send per run</label>
+                    <select value={sendCap} onChange={e => writeSend(e.target.value, sendLi)} className={cfgSelectCls}>
+                      {['5', '10', '15', '20', '30', '50'].map(n => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className={cfgLabelCls}>Channels</label>
+                    <select value={sendLi ? 'both' : 'email'} onChange={e => writeSend(sendCap, e.target.value === 'both')} className={cfgSelectCls}>
+                      <option value="email">Email only</option>
+                      <option value="both">Email + LinkedIn</option>
+                    </select>
+                  </div>
+                  {sendLi && (
+                    <p className="text-[9px] text-nv-yellow leading-relaxed">
+                      LinkedIn's terms forbid automated messaging. adris paces itself and caps the day, but
+                      the account at risk is yours.
+                    </p>
+                  )}
+                  <p className="text-[9px] text-nv-muted leading-relaxed">
+                    Email goes from your own mailbox — set it up under <b>Send from → Send automatically</b> in the
+                    outreach copilot and press Test first, or this step will refuse to run.
+                  </p>
+                  <p className="text-[9px] text-nv-faint leading-relaxed">
+                    Skips anything unfinished (a placeholder left in, no subject, no profile link) and
+                    tells you who and why.
+                  </p>
+                </>
+              ) : (
+                <div className="space-y-1">
+                  <label className={cfgLabelCls}>Extra instructions (optional)</label>
+                  <textarea value={String(d.prompt ?? '')} onChange={e => onUpdate(node.id, { ...d, prompt: e.target.value })}
+                    rows={4} placeholder={placeholders[action] ?? 'Add any extra instructions…'}
+                    className={`${cfgInputCls} resize-none leading-relaxed`} style={{ height: 'auto' }} />
+                </div>
+              )}
             </>
           );
         })()}

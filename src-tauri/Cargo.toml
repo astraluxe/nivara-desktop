@@ -36,6 +36,13 @@ tokio              = { version = "1", features = ["full"] }
 sysinfo            = "0.32"
 imap               = "2"
 native-tls         = "0.2"
+# Sending, not just reading. The outreach copilot drives a browser for LinkedIn because there is no
+# other way in, but email has had a real protocol for forty years — and using it means an automated
+# send works from ANY provider (a Titan/Hostinger domain mailbox, Zoho, a company 365 tenant), with
+# no compose window to keep open, no DOM to guess at, and a hard yes/no from the server about
+# whether the message was accepted. That last part is the one that matters: a browser click can
+# only be inspected, an SMTP transaction answers.
+lettre             = "0.11"
 cron               = "0.12"
 chrono             = "0.4"
 notify             = "6"

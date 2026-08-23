@@ -18,8 +18,15 @@ import { availabilityNote, loadAvailability, nextFreeSlots, fmtMins } from '../.
 import { parseEmailRewrite, bulkEmailTargets, type BulkScope } from '../../lib/emailDraft';
 import {
   loadMailSetup, saveMailSetup, composeTarget, mailSetupIncomplete,
+  canAutoSendEmail, autoSendBlocker, sendingAddress, SMTP_PRESETS, SMTP_CREDENTIAL_SERVICE,
   MAIL_PROVIDERS, COMPOSE_PRESETS, type MailSetup, type MailProviderId,
 } from '../../lib/mailProviders';
+import {
+  buildSendQueue, loadSendLog, sentToday,
+  loadGapSeconds, saveGapSeconds, loadPaceId, SEND_PACES, runSendQueue, summarise,
+  SEND_DEFAULTS, type SendChannel,
+} from '../../lib/outreachSender';
+import { credentialStore } from '../../lib/krewDb';
 
 // Assemble what the strategist/verifier needs to know about the USER's side: their pitch and any
 // stated availability, pulled from the Brain (product notes, meeting notes) so the drafted reply is
@@ -689,7 +696,6 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   // React state, so nothing else would tell this component the list changed.
   const [indexTick, setIndexTick] = useState(0);
   const [copied, setCopied] = useState<'msg' | 'email' | 'note' | 'x' | 'ig' | null>(null);
-  const [whyOpen, setWhyOpen] = useState(false);
   const [search, setSearch] = useState('');   // jump-to-a-contact by name, instead of Prev/Next spam
   const [opening, setOpening] = useState(false);
   const [openNote, setOpenNote] = useState('');
@@ -1734,6 +1740,153 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   const [mailTestNote, setMailTestNote] = useState('');
   const setMailSetup = (s: MailSetup) => { setMailSetupState(s); saveMailSetup(s); setMailTestNote(''); };
 
+  // ── SENDING IT FOR THEM ─────────────────────────────────────────────────────────────────────
+  //
+  // The copilot was a review queue: it drafts, you read, you press. Right for the first ten,
+  // absurd for the next hundred — the messages are written and approved, and the only thing left
+  // between them and the recipient is a person clicking the same two buttons four hundred times.
+  //
+  // Email goes over SMTP from the user's OWN mailbox (their work address if they gave us one),
+  // because that is the only route that works for a Titan/Hostinger/Zoho domain mailbox and the
+  // only one where the server tells us plainly whether it was accepted. LinkedIn has no protocol,
+  // so it is the browser — typed and sent the same way a person would, and verified in the thread
+  // afterwards rather than assumed.
+  //
+  // The password never touches localStorage: it goes to the OS keychain via the credential store.
+  const [smtpPassword, setSmtpPassword] = useState('');
+  const [smtpHasSaved, setSmtpHasSaved] = useState(false);
+  const [smtpTesting, setSmtpTesting] = useState(false);
+  const [smtpNote, setSmtpNote] = useState('');
+
+  /** Which channels an automatic run should use. */
+  const [autoChannels, setAutoChannels] = useState<SendChannel[]>(['email']);
+  const [autoOpen, setAutoOpen] = useState(false);
+  const [autoConfirm, setAutoConfirm] = useState(false);
+  const [autoRunning, setAutoRunning] = useState(false);
+  const [autoProgress, setAutoProgress] = useState<{ done: number; total: number; who: string; channel: SendChannel; waiting: number } | null>(null);
+  const [autoNote, setAutoNote] = useState('');
+  const [autoResults, setAutoResults] = useState<{ name: string; channel: SendChannel; ok: boolean; confirmed: boolean; detail: string }[]>([]);
+  const autoStopRef = useRef(false);
+  /** Bumped after every send so the daily counters on screen recompute. */
+  const [sendTick, setSendTick] = useState(0);
+  const [paceId, setPaceId] = useState(() => loadPaceId());
+
+  // Is a password already in the keychain for this mailbox? Asked once, so the field can say
+  // "saved" rather than looking empty and inviting the user to retype it every time.
+  useEffect(() => {
+    let alive = true;
+    credentialStore.get(SMTP_CREDENTIAL_SERVICE)
+      .then((d) => { if (alive) setSmtpHasSaved(!!(d as { api_key?: string } | null)?.api_key); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
+  const sendCounts = useMemo(() => {
+    void sendTick;
+    const log = loadSendLog();
+    return { email: sentToday(log, 'email'), linkedin: sentToday(log, 'linkedin') };
+  }, [sendTick]);
+
+  /** The exact queue an automatic run would send right now — recomputed live as drafts change. */
+  const autoQueue = useMemo(() => {
+    void sendTick;
+    return buildSendQueue(contacts, {
+      channels: autoChannels,
+      emailRemaining: Math.max(0, SEND_DEFAULTS.emailDailyCap - sendCounts.email),
+      linkedinRemaining: Math.max(0, SEND_DEFAULTS.linkedinDailyCap - sendCounts.linkedin),
+    });
+  }, [contacts, autoChannels, sendCounts, sendTick]);
+
+  /** Save the SMTP password to the OS keychain and prove the settings work by really sending one. */
+  async function testSmtp() {
+    const s = mailSetup.smtp;
+    if (!s || !s.host.trim() || !s.username.trim()) { setSmtpNote('Fill in the server and your email address first.'); return; }
+    const pw = smtpPassword.trim();
+    if (!pw && !smtpHasSaved) { setSmtpNote('Enter the mailbox password (or app password) so I can sign in to send.'); return; }
+    setSmtpTesting(true); setSmtpNote('');
+    try {
+      if (pw) { await credentialStore.save(SMTP_CREDENTIAL_SERVICE, { api_key: pw }); setSmtpHasSaved(true); }
+      const stored = pw || ((await credentialStore.get(SMTP_CREDENTIAL_SERVICE).catch(() => null)) as { api_key?: string } | null)?.api_key || '';
+      const to = sendingAddress(mailSetup);
+      const { invoke } = await import('@tauri-apps/api/core');
+      // The test sends to the USER'S OWN address. It has to be a real send — a connection that
+      // merely authenticates can still be refused at the point of delivery — and it must not be a
+      // real send to anybody else.
+      const res = await invoke<string>('smtp_send_email', {
+        host: s.host.trim(), port: s.port, username: s.username.trim(), password: stored,
+        fromName: s.fromName || '', fromAddress: s.fromAddress || '',
+        to, subject: 'ADRIS test — your outreach mailbox works',
+        body: 'This is the test message ADRIS sends to itself when you set up automatic sending.\n\nIf you can read this, your outreach emails will go out from this mailbox.',
+        implicitTls: s.implicitTls,
+      });
+      setMailSetup({ ...mailSetup, smtp: { ...s, verifiedAt: Date.now() } });
+      setSmtpPassword('');
+      setSmtpNote(`✓ Sent a test email to ${to} (${String(res)}). Check it arrived, then automatic sending is ready.`);
+    } catch (e) {
+      const raw = e instanceof Error ? e.message : String(e);
+      // Say which KIND of failure it is — a wrong password and a blocked port need opposite fixes,
+      // and collapsing them into "failed" is how someone ends up rotating a working password.
+      const hint = /auth|credential|username|password|535|534/i.test(raw)
+        ? 'The server refused the sign-in. Most providers need an APP PASSWORD here rather than the one you type into their website.'
+        : /timed out|timeout|connect|refused|dns|resolve|10060|10061/i.test(raw)
+          ? 'Could not reach the server. Check the address, and try the other port (465 with SSL, or 587 with STARTTLS).'
+          : /tls|ssl|handshake/i.test(raw)
+            ? 'The secure connection failed — this is usually the SSL/STARTTLS switch being the wrong way round for this port.'
+            : '';
+      setMailSetup({ ...mailSetup, smtp: { ...s, verifiedAt: undefined } });
+      setSmtpNote(`Couldn't send: ${raw.slice(0, 200)}${hint ? `\n\n${hint}` : ''}`);
+    } finally { setSmtpTesting(false); }
+  }
+
+  /**
+   * Send the queue, one at a time, pausing between each.
+   *
+   * Deliberately sequential and slow. Speed is not the goal — the goal is a run that behaves like a
+   * person working through a list, because the account and the sending domain that get restricted
+   * for behaving otherwise are the user's own. Each result is written the moment it happens, so a
+   * stop, a crash or a closed laptop leaves an accurate record rather than an optimistic one.
+   */
+  async function runAutoSend() {
+    if (autoRunning) return;
+    const { queue } = autoQueue;
+    if (!queue.length) { setAutoNote('There is nothing ready to send right now.'); return; }
+    if (autoChannels.includes('email') && !canAutoSendEmail(mailSetup)) {
+      setAutoNote(autoSendBlocker(mailSetup));
+      setMailPanelOpen(true);
+      return;
+    }
+    autoStopRef.current = false;
+    setAutoRunning(true); setAutoNote(''); setAutoResults([]);
+    setAgentBrowserHold(true);
+    if (autoChannels.includes('linkedin')) setBrowserOpen(true);
+    const pw = ((await credentialStore.get(SMTP_CREDENTIAL_SERVICE).catch(() => null)) as { api_key?: string } | null)?.api_key || '';
+    const collected: typeof autoResults = [];
+    try {
+      // ONE loop, shared with the scheduled automation — see runSendQueue. Two copies of this is
+      // how one path ends up marking contacts sent on an unconfirmed result and the other does not.
+      const summary = await runSendQueue(queue, {
+        campaign: campaign.title || '',
+        smtp: mailSetup.smtp ? {
+          host: mailSetup.smtp.host, port: mailSetup.smtp.port, username: mailSetup.smtp.username,
+          implicitTls: mailSetup.smtp.implicitTls, fromName: mailSetup.smtp.fromName, fromAddress: mailSetup.smtp.fromAddress,
+        } : undefined,
+        smtpPassword: pw,
+      }, {
+        shouldStop: () => autoStopRef.current,
+        onProgress: (p) => setAutoProgress(p),
+        onResult: (r) => { collected.push(r); setAutoResults([...collected]); setSendTick((t) => t + 1); },
+        onSent: (i) => setContacts((prev) => prev.map((c, k) => (k === i ? { ...c, status: 'sent' as OutreachStatus } : c))),
+      });
+      setAutoNote(summarise(summary));
+    } finally {
+      setAutoProgress(null);
+      setAutoRunning(false);
+      setAutoConfirm(false);
+      setAgentBrowserHold(false);
+      setSendTick((t) => t + 1);
+    }
+  }
+
   /**
    * Check THIS person's saved profile, and correct it if it belongs to somebody else.
    *
@@ -2543,20 +2696,178 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
           </button>
         </div>
 
-        {/* Why-not-automated banner */}
-        <div className="px-4 py-2 bg-amber-400/5 border-b border-amber-400/15 shrink-0">
-          <button onClick={() => setWhyOpen((v) => !v)} className="flex items-center gap-1.5 text-[10.5px] text-amber-600 w-full text-left">
-            <svg viewBox="0 0 24 24" className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 9v4M12 17h.01M10.3 3.9l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3l-8-14a2 2 0 0 0-3.4 0z"/></svg>
-            Why doesn't adris just send these itself?
-            <svg viewBox="0 0 24 24" className={`w-3 h-3 ml-auto transition-transform ${whyOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
+        {/* ── SEND IT FOR ME ────────────────────────────────────────────────────────────────────
+            This used to be a banner explaining why the app would NOT send for you. The reasoning
+            was sound and the conclusion was wrong: it is the user's list, their mailbox and their
+            decision, and clicking the same two buttons four hundred times is not a workflow. So it
+            sends — with the honest version of that old warning kept where it belongs, next to the
+            LinkedIn switch, because that is the part that can genuinely cost them an account. */}
+        <div className="px-4 py-2 border-b border-nv-border shrink-0">
+          <button onClick={() => setAutoOpen((v) => !v)} className="flex items-center gap-1.5 text-[10.5px] w-full text-left text-nv-text">
+            <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0 text-accent" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+            <span className="font-semibold">Send these for me</span>
+            <span className="text-nv-faint">
+              {autoQueue.queue.length} ready{autoQueue.skipped.length ? ` · ${autoQueue.skipped.length} not` : ''}
+            </span>
+            <svg viewBox="0 0 24 24" className={`w-3 h-3 ml-auto transition-transform ${autoOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
           </button>
-          {whyOpen && (
-            <p className="text-[10px] text-nv-faint mt-1.5 leading-relaxed">
-              LinkedIn's rules forbid automated messaging and connecting — accounts that auto-DM get
-              restricted or banned, which would wreck your reputation right when you're winning clients.
-              So adris does everything around it (writes each message, opens the right profile, tracks who
-              accepted) and you do the one safe step: paste &amp; send. It takes ~2 seconds each.
-            </p>
+
+          {autoOpen && (
+            <div className="mt-2 space-y-2">
+              {/* Channels */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[9.5px] text-nv-faint uppercase tracking-wide">Send by</span>
+                {([['email', 'Email'], ['linkedin', 'LinkedIn']] as const).map(([id, label]) => (
+                  <button
+                    key={id}
+                    disabled={autoRunning}
+                    onClick={() => setAutoChannels((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))}
+                    className={`text-[9.5px] px-2 py-0.5 rounded-full border transition-fast disabled:opacity-40 ${
+                      autoChannels.includes(id) ? 'border-accent/50 text-accent bg-accent/10' : 'border-nv-border text-nv-faint hover:bg-nv-surface2'}`}
+                  >{label}</button>
+                ))}
+                <span className="ml-auto text-[9px] text-nv-faint">
+                  today: {sendCounts.email}/{SEND_DEFAULTS.emailDailyCap} email · {sendCounts.linkedin}/{SEND_DEFAULTS.linkedinDailyCap} LinkedIn
+                </span>
+              </div>
+
+              {/* PACE. A choice, because fifteen warm intros and ninety cold emails are not the
+                  same job — and because a run that is too fast costs the user an account, not us. */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[9.5px] text-nv-faint uppercase tracking-wide">Pace</span>
+                {SEND_PACES.map((p) => (
+                  <button
+                    key={p.id}
+                    disabled={autoRunning}
+                    title={p.note}
+                    onClick={() => { saveGapSeconds(p.id); setPaceId(p.id); }}
+                    className={`text-[9.5px] px-2 py-0.5 rounded-full border transition-fast disabled:opacity-40 ${
+                      paceId === p.id ? 'border-accent/50 text-accent bg-accent/10' : 'border-nv-border text-nv-faint hover:bg-nv-surface2'}`}
+                  >{p.label}</button>
+                ))}
+                <span className="text-[9px] text-nv-faint">{SEND_PACES.find((p) => p.id === paceId)?.note}</span>
+              </div>
+
+              {/* WHERE THE EMAIL WILL COME FROM. Nobody should have to guess which mailbox an
+                  automated run is about to use — it is the first thing that goes wrong. */}
+              {autoChannels.includes('email') && (
+                canAutoSendEmail(mailSetup) ? (
+                  <p className="text-[9.5px] text-emerald-600 leading-snug">
+                    Emails go from <b>{sendingAddress(mailSetup)}</b> over your own mail server — tested and working.
+                  </p>
+                ) : (
+                  <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-1.5">
+                    <p className="text-[9.5px] text-amber-600 leading-snug">{autoSendBlocker(mailSetup)}</p>
+                    <button
+                      onClick={() => { setMailPanelOpen(true); setAutoOpen(false); }}
+                      className="mt-1 text-[9.5px] px-2 py-0.5 rounded-md border border-amber-500/40 text-amber-600 hover:bg-amber-500/10 transition-fast"
+                    >Set my mailbox up</button>
+                  </div>
+                )
+              )}
+
+              {/* THE ONE WARNING WORTH KEEPING. It is their account at risk, not ours, and the
+                  honest framing is a cost to weigh rather than a reason they may not choose. */}
+              {autoChannels.includes('linkedin') && (
+                <p className="text-[9.5px] text-amber-600 leading-snug">
+                  LinkedIn's terms forbid automated messaging, and accounts that send at machine pace do get
+                  restricted. adris paces itself like a person ({SEND_DEFAULTS.linkedinDailyCap}/day, randomised gaps)
+                  but the risk is real and it is your account. Email carries no such rule.
+                </p>
+              )}
+
+              {/* WHO WILL NOT BE SENT TO, AND WHY — the half that is actually useful. */}
+              {!!autoQueue.skipped.length && (
+                <details className="rounded-md border border-nv-border bg-nv-bg/60">
+                  <summary className="text-[9.5px] text-nv-faint px-2 py-1 cursor-pointer">
+                    {autoQueue.skipped.length} will NOT be sent — see why
+                  </summary>
+                  <div className="max-h-28 overflow-y-auto px-2 pb-1.5 space-y-0.5">
+                    {autoQueue.skipped.slice(0, 60).map((s) => (
+                      <p key={`${s.idx}-${s.why}`} className="text-[9.5px] text-nv-muted leading-snug">
+                        <button onClick={() => { setIdx(s.idx); setView('one'); }} className="text-accent hover:underline">{s.name}</button>
+                        {' — '}{s.why}
+                      </p>
+                    ))}
+                  </div>
+                </details>
+              )}
+
+              {/* Run / confirm / stop */}
+              {autoRunning ? (
+                <div className="rounded-md border border-accent/40 bg-accent/5 p-2">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full border border-accent/40 border-t-accent animate-spin shrink-0" />
+                    <span className="text-[10px] text-nv-text truncate flex-1">
+                      {autoProgress
+                        ? autoProgress.waiting > 0
+                          ? `Waiting ${autoProgress.waiting}s before ${autoProgress.who} (${autoProgress.done + 1} of ${autoProgress.total})`
+                          : `Sending ${autoProgress.done + 1} of ${autoProgress.total} — ${autoProgress.who} by ${autoProgress.channel === 'email' ? 'email' : 'LinkedIn'}`
+                        : 'Starting…'}
+                    </span>
+                    <button
+                      onClick={() => { autoStopRef.current = true; }}
+                      className="shrink-0 text-[9.5px] px-2 py-0.5 rounded-md border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
+                    >Stop</button>
+                  </div>
+                  <div className="mt-1 h-0.5 rounded-full bg-nv-border overflow-hidden">
+                    <div className="h-full bg-accent transition-all" style={{ width: `${Math.round(((autoProgress?.done ?? 0) / Math.max(1, autoProgress?.total ?? 1)) * 100)}%` }} />
+                  </div>
+                  <p className="text-[9px] text-nv-faint mt-1">Each one is recorded as it goes — stopping keeps everything already sent.</p>
+                </div>
+              ) : autoConfirm ? (
+                <div className="rounded-md border border-accent/50 bg-accent/5 p-2 space-y-1.5">
+                  {/* THE LAST HONEST SENTENCE BEFORE SOMETHING IRREVERSIBLE. Names the number, the
+                      channels and the mailbox, because "are you sure?" on its own tells you nothing. */}
+                  <p className="text-[10px] text-nv-text leading-snug">
+                    This really sends <b>{autoQueue.queue.length} message{autoQueue.queue.length === 1 ? '' : 's'}</b> to real people
+                    {autoChannels.includes('email') && canAutoSendEmail(mailSetup) ? <> from <b>{sendingAddress(mailSetup)}</b></> : null}
+                    {autoChannels.includes('linkedin') ? ' and from your LinkedIn account' : ''}. It cannot be undone.
+                  </p>
+                  <p className="text-[9.5px] text-nv-faint leading-snug">
+                    About {Math.max(1, Math.round((autoQueue.queue.length * loadGapSeconds()) / 60))} minutes at this pace. You can stop at any point.
+                  </p>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => void runAutoSend()}
+                      className="text-[10px] font-semibold px-2.5 py-1 rounded-md bg-accent text-white hover:bg-accent-dim transition-fast"
+                    >Yes — send {autoQueue.queue.length}</button>
+                    <button
+                      onClick={() => setAutoConfirm(false)}
+                      className="text-[10px] px-2.5 py-1 rounded-md border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
+                    >Cancel</button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => setAutoConfirm(true)}
+                    disabled={!autoQueue.queue.length || !autoChannels.length}
+                    className="text-[10px] font-semibold px-2.5 py-1 rounded-md bg-accent text-white hover:bg-accent-dim transition-fast disabled:opacity-40"
+                  >Send {autoQueue.queue.length || ''} now</button>
+                  <span className="text-[9px] text-nv-faint leading-snug flex-1">
+                    {autoChannels.length ? 'You will get one more confirmation before anything goes.' : 'Pick at least one channel.'}
+                  </span>
+                </div>
+              )}
+
+              {autoNote && <p className="text-[9.5px] text-nv-muted leading-snug whitespace-pre-line">{autoNote}</p>}
+
+              {/* WHAT ACTUALLY HAPPENED, PER PERSON. */}
+              {!!autoResults.length && (
+                <div className="max-h-32 overflow-y-auto rounded-md border border-nv-border divide-y divide-nv-border/60">
+                  {autoResults.map((r, i) => (
+                    <div key={i} className="flex items-start gap-1.5 px-1.5 py-1">
+                      <span className={`text-[10px] shrink-0 ${r.confirmed ? 'text-emerald-600' : r.ok ? 'text-amber-600' : 'text-red-500'}`}>
+                        {r.confirmed ? '✓' : r.ok ? '?' : '✕'}
+                      </span>
+                      <span className="text-[9.5px] text-nv-text truncate w-20 shrink-0">{r.name}</span>
+                      <span className="text-[9px] text-nv-faint leading-snug flex-1 min-w-0">{r.detail}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
         </div>
 
@@ -3338,6 +3649,96 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                         {composeFor(mailSetup, cur, addrs[0]).note}
                       </p>
                     )}
+
+                    {/* ── AUTOMATIC SENDING ─────────────────────────────────────────────────
+                        Everything above opens a window for a human to press Send in. This is the
+                        part that lets an automation do it instead, and it deliberately uses SMTP
+                        rather than the browser: it is the only route that works from a Titan /
+                        Hostinger / Zoho work mailbox, it needs no window left open, and the server
+                        answers with a real accepted-or-refused instead of something we would have
+                        to read off a page. The password goes to this computer's keychain, never to
+                        a file and never off this machine. */}
+                    <div className="pt-1.5 border-t border-nv-border">
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-[9px] text-nv-faint uppercase tracking-wide flex-1">Send automatically (outgoing / SMTP)</p>
+                        {canAutoSendEmail(mailSetup) && <span className="text-[9px] text-emerald-600">✓ tested</span>}
+                      </div>
+                      <p className="text-[9px] text-nv-faint mt-0.5 leading-snug">
+                        Only needed if you want adris to send without you pressing Send. Works with any
+                        provider — Titan/Hostinger, Zoho, Microsoft 365, Gmail, your own host.
+                      </p>
+                      <select
+                        value=""
+                        onChange={(e) => {
+                          const preset = SMTP_PRESETS.find((p) => p.id === e.target.value);
+                          if (!preset) return;
+                          setMailSetup({
+                            ...mailSetup,
+                            smtp: {
+                              host: preset.host, port: preset.port, implicitTls: preset.implicitTls,
+                              username: mailSetup.smtp?.username || '',
+                              fromName: mailSetup.smtp?.fromName || '',
+                              fromAddress: mailSetup.smtp?.fromAddress || '',
+                              // Changing the server invalidates any previous test — those settings
+                              // are not these settings, and "tested" must never mean "tested once,
+                              // for something else".
+                              verifiedAt: undefined,
+                            },
+                          });
+                          setSmtpNote(preset.note);
+                        }}
+                        className="w-full text-[9.5px] bg-nv-bg border border-nv-border rounded-md px-1.5 py-1 mt-1 focus:outline-none focus:border-accent/40"
+                      >
+                        <option value="">Who hosts your email?…</option>
+                        {SMTP_PRESETS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+                      </select>
+                      <div className="grid grid-cols-[1fr_auto] gap-1 mt-1">
+                        <input
+                          value={mailSetup.smtp?.host || ''}
+                          onChange={(e) => setMailSetup({ ...mailSetup, smtp: { host: e.target.value.trim(), port: mailSetup.smtp?.port ?? 465, username: mailSetup.smtp?.username || '', implicitTls: mailSetup.smtp?.implicitTls ?? true, fromName: mailSetup.smtp?.fromName, fromAddress: mailSetup.smtp?.fromAddress, verifiedAt: undefined } })}
+                          placeholder="smtp.titan.email"
+                          className="min-w-0 text-[10px] font-mono bg-nv-bg border border-nv-border rounded-md px-2 py-1 focus:outline-none focus:border-accent/40 select-text"
+                        />
+                        <select
+                          value={String(mailSetup.smtp?.port ?? 465)}
+                          onChange={(e) => { const port = Number(e.target.value); setMailSetup({ ...mailSetup, smtp: { host: mailSetup.smtp?.host || '', port, username: mailSetup.smtp?.username || '', implicitTls: port === 465, fromName: mailSetup.smtp?.fromName, fromAddress: mailSetup.smtp?.fromAddress, verifiedAt: undefined } }); }}
+                          className="text-[9.5px] bg-nv-bg border border-nv-border rounded-md px-1 py-1 focus:outline-none focus:border-accent/40"
+                        >
+                          <option value="465">465 · SSL</option>
+                          <option value="587">587 · STARTTLS</option>
+                        </select>
+                      </div>
+                      <input
+                        value={mailSetup.smtp?.username || ''}
+                        onChange={(e) => setMailSetup({ ...mailSetup, smtp: { host: mailSetup.smtp?.host || '', port: mailSetup.smtp?.port ?? 465, username: e.target.value.trim(), implicitTls: mailSetup.smtp?.implicitTls ?? true, fromName: mailSetup.smtp?.fromName, fromAddress: mailSetup.smtp?.fromAddress, verifiedAt: undefined } })}
+                        placeholder="you@yourcompany.com"
+                        className="w-full text-[10px] bg-nv-bg border border-nv-border rounded-md px-2 py-1 mt-1 focus:outline-none focus:border-accent/40 select-text"
+                      />
+                      <input
+                        value={smtpPassword}
+                        onChange={(e) => { setSmtpPassword(e.target.value); setSmtpNote(''); }}
+                        type="password"
+                        placeholder={smtpHasSaved ? 'Password saved — type a new one only to change it' : 'Mailbox password or app password'}
+                        className="w-full text-[10px] bg-nv-bg border border-nv-border rounded-md px-2 py-1 mt-1 focus:outline-none focus:border-accent/40 select-text"
+                      />
+                      <input
+                        value={mailSetup.smtp?.fromName || ''}
+                        onChange={(e) => setMailSetup({ ...mailSetup, smtp: { host: mailSetup.smtp?.host || '', port: mailSetup.smtp?.port ?? 465, username: mailSetup.smtp?.username || '', implicitTls: mailSetup.smtp?.implicitTls ?? true, fromName: e.target.value, fromAddress: mailSetup.smtp?.fromAddress, verifiedAt: mailSetup.smtp?.verifiedAt } })}
+                        placeholder="Your name, as recipients see it"
+                        className="w-full text-[10px] bg-nv-bg border border-nv-border rounded-md px-2 py-1 mt-1 focus:outline-none focus:border-accent/40 select-text"
+                      />
+                      <button
+                        disabled={smtpTesting}
+                        onClick={() => void testSmtp()}
+                        className="w-full text-[10px] px-2 py-1 rounded-md border border-accent/40 text-accent hover:bg-accent/10 transition-fast disabled:opacity-40 mt-1"
+                      >{smtpTesting ? 'Sending a test…' : 'Save & send myself a test email'}</button>
+                      <p className="text-[9px] text-nv-faint mt-0.5 leading-snug">
+                        The password is stored in this computer's keychain — not in a file, and never sent anywhere but your own mail server.
+                      </p>
+                      {smtpNote && (
+                        <p className={`text-[9.5px] mt-1 leading-snug whitespace-pre-line ${smtpNote.startsWith('✓') ? 'text-emerald-600' : /Couldn't/.test(smtpNote) ? 'text-amber-600' : 'text-nv-muted'}`}>{smtpNote}</p>
+                      )}
+                    </div>
                   </div>
                 )}
                 {addrs.length > 1 ? (

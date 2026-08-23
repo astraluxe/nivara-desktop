@@ -4538,6 +4538,10 @@ fn browser_debug_log(msg: &str) {
 // no specific contact); reads a company page the same way as a profile (innerText, identity at
 // the top) instead of running the feed extractor on it, and the search-result redirect decoder
 // surfaces /company/ links too.
+// Build marker: agent-browser.js v4 (2026-08-23) — `sendmsg` and `sendmail`: type AND send, then
+// PROVE it went (the LinkedIn bubble in the thread, Gmail's "Message sent" toast) before anyone is
+// recorded as contacted. Both are excluded from the interactive block, like every other custom
+// command — see the note there.
 // Build marker: agent-browser.js v3 (2026-06-29) — absolute-path node resolution so the
 // visible browser opens even when GUI-launched without node on PATH; tool-call stop sequences.
 // Build marker: agent-browser.js v2 (2026-06-26) — detached single-window Chrome, clean
@@ -5142,6 +5146,96 @@ fn decode_mime_body(raw: &str) -> String {
     if decoded.trim_start().starts_with('<') || decoded.to_lowercase().contains("<html") {
         strip_html(&decoded)
     } else { decoded }
+}
+
+/// Send one email over SMTP, from the user's own mailbox.
+///
+/// This is what makes an automated outreach run possible on a WORK address. The browser route can
+/// only drive Gmail's compose window — the DOM of every other webmail is unknown and guessing at it
+/// would mean clicking "Send" on a page we do not understand. SMTP has no such problem: every
+/// provider a business actually uses (Titan/Hostinger, Zoho, Microsoft 365, Gmail, a cPanel host)
+/// speaks it, the credentials are the user's own, and the server replies with an unambiguous
+/// accepted-or-refused rather than something we have to infer from pixels.
+///
+/// Two deliberate choices:
+///   - `implicit_tls` picks between port 465 (TLS from the first byte) and 587 (STARTTLS). Both are
+///     in use, providers document one or the other, and getting it wrong is the single most common
+///     reason a correct username and password still fail to connect. It is a setting, not a guess.
+///   - The error string is returned verbatim rather than flattened to "failed". "authentication
+///     failed" and "connection refused" need completely different fixes from the user, and hiding
+///     which one happened is how someone ends up rotating a password that was never the problem.
+#[tauri::command]
+async fn smtp_send_email(
+    host: String,
+    port: u16,
+    username: String,
+    password: String,
+    from_name: String,
+    from_address: String,
+    to: String,
+    subject: String,
+    body: String,
+    implicit_tls: bool,
+) -> Result<String, String> {
+    use lettre::transport::smtp::authentication::Credentials;
+    use lettre::{Message, SmtpTransport, Transport};
+    use lettre::message::header::ContentType;
+
+    // Refuse obviously-unsendable input HERE rather than letting the server reject it later: a
+    // failure at this end is a message that was never attempted, which is a much safer thing to
+    // report than one that may or may not have left.
+    let to_addr = to.trim().to_string();
+    if !to_addr.contains('@') { return Err(format!("\"{}\" is not an email address — nothing was sent.", to_addr)); }
+    if body.trim().is_empty() { return Err("The message body is empty — nothing was sent.".into()); }
+    let from_addr = if from_address.trim().is_empty() { username.trim().to_string() } else { from_address.trim().to_string() };
+    if !from_addr.contains('@') { return Err(format!("The sending address \"{}\" is not an email address — nothing was sent.", from_addr)); }
+
+    let host2 = host.trim().to_string();
+    if host2.is_empty() { return Err("No SMTP server was set for this mailbox — nothing was sent.".into()); }
+
+    tokio::task::spawn_blocking(move || -> Result<String, String> {
+        // A display name with a comma or a quote in it breaks a bare `Name <addr>` header, so let
+        // lettre build and escape it. An unparseable name must not cost the user the send.
+        let from_mbox = if from_name.trim().is_empty() {
+            from_addr.parse::<lettre::message::Mailbox>().map_err(|e| format!("Sending address is not valid: {e}"))?
+        } else {
+            format!("{} <{}>", from_name.trim(), from_addr)
+                .parse::<lettre::message::Mailbox>()
+                .or_else(|_| from_addr.parse::<lettre::message::Mailbox>())
+                .map_err(|e| format!("Sending address is not valid: {e}"))?
+        };
+        let to_mbox = to_addr.parse::<lettre::message::Mailbox>()
+            .map_err(|e| format!("Recipient address is not valid: {e}"))?;
+
+        let email = Message::builder()
+            .from(from_mbox)
+            .to(to_mbox)
+            .subject(subject)
+            .header(ContentType::TEXT_PLAIN)
+            .body(body)
+            .map_err(|e| format!("Could not build the message: {e}"))?;
+
+        let creds = Credentials::new(username.trim().to_string(), password);
+        let builder = if implicit_tls {
+            SmtpTransport::relay(&host2).map_err(|e| format!("Could not reach {host2}: {e}"))?
+        } else {
+            SmtpTransport::starttls_relay(&host2).map_err(|e| format!("Could not reach {host2}: {e}"))?
+        };
+        let mailer = builder
+            .port(port)
+            .credentials(creds)
+            .timeout(Some(std::time::Duration::from_secs(30)))
+            .build();
+
+        match mailer.send(&email) {
+            // The server ACCEPTED it. That is as close to certainty as sending gets, and it is why
+            // this path can mark a contact "sent" while the browser path has to hedge.
+            Ok(resp) => Ok(format!("SMTP_SENT {}", resp.code())),
+            Err(e) => Err(e.to_string()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -8163,6 +8257,7 @@ pub fn run() {
             krew_http_call,
             mcp_http_call,
             gmail_fetch_emails,
+            smtp_send_email,
             gmail_fetch_email_body,
             // Automation
             automation_list,

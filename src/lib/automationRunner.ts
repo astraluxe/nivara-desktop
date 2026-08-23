@@ -773,7 +773,13 @@ export async function executeCanvasFlow(
 
     // Data/work nodes: produce an output, then flow to every outgoing edge.
     let output = input;
-    if (node.type === 'ai_action')      output = S(d.prompt) ? await aiStep(S(d.prompt), input) : input;
+    // A canvas flow and a linear automation must do the SAME thing for the same block — the two
+    // engines have drifted before, and a send that only works on one of them is worse than one
+    // that works on neither, because it looks fine until the day it silently does nothing.
+    if (node.type === 'ai_action' && S(d.action) === 'outreach_send') {
+      output = await runOutreachSendStep({ id: node.id, action: 'outreach_send', prompt: S(d.prompt), output: '' });
+    }
+    else if (node.type === 'ai_action') output = S(d.prompt) ? await aiStep(S(d.prompt), input) : input;
     else if (node.type === 'subagent')  output = await runSubagents(d, input);
     else if (node.type === 'transform') output = flowTransform(d, input);
     else if (node.type === 'http')      output = await flowHttp(d, input);
@@ -801,6 +807,84 @@ export async function executeCanvasFlow(
 }
 
 // ─── Main execution function ──────────────────────────────────────────────────
+
+/**
+ * The "send my outreach" step, run on a schedule with nobody watching.
+ *
+ * Unattended is exactly why this is the strictest path in the file. Everything it refuses, it
+ * refuses BEFORE sending and says so in the run log, because the run log is the only thing the
+ * user will read tomorrow morning:
+ *
+ *   - No campaign → nothing to send. Not an error, just nothing.
+ *   - Email asked for, but the mailbox has never completed a test send → refuse the whole run.
+ *     A scheduled job is not the moment to discover the password is wrong; it would fail forty
+ *     times in a row at 9am and the user would find out from the silence.
+ *   - Drafts with placeholders, no subject, no profile link → skipped individually, by name.
+ *
+ * The per-run cap matters more here than in the panel: a human watching can stop a runaway, and a
+ * 7am cron cannot be. Default 20, and the daily caps still apply on top.
+ */
+async function runOutreachSendStep(step: AutomationStep): Promise<string> {
+  const {
+    buildSendQueue, runSendQueue, summarise, loadCampaignForSending, markContactStatus,
+    loadSendLog, sentToday, SEND_DEFAULTS, parseOutreachStepSettings,
+  } = await import('./outreachSender');
+  const { loadMailSetup, canAutoSendEmail, autoSendBlocker, sendingAddress, SMTP_CREDENTIAL_SERVICE } =
+    await import('./mailProviders');
+
+  const cfg = step.output_config ?? {};
+  // The prompt doubles as the configuration line for this step — see parseOutreachStepSettings.
+  const { channels, runLimit } = parseOutreachStepSettings(step.prompt || '');
+
+  const campaign = loadCampaignForSending();
+  if (!campaign || !campaign.contacts?.length) {
+    return 'No outreach campaign is saved, so nothing was sent. Open Krew, run /outreach to build one, and this step will pick it up next time.';
+  }
+
+  const setup = loadMailSetup();
+  if (channels.includes('email') && !canAutoSendEmail(setup)) {
+    // Refuse the WHOLE run rather than quietly doing the LinkedIn half — a partially-run campaign
+    // is harder to reason about tomorrow than one that plainly did not run.
+    return `NOT SENT — ${autoSendBlocker(setup)} Nothing went out, and no contact was marked as contacted.`;
+  }
+
+  const log = loadSendLog();
+  const { queue, skipped } = buildSendQueue(campaign.contacts, {
+    channels,
+    emailRemaining: Math.max(0, SEND_DEFAULTS.emailDailyCap - sentToday(log, 'email')),
+    linkedinRemaining: Math.max(0, SEND_DEFAULTS.linkedinDailyCap - sentToday(log, 'linkedin')),
+    runLimit,
+  });
+  if (!queue.length) {
+    return `Nothing was ready to send. ${skipped.length
+      ? `${skipped.length} contact(s) were skipped: ${skipped.slice(0, 8).map((s) => `${s.name} (${s.why})`).join('; ')}${skipped.length > 8 ? '; …' : ''}`
+      : 'Everyone in the campaign has already been contacted.'}`;
+  }
+
+  const pw = ((await credentialStore.get(SMTP_CREDENTIAL_SERVICE).catch(() => null)) as { api_key?: string } | null)?.api_key || '';
+  const summary = await runSendQueue(queue, {
+    campaign: String(campaign.title || ''),
+    smtp: setup.smtp ? {
+      host: setup.smtp.host, port: setup.smtp.port, username: setup.smtp.username,
+      implicitTls: setup.smtp.implicitTls, fromName: setup.smtp.fromName, fromAddress: setup.smtp.fromAddress,
+    } : undefined,
+    smtpPassword: pw,
+  }, {
+    // No UI to update — but the campaign file MUST be written, or tomorrow's run contacts the same
+    // people again.
+    onSent: (i) => markContactStatus(i, 'sent'),
+  });
+
+  void cfg;
+  const from = channels.includes('email') ? ` from ${sendingAddress(setup)}` : '';
+  return [
+    `${summarise(summary)}${from ? ` Sent${from}.` : ''}`,
+    skipped.length ? `Skipped ${skipped.length}: ${skipped.slice(0, 8).map((s) => `${s.name} (${s.why})`).join('; ')}${skipped.length > 8 ? '; …' : ''}` : '',
+    summary.results.filter((r) => !r.ok).length
+      ? `Failures: ${summary.results.filter((r) => !r.ok).slice(0, 5).map((r) => `${r.name} — ${r.detail}`).join('; ')}`
+      : '',
+  ].filter(Boolean).join('\n');
+}
 
 export async function executeAutomation(
   automation: AutomationRow,
@@ -1232,6 +1316,21 @@ export async function executeAutomation(
     let totalTokens = 0;
 
     for (const step of steps) {
+      // ── SEND THE OUTREACH CAMPAIGN ────────────────────────────────────────
+      //
+      // Not an AI step. The messages were written and approved days ago in the copilot; asking a
+      // model to "do the outreach" here would mean re-generating text the user already signed off,
+      // which is both wasteful and the exact way an approved draft turns into something they never
+      // read. This step only DELIVERS what is already sitting in the campaign.
+      //
+      // It runs the same queue-builder and the same send loop as the panel — so a scheduled run
+      // refuses the same broken drafts, respects the same daily caps, paces itself the same way,
+      // and marks somebody contacted only on the same confirmation.
+      if (step.action === 'outreach_send') {
+        finalOutput = await runOutreachSendStep(step);
+        stepInput = finalOutput;
+        continue;
+      }
       const userMsg = `${knowledgeBlock}Task: ${step.prompt}\n\nContent to process:\n${stepInput}`;
       const systemMsg = `You are an AI automation assistant running the workflow "${automation.name}".${knowledgeRule} Return only the output — no explanations, no preamble.`;
       const result = await withRetry(() => callAutomationAI(userMsg, systemMsg), 3, 1500).catch(() => '');
