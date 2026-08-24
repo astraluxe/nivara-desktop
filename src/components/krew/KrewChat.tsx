@@ -29,7 +29,7 @@ import AgentStatus from './AgentStatus';
 import { type ConnectionMode, type Provider } from '../../lib/ai';
 import { isDeadModelError, isSilenceError, isUserChosen, probeTimedOut, repairDeadModel, blockModel, scanModelsIfStale, measuredMsFor } from '../../lib/modelHealth';
 import { noteActiveModel, bulkPlan } from '../../lib/contextBudget';
-import { normaliseScore, scoreValue, decisionBias, recordDecision, decisionStyleNote, workingFileNote, setWorkingFile, EFFORT_LABEL, IMPACT_LABEL } from '../../lib/agentBrain';
+import { normaliseScore, scoreValue, decisionBias, recordDecision, decisionStyleNote, workingFileNote, setWorkingFile, extractChoices, EFFORT_LABEL, IMPACT_LABEL, type ChoiceSet } from '../../lib/agentBrain';
 import { slugLooksLikeName, hasWrittenMessage } from '../../lib/outreachConnections';
 import { auditPromises, cleanOutboundMessage, stripOngoingWorkClaims, type PromiseIssue } from '../../lib/verify';
 import ConnectionBar from '../coder/ConnectionBar';
@@ -287,25 +287,6 @@ function detectSkill(text: string): SkillRegistryEntry | null {
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-interface ChoiceItem {
-  id:      string;
-  label:   string;
-  preview: string;
-  content: string;
-  /** How hard, how much it moves the needle, and how sure the agent is — see agentBrain.
-   *  Optional throughout: an agent that offers options without scoring them still works exactly
-   *  as it did, the card simply renders without the badges. */
-  effort?:     number;
-  impact?:     number;
-  confidence?: number;
-  why?:        string;
-}
-
-interface ChoiceSet {
-  title:   string;
-  choices: ChoiceItem[];
-}
 
 interface DisplayMsg {
   role:      'user' | 'assistant' | 'tool_call' | 'tool_result' | 'delegation' | 'proposal' | 'choices' | 'deck_setup' | 'deck_result' | 'social_schedule' | 'next_task' | 'lead_setup' | 'lead_result' | 'avail_confirm' | 'council' | 'council_setup';
@@ -3571,7 +3552,7 @@ function ChoicePicker({ choiceSet, onSelect, disabled, storageKey, agentKey }: {
       <div className="px-3 py-2.5 bg-nv-bg border-b border-nv-border/60">
         <p className="text-[12px] font-semibold text-nv-text">{choiceSet.title}</p>
         <p className="text-[10px] text-nv-faint mt-0.5">
-          {disabled ? '⏳ Wait for the response to finish before selecting' : 'Tap a variant to select, then confirm'}
+          {disabled ? '⏳ Wait for the response to finish before selecting' : 'Tap one, then confirm — it is sent as your reply'}
         </p>
       </div>
       <div className="p-2 space-y-1.5">
@@ -3647,7 +3628,7 @@ function ChoicePicker({ choiceSet, onSelect, disabled, storageKey, agentKey }: {
               onSelect(content);
             }}
             className="text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-semibold"
-          >Use this variant →</button>
+          >Send this →</button>
         </div>
       )}
     </div>
@@ -4015,29 +3996,6 @@ function extractProposal(content: string): { cleanContent: string; proposal: Aut
     return { cleanContent, proposal };
   } catch {
     return { cleanContent: content, proposal: null };
-  }
-}
-
-function extractChoices(content: string): { cleanContent: string; choices: ChoiceSet | null } {
-  const match = content.match(/CHOICES_BLOCK:\s*([\s\S]*?)\s*END_CHOICES/);
-  if (!match) return { cleanContent: content, choices: null };
-  try {
-    const choices = JSON.parse(match[1].trim()) as ChoiceSet;
-    // Normalise the scores rather than trusting them. A model asked for 1-5 will occasionally
-    // answer 7, or "high", or omit one — and a card that renders "effort 7/5" reads as broken.
-    // normaliseScore clamps what is there and returns null when nothing usable was given, so an
-    // unscored option renders exactly as it always did.
-    if (Array.isArray(choices?.choices)) {
-      for (const c of choices.choices) {
-        const s = normaliseScore({ effort: c.effort, impact: c.impact, confidence: c.confidence, why: c.why });
-        if (s) { c.effort = s.effort; c.impact = s.impact; c.confidence = s.confidence; c.why = s.why; }
-        else { delete c.effort; delete c.impact; delete c.confidence; }
-      }
-    }
-    const cleanContent = content.replace(/\n*CHOICES_BLOCK:[\s\S]*?END_CHOICES\n*/g, '\n').trim();
-    return { cleanContent, choices };
-  } catch {
-    return { cleanContent: content, choices: null };
   }
 }
 

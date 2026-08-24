@@ -199,3 +199,65 @@ export function workingFileNote(agentKey: string): string {
     + '"update it", "make it shorter"), use recall_from_brain to read it and EDIT that, rather than '
     + 'starting a new document. If it is clearly a different job, ignore this and start fresh.';
 }
+
+// -- 4. Options offered as buttons ---------------------------------------------
+//
+// The boss can end a message with a CHOICES_BLOCK: a small JSON list of the two-to-four concrete
+// things the user could pick next. The chat renders it as buttons, so an answer the model already
+// spelled out is one tap instead of a retyped sentence. The parsing lives here, next to the
+// scoring it depends on, because it is the one part that has to survive whatever a free model
+// writes -- and here it can be tested without a browser.
+
+export interface ChoiceItem extends ChoiceScore {
+  id:      string;
+  label:   string;
+  preview: string;
+  /** What gets sent as if the user had typed it, so it must read in their voice and stand alone. */
+  content: string;
+}
+
+export interface ChoiceSet {
+  title:   string;
+  choices: ChoiceItem[];
+}
+
+export function extractChoices(content: string): { cleanContent: string; choices: ChoiceSet | null } {
+  const match = content.match(/CHOICES_BLOCK:\s*([\s\S]*?)\s*END_CHOICES/);
+  if (!match) return { cleanContent: content, choices: null };
+  // The block is machinery either way: whether we can read it or not, it never belongs on screen as
+  // raw JSON. The live stream already hides it (stripToolNoise), so leaving it in on a parse failure
+  // meant the text CHANGED at the end of the turn -- clean prose while streaming, then a wall of
+  // JSON once it finished. Strip first, decide about the card second.
+  const stripped = content.replace(/\n*CHOICES_BLOCK:[\s\S]*?END_CHOICES\n*/g, '\n').trim();
+  try {
+    const choices = JSON.parse(match[1].trim()) as ChoiceSet;
+    // -- A CARD IS ONLY DRAWN FROM OPTIONS THAT REALLY EXIST -------------------------------------
+    //
+    // The renderer maps straight over choices.choices. Valid JSON of the wrong SHAPE -- an object
+    // instead of an array, one option, an option with a label and no content -- used to reach it
+    // and take the whole chat down with a TypeError. The shape is checked here instead: usable
+    // options are kept, the rest dropped, and fewer than two means there was never a choice to
+    // offer, so the prose stands on its own.
+    const usable = (Array.isArray(choices?.choices) ? choices.choices : [])
+      .filter((c) => c && typeof c === 'object' && String(c.label || '').trim() && String(c.content || '').trim())
+      .slice(0, 4)
+      .map((c, i) => ({ ...c, id: String(c.id || '').trim() || `c${i + 1}`, preview: String(c.preview || '').trim() }));
+    if (usable.length < 2) return { cleanContent: stripped, choices: null };
+    choices.choices = usable;
+    choices.title = String(choices.title || '').trim() || 'Which one?';
+    // Normalise the scores rather than trusting them. A model asked for 1-5 will occasionally
+    // answer 7, or "high", or omit one — and a card that renders "effort 7/5" reads as broken.
+    // normaliseScore clamps what is there and returns null when nothing usable was given, so an
+    // unscored option renders exactly as it always did.
+    if (Array.isArray(choices?.choices)) {
+      for (const c of choices.choices) {
+        const s = normaliseScore({ effort: c.effort, impact: c.impact, confidence: c.confidence, why: c.why });
+        if (s) { c.effort = s.effort; c.impact = s.impact; c.confidence = s.confidence; c.why = s.why; }
+        else { delete c.effort; delete c.impact; delete c.confidence; }
+      }
+    }
+    return { cleanContent: stripped, choices };
+  } catch {
+    return { cleanContent: stripped, choices: null };
+  }
+}

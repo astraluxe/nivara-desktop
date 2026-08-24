@@ -38,6 +38,7 @@ const UNITS = [
   ['mailProviders', 'src/lib/mailProviders.ts'],
   ['emailDraft',    'src/lib/emailDraft.ts'],
   ['outreachSender','src/lib/outreachSender.ts'],
+  ['agentBrain',    'src/lib/agentBrain.ts'],
 ];
 
 let failed = 0;
