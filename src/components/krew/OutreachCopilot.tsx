@@ -385,7 +385,23 @@ const STATUS_META: Record<OutreachStatus, { label: string; cls: string }> = {
 function openLink(url: string) {
   import('@tauri-apps/plugin-shell').then(({ open }) => open(url)).catch(() => window.open(url, '_blank'));
 }
+/**
+ * Copy, through the route that actually works.
+ *
+ * This tried `navigator.clipboard` first and quietly returned true-ish either way. Inside a Tauri
+ * webview that write frequently fails — it wants a secure context and a fresh user gesture, and a
+ * click that has already gone through an await is neither — so "the draft is on your clipboard"
+ * was sometimes a lie, and the `execCommand` fallback fails there for the same reasons.
+ *
+ * The Rust command is the one that works on Windows (it talks to the real clipboard), so it goes
+ * first and the web APIs are the fallback rather than the other way round.
+ */
 async function copyText(t: string): Promise<boolean> {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('copy_text', { text: t });
+    return true;
+  } catch { /* not on Windows, or not in Tauri — fall through */ }
   try { await navigator.clipboard.writeText(t); return true; }
   catch {
     try {
@@ -2417,15 +2433,49 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       return;
     }
 
-    // A destination we cannot prefill: put the draft on the clipboard, open the mailbox, and say
-    // plainly that it has to be pasted. Never let it look like the email was written for them.
+    // ── A webmail we have no compose link for ────────────────────────────────
+    //
+    // This used to open the mailbox in the SYSTEM browser and say "the draft is on your clipboard".
+    // Both halves were unreliable: the system browser is not the one they are signed in to (the
+    // panel even promises the ADRIS browser), and the clipboard write silently failed often enough
+    // that people arrived at an empty compose window with nothing to paste.
+    //
+    // So now it opens the ADRIS browser — where the session lives — and TYPES the email into
+    // whatever compose form that webmail has, the same way the LinkedIn path types a message. The
+    // clipboard is still filled first, as the fallback for when the form cannot be understood.
     if (target.copyDraft) {
-      const draft = `Subject: ${fillTokens(contact.email_subject || '', contact)}\n\n${fillTokens(contact.email_body || contact.linkedin_message || '', contact)}`;
-      const copied = await copyText(draft);
-      openLink(target.url);
-      setOpenNote(copied
-        ? `${target.label} is open and the draft is on your clipboard — start a new message to ${address} and paste it.`
-        : `${target.label} is open. I could NOT copy the draft to your clipboard, so copy it from the box above before you write the message.`);
+      const subject = fillTokens(contact.email_subject || '', contact);
+      const body = fillTokens(contact.email_body || contact.linkedin_message || '', contact);
+      const copied = await copyText(`Subject: ${subject}\n\n${body}`);
+      setEmailBusy(`Opening ${target.label}…`);
+      setAgentBrowserHold(true); setBrowserOpen(true);
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        setEmailBusy(`Writing the email in ${target.label}…`);
+        const raw = await invoke<string>('run_browser_persistent', {
+          args: `webmail ${target.url} ::: ${address} ::: ${subject} ::: ${body}`,
+        });
+        const r = String(raw || '');
+        if (r.includes('WEBMAIL_DRAFTED')) {
+          setOpenNote(`Written into ${target.label} — check it reads right, then press Send there. Nothing has been sent.`);
+        } else if (r.includes('WEBMAIL_NEEDS_LOGIN')) {
+          setOpenNote(`${target.label} is asking you to sign in. Sign in inside the ADRIS browser window — it stays signed in afterwards — then press Compose here again.`);
+        } else if (r.includes('WEBMAIL_PARTIAL')) {
+          setOpenNote(`${target.label} is open and partly filled in, but I couldn't complete it. ${copied ? 'The full draft is on your clipboard' : 'Copy the draft from the box above'} — finish it before sending.`);
+        } else if (r.includes('WEBMAIL_NO_COMPOSE')) {
+          setOpenNote(`${target.label} is open but I couldn't find a compose window I understand. ${copied ? 'The draft is on your clipboard — press Compose and paste it.' : 'Copy the draft from the box above, then press Compose and paste it.'}`);
+        } else {
+          // Browser missing, crashed, or something unrecognised came back. Never dress that up.
+          openLink(target.url);
+          setOpenNote(`Opened ${target.label} in your browser. ${copied ? 'The draft is on your clipboard — paste it into a new message.' : 'Copy the draft from the box above.'}`);
+        }
+      } catch {
+        openLink(target.url);
+        setOpenNote(`Opened ${target.label} in your browser. ${copied ? 'The draft is on your clipboard — paste it into a new message.' : 'Copy the draft from the box above.'}`);
+      } finally {
+        setEmailBusy('');
+        setAgentBrowserHold(false);
+      }
       return;
     }
 

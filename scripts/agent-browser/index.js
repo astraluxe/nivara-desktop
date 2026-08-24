@@ -661,7 +661,7 @@ async function main() {
       && cmd !== 'connections' && cmd !== 'logincheck' && cmd !== 'message' && cmd !== 'printpdf'
       && cmd !== 'findprofile' && cmd !== 'messages' && cmd !== 'typemsg' && cmd !== 'meetlink' && cmd !== 'whatsapp'
       && cmd !== 'readthread' && cmd !== 'gcalcheck' && cmd !== 'sentinvites' && cmd !== 'humancheck'
-      && cmd !== 'gmailthread' && cmd !== 'sendmsg' && cmd !== 'sendmail') {
+      && cmd !== 'gmailthread' && cmd !== 'sendmsg' && cmd !== 'sendmail' && cmd !== 'webmail') {
     var state   = readState();
 
     var conn    = await ensureChrome();
@@ -2046,6 +2046,177 @@ async function main() {
       return;
     }
     process.stdout.write('SEND_FAILED NOT_IN_THREAD The Send button was pressed but the message is still in the box and not in the conversation. Nothing appears to have gone.');
+    return;
+  }
+
+  // ── webmail <url> ::: <to> ::: <subject> ::: <body> ─────────────────────────
+  // Open ANY webmail, find its compose window, and type the email into it.
+  //
+  // Gmail has a compose deeplink and a DOM we know; nothing else does. Everyone on a Titan,
+  // Hostinger, Zoho, Rediff or cPanel mailbox got "your webmail is open, here is your draft on the
+  // clipboard, paste it yourself" — which is barely better than nothing, and worse when the copy
+  // silently fails.
+  //
+  // A compose form is a compose form, though. Every one of them has a recipient box, a subject box
+  // and a body, and they are all findable without knowing the product: by field name, by label, by
+  // placeholder, by role. So this hunts for them generically instead of hard-coding a provider —
+  // and where a rich-text editor lives inside an iframe (Roundcube's TinyMCE does exactly this),
+  // it looks inside the frames too.
+  //
+  // It never presses Send. The user reads what landed and sends it themselves — and because we
+  // cannot be certain a strange webmail took the text, the reply says exactly which boxes were
+  // filled and which were not, rather than claiming a draft that may not be there.
+  if (cmd === 'webmail') {
+    var wRaw = argv.slice(1).join(' ').replace(/^"|"$/g, '').trim();
+    var wParts = wRaw.split(' ::: ');
+    var wUrl = (wParts[0] || '').trim();
+    var wTo = (wParts[1] || '').trim();
+    var wSubj = (wParts[2] || '').trim();
+    var wBody = wParts.slice(3).join(' ::: ').trim();
+    if (!wUrl) { process.stdout.write('[webmail-error] NO_URL — no webmail address was given.'); return; }
+    if (wUrl.indexOf('http') !== 0) wUrl = 'https://' + wUrl;
+    var wConn = await ensureChrome();
+    var wCtx = wConn.context;
+    if (!wCtx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
+    var wPage = wCtx.pages().at(-1) || await wCtx.newPage();
+    try { await wPage.bringToFront(); } catch (_) {}
+    try { await wPage.goto(wUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }); } catch (_) {}
+    await new Promise(function (r) { setTimeout(r, 1800); });
+    writeState({ url: wPage.url() });
+
+    // Signed out? Say so plainly — this is the single most common reason nothing appears, and it
+    // is not something we can fix for them.
+    var wLoggedOut = await wPage.evaluate(function () {
+      var t = ((document.body && document.body.innerText) || '').toLowerCase();
+      var hasPw = !!document.querySelector('input[type="password"]');
+      return hasPw && /sign in|log in|login|password/.test(t);
+    }).catch(function () { return false; });
+    if (wLoggedOut) {
+      process.stdout.write('WEBMAIL_NEEDS_LOGIN Your webmail is open but asking you to sign in. Sign in here in the ADRIS browser — it stays signed in afterwards — then try again.');
+      return;
+    }
+
+    await showBanner(wPage, 'ADRIS is writing your email here. Check it, then press Send yourself.');
+
+    // ── Find and open the compose window ────────────────────────────────────
+    // Already on one? Some webmail links land straight in a composer.
+    var composeOpen = async function () {
+      return await wPage.evaluate(function () {
+        function vis(el) { if (!el) return false; var r = el.getBoundingClientRect(); return r.width > 40 && r.height > 10; }
+        var sels = ['input[name*="subject" i]', 'input[id*="subject" i]', '[aria-label*="subject" i]', '[placeholder*="subject" i]'];
+        for (var i = 0; i < sels.length; i++) { var e = document.querySelector(sels[i]); if (vis(e)) return true; }
+        return false;
+      }).catch(function () { return false; });
+    };
+
+    var opened = await composeOpen();
+    if (!opened) {
+      // Click whatever this webmail calls "new message". Text first (most reliable across
+      // products), then the conventional attributes, then Roundcube's own compose URL.
+      var labels = /^(compose|new message|new mail|new e-?mail|write|new)$/i;
+      var clicked = false;
+      try {
+        var byRole = wPage.getByRole('button', { name: labels }).first();
+        if (await byRole.count() > 0) { await byRole.click({ timeout: 4000 }); clicked = true; }
+      } catch (_) {}
+      if (!clicked) {
+        try {
+          var byLink = wPage.getByRole('link', { name: labels }).first();
+          if (await byLink.count() > 0) { await byLink.click({ timeout: 4000 }); clicked = true; }
+        } catch (_) {}
+      }
+      if (!clicked) {
+        try {
+          var byAttr = wPage.locator('[aria-label*="ompose" i], [title*="ompose" i], [data-testid*="ompose" i], a[href*="_action=compose"], a[href*="compose"]').first();
+          if (await byAttr.count() > 0) { await byAttr.click({ timeout: 4000 }); clicked = true; }
+        } catch (_) {}
+      }
+      if (!clicked) {
+        // Roundcube (most cPanel/shared hosting webmail) always answers this URL.
+        try {
+          var base = wPage.url().split('?')[0];
+          await wPage.goto(base + '?_task=mail&_action=compose', { waitUntil: 'domcontentloaded', timeout: 15000 });
+          clicked = true;
+        } catch (_) {}
+      }
+      await new Promise(function (r) { setTimeout(r, 2200); });
+      opened = await composeOpen();
+    }
+
+    // ── Fill it in ──────────────────────────────────────────────────────────
+    // Tried across the main frame AND any iframes, because rich-text editors (Roundcube's TinyMCE,
+    // several others) put the message body inside one.
+    var frames = [wPage].concat(wPage.frames ? wPage.frames() : []);
+    var filled = { to: false, subject: false, body: false };
+
+    var typeInto = async function (frame, selectors, value, isBody) {
+      if (!value) return false;
+      for (var i = 0; i < selectors.length; i++) {
+        try {
+          var loc = frame.locator(selectors[i]).first();
+          if (await loc.count() === 0) continue;
+          if (!await loc.isVisible().catch(function () { return false; })) continue;
+          await loc.click({ timeout: 2500 });
+          // Real keystrokes. A scripted value assignment does not fire the events these editors
+          // listen to, so the text looks present and vanishes the moment anything re-renders.
+          await loc.pressSequentially(value, { delay: isBody ? 4 : 12, timeout: 25000 });
+          var landed = '';
+          try { landed = await loc.inputValue(); } catch (_) { try { landed = await loc.innerText(); } catch (_) {} }
+          if ((landed || '').replace(/\s+/g, ' ').trim().length > 0) return true;
+        } catch (_) { /* try the next selector */ }
+      }
+      return false;
+    };
+
+    for (var fi = 0; fi < frames.length && !(filled.to && filled.subject && filled.body); fi++) {
+      var fr = frames[fi];
+      if (!filled.to) {
+        filled.to = await typeInto(fr, [
+          'input[name="_to"]', 'textarea[name="_to"]',              // Roundcube
+          'input[name*="to" i]:not([name*="auto" i])', 'textarea[name*="to" i]',
+          'input[id*="to" i]:not([id*="auto" i])',
+          '[aria-label="To"]', '[aria-label*="to recipients" i]', '[aria-label^="To" i]',
+          '[placeholder^="To" i]', 'input[type="email"]',
+        ], wTo, false);
+      }
+      if (!filled.subject) {
+        filled.subject = await typeInto(fr, [
+          'input[name="_subject"]',                                  // Roundcube
+          'input[name*="subject" i]', 'input[id*="subject" i]',
+          '[aria-label*="subject" i]', '[placeholder*="subject" i]',
+        ], wSubj, false);
+      }
+      if (!filled.body) {
+        filled.body = await typeInto(fr, [
+          'body[id*="tinymce" i]', 'body.mce-content-body',          // TinyMCE inside an iframe
+          'textarea[name="_message"]',                               // Roundcube plain-text mode
+          'div[role="textbox"]', '[contenteditable="true"]',
+          'textarea[name*="body" i]', 'textarea[name*="message" i]',
+          '[aria-label*="message body" i]', '[aria-label*="body" i]',
+        ], wBody, true);
+      }
+    }
+
+    writeState({ url: wPage.url() });
+
+    if (filled.to && filled.subject && filled.body) {
+      process.stdout.write('WEBMAIL_DRAFTED — the email is written into your webmail, unsent. Check it and press Send yourself.');
+      return;
+    }
+    if (filled.body || filled.to) {
+      // PARTIAL. Say exactly what is missing rather than implying the draft is ready — the whole
+      // point of this command is that the user should not have to discover a half-written email
+      // after pressing Send.
+      var missing = [];
+      if (!filled.to) missing.push('the recipient');
+      if (!filled.subject) missing.push('the subject');
+      if (!filled.body) missing.push('the message');
+      process.stdout.write('WEBMAIL_PARTIAL The compose window is open but I could not fill in ' + missing.join(' and ')
+        + '. Everything is on your clipboard — finish it by hand before sending.');
+      return;
+    }
+    await hideBanner(wPage).catch(function () {});
+    process.stdout.write('WEBMAIL_NO_COMPOSE Your webmail is open but I could not find a compose window I understand, so nothing was typed. The draft is on your clipboard — press Compose and paste it.');
     return;
   }
 

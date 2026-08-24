@@ -4538,6 +4538,11 @@ fn browser_debug_log(msg: &str) {
 // no specific contact); reads a company page the same way as a profile (innerText, identity at
 // the top) instead of running the feed extractor on it, and the search-result redirect decoder
 // surfaces /company/ links too.
+// Build marker: agent-browser.js v5 (2026-08-24) — `webmail`: open ANY webmail in the signed-in
+// ADRIS browser, find its compose form generically (by name, label, placeholder or role, looking
+// inside iframes for the rich-text editors), and TYPE the email in. Verified against Roundcube's
+// shape (compose behind a button, body in a TinyMCE iframe) and the aria-label-only shape, plus
+// the signed-out and no-compose cases, which report themselves instead of guessing.
 // Build marker: agent-browser.js v4 (2026-08-23) — `sendmsg` and `sendmail`: type AND send, then
 // PROVE it went (the LinkedIn bubble in the thread, Gmail's "Message sent" toast) before anyone is
 // recorded as contacted. Both are excluded from the interactive block, like every other custom

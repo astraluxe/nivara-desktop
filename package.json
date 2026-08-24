@@ -1,7 +1,7 @@
 {
   "name": "nivara-desktop",
   "private": true,
-  "version": "1.52.0",
+  "version": "1.53.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "harness:build": "vite build --config vite.harness.config.ts --outDir dist-harness",
     "test:ui": "node harness/run-tests.mjs",
+    "test:webmail": "node harness/fake-webmail.mjs",
     "tauri": "tauri",
     "bundle-exo": "node scripts/bundle-exo.js",
     "tauri:build": "npm run bundle-exo && tauri build"
