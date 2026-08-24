@@ -491,6 +491,30 @@ function isHumanCheck(url) {
   return /\/checkpoint\/(challenge|challengesV2)|\/checkpoint\/rp\/|px-captcha|protechts\.net/i.test(url || '');
 }
 
+/**
+ * Wait for `check()` to come back truthy, polling instead of guessing a fixed sleep duration.
+ *
+ * A fixed sleep after navigating to a client-rendered app (Hostinger's webmail, and most modern
+ * webmail) is a bet on how long ITS OWN app takes to paint — right most of the time, and wrong on
+ * a slow first load, at which point whatever ran next found nothing there yet. Polling a real
+ * condition instead means "ready" is actually ready, not "however long we guessed."
+ *
+ * Bounded by `maxWait`, and never past what is actually left of the process's overall time budget
+ * (see pollForLoginCompletion below for why that matters — Rust abandons this process at 45s).
+ */
+async function pollUntil(check, maxWait, intervalMs) {
+  var spent = Date.now() - START_MS;
+  var budget = Math.max(1000, Math.min(maxWait, 40000 - spent));
+  var deadline = Date.now() + budget;
+  var last = false;
+  while (Date.now() < deadline) {
+    last = await check().catch(function () { return false; });
+    if (last) return true;
+    await new Promise(function (r) { setTimeout(r, intervalMs || 300); });
+  }
+  return false;
+}
+
 async function pollForLoginCompletion(page, maxWait) {
   // NEVER outlive the caller. Rust abandons this process at 45 seconds, and a command that has
   // already spent 25 of them navigating has nowhere near `maxWait` left — it just gets killed, and
@@ -2078,10 +2102,24 @@ async function main() {
     var wConn = await ensureChrome();
     var wCtx = wConn.context;
     if (!wCtx) { process.stdout.write('[browser-crash] Chrome could not start. Make sure Google Chrome is installed.'); return; }
-    var wPage = wCtx.pages().at(-1) || await wCtx.newPage();
+    // ALWAYS a fresh tab. Reusing whatever tab a PREVIOUS command left active meant a webmail run
+    // could land on someone else's leftover page — a different site entirely, or a stale Hostinger
+    // tab already mid-navigation — and everything after this silently ran against the wrong page.
+    // A new tab costs nothing and removes that whole class of "opened but nothing happened" bugs.
+    var wPage = await wCtx.newPage();
     try { await wPage.bringToFront(); } catch (_) {}
     try { await wPage.goto(wUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }); } catch (_) {}
-    await new Promise(function (r) { setTimeout(r, 1800); });
+    // A fixed sleep here is a guess at how long a webmail's OWN app takes to render after the shell
+    // loads — Hostinger's inbox, like most of these, is client-rendered, so "domcontentloaded" only
+    // means the empty shell exists. A slow first paint made this sleep run out before the "New
+    // message" button had even mounted, so the click below never found anything to click. Poll for
+    // a real sign of readiness instead of guessing a duration.
+    await pollUntil(function () {
+      return wPage.evaluate(function () {
+        var t = ((document.body && document.body.innerText) || '');
+        return t.trim().length > 20; // the app shell has actually rendered something
+      }).catch(function () { return false; });
+    }, 8000, 300);
     writeState({ url: wPage.url() });
 
     // Signed out? Say so plainly — this is the single most common reason nothing appears, and it
@@ -2110,7 +2148,12 @@ async function main() {
     };
 
     var opened = await composeOpen();
-    if (!opened) {
+    // TWO PASSES, NOT ONE. A "New message" button that exists and is even clickable can still
+    // swallow a click that lands mid-animation (a panel sliding in, a dialog still mounting) — the
+    // click succeeds, nothing happens, and one attempt reports failure on a button that would have
+    // worked a moment later. The second pass is what turns that from a real failure into nothing
+    // the user ever sees.
+    for (var wAttempt = 0; wAttempt < 2 && !opened; wAttempt++) {
       // Click whatever this webmail calls "new message". Text first (most reliable across
       // products), then the conventional attributes, then Roundcube's own compose URL.
       var labels = /^(compose|new message|new mail|new e-?mail|write|new)$/i;
@@ -2131,16 +2174,21 @@ async function main() {
           if (await byAttr.count() > 0) { await byAttr.click({ timeout: 4000 }); clicked = true; }
         } catch (_) {}
       }
-      if (!clicked) {
-        // Roundcube (most cPanel/shared hosting webmail) always answers this URL.
+      if (!clicked && wAttempt === 1) {
+        // Roundcube (most cPanel/shared hosting webmail) always answers this URL. Only tried on
+        // the SECOND pass — it navigates away, which the first pass should not risk doing before
+        // giving the page's own button a real chance.
         try {
           var base = wPage.url().split('?')[0];
           await wPage.goto(base + '?_task=mail&_action=compose', { waitUntil: 'domcontentloaded', timeout: 15000 });
           clicked = true;
         } catch (_) {}
       }
-      await new Promise(function (r) { setTimeout(r, 2200); });
-      opened = await composeOpen();
+      // Poll for the real sign the compose window is actually there, rather than guessing how
+      // long its animation or its own render takes. This is what fixed the flaky first-load case:
+      // the fixed sleep here used to run out before Hostinger's compose panel had finished
+      // mounting, so a click that WORKED still reported failure.
+      opened = await pollUntil(composeOpen, 8000, 400);
     }
 
     // ── Fill it in ──────────────────────────────────────────────────────────
@@ -2177,6 +2225,12 @@ async function main() {
           'input[id*="to" i]:not([id*="auto" i])',
           '[aria-label="To"]', '[aria-label*="to recipients" i]', '[aria-label^="To" i]',
           '[placeholder^="To" i]', 'input[type="email"]',
+          // Newer webmail apps (Hostinger's own included) build the recipient field as a chip/tag
+          // picker rather than a plain input — a combobox, or a contenteditable box that turns each
+          // typed address into a pill. Plain input[name*="to"] never matches one of those.
+          '[role="combobox"][aria-label*="to" i]', 'input[role="combobox"]',
+          '[data-testid*="to" i] input', '[data-testid*="recipient" i]',
+          '[class*="recipient" i] input', '[class*="recipient" i][contenteditable]',
         ], wTo, false);
       }
       if (!filled.subject) {
