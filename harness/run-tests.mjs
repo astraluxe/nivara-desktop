@@ -68,6 +68,12 @@ if (!process.argv.includes('--unit')) {
   console.log('\n### Automatic sending, in a real browser');
   try { execFileSync(process.execPath, [path.join(here, 'drive-send.mjs')], { stdio: 'inherit' }); }
   catch { failed++; }
+
+  // Setting the mailbox up is the step a non-technical person actually has to do, so it gets its
+  // own pass — including the mistake the first real user made.
+  console.log('\n### Mailbox setup, in a real browser');
+  try { execFileSync(process.execPath, [path.join(here, 'drive-smtp.mjs')], { stdio: 'inherit' }); }
+  catch { failed++; }
 }
 
 console.log(failed ? `\n${failed} suite(s) FAILED` : '\nall suites passed');

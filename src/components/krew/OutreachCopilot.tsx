@@ -1757,6 +1757,78 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   const [smtpHasSaved, setSmtpHasSaved] = useState(false);
   const [smtpTesting, setSmtpTesting] = useState(false);
   const [smtpNote, setSmtpNote] = useState('');
+  /** Named step while setting up, so a 15-second lookup is not a frozen button. */
+  const [smtpStage, setSmtpStage] = useState('');
+  const [smtpAdvanced, setSmtpAdvanced] = useState(false);
+
+  /**
+   * Type your email, type your password, press one button.
+   *
+   * Asking a business owner for "SMTP host, port, and SSL or STARTTLS" is asking them to go and
+   * find a support page they will not find — and it is exactly how the first real setup went wrong:
+   * the webmail URL ended up in the username box, and the only feedback was a failed send. Every
+   * mail client worth using derives the server from the address. So does this.
+   *
+   * The lookup reads the domain's MX records (which is how a Hostinger or Zoho mailbox on a custom
+   * domain is identified — no autoconfig file exists for those), then falls back to the public
+   * provider database, then to the domain's own autoconfig, then to a labelled guess. Nothing is
+   * trusted until the test send really succeeds.
+   */
+  async function findAndTestSmtp() {
+    const email = (mailSetup.smtp?.username || '').trim();
+    if (!/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(email)) {
+      setSmtpNote(/^https?:|\//.test(email)
+        ? 'That is a web address, not an email address. Put the address people write to you at — like you@yourcompany.com.'
+        : 'Put your work email address in first.');
+      return;
+    }
+    if (!smtpPassword.trim() && !smtpHasSaved) {
+      setSmtpNote('Enter the password for that mailbox so I can sign in and send.');
+      return;
+    }
+    setSmtpTesting(true); setSmtpNote(''); setSmtpStage('Looking up your provider…');
+    let found: { host: string; port: number; implicitTls: boolean; provider?: string; note?: string; source?: string } | null = null;
+    let detected = '';
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const raw = await invoke<string>('smtp_discover', { email });
+      const res = JSON.parse(raw) as {
+        detected?: string; mx?: string[];
+        candidates?: { host: string; port: number; implicitTls: boolean; provider?: string; note?: string; source?: string }[];
+      };
+      found = res.candidates?.[0] ?? null;
+      detected = res.detected || '';
+    } catch {
+      // The lookup needs the internet and the mail server does too, so a failure here is worth
+      // saying out loud rather than silently falling through to a guess.
+      setSmtpStage('');
+    }
+    // Anything the user typed by hand in Server settings wins — they may know something we do not,
+    // and silently overwriting it would be the app arguing with its owner.
+    const manual = (mailSetup.smtp?.host || '').trim();
+    const next = manual
+      ? { host: manual, port: mailSetup.smtp?.port ?? 465, implicitTls: mailSetup.smtp?.implicitTls ?? true }
+      : found
+        ? { host: found.host, port: found.port, implicitTls: found.implicitTls }
+        : null;
+    if (!next?.host) {
+      setSmtpTesting(false); setSmtpStage('');
+      setSmtpAdvanced(true);
+      setSmtpNote('I could not work out who runs your email. Open Server settings below and put in your provider\'s outgoing (SMTP) server — their help pages call it "SMTP settings".');
+      return;
+    }
+    const smtp = {
+      ...(mailSetup.smtp ?? { fromName: '', fromAddress: '' }),
+      host: next.host, port: next.port, implicitTls: next.implicitTls,
+      username: email, verifiedAt: undefined as number | undefined,
+    };
+    setMailSetup({ ...mailSetup, smtp });
+    setSmtpStage(`Sending a test through ${next.host}…`);
+    // Hand the resolved settings straight to the tester rather than waiting for React state, so the
+    // very first attempt uses what we just found instead of what was on screen a moment ago.
+    await testSmtp(smtp, found?.provider ? `Detected: ${found.provider}${detected ? ` (${detected})` : ''}.` : '', found?.note || '');
+    setSmtpStage('');
+  }
 
   /** Which channels an automatic run should use. */
   const [autoChannels, setAutoChannels] = useState<SendChannel[]>(['email']);
@@ -1798,21 +1870,34 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   }, [contacts, autoChannels, sendCounts, sendTick]);
 
   /** Save the SMTP password to the OS keychain and prove the settings work by really sending one. */
-  async function testSmtp() {
-    const s = mailSetup.smtp;
-    if (!s || !s.host.trim() || !s.username.trim()) { setSmtpNote('Fill in the server and your email address first.'); return; }
+  /**
+   * Prove the mailbox really sends, by really sending — to the user's own address.
+   *
+   * `override` lets the auto-setup hand in the settings it just resolved. Without it this would
+   * read React state that has not re-rendered yet, so the very first attempt would test the
+   * settings that were on screen a moment ago rather than the ones just found.
+   */
+  async function testSmtp(override?: NonNullable<MailSetup['smtp']>, prefix = '', providerNote = '') {
+    const s = override ?? mailSetup.smtp;
+    if (!s || !s.host.trim() || !s.username.trim()) { setSmtpNote('Fill in your email address and the server first.'); return; }
+    if (!/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(s.username.trim())) {
+      setSmtpNote(/^https?:|\//.test(s.username)
+        ? 'The "Your work email" box has a web address in it. It wants the address people write to you at — like you@yourcompany.com.'
+        : `"${s.username.slice(0, 60)}" is not an email address.`);
+      return;
+    }
     const pw = smtpPassword.trim();
     if (!pw && !smtpHasSaved) { setSmtpNote('Enter the mailbox password (or app password) so I can sign in to send.'); return; }
     setSmtpTesting(true); setSmtpNote('');
     try {
       if (pw) { await credentialStore.save(SMTP_CREDENTIAL_SERVICE, { api_key: pw }); setSmtpHasSaved(true); }
       const stored = pw || ((await credentialStore.get(SMTP_CREDENTIAL_SERVICE).catch(() => null)) as { api_key?: string } | null)?.api_key || '';
-      const to = sendingAddress(mailSetup);
+      const to = sendingAddress({ ...mailSetup, smtp: s });
       const { invoke } = await import('@tauri-apps/api/core');
       // The test sends to the USER'S OWN address. It has to be a real send — a connection that
       // merely authenticates can still be refused at the point of delivery — and it must not be a
       // real send to anybody else.
-      const res = await invoke<string>('smtp_send_email', {
+      await invoke<string>('smtp_send_email', {
         host: s.host.trim(), port: s.port, username: s.username.trim(), password: stored,
         fromName: s.fromName || '', fromAddress: s.fromAddress || '',
         to, subject: 'ADRIS test — your outreach mailbox works',
@@ -1821,20 +1906,24 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       });
       setMailSetup({ ...mailSetup, smtp: { ...s, verifiedAt: Date.now() } });
       setSmtpPassword('');
-      setSmtpNote(`✓ Sent a test email to ${to} (${String(res)}). Check it arrived, then automatic sending is ready.`);
+      setSmtpAdvanced(false);
+      setSmtpNote(`✓ ${prefix ? `${prefix} ` : ''}Set up and working — I sent a test to ${to} through ${s.host}. Check it arrived, then automatic sending is ready.`);
     } catch (e) {
       const raw = e instanceof Error ? e.message : String(e);
       // Say which KIND of failure it is — a wrong password and a blocked port need opposite fixes,
       // and collapsing them into "failed" is how someone ends up rotating a working password.
-      const hint = /auth|credential|username|password|535|534/i.test(raw)
-        ? 'The server refused the sign-in. Most providers need an APP PASSWORD here rather than the one you type into their website.'
-        : /timed out|timeout|connect|refused|dns|resolve|10060|10061/i.test(raw)
-          ? 'Could not reach the server. Check the address, and try the other port (465 with SSL, or 587 with STARTTLS).'
+      const hint = /auth|credential|username|password|535|534|authentication/i.test(raw)
+        ? `The server accepted the connection but refused the sign-in, so the address is right and the password is not being accepted. Most providers will not take your website password here — they want an APP PASSWORD generated in their settings.${providerNote ? `\n\n${providerNote}` : ''}`
+        : /timed out|timeout|connect|refused|dns|resolve|10060|10061|could not reach/i.test(raw)
+          ? `Could not reach ${s.host}. Either that is not your provider's server, or this network blocks the port. Open Server settings and try the other port (465 with SSL, or 587 with STARTTLS).`
           : /tls|ssl|handshake/i.test(raw)
-            ? 'The secure connection failed — this is usually the SSL/STARTTLS switch being the wrong way round for this port.'
+            ? 'The secure connection failed — this is almost always the SSL/STARTTLS setting being the wrong way round for the port. Open Server settings and switch it.'
             : '';
       setMailSetup({ ...mailSetup, smtp: { ...s, verifiedAt: undefined } });
-      setSmtpNote(`Couldn't send: ${raw.slice(0, 200)}${hint ? `\n\n${hint}` : ''}`);
+      // A failure is exactly when the settings stop being noise and start being the thing the
+      // person needs to see, so open them rather than making them go looking.
+      setSmtpAdvanced(true);
+      setSmtpNote(`Couldn't send through ${s.host}: ${raw.slice(0, 200)}${hint ? `\n\n${hint}` : ''}`);
     } finally { setSmtpTesting(false); }
   }
 
@@ -3584,7 +3673,10 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                           />
                         </div>
                         <div>
-                          <p className="text-[9px] text-nv-faint uppercase tracking-wide">The address you open your mail at</p>
+                          {/* NOT "address". That word was already doing a second job three fields
+                              below, where it means an email address — and the first real user
+                              pasted this link into that box. A link is a link. */}
+                          <p className="text-[9px] text-nv-faint uppercase tracking-wide">Link to your webmail page</p>
                           <input
                             value={mailSetup.webmailUrl || ''}
                             onChange={(e) => setMailSetup({ ...mailSetup, webmailUrl: e.target.value.trim() })}
@@ -3664,79 +3756,135 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                         {canAutoSendEmail(mailSetup) && <span className="text-[9px] text-emerald-600">✓ tested</span>}
                       </div>
                       <p className="text-[9px] text-nv-faint mt-0.5 leading-snug">
-                        Only needed if you want adris to send without you pressing Send. Works with any
-                        provider — Titan/Hostinger, Zoho, Microsoft 365, Gmail, your own host.
+                        Only needed if you want adris to send without you pressing Send. Type your work
+                        email and its password — I work the rest out.
                       </p>
-                      <select
-                        value=""
-                        onChange={(e) => {
-                          const preset = SMTP_PRESETS.find((p) => p.id === e.target.value);
-                          if (!preset) return;
-                          setMailSetup({
-                            ...mailSetup,
-                            smtp: {
-                              host: preset.host, port: preset.port, implicitTls: preset.implicitTls,
-                              username: mailSetup.smtp?.username || '',
-                              fromName: mailSetup.smtp?.fromName || '',
-                              fromAddress: mailSetup.smtp?.fromAddress || '',
-                              // Changing the server invalidates any previous test — those settings
-                              // are not these settings, and "tested" must never mean "tested once,
-                              // for something else".
-                              verifiedAt: undefined,
-                            },
-                          });
-                          setSmtpNote(preset.note);
-                        }}
-                        className="w-full text-[9.5px] bg-nv-bg border border-nv-border rounded-md px-1.5 py-1 mt-1 focus:outline-none focus:border-accent/40"
-                      >
-                        <option value="">Who hosts your email?…</option>
-                        {SMTP_PRESETS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-                      </select>
-                      <div className="grid grid-cols-[1fr_auto] gap-1 mt-1">
+
+                      {/* TWO FIELDS, BOTH LABELLED.
+                          The first person to use this pasted their webmail URL into the username box,
+                          and the box was blameless-looking: it had a placeholder and no label, so the
+                          moment anything was typed there was nothing left on screen saying what it
+                          was for. Worse, the field directly above it is called "the address you open
+                          your mail at" and takes a link — two fields, both "address", two meanings.
+                          Every field here now carries a real label that does not disappear. */}
+                      <label className="block mt-1.5">
+                        <span className="text-[9px] text-nv-faint uppercase tracking-wide">Your work email</span>
                         <input
-                          value={mailSetup.smtp?.host || ''}
-                          onChange={(e) => setMailSetup({ ...mailSetup, smtp: { host: e.target.value.trim(), port: mailSetup.smtp?.port ?? 465, username: mailSetup.smtp?.username || '', implicitTls: mailSetup.smtp?.implicitTls ?? true, fromName: mailSetup.smtp?.fromName, fromAddress: mailSetup.smtp?.fromAddress, verifiedAt: undefined } })}
-                          placeholder="smtp.titan.email"
-                          className="min-w-0 text-[10px] font-mono bg-nv-bg border border-nv-border rounded-md px-2 py-1 focus:outline-none focus:border-accent/40 select-text"
+                          value={mailSetup.smtp?.username || ''}
+                          onChange={(e) => {
+                            const v = e.target.value.trim();
+                            setSmtpNote('');
+                            setMailSetup({ ...mailSetup, smtp: { host: mailSetup.smtp?.host || '', port: mailSetup.smtp?.port ?? 465, username: v, implicitTls: mailSetup.smtp?.implicitTls ?? true, fromName: mailSetup.smtp?.fromName, fromAddress: mailSetup.smtp?.fromAddress, verifiedAt: undefined } });
+                          }}
+                          placeholder="you@yourcompany.com"
+                          className="w-full text-[10px] bg-nv-bg border border-nv-border rounded-md px-2 py-1 mt-0.5 focus:outline-none focus:border-accent/40 select-text"
                         />
-                        <select
-                          value={String(mailSetup.smtp?.port ?? 465)}
-                          onChange={(e) => { const port = Number(e.target.value); setMailSetup({ ...mailSetup, smtp: { host: mailSetup.smtp?.host || '', port, username: mailSetup.smtp?.username || '', implicitTls: port === 465, fromName: mailSetup.smtp?.fromName, fromAddress: mailSetup.smtp?.fromAddress, verifiedAt: undefined } }); }}
-                          className="text-[9.5px] bg-nv-bg border border-nv-border rounded-md px-1 py-1 focus:outline-none focus:border-accent/40"
-                        >
-                          <option value="465">465 · SSL</option>
-                          <option value="587">587 · STARTTLS</option>
-                        </select>
-                      </div>
-                      <input
-                        value={mailSetup.smtp?.username || ''}
-                        onChange={(e) => setMailSetup({ ...mailSetup, smtp: { host: mailSetup.smtp?.host || '', port: mailSetup.smtp?.port ?? 465, username: e.target.value.trim(), implicitTls: mailSetup.smtp?.implicitTls ?? true, fromName: mailSetup.smtp?.fromName, fromAddress: mailSetup.smtp?.fromAddress, verifiedAt: undefined } })}
-                        placeholder="you@yourcompany.com"
-                        className="w-full text-[10px] bg-nv-bg border border-nv-border rounded-md px-2 py-1 mt-1 focus:outline-none focus:border-accent/40 select-text"
-                      />
-                      <input
-                        value={smtpPassword}
-                        onChange={(e) => { setSmtpPassword(e.target.value); setSmtpNote(''); }}
-                        type="password"
-                        placeholder={smtpHasSaved ? 'Password saved — type a new one only to change it' : 'Mailbox password or app password'}
-                        className="w-full text-[10px] bg-nv-bg border border-nv-border rounded-md px-2 py-1 mt-1 focus:outline-none focus:border-accent/40 select-text"
-                      />
-                      <input
-                        value={mailSetup.smtp?.fromName || ''}
-                        onChange={(e) => setMailSetup({ ...mailSetup, smtp: { host: mailSetup.smtp?.host || '', port: mailSetup.smtp?.port ?? 465, username: mailSetup.smtp?.username || '', implicitTls: mailSetup.smtp?.implicitTls ?? true, fromName: e.target.value, fromAddress: mailSetup.smtp?.fromAddress, verifiedAt: mailSetup.smtp?.verifiedAt } })}
-                        placeholder="Your name, as recipients see it"
-                        className="w-full text-[10px] bg-nv-bg border border-nv-border rounded-md px-2 py-1 mt-1 focus:outline-none focus:border-accent/40 select-text"
-                      />
+                      </label>
+                      {/* Caught the moment it is typed, not after a round trip to the mail server. */}
+                      {!!(mailSetup.smtp?.username || '').trim() && !/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test((mailSetup.smtp?.username || '').trim()) && (
+                        <p className="text-[9px] text-amber-600 mt-0.5 leading-snug">
+                          {/^https?:|\//.test(mailSetup.smtp?.username || '')
+                            ? 'That is a web address. This box wants your email address — the one people write to, like you@yourcompany.com.'
+                            : 'That does not look like an email address yet.'}
+                        </p>
+                      )}
+
+                      <label className="block mt-1.5">
+                        <span className="text-[9px] text-nv-faint uppercase tracking-wide">Password for that mailbox</span>
+                        <input
+                          value={smtpPassword}
+                          onChange={(e) => { setSmtpPassword(e.target.value); setSmtpNote(''); }}
+                          type="password"
+                          placeholder={smtpHasSaved ? 'Saved — type a new one only to change it' : 'Mailbox password, or an app password'}
+                          className="w-full text-[10px] bg-nv-bg border border-nv-border rounded-md px-2 py-1 mt-0.5 focus:outline-none focus:border-accent/40 select-text"
+                        />
+                      </label>
+
                       <button
-                        disabled={smtpTesting}
-                        onClick={() => void testSmtp()}
-                        className="w-full text-[10px] px-2 py-1 rounded-md border border-accent/40 text-accent hover:bg-accent/10 transition-fast disabled:opacity-40 mt-1"
-                      >{smtpTesting ? 'Sending a test…' : 'Save & send myself a test email'}</button>
+                        disabled={smtpTesting || !(mailSetup.smtp?.username || '').includes('@')}
+                        onClick={() => void findAndTestSmtp()}
+                        className="w-full text-[10px] font-semibold px-2 py-1.5 rounded-md bg-accent text-white hover:bg-accent-dim transition-fast disabled:opacity-40 mt-1.5"
+                      >{smtpTesting ? (smtpStage || 'Working…') : 'Set it up for me'}</button>
                       <p className="text-[9px] text-nv-faint mt-0.5 leading-snug">
-                        The password is stored in this computer's keychain — not in a file, and never sent anywhere but your own mail server.
+                        I look up who runs your domain's email, fill in the server settings, and send you a
+                        test message so you can see it really works. The password is stored in this computer's
+                        keychain — never in a file, and never sent anywhere but your own mail server.
                       </p>
+
                       {smtpNote && (
-                        <p className={`text-[9.5px] mt-1 leading-snug whitespace-pre-line ${smtpNote.startsWith('✓') ? 'text-emerald-600' : /Couldn't/.test(smtpNote) ? 'text-amber-600' : 'text-nv-muted'}`}>{smtpNote}</p>
+                        <p className={`text-[9.5px] mt-1 leading-snug whitespace-pre-line ${smtpNote.startsWith('✓') ? 'text-emerald-600' : /Couldn't|could not/i.test(smtpNote) ? 'text-amber-600' : 'text-nv-muted'}`}>{smtpNote}</p>
+                      )}
+
+                      {/* THE SETTINGS ARE STILL THERE, JUST NOT IN THE WAY.
+                          Hidden by default because nobody outside IT knows what STARTTLS is, and
+                          shown in full the moment something fails — which is exactly when the person
+                          reading suddenly does need them. */}
+                      <button
+                        onClick={() => setSmtpAdvanced((v) => !v)}
+                        className="mt-1 text-[9px] text-nv-faint hover:text-nv-text transition-fast"
+                      >{smtpAdvanced ? '▾' : '▸'} Server settings{mailSetup.smtp?.host ? ` — ${mailSetup.smtp.host}:${mailSetup.smtp.port}` : ''}</button>
+                      {smtpAdvanced && (
+                        <div className="mt-1 space-y-1.5 rounded-md border border-nv-border bg-nv-bg/60 p-1.5">
+                          <label className="block">
+                            <span className="text-[9px] text-nv-faint uppercase tracking-wide">Outgoing server (SMTP)</span>
+                            <input
+                              value={mailSetup.smtp?.host || ''}
+                              onChange={(e) => setMailSetup({ ...mailSetup, smtp: { host: e.target.value.trim(), port: mailSetup.smtp?.port ?? 465, username: mailSetup.smtp?.username || '', implicitTls: mailSetup.smtp?.implicitTls ?? true, fromName: mailSetup.smtp?.fromName, fromAddress: mailSetup.smtp?.fromAddress, verifiedAt: undefined } })}
+                              placeholder="smtp.yourprovider.com"
+                              className="w-full text-[10px] font-mono bg-nv-bg border border-nv-border rounded-md px-2 py-1 mt-0.5 focus:outline-none focus:border-accent/40 select-text"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-[9px] text-nv-faint uppercase tracking-wide">Port &amp; encryption</span>
+                            <select
+                              value={String(mailSetup.smtp?.port ?? 465)}
+                              onChange={(e) => { const port = Number(e.target.value); setMailSetup({ ...mailSetup, smtp: { host: mailSetup.smtp?.host || '', port, username: mailSetup.smtp?.username || '', implicitTls: port === 465, fromName: mailSetup.smtp?.fromName, fromAddress: mailSetup.smtp?.fromAddress, verifiedAt: undefined } }); }}
+                              className="w-full text-[9.5px] bg-nv-bg border border-nv-border rounded-md px-1.5 py-1 mt-0.5 focus:outline-none focus:border-accent/40"
+                            >
+                              <option value="465">465 · SSL</option>
+                              <option value="587">587 · STARTTLS</option>
+                            </select>
+                          </label>
+                          <label className="block">
+                            <span className="text-[9px] text-nv-faint uppercase tracking-wide">Your name, as recipients see it</span>
+                            <input
+                              value={mailSetup.smtp?.fromName || ''}
+                              onChange={(e) => setMailSetup({ ...mailSetup, smtp: { host: mailSetup.smtp?.host || '', port: mailSetup.smtp?.port ?? 465, username: mailSetup.smtp?.username || '', implicitTls: mailSetup.smtp?.implicitTls ?? true, fromName: e.target.value, fromAddress: mailSetup.smtp?.fromAddress, verifiedAt: mailSetup.smtp?.verifiedAt } })}
+                              placeholder="Amogh Misra"
+                              className="w-full text-[10px] bg-nv-bg border border-nv-border rounded-md px-2 py-1 mt-0.5 focus:outline-none focus:border-accent/40 select-text"
+                            />
+                          </label>
+                          <select
+                            value=""
+                            onChange={(e) => {
+                              const preset = SMTP_PRESETS.find((p) => p.id === e.target.value);
+                              if (!preset) return;
+                              setMailSetup({
+                                ...mailSetup,
+                                smtp: {
+                                  host: preset.host, port: preset.port, implicitTls: preset.implicitTls,
+                                  username: mailSetup.smtp?.username || '',
+                                  fromName: mailSetup.smtp?.fromName || '',
+                                  fromAddress: mailSetup.smtp?.fromAddress || '',
+                                  // Changing the server invalidates any previous test — those settings
+                                  // are not these settings, and "tested" must never mean "tested once,
+                                  // for something else".
+                                  verifiedAt: undefined,
+                                },
+                              });
+                              setSmtpNote(preset.note);
+                            }}
+                            className="w-full text-[9.5px] bg-nv-bg border border-nv-border rounded-md px-1.5 py-1 focus:outline-none focus:border-accent/40"
+                          >
+                            <option value="">Or pick a known provider…</option>
+                            {SMTP_PRESETS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+                          </select>
+                          <button
+                            disabled={smtpTesting || !(mailSetup.smtp?.username || '').includes('@') || !(mailSetup.smtp?.host || '').trim()}
+                            onClick={() => void testSmtp()}
+                            className="w-full text-[10px] px-2 py-1 rounded-md border border-accent/40 text-accent hover:bg-accent/10 transition-fast disabled:opacity-40"
+                          >{smtpTesting ? 'Sending a test…' : 'Test these settings'}</button>
+                        </div>
                       )}
                     </div>
                   </div>

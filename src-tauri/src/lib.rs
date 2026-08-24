@@ -5164,6 +5164,194 @@ fn decode_mime_body(raw: &str) -> String {
 ///   - The error string is returned verbatim rather than flattened to "failed". "authentication
 ///     failed" and "connection refused" need completely different fixes from the user, and hiding
 ///     which one happened is how someone ends up rotating a password that was never the problem.
+/// Work out a mailbox's outgoing-mail settings from nothing but its address.
+///
+/// Asking a non-technical user for "SMTP host, port, and whether it uses SSL or STARTTLS" is asking
+/// them to go and read a support page they will not find, and it is why the first person to try
+/// this pasted their webmail URL into the username box. Every mail client worth using — Thunderbird,
+/// Apple Mail, Outlook — asks for an address and a password and works the rest out. So does this.
+///
+/// Three sources, cheapest and most certain first:
+///
+///   1. THE DOMAIN'S MX RECORDS. This is the one that matters for business mail. `adris.tech` on a
+///      Hostinger/Titan mailbox has no autoconfig file anywhere and is in no public database, but
+///      its MX records point at Titan — which tells us exactly whose SMTP server to use. Looked up
+///      over DNS-over-HTTPS so it needs no DNS crate and works on networks that block port 53.
+///   2. MOZILLA'S ISPDB, the public database every Thunderbird install uses. Good for consumer
+///      providers, useless for custom domains — hence MX first.
+///   3. The domain's own autoconfig file, then a plain guess at smtp.<domain>.
+///
+/// NOTHING HERE IS TRUSTED. No password is sent anywhere during discovery, and every candidate is
+/// a suggestion that the user's own test send has to confirm. A wrong guess costs one failed
+/// attempt with a clear error; it can never quietly configure the wrong server.
+#[tauri::command]
+async fn smtp_discover(email: String) -> Result<String, String> {
+    let addr = email.trim().to_lowercase();
+    let domain = match addr.split('@').nth(1) {
+        Some(d) if !d.is_empty() && d.contains('.') => d.to_string(),
+        _ => return Err(format!("\"{}\" is not an email address, so there is no mailbox to look up.", email.trim())),
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    // ── 1. MX records, over HTTPS ──────────────────────────────────────────
+    let mut mx_hosts: Vec<String> = Vec::new();
+    for url in [
+        format!("https://dns.google/resolve?name={}&type=MX", domain),
+        format!("https://cloudflare-dns.com/dns-query?name={}&type=MX", domain),
+    ] {
+        let resp = client.get(&url).header("accept", "application/dns-json").send().await;
+        if let Ok(r) = resp {
+            if let Ok(j) = r.json::<serde_json::Value>().await {
+                if let Some(ans) = j.get("Answer").and_then(|a| a.as_array()) {
+                    for a in ans {
+                        if let Some(data) = a.get("data").and_then(|d| d.as_str()) {
+                            // "10 mx1.titan.email." -> "mx1.titan.email"
+                            let host = data.split_whitespace().last().unwrap_or("").trim_end_matches('.').to_lowercase();
+                            if !host.is_empty() { mx_hosts.push(host); }
+                        }
+                    }
+                }
+            }
+        }
+        if !mx_hosts.is_empty() { break; }
+    }
+
+    // Which provider actually runs this domain's mail, read off the MX hostname. These SMTP hosts
+    // are the ones the providers themselves document; the user's test send is what confirms it.
+    let from_mx = |mx: &str| -> Option<(&'static str, &'static str, u16, bool, &'static str)> {
+        // (provider label, smtp host, port, implicit TLS, note)
+        if mx.ends_with("titan.email") || mx.contains("titan") {
+            Some(("Titan (used by Hostinger and many hosts)", "smtp.titan.email", 465, true,
+                  "Use your full email address and its mailbox password. Titan needs third-party email access switched on for the account."))
+        } else if mx.contains("hostinger") {
+            Some(("Hostinger", "smtp.hostinger.com", 465, true,
+                  "Use the mailbox address and password from hPanel → Emails."))
+        } else if mx.contains("google.com") || mx.contains("googlemail") {
+            Some(("Google Workspace / Gmail", "smtp.gmail.com", 465, true,
+                  "Google will NOT accept your normal password here — you need an App Password (Google Account → Security → 2-Step Verification → App passwords)."))
+        } else if mx.contains("zoho.in") {
+            Some(("Zoho Mail (India)", "smtp.zoho.in", 465, true,
+                  "If two-factor is on, Zoho needs an app-specific password rather than your login password."))
+        } else if mx.contains("zoho") {
+            Some(("Zoho Mail", "smtp.zoho.com", 465, true,
+                  "If two-factor is on, Zoho needs an app-specific password rather than your login password."))
+        } else if mx.contains("outlook.com") || mx.contains("microsoft") {
+            Some(("Microsoft 365 / Outlook", "smtp.office365.com", 587, false,
+                  "Many tenants now block SMTP sign-in by default. If the test fails with an authentication error, your admin has to allow SMTP AUTH for this mailbox."))
+        } else if mx.contains("secureserver.net") {
+            Some(("GoDaddy", "smtpout.secureserver.net", 465, true, "Use the full email address as the username."))
+        } else if mx.contains("rediffmailpro") || mx.contains("rediff") {
+            Some(("Rediffmail Pro", "smtp.rediffmailpro.com", 465, true, "Use the full email address as the username."))
+        } else if mx.contains("yandex") {
+            Some(("Yandex", "smtp.yandex.com", 465, true, "Yandex requires an app password when two-factor is on."))
+        } else if mx.contains("zimbra") {
+            Some(("Zimbra", "", 465, true, "Zimbra is self-hosted, so the server is usually mail.<your domain>."))
+        } else { None }
+    };
+
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    let mut detected = String::new();
+    for mx in &mx_hosts {
+        if let Some((label, host, port, tls, note)) = from_mx(mx) {
+            if host.is_empty() { continue; }
+            detected = label.to_string();
+            out.push(serde_json::json!({
+                "host": host, "port": port, "implicitTls": tls,
+                "provider": label, "note": note, "source": format!("your domain's mail is handled by {mx}"),
+            }));
+            break;
+        }
+    }
+
+    // ── 2. Mozilla's ISPDB (consumer providers) ────────────────────────────
+    if out.is_empty() {
+        let url = format!("https://autoconfig.thunderbird.net/v1.1/{}", domain);
+        if let Ok(r) = client.get(&url).send().await {
+            if r.status().is_success() {
+                if let Ok(body) = r.text().await {
+                    if let Some(c) = parse_autoconfig_smtp(&body) {
+                        detected = "your provider's published settings".into();
+                        out.push(serde_json::json!({
+                            "host": c.0, "port": c.1, "implicitTls": c.2,
+                            "provider": "Published by your provider", "note": "",
+                            "source": "Mozilla's public provider database",
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    // ── 3. The domain's own autoconfig, then a plain guess ─────────────────
+    if out.is_empty() {
+        for url in [
+            format!("https://autoconfig.{}/mail/config-v1.1.xml?emailaddress={}", domain, addr),
+            format!("https://{}/.well-known/autoconfig/mail/config-v1.1.xml", domain),
+        ] {
+            if let Ok(r) = client.get(&url).send().await {
+                if r.status().is_success() {
+                    if let Ok(body) = r.text().await {
+                        if let Some(c) = parse_autoconfig_smtp(&body) {
+                            detected = "your organisation's published settings".into();
+                            out.push(serde_json::json!({
+                                "host": c.0, "port": c.1, "implicitTls": c.2,
+                                "provider": "Published by your organisation", "note": "",
+                                "source": "your domain's autoconfig file",
+                            }));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if out.is_empty() {
+        // A GUESS, LABELLED AS ONE. smtp.<domain> is the most common convention by a wide margin,
+        // and the test send is what decides — but the UI must be able to say "this is a guess".
+        out.push(serde_json::json!({
+            "host": format!("smtp.{}", domain), "port": 465, "implicitTls": true,
+            "provider": "", "note": "I could not look your provider up, so this is the most common setting rather than a known one. Press Test — if it fails, search your provider's help for \"SMTP settings\".",
+            "source": "guess",
+        }));
+    }
+
+    Ok(serde_json::json!({
+        "email": addr,
+        "domain": domain,
+        "mx": mx_hosts,
+        "detected": detected,
+        "candidates": out,
+    }).to_string())
+}
+
+/// Pull the SMTP server out of a Thunderbird-style autoconfig document.
+///
+/// Deliberately a string scan rather than a real XML parse: the document is small, its shape is
+/// fixed, and adding an XML dependency to read three values would be the wrong trade. Returns
+/// (host, port, implicit TLS).
+fn parse_autoconfig_smtp(xml: &str) -> Option<(String, u16, bool)> {
+    let start = xml.find("<outgoingServer")?;
+    let end = xml[start..].find("</outgoingServer>").map(|e| start + e).unwrap_or(xml.len());
+    let block = &xml[start..end];
+    let tag = |name: &str| -> Option<String> {
+        let open = format!("<{name}>");
+        let close = format!("</{name}>");
+        let s = block.find(&open)? + open.len();
+        let e = block[s..].find(&close)? + s;
+        Some(block[s..e].trim().to_string())
+    };
+    let host = tag("hostname")?;
+    if host.is_empty() { return None; }
+    let port: u16 = tag("port").and_then(|p| p.parse().ok()).unwrap_or(465);
+    // "SSL" means TLS from the first byte; "STARTTLS" means upgrade an open connection.
+    let implicit = tag("socketType").map(|s| s.eq_ignore_ascii_case("SSL")).unwrap_or(port == 465);
+    Some((host, port, implicit))
+}
+
 #[tauri::command]
 async fn smtp_send_email(
     host: String,
@@ -8258,6 +8446,7 @@ pub fn run() {
             mcp_http_call,
             gmail_fetch_emails,
             smtp_send_email,
+            smtp_discover,
             gmail_fetch_email_body,
             // Automation
             automation_list,
