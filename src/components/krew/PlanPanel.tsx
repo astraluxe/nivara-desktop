@@ -83,7 +83,7 @@ function toolsFor(step: string): string[] {
   return (r?.tools ?? []).slice(0, 2).map((t) => t.name);
 }
 
-function WorkOrderFlow({ brief, action }: { brief: string; action: string }) {
+function WorkOrderFlow({ brief, action, hideSummary }: { brief: string; action: string; hideSummary?: boolean }) {
   const order = parseWorkOrder(brief, action);
   // A brief with no recognisable steps is still worth drawing: derive them from its prose the same
   // way the pipeline does, so an order written as a paragraph is not left as a paragraph.
@@ -93,7 +93,10 @@ function WorkOrderFlow({ brief, action }: { brief: string; action: string }) {
   }
   return (
     <div className="mt-1">
-      {order.summary.trim() && steps.length > 0 && order.summary.trim() !== brief.trim() && (
+      {/* hideSummary: the caller already showed this plain-English line under "About this step" —
+          repeating it here, right above the same steps, read as the panel not knowing what it had
+          already said. */}
+      {!hideSummary && order.summary.trim() && steps.length > 0 && order.summary.trim() !== brief.trim() && (
         <p className="text-[10px] text-nv-muted leading-relaxed mb-1.5">{order.summary.trim()}</p>
       )}
       <div className="flex flex-col">
@@ -141,7 +144,7 @@ function WorkOrderFlow({ brief, action }: { brief: string; action: string }) {
           {order.uses.slice(0, 5).join(' · ')}
         </p>
       )}
-      {order.doneWhen.trim() && (
+      {!hideSummary && order.doneWhen.trim() && (
         <p className="text-[9.5px] leading-snug mt-1 px-1.5 py-1 rounded-md"
           style={{ background: 'rgba(43,182,115,.08)', color: '#2bb673' }}>
           ✔ Finished when: {order.doneWhen.trim()}
@@ -189,6 +192,18 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
   const [note, setNote] = useState('');
   /** Which step has its detail open. One at a time — the panel is 380px wide. */
   const [expanded, setExpanded] = useState<string | null>(null);
+  /**
+   * Which steps have their WORKFLOW open — the stage-by-stage "who does this, with what" breakdown.
+   * Closed by default, and separate from `expanded`: the thing worth reading on opening a step is
+   * what it is and why it matters, not the machinery behind it. Most people never open this at all,
+   * which is exactly why it stays a second click rather than the first thing they see.
+   */
+  const [wfOpen, setWfOpen] = useState<Set<string>>(new Set());
+  const toggleWf = (id: string) => setWfOpen((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
   /** The task whose work order is being written and signed off. Nothing runs while this is open. */
   const [handover, setHandover] = useState<PlanStep | null>(null);
   const [view, setView] = useState<'list' | 'month'>('list');
@@ -369,19 +384,52 @@ export default function PlanPanel({ onClose, onRunStep, onSchedule, onCouncil, o
               away instead of lost in a chat scroll. */}
           {expanded === s.id && (
             <div className="mt-1.5 p-2 rounded-lg bg-nv-bg border border-nv-border">
-              {/* The agreed work order, when there is one — this is the DETAIL behind the title,
-                  and it is the reason a task in the calendar is now something you can read rather
-                  than a headline you have to remember the meaning of. */}
+              {/* WHAT THIS IS, AND WHY IT'S ON THE PLAN — the first thing anyone reads, because it
+                  is the only thing most people ever wanted from opening a step. A work order's own
+                  "what it means" line is a real plain-English answer to that when one exists (a
+                  human wrote or approved it); the line pulled from the original strategy answer is
+                  the fallback when it doesn't. Neither is the stage-by-stage machinery below — that
+                  is a second click for the minority who want it, not the headline. */}
+              {(() => {
+                const order = s.brief ? parseWorkOrder(s.brief, s.action) : null;
+                const fromOrder = order && order.summary.trim()
+                  && order.summary.trim() !== s.action.trim() && order.summary.trim() !== s.brief?.trim()
+                  ? order.summary.trim() : '';
+                const about = fromOrder || stepContext(s);
+                const doneWhen = order?.doneWhen.trim() || s.doneWhen;
+                if (!about && !doneWhen) return null;
+                return (
+                  <div className="mb-2 pb-2 border-b border-nv-border">
+                    <p className="text-[9px] font-semibold uppercase tracking-wide text-nv-faint">About this step</p>
+                    {about && <p className="text-[10.5px] text-nv-muted leading-relaxed whitespace-pre-wrap mt-0.5">{about}</p>}
+                    {doneWhen && (
+                      <p className="text-[9.5px] leading-snug mt-1.5 px-1.5 py-1 rounded-md"
+                        style={{ background: 'rgba(43,182,115,.08)', color: '#2bb673' }}>
+                        ✔ Finished when: {doneWhen}
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
+              {/* THE MACHINERY BEHIND IT — who does it and with what, stage by stage. Real,
+                  useful, and read by almost nobody: a description answers "what and why" in one
+                  breath, and that is what someone opens a step to find out. So it stays one tap
+                  away instead of being the first thing on screen. */}
               {s.brief && (
                 <div className="mb-2 pb-2 border-b border-nv-border">
-                  <p className="text-[9px] font-semibold uppercase tracking-wide text-accent">
-                    {s.handedOverAt ? 'The work order · handed over' : 'The work order'}
-                  </p>
-                  <WorkOrderFlow brief={s.brief} action={s.action} />
+                  <button
+                    onClick={() => toggleWf(s.id)}
+                    className="flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wide text-accent hover:text-accent-dim transition-fast"
+                    aria-expanded={wfOpen.has(s.id)}
+                  >
+                    <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                      style={{ transform: wfOpen.has(s.id) ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s ease' }}>
+                      <path d="M6 4l4 4-4 4" />
+                    </svg>
+                    Workflow — who does this, step by step{s.handedOverAt ? ' · handed over' : ''}
+                  </button>
+                  {wfOpen.has(s.id) && <WorkOrderFlow brief={s.brief} action={s.action} hideSummary />}
                 </div>
-              )}
-              {stepContext(s) && (
-                <p className="text-[10px] text-nv-muted leading-relaxed whitespace-pre-wrap">{stepContext(s)}</p>
               )}
               {/* WHO WOULD DO THIS, AND WITH WHAT.
                   Worked out from the task itself, with no model call — the user is reading a panel,
