@@ -162,6 +162,13 @@ export interface OutreachContact {
   linkedin_message?: string;
   email_subject?: string;
   email_body?: string;
+  /**
+   * A file to attach to THIS person's email — whether the user chose it, picked it out of the
+   * Brain, or an agent selected it from what it generated. One field for all four routes, so the
+   * automatic sender has exactly one place to look and cannot miss an attachment that a different
+   * part of the app thought was set.
+   */
+  attachmentPath?: string;
   status?: OutreachStatus;
   // ── Connection tracking. All optional: campaigns saved before this existed load unchanged and
   // simply behave as connections, which is what they were.
@@ -196,6 +203,8 @@ export interface OutreachContact {
 export interface OutreachCampaign {
   title: string;
   contacts: OutreachContact[];
+  /** A file attached to every email in this campaign. A contact's own beats it. */
+  attachmentPath?: string;
   channel?: 'linkedin' | 'email' | 'both';
   deckAttached?: boolean;
   updatedAt?: number;
@@ -700,6 +709,12 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   const [contacts, setContacts] = useState<OutreachContact[]>(
     campaign.contacts.map((c) => ({ ...c, status: c.status || 'todo' })));
   const [idx, setIdx] = useState(() => firstUndoneIdx(campaign.contacts));
+  /** A file attached to the WHOLE campaign. A per-contact one beats it — see pickAttachment. */
+  const [bulkAttach, setBulkAttach] = useState<string>(() => String((campaign as { attachmentPath?: string }).attachmentPath || ''));
+  const [pickingFile, setPickingFile] = useState<'' | 'one' | 'all'>('');
+  const [brainPickOpen, setBrainPickOpen] = useState<'' | 'one' | 'all'>('');
+  const [brainDocs, setBrainDocs] = useState<GeneratedDoc[]>([]);
+  const [attachNote, setAttachNote] = useState('');
   // ── Which campaign am I working, and what else is running? ─────────────────────────────────
   // The copilot was hard-wired to exactly one campaign — whichever the parent last set. You could
   // not see that a second one existed, how far through it you were, or get back to it without
@@ -1015,8 +1030,9 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
 
   // Auto-save the campaign (with live statuses) whenever it changes.
   useEffect(() => {
-    saveCampaign({ ...campaign, contacts });
-  }, [contacts]); // eslint-disable-line react-hooks/exhaustive-deps
+    // The campaign-wide attachment rides along, so it survives a reload like everything else.
+    saveCampaign({ ...campaign, contacts, attachmentPath: bulkAttach } as OutreachCampaign);
+  }, [contacts, bulkAttach]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { setCopied(null); }, [idx]);
 
@@ -1858,6 +1874,68 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   /** Bumped after every send so the daily counters on screen recompute. */
   const [sendTick, setSendTick] = useState(0);
   const [paceId, setPaceId] = useState(() => loadPaceId());
+  /**
+   * Skip the "are you sure" step, permanently.
+   *
+   * The confirmation exists because sending to strangers cannot be undone. But it is asked on
+   * every single run, and someone working a list every morning has already answered it fifty
+   * times — at which point it is not a safeguard, it is a keystroke tax that trains people to
+   * click through dialogs without reading them.
+   *
+   * So it becomes a decision made ONCE and remembered, rather than a decision re-asked forever.
+   * The guards that catch mistakes rather than second thoughts all stay: drafts with placeholders
+   * are still refused, daily caps still apply, already-sent contacts are still skipped, Stop still
+   * works, and a send still only counts when something confirmed it.
+   */
+  const [skipConfirm, setSkipConfirm] = useState(() => {
+    try { return localStorage.getItem('nv-send-skip-confirm') === '1'; } catch { return false; }
+  });
+  const setSkipConfirmSaved = (v: boolean) => {
+    setSkipConfirm(v);
+    try { localStorage.setItem('nv-send-skip-confirm', v ? '1' : '0'); } catch { /* quota */ }
+  };
+  /** Running tally during a send, so the panel reports progress rather than just position. */
+  const [autoTally, setAutoTally] = useState({ sent: 0, failed: 0 });
+
+
+  /**
+   * Choose a file from this computer to attach — to the person on screen, or to everyone.
+   *
+   * The picker is opened from Rust rather than through a web file input, because a web input hands
+   * back an opaque File object and what an attachment needs is a PATH: the mail server is given the
+   * bytes off disk at send time, and the browser attach helper needs somewhere to point the page's
+   * own file input.
+   */
+  /**
+   * Attach something already in the Brain — a deck, a one-pager, a PDF adris generated earlier.
+   *
+   * The other route reaches out to the filesystem; this one reaches into what the app already
+   * made, which is where the file usually is. Same destination either way: the contact's own
+   * attachmentPath, or the campaign's.
+   */
+  function chooseFromBrain(doc: GeneratedDoc, scope: 'one' | 'all') {
+    setBrainPickOpen('');
+    setAttachNote('');
+    if (scope === 'one') setContacts((prev) => prev.map((c, i) => (i === idx ? { ...c, attachmentPath: doc.path } : c)));
+    else setBulkAttach(doc.path);
+  }
+
+  async function chooseFromComputer(scope: 'one' | 'all') {
+    if (pickingFile) return;
+    setPickingFile(scope); setAttachNote('');
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const path = await invoke<string | null>('pick_file');
+      if (!path) return;                        // they cancelled; that is not an error
+      if (scope === 'one') {
+        setContacts((prev) => prev.map((c, i) => (i === idx ? { ...c, attachmentPath: path } : c)));
+      } else {
+        setBulkAttach(path);
+      }
+    } catch (e) {
+      setAttachNote(`Couldn't open the file picker: ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}`);
+    } finally { setPickingFile(''); }
+  }
 
   // Is a password already in the keychain for this mailbox? Asked once, so the field can say
   // "saved" rather than looking empty and inviting the user to retype it every time.
@@ -1880,10 +1958,11 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     void sendTick;
     return buildSendQueue(contacts, {
       channels: autoChannels,
+      attachmentPath: bulkAttach,
       emailRemaining: Math.max(0, SEND_DEFAULTS.emailDailyCap - sendCounts.email),
       linkedinRemaining: Math.max(0, SEND_DEFAULTS.linkedinDailyCap - sendCounts.linkedin),
     });
-  }, [contacts, autoChannels, sendCounts, sendTick]);
+  }, [contacts, autoChannels, sendCounts, sendTick, bulkAttach]);
 
   /** Save the SMTP password to the OS keychain and prove the settings work by really sending one. */
   /**
@@ -1962,6 +2041,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     }
     autoStopRef.current = false;
     setAutoRunning(true); setAutoNote(''); setAutoResults([]);
+    setAutoTally({ sent: 0, failed: 0 });
     setAgentBrowserHold(true);
     if (autoChannels.includes('linkedin')) setBrowserOpen(true);
     const pw = ((await credentialStore.get(SMTP_CREDENTIAL_SERVICE).catch(() => null)) as { api_key?: string } | null)?.api_key || '';
@@ -1979,7 +2059,17 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       }, {
         shouldStop: () => autoStopRef.current,
         onProgress: (p) => setAutoProgress(p),
-        onResult: (r) => { collected.push(r); setAutoResults([...collected]); setSendTick((t) => t + 1); },
+        onResult: (r) => {
+          collected.push(r);
+          setAutoResults([...collected]);
+          // Count as it goes, so the line on screen says how the run is GOING rather than only
+          // where it is. "7 of 20 · 6 sent · 1 failed" is the sentence someone actually wants.
+          setAutoTally({
+            sent: collected.filter((x) => x.confirmed).length,
+            failed: collected.filter((x) => !x.ok).length,
+          });
+          setSendTick((t) => t + 1);
+        },
         onSent: (i) => setContacts((prev) => prev.map((c, k) => (k === i ? { ...c, status: 'sent' as OutreachStatus } : c))),
       });
       setAutoNote(summarise(summary));
@@ -2940,7 +3030,7 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                     <span className="text-[10px] text-nv-text truncate flex-1">
                       {autoProgress
                         ? autoProgress.waiting > 0
-                          ? `Waiting ${autoProgress.waiting}s before ${autoProgress.who} (${autoProgress.done + 1} of ${autoProgress.total})`
+                          ? `${autoProgress.done} of ${autoProgress.total} done · waiting ${autoProgress.waiting}s before ${autoProgress.who}`
                           : `Sending ${autoProgress.done + 1} of ${autoProgress.total} — ${autoProgress.who} by ${autoProgress.channel === 'email' ? 'email' : 'LinkedIn'}`
                         : 'Starting…'}
                     </span>
@@ -2952,7 +3042,12 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                   <div className="mt-1 h-0.5 rounded-full bg-nv-border overflow-hidden">
                     <div className="h-full bg-accent transition-all" style={{ width: `${Math.round(((autoProgress?.done ?? 0) / Math.max(1, autoProgress?.total ?? 1)) * 100)}%` }} />
                   </div>
-                  <p className="text-[9px] text-nv-faint mt-1">Each one is recorded as it goes — stopping keeps everything already sent.</p>
+                  {/* HOW IT IS GOING, not only where it is. */}
+                  <p className="text-[9px] mt-1">
+                    <span className="text-emerald-600 font-semibold">{autoTally.sent} sent</span>
+                    {autoTally.failed > 0 && <span className="text-red-500"> · {autoTally.failed} failed</span>}
+                    <span className="text-nv-faint"> · recorded as it goes, so stopping keeps everything already sent.</span>
+                  </p>
                 </div>
               ) : autoConfirm ? (
                 <div className="rounded-md border border-accent/50 bg-accent/5 p-2 space-y-1.5">
@@ -2978,15 +3073,42 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                   </div>
                 </div>
               ) : (
-                <div className="flex items-center gap-1.5">
-                  <button
-                    onClick={() => setAutoConfirm(true)}
-                    disabled={!autoQueue.queue.length || !autoChannels.length}
-                    className="text-[10px] font-semibold px-2.5 py-1 rounded-md bg-accent text-white hover:bg-accent-dim transition-fast disabled:opacity-40"
-                  >Send {autoQueue.queue.length || ''} now</button>
-                  <span className="text-[9px] text-nv-faint leading-snug flex-1">
-                    {autoChannels.length ? 'You will get one more confirmation before anything goes.' : 'Pick at least one channel.'}
-                  </span>
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-1.5">
+                    {/* ONE CLICK WHEN YOU HAVE ALREADY DECIDED.
+                        With "don't ask" on, this fires immediately — no dialog, no second click.
+                        Everything that catches a MISTAKE still runs (placeholders refused, caps
+                        respected, sent contacts skipped, Stop available); the only thing removed
+                        is being asked a question you have already answered fifty times. */}
+                    <button
+                      onClick={() => { if (skipConfirm) void runAutoSend(); else setAutoConfirm(true); }}
+                      disabled={!autoQueue.queue.length || !autoChannels.length}
+                      className="text-[10px] font-semibold px-2.5 py-1 rounded-md bg-accent text-white hover:bg-accent-dim transition-fast disabled:opacity-40"
+                    >
+                      {skipConfirm
+                        ? `Send ${autoQueue.queue.length || ''} now →`.replace('  ', ' ')
+                        : `Send ${autoQueue.queue.length || ''} now`.replace('  ', ' ')}
+                    </button>
+                    <span className="text-[9px] text-nv-faint leading-snug flex-1">
+                      {!autoChannels.length
+                        ? 'Pick at least one channel.'
+                        : skipConfirm
+                          ? 'Goes straight away. Stop is always there.'
+                          : 'You will get one more confirmation before anything goes.'}
+                    </span>
+                  </div>
+                  <label className="flex items-start gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={skipConfirm}
+                      onChange={(e) => setSkipConfirmSaved(e.target.checked)}
+                      className="mt-[2px] accent-current"
+                    />
+                    <span className="text-[9px] text-nv-faint leading-snug">
+                      Send straight away — don't ask me to confirm each time. Drafts that aren't finished are
+                      still skipped, and your daily limit still applies.
+                    </span>
+                  </label>
                 </div>
               )}
 
@@ -3659,6 +3781,83 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                   ) : (
                     <p className="text-[10.5px] text-nv-faint">Nothing attached.</p>
                   )}
+
+                  {/* ── ATTACH A FILE OF YOUR OWN ────────────────────────────────────────────
+                      The buttons below make a document; this attaches one you already have —
+                      a rate card, a brochure, last year's case study. Two scopes, because both
+                      are real jobs: the proposal that goes to one person, and the deck that goes
+                      to the whole list. A file chosen for one person always beats the campaign
+                      one, so a general attachment can be overridden without clearing it. */}
+                  {(() => {
+                    const mine = (cur.attachmentPath || '').trim();
+                    const all = (bulkAttach || '').trim();
+                    const effective = mine || all;
+                    const base = (p: string) => p.split(/[\\/]/).pop() || p;
+                    return (
+                      <div className="mt-1.5 rounded-md border border-nv-border bg-nv-bg/60 p-1.5">
+                        {effective ? (
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] text-nv-text truncate flex-1" title={effective}>
+                              📎 {base(effective)}
+                              <span className="text-nv-faint"> · {mine ? 'this person only' : `everyone (${autoQueue.queue.filter((q) => q.channel === 'email').length} emails)`}</span>
+                            </span>
+                            <button
+                              onClick={() => { if (mine) setContacts((p) => p.map((c, i) => (i === idx ? { ...c, attachmentPath: '' } : c))); else setBulkAttach(''); }}
+                              className="shrink-0 text-[9.5px] px-1.5 py-0.5 rounded-md border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
+                            >Remove</button>
+                          </div>
+                        ) : (
+                          <p className="text-[9.5px] text-nv-faint">No file of yours attached.</p>
+                        )}
+                        <div className="flex items-center gap-1 mt-1">
+                          <button
+                            disabled={!!pickingFile}
+                            onClick={() => void chooseFromComputer('one')}
+                            className="text-[9.5px] px-1.5 py-0.5 rounded-md border border-accent/40 text-accent hover:bg-accent/10 transition-fast disabled:opacity-40"
+                          >{pickingFile === 'one' ? 'Choosing…' : '📎 Attach to this one'}</button>
+                          <button
+                            disabled={!!pickingFile}
+                            onClick={() => void chooseFromComputer('all')}
+                            className="text-[9.5px] px-1.5 py-0.5 rounded-md border border-accent/40 text-accent hover:bg-accent/10 transition-fast disabled:opacity-40"
+                          >{pickingFile === 'all' ? 'Choosing…' : '📎 Attach to everyone'}</button>
+                        </div>
+                        {/* The file is usually one adris already made — a deck, a one-pager, a PDF
+                            from last week. Reaching into the Brain for it is fewer steps than
+                            hunting through folders for something you never chose a location for. */}
+                        <div className="flex items-center gap-1 mt-1">
+                          <button
+                            onClick={() => { setBrainDocs(listAttachableDocs()); setBrainPickOpen((v) => (v === 'one' ? '' : 'one')); }}
+                            className="text-[9.5px] px-1.5 py-0.5 rounded-md border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
+                          >From Brain → this one</button>
+                          <button
+                            onClick={() => { setBrainDocs(listAttachableDocs()); setBrainPickOpen((v) => (v === 'all' ? '' : 'all')); }}
+                            className="text-[9.5px] px-1.5 py-0.5 rounded-md border border-nv-border text-nv-faint hover:bg-nv-surface2 transition-fast"
+                          >From Brain → everyone</button>
+                        </div>
+                        {brainPickOpen && (
+                          <div className="mt-1 max-h-28 overflow-y-auto rounded-md border border-nv-border divide-y divide-nv-border/60">
+                            {brainDocs.length === 0 ? (
+                              <p className="text-[9.5px] text-nv-faint px-2 py-1.5">
+                                Nothing here yet. Make a one-pager or a deck first and it will show up.
+                              </p>
+                            ) : brainDocs.map((d) => (
+                              <button
+                                key={d.path}
+                                onClick={() => chooseFromBrain(d, brainPickOpen === 'all' ? 'all' : 'one')}
+                                className="w-full text-left px-2 py-1 text-[10px] text-nv-muted hover:bg-nv-surface2 transition-fast truncate"
+                                title={d.path}
+                              >📄 {d.filename}</button>
+                            ))}
+                          </div>
+                        )}
+                        {attachNote && <p className="text-[9px] text-amber-600 mt-1 leading-snug">{attachNote}</p>}
+                        <p className="text-[9px] text-nv-faint mt-1 leading-snug">
+                          Goes with automatic sending too. If the file has moved by the time it sends, that
+                          email is refused rather than going without it.
+                        </p>
+                      </div>
+                    );
+                  })()}
                   {/* MAKE THE THING, RATHER THAN TELLING THEM TO GO AND MAKE IT.
                       This is the step a real office does without being asked: someone wants to see
                       it in writing, so the one-pager or the pilot scope gets written and attached. */}

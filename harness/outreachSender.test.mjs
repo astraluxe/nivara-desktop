@@ -162,6 +162,20 @@ ok('alreadySent ignores failures', !alreadySent(log, 'email', 'e@f.com'));
 ok('alreadySent is channel-specific', !alreadySent(log, 'linkedin', 'a@b.com'));
 ok('alreadySent on empty input is false', !alreadySent(log, 'email', ''));
 
+// ── Attachments reach the send ──────────────────────────────────────────────
+console.log('\n=== attachments ===');
+const withFile = [{ ...priya, name: 'A' }, { ...priya, name: 'B', attachmentPath: 'C:/own/mine.pdf' }];
+const qA = buildSendQueue(withFile, { channels: ['email'], emailRemaining: 9, linkedinRemaining: 9, attachmentPath: 'C:/all/deck.pdf' });
+eq('the campaign file reaches someone with none of their own', qA.queue[0].attachmentPath, 'C:/all/deck.pdf');
+eq('a contact own-file beats the campaign one', qA.queue[1].attachmentPath, 'C:/own/mine.pdf');
+const qB = buildSendQueue(withFile, { channels: ['email'], emailRemaining: 9, linkedinRemaining: 9 });
+eq('no campaign file: only the person who chose one has it', qB.queue[0].attachmentPath, undefined);
+eq('...and theirs still goes', qB.queue[1].attachmentPath, 'C:/own/mine.pdf');
+// LinkedIn has no attachments — carrying a path there would be a promise nothing can keep.
+const qC = buildSendQueue([{ ...priya, name: 'A', email: '', emails: [] }], { channels: ['linkedin'], emailRemaining: 9, linkedinRemaining: 9, attachmentPath: 'C:/all/deck.pdf' });
+eq('LinkedIn never carries an attachment', qC.queue[0].attachmentPath, undefined);
+eq('an empty campaign path is not treated as a file', buildSendQueue([{ ...priya, name: 'A' }], { channels: ['email'], emailRemaining: 9, linkedinRemaining: 9, attachmentPath: '   ' }).queue[0].attachmentPath, undefined);
+
 // ── The automation step reads its own settings sentence ─────────────────────
 console.log('\n=== automation step settings ===');
 const ps = (t) => parseOutreachStepSettings(t);

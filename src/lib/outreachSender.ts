@@ -33,6 +33,8 @@ export type SendChannel = 'email' | 'linkedin';
 /** Just enough of an OutreachContact to decide about it — structural, so no circular import. */
 export interface SendableContact {
   name?: string;
+  /** A file chosen for THIS person, which beats the campaign-wide one. */
+  attachmentPath?: string;
   company?: string;
   status?: string;
   email?: string;
@@ -52,12 +54,16 @@ export interface SendCandidate {
   to: string;
   subject: string;
   body: string;
+  /** File to attach, when one was chosen for this person or for the whole campaign. */
+  attachmentPath?: string;
 }
 
 export interface SkipReason { idx: number; name: string; channel: SendChannel; why: string }
 
 export interface QueueOptions {
   channels: SendChannel[];
+  /** A file to attach to everyone who does not have their own. */
+  attachmentPath?: string;
   /** How many more of each may go today, after subtracting what has already gone. */
   emailRemaining: number;
   linkedinRemaining: number;
@@ -192,7 +198,14 @@ export function buildSendQueue(
         continue;
       }
       if (channel === 'email') emailLeft--; else liLeft--;
-      queue.push({ idx, name, channel, to: verdict.to, subject: verdict.subject, body: verdict.body });
+      queue.push({
+        idx, name, channel, to: verdict.to, subject: verdict.subject, body: verdict.body,
+        // Their own file wins over the campaign-wide one — the specific choice is always the more
+        // deliberate one. LinkedIn has no attachment, so it never carries a path.
+        attachmentPath: channel === 'email'
+          ? ((c.attachmentPath || '').trim() || (opts.attachmentPath || '').trim() || undefined)
+          : undefined,
+      });
     }
   }
   // A PERSON WHO IS BEING CONTACTED IS NOT A PERSON WHO WAS SKIPPED.
@@ -371,6 +384,7 @@ export async function sendOne(
           subject: cand.subject,
           body: cand.body,
           implicitTls: ctx.smtp.implicitTls,
+          attachmentPath: cand.attachmentPath || null,
         });
         // The server accepted it. This is the strongest confirmation available anywhere in this file.
         return { ok: true, confirmed: /^SMTP_SENT/.test(String(r)), detail: String(r) };

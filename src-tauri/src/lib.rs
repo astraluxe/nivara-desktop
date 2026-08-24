@@ -5357,6 +5357,53 @@ fn parse_autoconfig_smtp(xml: &str) -> Option<(String, u16, bool)> {
     Some((host, port, implicit))
 }
 
+/// Open the system's own "choose a file" window and return what was picked.
+///
+/// Done from Rust rather than the JS dialog package because the plugin is already compiled in, and
+/// because the web file input cannot give us a PATH — only an opaque File object. An attachment
+/// needs a path: the mail server is handed the bytes off disk, and the browser attach helper needs
+/// somewhere to point the page's file input at.
+#[tauri::command]
+async fn pick_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog().file().pick_file(move |f| { let _ = tx.send(f); });
+    // The picker runs on the UI thread and answers through the channel; blocking the async task is
+    // fine here because nothing else is waiting on it.
+    let picked = tokio::task::spawn_blocking(move || rx.recv().ok().flatten())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(picked.map(|p| p.to_string()))
+}
+
+/// Best-guess MIME type from a filename, for attachments.
+///
+/// Deliberately small: these are the things people actually attach to a business email. Anything
+/// else goes as a generic binary, which every mail client handles correctly — it just shows a
+/// plain file icon instead of a pretty one, which is not worth a dependency.
+fn guess_mime(name: &str) -> &'static str {
+    let lower = name.to_lowercase();
+    let ext = lower.rsplit('.').next().unwrap_or("");
+    match ext {
+        "pdf"  => "application/pdf",
+        "doc"  => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls"  => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt"  => "application/vnd.ms-powerpoint",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "csv"  => "text/csv",
+        "txt"  => "text/plain",
+        "png"  => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif"  => "image/gif",
+        "webp" => "image/webp",
+        "svg"  => "image/svg+xml",
+        "zip"  => "application/zip",
+        _       => "application/octet-stream",
+    }
+}
+
 #[tauri::command]
 async fn smtp_send_email(
     host: String,
@@ -5369,10 +5416,15 @@ async fn smtp_send_email(
     subject: String,
     body: String,
     implicit_tls: bool,
+    // Optional file to attach. The bytes are read here, at send time, so a file that moved or was
+    // deleted since it was picked fails loudly instead of sending a message that promises an
+    // attachment nobody receives.
+    attachment_path: Option<String>,
 ) -> Result<String, String> {
     use lettre::transport::smtp::authentication::Credentials;
     use lettre::{Message, SmtpTransport, Transport};
     use lettre::message::header::ContentType;
+    use lettre::message::{Attachment, MultiPart, SinglePart};
 
     // Refuse obviously-unsendable input HERE rather than letting the server reject it later: a
     // failure at this end is a message that was never attempted, which is a much safer thing to
@@ -5400,13 +5452,33 @@ async fn smtp_send_email(
         let to_mbox = to_addr.parse::<lettre::message::Mailbox>()
             .map_err(|e| format!("Recipient address is not valid: {e}"))?;
 
-        let email = Message::builder()
-            .from(from_mbox)
-            .to(to_mbox)
-            .subject(subject)
-            .header(ContentType::TEXT_PLAIN)
-            .body(body)
-            .map_err(|e| format!("Could not build the message: {e}"))?;
+        let builder_base = Message::builder().from(from_mbox).to(to_mbox).subject(subject);
+
+        let email = match attachment_path.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+            None => builder_base
+                .header(ContentType::TEXT_PLAIN)
+                .body(body)
+                .map_err(|e| format!("Could not build the message: {e}"))?,
+            Some(path) => {
+                // REFUSE RATHER THAN SEND WITHOUT IT. Someone attaching a proposal and pressing
+                // send is not asking for the email minus the proposal — a message that arrives
+                // referring to an attachment that is not there is worse than one that never went.
+                let bytes = std::fs::read(path)
+                    .map_err(|e| format!("Could not read the attachment at {path}: {e}. Nothing was sent."))?;
+                let name = std::path::Path::new(path)
+                    .file_name().map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "attachment".to_string());
+                let ctype = ContentType::parse(guess_mime(&name))
+                    .unwrap_or(ContentType::TEXT_PLAIN);
+                builder_base
+                    .multipart(
+                        MultiPart::mixed()
+                            .singlepart(SinglePart::builder().header(ContentType::TEXT_PLAIN).body(body))
+                            .singlepart(Attachment::new(name).body(bytes, ctype)),
+                    )
+                    .map_err(|e| format!("Could not build the message: {e}"))?
+            }
+        };
 
         let creds = Credentials::new(username.trim().to_string(), password);
         let builder = if implicit_tls {
@@ -8452,6 +8524,7 @@ pub fn run() {
             gmail_fetch_emails,
             smtp_send_email,
             smtp_discover,
+            pick_file,
             gmail_fetch_email_body,
             // Automation
             automation_list,

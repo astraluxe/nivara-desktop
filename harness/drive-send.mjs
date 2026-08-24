@@ -115,8 +115,10 @@ try {
   await page.waitForTimeout(1500);
   txt = await body();
   ok('it names the person it is working on, live',
-    /Sending \d of 3 — (Aisha Khan|Rohit Nair|Meera Iyer) by email|Waiting \d+s before (Rohit Nair|Meera Iyer)/.test(txt.replace(/\s+/g, ' ')),
+    /Sending \d of 3 — (Aisha Khan|Rohit Nair|Meera Iyer) by email|\d of 3 done · waiting \d+s before (Rohit Nair|Meera Iyer)/.test(txt.replace(/\s+/g, ' ')),
     txt.slice(0, 400));
+  ok('it reports how many are done, not just where it is',
+    /\d of 3 done|Sending \d of 3/.test(txt.replace(/\s+/g, ' ')), txt.slice(0, 300));
   // Wait out the run (3 sends, 2 gaps of ~2-8s each).
   for (let i = 0; i < 60; i++) {
     txt = await body();
@@ -242,6 +244,35 @@ try {
   txt = await body();
   ok('LinkedIn shows the terms warning', /terms forbid automated messaging/.test(txt), txt.slice(0, 400));
   ok('nobody is LinkedIn-sendable without a profile url', /0 ready/.test(txt) || !/\d+ ready/.test(txt.split('Send these for me')[1] || ''), (txt.match(/\d+ ready/) || [])[0]);
+
+  console.log('\n=== 11. One click, no dialog, once you have said so ===');
+  await boot({ __invokeReplies: { smtp_send_email: 'SMTP_SENT 250', get_credential: JSON.stringify({ api_key: 'app-password' }) } });
+  await openPanel();
+  txt = await body();
+  ok('the skip-confirm choice is offered', /don't ask me to confirm each time/.test(txt), txt.slice(0, 600));
+  await page.locator('input[type="checkbox"]').first().check();
+  await page.waitForTimeout(300);
+  txt = await body();
+  ok('the button now says it goes straight away', /Goes straight away/.test(txt), txt.slice(0, 500));
+
+  await page.getByRole('button', { name: /Send 3 now/ }).click();
+  await page.waitForTimeout(1400);
+  txt = await body();
+  ok('NO confirmation step appeared', !/Yes — send 3|cannot be undone/.test(txt), txt.slice(0, 400));
+  ok('it began sending on that one click', /Sending \d of 3|\d of 3 done/.test(txt.replace(/\s+/g, ' ')), txt.slice(0, 400));
+  ok('the running tally is shown', /\d+ sent/.test(txt), txt.slice(0, 500));
+  for (let i = 0; i < 60; i++) { txt = await body(); if (/sent and confirmed/.test(txt)) break; await page.waitForTimeout(1000); }
+  ok('the whole run completed from one click', /3 sent and confirmed/.test(txt), (txt.match(/\d+ sent and confirmed[^\n]*/) || [])[0]);
+  cs = await contacts();
+  ok('statuses updated for everyone sent', cs.filter((c) => c.status === 'sent').length === 4, JSON.stringify(cs.map((c) => c.status)));
+  ok('the unfinished draft was STILL skipped', cs[3].status === 'todo', cs[3].status);
+
+  console.log('\n=== 12. The choice is remembered ===');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(1000);
+  await page.evaluate(() => { window.__invokeReplies = { smtp_send_email: 'SMTP_SENT 250', get_credential: JSON.stringify({ api_key: 'x' }) }; });
+  await openPanel();
+  ok('still set after a reload', /Goes straight away/.test(await body()));
 
   console.log('\n=== errors ===');
   ok('no uncaught page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
