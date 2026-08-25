@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { credentialStore } from './krewDb';
 import { supabase } from './supabase';
+import { detectClis, availableClis, type AgentCli } from './agentCli';
 
 // ─── Where AI runs ────────────────────────────────────────────────────────────
 // Krew always had a connection bar, but everything else — Guard, Automations, Studio, Coder's
@@ -8,7 +9,10 @@ import { supabase } from './supabase';
 // with no way for the user to see or change it. This is that choice, in one place, remembered
 // across the app and across restarts.
 
-export type AiSourceMode = 'auto' | 'nivara' | 'own_key' | 'local';
+// 'agent_cli' is the bridge: the whole app thinks with the user's OWN Claude Code / Codex
+// subscription instead of with tokens bought from anyone. See agentCli.ts for why that is the
+// strategically important one — their budget is larger than any plan this product could sell.
+export type AiSourceMode = 'auto' | 'nivara' | 'own_key' | 'local' | 'agent_cli';
 // nvidia + groq are free, OpenAI-compatible cloud providers — the fast alternative to a slow local
 // model, at no adris.tech token cost. The Rust own_key path routes them by name to their endpoints.
 // omniroute is a gateway the user installs and runs themselves — own-key in every sense that
@@ -19,6 +23,7 @@ export interface AiSourcePref {
   mode: AiSourceMode;
   provider?: ByokProvider;   // which BYOK key to use when mode is own_key
   localModel?: string;       // which downloaded model to use when mode is local
+  cli?: AgentCli;            // which agent CLI to think with when mode is agent_cli
 }
 
 const KEY = 'nv-ai-source';
@@ -55,6 +60,7 @@ export interface AiAvailability {
   byokProviders: ByokProvider[];   // keys the user has actually connected
   localModels: { name: string; filename: string }[];
   signedIn: boolean;
+  clis: AgentCli[];                // agent CLIs actually installed on this machine
 }
 
 /** What the user can actually pick right now — used to disable options rather than fail later. */
@@ -78,11 +84,14 @@ export async function getAiAvailability(): Promise<AiAvailability> {
   let signedIn = false;
   try { signedIn = !!(await supabase.auth.getSession()).data.session?.access_token; } catch { /* offline */ }
 
-  return { byokProviders, localModels, signedIn };
+  let clis: AgentCli[] = [];
+  try { clis = availableClis(await detectClis()); } catch { /* none installed */ }
+
+  return { byokProviders, localModels, signedIn, clis };
 }
 
 export interface ResolvedAiSource {
-  mode: 'nivara' | 'own_key' | 'local';
+  mode: 'nivara' | 'own_key' | 'local' | 'agent_cli';
   apiKey: string | null;
   provider: string | null;
   modelName: string | null;
@@ -91,6 +100,8 @@ export interface ResolvedAiSource {
   baseUrl: string | null;
   localModel: string | null;
   sessionToken: string | null;
+  /** Which agent CLI to think with, when mode is 'agent_cli'. */
+  cli?: AgentCli;
   /** Set when the user's choice could not be honoured and we fell back. */
   fellBackFrom?: AiSourceMode;
 }
@@ -145,6 +156,18 @@ export async function resolveAiSource(): Promise<ResolvedAiSource> {
     return { mode: 'local', apiKey: null, provider: null, modelName: null, baseUrl: null, localModel: chosen.filename, sessionToken: null };
   };
 
+  // THE BRIDGE. Deliberately falls back like every other mode rather than failing: someone who
+  // uninstalls Claude Code should find the app still works, not find it dead.
+  if (pref.mode === 'agent_cli') {
+    const want = pref.cli && avail.clis.includes(pref.cli) ? pref.cli : avail.clis[0];
+    if (want) {
+      return { mode: 'agent_cli', apiKey: null, provider: null, modelName: null,
+               baseUrl: null, localModel: null, sessionToken: null, cli: want };
+    }
+    const fb = (await byok()) ?? (await nivara()) ?? local();
+    if (fb) return { ...fb, fellBackFrom: 'agent_cli' };
+  }
+
   if (pref.mode === 'own_key') {
     const r = await byok(pref.provider);
     if (r) return r;
@@ -174,6 +197,7 @@ export function aiSourceLabel(pref: AiSourcePref): string {
   switch (pref.mode) {
     case 'own_key': return pref.provider ? `Your ${pref.provider} key` : 'Your own key';
     case 'local':   return pref.localModel ? 'Local model' : 'Local model';
+    case 'agent_cli': return pref.cli === 'codex' ? 'Your Codex' : 'Your Claude Code';
     case 'nivara':  return 'adris.tech AI';
     default:        return 'Automatic';
   }

@@ -1,5 +1,8 @@
+import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAuth } from "../contexts/AuthContext";
+import { getAiSource, setAiSource, AI_SOURCE_EVENT } from "../lib/aiSource";
+import { detectClis, availableClis, CLI_LABEL, type AgentCli } from "../lib/agentCli";
 
 const PLAN_LABEL: Record<string, string> = {
   free: "Free", explore: "Free", solo: "Solo",
@@ -48,8 +51,9 @@ export default function TitleBar({ activeModule }: { activeModule: string }) {
 
       <div className="flex-1" />
 
-      {/* Right — plan badge + window controls */}
+      {/* Right — the bridge, plan badge, window controls */}
       <div className="flex items-center gap-3 pr-2">
+        <BridgeButton />
         {profile && (
           <span className="text-[10px] font-mono px-2 py-[3px] rounded-full uppercase tracking-[0.14em]
                            bg-accent/10 border border-accent/25 text-accent/90 pointer-events-none">
@@ -88,6 +92,63 @@ export default function TitleBar({ activeModule }: { activeModule: string }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * The bridge switch.
+ *
+ * One click turns the whole app over to thinking with the user's OWN Claude Code (or Codex)
+ * subscription instead of with tokens bought from anyone. It lives in the title bar because it
+ * changes what every screen does, and a setting that changes everything should be visible from
+ * everywhere rather than buried three panels deep.
+ *
+ * It only appears when a CLI is actually installed. An always-visible button that explains it
+ * cannot do anything is worse than no button — the whole point of this one is that pressing it
+ * works.
+ */
+function BridgeButton() {
+  const [clis, setClis] = useState<AgentCli[]>([]);
+  const [on, setOn] = useState(() => getAiSource().mode === 'agent_cli');
+
+  useEffect(() => {
+    let alive = true;
+    detectClis().then((p) => { if (alive) setClis(availableClis(p)); }).catch(() => {});
+    // Kept in step with the Models screen, which changes the same preference.
+    const sync = () => setOn(getAiSource().mode === 'agent_cli');
+    window.addEventListener(AI_SOURCE_EVENT, sync);
+    return () => { alive = false; window.removeEventListener(AI_SOURCE_EVENT, sync); };
+  }, []);
+
+  if (!clis.length) return null;
+  const cli = clis[0];
+  const label = CLI_LABEL[cli];
+
+  // Returning to 'auto' rather than to a specific provider: auto is the app's own "use whatever
+  // works" and is the only safe thing to restore, since we do not know what they were on before.
+  const toggle = () => {
+    const next = !on;
+    setAiSource(next ? { mode: 'agent_cli', cli } : { mode: 'auto' });
+    setOn(next);
+  };
+
+  return (
+    <button
+      onClick={toggle}
+      title={on
+        ? `Everything is running on your ${label} subscription. Click to go back to the default.`
+        : `Run everything on your own ${label} subscription instead of adris.tech tokens.`}
+      className={`flex items-center gap-1.5 h-[22px] pl-1.5 pr-2 rounded-full border text-[10px] font-medium
+                  transition-colors duration-fast ease-nv ${on
+        ? 'bg-accent/15 border-accent/45 text-accent'
+        : 'bg-nv-surface2/60 border-nv-border text-nv-faint hover:text-nv-text hover:border-accent/35'}`}
+    >
+      {/* Lit when live, hollow when not — the state is readable without reading the words. */}
+      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${on
+        ? 'bg-accent shadow-[0_0_6px_rgb(124_92_255_/_0.9)]'
+        : 'bg-transparent ring-1 ring-nv-faint'}`} />
+      {label}
+    </button>
   );
 }
 

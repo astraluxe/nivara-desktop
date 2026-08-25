@@ -258,16 +258,62 @@ user for the mouse is infuriating and breaks the moment they touch the trackpad.
 transparent always-on-top overlay window — the user *sees* the work and keeps their machine. Same
 feeling, none of the fight, and it lets agents run while they carry on working.
 
-### 4. Claude Code / Codex bridge — 1–2 weeks
-Both ship CLIs that can be driven headlessly. adris becomes the *hands* — multi-app, multi-tab,
-real Office, visible cursor — while the user's own subscription is the *brain*.
+### 4. Claude Code / Codex bridge ✅ working against the real CLI, 🟡 partial coverage
 
-Strategically the strongest item here: it ends token resale, the user's budget is far larger than
-any plan adris could offer, and revenue becomes a licence for the bridge.
+`src/lib/agentCli.ts` + `agent_cli_detect` / `agent_cli_run` in lib.rs + the `agent_cli` mode in
+`aiSource.ts` + the switch in the title bar.
 
-**Check before betting on it:** whether programmatic driving fits those providers' terms, and the
-not-installed path. Neither looks like a blocker; both are cheaper to check now than after launch.
-Also see the hard rule above — this is exactly where it bites.
+#### The finding the whole thing rests on
+
+Claude Code **prefers `ANTHROPIC_API_KEY` over the user's claude.ai login** whenever both are
+present, and says so in a warning most people would scroll past. Measured on this machine:
+
+| Environment | Result |
+|---|---|
+| `ANTHROPIC_API_KEY` set | **HTTP 401** after 3 minutes of retries |
+| same call, variable cleared | **succeeded in 6.3s** |
+
+If the app inherits that variable from anywhere — a shell profile, a launcher, another tool — the
+bridge silently bills an API key instead of the subscription the user is paying for, which is the
+exact opposite of why it exists. `STRIPPED_ENV` clears it and five siblings on **every** spawn.
+
+#### Proven end to end, our arg builder → the real `claude.exe` → our parser
+
+- plain call → `BRIDGE_OK` in 10.2s, cost reported back
+- **session continuity** → turn two recalled `4712` from turn one via `--resume`
+- **24,000-character prompt** → went through as a single argument
+
+That last one is why the real `.exe` is spawned rather than `claude`. On Windows npm installs
+`claude` as a **.cmd shim**, and CreateProcess does not apply PATHEXT, so spawning `claude` fails
+outright; going through cmd.exe to reach the shim would reintroduce quoting and its
+**8191-character** command line, which that prompt exceeds. The shim only execs
+`.../claude-code/bin/claude.exe`, so that is what gets spawned.
+
+#### The switch would have been a trap
+
+`automationRunner` passes the resolved mode straight into `krew_ai_stream`, which has never heard of
+`agent_cli` and would reject it — so turning the button on would have broken every automation. The
+bridge is intercepted in `callAiOnce` before anything reaches Rust. **Every background job in the
+app comes through that one function**, so a single branch turns Guard scans, automations, contract
+reads and outreach follow-ups over to the user's own subscription.
+
+#### What is NOT done yet, stated plainly
+
+- **Krew chat still streams through the old path.** `KrewChat.tsx` has its own `krew_ai_stream`
+  plumbing, and the CLI answers in one piece rather than streaming. Routing it means either
+  buffering (losing the live feel) or moving to `--output-format stream-json`. That is the next
+  step, and it is the difference between "background work uses your subscription" and "the whole
+  app does".
+- **Codex is not installed here, so it is not offered.** `buildCodexArgs` is the documented shape
+  and has never been run. `detectClis()` simply will not return it until it exists and can be tested.
+- **The tool allow-list is empty by default** — deliberate. The bridge buys *thinking*; the hands
+  are adris's own tools, which the user already approves through the normal flow.
+- **Terms of use are still unchecked.** The roadmap flagged this and it remains open: whether
+  driving these CLIs programmatically fits each provider's terms is a question for a person, not a
+  thing to discover after launch.
+
+**35 unit assertions**, including that an error envelope carrying `subtype: "success"` — which the
+real 401 does — is never mistaken for an empty answer.
 
 ### 5. Multiple tabs / parallel agents — 1–2 weeks
 Several agents working at once, each visible, without them fighting over one browser or one window.

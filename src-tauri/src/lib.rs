@@ -3410,6 +3410,96 @@ async fn office_automation(script: String) -> Result<String, String> {
     }
 }
 
+// ── The bridge to Claude Code / Codex ────────────────────────────────────────
+//
+// The idea: the user already pays for a coding-agent subscription that is far larger than anything
+// this app could resell. adris becomes the HANDS — real Office, the browser, the user's own files —
+// while their own subscription is the BRAIN. No token resale, and their budget, not ours.
+//
+// WHY THE REAL .exe AND NOT THE `claude` ON PATH. On Windows npm installs `claude` as a .cmd shim,
+// and CreateProcess — which std::process::Command uses — does not apply PATHEXT, so spawning
+// "claude" simply fails. Going through cmd.exe to reach the .cmd would then reintroduce quoting and
+// its 8191-character command line, which a long prompt exceeds. The shim itself just execs
+// node_modules/@anthropic-ai/claude-code/bin/claude.exe, so that is what gets spawned: directly,
+// with the prompt as one argument, at any length.
+#[tauri::command]
+async fn agent_cli_detect() -> Result<String, String> {
+    fn first_existing(paths: Vec<std::path::PathBuf>) -> Option<String> {
+        paths.into_iter().find(|p| p.exists()).map(|p| p.to_string_lossy().to_string())
+    }
+    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
+    let appdata = std::env::var("APPDATA").unwrap_or_default();
+    let localapp = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    let exe = if cfg!(windows) { ".exe" } else { "" };
+
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    for base in [appdata.as_str(), localapp.as_str(), home.as_str()] {
+        if base.is_empty() { continue; }
+        roots.push(std::path::Path::new(base).join("npm").join("node_modules"));
+        roots.push(std::path::Path::new(base).join("node_modules"));
+    }
+    roots.push(std::path::Path::new("/usr/local/lib").join("node_modules"));
+
+    let claude = first_existing(
+        roots.iter()
+            .map(|r| r.join("@anthropic-ai").join("claude-code").join("bin").join(format!("claude{exe}")))
+            .collect(),
+    );
+    let codex = first_existing(
+        roots.iter()
+            .flat_map(|r| [
+                r.join("@openai").join("codex").join("bin").join(format!("codex{exe}")),
+                r.join("codex").join("bin").join(format!("codex{exe}")),
+            ])
+            .collect::<Vec<_>>(),
+    );
+
+    let esc = |s: &Option<String>| s.as_deref().unwrap_or("").replace('\\', "\\\\").replace('"', "\\\"");
+    Ok(format!(
+        "{{\"claude_code\":\"{}\",\"codex\":\"{}\"}}",
+        esc(&claude), esc(&codex)
+    ))
+}
+
+/// Run an agent CLI and hand back stdout.
+///
+/// `clear_env` is the whole point of the environment argument and is not optional in spirit:
+/// Claude Code prefers ANTHROPIC_API_KEY over the user's claude.ai login when both are present. If
+/// this process happens to carry that variable, the bridge would silently bill an API key instead of
+/// using the subscription the user is paying for — the exact opposite of why this exists. Measured:
+/// with the variable set the call returned HTTP 401; with it cleared the same call succeeded.
+#[tauri::command]
+async fn agent_cli_run(
+    exe: String,
+    args: Vec<String>,
+    cwd: Option<String>,
+    clear_env: Vec<String>,
+    timeout_secs: Option<u64>,
+) -> Result<String, String> {
+    let mut cmd = tokio::process::Command::new(&exe);
+    cmd.args(&args);
+    if let Some(dir) = cwd.as_deref().filter(|d| !d.is_empty()) { cmd.current_dir(dir); }
+    for key in &clear_env { cmd.env_remove(key); }
+    // tokio's Command exposes creation_flags itself on Windows, so unlike the std::process callers
+    // above this needs no CommandExt import.
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW — no console flash when an agent is asked something
+
+    let secs = timeout_secs.unwrap_or(300).clamp(10, 1800);
+    let fut = cmd.output();
+    let out = match tokio::time::timeout(std::time::Duration::from_secs(secs), fut).await {
+        // A hung agent must not hang the app forever behind a spinner that never resolves.
+        Err(_) => return Err(format!("the agent did not answer within {secs}s")),
+        Ok(r) => r.map_err(|e| format!("could not start {exe}: {e}"))?,
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if stdout.is_empty() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() { "the agent returned nothing".into() } else { err });
+    }
+    Ok(stdout)
+}
+
 /// Spawn PowerShell directly and hand back stdout.
 ///
 /// NOT through `cmd /C`, unlike krew_execute_command. std::process::Command passes arguments to
@@ -8582,6 +8672,8 @@ pub fn run() {
             krew_execute_command,
             scan_installed_apps,
             office_automation,
+            agent_cli_detect,
+            agent_cli_run,
             setup_agent_browser,
             browser_diagnose,
             run_agent_browser,

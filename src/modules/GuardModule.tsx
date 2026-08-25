@@ -111,7 +111,8 @@ export default function GuardModule() {
   // and then stop working once the pool ran dry — even though a local model runs on the user's own
   // hardware and an own-key run bills the user's own API key. Neither costs us anything, so neither
   // may be metered. Same rule the chat already follows.
-  const [aiMode, setAiMode] = useState<'nivara' | 'own_key' | 'local' | null>(null);
+  // Mirrors ResolvedAiSource['mode'] — widen both together, or tsc will say so.
+  const [aiMode, setAiMode] = useState<'nivara' | 'own_key' | 'local' | 'agent_cli' | null>(null);
   useEffect(() => {
     let alive = true;
     resolveAiSource().then((s) => { if (alive) setAiMode(s.mode); }).catch(() => {});

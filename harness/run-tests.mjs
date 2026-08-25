@@ -41,6 +41,7 @@ const UNITS = [
   ['agentBrain',    'src/lib/agentBrain.ts'],
   ['installedApps', 'src/lib/installedApps.ts'],
   ['officeCom',     'src/lib/officeCom.ts'],
+  ['agentCli',      'src/lib/agentCli.ts'],
 ];
 
 let failed = 0;

@@ -147,6 +147,26 @@ async function callAiOnce(userMessage: string, systemPrompt: string, modelOverri
   // hardcoded with no way to see or change it, and local mode always asked for 'llama3'
   // regardless of which model was actually downloaded.
   const src = await resolveAiSource();
+
+  // ── THE BRIDGE ────────────────────────────────────────────────────────────
+  // Intercepted here, before anything is handed to krew_ai_stream — which has never heard of
+  // 'agent_cli' and would reject it. Every background job in the app (Guard scans, automations,
+  // outreach follow-ups, contract reads) comes through this one function, so this single branch is
+  // what makes the title-bar switch actually turn the whole product over to the user's own
+  // subscription. Without it the switch would be a trap: on, and nothing works.
+  //
+  // The CLI answers in one piece rather than streaming, so the event plumbing below is skipped
+  // entirely instead of being faked.
+  if (src.mode === 'agent_cli' && src.cli) {
+    const { runAgentCli } = await import('./agentCli');
+    const r = await runAgentCli(src.cli, userMessage, {
+      systemPrompt: systemPrompt || undefined,
+      model: modelOverride || undefined,
+    });
+    if (!r.ok) throw new Error(r.error || 'the agent returned nothing');
+    return r.text;
+  }
+
   const mode         = src.mode;
   const apiKey       = src.apiKey;
   const provider     = src.provider;

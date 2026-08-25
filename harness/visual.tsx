@@ -12,6 +12,10 @@ import Caret from '../src/components/ui/Caret';
 // its own useTheme hook, which reads that key on mount and then rewrites the class from it. Setting
 // the class directly produced two byte-identical screenshots, because the Sidebar removed it again
 // a moment after mount.
+// Pretend Claude Code is installed and the bridge is on, so the title-bar switch renders in its
+// live state. The real button reads the same two keys.
+localStorage.setItem('nv-agent-cli', JSON.stringify({ claude_code: '/fake/claude', codex: '' }));
+localStorage.setItem('nv-ai-source', JSON.stringify({ mode: 'agent_cli', cli: 'claude_code' }));
 localStorage.setItem('nv-theme',
   new URLSearchParams(location.search).get('paper') ? 'paper' : 'ink');
 
