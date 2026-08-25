@@ -40,6 +40,7 @@ const UNITS = [
   ['outreachSender','src/lib/outreachSender.ts'],
   ['agentBrain',    'src/lib/agentBrain.ts'],
   ['installedApps', 'src/lib/installedApps.ts'],
+  ['officeCom',     'src/lib/officeCom.ts'],
 ];
 
 let failed = 0;

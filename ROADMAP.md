@@ -184,22 +184,67 @@ not the repository's.
 it runs was executed directly and produces correct output, but the two have not yet been exercised
 together through `invoke`.
 
-### 2. Drive Word, Excel and PowerPoint — 2–3 days
-**The highest-value item in this document.** Windows exposes full COM automation, and
-`krew_execute_command` already runs arbitrary commands, so the plumbing exists:
+### 2. Drive Word, Excel and PowerPoint ✅ built and proven on a real machine, 🟡 not in a build yet
 
-```powershell
-$word = New-Object -ComObject Word.Application
-$word.Visible = $true
-$doc = $word.Documents.Add("C:\...\proposal.dotx")   # the user's own template
-```
+`src/lib/officeCom.ts` + `office_automation` in lib.rs + the `create_office_document` agent tool.
 
-Why it beats generating files ourselves (`docgen.ts`, `pptxgenjs`): **the user's template, fonts and
-branding work, because it is genuinely Word.** Output is a real `.docx`, not an approximation.
+**Verified by producing real files and reading them back**, not by the script reporting success:
 
-- Must fall back to LibreOffice / the existing generator when Office isn't installed — say which
-  was used, never imply Office when it wasn't.
-- Templates are the point: "use my proposal template" is the demo that sells this.
+| | Result |
+|---|---|
+| Word | Title / Heading 1 / Normal / two bulleted paragraphs (ListType 2), 14,589 bytes |
+| Excel | `00123` kept its leading zeros, `1-2` did **not** become a date, header bolded, columns autofit |
+| PowerPoint | 2 slides, titles and bullets correct, 36,026 bytes |
+| **Template** | A `.dotx` defining Heading 1 as Georgia 22pt red produced **Georgia 22pt red** — not Word's default Calibri |
+| Leftover processes | **0** |
+
+Timings on this machine: Word ~7s, Excel ~4s, PowerPoint ~3s.
+
+#### Four things the real run found that reasoning did not
+
+1. **`$para.Range.Text = ...` destroys the document.** It replaces the paragraph MARK along with the
+   text, so each block swallowed the one before it — five blocks produced *one* paragraph. The
+   second attempt, `Range.InsertAfter`, kept all five but applied **every style to the wrong
+   paragraph**: the title came back as Heading 1 and the last bullet as Normal. Only setting the
+   style and then typing through `Application.Selection` — what Word does when a person types — is
+   correct. All three were tried against real Word; only reading the saved file showed the difference.
+2. **Style names are translated.** `Styles.Item("Heading 1")` throws on a German or French Office.
+   Built-in style **IDs** (`wdStyleHeading1` = -2) are the same everywhere. This would only ever
+   have failed on someone else's machine.
+3. **Office COM leaves invisible processes running.** The first test left two `WINWORD`/`EXCEL`
+   processes behind; unchecked they accumulate until the machine is out of memory. Each script now
+   records which PIDs existed *before* it started and stops only ones that are new and still alive.
+   **Never by name** — `taskkill /IM WINWORD.EXE` would close the document the user has open and
+   unsaved in front of them.
+4. **The injection guard was too strict and would have refused ordinary documents.** It rejected any
+   payload containing `'@` — including the perfectly normal `bob'@example.com`. A single-quoted
+   here-string is only closed by `'@` at the *start of a line*, and the payload is always one line,
+   so the real invariant is "no newlines". Caught by a test written to prove the guard worked.
+
+#### Why model-written text cannot become a command
+
+The content comes from a language model and ends up inside a PowerShell script. It is **never
+interpolated into code**. Per document kind there is one fixed script that never varies, and the
+content travels beside it as JSON in a single-quoted here-string, which interpolates nothing — no
+`$variables`, no `$(subexpressions)`, no backticks. A test asserts that two completely different
+documents produce **byte-identical code**, and that `$(Remove-Item C:\ -Recurse)` lands in the
+document as literal text. It does: it is visible in the .docx that was read back.
+
+#### Honesty about which engine made the file
+
+`engineNote()` exists to enforce "never imply Office when it wasn't". Without real Office the tool
+refuses to pretend, routes the agent to `generate_document`, and states that the file will **not**
+carry the user's template — because someone who believes it did will send an unbranded proposal to
+a client.
+
+**Not implemented: the LibreOffice middle path.** The roadmap called for it, and LibreOffice is not
+installed on the machine this was built against, so it could not be tested. Shipping an untested
+path that claims to work is exactly the failure this file's status rule exists to prevent — so the
+fallback goes straight to the built-in generator, and says so. `libreoffice` is already detected by
+the scan, so the branch has somewhere to attach when it can be tested.
+
+**36 unit assertions** covering engine choice, the honesty sentences, spec validation, the injection
+property, and the "only our own PIDs" rule.
 
 ### 3. Agent cursor — ~2 days
 A visible, department-coloured cursor showing what an agent is doing, with a label

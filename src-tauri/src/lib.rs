@@ -3376,18 +3376,7 @@ async fn krew_execute_command(command: String) -> Result<String, String> {
 async fn scan_installed_apps(script: String) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
-        let out = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script])
-            .creation_flags(0x08000000) // CREATE_NO_WINDOW — this must never flash a console
-            .output()
-            .map_err(|e| format!("could not run PowerShell: {e}"))?;
-        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if stdout.is_empty() {
-            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            return Err(if err.is_empty() { "the scan produced no output".into() } else { err });
-        }
-        Ok(stdout)
+        run_powershell(&script, "the scan produced no output")
     }
     // Not an error: an app scan is a Windows idea, and the caller treats "nothing" as "I do not
     // know what is installed" rather than as a failure.
@@ -3396,6 +3385,50 @@ async fn scan_installed_apps(script: String) -> Result<String, String> {
         let _ = script;
         Ok(String::from("{\"shortcuts\":[],\"registry\":[],\"automation\":{}}"))
     }
+}
+
+// ── Driving Microsoft Office ─────────────────────────────────────────────────
+//
+// Deliberately a SEPARATE command from scan_installed_apps even though the plumbing is identical,
+// because the guarantees are not: that one only reads, this one creates files in the user's
+// documents. Two named commands with two documented contracts is worth more than one general
+// "run any PowerShell" that erases the difference — and it leaves room to gate them differently.
+//
+// The script is built by src/lib/officeCom.ts, where the content travels as JSON data inside a
+// single-quoted here-string rather than being interpolated into code. See the note at the top of
+// that file; it is the reason model-written text cannot become a command here.
+#[tauri::command]
+async fn office_automation(script: String) -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        run_powershell(&script, "Office automation produced no output")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = script;
+        Err(String::from("Microsoft Office automation is only available on Windows."))
+    }
+}
+
+/// Spawn PowerShell directly and hand back stdout.
+///
+/// NOT through `cmd /C`, unlike krew_execute_command. std::process::Command passes arguments to
+/// CreateProcess itself, so the script needs no quoting and is not subject to cmd.exe's
+/// 8191-character command line — which is shorter than the scripts these callers send.
+#[cfg(target_os = "windows")]
+fn run_powershell(script: &str, empty_msg: &str) -> Result<String, String> {
+    use std::os::windows::process::CommandExt;
+    let out = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW — this must never flash a console at the user
+        .output()
+        .map_err(|e| format!("could not run PowerShell: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if stdout.is_empty() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() { empty_msg.to_string() } else { err });
+    }
+    Ok(stdout)
 }
 
 // ── agent-browser: local binary path ─────────────────────────────────────────
@@ -8548,6 +8581,7 @@ pub fn run() {
             krew_web_search,
             krew_execute_command,
             scan_installed_apps,
+            office_automation,
             setup_agent_browser,
             browser_diagnose,
             run_agent_browser,

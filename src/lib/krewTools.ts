@@ -599,6 +599,19 @@ export const SYSTEM_TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'create_office_document',
+    description: "Make a real Word, Excel or PowerPoint file by driving the copy of Microsoft Office already on this computer — so the user's own template, fonts, styles and branding come out right, because it genuinely is Word. Use this INSTEAD of generate_document whenever the user has Office and especially whenever they mention a template of their own. Call list_installed_apps first if you do not already know whether Office is available. Always tell the user which program made the file; if Office was not available this will say so, and you must repeat that rather than implying Office was used.",
+    parameters: {
+      kind:      { type: 'string', description: '"word", "excel" or "powerpoint".', required: true },
+      save_path: { type: 'string', description: 'Full Windows path to write, ending .docx, .xlsx or .pptx — e.g. C:\\Users\\name\\Documents\\proposal.docx', required: true },
+      template:  { type: 'string', description: "Optional full path to the user's own template (.dotx/.xltx/.potx). This is the whole point of using this tool — ask for it if they mention having one.", required: false },
+      blocks:    { type: 'array',  description: 'WORD only. The document, in order, each an object: {"style":"title|heading|subheading|body|bullet","text":"..."}.', required: false },
+      rows:      { type: 'array',  description: 'EXCEL only. An array of arrays of cell values, first row treated as the header, e.g. [["Company","Amount"],["Acme","45000"]].', required: false },
+      sheet_name:{ type: 'string', description: 'EXCEL only. Name for the sheet tab.', required: false },
+      slides:    { type: 'array',  description: 'POWERPOINT only. Each an object: {"title":"...","bullets":["...","..."]}.', required: false },
+    },
+  },
+  {
     name: 'list_installed_apps',
     description: "Find out what software is actually installed on the user's computer, and which of it can be driven directly. Call this BEFORE offering to open, use or automate any desktop application — never assume Word, Excel, Tally or anything else is present. Also tells you whether real Microsoft Office automation is available, which is a different question from whether Office is installed (Home and Student has no Outlook, for example). Results are cached for a day.",
     parameters: {
@@ -3573,6 +3586,49 @@ async function executeToolCore(
     const approved = await onTerminalApprovalNeeded(command);
     if (!approved) return 'User declined to run this command.';
     return await invoke<string>('krew_execute_command', { command });
+  }
+
+  if (toolName === 'create_office_document') {
+    const kindRaw = str(args.kind).toLowerCase().trim();
+    const kind = kindRaw === 'word' || kindRaw === 'excel' || kindRaw === 'powerpoint' ? kindRaw : '';
+    if (!kind) return `[kind must be "word", "excel" or "powerpoint" — got "${kindRaw}".]`;
+
+    // Models pass an array sometimes and a JSON string other times. Accept both rather than
+    // failing on a difference the user cannot see and did not cause.
+    const asArray = (v: unknown): unknown[] => {
+      if (Array.isArray(v)) return v;
+      if (typeof v === 'string' && v.trim().startsWith('[')) {
+        try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch { return []; }
+      }
+      return [];
+    };
+
+    const { getInstalledApps } = await import('./installedApps');
+    const { chooseEngine, engineNote, createDocument } = await import('./officeCom');
+    const scan = await getInstalledApps();
+    const engine = chooseEngine(scan?.automation, kind);
+
+    // NEVER IMPLY OFFICE WHEN IT WAS NOT USED. Without real Office the honest move is to hand this
+    // to the existing generator and say plainly that the template did not apply — someone who
+    // believes their branding is on it will send an unbranded proposal to a client.
+    if (engine !== 'office') {
+      return `[${engineNote('builtin', kind, false)} Use the generate_document tool instead for this one, `
+        + `and tell the user it was generated rather than made in ${kind === 'word' ? 'Word' : kind === 'excel' ? 'Excel' : 'PowerPoint'}.]`;
+    }
+
+    const template = str(args.template).trim();
+    const res = await createDocument({
+      kind,
+      savePath: str(args.save_path).trim(),
+      template: template || undefined,
+      blocks: asArray(args.blocks) as never,
+      rows: asArray(args.rows) as never,
+      sheetName: str(args.sheet_name).trim() || undefined,
+      slides: asArray(args.slides) as never,
+    });
+
+    if (!res.ok) return `[The document was NOT created: ${res.error ?? 'unknown error'}. Say so — do not tell the user it was saved.]`;
+    return `Saved ${res.path} (${res.bytes} bytes). ${engineNote('office', kind, !!template)}`;
   }
 
   if (toolName === 'list_installed_apps') {
