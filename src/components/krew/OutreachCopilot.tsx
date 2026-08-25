@@ -2252,8 +2252,23 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       setEmailRefineInput('');
       // The change is on screen and it worked — so offer the obvious next thought before they have
       // to go looking for it, with the instruction already carried across.
+      //
+      // WHY THE SCOPE IS FORCED TO 'all' HERE, NOT LEFT AT WHATEVER IT WAS: this prompt exists to
+      // ask "want the same change on the others" — and by the time someone is refining wording on
+      // contact 40 of 150, "the others" already have their own drafts. The 'untouched' scope
+      // (right for propagating a FACT before most contacts are even drafted) matches close to
+      // nobody at that point, so the offer would silently apply to almost no one while reading as
+      // though it had — someone types "make it formal, sign as Director" once, sees it work on the
+      // contact in front of them, and has no reason to think the other 149 are still on the old
+      // wording. Forcing 'all' (still never touching an already-SENT contact — see
+      // bulkEmailTargets) makes THIS specific offer mean what it says. Scope picked manually via
+      // the panel toggle afterward is unaffected — this only sets the default for the auto-prompt.
+      const target = bulkEmailTargets(contacts, idx, 'all');
+      setBulkScope('all');
       setBulkInput(instruction);
-      setBulkNote(`Changed ${cur.name || 'this one'}. Want the same change on the others?`);
+      setBulkNote(target.length
+        ? `Changed ${cur.name || 'this one'}. Apply the same change to the other ${target.length}?`
+        : `Changed ${cur.name || 'this one'}. Nobody else has a draft yet to apply this to.`);
       setBulkOpen(true);
     } catch (e) {
       setEmailRefineNote(`Couldn't rewrite: ${(e instanceof Error ? e.message : String(e)).slice(0, 160)}`);
