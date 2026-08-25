@@ -2222,13 +2222,44 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
       ownerContext: buildOwnerContext(),
       aiCall,
     });
-    if (!out || !out.trim()) return null;
-    const next = parseEmailRewrite(out, subject);
-    // A rewrite that came back with no body is not a rewrite — leave the draft alone rather than
-    // replacing a real email with a subject line.
-    if (!next.body.trim()) return null;
-    if (next.subject === subject && next.body === body) return null;   // nothing actually changed
-    return next;
+    const usable = (raw: string | null | undefined): { subject: string; body: string } | null => {
+      if (!raw || !raw.trim()) return null;
+      const n = parseEmailRewrite(raw, subject);
+      // A rewrite that came back with no body is not a rewrite — leave the draft alone rather than
+      // replacing a real email with a subject line.
+      if (!n.body.trim()) return null;
+      if (n.subject === subject && n.body === body) return null;   // nothing actually changed
+      return n;
+    };
+
+    const first = usable(out);
+    if (first) return first;
+
+    // ── ONE RETRY, BECAUSE ONE-SHOT IS WHY THIS LOOKED BROKEN ────────────────────────────────
+    //
+    // Reported symptom: rewriting a SINGLE draft answered "the AI came back with the same email
+    // (or nothing)", and then the very same instruction applied across the rest of the campaign
+    // worked fine. That difference is not logic — both paths call this same function — it is
+    // sample size. A bulk pass makes one call per contact, so a handful of duds vanish into a
+    // hundred successes; the single-draft path makes exactly one call, so one dud IS the result.
+    // Empty and unchanged replies are ordinary on free and hosted models, so a lone attempt is
+    // simply not enough evidence to tell the user their instruction failed.
+    //
+    // One retry only, and a firmer brief on the second go — a model that returns the same text
+    // twice, told plainly that it must not, is genuinely saying it cannot do it, and the honest
+    // message above is then the right answer.
+    const retry = await refineMessage({
+      current,
+      instruction:
+        `${instruction}\n\nThis is an EMAIL. Return it in exactly this shape: the first line "Subject: <subject>", then a blank line, then the body. `
+        + `Keep it addressed to this specific person — never make it generic, and never introduce placeholders like [Name] or [Company].${exampleBlock}`
+        + `\n\nIMPORTANT: your previous attempt returned the text unchanged (or returned nothing). You MUST actually apply the change described above and return the full rewritten email. Do not reply with an explanation, an apology, or the original text.`,
+      person: c.name,
+      thread: c.company ? `${c.name || 'They'} — ${c.company}` : '',
+      ownerContext: buildOwnerContext(),
+      aiCall,
+    }).catch(() => null);
+    return usable(retry);
   }
 
   /** The "Rewrite" button under the email on screen. */

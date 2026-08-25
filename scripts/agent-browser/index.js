@@ -52,6 +52,29 @@ function writeState(data) {
   try { fs.writeFileSync(STATE_FILE, JSON.stringify(data)); } catch {}
 }
 
+// ── "Prove you're human" pages, in one place ────────────────────────────────
+//
+// Hoisted to module scope because two very different commands need the SAME judgement and were
+// drifting apart: `humancheck` (a search engine blocking us) had this list, and `webmail` did not
+// have it at all — so a mailbox that answered with a verification challenge was treated as an
+// ordinary page, and the command went hunting for a compose button that was never going to be
+// there. It then reported "couldn't find a compose window", which describes the symptom and hides
+// the cause. One regex, both callers.
+var HUMAN_CHECK_RE = /unusual traffic|verify[^.\n]{0,24}human|are you a human|human verification|are you human|i.?m not a robot|captcha|access denied|automated (queries|requests)|request could not be processed|bots use duckduckgo|complete the following challenge|search was made by a human|select all squares|before you continue to google|enable javascript and cookies to continue|our systems have detected|checking your browser|just a moment|cf-challenge|security check|confirm your identity/i;
+
+/** Is this page currently asking a human to prove they are one? */
+async function looksLikeHumanCheck(page) {
+  return await page.evaluate(function (src) {
+    var re = new RegExp(src.slice(1, src.lastIndexOf('/')), 'i');
+    var t = ((document.body && document.body.innerText) || '').slice(0, 4000);
+    if (re.test(t)) return true;
+    // Cloudflare/hCaptcha/reCAPTCHA frames often carry no readable text of their own.
+    return !!document.querySelector(
+      'iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[title*="challenge" i], #cf-challenge-running, .g-recaptcha, [data-sitekey]'
+    );
+  }, HUMAN_CHECK_RE.toString()).catch(function () { return false; });
+}
+
 // Detect login / auth-wall pages so the LLM gets a clear structured signal.
 function isAuthWall(url) {
   return /\/(login|signin|checkpoint|authwall|challenge|uas\/login|session-redirect|sso\/login)|\/login\?|accounts\.google\.com|appleid\.apple\.com\/auth|auth\.linkedin\.com/.test(url);
@@ -366,6 +389,43 @@ async function extractLinkedInFeed(page) {
 // clear, in-place signal not to scroll/close while automation runs. Appended to
 // <html> (not <body>) so it survives body re-renders and is never picked up by the
 // content extractors (LinkedIn extractor scopes to <main>; general extractor clones <body>).
+/**
+ * Keep the "ADRIS is using this browser" banner on screen ACROSS navigations.
+ *
+ * showBanner appends a div. A navigation throws the whole document away, banner included — so on
+ * any flow that navigates (a webmail opening its compose panel, a challenge page clearing) the
+ * banner silently disappeared and the user was left looking at their own mailbox being typed into
+ * with nothing saying why. Playwright's addInitScript runs on every new document in the page, so
+ * re-adding it there is what makes it survive rather than needing to be re-shown by hand at every
+ * call site (which is what would drift).
+ */
+async function persistBanner(page, text) {
+  await showBanner(page, text);
+  try {
+    await page.addInitScript(function (msg) {
+      var draw = function () {
+        var id = 'adris-agent-banner';
+        if (document.getElementById(id)) return;
+        var b = document.createElement('div');
+        b.id = id;
+        b.style.cssText =
+          'position:fixed;top:0;left:0;right:0;z-index:2147483647;' +
+          'background:#7C5CFF;color:#fff;' +
+          'font:600 13px/1.4 system-ui,Segoe UI,Roboto,sans-serif;' +
+          'padding:9px 16px;text-align:center;letter-spacing:.02em;' +
+          'box-shadow:0 2px 10px rgba(0,0,0,.28);pointer-events:none;';
+        b.textContent = '🤖 ' + msg;
+        (document.documentElement || document.body).appendChild(b);
+      };
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', draw);
+      } else {
+        draw();
+      }
+    }, text);
+  } catch (_) { /* an init script is a nicety — never fail the task over it */ }
+}
+
 async function showBanner(page, text) {
   await page.evaluate(function(msg) {
     var id = 'adris-agent-banner';
@@ -2134,7 +2194,41 @@ async function main() {
       return;
     }
 
-    await showBanner(wPage, 'ADRIS is writing your email here. Check it, then press Send yourself.');
+    // ── "Confirm you are human" — WAIT for the person, never type past it ────────────────────
+    //
+    // Hostinger (and most webmail behind Cloudflare) will periodically challenge a session that
+    // looks automated. Until now this command had no idea that had happened: it went straight on
+    // to hunt for a compose button, found nothing — because the page showing is a challenge, not a
+    // mailbox — and reported "couldn't find a compose window I understand". That names the symptom
+    // and hides the cause, and on a retry it would cheerfully do the same thing again.
+    //
+    // The challenge is EXACTLY the thing a human must do, and a human is sitting right there. So
+    // ask them, wait, and pick up the moment it clears — the same shape as the `humancheck`
+    // command. If it does not clear within the budget, say so specifically rather than blaming the
+    // compose form.
+    if (await looksLikeHumanCheck(wPage)) {
+      await showBanner(wPage, 'Your webmail is asking you to confirm you are human — please complete it here. ADRIS carries on by itself the moment it clears.');
+      var wCleared = await pollUntil(async function () {
+        if (await looksLikeHumanCheck(wPage)) return false;
+        // Cleared means the challenge is gone AND a real mailbox is underneath it.
+        return await wPage.evaluate(function () {
+          return (((document.body && document.body.innerText) || '').trim().length > 120);
+        }).catch(function () { return false; });
+      }, 30000, 1500);
+      if (!wCleared) {
+        process.stdout.write('WEBMAIL_NEEDS_HUMAN Your webmail is showing a "confirm you are human" check, so nothing was typed. Complete it in the ADRIS browser window, then press Compose here again.');
+        return;
+      }
+      // It cleared — the page under it is fresh, so give it a moment to actually render.
+      await pollUntil(function () {
+        return wPage.evaluate(function () { return (((document.body && document.body.innerText) || '').trim().length > 120); })
+          .catch(function () { return false; });
+      }, 6000, 300);
+    }
+
+    // persistBanner, not showBanner: the compose flow navigates, and a plain banner dies with the
+    // document it was appended to.
+    await persistBanner(wPage, 'ADRIS is writing your email here. Check it, then press Send yourself.');
 
     // ── Find and open the compose window ────────────────────────────────────
     // Already on one? Some webmail links land straight in a composer.
