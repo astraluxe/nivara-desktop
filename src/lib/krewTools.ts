@@ -599,6 +599,14 @@ export const SYSTEM_TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'list_installed_apps',
+    description: "Find out what software is actually installed on the user's computer, and which of it can be driven directly. Call this BEFORE offering to open, use or automate any desktop application — never assume Word, Excel, Tally or anything else is present. Also tells you whether real Microsoft Office automation is available, which is a different question from whether Office is installed (Home and Student has no Outlook, for example). Results are cached for a day.",
+    parameters: {
+      query: { type: 'string', description: 'Optional filter, e.g. "excel", "browser", "design". Leave empty for everything grouped by category.', required: false },
+      refresh: { type: 'boolean', description: 'Re-scan instead of using the cached list. Only if the user says they just installed something.', required: false },
+    },
+  },
+  {
     name: 'web_search',
     description: 'Search the web for information, news, prices, facts. Uses Brave API if connected (fastest). Otherwise opens DuckDuckGo silently — no key needed. Use this for gathering information only, NOT for doing tasks on websites.',
     parameters: {
@@ -3565,6 +3573,18 @@ async function executeToolCore(
     const approved = await onTerminalApprovalNeeded(command);
     if (!approved) return 'User declined to run this command.';
     return await invoke<string>('krew_execute_command', { command });
+  }
+
+  if (toolName === 'list_installed_apps') {
+    const { getInstalledApps, describeScan } = await import('./installedApps');
+    const scan = await getInstalledApps({ force: !!args.refresh });
+    // A machine that could not be read is stated as unknown, never as empty. "Nothing is installed"
+    // and "I could not look" lead to opposite next moves, and only one of them is honest here.
+    if (!scan) {
+      return '[Could not read what is installed on this computer. Do NOT guess — ask the user what '
+        + 'they have, or say plainly that you could not check.]';
+    }
+    return describeScan(scan, { query: str(args.query) });
   }
 
   if (toolName === 'get_exchange_rate') {

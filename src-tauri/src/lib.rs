@@ -3361,6 +3361,43 @@ async fn krew_execute_command(command: String) -> Result<String, String> {
     Ok(result)
 }
 
+// ── What is installed on this machine ────────────────────────────────────────
+//
+// The script comes from the frontend (src/lib/installedApps.ts) rather than living here, so the
+// collection and the parsing of its output stay in one file and cannot drift apart.
+//
+// WHY POWERSHELL IS SPAWNED DIRECTLY AND NOT THROUGH cmd. std::process::Command hands its arguments
+// to CreateProcess itself, so the script needs no quoting and is not subject to cmd.exe's
+// 8191-character command line — which is shorter than the script. Going through `cmd /C`, the way
+// krew_execute_command does, would need both.
+//
+// Read-only by construction: it enumerates shortcuts and reads registry values, and never writes.
+#[tauri::command]
+async fn scan_installed_apps(script: String) -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW — this must never flash a console
+            .output()
+            .map_err(|e| format!("could not run PowerShell: {e}"))?;
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if stdout.is_empty() {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return Err(if err.is_empty() { "the scan produced no output".into() } else { err });
+        }
+        Ok(stdout)
+    }
+    // Not an error: an app scan is a Windows idea, and the caller treats "nothing" as "I do not
+    // know what is installed" rather than as a failure.
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = script;
+        Ok(String::from("{\"shortcuts\":[],\"registry\":[],\"automation\":{}}"))
+    }
+}
+
 // ── agent-browser: local binary path ─────────────────────────────────────────
 fn get_agent_browser_local_path(app: &tauri::AppHandle) -> std::path::PathBuf {
     let data_dir = app.path().app_local_data_dir()
@@ -8510,6 +8547,7 @@ pub fn run() {
             reddit_post,
             krew_web_search,
             krew_execute_command,
+            scan_installed_apps,
             setup_agent_browser,
             browser_diagnose,
             run_agent_browser,

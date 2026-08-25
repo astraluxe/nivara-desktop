@@ -39,6 +39,7 @@ const UNITS = [
   ['emailDraft',    'src/lib/emailDraft.ts'],
   ['outreachSender','src/lib/outreachSender.ts'],
   ['agentBrain',    'src/lib/agentBrain.ts'],
+  ['installedApps', 'src/lib/installedApps.ts'],
 ];
 
 let failed = 0;

@@ -139,9 +139,50 @@ comes from Tailwind's content scanner reading the regex character class `[-:\s]`
 
 ## After the UI, in order
 
-### 1. Scan what's installed on the PC — ~1 day
-Registry (`Uninstall` keys) + Start Menu shortcuts → a list of real applications with real paths.
-Everything below depends on knowing what exists. Same shape as the existing browser detection.
+### 1. Scan what's installed on the PC ✅ code complete, 🟡 not yet run in a real build
+
+`src/lib/installedApps.ts` + `scan_installed_apps` in lib.rs + the `list_installed_apps` agent tool.
+
+**The roadmap was wrong about where this came from.** It said "same shape as the existing browser
+detection" — there is no such shape. Browser detection is hardcoded path guessing (`lib.rs:4096`,
+`4347`); the codebase had no registry access at all and no registry crate. This was new ground.
+
+**And the registry turned out to be the wrong primary source.** Measured on a real machine, not
+assumed:
+
+| Source | Raw | Usable | Names look like |
+|---|---|---|---|
+| Registry `Uninstall` keys | 182 | 51 after filtering | `Microsoft Office Home and Student 2021 - en-gb` (twice — one per language pack) |
+| Start Menu shortcuts | 182 | 99 with a real `.exe` | `Word`, `Excel` |
+
+The Start Menu **is** the list of things a person can click, labelled the way they say it. So
+shortcuts are the source and the registry is demoted to what it is actually good at: version and
+publisher, matched on install folder rather than on name.
+
+**The distinction that matters for item 2:** "is Word installed" and "can Word be automated" are
+different questions. The answer is in `HKEY_CLASSES_ROOT` — a registered COM server has a
+`LocalServer32` path, an unregistered one has nothing. On the test machine Word/Excel/PowerPoint
+answer and **Outlook does not**, because Home and Student does not ship it. An installed-apps list
+alone would have got that wrong and had an agent offer to send mail through Outlook.
+
+**End-to-end result on the real machine:** 182 shortcuts → **45 applications**, no junk, no
+duplicates, correctly grouped, and the automation line reads
+`Can be driven directly (real Microsoft Office automation): word, excel, powerpoint.`
+
+Four problems only the real data exposed, all now fixed and covered by tests: `Global Flags` ×4 and
+`WinDbg` ×2 (same name, different paths — now deduped by name as well as by path); ARM and ARM64
+builds offered on an x64 laptop (**offering software that cannot execute is the same failure as
+offering software that is not installed**); helper entries like `About Java`, `Reload Configuration`
+and `Office Language Preferences`; and SDK debugging tools drowning the `other` bucket, now
+classified as development rather than deleted.
+
+**48 unit assertions**, all suites pass. The committed fixture reproduces the *shapes* found in the
+real scan rather than the scan itself — a list of someone's installed software is their business,
+not the repository's.
+
+**Still to verify in a real build:** the Rust command has only been `cargo check`ed. The PowerShell
+it runs was executed directly and produces correct output, but the two have not yet been exercised
+together through `invoke`.
 
 ### 2. Drive Word, Excel and PowerPoint — 2–3 days
 **The highest-value item in this document.** Windows exposes full COM automation, and
