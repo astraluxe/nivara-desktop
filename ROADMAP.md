@@ -19,9 +19,9 @@ cost real time.
 |---|---|
 | **Version in the tree** | **1.59.0** — bumped, builds clean, **not yet produced as an `.exe`** |
 | Last released | 1.58.0 |
-| In 1.59.0 | installed-app scanning (`c90a693`) and real Office automation (`8ecb058`) |
+| In 1.59.0 | installed-app scanning (`c90a693`), real Office automation (`8ecb058`), the Claude Code bridge (`7522377`) |
 | In 1.58.0 | the UI pass and the outreach copilot counts |
-| Next | item 3, the agent cursor |
+| Next | finish the bridge for Krew chat (streaming), then item 3 the agent cursor, then item 5 multiple tabs |
 
 Both new features are ✅ *proven on this machine* — real documents made and read back, a real
 template's branding verified in the output — and 🟡 *not yet exercised through the running app*, so
