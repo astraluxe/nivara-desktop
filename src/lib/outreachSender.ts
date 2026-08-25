@@ -157,6 +157,70 @@ export function checkOne(c: SendableContact, channel: SendChannel): { ok: true; 
 }
 
 /**
+ * The two reasons that are not failures.
+ *
+ * Named rather than written inline because the interface has to tell them apart from every other
+ * skip, and matching a sentence by its literal text is how that quietly stops working the day
+ * someone rewords it.
+ */
+export const CAP_REASON = {
+  email: "today's email limit is used up",
+  linkedin: "today's LinkedIn limit is used up",
+} as const;
+
+/** Was this contact held back only by today's pacing? */
+export function isCapSkip(s: { why: string }): boolean {
+  return s.why === CAP_REASON.email || s.why === CAP_REASON.linkedin;
+}
+
+/**
+ * Split the "will not send" list into the two different things it actually contains.
+ *
+ * THE PROBLEM THIS EXISTS FOR. A 150-contact campaign reported "40 ready · 110 not". Both numbers
+ * were true and the sentence was still wrong: nothing was wrong with those 110 people, they were
+ * simply past today's cap of 40 — they are tomorrow's sends. Opening the list showed "today's email
+ * limit is used up" repeated a hundred times, which reads as a hundred errors.
+ *
+ *   - `deferred` — held back by today's pacing. Nothing to fix; they go out tomorrow.
+ *   - `blocked`  — genuinely cannot be sent: no address, no draft, a placeholder left in.
+ *   - `groups`   — the blocked ones gathered by reason, so eleven identical lines become one line
+ *                  saying eleven. Biggest first, because the most common problem is the one worth
+ *                  fixing first and it is usually one fix for all of them.
+ */
+export function summariseSkips(skipped: SkipReason[]): {
+  deferred: SkipReason[];
+  blocked: SkipReason[];
+  groups: { why: string; who: SkipReason[] }[];
+} {
+  const deferred = skipped.filter(isCapSkip);
+  const blocked = skipped.filter((s) => !isCapSkip(s));
+  const byWhy = new Map<string, SkipReason[]>();
+  for (const s of blocked) {
+    const list = byWhy.get(s.why);
+    if (list) list.push(s); else byWhy.set(s.why, [s]);
+  }
+  const groups = [...byWhy.entries()]
+    .map(([why, who]) => ({ why, who }))
+    .sort((a, b) => b.who.length - a.who.length);
+  return { deferred, blocked, groups };
+}
+
+/**
+ * How many of these contacts could receive anything at all on each channel.
+ *
+ * Offering LinkedIn on a campaign where nobody has a profile saved is how the "not" count gets
+ * inflated with people who were never reachable that way: the user turns the channel on, a hundred
+ * "no LinkedIn profile saved" skips appear, and the campaign looks broken when it is not.
+ */
+export function channelReach(contacts: SendableContact[]): { email: number; linkedin: number } {
+  const EMAIL = /^[^@\s]+@[^@\s.]+\.[^@\s]+$/;
+  return {
+    email: contacts.filter((c) => EMAIL.test((c.email || (c.emails || [])[0] || '').trim())).length,
+    linkedin: contacts.filter((c) => isMessageableProfile(c.linkedin_url)).length,
+  };
+}
+
+/**
  * Build the exact list that will go out, and the exact list that will not.
  *
  * Both halves are returned because the second one is the useful half: "37 of your 50 will send" is
@@ -190,11 +254,11 @@ export function buildSendQueue(
         continue;
       }
       if (channel === 'email' && emailLeft <= 0) {
-        if (!skipped.some((s) => s.idx === idx)) skipped.push({ idx, name, channel, why: 'today\'s email limit is used up' });
+        if (!skipped.some((s) => s.idx === idx)) skipped.push({ idx, name, channel, why: CAP_REASON.email });
         continue;
       }
       if (channel === 'linkedin' && liLeft <= 0) {
-        if (!skipped.some((s) => s.idx === idx)) skipped.push({ idx, name, channel, why: 'today\'s LinkedIn limit is used up' });
+        if (!skipped.some((s) => s.idx === idx)) skipped.push({ idx, name, channel, why: CAP_REASON.linkedin });
         continue;
       }
       if (channel === 'email') emailLeft--; else liLeft--;

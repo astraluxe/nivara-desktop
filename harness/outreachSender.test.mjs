@@ -1,7 +1,7 @@
 import {
   findPlaceholder, isMessageableProfile, isDoneWith, checkOne, buildSendQueue,
   nextDelayMs, sentToday, alreadySent, startOfLocalDay, SEND_DEFAULTS,
-  parseOutreachStepSettings, summarise,
+  parseOutreachStepSettings, summarise, summariseSkips, channelReach, CAP_REASON,
 } from './outreachSender.js';
 
 let pass = 0, fail = 0;
@@ -198,6 +198,49 @@ ok('a stopped run says so first', S({ sent: 1, stopped: true }).startsWith('Stop
 ok('unconfirmed is spelled out as unmarked', /left unmarked/.test(S({ sent: 1, unconfirmed: 2 })));
 ok('failures are counted', /2 failed/.test(S({ sent: 1, failed: 2 })));
 eq('a run where nothing worked is still honest', S({ failed: 3 }), '0 sent and confirmed, 3 failed.');
+
+// ── "40 ready · 110 not" ─────────────────────────────────────────────────────
+// The count that started this: 110 people with nothing wrong with them, reported as though 110
+// things had failed. These assert the two halves stay separated and the second half stays grouped.
+console.log('\n=== what "will not be sent" actually contains ===');
+{
+  const many = Array.from({ length: 150 }, (_, i) => ({
+    name: `P${i}`, company: 'Acme', email: `p${i}@acme.co.in`, status: 'todo',
+    email_subject: 'A real subject', email_body: GOOD_BODY,
+  }));
+  // Three that genuinely cannot go, so both kinds appear in one run.
+  many[0] = { ...many[0], email: '' };
+  many[1] = { ...many[1], email: '' };
+  many[2] = { ...many[2], email_body: 'too short' };
+
+  const q = buildSendQueue(many, { channels: ['email'], emailRemaining: 40, linkedinRemaining: 0 });
+  const sum = summariseSkips(q.skipped);
+
+  ok('the queue stops at the daily cap', q.queue.length === 40, String(q.queue.length));
+  ok('the three broken ones are blocked, not deferred', sum.blocked.length === 3, String(sum.blocked.length));
+  ok('everyone else is deferred, not blocked', sum.deferred.length === 150 - 40 - 3, String(sum.deferred.length));
+  ok('deferred + blocked accounts for every skip', sum.deferred.length + sum.blocked.length === q.skipped.length);
+  ok('nothing deferred is reported as a failure', sum.deferred.every((s) => s.why === CAP_REASON.email));
+  ok('the two with no address collapse into one group', sum.groups[0].who.length === 2, JSON.stringify(sum.groups.map((g) => [g.why, g.who.length])));
+  ok('the biggest group comes first', sum.groups[0].who.length >= (sum.groups[1]?.who.length ?? 0));
+  ok('every blocked contact appears in exactly one group',
+     sum.groups.reduce((n, g) => n + g.who.length, 0) === sum.blocked.length);
+}
+
+console.log('\n=== who can actually be reached ===');
+{
+  const mixed = [
+    { name: 'A', email: 'a@b.co.in' },
+    { name: 'B', email: 'not-an-address' },
+    { name: 'C', emails: ['c@d.co.in'] },
+    { name: 'D', linkedin_url: 'https://www.linkedin.com/in/someone' },
+    { name: 'E', linkedin_url: 'https://www.linkedin.com/company/acme' },
+  ];
+  const r = channelReach(mixed);
+  eq('emails counted, including the fallback list and excluding junk', r.email, 2);
+  eq('only personal profiles count as reachable on LinkedIn', r.linkedin, 1);
+  eq('an empty campaign reaches nobody', channelReach([]), { email: 0, linkedin: 0 });
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

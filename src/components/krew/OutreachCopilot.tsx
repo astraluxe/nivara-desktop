@@ -24,7 +24,7 @@ import {
 import {
   buildSendQueue, loadSendLog, sentToday,
   loadGapSeconds, saveGapSeconds, loadPaceId, SEND_PACES, runSendQueue, summarise,
-  SEND_DEFAULTS, type SendChannel,
+  SEND_DEFAULTS, summariseSkips, channelReach, type SendChannel,
 } from '../../lib/outreachSender';
 import { credentialStore } from '../../lib/krewDb';
 
@@ -1964,6 +1964,11 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
     });
   }, [contacts, autoChannels, sendCounts, sendTick, bulkAttach]);
 
+  // The two halves of "will not be sent", and who can be reached on each channel at all. See
+  // summariseSkips() for why a single "not" number was actively misleading.
+  const skips = useMemo(() => summariseSkips(autoQueue.skipped), [autoQueue.skipped]);
+  const reach = useMemo(() => channelReach(contacts), [contacts]);
+
   /** Save the SMTP password to the OS keychain and prove the settings work by really sending one. */
   /**
    * Prove the mailbox really sends, by really sending — to the user's own address.
@@ -2982,7 +2987,9 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
             <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0 text-accent" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
             <span className="font-semibold">Send these for me</span>
             <span className="text-nv-faint">
-              {autoQueue.queue.length} ready{autoQueue.skipped.length ? ` · ${autoQueue.skipped.length} not` : ''}
+              {autoQueue.queue.length} ready
+              {skips.deferred.length ? ` · ${skips.deferred.length} tomorrow` : ''}
+              {skips.blocked.length ? ` · ${skips.blocked.length} need a fix` : ''}
             </span>
             <svg viewBox="0 0 24 24" className={`w-3 h-3 ml-auto transition-transform ${autoOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
           </button>
@@ -2997,12 +3004,17 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                     key={id}
                     disabled={autoRunning}
                     onClick={() => setAutoChannels((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))}
+                    /* The channel still toggles when nobody can receive on it — profiles can be
+                       added later, and disabling it would just look broken. What changes is that it
+                       says so, instead of letting the user switch it on and then blaming them with
+                       a hundred "no LinkedIn profile saved" skips. */
+                    title={reach[id] ? `${reach[id]} of ${contacts.length} can be reached this way` : `Nobody in this list has ${id === 'email' ? 'an email address' : 'a LinkedIn profile'} saved`}
                     className={`text-[9.5px] px-2 py-0.5 rounded-full border transition-fast disabled:opacity-40 ${
-                      autoChannels.includes(id) ? 'border-accent/50 text-accent bg-accent/10' : 'border-nv-border text-nv-faint hover:bg-nv-surface2'}`}
-                  >{label}</button>
+                      autoChannels.includes(id) ? 'border-accent/50 text-accent bg-accent/10' : 'border-nv-border text-nv-faint hover:bg-nv-surface2'} ${reach[id] ? '' : 'opacity-50'}`}
+                  >{label}{reach[id] ? '' : ' · none in this list'}</button>
                 ))}
-                <span className="ml-auto text-[9px] text-nv-faint">
-                  today: {sendCounts.email}/{SEND_DEFAULTS.emailDailyCap} email · {sendCounts.linkedin}/{SEND_DEFAULTS.linkedinDailyCap} LinkedIn
+                <span className="ml-auto text-[9px] text-nv-faint" title="A daily pace, not a plan limit — it protects your mailbox and your LinkedIn account.">
+                  sent today: {sendCounts.email}/{SEND_DEFAULTS.emailDailyCap} email · {sendCounts.linkedin}/{SEND_DEFAULTS.linkedinDailyCap} LinkedIn
                 </span>
               </div>
 
@@ -3052,17 +3064,40 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
               )}
 
               {/* WHO WILL NOT BE SENT TO, AND WHY — the half that is actually useful. */}
-              {!!autoQueue.skipped.length && (
+              {/* HELD FOR TOMORROW — stated on its own line and never inside the "why" list,
+                  because there is nothing here to fix and it is the larger number by far. */}
+              {!!skips.deferred.length && (
+                <p className="text-[9.5px] text-nv-muted leading-snug px-0.5">
+                  <b className="text-nv-text">{skips.deferred.length} more go out tomorrow.</b>{' '}
+                  Nothing is wrong with them — {SEND_DEFAULTS.emailDailyCap} emails and{' '}
+                  {SEND_DEFAULTS.linkedinDailyCap} LinkedIn messages a day is the pace that keeps
+                  your mailbox and your account out of trouble.
+                </p>
+              )}
+
+              {/* GENUINELY STUCK — grouped, so one problem shared by forty people is one line
+                  saying forty, not forty lines saying the same sentence. */}
+              {!!skips.blocked.length && (
                 <details className="rounded-md border border-nv-border bg-nv-bg/60">
                   <summary className="text-[9.5px] text-nv-faint px-2 py-1 cursor-pointer">
-                    {autoQueue.skipped.length} will NOT be sent — see why
+                    {skips.blocked.length} need something fixed first — see why
                   </summary>
-                  <div className="max-h-28 overflow-y-auto px-2 pb-1.5 space-y-0.5">
-                    {autoQueue.skipped.slice(0, 60).map((s) => (
-                      <p key={`${s.idx}-${s.why}`} className="text-[9.5px] text-nv-muted leading-snug">
-                        <button onClick={() => { setIdx(s.idx); setView('one'); }} className="text-accent hover:underline">{s.name}</button>
-                        {' — '}{s.why}
-                      </p>
+                  <div className="max-h-32 overflow-y-auto px-2 pb-1.5 space-y-1">
+                    {skips.groups.map((g) => (
+                      <div key={g.why}>
+                        <p className="text-[9.5px] text-nv-text leading-snug">
+                          {g.who.length} × {g.why}
+                        </p>
+                        <p className="text-[9.5px] text-nv-muted leading-snug">
+                          {g.who.slice(0, 8).map((s, i) => (
+                            <span key={s.idx}>
+                              {i > 0 && ', '}
+                              <button onClick={() => { setIdx(s.idx); setView('one'); }} className="text-accent hover:underline">{s.name}</button>
+                            </span>
+                          ))}
+                          {g.who.length > 8 && ` and ${g.who.length - 8} more`}
+                        </p>
+                      </div>
                     ))}
                   </div>
                 </details>

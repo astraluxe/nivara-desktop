@@ -177,22 +177,39 @@ something. Very often what the user remembers is an addition, not a correction.
 
 ---
 
-## Known issues to fix in passing
+## Fixed in passing
 
-### The outreach copilot's counts are honest but unreadable
+### The outreach copilot's counts ✅
 
-Not a bug — but genuinely confusing, and it's a UI problem so it belongs in the pass.
+**It was never a bug, and the interface said it was one.** Reported as: "40 ready · 110 not" on a
+150-contact campaign, plus "today 0/40 email · 0/20 LinkedIn", plus both channels offered on a
+campaign with no LinkedIn profiles in it.
 
-- **"40 ready · 110 not"** — the queue caps at `emailDailyCap: 40`
-  (`src/lib/outreachSender.ts`). The other 110 aren't failures; they're *tomorrow*. But the reason
-  is only visible by opening the skipped list, where "today's email limit is used up" repeats a
-  hundred times and reads like a hundred errors.
-- **"today 0/40 email · 0/20 LinkedIn"** is today's usage against the daily caps — deliberate
-  anti-spam pacing, not a limit tied to a plan or tier.
-- **Both channels are always offered**, even when no contact in the campaign has a LinkedIn URL —
-  so turning LinkedIn on adds a pile of "no profile" skips and inflates the "not" count with
-  something the user could never have sent anyway.
+What was actually true:
 
-**Fix:** say the cap in the summary line ("40 today, 110 tomorrow — daily limit"), collapse repeated
-skip reasons into one row with a count, and only offer a channel that some contact can actually
-receive.
+- **The caps are pacing, not a plan limit.** `SEND_DEFAULTS` in `src/lib/outreachSender.ts` —
+  40 emails and 20 LinkedIn messages a day. They exist so the user's own mailbox and LinkedIn
+  account do not get restricted. Nothing about a tier or a subscription.
+- **The 110 were not failures.** They were tomorrow. But they were pooled with the genuinely stuck
+  ones under one "not" number, and opening the list showed *today's email limit is used up* repeated
+  a hundred times, which reads as a hundred errors.
+- **Both channels were always offered**, so switching LinkedIn on added a pile of "no profile"
+  skips and inflated the same number with people who were never reachable that way.
+
+The fix is entirely in what is said:
+
+- `summariseSkips()` splits the list into **deferred** (today's pace — nothing to fix) and
+  **blocked** (no address, no draft, a placeholder left in), and groups the blocked ones by reason,
+  biggest first. Forty identical lines become one line saying forty.
+- The summary line now reads **"40 ready · 107 tomorrow · 3 need a fix"**.
+- The deferred count gets its own sentence naming the caps, so the reason is on screen rather than
+  buried behind a disclosure triangle.
+- `channelReach()` marks a channel **"· none in this list"** when nobody can receive on it. It still
+  toggles — profiles can be added later, and disabling it would just look broken — but it no longer
+  lets the user switch it on and then blames them for the result.
+- `CAP_REASON` names the two cap sentences, so telling them apart is not a literal string match that
+  breaks the day someone rewords them.
+
+Covered by 11 new assertions in `harness/outreachSender.test.mjs`, built on the user's real
+numbers — 150 contacts, a cap of 40, three genuinely broken. All 114 unit assertions and all four
+browser suites pass.
