@@ -13,6 +13,20 @@ cost real time.
 
 ---
 
+## Where this is right now
+
+| | |
+|---|---|
+| **Version in the tree** | **1.58.0** — bumped, built clean, **not yet built as an `.exe` or released** |
+| Last released | 1.57.0 (`7ae7b48`) |
+| In 1.58.0 | the UI pass (`5736714`) and the outreach copilot counts (`77b3ae6`) |
+| Next | build with `scripts/build-signed.ps1`, launch it, then app scanning → Office COM |
+
+Per the honesty rule below, the UI pass is ✅ *as rendered in a browser screenshot* and 🟡 *as
+shipped* — nobody has run it as a real window yet.
+
+---
+
 ## The decision this roadmap rests on
 
 **Windows is the product surface, not a new OS.** `ADRIS-OS/` is on hold — not deleted, and its
@@ -174,6 +188,41 @@ Builds on 1–3.
 Today a running task can't be added to; the user waits for it to finish, then asks again. It should
 absorb a new instruction *while running* — the way a person would when you lean over and add
 something. Very often what the user remembers is an addition, not a correction.
+
+---
+
+## Cutting a release — what the script does and does not do
+
+**`scripts/build-signed.ps1` READS the version, it does not bump it.** It takes
+`(Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version` and builds whatever it finds,
+so **forgetting to bump silently rebuilds and re-uploads the version already out there.** The bump
+is a manual edit first, every time.
+
+A bump touches **exactly two files**:
+
+- `package.json`
+- `src-tauri/tauri.conf.json`
+
+And deliberately **not**:
+
+- **`src-tauri/Cargo.toml`** — sits on its own scheme (currently `1.7.6`) and has never been moved
+  for a release. Leave it alone; matching it to the app version would be a change of its own.
+- **`latest.json`** — the script regenerates it after the build, because it has to carry the real
+  signature of the `.exe` that was just produced. Hand-editing it produces a manifest whose
+  signature does not match the installer, and the updater rejects it.
+
+Then `build-signed.ps1` does the rest by itself: signs, writes `latest.json`, commits
+`chore(release): v<version>`, tags, creates the GitHub release, uploads the assets, and mirrors the
+manifest to the hosts that are actually reachable. **Release notes are hardcoded** to "Bug fixes and
+improvements" in the script — if a release deserves real notes, that is an edit to the script or to
+the release afterwards, not something a bump can express.
+
+**Why the mirroring exists** (measured on a real Indian ISP, not assumed):
+`objects.githubusercontent.com` and `release-assets.githubusercontent.com` accept a TCP connection
+on 443 and then never complete the TLS handshake — SNI filtering. Every GitHub release file is
+served from those two hosts, so the updater could not even read `latest.json` and told users to
+check a connection that was fine. Everything therefore downloads via `www.adris.tech/dl/<file>`.
+Use `www` — the apex 307-redirects and drops the CORS header, which kills the fetch.
 
 ---
 
