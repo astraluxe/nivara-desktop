@@ -17,13 +17,16 @@ cost real time.
 
 | | |
 |---|---|
-| **Version in the tree** | **1.58.0** — bumped, built clean, **not yet built as an `.exe` or released** |
-| Last released | 1.57.0 (`7ae7b48`) |
-| In 1.58.0 | the UI pass (`5736714`) and the outreach copilot counts (`77b3ae6`) |
-| Next | build with `scripts/build-signed.ps1`, launch it, then app scanning → Office COM |
+| **Version in the tree** | **1.59.0** — bumped, builds clean, **not yet produced as an `.exe`** |
+| Last released | 1.58.0 |
+| In 1.59.0 | installed-app scanning (`c90a693`) and real Office automation (`8ecb058`) |
+| In 1.58.0 | the UI pass and the outreach copilot counts |
+| Next | item 3, the agent cursor |
 
-Per the honesty rule below, the UI pass is ✅ *as rendered in a browser screenshot* and 🟡 *as
-shipped* — nobody has run it as a real window yet.
+Both new features are ✅ *proven on this machine* — real documents made and read back, a real
+template's branding verified in the output — and 🟡 *not yet exercised through the running app*, so
+the Rust `invoke` boundary is the one thing still unproven. Both Rust commands are `cargo check`ed
+and the PowerShell they run has been executed directly.
 
 ---
 
