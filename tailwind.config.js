@@ -31,6 +31,26 @@ export default {
         "nv-bad":     "rgb(var(--nv-bad-rgb) / <alpha-value>)",
         "nv-info":    "rgb(var(--nv-info-rgb) / <alpha-value>)",
       },
+      // ── The design tokens from index.css, reachable as Tailwind utilities ───
+      // Defined in one place there so hand-written CSS and utility classes can never drift apart.
+      // Purely additive: no existing utility changes meaning.
+      boxShadow: {
+        e1: "var(--nv-e1)",
+        e2: "var(--nv-e2)",
+        e3: "var(--nv-e3)",
+        lip: "var(--nv-lip)",
+        "e1-lip": "var(--nv-e1), var(--nv-lip)",
+        "e2-lip": "var(--nv-e2), var(--nv-lip)",
+        "e3-lip": "var(--nv-e3), var(--nv-lip)",
+      },
+      borderRadius: {
+        "nv-sm": "var(--nv-r-sm)",
+        nv: "var(--nv-r)",
+        "nv-lg": "var(--nv-r-lg)",
+        "nv-xl": "var(--nv-r-xl)",
+      },
+      transitionTimingFunction: { nv: "var(--nv-ease)" },
+      transitionDuration: { fast: "120ms", med: "200ms", slow: "320ms" },
       fontFamily: {
         sans: ["Space Grotesk", "Inter", "-apple-system", "BlinkMacSystemFont", "Segoe UI", "sans-serif"],
         // Serif reading font for assistant message prose — like a well-typeset web article. Falls

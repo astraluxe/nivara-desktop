@@ -214,7 +214,10 @@ export default function Sidebar({ activeModule, onModuleChange, meshSessionActiv
 
   return (
     <aside
-      className="flex flex-col shrink-0 bg-nv-bg border-r border-nv-border overflow-hidden"
+      /* A flat step off the content ground, not a fade. The first attempt graduated from surface2
+         down to nearly nothing over the rail's full height, which at 700px tall just reads as
+         uneven lighting rather than as a separate surface. One definite tone separates the two. */
+      className="flex flex-col shrink-0 overflow-hidden border-r border-nv-border bg-nv-surface2/45"
       style={{
         width: W,
         minWidth: W,
@@ -258,15 +261,15 @@ export default function Sidebar({ activeModule, onModuleChange, meshSessionActiv
           title="Home"
           aria-label="Home"
           className={`
-            relative flex items-center rounded-lg transition-fast mb-1 mx-1.5
+            relative flex items-center rounded-nv transition-colors duration-fast ease-nv mb-1 mx-1.5
             ${activeModule === "home"
-              ? "bg-accent/15 text-accent"
-              : "text-nv-muted hover:bg-nv-surface2 hover:text-nv-text"}
+              ? "bg-accent/[0.13] text-accent ring-1 ring-inset ring-accent/25"
+              : "text-nv-faint hover:bg-nv-surface2/70 hover:text-nv-text"}
           `}
           style={{ height: "36px", padding: "0 8px" }}
         >
           {activeModule === "home" && (
-            <span className="absolute left-0 top-2 bottom-2 w-0.5 rounded-full bg-accent" />
+            <span className="absolute left-0 top-2 bottom-2 w-[2px] rounded-full bg-accent shadow-[0_0_8px_rgb(124_92_255_/_0.75)]" />
           )}
           <span style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "100%", position: "relative" }}>
             <span style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 20, height: 20, flexShrink: 0 }}>
@@ -305,16 +308,16 @@ export default function Sidebar({ activeModule, onModuleChange, meshSessionActiv
               title={m.label}
               aria-label={m.label}
               className={`
-                relative flex items-center rounded-lg transition-fast mx-1.5
+                relative flex items-center rounded-nv transition-colors duration-fast ease-nv mx-1.5
                 ${isActive
-                  ? "bg-accent/15 text-accent"
-                  : "text-nv-muted hover:bg-nv-surface2 hover:text-nv-text"
+                  ? "bg-accent/[0.13] text-accent ring-1 ring-inset ring-accent/25"
+                  : "text-nv-faint hover:bg-nv-surface2/70 hover:text-nv-text"
                 }
               `}
               style={{ height: "36px", padding: "0 8px", justifyContent: expanded ? "flex-start" : "center" }}
             >
               {isActive && (
-                <span className="absolute left-0 top-2 bottom-2 w-0.5 rounded-full bg-accent" />
+                <span className="absolute left-0 top-2 bottom-2 w-[2px] rounded-full bg-accent shadow-[0_0_8px_rgb(124_92_255_/_0.75)]" />
               )}
               {/* Icon — always centered when collapsed */}
               <span style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 20, height: 20, flexShrink: 0 }}>
@@ -369,16 +372,16 @@ export default function Sidebar({ activeModule, onModuleChange, meshSessionActiv
               title="Head Dashboard"
               aria-label="Head Dashboard"
               className={`
-                relative flex items-center rounded-lg transition-fast mx-1.5
+                relative flex items-center rounded-nv transition-colors duration-fast ease-nv mx-1.5
                 ${activeModule === 'head'
-                  ? 'bg-accent/15 text-accent'
-                  : 'text-nv-muted hover:bg-nv-surface2 hover:text-nv-text'
+                  ? 'bg-accent/[0.13] text-accent ring-1 ring-inset ring-accent/25'
+                  : 'text-nv-faint hover:bg-nv-surface2/70 hover:text-nv-text'
                 }
               `}
               style={{ height: '36px', padding: '0 8px', justifyContent: expanded ? 'flex-start' : 'center' }}
             >
               {activeModule === 'head' && (
-                <span className="absolute left-0 top-2 bottom-2 w-0.5 rounded-full bg-accent" />
+                <span className="absolute left-0 top-2 bottom-2 w-[2px] rounded-full bg-accent shadow-[0_0_8px_rgb(124_92_255_/_0.75)]" />
               )}
               <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 20, height: 20, flexShrink: 0 }}>
                 <svg viewBox="0 0 20 20" fill="none" style={{ width: 14, height: 14 }}>
@@ -441,7 +444,7 @@ export default function Sidebar({ activeModule, onModuleChange, meshSessionActiv
           onClick={toggle}
           title={paper ? "Switch to Ink (dark)" : "Switch to Paper (light)"}
           aria-label="Toggle theme"
-          className="w-8 h-8 flex items-center justify-center rounded-lg text-nv-muted hover:bg-nv-surface2 hover:text-nv-text transition-fast shrink-0"
+          className="w-8 h-8 flex items-center justify-center rounded-nv text-nv-faint hover:bg-nv-surface2/70 hover:text-nv-text transition-colors duration-fast ease-nv shrink-0"
         >
           {paper ? <InkIcon /> : <PaperIcon />}
         </button>
@@ -451,10 +454,10 @@ export default function Sidebar({ activeModule, onModuleChange, meshSessionActiv
           title="Settings"
           onClick={() => onModuleChange("settings")}
           aria-label="Settings"
-          className={`w-8 h-8 flex items-center justify-center rounded-lg transition-fast shrink-0 ${
+          className={`w-8 h-8 flex items-center justify-center rounded-nv transition-colors duration-fast ease-nv shrink-0 ${
             activeModule === "settings"
-              ? "bg-accent/15 text-accent"
-              : "text-nv-muted hover:bg-nv-surface2 hover:text-nv-text"
+              ? "bg-accent/[0.13] text-accent ring-1 ring-inset ring-accent/25"
+              : "text-nv-faint hover:bg-nv-surface2/70 hover:text-nv-text"
           }`}
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -468,7 +471,7 @@ export default function Sidebar({ activeModule, onModuleChange, meshSessionActiv
           title="Suggest or report"
           onClick={() => setShowFeedback(true)}
           aria-label="Suggest or report"
-          className="w-8 h-8 flex items-center justify-center rounded-lg transition-fast shrink-0 text-nv-muted hover:bg-nv-surface2 hover:text-nv-text"
+          className="w-8 h-8 flex items-center justify-center rounded-nv transition-colors duration-fast ease-nv shrink-0 text-nv-muted hover:bg-nv-surface2 hover:text-nv-text"
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
@@ -479,7 +482,7 @@ export default function Sidebar({ activeModule, onModuleChange, meshSessionActiv
         <button
           title="Account"
           onClick={() => onModuleChange("account")}
-          className={`shrink-0 rounded-full flex items-center justify-center text-accent text-xs font-semibold transition-fast ${
+          className={`shrink-0 rounded-full flex items-center justify-center text-accent text-xs font-semibold transition-colors duration-fast ease-nv ${
             activeModule === "account"
               ? "bg-accent/30 ring-1 ring-accent/60"
               : "bg-accent/20 hover:bg-accent/30"

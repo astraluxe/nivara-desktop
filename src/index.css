@@ -13,11 +13,18 @@
 
 /* ── Ink (dark) theme — default ──────────────────── */
 :root {
-  --nv-bg-rgb:       10 10 10;
-  --nv-surface-rgb:  20 20 20;
-  --nv-surface2-rgb: 30 30 30;
-  --nv-border-rgb:   42 42 42;
-  --nv-text-rgb:     242 242 242;
+  /* ── Why these are not pure grey ───────────────────────────────────────────
+     They used to be 10/10/10, 20/20/20, 30/30/30 — perfectly neutral, and that is exactly what
+     made the app read as a default rather than a design. Every considered dark interface carries a
+     slight temperature; here it is a barely-there violet, borrowed from the accent (#7C5CFF), so
+     the greys look related to the brand instead of merely absent of colour. The shift is 2-4
+     points per channel: not visible as "blue", only as "deliberate". Contrast is unchanged —
+     --nv-text on --nv-bg is still ~18:1. */
+  --nv-bg-rgb:       9 9 13;
+  --nv-surface-rgb:  18 18 24;
+  --nv-surface2-rgb: 26 26 34;
+  --nv-border-rgb:   44 44 56;
+  --nv-text-rgb:     242 242 248;
   /* Body copy. Lifted slightly so long passages stay comfortable on the near-black background. */
   --nv-muted-rgb:    176 176 186;
   /* Tertiary text. The old #6b6b6b measured 3.7:1 against --nv-bg — below the 4.5:1 needed for
@@ -74,10 +81,12 @@
 
 /* ── Paper (light) theme ─────────────────────────── */
 :root.paper {
-  --nv-bg-rgb:       255 255 255;
-  --nv-surface-rgb:  244 244 245;
-  --nv-surface2-rgb: 228 228 231;
-  --nv-border-rgb:   212 212 216;
+  /* Same reasoning as the dark theme: a hair of violet so white reads as paper rather than as
+     nothing, and so the two themes feel like one product. */
+  --nv-bg-rgb:       253 253 255;
+  --nv-surface-rgb:  245 245 249;
+  --nv-surface2-rgb: 234 234 240;
+  --nv-border-rgb:   216 216 226;
   --nv-text-rgb:     9 9 11;
   --nv-muted-rgb:    63 63 70;
   /* faint darkened from #a1a1aa → #6b6b74: the old value was ~2.3:1 on white (unreadable);
@@ -123,6 +132,104 @@
   --nv-bad:      rgb(var(--nv-bad-rgb));
   --nv-info:     rgb(var(--nv-info-rgb));
 }
+
+/* ═══ Elevation, radius and motion ══════════════════════════════════════════
+   The app had none of these. Every panel was a flat fill with a 1px border and
+   nothing else, every corner was whatever radius that component's author typed,
+   and the only transition in the whole product was `all 0.12s ease`. That is the
+   single biggest reason the interface read as older than it is: depth, rhythm and
+   movement are what separate a designed surface from a coloured rectangle.
+
+   These are ADDITIVE. Nothing is renamed and nothing existing is redefined, so
+   every current component keeps rendering exactly as it did; they are here to be
+   adopted, not to change anything on their own. */
+:root {
+  /* Depth. Three steps, and no more — a system with eight elevations is one nobody
+     can use consistently. Each is a tight contact shadow plus a soft ambient one,
+     which is what makes a card look placed on a surface rather than pasted onto it. */
+  --nv-e1: 0 1px 2px rgb(0 0 0 / .28), 0 1px 3px -1px rgb(0 0 0 / .22);
+  --nv-e2: 0 2px 4px rgb(0 0 0 / .3), 0 8px 20px -8px rgb(0 0 0 / .45);
+  --nv-e3: 0 4px 8px rgb(0 0 0 / .34), 0 20px 44px -16px rgb(0 0 0 / .6);
+
+  /* The hairline of light along a raised edge. One line, and the thing that most
+     makes a panel look lit rather than filled. */
+  --nv-lip: inset 0 1px 0 rgb(255 255 255 / .05);
+
+  /* Radius. Small controls stay tight; big surfaces get generous corners. Mixing
+     4px and 16px at random is what makes an interface feel assembled by committee. */
+  --nv-r-sm: 6px;
+  --nv-r:    10px;
+  --nv-r-lg: 14px;
+  --nv-r-xl: 20px;
+
+  /* Motion. One curve, three speeds. The curve matters more than the durations:
+     ease-out-ish deceleration is what reads as responsive, while plain `ease`
+     (the old default) starts slowly and feels heavy. */
+  --nv-ease: cubic-bezier(.22, .61, .36, 1);
+  --nv-fast: 120ms;
+  --nv-med:  200ms;
+  --nv-slow: 320ms;
+}
+
+:root.paper {
+  /* Light needs far less shadow — on white, a heavy shadow reads as dirt. Most of
+     the depth comes from the border instead. */
+  --nv-e1: 0 1px 2px rgb(16 14 24 / .06), 0 1px 3px -1px rgb(16 14 24 / .05);
+  --nv-e2: 0 2px 4px rgb(16 14 24 / .06), 0 8px 20px -8px rgb(16 14 24 / .12);
+  --nv-e3: 0 4px 8px rgb(16 14 24 / .08), 0 20px 44px -16px rgb(16 14 24 / .18);
+  --nv-lip: inset 0 1px 0 rgb(255 255 255 / .7);
+}
+
+/* ── Surfaces, as classes ──────────────────────────────────────────────────
+   So a panel is one class instead of four hand-written utilities repeated in
+   sixty places, each slightly different from the last. */
+.nv-card {
+  background: var(--nv-surface);
+  border: 1px solid var(--nv-border);
+  border-radius: var(--nv-r-lg);
+  box-shadow: var(--nv-e1), var(--nv-lip);
+}
+.nv-card-raised {
+  background: var(--nv-surface);
+  border: 1px solid var(--nv-border);
+  border-radius: var(--nv-r-lg);
+  box-shadow: var(--nv-e2), var(--nv-lip);
+}
+.nv-sheet {                       /* modals and popovers — the things that float */
+  background: var(--nv-surface);
+  border: 1px solid var(--nv-border);
+  border-radius: var(--nv-r-xl);
+  box-shadow: var(--nv-e3), var(--nv-lip);
+}
+
+/* ── Motion, as classes ────────────────────────────────────────────────────
+   Every one of these respects prefers-reduced-motion at the bottom of this file. */
+@keyframes nv-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes nv-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes nv-pop {
+  0%   { opacity: 0; transform: scale(.97); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.nv-rise { animation: nv-rise var(--nv-med) var(--nv-ease) both; }
+.nv-fade { animation: nv-fade var(--nv-med) var(--nv-ease) both; }
+.nv-pop  { animation: nv-pop  var(--nv-fast) var(--nv-ease) both; }
+
+/* A row that lifts under the cursor. Deliberately restrained: 1px, not 4 — the
+   point is to confirm the thing is interactive, not to launch it. */
+.nv-lift {
+  transition: transform var(--nv-fast) var(--nv-ease),
+              box-shadow var(--nv-fast) var(--nv-ease),
+              background-color var(--nv-fast) var(--nv-ease),
+              border-color var(--nv-fast) var(--nv-ease);
+}
+.nv-lift:hover { transform: translateY(-1px); box-shadow: var(--nv-e2), var(--nv-lip); }
+.nv-lift:active { transform: translateY(0); box-shadow: var(--nv-e1), var(--nv-lip); }
 
 *, *::before, *::after {
   box-sizing: border-box;
@@ -207,18 +314,64 @@ p, li, td, th, pre, code, blockquote, h1, h2, h3, h4, h5, h6, .font-serif, .font
   app-region: no-drag;
 }
 
-::-webkit-scrollbar { width: 3px; height: 3px; }
+/* Scrollbars. 3px was thin enough to be genuinely hard to grab — a 24px minimum target is the
+   rule everywhere else in this app and the scrollbar was the one place breaking it. 8px of track
+   with a 4px thumb inside it gives a real target while still reading as a hairline, and the thumb
+   only reaches full contrast on hover so it stays quiet when you are not using it. */
+::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 2px; }
-::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-h); }
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+  border-radius: 999px;
+  border: 2px solid transparent;      /* inset via the padding-box trick, so the thumb is 4px wide */
+  background-clip: padding-box;
+  transition: background-color var(--nv-med) var(--nv-ease);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-h); background-clip: padding-box; }
+::-webkit-scrollbar-corner { background: transparent; }
 
+/* A ring, not an outline. The 1px hairline could vanish against the accent-tinted surfaces it most
+   often landed on; a 2px ring plus a soft halo is visible on every background in both themes. */
 :focus-visible {
-  outline: 1px solid #7C5CFF;
+  outline: 2px solid rgb(124 92 255 / .85);
   outline-offset: 2px;
-  border-radius: 2px;
+  border-radius: var(--nv-r-sm);
+  box-shadow: 0 0 0 4px rgb(124 92 255 / .16);
 }
 
-.transition-fast { transition: all 0.12s ease; }
+/* Selected text carried the browser default blue, which was the one un-branded colour in the app. */
+::selection { background: rgb(124 92 255 / .3); color: var(--nv-text); }
+
+/* Respect the system setting. Everything above degrades to an instant state change rather than
+   disappearing, so nothing becomes unreachable — a page that only appears via an animation is
+   invisible to anyone who has turned animation off. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Used on several hundred elements, so it is the cheapest motion change available: the properties
+   are unchanged, only the curve. Plain `ease` accelerates slowly out of rest, which is what made
+   hovers across the app feel a beat behind the cursor. */
+.transition-fast { transition: all var(--nv-fast) var(--nv-ease); }
+
+/* ── Form fields ───────────────────────────────────────────────────────────
+   Most inputs in the app set `outline-none` and colour their own border on focus, which is a
+   border, not a focus ring — thin, and easy to miss against a tinted surface. `.nv-field` adds the
+   halo without removing anything an element already declares. */
+.nv-field {
+  transition: border-color var(--nv-fast) var(--nv-ease),
+              box-shadow   var(--nv-fast) var(--nv-ease),
+              background-color var(--nv-fast) var(--nv-ease);
+}
+.nv-field:focus, .nv-field:focus-within {
+  border-color: rgb(124 92 255 / .55);
+  box-shadow: 0 0 0 3px rgb(124 92 255 / .13);
+}
 
 /* ── Office mesh view animations ── */
 @keyframes ov-drawIn { from { stroke-dashoffset: var(--ov-len); } to { stroke-dashoffset: 0; } }

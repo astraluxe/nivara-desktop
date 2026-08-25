@@ -1,6 +1,7 @@
 ﻿import { useState, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { resolveAiSource } from '../lib/aiSource';
+import Caret from '../components/ui/Caret';
 import { listen } from '@tauri-apps/api/event';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
@@ -3090,7 +3091,7 @@ Rules:
                 <button
                   onClick={() => setShowContext(v => !v)}
                   className="text-[9px] text-accent/60 hover:text-accent font-mono transition-fast shrink-0"
-                >{showContext ? '▲' : '▼'}</button>
+                ><Caret open={showContext} /></button>
                 <button
                   onClick={() => { setContextFile(null); setShowContext(false); }}
                   className="w-5 h-5 flex items-center justify-center text-base text-nv-muted hover:text-nv-text leading-none shrink-0 rounded hover:bg-nv-border/50 transition-fast"

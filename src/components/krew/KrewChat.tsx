@@ -28,6 +28,7 @@ import { type AutomationProposal } from './AutomationProposalModal';
 import AgentStatus from './AgentStatus';
 import { type ConnectionMode, type Provider } from '../../lib/ai';
 import { isDeadModelError, isSilenceError, isUserChosen, probeTimedOut, repairDeadModel, blockModel, scanModelsIfStale, measuredMsFor } from '../../lib/modelHealth';
+import Caret from '../ui/Caret';
 import { noteActiveModel, bulkPlan } from '../../lib/contextBudget';
 import { normaliseScore, scoreValue, decisionBias, recordDecision, decisionStyleNote, workingFileNote, setWorkingFile, extractChoices, EFFORT_LABEL, IMPACT_LABEL, type ChoiceSet } from '../../lib/agentBrain';
 import { slugLooksLikeName, hasWrittenMessage } from '../../lib/outreachConnections';
@@ -661,8 +662,8 @@ function ToolCallBubble({ name, args }: { name: string; args: string }) {
         <svg width="10" height="10" viewBox="0 0 16 16" fill="none"><path d="M2 8h12M9 3l5 5-5 5" stroke="#7C5CFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
       </div>
       <div className="flex-1">
-        <button onClick={() => setOpen((o) => !o)} className="text-[11px] text-accent font-mono hover:underline">
-          {name}() {open ? '▲' : '▼'}
+        <button onClick={() => setOpen((o) => !o)} className="inline-flex items-center gap-1.5 text-[11px] text-accent font-mono hover:text-nv-text transition-colors duration-fast ease-nv">
+          {name}() <Caret open={open} />
         </button>
         {inlineLabel && !open && (
           <p className="text-[10px] text-nv-muted mt-0.5 font-mono">{inlineLabel}</p>
@@ -688,9 +689,9 @@ function ToolResultBubble({ name, content }: { name: string; content: string }) 
   const preview = content.slice(0, 120).replace(/\n/g, ' ');
   if (isTable) {
     return (
-      <div className="my-1.5 ml-2 rounded-xl border border-nv-border bg-nv-bg overflow-hidden">
-        <button onClick={() => setOpen((o) => !o)} className="w-full text-left px-3 py-1.5 text-[10px] text-nv-faint font-mono hover:text-nv-muted">
-          {name} · {tableLines.length - 1} rows {open ? '▲' : '▼'}
+      <div className="my-2 ml-2 rounded-nv-lg border border-nv-border bg-nv-bg shadow-e1 overflow-hidden">
+        <button onClick={() => setOpen((o) => !o)} className="w-full flex items-center gap-1.5 px-3 py-2 text-[10px] text-nv-faint font-mono hover:text-nv-text hover:bg-nv-surface2/50 transition-colors duration-fast ease-nv">
+          {name} · {tableLines.length - 1} rows <Caret open={open} />
         </button>
         {open && (
           <div className="max-h-72 overflow-auto border-t border-nv-border">
@@ -724,7 +725,7 @@ function ToolResultBubble({ name, content }: { name: string; content: string }) 
       </div>
       <div className="flex-1">
         <button onClick={() => setOpen((o) => !o)} className="text-[10px] text-nv-faint font-mono hover:text-nv-muted">
-          {name} result {open ? '▲' : '▼'}
+          {name} result <Caret open={open} />
         </button>
         {!open && <p className="text-[10px] text-nv-faint truncate">{preview}</p>}
         {open && (
@@ -1465,7 +1466,7 @@ function ProposalCard({ proposal, agentName, userId, onAccept, onDecline, onView
                   </p>
                 </div>
               </div>
-              <span className="text-[10px] text-nv-faint font-mono shrink-0 ml-2">{showCtxInput ? '▲' : '▼'}</span>
+              <Caret open={showCtxInput} className="text-nv-faint shrink-0 ml-2" />
             </button>
             {showCtxInput && (
               <textarea
@@ -3786,8 +3787,9 @@ function MessageRow({ msg, agent }: { msg: DisplayMsg; agent: KrewAgent }) {
     const bodyText = textLines.join('\n').trim();
     return (
       <div className="flex flex-col items-end my-2">
-        <div className="max-w-[80%] bg-accent/15 border border-accent/30 rounded-2xl rounded-tr-sm px-3 py-2">
-          {bodyText && <p className="text-[12px] text-nv-text whitespace-pre-wrap select-text" style={{ userSelect: 'text' }}>{bodyText}</p>}
+        <div className="max-w-[80%] bg-accent/[0.13] border border-accent/25 shadow-e1
+                        rounded-nv-xl rounded-tr-nv-sm px-3.5 py-2.5">
+          {bodyText && <p className="text-[13px] leading-[1.6] text-nv-text whitespace-pre-wrap select-text" style={{ userSelect: 'text' }}>{bodyText}</p>}
           {fileChips.length > 0 && (
             <div className={`flex flex-wrap gap-1.5 ${bodyText ? 'mt-1.5' : ''}`}>
               {fileChips.map((f, i) => (
@@ -3815,11 +3817,15 @@ function MessageRow({ msg, agent }: { msg: DisplayMsg; agent: KrewAgent }) {
   return (
     <div className="my-3">
       <div className="flex items-center gap-2 mb-1.5">
-        <div className="w-6 h-6 rounded-md flex items-center justify-center text-[9px] font-bold shrink-0"
-             style={{ background: deptTint(agent.category, 0.18), color: deptColor(agent.category) }}>
+        <div className="w-6 h-6 rounded-nv-sm flex items-center justify-center text-[9px] font-bold shrink-0"
+             style={{
+               background: deptTint(agent.category, 0.16),
+               color: deptColor(agent.category),
+               boxShadow: `inset 0 0 0 1px ${deptTint(agent.category, 0.35)}`,
+             }}>
           {agentInitials(agent)}
         </div>
-        <span className="text-[11px] font-semibold text-nv-text">{agentHandle(agent)}</span>
+        <span className="text-[11.5px] font-semibold tracking-[-0.01em] text-nv-text">{agentHandle(agent)}</span>
       </div>
       <div className="ml-8">
         <AssistantBubble content={msg.content} streaming={msg.streaming} />
@@ -15332,8 +15338,11 @@ ${msg.content}`),
               }}
               placeholder={`Ask ${agent.humanName} anything…   type / for commands`}
               rows={inputExpanded ? 14 : 2}
-              className="flex-1 bg-nv-bg border border-nv-border rounded-lg px-2.5 py-1.5
-                text-[12px] text-nv-text outline-none focus:border-accent transition-fast
+              /* The composer is the most-used control in the product and was the smallest text on
+                 the screen at 12px — under the app's own 13px body size. It now matches, gains
+                 breathing room, and shows a real focus halo rather than a 1px border change. */
+              className="nv-field flex-1 bg-nv-bg border border-nv-border rounded-nv px-3 py-2
+                text-[13px] leading-[1.55] text-nv-text outline-none
                 resize-none placeholder:text-nv-faint"
             />
             {/* Expand / collapse the message box — handy for reading a long or refined prompt */}

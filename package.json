@@ -13,6 +13,7 @@
     "harness:build": "vite build --config vite.harness.config.ts --outDir dist-harness",
     "test:ui": "node harness/run-tests.mjs",
     "test:webmail": "node harness/fake-webmail.mjs",
+    "visual": "vite build --config vite.visual.config.ts --outDir dist-visual && node harness/shoot.mjs",
     "tauri": "tauri",
     "bundle-exo": "node scripts/bundle-exo.js",
     "tauri:build": "npm run bundle-exo && tauri build"
