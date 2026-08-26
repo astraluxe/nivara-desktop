@@ -17,41 +17,47 @@ cost real time.
 
 **Version in the tree: 1.61.0** — builds clean, not yet produced as an `.exe`. Last released: 1.59.0.
 
-1.60.0 carries the fix for the boss denying `create_office_document`, plus the two guards that
-stop it happening again. **If you build nothing else, build this one** — 1.59.0 has the Office
-feature but the boss cannot reach it.
+**1.60.0 and 1.61.0 both matter.** 1.59.0 shipped the Office feature with the boss unable to reach
+it (see below), and 1.61.0 is the first build where Office work happens *where the user can see it*.
 
 | # | Item | State | Evidence |
 |---|---|---|---|
-| — | UI pass | ✅ **released** in 1.58.0 | screenshotted in both themes |
-| — | Outreach copilot counts | ✅ **released** in 1.58.0 | 11 assertions on the real numbers |
-| 1 | Scan what's installed | ✅ **done** | 182 shortcuts → 45 apps on a real machine; 48 assertions |
-| 2 | Drive Word / Excel / PowerPoint | ✅ **done** | real files made **and read back**; a real `.dotx` template's branding verified in the output; 36 + 13 assertions |
-| 4 | Claude Code / Codex bridge | 🟡 **half** | works against the real CLI — background jobs use the subscription; **Krew chat does not yet**; Codex untested |
-| 3 | Agent cursor | ❌ **not started** | specified in detail below, including the ask-the-user window |
-| 5 | Several agents at once | ❌ **not started** | specified in detail below |
+| — | UI pass | ✅ released 1.58.0 | screenshotted in both themes |
+| — | Outreach copilot counts | ✅ released 1.58.0 | 11 assertions on the real numbers |
+| 1 | Scan what's installed | ✅ **done** | 182 shortcuts → 45 apps on this machine; 48 + 13 assertions |
+| 2 | Drive Word / Excel / PowerPoint | ✅ **done, and visible** | all three open, write, save and stay on screen; template branding verified; 36 + 13 assertions |
+| — | Copilot: daily limit + attachments | ✅ **done** | limit is the user's to set; a dropped attachment now refuses |
+| 4 | Claude Code / Codex bridge | 🟡 **half** | real CLI works; background jobs use the subscription, **Krew chat does not yet**; Codex untested |
+| 7 | Coder | 🟡 **part** | folder can be changed/closed, real icons; **VS Code parity and the Krew→Coder plan handoff not started** |
+| 3 | Agent cursor | ❌ **not started** | fully specified below, including the ask-the-user window |
+| 5 | Several agents at once | ❌ **not started** | fully specified below |
 | 6 | Mid-task instructions | ❌ **not started** | — |
+| 8 | Browser fails for non-technical users | ❌ **not started** | diagnosed below — it is a silent download failure, not a missing feature |
 
 ### The lesson that cost a release
 
-1.59.0 shipped a working Office feature that the user could not use. `create_office_document` was
-built, tested against real Word, and verified producing branded documents — and when the user asked
-for a Word proposal the boss replied **"I cannot create or save files directly to your computer."**
+1.59.0 shipped a working Office feature the user could not use. `create_office_document` was built,
+tested against real Word, and verified producing branded documents — and when the user asked for a
+Word proposal the boss replied **"I cannot create or save files directly to your computer."**
 
 The tool was never added to the boss's system-tool allowlist, which lived as an inline literal 4,800
 lines into `KrewChat.tsx`. Nothing was broken; the agent was describing the tools it could see.
-**Every test I had written passed.** None of them exercised `executeTool(name, args)` → a file on
-disk — the only path a user ever takes.
+**Every test written for it passed.** None exercised `executeTool(name, args)` → a file on disk —
+the only path a user ever takes.
 
-Two things now prevent a repeat, and both are wired into `npm run build` / the test suite:
-`scripts/check-boss-tools.mjs` (asserts every boss tool name is real, that the capabilities people
-ask the boss for directly are present, and that the shared list has not drifted back to a literal)
-and `harness/officeDispatch.mjs` (drives the real tool to a real document).
+Two things now prevent a repeat, both wired into `npm run build` / the suite:
+`scripts/check-boss-tools.mjs` (every boss tool name is real — a typo filters to nothing, silently;
+the capabilities people ask the boss for directly are present; the shared list has not drifted back
+to a literal) and `harness/officeDispatch.mjs` (drives the real tool to a real document).
 
-**The rule this produces: a feature is not done when the module works. It is done when the thing
-the user types produces the thing they asked for.**
+**The rule this produces, and it governs everything below: a feature is not done when the module
+works. It is done when the thing the user types produces the thing they asked for.**
 
----
+### A second rule, from the same week
+
+**The user decides limits about their own things.** The outreach daily cap was a number adris picked,
+presented as a rule. It is their mailbox, their domain, their list. adris owes them the *reason* for
+a safe default — not the ceiling.
 
 ## The decision this roadmap rests on
 
@@ -95,10 +101,10 @@ server needs an explicit decision from the owner, not a default.**
 
 ---
 
-## Now — the UI
+## The UI pass ✅ RELEASED in 1.58.0
 
-The exe works and looks about ten years older than it is. This is a **visual pass only**: tokens,
-spacing, typography, motion, chrome. Reference point is Supabase's site — dense, confident, dark,
+The exe worked and looked about ten years older than it was. This was a **visual pass only**: tokens,
+spacing, typography, motion, chrome. Kept here because the rules below govern any future pass. Reference point is Supabase's site — dense, confident, dark,
 with real hierarchy — in the existing adris colours.
 
 ### Rules for the pass, so nothing breaks
@@ -165,7 +171,7 @@ comes from Tailwind's content scanner reading the regex character class `[-:\s]`
 
 ## After the UI, in order
 
-### 1. Scan what's installed on the PC ✅ code complete, 🟡 not yet run in a real build
+### 1. Scan what's installed on the PC ✅ DONE
 
 `src/lib/installedApps.ts` + `scan_installed_apps` in lib.rs + the `list_installed_apps` agent tool.
 
@@ -206,11 +212,11 @@ classified as development rather than deleted.
 real scan rather than the scan itself — a list of someone's installed software is their business,
 not the repository's.
 
-**Still to verify in a real build:** the Rust command has only been `cargo check`ed. The PowerShell
-it runs was executed directly and produces correct output, but the two have not yet been exercised
-together through `invoke`.
+**Verified through the agent tool, not just the module.** `harness/officeDispatch.mjs` calls
+`executeTool('list_installed_apps', ...)` with `invoke` stubbed to really spawn PowerShell, so every
+layer above Rust is the shipped code. It reports Word and states that Office can be driven.
 
-### 2. Drive Word, Excel and PowerPoint ✅ built and proven on a real machine, 🟡 not in a build yet
+### 2. Drive Word, Excel and PowerPoint ✅ DONE — and the work is VISIBLE
 
 `src/lib/officeCom.ts` + `office_automation` in lib.rs + the `create_office_document` agent tool.
 
@@ -225,6 +231,38 @@ together through `invoke`.
 | Leftover processes | **0** |
 
 Timings on this machine: Word ~7s, Excel ~4s, PowerPoint ~3s.
+
+#### It happens where the user can see it (v1.61.0)
+
+The first version was headless: `$app.Visible = $false`, the file appeared, and nobody saw it happen.
+For someone who has never trusted software to do their work, watching a document being written is
+the entire difference between "the computer produced a file somewhere" and "I saw it happen".
+
+**Visible is not a flag flip. Three things change together, or the feature deletes its own output:**
+
+| Headless | Visible |
+|---|---|
+| `Visible = $false` | shown **and** brought to front with `Activate()` |
+| `Quit()` after saving | **left open** — the document is handed over |
+| sweeps and kills any Office process it started | **must not sweep** — it would kill the window the user was asked to look at |
+
+Headless keeps all three, so anything running unattended still cannot leak processes. Either way
+nothing is stopped by name: `taskkill /IM WINWORD.EXE` would close the file the user has open and
+unsaved in another window.
+
+**Verified live:** all three opened, wrote, saved, and were still on screen afterwards with real
+window titles (`visible - Word`, `visible - Excel`, `visible - PowerPoint`), 0 processes leaked.
+
+#### Design, because a document nobody would send is not done either
+
+All read back out of the saved files:
+
+- **Word** types block by block with a beat between, so it reads as writing rather than a paste.
+- **Excel** gets a real header — accent fill, white text, 20px row — plus **frozen panes** and
+  **autofilter**. On a 200-row lead list that is the difference between a dump and something a
+  person can work in. Cells are still written as text, so `00123` keeps its zeros.
+- **PowerPoint** is **16:9** (720x405). The default on many installs is still 4:3, which looks a
+  decade old on any screen or projector made this century.
 
 #### Four things the real run found that reasoning did not
 
@@ -315,7 +353,7 @@ Whatever the cursor is doing must also be legible in the chat — **while** the 
 when it finishes. This is the existing `src/lib/agentActivity.ts` rule (never a bare "thinking…";
 name the sheet, the filter, the query, with a live clock) extended to cursor work.
 
-### 4. Claude Code / Codex bridge ✅ working against the real CLI, 🟡 partial coverage
+### 4. Claude Code / Codex bridge 🟡 HALF DONE — background work yes, Krew chat not yet
 
 `src/lib/agentCli.ts` + `agent_cli_detect` / `agent_cli_run` in lib.rs + the `agent_cli` mode in
 `aiSource.ts` + the switch in the title bar.
@@ -399,6 +437,13 @@ re-asking, and the chat should say where it went and offer to open it.
 `save_to_brain` / `recall_from_brain` already move facts between agents. What is missing is passing a
 *deliverable* — a table, a draft, a list — with an intended destination attached.
 
+### 6. Mid-task instructions — small, high value
+Today a running task can't be added to; the user waits for it to finish, then asks again. It should
+absorb a new instruction *while running* — the way a person would when you lean over and add
+something. Very often what the user remembers is an addition, not a correction.
+
+---
+
 ### 7. Coder — make it a real editor, and connect it to Krew — PARTLY STARTED
 
 **Done (v1.60.0):**
@@ -423,12 +468,32 @@ re-asking, and the chat should say where it went and offer to open it.
   **It must never switch modules on its own.** Being thrown into an editor mid-conversation is
   exactly the "do not shift the user off what they are working on" rule, applied to adris itself.
 
-### 6. Mid-task instructions — small, high value
-Today a running task can't be added to; the user waits for it to finish, then asks again. It should
-absorb a new instruction *while running* — the way a person would when you lean over and add
-something. Very often what the user remembers is an addition, not a correction.
+### 8. The browser does not open for non-technical users — NOT STARTED
 
----
+Reported by the owner: for some users the agent browser simply never appears, and the reason given
+at the time was that "node or something wasn't downloaded". For a developer that is a five-minute
+fix. For the people this product is for it is the end of the feature.
+
+**Diagnosed, not guessed:** Node **is** provisioned automatically — `provision_node()` in lib.rs
+downloads a pinned Node 20.18.1 from `nodejs.org` into app-data and unpacks it, and `playwright-core`
+is fetched separately. So nothing is missing from the design. **A download is failing silently.**
+
+That is almost certainly the same problem already documented under *Updates & downloads*: on a real
+Indian ISP, `objects.githubusercontent.com` and `release-assets.githubusercontent.com` accept a TCP
+connection on 443 and then never complete the TLS handshake. `nodejs.org` and the npm registry are
+different hosts and have not been measured — but the shape of the failure is identical, and the fix
+that already worked for releases is the fix here.
+
+**What to do, in order:**
+1. **Mirror Node and playwright-core through `www.adris.tech/dl/`**, exactly as installers already
+   are. The manifest trick is proven; this is the same edge proxy with two more files behind it.
+2. **Make the failure visible and actionable.** Today it reads as "the browser didn't open". It
+   should say which step failed, how far it got, and offer a retry — a silent failure is what turned
+   a slow download into a broken product.
+3. **Pre-warm on first run**, so the download happens while the user is still setting up rather than
+   at the moment they first ask for something.
+4. Consider **bundling** Node in the installer. It costs ~30 MB and removes the failure entirely.
+   That is a size decision for the owner, not a technical one.
 
 ## Cutting a release — what the script does and does not do
 
@@ -466,6 +531,33 @@ Use `www` — the apex 307-redirects and drops the CORS header, which kills the 
 ---
 
 ## Fixed in passing
+
+### The outreach daily limit, and a file that could vanish ✅ (v1.61.0)
+
+Two separate things, both raised by the owner, both about honesty rather than mechanics.
+
+**The daily limit was not adris's to set.** `SEND_DEFAULTS` capped sending at 40 emails and 20
+LinkedIn messages a day and the interface presented that as a rule. It is the user's mailbox, their
+domain, their LinkedIn account and their list — a five-year-old domain mailing warm contacts can
+comfortably do far more than 40, and a brand-new one should probably do less. **adris does not know
+which they have.** What adris owes them is the reason for a safe starting point, not the ceiling.
+
+`loadDailyCaps()` / `saveDailyCaps()` now hold the user's own numbers, edited **inline where the
+count is shown** — the moment someone asks "why has it only queued 40?" is the moment it should be
+changeable, not three screens away and not a support question about a restriction adris invented.
+The only hard edges: `0` and nonsense fall back to the safe **default** rather than to 1 (someone who
+fat-fingers a zero should get a sane limit back, not a limit of one), and an absurd number is clamped
+to 2000, keeping the intent.
+
+**An attached file could be delivered as nothing at all.** Attachments ride the SMTP path correctly —
+`buildSendQueue` puts the campaign-wide file on every candidate, a contact's own file beats it, and
+`smtp_send_email` carries `attachmentPath`. But the **browser compose fallback** (used when SMTP is
+not set up) carries only to/subject/body. Sending through it with an attachment set would deliver a
+message whose entire point — *"here is the brochure"* — was missing, **and report it as sent**. The
+contact then receives a mail referring to a document that is not there and the user never finds out.
+
+It now refuses, and says the one thing they can act on: attachments need their own mailbox (SMTP).
+LinkedIn correctly never carries one, because it cannot.
 
 ### The outreach copilot's counts ✅
 
