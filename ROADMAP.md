@@ -37,7 +37,7 @@ it (see below), and 1.61.0 is the first build where Office work happens *where t
 | — | Node download survives a filtered network | ✅ **done** | mirrored through adris.tech, every attempt named on failure |
 | — | Truly concurrent delegation | 🟡 **needs a UI change** | the bubbles stream into "the last message"; two at once would interleave |
 | 3c | Clicking in software with no API | ❌ **not built** | input synthesis refused by a safety check — UI Automation is the right design |
-| 8 | Browser fails for non-technical users | ❌ **not started** | diagnosed: a silent download failure, not a missing feature |
+| 8 | Browser for non-technical users | 🟡 **mirrored** | fallback + timeout + honest error done; **one zip to upload to adris.tech/dl** |
 | 9 | Antivirus flags the installer | ❌ **needs a certificate** | parked at the owner's request; one free mitigation applied |
 
 ### The lesson that cost a release
