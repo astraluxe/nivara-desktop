@@ -38,7 +38,7 @@ try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 860 }, deviceScaleFactor: 2 });
     const file = name === 'cursor' ? '/visual-cursor.html' : '/visual.html';
     await page.goto('http://127.0.0.1:5198' + file + q, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(900);
     const dest = path.join(out, `visual-${name}.png`);
     await page.screenshot({ path: dest });
     console.log('wrote ' + dest);

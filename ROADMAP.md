@@ -15,7 +15,7 @@ cost real time.
 
 ## Where this is right now
 
-**Version in the tree: 1.65.0** — builds clean, not yet produced as an `.exe`. Last released: 1.59.0.
+**Version in the tree: 1.66.0** — builds clean, not yet produced as an `.exe`. Last released: 1.65.0.
 
 **1.60.0 and 1.61.0 both matter.** 1.59.0 shipped the Office feature with the boss unable to reach
 it (see below), and 1.61.0 is the first build where Office work happens *where the user can see it*.
@@ -81,6 +81,31 @@ plan.md stays as a full record. The reasoning:
 
 adris OS was the right idea for a user who has nothing. These users have Windows and Office
 already — meet them there.
+
+---
+
+## One choice, in the title bar ✅ (1.66.0)
+
+**adris.tech is pay-per-use.** Claude Code and Codex plug in through the user's own subscription,
+their own key plugs in through Connect Apps, and a local model needs neither. All four are the same
+decision — *where does the AI run* — and it was being made in four different places: a picker in
+Guard, another in Settings, one in the Krew connection bar, and the bridge toggle.
+
+Four controls, one setting (`nv-ai-source`). Someone who chose "my own key" in one of them could
+still be spending adris.tech credit somewhere else, and there was **nowhere to look to find out
+which was true**.
+
+`AiSourceMenu` in the title bar is now the only control. It lists what this machine can actually
+offer, each with **what it costs in the user's terms** — *included in your subscription*, *pay per
+use*, *billed by OpenAI*, *free* — because that is the thing they actually want to know. A
+subscription or a local model shows in the accent colour, since it is the state they should be
+pleased to see.
+
+`AiSourcePicker` still renders wherever it did, but as a **statement rather than a second switch**:
+it says what is in force and points at the title bar. The "which key" chooser is gone — the menu
+lists every connected key as its own entry, so a second chooser was the same competing-control
+problem in miniature. The "which local model" chooser stays, because nothing else offers it and it
+refines a choice already made rather than making it again.
 
 ---
 

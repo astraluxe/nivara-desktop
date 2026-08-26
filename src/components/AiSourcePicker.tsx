@@ -1,11 +1,20 @@
 import { useState, useEffect } from 'react';
 import {
   getAiSource, setAiSource, getAiAvailability,
-  type AiSourceMode, type ByokProvider, type AiAvailability,
+  type AiSourceMode, type AiAvailability,
 } from '../lib/aiSource';
 
-// One control, used anywhere a module runs AI in the background (Guard, Automations, Studio…).
-// Krew keeps its own connection bar for the chat itself; this governs everything else.
+// ─── DEPRECATED as a control; kept as a read-only indicator ──────────────────
+//
+// The same decision — where the AI runs — used to be made here, in Guard, in Settings and in Krew's
+// own connection bar. Four controls, one setting. Someone who chose "my own key" in one of them
+// could still be spending adris.tech credit somewhere else, and there was nowhere to look to find
+// out which was true.
+//
+// There is now ONE control, in the title bar (AiSourceMenu), because a setting that governs every
+// module belongs in the chrome every module shares. This component still renders — it says what is
+// currently in force and points at where to change it — so the modules that showed a picker still
+// show the answer, they just no longer offer a second, competing way to set it.
 
 const OPTIONS: { id: AiSourceMode; label: string; blurb: string }[] = [
   { id: 'auto',    label: 'Automatic',    blurb: 'Use your own key if one is connected, otherwise adris.tech, otherwise a local model.' },
@@ -15,30 +24,13 @@ const OPTIONS: { id: AiSourceMode; label: string; blurb: string }[] = [
 ];
 
 export default function AiSourcePicker({ compact = false }: { compact?: boolean }) {
-  const [pref, setPref]   = useState(getAiSource);
+  const [pref, setPref] = useState(getAiSource);
   const [avail, setAvail] = useState<AiAvailability | null>(null);
 
   useEffect(() => { getAiAvailability().then(setAvail).catch(() => {}); }, []);
 
-  function choose(mode: AiSourceMode) {
-    const next = { ...pref, mode };
-    // Default to the first thing that is actually available so the choice works immediately.
-    if (mode === 'own_key' && !next.provider) next.provider = avail?.byokProviders[0];
-    if (mode === 'local'   && !next.localModel) next.localModel = avail?.localModels[0]?.filename;
-    setPref(next);
-    setAiSource(next);
-  }
-
-  const canUse = (id: AiSourceMode) =>
-    id === 'auto' ? true
-    : id === 'own_key' ? (avail?.byokProviders.length ?? 0) > 0
-    : id === 'local' ? (avail?.localModels.length ?? 0) > 0
-    : (avail?.signedIn ?? true);
-
-  const why = (id: AiSourceMode) =>
-    id === 'own_key' ? 'Connect an OpenAI, Gemini or Anthropic key in Connect Apps first.'
-    : id === 'local' ? 'Download a model in the Models tab first.'
-    : 'Sign in to use the hosted AI.';
+  // choose/canUse/why lived here when this was a control. They are gone with it: keeping dead
+  // setters around a component documented as read-only is how a second switch grows back.
 
   const active = OPTIONS.find((o) => o.id === pref.mode) ?? OPTIONS[0];
 
@@ -48,32 +40,20 @@ export default function AiSourcePicker({ compact = false }: { compact?: boolean 
         <>
           <p className="text-[12px] font-medium text-nv-text mb-0.5">Where AI runs</p>
           <p className="text-[11.5px] leading-[1.6] text-nv-muted mb-2.5">
-            Applies to background work like Guard scans and automations. The Krew chat has its own
-            switch in the connection bar.
+            One choice, used by everything — this module, the Krew chat, automations and Guard.
+            Change it from the menu at the top of the window.
           </p>
         </>
       )}
 
-      <div className="flex flex-wrap gap-1.5">
-        {OPTIONS.map((o) => {
-          const ok = canUse(o.id);
-          const on = pref.mode === o.id;
-          return (
-            <button
-              key={o.id}
-              onClick={() => ok && choose(o.id)}
-              disabled={!ok}
-              title={ok ? o.blurb : why(o.id)}
-              className={`text-[11.5px] px-2.5 py-1.5 rounded-lg border transition-fast ${
-                on ? 'border-accent bg-accent/10 text-accent font-medium'
-                   : ok ? 'border-nv-border text-nv-muted hover:border-nv-faint hover:text-nv-text'
-                        : 'border-nv-border/60 text-nv-faint cursor-not-allowed opacity-60'
-              }`}
-            >
-              {o.label}
-            </button>
-          );
-        })}
+      {/* A STATEMENT, NOT A SECOND SWITCH. This used to be a row of buttons that wrote the same
+          setting the title-bar menu writes — two controls for one value, which is how someone ends
+          up believing they are on their own key while another screen quietly spends adris.tech
+          credit. It now reports what is in force and says where to change it. */}
+      <div className="flex items-center gap-2 rounded-nv border border-nv-border bg-nv-bg/60 px-2.5 py-2">
+        <span className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
+        <span className="text-[11.5px] text-nv-text font-medium flex-1 truncate">{active.label}</span>
+        <span className="text-[10px] text-nv-faint shrink-0">set at the top of the window</span>
       </div>
 
       <p className="text-[11px] text-nv-muted leading-relaxed mt-2">{active.blurb}</p>
@@ -112,24 +92,10 @@ export default function AiSourcePicker({ compact = false }: { compact?: boolean 
         </div>
       )}
 
-      {/* Which key / which model — only when that mode is selected and there is a real choice. */}
-      {pref.mode === 'own_key' && (avail?.byokProviders.length ?? 0) > 1 && (
-        <div className="flex items-center gap-1.5 mt-2">
-          <span className="text-[10px] text-nv-faint">Key:</span>
-          {avail!.byokProviders.map((p: ByokProvider) => (
-            <button
-              key={p}
-              onClick={() => { const n = { ...pref, provider: p }; setPref(n); setAiSource(n); }}
-              className={`text-[10px] px-2 py-0.5 rounded-md border transition-fast ${
-                pref.provider === p ? 'border-accent text-accent bg-accent/10' : 'border-nv-border text-nv-muted hover:text-nv-text'
-              }`}
-            >
-              {p}
-            </button>
-          ))}
-        </div>
-      )}
-
+      {/* WHICH key is not offered here: the title-bar menu lists every connected key as its own
+          entry, so a second chooser would be the same competing-control problem in miniature.
+          WHICH LOCAL MODEL is offered, because nothing else offers it — it refines a choice already
+          made rather than making it again. */}
       {pref.mode === 'local' && (avail?.localModels.length ?? 0) > 0 && (
         <div className="flex items-center gap-1.5 mt-2 flex-wrap">
           <span className="text-[10px] text-nv-faint">Model:</span>

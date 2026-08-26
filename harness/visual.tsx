@@ -16,6 +16,8 @@ import Caret from '../src/components/ui/Caret';
 // live state. The real button reads the same two keys.
 localStorage.setItem('nv-agent-cli', JSON.stringify({ claude_code: '/fake/claude', codex: '' }));
 localStorage.setItem('nv-ai-source', JSON.stringify({ mode: 'agent_cli', cli: 'claude_code' }));
+// Open the AI-source menu on load so the dropdown itself is in the screenshot.
+setTimeout(() => (document.querySelector('[aria-haspopup="menu"]') as HTMLButtonElement | null)?.click(), 300);
 localStorage.setItem('nv-theme',
   new URLSearchParams(location.search).get('paper') ? 'paper' : 'ink');
 
