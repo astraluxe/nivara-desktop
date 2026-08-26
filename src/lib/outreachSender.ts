@@ -298,7 +298,17 @@ export function nextDelayMs(baseSeconds: number, rnd: () => number = Math.random
   return Math.round(base - jitter + rnd() * jitter * 2);
 }
 
-/** Sensible defaults, sized to what the platforms tolerate rather than to what we could push. */
+/**
+ * Starting points, not rules.
+ *
+ * These are sized to what the platforms tolerate rather than to what we could push — but they are
+ * DEFAULTS, and the user changes them. It is their mailbox, their domain, their LinkedIn account
+ * and their list. A five-year-old domain sending to warm contacts can comfortably do far more than
+ * 40; a brand-new one should probably do less. adris does not know which they have, and a number
+ * we picked being presented as a limit is us deciding something that is not ours to decide.
+ *
+ * What adris owes them is the reason, not the ceiling — see CAP_LIMITS and the note in the panel.
+ */
 export const SEND_DEFAULTS = {
   /** LinkedIn restricts accounts that message at volume; this is deliberately conservative. */
   linkedinDailyCap: 20,
@@ -307,6 +317,44 @@ export const SEND_DEFAULTS = {
   /** Seconds between sends, before jitter. */
   gapSeconds: 50,
 };
+
+/** The only hard edges: zero would mean "never send", and something absurd is a typo, not a choice. */
+export const CAP_LIMITS = { min: 1, max: 2000 };
+
+const CAPS_KEY = 'nv-send-caps';
+
+export interface DailyCaps { email: number; linkedin: number }
+
+export function loadDailyCaps(): DailyCaps {
+  try {
+    const raw = JSON.parse(localStorage.getItem(CAPS_KEY) || '{}') as Partial<DailyCaps>;
+    const clamp = (v: unknown, fallback: number) => {
+      const n = Number(v);
+      return Number.isFinite(n) && n > 0 ? Math.min(CAP_LIMITS.max, Math.max(CAP_LIMITS.min, Math.round(n))) : fallback;
+    };
+    return {
+      email: clamp(raw.email, SEND_DEFAULTS.emailDailyCap),
+      linkedin: clamp(raw.linkedin, SEND_DEFAULTS.linkedinDailyCap),
+    };
+  } catch { return { email: SEND_DEFAULTS.emailDailyCap, linkedin: SEND_DEFAULTS.linkedinDailyCap }; }
+}
+
+export function saveDailyCaps(caps: Partial<DailyCaps>): DailyCaps {
+  const next = { ...loadDailyCaps(), ...caps };
+  const merged = loadDailyCapsFrom(next);
+  try { localStorage.setItem(CAPS_KEY, JSON.stringify(merged)); } catch { /* quota */ }
+  return merged;
+}
+
+/** Clamp a caps object the same way loading does, so saving and loading can never disagree. */
+function loadDailyCapsFrom(v: DailyCaps): DailyCaps {
+  const clamp = (n: number, fallback: number) =>
+    Number.isFinite(n) && n > 0 ? Math.min(CAP_LIMITS.max, Math.max(CAP_LIMITS.min, Math.round(n))) : fallback;
+  return {
+    email: clamp(v.email, SEND_DEFAULTS.emailDailyCap),
+    linkedin: clamp(v.linkedin, SEND_DEFAULTS.linkedinDailyCap),
+  };
+}
 
 /**
  * How fast to work through the list.
@@ -456,6 +504,23 @@ export async function sendOne(
         return { ok: false, confirmed: false, detail: `SMTP refused it: ${e instanceof Error ? e.message : String(e)}` };
       }
     }
+    // A FILE THE USER ATTACHED MUST NOT VANISH.
+    //
+    // The browser compose route carries to/subject/body and nothing else. Sending through it with
+    // an attachment set would deliver a message whose entire point — "here is the brochure" — is
+    // missing, and would report it as sent. The contact then gets a mail referring to a document
+    // that is not there, and the user never finds out. Refusing is the only honest option, and the
+    // fix is one the user can actually act on.
+    if (cand.attachmentPath) {
+      return {
+        ok: false,
+        confirmed: false,
+        detail: 'This message has a file attached, and attachments can only be sent through your own '
+          + 'mailbox (SMTP). Set that up in the copilot — sending it through the browser would deliver '
+          + 'the message without the file.',
+      };
+    }
+
     // No SMTP: drive Gmail's compose window. Works only for Gmail, and says so when it does not.
     try {
       const raw = await invoke<string>('run_browser_persistent', {

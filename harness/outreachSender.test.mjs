@@ -2,6 +2,7 @@ import {
   findPlaceholder, isMessageableProfile, isDoneWith, checkOne, buildSendQueue,
   nextDelayMs, sentToday, alreadySent, startOfLocalDay, SEND_DEFAULTS,
   parseOutreachStepSettings, summarise, summariseSkips, channelReach, CAP_REASON,
+  loadDailyCaps, saveDailyCaps, CAP_LIMITS,
 } from './outreachSender.js';
 
 let pass = 0, fail = 0;
@@ -225,6 +226,78 @@ console.log('\n=== what "will not be sent" actually contains ===');
   ok('the biggest group comes first', sum.groups[0].who.length >= (sum.groups[1]?.who.length ?? 0));
   ok('every blocked contact appears in exactly one group',
      sum.groups.reduce((n, g) => n + g.who.length, 0) === sum.blocked.length);
+}
+
+// ── The daily limit is the USER'S number ─────────────────────────────────────
+// It was a constant adris picked, presented as though it were a rule. It is their mailbox, their
+// domain and their list; a five-year-old domain mailing warm contacts can do far more than 40, and
+// a brand-new one should probably do less. adris does not know which they have.
+console.log('\n=== the daily limit belongs to the user ===');
+{
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: (k) => store.delete(k),
+  };
+
+  const d = loadDailyCaps();
+  eq('untouched, it starts at the safe default', [d.email, d.linkedin], [40, 20]);
+
+  const raised = saveDailyCaps({ email: 250 });
+  eq('the user can raise it well past the default', raised.email, 250);
+  eq('...and it survives a reload', loadDailyCaps().email, 250);
+  eq('...without disturbing the other channel', loadDailyCaps().linkedin, 20);
+
+  eq('the user can also LOWER it', saveDailyCaps({ linkedin: 5 }).linkedin, 5);
+
+  // The only hard edges, and they behave differently on purpose:
+  //   0 / NaN are not a smaller choice, they are an invalid one — "never send" is a broken campaign,
+  //   not a preference — so they fall back to the documented DEFAULT rather than to 1. Someone who
+  //   fat-fingers a zero should get a sane limit back, not a limit of one.
+  //   A six-digit number is a typo in the other direction, and clamping it keeps the intent.
+  eq('zero is not a choice — it falls back to the default', saveDailyCaps({ email: 0 }).email, 40);
+  eq('nor is nonsense', saveDailyCaps({ email: NaN }).email, 40);
+  eq('something absurd is clamped to the ceiling, keeping the intent',
+     saveDailyCaps({ email: 999999 }).email, CAP_LIMITS.max);
+  eq('a big but real number is simply honoured', saveDailyCaps({ email: 800 }).email, 800);
+
+  // And the raised limit has to actually change what gets queued, not just what is displayed.
+  store.clear();
+  saveDailyCaps({ email: 120 });
+  const many = Array.from({ length: 150 }, (_, i) => ({
+    name: `P${i}`, email: `p${i}@acme.co.in`, status: 'todo',
+    email_subject: 'A real subject', email_body: GOOD_BODY,
+  }));
+  const caps = loadDailyCaps();
+  const q = buildSendQueue(many, { channels: ['email'], emailRemaining: caps.email, linkedinRemaining: 0 });
+  eq('raising the limit really queues more', q.queue.length, 120);
+  delete globalThis.localStorage;
+}
+
+// ── A file the user attached must never vanish ───────────────────────────────
+console.log('\n=== an attachment is never silently dropped ===');
+{
+  // The browser compose route carries to/subject/body and nothing else. Sending an attached
+  // brochure through it would deliver a mail referring to a document that is not there, and report
+  // it as sent -- and the user would never find out.
+  const withFile = buildSendQueue(
+    [{ name: 'A', email: 'a@b.co.in', status: 'todo', email_subject: 'Our brochure', email_body: GOOD_BODY }],
+    { channels: ['email'], emailRemaining: 10, linkedinRemaining: 0, attachmentPath: 'C:\\docs\\brochure.pdf' },
+  );
+  eq('the campaign-wide file lands on the candidate', withFile.queue[0].attachmentPath, 'C:\\docs\\brochure.pdf');
+
+  const ownFile = buildSendQueue(
+    [{ name: 'A', email: 'a@b.co.in', status: 'todo', email_subject: 'S', email_body: GOOD_BODY, attachmentPath: 'C:\\docs\\theirs.pdf' }],
+    { channels: ['email'], emailRemaining: 10, linkedinRemaining: 0, attachmentPath: 'C:\\docs\\bulk.pdf' },
+  );
+  eq("a contact's own file beats the campaign-wide one", ownFile.queue[0].attachmentPath, 'C:\\docs\\theirs.pdf');
+
+  const li = buildSendQueue(
+    [{ name: 'A', linkedin_url: 'https://www.linkedin.com/in/a', status: 'todo', linkedin_message: GOOD_LI }],
+    { channels: ['linkedin'], emailRemaining: 0, linkedinRemaining: 10, attachmentPath: 'C:\\docs\\brochure.pdf' },
+  );
+  eq('LinkedIn never carries one, because it cannot', li.queue[0].attachmentPath, undefined);
 }
 
 console.log('\n=== who can actually be reached ===');

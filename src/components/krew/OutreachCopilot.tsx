@@ -24,7 +24,7 @@ import {
 import {
   buildSendQueue, loadSendLog, sentToday,
   loadGapSeconds, saveGapSeconds, loadPaceId, SEND_PACES, runSendQueue, summarise,
-  SEND_DEFAULTS, summariseSkips, channelReach, type SendChannel,
+  SEND_DEFAULTS, summariseSkips, channelReach, loadDailyCaps, saveDailyCaps, CAP_LIMITS, type SendChannel,
 } from '../../lib/outreachSender';
 import { credentialStore } from '../../lib/krewDb';
 
@@ -691,6 +691,44 @@ export function loadResumableCampaign(): OutreachCampaign | null {
 function firstUndoneIdx(arr: OutreachContact[]): number {
   const i = arr.findIndex((c) => !(c.status === 'sent' || c.status === 'accepted' || c.status === 'replied' || c.status === 'skip'));
   return i >= 0 ? i : 0;
+}
+
+/**
+ * A daily limit the user can change, sitting inline where the count is shown.
+ *
+ * Deliberately not hidden in a settings panel. The moment someone wonders "why has it only queued
+ * 40?" is the moment the number should be editable, in the place they are already looking — not
+ * three screens away, and not a support question about a restriction adris invented.
+ *
+ * Commits on blur or Enter rather than per keystroke, so typing "150" does not briefly apply a
+ * limit of 1 and requeue the whole campaign twice on the way.
+ */
+function CapInput({ value, onChange, disabled, label }: {
+  value: number; onChange: (n: number) => void; disabled?: boolean; label: string;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => { setDraft(String(value)); }, [value]);
+  const commit = () => {
+    const n = Number(draft);
+    if (Number.isFinite(n) && n > 0) onChange(n); else setDraft(String(value));
+  };
+  return (
+    <input
+      value={draft}
+      disabled={disabled}
+      inputMode="numeric"
+      title={`Your limit: ${label}. This is a starting point, not a rule — change it to suit your domain and your list.`}
+      aria-label={`Daily limit, ${label}`}
+      onChange={(e) => setDraft(e.target.value.replace(/[^0-9]/g, '').slice(0, 4))}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); (e.target as HTMLInputElement).blur(); } }}
+      className="w-8 bg-transparent border-b border-dashed border-nv-border text-center text-[9px]
+                 text-nv-text hover:border-accent/60 focus:border-accent outline-none
+                 transition-colors duration-fast ease-nv disabled:opacity-40"
+      style={{ minWidth: 18 }}
+      max={CAP_LIMITS.max}
+    />
+  );
 }
 
 export default function OutreachCopilot({ campaign, onClose, googleToken = '', aiCall, onOpenCampaign, onNewCampaign, startOnIndex = false }: {
@@ -1954,15 +1992,19 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
   }, [sendTick]);
 
   /** The exact queue an automatic run would send right now — recomputed live as drafts change. */
+  // The user's own daily limits, not ours. See loadDailyCaps() for why these are a starting point
+  // rather than a rule.
+  const [caps, setCaps] = useState(() => loadDailyCaps());
+
   const autoQueue = useMemo(() => {
     void sendTick;
     return buildSendQueue(contacts, {
       channels: autoChannels,
       attachmentPath: bulkAttach,
-      emailRemaining: Math.max(0, SEND_DEFAULTS.emailDailyCap - sendCounts.email),
-      linkedinRemaining: Math.max(0, SEND_DEFAULTS.linkedinDailyCap - sendCounts.linkedin),
+      emailRemaining: Math.max(0, caps.email - sendCounts.email),
+      linkedinRemaining: Math.max(0, caps.linkedin - sendCounts.linkedin),
     });
-  }, [contacts, autoChannels, sendCounts, sendTick, bulkAttach]);
+  }, [contacts, autoChannels, sendCounts, sendTick, bulkAttach, caps]);
 
   // The two halves of "will not be sent", and who can be reached on each channel at all. See
   // summariseSkips() for why a single "not" number was actively misleading.
@@ -3013,8 +3055,18 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
                       autoChannels.includes(id) ? 'border-accent/50 text-accent bg-accent/10' : 'border-nv-border text-nv-faint hover:bg-nv-surface2'} ${reach[id] ? '' : 'opacity-50'}`}
                   >{label}{reach[id] ? '' : ' · none in this list'}</button>
                 ))}
-                <span className="ml-auto text-[9px] text-nv-faint" title="A daily pace, not a plan limit — it protects your mailbox and your LinkedIn account.">
-                  sent today: {sendCounts.email}/{SEND_DEFAULTS.emailDailyCap} email · {sendCounts.linkedin}/{SEND_DEFAULTS.linkedinDailyCap} LinkedIn
+                {/* YOUR limits, editable here. They are a starting point sized to what the
+                    platforms tolerate — not a plan restriction, and not adris's decision to make
+                    about your own mailbox and your own list. */}
+                <span className="ml-auto flex items-center gap-1 text-[9px] text-nv-faint">
+                  <span title="How many you have sent today, out of your own daily limit. Change the limit if it is wrong for your domain.">sent today:</span>
+                  <span className="text-nv-muted">{sendCounts.email}/</span>
+                  <CapInput value={caps.email} disabled={autoRunning}
+                    onChange={(n) => setCaps(saveDailyCaps({ email: n }))} label="emails a day" />
+                  <span className="text-nv-muted">email · {sendCounts.linkedin}/</span>
+                  <CapInput value={caps.linkedin} disabled={autoRunning}
+                    onChange={(n) => setCaps(saveDailyCaps({ linkedin: n }))} label="LinkedIn messages a day" />
+                  <span className="text-nv-muted">LinkedIn</span>
                 </span>
               </div>
 
@@ -3069,9 +3121,11 @@ export default function OutreachCopilot({ campaign, onClose, googleToken = '', a
               {!!skips.deferred.length && (
                 <p className="text-[9.5px] text-nv-muted leading-snug px-0.5">
                   <b className="text-nv-text">{skips.deferred.length} more go out tomorrow.</b>{' '}
-                  Nothing is wrong with them — {SEND_DEFAULTS.emailDailyCap} emails and{' '}
-                  {SEND_DEFAULTS.linkedinDailyCap} LinkedIn messages a day is the pace that keeps
-                  your mailbox and your account out of trouble.
+                  Nothing is wrong with them — that is your daily limit of {caps.email} emails and{' '}
+                  {caps.linkedin} LinkedIn messages. It starts low because a new sending domain that
+                  blasts hundreds on day one gets filtered permanently, and LinkedIn restricts
+                  accounts that message at volume. <b className="text-nv-text">Raise it above if
+                  that is not your situation</b> — it is your mailbox.
                 </p>
               )}
 

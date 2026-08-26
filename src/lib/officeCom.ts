@@ -58,6 +58,19 @@ export interface DocSpec {
   sheetName?: string;
   /** PowerPoint */
   slides?: { title: string; bullets: string[] }[];
+  /**
+   * Do the work where the user can SEE it — Word opens, text appears, the file is saved, and the
+   * document stays on screen in front of them.
+   *
+   * Defaults to true, and that default is the point. Watching a document being written is the
+   * difference between "the computer produced a file somewhere" and "I saw it happen" — which for
+   * someone who has never trusted software to do their work is the whole difference.
+   *
+   * It also changes the cleanup rules completely; see the note on the scripts below.
+   */
+  visible?: boolean;
+  /** Milliseconds between blocks when visible, so it reads as typing rather than a paste. */
+  typeDelayMs?: number;
 }
 
 export interface DocResult {
@@ -128,6 +141,10 @@ export function buildPayload(spec: DocSpec): string {
     rows: spec.rows ?? [],
     sheetName: spec.sheetName ?? '',
     slides: spec.slides ?? [],
+    // Visible unless explicitly turned off — a document the user watched being written is worth
+    // more than one that appeared.
+    visible: spec.visible !== false,
+    typeDelayMs: Math.max(0, Math.min(400, spec.typeDelayMs ?? 90)),
   });
   assertSafePayload(json);
   return json;
@@ -161,19 +178,34 @@ const PREAMBLE = String.raw`
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
 $spec = $payload | ConvertFrom-Json
+$visible = [bool]$spec.visible
+$pause = [int]$spec.typeDelayMs
 # Whose processes were already running. Anything in here is the user's and is never touched.
 $theirs = @(Get-Process -Name $procName -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
 $result = @{ ok = $false }
 `;
 
-// Terminates only processes that (a) did not exist before this script started and (b) are still
-// alive after a graceful Quit. Never by name — see the note at the top of this file.
+// THE CLEANUP RULE, AND WHY IT IS CONDITIONAL.
+//
+// Headless: quit, then terminate only processes that (a) did not exist before this script started
+// and (b) are still alive afterwards. Office is notorious for leaving an invisible WINWORD.EXE
+// behind, and unchecked those accumulate until the machine is out of memory.
+//
+// VISIBLE: do none of that. The user is looking at the document. Quitting would close it in front
+// of them, and the process-sweep would then kill the very window they were asked to look at — the
+// feature would delete its own output. So a visible run leaves everything open, on purpose, and
+// hands the document over.
+//
+// Either way, nothing is ever stopped by name: taskkill /IM WINWORD.EXE would close the file the
+// user has open and unsaved in another window.
 const POSTAMBLE = String.raw`
-[GC]::Collect(); [GC]::WaitForPendingFinalizers()
-[GC]::Collect(); [GC]::WaitForPendingFinalizers()
-Start-Sleep -Milliseconds 400
-foreach ($p in (Get-Process -Name $procName -ErrorAction SilentlyContinue)) {
-  if ($theirs -notcontains $p.Id) { try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch { } }
+if (-not $visible) {
+  [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+  [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+  Start-Sleep -Milliseconds 400
+  foreach ($p in (Get-Process -Name $procName -ErrorAction SilentlyContinue)) {
+    if ($theirs -notcontains $p.Id) { try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch { } }
+  }
 }
 $result | ConvertTo-Json -Compress
 `;
@@ -183,8 +215,11 @@ $procName = 'WINWORD'
 ` + PREAMBLE + String.raw`
 try {
   $app = New-Object -ComObject Word.Application
-  $app.Visible = $false
+  $app.Visible = $visible
   $app.DisplayAlerts = 0
+  # Bring it to the front so the user is actually looking at the thing being written, rather than
+  # at a taskbar button they have to notice.
+  if ($visible) { try { $app.Activate() } catch { } }
   # The user's own template, if they named one. Documents.Add(template) is what makes the output
   # genuinely theirs rather than merely a .docx.
   $doc = if ($spec.template -and (Test-Path $spec.template)) { $app.Documents.Add($spec.template) } else { $app.Documents.Add() }
@@ -209,6 +244,12 @@ try {
     $sel.Style = $id
     $sel.TypeText([string]$b.text)
     $sel.TypeParagraph()
+    # A beat between blocks so a visible run READS as writing rather than as a paste appearing all
+    # at once. Zero when headless, so nothing is slowed down for a file nobody is watching.
+    if ($visible -and $pause -gt 0) {
+      try { $app.ScreenRefresh() } catch { }
+      Start-Sleep -Milliseconds $pause
+    }
   }
 
   # Bullet glyphs in a second pass. The List Paragraph style supplies the indent but not the bullet
@@ -221,13 +262,19 @@ try {
     }
   }
   $doc.SaveAs2($spec.savePath, 16)
-  $doc.Close($false)
-  $app.Quit()
-  [Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null
-  $result = @{ ok = $true; path = $spec.savePath; bytes = (Get-Item $spec.savePath).Length }
+  # Visible: hand the open document to the user and step back. Closing it would be the feature
+  # deleting its own output in front of them.
+  if (-not $visible) {
+    $doc.Close($false)
+    $app.Quit()
+    [Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null
+  }
+  $result = @{ ok = $true; path = $spec.savePath; bytes = (Get-Item $spec.savePath).Length; visible = $visible }
 } catch {
   $result = @{ ok = $false; error = $_.Exception.Message }
-  try { $app.Quit() } catch { }
+  # Only tidy up after a FAILED visible run — there is no document worth leaving on screen, and a
+  # half-written window with an error nobody can see is worse than nothing.
+  try { if (-not $visible) { $app.Quit() } } catch { }
 }
 ` + POSTAMBLE;
 
@@ -236,8 +283,9 @@ $procName = 'EXCEL'
 ` + PREAMBLE + String.raw`
 try {
   $app = New-Object -ComObject Excel.Application
-  $app.Visible = $false
+  $app.Visible = $visible
   $app.DisplayAlerts = $false
+  if ($visible) { try { $app.Activate() } catch { } }
   $wb = if ($spec.template -and (Test-Path $spec.template)) { $app.Workbooks.Add($spec.template) } else { $app.Workbooks.Add() }
   $ws = $wb.Worksheets.Item(1)
   if ($spec.sheetName) { $ws.Name = [string]$spec.sheetName }
@@ -251,20 +299,40 @@ try {
       $ws.Cells.Item($r, $c).Value2 = [string]$cell
       $c++
     }
+    # Row by row when visible, so the sheet fills in front of the user instead of appearing.
+    if ($visible -and $pause -gt 0) { Start-Sleep -Milliseconds ([Math]::Min($pause, 60)) }
     $r++
   }
   if ($spec.rows.Count -gt 0) {
-    $ws.Rows.Item(1).Font.Bold = $true
+    # A header that looks like a header. Bold alone reads as a slightly odd first row; the fill,
+    # the white text and the frozen pane are what make it a table someone can actually work in.
+    $hdr = $ws.Range($ws.Cells.Item(1, 1), $ws.Cells.Item(1, $spec.rows[0].Count))
+    $hdr.Font.Bold = $true
+    $hdr.Font.Color = 16777215                     # white
+    $hdr.Interior.Color = 6963003                  # the adris accent, as BGR
+    $hdr.HorizontalAlignment = -4131               # xlLeft
+    $ws.Rows.Item(1).RowHeight = 20
+    # Freeze the header and turn on filters: on a 200-row lead list these are the difference
+    # between a dump and something usable.
+    try {
+      $ws.Activate()
+      $app.ActiveWindow.FreezePanes = $false
+      $ws.Range('A2').Select() | Out-Null
+      $app.ActiveWindow.FreezePanes = $true
+      $hdr.AutoFilter() | Out-Null
+    } catch { }
     $ws.Columns.AutoFit() | Out-Null
   }
   $wb.SaveAs($spec.savePath, 51)
-  $wb.Close($false)
-  $app.Quit()
-  [Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null
-  $result = @{ ok = $true; path = $spec.savePath; bytes = (Get-Item $spec.savePath).Length }
+  if (-not $visible) {
+    $wb.Close($false)
+    $app.Quit()
+    [Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null
+  }
+  $result = @{ ok = $true; path = $spec.savePath; bytes = (Get-Item $spec.savePath).Length; visible = $visible }
 } catch {
   $result = @{ ok = $false; error = $_.Exception.Message }
-  try { $app.Quit() } catch { }
+  try { if (-not $visible) { $app.Quit() } } catch { }
 }
 ` + POSTAMBLE;
 
@@ -273,11 +341,19 @@ $procName = 'POWERPNT'
 ` + PREAMBLE + String.raw`
 try {
   $app = New-Object -ComObject PowerPoint.Application
-  $pres = if ($spec.template -and (Test-Path $spec.template)) { $app.Presentations.Add(0) } else { $app.Presentations.Add(0) }
+  # PowerPoint is unusual: its window is not reliably hideable, and Presentations.Add takes the
+  # visibility as its argument rather than it being a property set afterwards. msoTrue = -1.
+  $pres = $app.Presentations.Add($(if ($visible) { -1 } else { 0 }))
+  if ($visible) { try { $app.Activate() } catch { } }
   if ($spec.template -and (Test-Path $spec.template)) { $pres.ApplyTemplate($spec.template) }
+  # 16:9. The default on many installs is still 4:3, which looks a decade old on any modern screen
+  # or projector. ppSlideSizeOnScreen16x9 = 15.
+  try { $pres.PageSetup.SlideSize = 15 } catch { }
   $i = 1
   foreach ($s in $spec.slides) {
     $slide = $pres.Slides.Add($i, 2)   # ppLayoutText: a title and a body placeholder
+    # Show each slide as it is built, so the deck assembles in front of the user.
+    if ($visible) { try { $slide.Select(); $app.ActiveWindow.View.GotoSlide($i) } catch { } }
     $slide.Shapes.Item(1).TextFrame.TextRange.Text = [string]$s.title
     if ($s.bullets -and $s.bullets.Count -gt 0) {
       # PowerPoint separates paragraphs with CR, not CRLF: a newline here produces empty bullets.
@@ -285,16 +361,19 @@ try {
       # the JavaScript template literal this script lives inside.
       $slide.Shapes.Item(2).TextFrame.TextRange.Text = ($s.bullets -join [string][char]13)
     }
+    if ($visible -and $pause -gt 0) { Start-Sleep -Milliseconds $pause }
     $i++
   }
   $pres.SaveAs($spec.savePath, 24)
-  $pres.Close()
-  $app.Quit()
-  [Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null
-  $result = @{ ok = $true; path = $spec.savePath; bytes = (Get-Item $spec.savePath).Length }
+  if (-not $visible) {
+    $pres.Close()
+    $app.Quit()
+    [Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null
+  }
+  $result = @{ ok = $true; path = $spec.savePath; bytes = (Get-Item $spec.savePath).Length; visible = $visible }
 } catch {
   $result = @{ ok = $false; error = $_.Exception.Message }
-  try { $app.Quit() } catch { }
+  try { if (-not $visible) { $app.Quit() } } catch { }
 }
 ` + POSTAMBLE;
 
