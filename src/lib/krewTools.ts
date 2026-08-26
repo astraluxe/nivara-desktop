@@ -1345,7 +1345,7 @@ export const BOSS_TOOLS: ToolDef[] = [
     name: 'plan_workflow',
     description: 'Plan and execute a multi-agent workflow in ONE shot. Use this when the task genuinely needs 2-4 different specialists working in sequence. Do NOT use researcher as a mandatory first step — only include it if factual research is actually needed. Each agent receives the outputs of all previous agents as context in their task description.',
     parameters: {
-      delegations: { type: 'string', description: 'JSON array of delegations in execution order: [{"agent_key":"researcher","task":"Research X"},{"agent_key":"blog_writer","task":"Using this research: {{prev}}, write a blog post about X"}]. Use {{prev}} as a placeholder where a previous agent\'s output should be inserted.', required: true },
+      delegations: { type: 'string', description: 'JSON array of delegations: [{"agent_key":"researcher","task":"Research X"},{"agent_key":"blog_writer","task":"Using this research: {{prev}}, write a blog post about X"}]. Use {{prev}} where a previous agent\'s output should be inserted. IF TWO STEPS DO NOT NEED EACH OTHER, leave {{prev}} out of both — they are then treated as independent and the order you list them in stops mattering. For anything more complicated than a straight line, add "needs": ["1"] (step numbers, 1-based, or an agent_key) to say exactly which steps must finish first; that is far more reliable than relying on the order you happened to write them in.', required: true },
     },
   },
 ];

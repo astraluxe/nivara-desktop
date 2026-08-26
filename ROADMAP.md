@@ -15,7 +15,7 @@ cost real time.
 
 ## Where this is right now
 
-**Version in the tree: 1.62.0** — builds clean, not yet produced as an `.exe`. Last released: 1.59.0.
+**Version in the tree: 1.63.0** — builds clean, not yet produced as an `.exe`. Last released: 1.59.0.
 
 **1.60.0 and 1.61.0 both matter.** 1.59.0 shipped the Office feature with the boss unable to reach
 it (see below), and 1.61.0 is the first build where Office work happens *where the user can see it*.
@@ -33,7 +33,9 @@ it (see below), and 1.61.0 is the first build where Office work happens *where t
 | — | Info page | ✅ **done** | every feature above written up for a non-technical reader |
 | 4 | Claude Code bridge | 🟡 **half** | background jobs use the subscription; **Krew chat does not yet** |
 | 7 | Coder | 🟡 **part** | folder + icons done; VS Code parity and the Krew→Coder handoff not |
-| — | Boss produces scheduler-shaped plans | 🟡 **last piece** | the scheduler is done and tested; what feeds it is not |
+| — | Boss produces dependency-aware plans | ✅ **done** | `plan_workflow` accepts `needs`, orders by dependency; 66 assertions |
+| — | Node download survives a filtered network | ✅ **done** | mirrored through adris.tech, every attempt named on failure |
+| — | Truly concurrent delegation | 🟡 **needs a UI change** | the bubbles stream into "the last message"; two at once would interleave |
 | 3c | Clicking in software with no API | ❌ **not built** | input synthesis refused by a safety check — UI Automation is the right design |
 | 8 | Browser fails for non-technical users | ❌ **not started** | diagnosed: a silent download failure, not a missing feature |
 | 9 | Antivirus flags the installer | ❌ **needs a certificate** | parked at the owner's request; one free mitigation applied |
@@ -445,6 +447,27 @@ agent; until that exists the ceiling is what keeps the office honest.
 **Still to do:** have the boss produce plans in this shape. The scheduler is done and tested with 55
 assertions, and `runPlan` accepts mid-task instructions; what feeds it is the last piece.
 
+
+#### The boss now produces plans in this shape ✅
+
+`planFromDelegations()` converts what `plan_workflow` hands over into a Plan, and `runWaves()`
+groups it. Authority order for a dependency:
+
+1. an explicit `needs` on the delegation — accepting **either a step number or an agent_key**,
+   because a model will use whichever it happened to be thinking in;
+2. otherwise `{{prev}}` means "I need the step before me" — which is exactly what it has always
+   meant, so **every existing prompt keeps its current behaviour**;
+3. otherwise the step depends on nothing.
+
+That third line is the whole win, and it is backwards compatible. It also fixes a real failure: a
+model that lists the writer before the researcher used to get exactly that, and the writer opened
+with an empty `{{prev}}`. The steps are now reordered onto the dependency graph before anything runs.
+
+**Truly concurrent execution is NOT done, and the reason is honest:** delegation bubbles stream into
+"the last message" in `KrewChat.tsx`, so two agents streaming at once would interleave into one
+bubble. Running the waves in order is correct either way — which makes real concurrency a *rendering*
+change later rather than a scheduling one.
+
 ### 6. Mid-task instructions ✅ DONE — wired into runPlan
 
 `src/lib/midTask.ts`, plus a `takeInstructions` hook on `runPlan`.
@@ -488,32 +511,33 @@ wins where they disagree — a model given two briefs with no ordering will aver
   **It must never switch modules on its own.** Being thrown into an editor mid-conversation is
   exactly the "do not shift the user off what they are working on" rule, applied to adris itself.
 
-### 8. The browser does not open for non-technical users — NOT STARTED
+### 8. The browser for non-technical users ✅ MIRRORED — 🟡 one file to upload
 
-Reported by the owner: for some users the agent browser simply never appears, and the reason given
-at the time was that "node or something wasn't downloaded". For a developer that is a five-minute
-fix. For the people this product is for it is the end of the feature.
+Reported: for some users the agent browser never appears, blamed at the time on "node not
+downloaded". Nothing was missing from the design — `provision_node()` downloads a pinned Node and
+unpacks it automatically. **A download was failing in silence.**
 
-**Diagnosed, not guessed:** Node **is** provisioned automatically — `provision_node()` in lib.rs
-downloads a pinned Node 20.18.1 from `nodejs.org` into app-data and unpacks it, and `playwright-core`
-is fetched separately. So nothing is missing from the design. **A download is failing silently.**
+Almost certainly the ISP problem already documented for GitHub release assets: hosts that accept a
+TCP connection on 443 and then never complete the TLS handshake. The people this product is for
+cannot diagnose that, and the app told them nothing.
 
-That is almost certainly the same problem already documented under *Updates & downloads*: on a real
-Indian ISP, `objects.githubusercontent.com` and `release-assets.githubusercontent.com` accept a TCP
-connection on 443 and then never complete the TLS handshake. `nodejs.org` and the npm registry are
-different hosts and have not been measured — but the shape of the failure is identical, and the fix
-that already worked for releases is the fix here.
+**Done:**
+- `download_with_mirrors()` tries **nodejs.org first, then `www.adris.tech/dl/`** — the same route
+  the updater already uses to get around exactly this.
+- A **240-second timeout per source**, so a black-holed connection fails instead of hanging forever.
+  That hang *was* the silent failure.
+- A response under 1 KB is treated as a failure, not as a Node runtime — a captive portal or an
+  error page returning HTTP 200 would otherwise be unpacked as an archive.
+- The error **names every URL tried and what each one said**. "Download failed" tells a
+  non-technical user nothing they can act on.
 
-**What to do, in order:**
-1. **Mirror Node and playwright-core through `www.adris.tech/dl/`**, exactly as installers already
-   are. The manifest trick is proven; this is the same edge proxy with two more files behind it.
-2. **Make the failure visible and actionable.** Today it reads as "the browser didn't open". It
-   should say which step failed, how far it got, and offer a retry — a silent failure is what turned
-   a slow download into a broken product.
-3. **Pre-warm on first run**, so the download happens while the user is still setting up rather than
-   at the moment they first ask for something.
-4. Consider **bundling** Node in the installer. It costs ~30 MB and removes the failure entirely.
-   That is a size decision for the owner, not a technical one.
+**The one remaining step, and it needs the website repo:** upload
+`node-v24.9.0-win-x64.zip` (and `node-v20.18.1-win-x64.zip` for the second provisioner) to whatever
+`www.adris.tech/dl/` serves. Until that file exists the mirror is a dead second attempt — harmless,
+but it only helps once the file is there.
+
+**Also worth doing:** bundle Node in the installer. ~30 MB, and it removes this problem *and* the
+antivirus signal from downloading an executable at runtime. One decision, two problems.
 
 ### 9. Antivirus flags the installer — NOT FIXED, and it needs money not code
 

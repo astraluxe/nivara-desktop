@@ -11878,8 +11878,36 @@ Everything you need for follow-ups is in that answer above; read it there rather
             }
           } else if (tool === 'plan_workflow') {
             // Multi-agent workflow: run all delegations in sequence, boss synthesizes once at end
-            let wfDelegations: Array<{ agent_key: string; task: string }> = [];
+            let wfDelegations: Array<{ agent_key: string; task: string; needs?: string[] }> = [];
             try { wfDelegations = JSON.parse(String(args.delegations ?? '[]')); } catch { toolResult = 'Could not parse workflow plan — invalid JSON.'; }
+
+            // ORDER THE STEPS BY WHAT THEY ACTUALLY NEED, not by the order the model happened to
+            // list them in. A model that puts the writer before the researcher gets exactly that,
+            // and the writer opens with an empty {{prev}} — which has happened.
+            //
+            // planFromDelegations reads an explicit `needs`, falls back to "{{prev}} means I need
+            // the step before me" (so every existing prompt behaves exactly as it always has), and
+            // otherwise treats a step as independent. runWaves then groups them: everything in a
+            // wave could run together, and each wave needs the one before it.
+            //
+            // The loop below still runs them one at a time — the delegation bubbles stream into
+            // "the last message", so two at once would interleave into one bubble. Running the
+            // waves in order is correct either way, and it is what makes true concurrency a
+            // rendering change later rather than a scheduling one.
+            if (wfDelegations.length > 1) {
+              try {
+                const { planFromDelegations, runWaves, validatePlan } = await import('../../lib/agentSchedule');
+                const wfPlan = planFromDelegations(wfDelegations);
+                const problems = validatePlan(wfPlan);
+                if (!problems.length) {
+                  const ordered = runWaves(wfPlan).flat().map((st) => wfDelegations[Number(st.id) - 1]).filter(Boolean);
+                  if (ordered.length === wfDelegations.length) wfDelegations = ordered;
+                }
+                // A plan with a cycle or a dependency nobody produces is left in its original order
+                // rather than rearranged on a broken graph — the run still happens, just unhelped.
+              } catch { /* ordering is an improvement, never a requirement */ }
+            }
+
             if (wfDelegations.length > 0) {
               isDelegation = true;
               // Set up task phases for the progress strip

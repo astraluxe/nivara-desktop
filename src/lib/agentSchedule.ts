@@ -271,3 +271,95 @@ export async function runPlan(
   await Promise.allSettled([...inFlight.values()]);
   return current;
 }
+
+// ─── Turning the boss's workflow into a plan ─────────────────────────────────
+//
+// `plan_workflow` hands over a list of delegations that has always been run strictly in order. Two
+// things are wrong with that, and they are different problems:
+//
+//   1. STEPS THAT NEED NOTHING FROM EACH OTHER STILL QUEUE. "Research three competitors, pull my
+//      pricing, and check my calendar" is three independent jobs run one after another for no
+//      reason at all.
+//   2. A BADLY ORDERED LIST RUNS BADLY. A model that lists the writer before the researcher gets
+//      exactly that, and the writer opens with an empty {{prev}}.
+//
+// This converts the delegations into a Plan the scheduler understands, so both are answered by the
+// same piece of code.
+//
+// HOW A DEPENDENCY IS WORKED OUT, in order of authority:
+//   - an explicit `needs` on the delegation wins, always;
+//   - otherwise, `{{prev}}` in the task means "I need the step before me" — which is exactly what
+//     it has always meant, so every existing prompt keeps its current behaviour;
+//   - otherwise the step depends on nothing and may run in parallel.
+//
+// That last line is the entire win, and it is backwards compatible: nothing that used {{prev}}
+// changes, and everything that never needed it stops waiting.
+
+export interface Delegation {
+  agent_key: string;
+  task: string;
+  /** Optional explicit dependencies, by step id ("1", "2", …) or by agent_key. */
+  needs?: string[];
+}
+
+/** Build a validated Plan from what the boss asked for. Ids are 1-based to match how it thinks. */
+export function planFromDelegations(dels: Delegation[], maxParallel = DEFAULT_MAX_PARALLEL): Plan {
+  const steps: AgentStep[] = dels.map((d, i) => {
+    const id = String(i + 1);
+    const task = String(d.task ?? '');
+    let needs: string[];
+    if (Array.isArray(d.needs) && d.needs.length) {
+      // Accept either an id or an agent_key, because a model will use whichever it was thinking in.
+      needs = d.needs
+        .map((n) => {
+          const s = String(n);
+          const byKey = dels.findIndex((x) => x.agent_key === s);
+          return byKey >= 0 ? String(byKey + 1) : s;
+        })
+        .filter((n) => n !== id);
+    } else if (/\{\{prev\}\}/.test(task) && i > 0) {
+      needs = [String(i)];
+    } else {
+      needs = [];
+    }
+    return {
+      id,
+      agent: String(d.agent_key ?? `step${id}`),
+      label: task.slice(0, 60) + (task.length > 60 ? '…' : ''),
+      needs,
+    };
+  });
+  return { steps, maxParallel };
+}
+
+/**
+ * The order to run them in, and which ones could have gone together.
+ *
+ * Returned as WAVES: every step in a wave can run at the same time as the others in it, and each
+ * wave needs the one before. Running the waves in order is correct even for a caller that executes
+ * strictly one at a time — which is why this is useful before true concurrency exists.
+ */
+export function runWaves(plan: Plan): AgentStep[][] {
+  const waves: AgentStep[][] = [];
+  const done = new Set<string>();
+  const left = new Map(plan.steps.map((s) => [s.id, s]));
+  while (left.size) {
+    const ready = [...left.values()].filter((s) => (s.needs ?? []).every((n) => done.has(n) || !left.has(n)));
+    // Nothing ready and something left means a cycle. validatePlan reports it properly; here the
+    // remaining steps are emitted in their original order so a caller can still run *something*
+    // rather than looping forever.
+    if (!ready.length) { waves.push([...left.values()]); break; }
+    waves.push(ready);
+    for (const s of ready) { done.add(s.id); left.delete(s.id); }
+  }
+  return waves;
+}
+
+/** How much time the ordering saves, for the line the user is shown. */
+export function parallelSummary(plan: Plan): string {
+  const waves = runWaves(plan);
+  const together = waves.filter((w) => w.length > 1);
+  if (!together.length) return `${plan.steps.length} steps, each needing the one before it.`;
+  const most = Math.max(...waves.map((w) => w.length));
+  return `${plan.steps.length} steps in ${waves.length} rounds — up to ${most} working at the same time.`;
+}

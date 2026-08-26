@@ -3769,17 +3769,26 @@ async fn provision_omniroute_node(app: &tauri::AppHandle) -> Result<std::path::P
 
     // Pinned. nodejs.org is reachable on connections where GitHub release assets are not, which is
     // the same reason the updater downloads through adris.tech.
+    // nodejs.org first, then our own mirror. See download_with_mirrors: a download that
+    // dies in silence on a filtered network is how "the browser did not open" begins, and
+    // the people this product is for cannot diagnose that.
     #[cfg(target_os = "windows")]
-    let (url, is_zip) = ("https://nodejs.org/dist/v24.9.0/node-v24.9.0-win-x64.zip", true);
+    let (urls, is_zip): (&[&str], bool) = (&[
+        "https://nodejs.org/dist/v24.9.0/node-v24.9.0-win-x64.zip",
+        "https://www.adris.tech/dl/node-v24.9.0-win-x64.zip",
+    ], true);
     #[cfg(target_os = "macos")]
-    let (url, is_zip) = ("https://nodejs.org/dist/v24.9.0/node-v24.9.0-darwin-x64.tar.gz", false);
+    let (urls, is_zip): (&[&str], bool) = (&[
+        "https://nodejs.org/dist/v24.9.0/node-v24.9.0-darwin-x64.tar.gz",
+        "https://www.adris.tech/dl/node-v24.9.0-darwin-x64.tar.gz",
+    ], false);
     #[cfg(all(unix, not(target_os = "macos")))]
-    let (url, is_zip) = ("https://nodejs.org/dist/v24.9.0/node-v24.9.0-linux-x64.tar.gz", false);
+    let (urls, is_zip): (&[&str], bool) = (&[
+        "https://nodejs.org/dist/v24.9.0/node-v24.9.0-linux-x64.tar.gz",
+        "https://www.adris.tech/dl/node-v24.9.0-linux-x64.tar.gz",
+    ], false);
 
-    let bytes = reqwest::get(url).await
-        .map_err(|e| format!("download failed: {e}"))?
-        .bytes().await
-        .map_err(|e| format!("download failed: {e}"))?;
+    let bytes = download_with_mirrors(urls).await?;
 
     if is_zip {
         let reader = std::io::Cursor::new(bytes);
@@ -4264,6 +4273,43 @@ fn bundled_npm_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
     if cmd.is_file() { Some(cmd) } else { None }
 }
 
+
+/// Download something, trying every mirror before giving up — and saying which one worked.
+///
+/// WHY MIRRORS AT ALL. Measured on a real Indian ISP: several large-file hosts accept a TCP
+/// connection on 443 and then never complete the TLS handshake — SNI filtering. That is exactly how
+/// a "the browser didn't open" report starts: nothing is broken, a download simply died in silence
+/// on a network that looked fine. The updater already routes around this through adris.tech, and
+/// this is the same trick for the Node runtime.
+///
+/// The failure message names every URL tried and what each said, because "download failed" tells a
+/// non-technical user nothing they can act on and tells us nothing we can debug.
+async fn download_with_mirrors(urls: &[&str]) -> Result<Vec<u8>, String> {
+    let mut tried: Vec<String> = Vec::new();
+    for url in urls {
+        // A generous but finite timeout: an ISP that black-holes the connection would otherwise
+        // hang here forever, which is precisely the silent failure this function exists to end.
+        let client = match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(240))
+            .build() { Ok(c) => c, Err(e) => { tried.push(format!("{url} — {e}")); continue; } };
+        match client.get(*url).send().await {
+            Ok(r) if r.status().is_success() => match r.bytes().await {
+                Ok(b) if b.len() > 1024 => return Ok(b.to_vec()),
+                Ok(b) => tried.push(format!("{url} — only {} bytes came back", b.len())),
+                Err(e) => tried.push(format!("{url} — {e}")),
+            },
+            Ok(r) => tried.push(format!("{url} — HTTP {}", r.status().as_u16())),
+            Err(e) => tried.push(format!("{url} — {e}")),
+        }
+    }
+    Err(format!(
+        "Could not download what the browser needs. Tried {} source(s):
+  {}",
+        tried.len(), tried.join("
+  ")
+    ))
+}
+
 /// Download and unpack Node into app-data. Returns the node binary path.
 ///
 /// Only called when no usable Node exists. Everything is best-effort and reported honestly by the
@@ -4275,17 +4321,26 @@ async fn provision_node(app: &tauri::AppHandle) -> Result<std::path::PathBuf, St
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
 
     // LTS, pinned. An unpinned "latest" would change under the user without warning.
+    // nodejs.org first, then our own mirror. See download_with_mirrors: a download that
+    // dies in silence on a filtered network is how "the browser did not open" begins, and
+    // the people this product is for cannot diagnose that.
     #[cfg(target_os = "windows")]
-    let (url, is_zip) = ("https://nodejs.org/dist/v20.18.1/node-v20.18.1-win-x64.zip", true);
+    let (urls, is_zip): (&[&str], bool) = (&[
+        "https://nodejs.org/dist/v20.18.1/node-v20.18.1-win-x64.zip",
+        "https://www.adris.tech/dl/node-v20.18.1-win-x64.zip",
+    ], true);
     #[cfg(target_os = "macos")]
-    let (url, is_zip) = ("https://nodejs.org/dist/v20.18.1/node-v20.18.1-darwin-x64.tar.gz", false);
+    let (urls, is_zip): (&[&str], bool) = (&[
+        "https://nodejs.org/dist/v20.18.1/node-v20.18.1-darwin-x64.tar.gz",
+        "https://www.adris.tech/dl/node-v20.18.1-darwin-x64.tar.gz",
+    ], false);
     #[cfg(all(unix, not(target_os = "macos")))]
-    let (url, is_zip) = ("https://nodejs.org/dist/v20.18.1/node-v20.18.1-linux-x64.tar.gz", false);
+    let (urls, is_zip): (&[&str], bool) = (&[
+        "https://nodejs.org/dist/v20.18.1/node-v20.18.1-linux-x64.tar.gz",
+        "https://www.adris.tech/dl/node-v20.18.1-linux-x64.tar.gz",
+    ], false);
 
-    let bytes = reqwest::get(url).await
-        .map_err(|e| format!("download failed: {e}"))?
-        .bytes().await
-        .map_err(|e| format!("download failed: {e}"))?;
+    let bytes = download_with_mirrors(urls).await?;
 
     if is_zip {
         let reader = std::io::Cursor::new(bytes);
