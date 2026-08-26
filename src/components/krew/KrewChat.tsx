@@ -290,6 +290,18 @@ function detectSkill(text: string): SkillRegistryEntry | null {
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface DisplayMsg {
+  /**
+   * A stable identity for a bubble that will be written to more than once.
+   *
+   * Everything streaming used to be written with updateLastMsg — "whatever bubble is at the end" —
+   * which is correct only while exactly one thing is being written at a time. It is the single
+   * reason several agents could not work at once: two of them streaming would both have painted
+   * into whichever bubble happened to be last, interleaving two answers into one.
+   *
+   * OPTIONAL on purpose. Every existing message carries none and keeps behaving exactly as it did;
+   * only the bubbles that need to be addressable get one.
+   */
+  mid?:      string;
   role:      'user' | 'assistant' | 'tool_call' | 'tool_result' | 'delegation' | 'proposal' | 'choices' | 'deck_setup' | 'deck_result' | 'social_schedule' | 'next_task' | 'lead_setup' | 'lead_result' | 'avail_confirm' | 'council' | 'council_setup';
   leadCount?: number;
   leadTable?: string;
@@ -11926,11 +11938,18 @@ Everything you need for follow-ups is in that answer above; read it there rather
               /** Appended to the boss's tool result: what the app itself saved, so its wrap-up
                *  reports a fact rather than repeating whichever agent claimed the most. */
               let toolResultExtra = '';
-              // Use the delegation array index directly as the phase index so the
-              // progress bar always stays aligned even when a step is skipped.
-              for (let phIdx = 0; phIdx < wfDelegations.length; phIdx++) {
+              // ── ONE STAGE, AS A FUNCTION ──────────────────────────────────────────
+              //
+              // This was a `for` loop, and the loop was the only reason agents could not work at
+              // once. As a function it can be called several times in parallel — each call paints
+              // its own bubble by id (see updateMsgById) instead of writing into "the last one",
+              // which is what two concurrent streams used to fight over.
+              //
+              // The array index is still the phase index, so the progress strip stays aligned even
+              // when a step is skipped.
+              const runStage = async (phIdx: number): Promise<void> => {
                 const del = wfDelegations[phIdx];
-                if (superseded()) break;
+                if (superseded()) return;
                 const wfKey  = String(del.agent_key ?? '');
                 const wfRawTask = String(del.task ?? '');
                 // Mark current phase as running
@@ -11942,18 +11961,29 @@ Everything you need for follow-ups is in that answer above; read it there rather
                 // returned nothing, and the marketing step behind it opened with an empty {{prev}},
                 // concluded it had no data to evaluate, and wrote a report about the absence. Three
                 // agents' work was sitting in wfResults the whole time, one slot further back.
-                const wfPrev = [...wfResults].reverse().find((r) => r.trim().length > 0) ?? '';
+                // THE LAST FINISHED STEP BEFORE THIS ONE — not "the last thing in the array".
+                //
+                // With stages running concurrently the array has holes in it (later slots filled by
+                // steps that finished sooner), so scanning the whole thing backwards could hand a
+                // stage the output of a step that comes AFTER it. Bounded to what precedes it, and
+                // skipping empties, which is what this always meant.
+                const wfPrev = wfResults.slice(0, phIdx).reverse().find((r) => (r ?? '').trim().length > 0) ?? '';
                 const wfTask = wfRawTask.replace(/\{\{prev\}\}/g, wfPrev
                   || '(Nothing usable came back from the steps before you. Do your own part from the brief above, and say in one line that you had nothing to build on.)');
                 const wfAgent = AGENT_BY_KEY[wfKey];
                 if (!wfAgent || delegatedAgents.has(wfKey)) {
                   // Invalid or duplicate agent — mark this phase done so the bar still completes.
+                  // `return`, not `continue`: this is one stage now, not an iteration of a loop.
                   setTaskPhases((prev) => prev.map((p, i) => i === phIdx ? { ...p, status: 'done' as const } : p));
-                  continue;
+                  wfResults[phIdx] = '';
+                  return;
                 }
                 delegatedAgents.add(wfKey);
                 setAgentStep(`Delegating to ${agentHandle(wfAgent)}…`);
-                addMsg({ role: 'delegation', content: '', toolName: wfKey, streaming: true });
+                // A NAMED bubble. Concurrent stages each paint their own; without this they
+                // would all write into whichever bubble happened to be last and interleave.
+                const wfMid = `wf-${phIdx}-${Date.now()}`;
+                addMsg({ mid: wfMid, role: 'delegation', content: '', toolName: wfKey, streaming: true });
                 const wfMems = await krewMemoryDb.getAll(wfKey).catch(() => [] as KrewMemory[]);
                 const wfMemBlock = wfMems.length > 0 ? '\n\n## Your memory\n' + wfMems.map((m) => `- ${m.key}: ${m.value}`).join('\n') : '';
                 // THE SAME TOOLBOX AS A SINGLE DELEGATION. A stage was handed fewer tools than the
@@ -12031,7 +12061,10 @@ ${wfTask}`);
                 // Did this stage actually look anything up, and has it already been corrected once?
                 let wfAnyTool = false;
                 let wfRecallRetries = 0;
-                const wfPaint = (live: string) => updateLastMsg(
+                // Everything this stage shows goes through here, and it now addresses its OWN
+                // bubble by name. That single line is what lets two agents stream at once without
+                // their answers interleaving into one.
+                const wfPaint = (live: string) => updateMsgById(wfMid,
                   [runLogFence(wfLog), wfAccum, live].filter(Boolean).join('\n\n'));
                 for (let ds = 0; ds < wfMax && !superseded(); ds++) {
                   wfCutOff = false;
@@ -12323,10 +12356,50 @@ ${wfTask}`);
                 // An unusable stage contributes NOTHING to the pipeline: {{prev}} must not carry
                 // two words of noise into the next agent, and the boss must not be handed it as a
                 // result it can then describe as work done.
-                wfResults.push(wfUsable ? wfClean : '');
+                // Its OWN SLOT, never push(). With stages running together, push() records
+                // COMPLETION order, so a fast stage's output would be filed under a slower stage's
+                // agent — and {{prev}} would hand the wrong work to whatever came next.
+                wfResults[phIdx] = wfUsable ? wfClean : '';
                 // Mark phase done
                 setTaskPhases((prev) => prev.map((p, i) => i === phIdx ? { ...p, status: 'done' as const } : p));
+              };
+
+              // ── RUNNING THEM ─────────────────────────────────────────────────────
+              //
+              // In WAVES. Every stage in a wave is independent of the others in it, so they run at
+              // the same time; each wave waits for the one before, because that is what a real
+              // dependency means. planFromDelegations works the dependency out from an explicit
+              // `needs`, or from {{prev}} (which has always meant "the step before me", so nothing
+              // existing changes), or concludes there is none.
+              //
+              // Promise.allSettled, not Promise.all: one stage throwing must not abandon the others
+              // mid-flight — they have bubbles on screen that would never finish.
+              //
+              // The ceiling is the scheduler's, and it is not arbitrary: there is one agent browser
+              // and one Word application object, so unlimited parallelism collides rather than
+              // going faster.
+              let wfWaves: number[][] = wfDelegations.map((_, i) => [i]);
+              try {
+                const { planFromDelegations, runWaves, validatePlan } = await import('../../lib/agentSchedule');
+                const plan = planFromDelegations(wfDelegations);
+                if (!validatePlan(plan).length) {
+                  wfWaves = runWaves(plan).map((w) => w.map((st) => Number(st.id) - 1));
+                }
+                // A plan with a cycle stays one-at-a-time in its original order rather than being
+                // rearranged on a broken graph.
+              } catch { /* concurrency is an improvement, never a requirement */ }
+
+              for (const wave of wfWaves) {
+                if (superseded()) break;
+                await Promise.allSettled(wave.map((idx) => runStage(idx)));
               }
+              // NO HOLES PAST THIS POINT. Slots are filled by index now rather than pushed, so a
+              // stage that never ran — Stop pressed mid-wave — leaves `undefined` where the wrap-up
+              // below calls .trim(). Normalised once, here, instead of guarded in six places.
+              for (let i = 0; i < wfDelegations.length; i++) {
+                if (typeof wfResults[i] !== 'string') wfResults[i] = '';
+              }
+
               // GUARANTEE the lead table is saved to the Brain — plan_workflow had NO save at all
               // before, so a request routed here (the boss's own prompt steers "find X AND do Y"
               // compound requests to plan_workflow, not delegate_to_agent) silently never reached
@@ -13572,6 +13645,28 @@ ${wfTask}`);
     setMessages((prev) => {
       const copy = [...prev];
       if (copy.length) copy[copy.length - 1] = { ...copy[copy.length - 1], content, streaming: live };
+      return copy;
+    });
+  }
+
+  /**
+   * Write into a NAMED bubble, wherever it happens to sit.
+   *
+   * The counterpart to updateLastMsg, and what makes concurrent agents possible: each one paints
+   * only its own bubble, so their order on screen and the order they finish in stop mattering.
+   *
+   * Carries the same two guards as updateLastMsg — never write into another conversation, and
+   * never re-open a bubble the user already stopped — because a concurrent run is exactly when a
+   * late straggler is most likely.
+   */
+  function updateMsgById(mid: string, content: string) {
+    if (!owns()) return;
+    const live = !stopRef.current;
+    setMessages((prev) => {
+      const i = prev.findIndex((m) => m.mid === mid);
+      if (i < 0) return prev;
+      const copy = [...prev];
+      copy[i] = { ...copy[i], content, streaming: live };
       return copy;
     });
   }
