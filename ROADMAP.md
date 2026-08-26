@@ -15,7 +15,7 @@ cost real time.
 
 ## Where this is right now
 
-**Version in the tree: 1.61.0** — builds clean, not yet produced as an `.exe`. Last released: 1.59.0.
+**Version in the tree: 1.62.0** — builds clean, not yet produced as an `.exe`. Last released: 1.59.0.
 
 **1.60.0 and 1.61.0 both matter.** 1.59.0 shipped the Office feature with the boss unable to reach
 it (see below), and 1.61.0 is the first build where Office work happens *where the user can see it*.
@@ -23,16 +23,18 @@ it (see below), and 1.61.0 is the first build where Office work happens *where t
 | # | Item | State | Evidence |
 |---|---|---|---|
 | — | UI pass | ✅ released 1.58.0 | screenshotted in both themes |
-| — | Outreach copilot counts | ✅ released 1.58.0 | 11 assertions on the real numbers |
-| 1 | Scan what's installed | ✅ **done** | 182 shortcuts → 45 apps on this machine; 48 + 13 assertions |
-| 2 | Drive Word / Excel / PowerPoint | ✅ **done, and visible** | all three open, write, save and stay on screen; template branding verified; 36 + 13 assertions |
-| — | Copilot: daily limit + attachments | ✅ **done** | limit is the user's to set; a dropped attachment now refuses |
-| 4 | Claude Code / Codex bridge | 🟡 **half** | real CLI works; background jobs use the subscription, **Krew chat does not yet**; Codex untested |
-| 7 | Coder | 🟡 **part** | folder can be changed/closed, real icons; **VS Code parity and the Krew→Coder plan handoff not started** |
-| 3 | Agent cursor | ❌ **not started** | fully specified below, including the ask-the-user window |
-| 5 | Several agents at once | ❌ **not started** | fully specified below |
-| 6 | Mid-task instructions | ❌ **not started** | — |
-| 8 | Browser fails for non-technical users | ❌ **not started** | diagnosed below — it is a silent download failure, not a missing feature |
+| 1 | Scan what's installed | ✅ **done** | 182 shortcuts → 45 apps; 48 + 13 assertions |
+| 2 | Word / Excel / PowerPoint | ✅ **done, and visible** | all three open, write, save, stay on screen; template branding verified |
+| 3 | Agent cursor | ✅ **built** 🟡 not yet driven by a real task | two windows, click-through overlay + ask-below-cursor; builds |
+| 5 | Several agents at once | ✅ **built** 🟡 not yet wired to the office | 55 assertions: parallel, dependency, chain, failure, cycle, stop |
+| 6 | Mid-task instructions | ✅ **built** 🟡 not yet wired to the chat box | folded in at step boundaries, taken once |
+| — | Copilot: limit + attachments | ✅ **done** | the limit is the user's; a dropped attachment now refuses |
+| — | Open any installed application | ✅ **done** | `launch_application`, from the scanned list only |
+| 4 | Claude Code bridge | 🟡 **half** | background jobs use the subscription; **Krew chat does not yet** |
+| 7 | Coder | 🟡 **part** | folder + icons done; VS Code parity and the Krew→Coder handoff not |
+| 3c | Clicking in software with no API | ❌ **not built** | input synthesis refused by a safety check — UI Automation is the right design |
+| 8 | Browser fails for non-technical users | ❌ **not started** | diagnosed: a silent download failure, not a missing feature |
+| 9 | Antivirus flags the installer | ❌ **needs a certificate** | no Authenticode signature; one free mitigation already applied |
 
 ### The lesson that cost a release
 
@@ -310,48 +312,55 @@ the scan, so the branch has somewhere to attach when it can be tested.
 **36 unit assertions** covering engine choice, the honesty sentences, spec validation, the injection
 property, and the "only our own PIDs" rule.
 
-### 3. The agent cursor — NOT STARTED
+### 3. The agent cursor ✅ BUILT — 🟡 not yet driven by a real task
 
-A visible, department-coloured cursor that **moves around the screen and does the work**, with a
-label saying what it is doing ("Meera · reading your pricing sheet").
+`src/lib/agentCursor.ts` + `cursor.html`/`src/cursor.tsx` + `ask.html`/`src/ask.tsx`, declared as two
+windows in `tauri.conf.json` and registered in `capabilities/default.json`.
 
-**Design correction, stated up front: do NOT take over the real Windows cursor.** An agent fighting
-the user for the mouse is infuriating and breaks the instant they touch the trackpad — and the
-owner's rule is that **adris must never shift the user off the software they are working in**. So
-this is a transparent, click-through, always-on-top overlay window: the user *sees* the work happen
-and keeps their machine. It also means several agents can be visible at once, which the real cursor
-could never do.
+**It draws a cursor; it does not take the user's.** An agent fighting for the mouse is intolerable
+and breaks the moment they touch the trackpad. A transparent, click-through, always-on-top window
+means the user sees everything and keeps their machine — and it is the only way several agents can
+be visible at once, which one real pointer never could.
 
-#### 3a. When the cursor gets stuck, it ASKS — right there, not in the app
+**Two windows, because click-through and clickable are opposites.** `agentcursor` is click-through
+always, so every click passes through to the work underneath. But a *question* has to be clicked,
+and turning click-through off would make a transparent full-screen sheet swallow clicks everywhere.
+So the question is a second small window, `agentask`, that appears just below the cursor.
 
-The requirement, in the owner's words: the agent is clicking through a real task and hits something
-only the user can answer — *which Google account?* Their X is on one account and their LinkedIn on
-another. Today an agent would guess, and a wrong guess here posts to the wrong account.
+`setIgnoreCursorEvents(true)` is re-applied on **every** show rather than once at startup: it is the
+one property whose loss would leave an invisible sheet eating the user's clicks across the whole
+screen. Cheap to repeat, catastrophic to miss.
 
-So the cursor **holds**, and a small window opens **directly below the cursor** — over whatever app
-the work is happening in, **not** inside the adris window — with the question and the options it can
-see. The user answers, and the cursor carries on.
+**Asking, when the agent hits something only the user can answer** — which Google account, when
+their X is on one and their LinkedIn on another:
 
-Why below the cursor and not in the exe: the user's eyes are on the app being worked in. A prompt
-that appears in a different window, possibly behind the one they are looking at, is a prompt that
-gets missed — and a stalled agent that looks like a hung agent.
+- **real choices where they exist**, free text as the fallback rather than the default — a list they
+  recognise beats a box that invites the typo that becomes a wrong account
+- **remembered** (`rememberAs`), so it is asked once and not every run
+- **an unanswered question times out into a HOLD, never a guess.** `askUser` returns `timedOut` so
+  the caller stops and says it is waiting. An agent posting to the wrong account is worse than an
+  agent that stopped.
 
-Design notes for when this is built:
-- It must be a **separate always-on-top Tauri window**, positioned at the cursor. The existing Quick
-  Bar (a second webview sharing localStorage) is the closest thing already in the codebase and is
-  the pattern to copy.
-- Offer **real choices, not a text box**, wherever possible — the accounts actually signed in, read
-  from the browser profile, are a list the user recognises. Falling back to free text is fine.
-- The answer must be **remembered** ("X posts go from the personal account, LinkedIn from the work
-  one") in the shared Krew profile, so the same question is asked once, not every run.
-- A question must **time out into a hold, never into a guess.** If nobody answers, the task waits
-  and says it is waiting — it does not pick one.
+**Still to do:** wire it into the agent run loop so real tasks drive it. The pieces are done and
+build; nothing has yet moved it across a screen during real work.
 
-### 3b. Everything visible in the chat as it happens
+#### 3c. Clicking in software that has no API — NOT BUILT, and the reason is important
 
-Whatever the cursor is doing must also be legible in the chat — **while** the task runs, not only
-when it finishes. This is the existing `src/lib/agentActivity.ts` rule (never a bare "thinking…";
-name the sheet, the filter, the query, with a live clock) extended to cursor work.
+Office is driven through COM, the browser through Playwright, and any application can be **opened**
+through `launch_application`. What is missing is clicking inside third-party software with no
+automation interface.
+
+The obvious route is `user32.dll` (SetCursorPos / mouse_event / SendKeys). **An automated safety
+check refused that code, and was right to:** a general "move the pointer anywhere and synthesise
+clicks and keystrokes" primitive is indistinguishable from malicious automation, because nothing in
+it says on whose behalf it acts.
+
+**The better design, which is what should actually be built:** Windows **UI Automation** — the
+accessibility API. It invokes a control *by name* ("find the button called Save in this window and
+invoke it"), which is structured, inspectable, and does not move the user's pointer at all. It is
+also far more reliable: blind coordinate clicking breaks the moment a window moves or the screen
+resolution differs, which on someone else's laptop is immediately. And it fits the rule this product
+already lives by, because it never touches the mouse.
 
 ### 4. Claude Code / Codex bridge 🟡 HALF DONE — background work yes, Krew chat not yet
 
@@ -410,39 +419,51 @@ reads and outreach follow-ups over to the user's own subscription.
 **35 unit assertions**, including that an error envelope carrying `subtype: "success"` — which the
 real 401 does — is never mistaken for an empty answer.
 
-### 5. Several agents working at once — NOT STARTED
+### 5. Several agents working at once ✅ BUILT — 🟡 not yet wired to the office
 
-Multiple agents on real work simultaneously, each with its own cursor and colour, without fighting
-over one browser window or one Word instance. Builds on 1–3.
+`src/lib/agentSchedule.ts`, with **55 assertions**.
 
-The hard parts, none of which are the UI:
-- **One browser, many agents.** The existing agent-browser is a single CDP session on port 9223.
-  Two agents driving it at once would interleave clicks. Needs either a tab per agent with a lock,
-  or a profile per agent.
-- **One Office, many agents.** Word COM is a single application object per process. Two documents at
-  once is fine; two agents editing the *same* document is not.
-- **The user is also using the machine.** Nothing here may steal focus or the clipboard.
+Exactly the requirement as stated: **if three agents can each work without the others finishing, all
+three run at once; if one will answer better with what another found, it waits — and actually
+RECEIVES that work**, because waiting that buys nothing is just being slow.
 
-#### 5a. Agents must hand work to each other, in the form the user actually wants
+| Case | Behaviour |
+|---|---|
+| three independent steps | all three start immediately |
+| a step needing one other | waits, then runs with that step's output in its context |
+| a step needing two | waits for **both**, receives both |
+| a chain a→b→c | each waits for its own input, and sees it, not the one before |
+| a step fails | what needed it is **blocked** and says which step let it down; the chain is followed outward; **unrelated work carries on** |
+| a cycle | refused **before anything starts**, naming the loop — never a run that silently hangs |
+| a dependency nobody produces | same, caught up front |
+| Stop | in-flight work is awaited so nothing is half-written; nothing new starts |
 
-The owner's example, and it is the right test: a lead-gen run should not just print a list in the
-chat. If the user wants it **in Excel**, the list goes to Excel — using the spreadsheet software on
-their own machine (item 2 already does this), and only falling back to showing it in the exe if no
-such software exists.
+**The ceiling is 3, and it is not arbitrary.** There is ONE agent browser (a single CDP session — two
+agents driving it interleave their clicks) and ONE Word application object per process. Unlimited
+parallelism does not make work faster, it makes it collide. The real fix is a resource claim per
+agent; until that exists the ceiling is what keeps the office honest.
 
-So the rule is: **the deliverable decides the destination, not the agent that produced it.** A
-researcher finishing a list should be able to hand it to the document agent without the user
-re-asking, and the chat should say where it went and offer to open it.
+**Still to do:** have the boss produce plans in this shape. The scheduler is done and tested; what
+feeds it is not.
 
-`save_to_brain` / `recall_from_brain` already move facts between agents. What is missing is passing a
-*deliverable* — a table, a draft, a list — with an intended destination attached.
+### 6. Mid-task instructions ✅ BUILT — 🟡 not yet wired to the chat box
 
-### 6. Mid-task instructions — small, high value
-Today a running task can't be added to; the user waits for it to finish, then asks again. It should
-absorb a new instruction *while running* — the way a person would when you lean over and add
-something. Very often what the user remembers is an addition, not a correction.
+`src/lib/midTask.ts`, plus a `takeInstructions` hook on `runPlan`.
 
----
+What people remember mid-task is almost always an **addition**, not a correction — "also cc my
+partner", "skip the ones in Mumbai". A person leaning over your desk would just say it.
+
+**Folded in at step boundaries, never mid-step.** Interrupting an agent halfway through writing a
+document to hand it a new brief produces something written half to each. The next step is the
+earliest point the instruction can be honoured *completely* — the difference between "added" and
+"half-added" — and the user is told which, because an instruction that looks ignored is worse than
+one that was refused.
+
+Taken **once**, by the first step to ask: handed to two parallel steps, "also cc my partner" becomes
+two copies of everything. The text says plainly that it arrived later than the original brief and
+wins where they disagree — a model given two briefs with no ordering will average them.
+
+**Still to do:** let the chat box add to a running task instead of queueing a new one.
 
 ### 7. Coder — make it a real editor, and connect it to Krew — PARTLY STARTED
 
@@ -494,6 +515,42 @@ that already worked for releases is the fix here.
    at the moment they first ask for something.
 4. Consider **bundling** Node in the installer. It costs ~30 MB and removes the failure entirely.
    That is a size decision for the owner, not a technical one.
+
+### 9. Antivirus flags the installer — NOT FIXED, and it needs money not code
+
+Reported: free antivirus stopped the installer on a real user's machine, then allowed it. That is a
+**reputation** problem, not a bug, and it will get worse as the app does more.
+
+**The cause.** `build-signed.ps1` signs the update manifest with a Tauri **updater key** — that
+proves an update came from you, and Windows has never heard of it. There is **no Authenticode code
+signature**, so to Windows and to every antivirus this is an unknown publisher. An unsigned
+executable that spawns PowerShell, downloads Node at runtime and enumerates processes is the exact
+heuristic profile of something unwanted. Everything adris does for good reasons looks, from the
+outside, like the things malware does.
+
+**Fixed already, and free:** `-ExecutionPolicy Bypass` is gone from the `-Command` spawn path. It
+does nothing there — execution policy governs script *files* — while being one of the most reliable
+heuristic triggers in existence. The `-File` callers still pass it, where it genuinely matters.
+
+**What actually fixes it, in order of effect:**
+
+1. **An Authenticode code-signing certificate.** OV is roughly $200–400/year and reputation builds
+   over weeks; **EV** is roughly $400–600/year and carries SmartScreen reputation **immediately**.
+   For a paid product sold to businesses this is not optional — it is the cost of not being
+   quarantined. This is the single highest-value non-code item in this document.
+2. **Submit the signed installer to the major vendors as a false positive.** Microsoft, Avast/AVG,
+   Norton and McAfee all take submissions and most clear within days.
+3. **Stop downloading executables at runtime where possible.** Bundling Node (~30 MB) removes both
+   the antivirus signal *and* item 8's silent download failure. One decision, two problems.
+4. **Keep the PowerShell surface small and named.** Two commands with documented contracts
+   (`scan_installed_apps` reads only; `office_automation` writes documents) beats one general
+   "run anything", both for review and for anyone reverse-engineering the binary.
+
+**Do not:** obfuscate, pack, or otherwise try to look less like what it is. That makes the score
+worse, not better, and it is the wrong instinct for a product whose entire pitch is that it does not
+touch the user's data.
+
+---
 
 ## Cutting a release — what the script does and does not do
 

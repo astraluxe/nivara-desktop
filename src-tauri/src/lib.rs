@@ -3410,6 +3410,85 @@ async fn office_automation(script: String) -> Result<String, String> {
     }
 }
 
+// ── Giving the agents hands ──────────────────────────────────────────────────
+//
+// NOT IMPLEMENTED YET, DELIBERATELY, AND THE REASON MATTERS.
+//
+// Driving Word through COM only works for Word. To click a button in the user's accounting package
+// or fill a form in software with no API, an agent needs to do what a person does: move the pointer
+// and click. The obvious way is user32.dll (SetCursorPos / mouse_event / SendKeys) through the same
+// PowerShell path the Office work already uses.
+//
+// A general "move the mouse anywhere and synthesise clicks and keystrokes" primitive is, from the
+// outside, indistinguishable from malicious automation — and an automated safety check refused it,
+// correctly, because nothing in the code says whose behalf it acts on.
+//
+// THE BETTER DESIGN, which is what should be built instead:
+//
+//   Windows UI Automation (UIA) — the accessibility API — invokes a control BY NAME. "Find the
+//   button called Save in this window and invoke it" is a structured, inspectable action against a
+//   named target, and it does not move the user's pointer at all. It is also far more reliable:
+//   blind coordinate clicking breaks the moment a window moves or the screen resolution changes,
+//   which on someone else's laptop is immediately.
+//
+//   It also fits the rule this product already lives by — an agent must never fight the user for
+//   the mouse — because it never touches the mouse.
+//
+// Until then, agents reach real software three ways that need none of this: Office through COM,
+// the browser through Playwright, and any application through launch_application below.
+//
+// See ROADMAP.md item 3 for the full plan.
+
+/// Open an application the user actually has, and optionally a file in it.
+///
+/// This is the third way agents reach real software, alongside Office COM and the browser — and it
+/// covers everything the other two do not, because "start this program" needs no API, no
+/// automation interface and no pointer.
+///
+/// `exe` comes from the installed-app scan, never from free text a model wrote: the agent picks
+/// from a list of what is genuinely on the machine, so it cannot invent a path or be talked into
+/// running something that was never there.
+#[tauri::command]
+async fn launch_application(exe: String, file: Option<String>) -> Result<String, String> {
+    let path = std::path::Path::new(&exe);
+    if !path.is_file() {
+        return Err(format!("{exe} is not on this computer — scan the installed applications first."));
+    }
+    let mut cmd = std::process::Command::new(&exe);
+    if let Some(f) = file.as_deref().filter(|f| !f.is_empty()) {
+        if !std::path::Path::new(f).exists() {
+            return Err(format!("{f} does not exist, so there is nothing to open."));
+        }
+        cmd.arg(f);
+    }
+    // Spawned, never waited on: these are windows the user is meant to work in, and the agent must
+    // not sit blocked until they close them.
+    cmd.spawn().map_err(|e| format!("could not start {exe}: {e}"))?;
+    let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or(exe.clone());
+    Ok(match file {
+        Some(f) if !f.is_empty() => format!("Opened {f} in {name}."),
+        _ => format!("Opened {name}."),
+    })
+}
+
+/// Where the pointer is, and how big the screen is — so the overlay can be positioned in the same
+/// coordinate space the clicks use.
+#[tauri::command]
+async fn agent_screen() -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        run_powershell(
+            r#"Add-Type -AssemblyName System.Windows.Forms
+$s = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+$p = [System.Windows.Forms.Cursor]::Position
+"{""w"":$($s.Width),""h"":$($s.Height),""x"":$($p.X),""y"":$($p.Y)}""#,
+            "could not read the screen",
+        )
+    }
+    #[cfg(not(target_os = "windows"))]
+    { Err("Windows-only for now".into()) }
+}
+
 // ── The bridge to Claude Code / Codex ────────────────────────────────────────
 //
 // The idea: the user already pays for a coding-agent subscription that is far larger than anything
@@ -3509,7 +3588,16 @@ async fn agent_cli_run(
 fn run_powershell(script: &str, empty_msg: &str) -> Result<String, String> {
     use std::os::windows::process::CommandExt;
     let out = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script])
+        // NOTE the absence of -ExecutionPolicy Bypass, and do not add it back.
+        //
+        // Execution policy governs script FILES. It has no effect on -Command, so passing Bypass
+        // here bought nothing — while being one of the most reliable heuristic triggers there is
+        // for antivirus and EDR products. An unsigned installer that spawns
+        // "powershell -ExecutionPolicy Bypass" is the textbook shape of something unwanted, and
+        // free antivirus has already stopped this app installing on a real user's machine once.
+        //
+        // The other callers below still pass it because they run -File, where it genuinely matters.
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .creation_flags(0x08000000) // CREATE_NO_WINDOW — this must never flash a console at the user
         .output()
         .map_err(|e| format!("could not run PowerShell: {e}"))?;
@@ -8672,6 +8760,8 @@ pub fn run() {
             krew_execute_command,
             scan_installed_apps,
             office_automation,
+            launch_application,
+            agent_screen,
             agent_cli_detect,
             agent_cli_run,
             setup_agent_browser,

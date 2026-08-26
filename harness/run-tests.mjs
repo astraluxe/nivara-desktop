@@ -42,6 +42,7 @@ const UNITS = [
   ['installedApps', 'src/lib/installedApps.ts'],
   ['officeCom',     'src/lib/officeCom.ts'],
   ['agentCli',      'src/lib/agentCli.ts'],
+  ['agentSchedule', 'src/lib/agentSchedule.ts'],
 ];
 
 let failed = 0;

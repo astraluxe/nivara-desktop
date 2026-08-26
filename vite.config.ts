@@ -33,6 +33,10 @@ export default defineConfig(async () => ({
       input: {
         main: "index.html",
         quickbar: "quickbar.html",
+        // The agent cursor overlay (click-through, draws the pointer) and the small window it
+        // opens below itself when it has to ask the user something.
+        cursor: "cursor.html",
+        ask: "ask.html",
         // quickbadge (the float-over-apps corner badge) is removed for now — quickbar stays.
       },
     },
