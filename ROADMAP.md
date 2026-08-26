@@ -15,18 +15,37 @@ cost real time.
 
 ## Where this is right now
 
-| | |
-|---|---|
-| **Version in the tree** | **1.59.0** — bumped, builds clean, **not yet produced as an `.exe`** |
-| Last released | 1.58.0 |
-| In 1.59.0 | installed-app scanning (`c90a693`), real Office automation (`8ecb058`), the Claude Code bridge (`7522377`) |
-| In 1.58.0 | the UI pass and the outreach copilot counts |
-| Next | finish the bridge for Krew chat (streaming), then item 3 the agent cursor, then item 5 multiple tabs |
+**Version in the tree: 1.59.0** — builds clean, not yet produced as an `.exe`. Last released: 1.58.0.
 
-Both new features are ✅ *proven on this machine* — real documents made and read back, a real
-template's branding verified in the output — and 🟡 *not yet exercised through the running app*, so
-the Rust `invoke` boundary is the one thing still unproven. Both Rust commands are `cargo check`ed
-and the PowerShell they run has been executed directly.
+| # | Item | State | Evidence |
+|---|---|---|---|
+| — | UI pass | ✅ **released** in 1.58.0 | screenshotted in both themes |
+| — | Outreach copilot counts | ✅ **released** in 1.58.0 | 11 assertions on the real numbers |
+| 1 | Scan what's installed | ✅ **done** | 182 shortcuts → 45 apps on a real machine; 48 assertions |
+| 2 | Drive Word / Excel / PowerPoint | ✅ **done** | real files made **and read back**; a real `.dotx` template's branding verified in the output; 36 + 13 assertions |
+| 4 | Claude Code / Codex bridge | 🟡 **half** | works against the real CLI — background jobs use the subscription; **Krew chat does not yet**; Codex untested |
+| 3 | Agent cursor | ❌ **not started** | specified in detail below, including the ask-the-user window |
+| 5 | Several agents at once | ❌ **not started** | specified in detail below |
+| 6 | Mid-task instructions | ❌ **not started** | — |
+
+### The lesson that cost a release
+
+1.59.0 shipped a working Office feature that the user could not use. `create_office_document` was
+built, tested against real Word, and verified producing branded documents — and when the user asked
+for a Word proposal the boss replied **"I cannot create or save files directly to your computer."**
+
+The tool was never added to the boss's system-tool allowlist, which lived as an inline literal 4,800
+lines into `KrewChat.tsx`. Nothing was broken; the agent was describing the tools it could see.
+**Every test I had written passed.** None of them exercised `executeTool(name, args)` → a file on
+disk — the only path a user ever takes.
+
+Two things now prevent a repeat, and both are wired into `npm run build` / the test suite:
+`scripts/check-boss-tools.mjs` (asserts every boss tool name is real, that the capabilities people
+ask the boss for directly are present, and that the shared list has not drifted back to a literal)
+and `harness/officeDispatch.mjs` (drives the real tool to a real document).
+
+**The rule this produces: a feature is not done when the module works. It is done when the thing
+the user types produces the thing they asked for.**
 
 ---
 
