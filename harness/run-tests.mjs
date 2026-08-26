@@ -62,6 +62,14 @@ if (!process.argv.includes('--unit')) {
     execFileSync(vite, ['build', '--config', 'vite.harness.config.ts', '--outDir', 'dist-harness'],
       binOpts({ cwd: root, stdio: 'ignore' }));
   }
+  // Real Microsoft Office, on a real machine. This suite exists because the Office feature was
+  // verified as a module and as a script, shipped, and STILL told the user "I cannot create or save
+  // files" — nothing had ever exercised executeTool(name, args) → a file on disk. It skips cleanly
+  // off Windows or without Office.
+  console.log('\n### Making a real document, through the agent tool');
+  try { execFileSync(process.execPath, [path.join(here, 'officeDispatch.mjs')], { stdio: 'inherit' }); }
+  catch { failed++; }
+
   console.log('\n### OutreachCopilot, in a real browser');
   try { execFileSync(process.execPath, [path.join(here, 'drive.mjs')], { stdio: 'inherit' }); }
   catch { failed++; }
