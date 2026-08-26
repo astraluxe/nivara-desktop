@@ -4397,6 +4397,14 @@ const [studioExtracting, setStudioExtracting] = useState(false);
   const bottomRef          = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const atBottomRef        = useRef(true);
+  /**
+   * The Claude Code session this chat is continuing.
+   *
+   * Without it every message would start a fresh conversation and the agent would have no idea what
+   * was said a moment ago — the bridge would work and the chat would feel amnesiac.
+   */
+  const cliSessionRef = useRef<string>('');
+
   const callIdRef          = useRef(0);
   // Which BYOK key/model the last call actually used, and any model we had to repair after the
   // provider retired the saved one. See streamTurnWithRetry's dead-model recovery.
@@ -4966,6 +4974,47 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     let   fullText = '';
     let   truncated = false;
     const done = { cleanup: () => {} };
+
+    // ── THE BRIDGE ────────────────────────────────────────────────────────────
+    //
+    // Every model call in Krew comes through this function, so this one branch is what turns the
+    // whole chat over to the user's own Claude Code subscription. Read live from the stored
+    // preference rather than from this component's `mode`, so the title-bar menu takes effect on
+    // the very next message instead of the next remount.
+    //
+    // Placed FIRST, before any key or provider is resolved: none of that applies to a subscription,
+    // and resolving it would be work done to be thrown away.
+    try {
+      const { getAiSource } = await import('../../lib/aiSource');
+      const bridgePref = getAiSource();
+      if (bridgePref.mode === 'agent_cli') {
+        const { streamAgentCli } = await import('../../lib/agentCli');
+        // The CLI takes ONE prompt, not a message array. The history is flattened with speaker
+        // labels, which is how it reads a conversation — and the session id below means only the
+        // newest turn usually has to be sent at all.
+        const flat = msgs.map((m) => (m.role === 'user' ? `User: ${m.content}` : `Assistant: ${m.content}`)).join('\n\n');
+        const r = await streamAgentCli(
+          bridgePref.cli ?? 'claude_code',
+          flat,
+          (chunk) => { fullText += chunk; onChunk(chunk); },
+          {
+            systemPrompt: systemPrompt || undefined,
+            // Continue the same conversation rather than starting a new one on every message.
+            sessionId: cliSessionRef.current || undefined,
+          },
+        );
+        if (r.sessionId) cliSessionRef.current = r.sessionId;
+        // An error is thrown, not returned as an empty answer: streamTurnWithRetry already knows how
+        // to report a failed turn, and silence would be presented to the user as a reply.
+        if (r.error && !r.text.trim()) throw new Error(r.error);
+        return { text: r.text || fullText, truncated: false };
+      }
+    } catch (e) {
+      // A bridge that is chosen but broken must SAY so. Falling through to the hosted model would
+      // spend the user's adris.tech credit without telling them the subscription they picked was
+      // not used — which is the whole thing the title-bar menu exists to make visible.
+      if (e instanceof Error && e.message) throw e;
+    }
 
     // Resolve the API key + provider for own_key mode.
     let effectiveKey       = apiKey;

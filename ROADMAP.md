@@ -31,11 +31,11 @@ it (see below), and 1.61.0 is the first build where Office work happens *where t
 | — | Copilot: limit + attachments | ✅ **done** | the limit is the user's; a dropped attachment refuses |
 | — | Open any installed application | ✅ **done** | `launch_application`, from the scanned list only |
 | — | Info page | ✅ **done** | every feature above written up for a non-technical reader |
-| 4 | Claude Code bridge | 🟡 **half** | background jobs use the subscription; **Krew chat does not yet** |
-| 7 | Coder | 🟡 **part** | folder + icons done; VS Code parity and the Krew→Coder handoff not |
+| 4 | Claude Code bridge | ✅ **done** | background jobs and the chat both; streaming verified against the real CLI |
+| 7 | Coder | 🟡 **part** | folder, icons and the **Krew→Coder plan handoff** done; VS Code parity not |
 | — | Boss produces dependency-aware plans | ✅ **done** | `plan_workflow` accepts `needs`, orders by dependency; 66 assertions |
 | — | Node download survives a filtered network | ✅ **done** | mirrored through adris.tech, every attempt named on failure |
-| — | Truly concurrent delegation | 🟡 **needs a UI change** | the bubbles stream into "the last message"; two at once would interleave |
+| — | Truly concurrent delegation | ✅ **done** | bubbles have an identity; independent stages run together |
 | 3c | Clicking in software with no API | ❌ **not built** | input synthesis refused by a safety check — UI Automation is the right design |
 | 8 | Browser for non-technical users | ✅ **done** | both runtimes mirrored at tag v0.0.1; adris.tech/dl serves them (HTTP 206 measured) |
 | 9 | Antivirus flags the installer | ❌ **needs a certificate** | parked at the owner's request; one free mitigation applied |
@@ -434,7 +434,7 @@ guess** — `askUser` returns `timedOut` so the caller stops and says it is wait
 window. The overlay is a Tauri window, so it only appears inside the built exe — the screenshot is
 how it is checked without one.
 
-### 4. Claude Code / Codex bridge 🟡 HALF DONE — background work yes, Krew chat not yet
+### 4. Claude Code / Codex bridge ✅ DONE — the chat streams through it too
 
 `src/lib/agentCli.ts` + `agent_cli_detect` / `agent_cli_run` in lib.rs + the `agent_cli` mode in
 `aiSource.ts` + the switch in the title bar.
@@ -475,11 +475,21 @@ reads and outreach follow-ups over to the user's own subscription.
 
 #### What is NOT done yet, stated plainly
 
-- **Krew chat still streams through the old path.** `KrewChat.tsx` has its own `krew_ai_stream`
-  plumbing, and the CLI answers in one piece rather than streaming. Routing it means either
-  buffering (losing the live feel) or moving to `--output-format stream-json`. That is the next
-  step, and it is the difference between "background work uses your subscription" and "the whole
-  app does".
+- ~~Krew chat still streams through the old path.~~ **Done.** `agent_cli_stream` in Rust runs the
+  CLI with `--output-format stream-json --include-partial-messages` and forwards each line as an
+  event; `streamAgentCli` assembles it. The branch sits at the top of `streamTurn`, which is the
+  single choke point every model call in Krew passes through, and reads the preference **live** so
+  the title-bar menu takes effect on the very next message rather than the next remount.
+
+  **A bug found only by running it against the real CLI:** the answer arrived **twice**. The CLI
+  emits the deltas *and then* a whole `assistant` message carrying the same text — a five-line reply
+  came out as `1234512345`. The whole-message line is now marked and taken **only** when no deltas
+  were seen, which is also what keeps it working if partials are ever unavailable. Both directions
+  are asserted in the tests.
+
+  A chosen-but-broken bridge **throws rather than falling back**. Quietly using the hosted model
+  would spend adris.tech credit without saying the subscription they picked was not used — the exact
+  thing the menu exists to make visible.
 - **Codex is not installed here, so it is not offered.** `buildCodexArgs` is the documented shape
   and has never been run. `detectClis()` simply will not return it until it exists and can be tested.
 - **The tool allow-list is empty by default** — deliberate. The bridge buys *thinking*; the hands
@@ -656,6 +666,29 @@ heuristic triggers in existence. The `-File` callers still pass it, where it gen
 **Do not:** obfuscate, pack, or otherwise try to look less like what it is. That makes the score
 worse, not better, and it is the wrong instinct for a product whose entire pitch is that it does not
 touch the user's data.
+
+---
+
+## The website has to change too — NOT STARTED
+
+**adris.tech is pay-per-use now.** The site still sells subscription tiers, and the exe already says
+"pay per use" in the AI menu, so the two now contradict each other in front of the same user.
+
+This is the **website repo** (the NIVARA root), not this one, and it is listed here so it is not
+forgotten while the exe moves:
+
+- **Pricing page** — replace the tier table with pay-per-use. What a unit costs, what a typical
+  month looks like, and no monthly commitment.
+- **Say the cheaper option out loud.** Someone who already pays for Claude Code or Codex can plug it
+  in and spend nothing here. Hiding that to protect revenue would be the same dishonesty the app
+  refuses everywhere else — and it is the strongest reason to choose adris over a wrapper.
+- **Checkout and the webhook** — `razorpay-webhook` and the plan grants are written around
+  subscriptions. Usage billing is a different shape and needs deciding before it is built.
+- **The exe's plan badge** currently reads Free/Solo/Builder/Team. It has to mean something under
+  pay-per-use or come out.
+
+**Do not start this until the exe is launched.** The two must change together, and a half-migrated
+pricing page is worse than an old one.
 
 ---
 

@@ -3622,6 +3622,85 @@ async fn agent_cli_run(
     Ok(stdout)
 }
 
+/// Run an agent CLI and STREAM its answer, a line at a time.
+///
+/// The non-streaming `agent_cli_run` returns only when the CLI is finished, which is right for a
+/// background job and wrong for a chat: the user watches a spinner for twenty seconds and then the
+/// whole reply appears at once. Krew streams everything else, so a bridged chat that did not would
+/// feel broken rather than different.
+///
+/// `--output-format stream-json` emits one JSON object per line. Each line is forwarded as a
+/// `agent-cli-chunk` event keyed by `id`, and the caller assembles them exactly as it already
+/// assembles `krew-chunk`.
+#[tauri::command]
+async fn agent_cli_stream(
+    app: tauri::AppHandle,
+    id: String,
+    exe: String,
+    args: Vec<String>,
+    cwd: Option<String>,
+    clear_env: Vec<String>,
+    timeout_secs: Option<u64>,
+) -> Result<(), String> {
+    use tauri::Emitter;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let mut cmd = tokio::process::Command::new(&exe);
+    cmd.args(&args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    if let Some(dir) = cwd.as_deref().filter(|d| !d.is_empty()) { cmd.current_dir(dir); }
+    // The same auth-stripping as agent_cli_run, and for the same reason: an inherited
+    // ANTHROPIC_API_KEY silently bills a key instead of the subscription the user pays for.
+    for key in &clear_env { cmd.env_remove(key); }
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
+    let mut child = cmd.spawn().map_err(|e| format!("could not start {exe}: {e}"))?;
+    let stdout = child.stdout.take().ok_or("no stdout from the agent")?;
+    let mut lines = BufReader::new(stdout).lines();
+
+    let secs = timeout_secs.unwrap_or(600).clamp(10, 3600);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(secs);
+
+    loop {
+        let next = tokio::time::timeout_at(deadline, lines.next_line()).await;
+        match next {
+            // A hung agent must end the stream rather than leaving the chat mid-sentence forever.
+            Err(_) => {
+                let _ = child.start_kill();
+                let _ = app.emit("agent-cli-error", serde_json::json!({
+                    "id": id, "error": format!("the agent did not finish within {secs}s")
+                }));
+                return Ok(());
+            }
+            Ok(Err(e)) => {
+                let _ = app.emit("agent-cli-error", serde_json::json!({ "id": id, "error": e.to_string() }));
+                return Ok(());
+            }
+            Ok(Ok(None)) => break,
+            Ok(Ok(Some(line))) => {
+                if line.trim().is_empty() { continue; }
+                let _ = app.emit("agent-cli-chunk", serde_json::json!({ "id": id, "line": line }));
+            }
+        }
+    }
+
+    // Whatever the CLI said on stderr is worth keeping: when it refuses, that is where it says why.
+    let mut err_text = String::new();
+    if let Some(stderr) = child.stderr.take() {
+        let mut el = BufReader::new(stderr).lines();
+        while let Ok(Some(l)) = el.next_line().await {
+            if !err_text.is_empty() { err_text.push('\n'); }
+            err_text.push_str(&l);
+            if err_text.len() > 4000 { break; }
+        }
+    }
+    let _ = child.wait().await;
+    let _ = app.emit("agent-cli-done", serde_json::json!({ "id": id, "stderr": err_text }));
+    Ok(())
+}
+
 /// Spawn PowerShell directly and hand back stdout.
 ///
 /// NOT through `cmd /C`, unlike krew_execute_command. std::process::Command passes arguments to
@@ -8864,6 +8943,7 @@ pub fn run() {
             agent_screen,
             agent_cli_detect,
             agent_cli_run,
+            agent_cli_stream,
             setup_agent_browser,
             browser_diagnose,
             run_agent_browser,
