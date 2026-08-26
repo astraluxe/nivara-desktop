@@ -14,7 +14,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import {
-  getAiSource, setAiSource, getAiAvailability, AI_SOURCE_EVENT,
+  getAiSource, setAiSource, getAiAvailability, AI_SOURCE_EVENT, AI_SETUP_EVENT,
   type AiSourceMode, type AiSourcePref, type ByokProvider, type AiAvailability,
 } from '../lib/aiSource';
 import { CLI_LABEL, type AgentCli } from '../lib/agentCli';
@@ -31,6 +31,16 @@ interface Choice {
   cost: string;
   /** Which real brand mark to draw. People recognise a logo far faster than they read a name. */
   logo: string;
+  /**
+   * Not usable yet, and why.
+   *
+   * Shown rather than hidden. A menu that silently omits Codex leaves someone who pays for Codex
+   * with no way to know the app supports it — "it is not here" and "it is not installed" look
+   * identical when the row is missing.
+   */
+  unavailable?: string;
+  /** A setup panel to open instead of selecting. See AI_SETUP_EVENT. */
+  setup?: 'own_key' | 'local' | 'omniroute';
 }
 
 const PROVIDER_LABEL: Record<ByokProvider, string> = {
@@ -48,13 +58,19 @@ const PROVIDER_LABEL: Record<ByokProvider, string> = {
 export function buildChoices(avail: AiAvailability | null): Choice[] {
   const out: Choice[] = [];
 
-  for (const cli of avail?.clis ?? []) {
+  // BOTH are always listed, installed or not. Someone who pays for Codex needs to see that the app
+  // supports it; a missing row says nothing, and "not installed" says exactly what to do.
+  for (const cli of ['claude_code', 'codex'] as AgentCli[]) {
+    const have = (avail?.clis ?? []).includes(cli);
     out.push({
       id: `cli:${cli}`, mode: 'agent_cli', cli,
       label: `Your ${CLI_LABEL[cli]}`,
-      blurb: 'Thinks with the subscription you already pay for.',
-      cost: 'included in your subscription',
+      blurb: have
+        ? 'Thinks with the subscription you already pay for.'
+        : `Install ${CLI_LABEL[cli]} and it appears here — then adris runs on your subscription, not on credit.`,
+      cost: have ? 'included in your subscription' : 'not installed',
       logo: cli === 'claude_code' ? 'claude' : 'openai',
+      unavailable: have ? undefined : `${CLI_LABEL[cli]} is not on this computer.`,
     });
   }
 
@@ -68,6 +84,20 @@ export function buildChoices(avail: AiAvailability | null): Choice[] {
     });
   }
 
+  // No key connected: an entry that OPENS THE SETUP rather than one that cannot be chosen. The row
+  // of mode buttons that used to do this is gone, so without it there is no route to the panel at
+  // all. NVIDIA and Groq hand out free keys, which is the part people do not expect.
+  if (!(avail?.byokProviders ?? []).length) {
+    out.push({
+      id: 'connect-key', mode: 'own_key',
+      label: 'Connect your own key',
+      blurb: 'NVIDIA and Groq give them away free. Nothing here is charged to you afterwards.',
+      cost: 'free to set up',
+      logo: 'openai',
+      setup: 'own_key',
+    });
+  }
+
   out.push({
     id: 'nivara', mode: 'nivara',
     label: 'adris.tech',
@@ -76,21 +106,25 @@ export function buildChoices(avail: AiAvailability | null): Choice[] {
     logo: 'adris',
   });
 
-  if ((avail?.localModels.length ?? 0) > 0) {
-    out.push({
-      id: 'local', mode: 'local',
-      label: 'Local model',
-      blurb: 'Runs on this computer. Works with no internet.',
-      cost: 'free',
-      logo: 'local',
-    });
-  }
+  const haveLocal = (avail?.localModels.length ?? 0) > 0;
+  out.push({
+    id: 'local', mode: 'local',
+    label: 'Local model',
+    blurb: haveLocal
+      ? 'Runs on this computer. Works with no internet.'
+      : 'Download one and it runs here, offline, with nothing leaving the machine.',
+    cost: 'free',
+    logo: 'local',
+    setup: haveLocal ? undefined : 'local',
+  });
 
   out.push({
     id: 'auto', mode: 'auto',
-    label: 'Automatic',
-    blurb: 'Your own key if you have one, then adris.tech, then a local model.',
-    cost: 'whichever is available',
+    label: 'Choose for me',
+    // "Automatic" told the user nothing -- the owner's own reaction was "idk what that is". This
+    // says what it will actually do, in the order it will do it.
+    blurb: 'Picks whichever of the above you have, cheapest first: your subscription, then your own key, then adris.tech.',
+    cost: 'varies',
     logo: 'auto',
   });
 
@@ -137,6 +171,15 @@ export default function AiSourceMenu() {
   const current = choices.find((c) => c.id === currentId) ?? choices[choices.length - 1];
 
   function pick(c: Choice) {
+    // Needs setting up first. Open the panel instead of selecting something that cannot run — a
+    // choice that silently does nothing is worse than one that takes you where you have to go.
+    if (c.setup) {
+      window.dispatchEvent(new CustomEvent(AI_SETUP_EVENT, { detail: { which: c.setup } }));
+      setOpen(false);
+      return;
+    }
+    if (c.unavailable) return;      // listed so it is known to exist, not selectable
+
     const next: AiSourcePref = { mode: c.mode };
     if (c.cli) next.cli = c.cli;
     if (c.provider) next.provider = c.provider;
@@ -184,8 +227,11 @@ export default function AiSourceMenu() {
                 role="menuitemradio"
                 aria-checked={active}
                 onClick={() => pick(c)}
+                title={c.unavailable ?? c.blurb}
                 className={`w-full text-left px-2.5 py-2 rounded-nv transition-colors duration-fast ease-nv
-                            ${active ? 'bg-accent/[0.13] ring-1 ring-inset ring-accent/25' : 'hover:bg-nv-surface2/70'}`}
+                            ${active ? 'bg-accent/[0.13] ring-1 ring-inset ring-accent/25'
+                              : c.unavailable ? 'opacity-45 hover:bg-nv-surface2/40'
+                                : 'hover:bg-nv-surface2/70'}`}
               >
                 <span className="flex items-center gap-2">
                   {/* Colour ON here: the user is choosing between COMPANIES, and the hue is half of

@@ -15,7 +15,7 @@ cost real time.
 
 ## Where this is right now
 
-**Version in the tree: 1.66.0** — builds clean, not yet produced as an `.exe`. Last released: 1.65.0.
+**Version in the tree: 1.67.0** — builds clean, not yet produced as an `.exe`. Last released: 1.66.0.
 
 **1.60.0 and 1.61.0 both matter.** 1.59.0 shipped the Office feature with the boss unable to reach
 it (see below), and 1.61.0 is the first build where Office work happens *where the user can see it*.
@@ -100,6 +100,25 @@ offer, each with **what it costs in the user's terms** — *included in your sub
 use*, *billed by OpenAI*, *free* — because that is the thing they actually want to know. A
 subscription or a local model shows in the accent colour, since it is the state they should be
 pleased to see.
+
+**The pill rows are gone from every module (1.67.0).** `ConnectionBar` — shown at the top of BOTH
+Krew and Coder — rendered Local / Own Key / adris.tech / OmniRoute buttons setting the same value
+the title-bar menu sets. Four ways to make one decision, on two screens.
+
+What survives is everything *below* those buttons: the setup panels. Connecting a key, ranking the
+models that key can actually call, downloading a local model, installing OmniRoute — none of it is a
+duplicate, and all of it still has to live somewhere. The menu opens them by name through
+`AI_SETUP_EVENT`, so **choosing something that needs setting up takes the user straight to it**
+rather than leaving them hunting for a panel whose button no longer exists.
+
+**Both CLIs are always listed, installed or not.** A menu that silently omits Codex leaves someone
+who pays for Codex with no way to know the app supports it — "it is not here" and "it is not
+installed" look identical when the row is missing. The uninstalled one is dimmed, unselectable, and
+says what to do.
+
+**"Automatic" became "Choose for me."** The old label told the user nothing — the owner's own
+reaction was *"idk what that is"* — so it now says what it will do and in what order: your
+subscription, then your own key, then adris.tech.
 
 **Real brand marks, not lettered squares.** The logos people actually recognise — Anthropic's
 burst, OpenAI's knot, Gemini's spark, our own chevron — drawn from the paths those companies

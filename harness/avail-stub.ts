@@ -11,11 +11,12 @@ export interface AiAvailability {
   clis: string[];
 }
 export const AI_SOURCE_EVENT = 'nv-ai-source-changed';
+export const AI_SETUP_EVENT = 'nv-open-ai-setup';
 export const getAiSource = (): AiSourcePref => ({ mode: 'agent_cli', cli: 'claude_code' });
 export const setAiSource = () => {};
 export const getAiAvailability = async (): Promise<AiAvailability> => ({
-  byokProviders: ['openai', 'gemini'],
-  localModels: [{ name: 'Llama 3.1 8B', filename: 'llama.gguf' }],
+  byokProviders: [],
+  localModels: [],
   signedIn: true,
   clis: ['claude_code'],
 });

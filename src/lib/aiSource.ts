@@ -29,6 +29,19 @@ export interface AiSourcePref {
 const KEY = 'nv-ai-source';
 export const AI_SOURCE_EVENT = 'nv-ai-source-changed';
 
+/**
+ * Ask whichever screen owns the setup panels to open one.
+ *
+ * The panels — connect a key, pick a local model, install OmniRoute — live inside ConnectionBar and
+ * are genuinely useful. What was removed is the row of buttons beside them that set the same value
+ * the title-bar menu sets. This is how the menu reaches them now: choosing something that needs
+ * setting up opens the panel for it, instead of leaving the user to hunt for a button that no
+ * longer exists.
+ *
+ * detail: { which: 'own_key' | 'local' | 'omniroute' }
+ */
+export const AI_SETUP_EVENT = 'nv-open-ai-setup';
+
 /** Default model per BYOK provider — cheap + fast, these are background tasks. */
 const BYOK_MODEL: Record<ByokProvider, string> = {
   gemini: 'gemini-2.5-flash-lite',

@@ -1,4 +1,5 @@
-﻿import { useState, useEffect, useCallback } from 'react';
+﻿import { AI_SETUP_EVENT } from '../../lib/aiSource';
+import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { ConnectionMode, Provider, PROVIDERS, fetchRankedModels, type RankedModel } from '../../lib/ai';
@@ -35,11 +36,6 @@ const PLAN_LABELS: Record<Plan, string> = {
   explore: 'Free', free: 'Free', solo: 'Solo', builder: 'Builder', business: 'Team', custom: 'Custom',
 };
 
-const MODES: { id: ConnectionMode; label: string; dotClass: string }[] = [
-  { id: 'local',   label: 'Local',   dotClass: 'bg-nv-green' },
-  { id: 'own_key', label: 'Own Key', dotClass: 'bg-nv-yellow' },
-  { id: 'nivara',  label: 'adris.tech',  dotClass: 'bg-accent' },
-];
 
 // THE DROPDOWN IS BUILT FROM THIS LIST, NOT FROM PROVIDERS. A provider missing here simply does
 // not exist as far as the user is concerned, however completely it is wired underneath.
@@ -480,47 +476,41 @@ export default function ConnectionBar(props: Props) {
     }
   }
 
+  // The title-bar menu asks for a panel by name; this is the only remaining way to open one.
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const which = (e as CustomEvent<{ which?: string }>).detail?.which;
+      if (which === 'own_key' || which === 'local' || which === 'omniroute') {
+        if (which === 'omniroute') { onModeChange('own_key'); handleProviderChange('omniroute'); }
+        else if (which === 'own_key') onModeChange('own_key');
+        else onModeChange('local');
+        setPopup(which);
+      }
+    };
+    window.addEventListener(AI_SETUP_EVENT, onOpen);
+    return () => window.removeEventListener(AI_SETUP_EVENT, onOpen);
+  }, [onModeChange]);
+
+  // `mode` is still received and still used to decide what the panels show; it is simply no
+  // longer RENDERED as a row of buttons here.
+  void mode;
+
   const meta = PROVIDERS[provider];
 
   return (
     <>
-      <div className="flex items-center gap-1.5">
-        {MODES.map((m) => {
-          const active = mode === m.id;
-          return (
-            <button
-              key={m.id}
-              onClick={() => { onModeChange(m.id); setPopup(m.id); }}
-              className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded border transition-fast
-                ${active
-                  ? 'border-accent/50 text-accent bg-accent/10'
-                  : 'border-nv-border text-nv-faint hover:text-nv-muted hover:border-nv-muted'}`}
-            >
-              <span className={`w-1.5 h-1.5 rounded-full ${active ? m.dotClass : 'bg-nv-faint'}`} />
-              {m.label}
-            </button>
-          );
-        })}
-        {/* OMNIROUTE BELONGS ON THIS ROW, NOT THREE CLICKS INSIDE OWN KEY.
-            It was added as a provider, wired to Rust, given a one-button installer — and then
-            looked for on this row twice by the person who asked for it. If the author of the app
-            cannot find it, nobody will: the top row is where people decide what their AI runs on,
-            and "a gateway I install" is that kind of decision, not a brand of API key.
-            Underneath it IS own_key — same credentials, same free treatment, no new mode in the
-            backend — so this button simply says "own key, and specifically this one". */}
-        <button
-          onClick={() => { onModeChange('own_key'); handleProviderChange('omniroute'); setPopup('omniroute'); }}
-          title="A free gateway you run yourself — one address in front of many AI providers"
-          className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded border transition-fast
-            ${mode === 'own_key' && provider === 'omniroute'
-              ? 'border-accent/50 text-accent bg-accent/10'
-              : 'border-nv-border text-nv-faint hover:text-nv-muted hover:border-nv-muted'}`}
-        >
-          <span className={`w-1.5 h-1.5 rounded-full ${mode === 'own_key' && provider === 'omniroute' ? 'bg-nv-green' : 'bg-nv-faint'}`} />
-          OmniRoute
-        </button>
-      </div>
+      {/* ── THE MODE PILLS ARE GONE ──────────────────────────────────────────
+          This row used to be Local / Own Key / adris.tech / OmniRoute, repeated at the top of Krew
+          AND at the top of Coder, setting the same value the title-bar menu sets. Four ways to make
+          one decision, so someone could pick "own key" here and still be spending adris.tech credit
+          on the screen next door, with nowhere to look to find out which was true.
 
+          What survives is everything BELOW: the setup panels. Connecting a key, ranking the models
+          that key can actually call, downloading a local model, installing OmniRoute — none of that
+          is a duplicate of anything, and all of it still has to live somewhere. The title-bar menu
+          now opens these by name (see AI_SETUP_EVENT), so choosing a thing that needs setting up
+          takes the user straight to it instead of leaving them to hunt for a panel that no longer
+          has a button. */}
       {popup && (
         <div
           className="fixed inset-0 z-50 flex items-start justify-center pt-14 px-3 pb-4"
