@@ -25,8 +25,10 @@ function Desktop() {
       </div>
 
       {/* The real overlay, positioned where the window would put it. */}
-      <div style={{ position: 'absolute', left: 430, top: 250 }}><AgentCursorView /></div>
-      <div style={{ position: 'absolute', left: 470, top: 300, width: 420 }}><AgentAskView /></div>
+      {/* The overlay is full-screen now and positions itself by transform, so it is mounted at the
+          root exactly as it is in the real window. */}
+      <AgentCursorView />
+      <div style={{ position: 'absolute', left: 520, top: 430, width: 420 }}><AgentAskView /></div>
     </div>
   );
 }

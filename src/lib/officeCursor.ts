@@ -139,9 +139,15 @@ export async function createDocumentWatched(
       const p = lines[lines.length - 1];
       seen = lines.length;
       const target = rect ? pointFor(p, rect, full.kind) : last;
-      await moveCursorTo(last, target, { ...who, doing: describeProgress(p, full.kind) }, 8, 14);
+      // One emit; the component animates the travel with a CSS transition. Stepping it from here
+      // would restart that transition on every frame and produce the stutter it replaced.
+      await moveCursorTo(last, target, {
+        ...who,
+        doing: describeProgress(p, full.kind),
+        step: p.i, total: p.total,
+      });
       last = target;
-      if (p.phase === 'saving') await flashClick(target, { ...who, doing: describeProgress(p, full.kind) });
+      if (p.phase === 'saving') await flashClick(target, { ...who, doing: describeProgress(p, full.kind), step: p.total, total: p.total });
     }
   })().catch(() => { /* never allowed to break the document */ });
 

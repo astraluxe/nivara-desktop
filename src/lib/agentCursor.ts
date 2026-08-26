@@ -43,6 +43,9 @@ export interface CursorState {
   doing: string;
   /** Draw the click ripple. */
   clicking?: boolean;
+  /** How far through the job, for the progress ticks on the label. Omit when unknown. */
+  step?: number;
+  total?: number;
 }
 
 export interface AgentQuestion {
@@ -65,8 +68,28 @@ export const CURSOR_EVENT = 'nv-agent-cursor';
 export const ASK_EVENT = 'nv-agent-ask';
 export const ANSWER_EVENT = 'nv-agent-answer';
 
-/** The window offset so the drawn cursor's TIP lands exactly on (x, y). */
+/** Where the pointer's tip sits inside its own 460x120 block. The component draws at this offset. */
 const TIP_INSET = 10;
+
+// The overlay is sized to the screen ONCE, then never moved again.
+//
+// It used to be a small window moved to each point — which cannot be animated, because a window
+// position is set rather than transitioned. Every step was a jump, and the label could be clipped
+// at a screen edge. Covering the screen and moving the pointer INSIDE it with a CSS transform gives
+// one smooth movement at any distance, handled by the compositor.
+let sized = false;
+async function sizeToScreen(w: Awaited<ReturnType<typeof windowFor>>): Promise<void> {
+  if (sized || !w) return;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const { LogicalSize, LogicalPosition } = await import('@tauri-apps/api/dpi');
+    const s = JSON.parse(await invoke<string>('agent_screen')) as { w: number; h: number };
+    if (!(s.w > 0 && s.h > 0)) return;
+    await w.setPosition(new LogicalPosition(0, 0));
+    await w.setSize(new LogicalSize(s.w, s.h));
+    sized = true;
+  } catch { /* an unsized overlay still draws, just clipped to its default size */ }
+}
 
 async function windowFor(label: string) {
   const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
@@ -84,11 +107,20 @@ export async function showCursor(state: Omit<CursorState, 'visible'>): Promise<v
   try {
     const w = await windowFor('agentcursor');
     if (!w) return;
-    const { LogicalPosition } = await import('@tauri-apps/api/dpi');
+    await sizeToScreen(w);
+    // Re-applied every time, not once at startup: this is the one property whose loss would leave a
+    // transparent full-screen sheet swallowing the user's clicks. Cheap to repeat, catastrophic to
+    // miss.
     await w.setIgnoreCursorEvents(true);
     await w.setAlwaysOnTop(true);
-    await w.setPosition(new LogicalPosition(Math.round(state.x - TIP_INSET), Math.round(state.y - TIP_INSET)));
-    await emit(CURSOR_EVENT, { ...state, visible: true });
+    // The point is sent as DATA and the component positions itself with a transform. The window
+    // itself no longer moves — see sizeToScreen.
+    await emit(CURSOR_EVENT, {
+      ...state,
+      x: Math.round(state.x - TIP_INSET),
+      y: Math.round(state.y - TIP_INSET),
+      visible: true,
+    });
     if (!(await w.isVisible())) await w.show();
   } catch { /* the overlay is never allowed to break the task it is describing */ }
 }
@@ -108,15 +140,12 @@ export async function hideCursor(): Promise<void> {
  * other tells the user nothing about what just happened, while one that moves lets them follow it.
  */
 export async function moveCursorTo(
-  from: CursorPos, to: CursorPos, state: Omit<CursorState, 'visible' | 'x' | 'y'>, steps = 14, ms = 16,
+  _from: CursorPos, to: CursorPos, state: Omit<CursorState, 'visible' | 'x' | 'y'>,
 ): Promise<void> {
-  const n = Math.max(1, steps);
-  for (let i = 1; i <= n; i++) {
-    // Ease-out: quick away, settling at the target. Linear movement reads as mechanical.
-    const t = 1 - Math.pow(1 - i / n, 3);
-    await showCursor({ ...state, x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t });
-    await new Promise((r) => setTimeout(r, ms));
-  }
+  // ONE emit. The travel is a CSS transition in the component, so stepping the position from here
+  // would fight it — each new value would restart the transition and the result is the stutter this
+  // replaced. The `from` argument is kept so callers do not all have to change.
+  await showCursor({ ...state, ...to });
 }
 
 /** A visible click, for when something really was clicked. */

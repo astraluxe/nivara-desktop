@@ -1,9 +1,10 @@
 // Feeds the REAL cursor and ask components a fixed state so they can be screenshotted without the
 // Tauri runtime. Only the transport is faked; the components are the shipped ones.
 const CURSOR = {
-  visible: true, x: 0, y: 0,
+  visible: true, x: 420, y: 300,
   rgb: 'var(--nv-dept-sales)', agent: 'Meera',
-  doing: 'writing "Proposal for Acme Manufacturing"  (1/7)',
+  doing: 'writing "Proposal for Acme" (3/7)',
+  step: 3, total: 7,
 };
 const QUESTION = {
   id: 'q1', agent: 'Meera', rgb: 'var(--nv-dept-sales)',

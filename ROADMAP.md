@@ -15,7 +15,7 @@ cost real time.
 
 ## Where this is right now
 
-**Version in the tree: 1.64.0** — builds clean, not yet produced as an `.exe`. Last released: 1.59.0.
+**Version in the tree: 1.65.0** — builds clean, not yet produced as an `.exe`. Last released: 1.59.0.
 
 **1.60.0 and 1.61.0 both matter.** 1.59.0 shipped the Office feature with the boss unable to reach
 it (see below), and 1.61.0 is the first build where Office work happens *where the user can see it*.
@@ -25,7 +25,7 @@ it (see below), and 1.61.0 is the first build where Office work happens *where t
 | — | UI pass | ✅ released 1.58.0 | screenshotted in both themes |
 | 1 | Scan what's installed | ✅ **done** | 182 shortcuts → 45 apps; 61 assertions |
 | 2 | Word / Excel / PowerPoint | ✅ **done, visible** | all three open, write, save, stay on screen; template branding verified |
-| 3 | Agent cursor | ✅ **works** 🟡 design being replaced | follows REAL progress, verified live; the black-box bug is fixed in 1.64.0; the visual design is being redone |
+| 3 | Agent cursor | ✅ **done** | follows REAL progress; new design in 1.65.0 — full-screen overlay, CSS-transform travel, ghost trail, per-department colour, progress ticks |
 | 5 | Several agents at once | ✅ **done** | 55 assertions: parallel, dependency, chain, failure, cycle, stop |
 | 6 | Mid-task instructions | ✅ **done** | folded in at step boundaries, taken once |
 | — | Copilot: limit + attachments | ✅ **done** | the limit is the user's; a dropped attachment refuses |
@@ -331,6 +331,24 @@ through to the work beneath. A *question* must be clicked, and turning click-thr
 a transparent sheet swallow clicks across the whole screen — so the question is a second small
 window opening just below the cursor. `setIgnoreCursorEvents(true)` is re-applied on every show:
 losing it once would leave an invisible sheet eating the user's clicks everywhere.
+
+#### Why the window is full screen (1.65.0)
+
+The first version made the overlay a small window and MOVED THE WINDOW to each point. A window
+position is set, not transitioned, so every step was a jump — which is exactly how it looked. It
+also meant the label could be clipped at a screen edge.
+
+The window now covers the screen and the pointer is placed inside it with a CSS transform, which IS
+transitionable: travel between two points is one smooth movement the compositor handles, at any
+distance. That is only acceptable because the sheet is click-through at both levels —
+`setIgnoreCursorEvents` on the window, re-applied on every show, and `pointer-events:none` in
+`overlay.css`.
+
+**A bug the screenshot caught, and reasoning would not have:** the entrance animation used
+`transform: scale()` on the same element that carries the position. A CSS animation beats an inline
+style, so it silently replaced the `translate()` and pinned the whole overlay to the top-left corner
+— while the ghost trail, which has no animation, went to the right place. The entrance is opacity
+only now, and the scale lives on the pointer beneath it.
 
 #### The black box, and the four layers of transparency (fixed in 1.64.0)
 
