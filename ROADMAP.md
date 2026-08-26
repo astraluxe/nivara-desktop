@@ -249,14 +249,48 @@ the scan, so the branch has somewhere to attach when it can be tested.
 **36 unit assertions** covering engine choice, the honesty sentences, spec validation, the injection
 property, and the "only our own PIDs" rule.
 
-### 3. Agent cursor — ~2 days
-A visible, department-coloured cursor showing what an agent is doing, with a label
-("Meera · reading your pricing sheet").
+### 3. The agent cursor — NOT STARTED
 
-**Design correction, stated up front: do NOT move the real Windows cursor.** An agent fighting the
-user for the mouse is infuriating and breaks the moment they touch the trackpad. This is a
-transparent always-on-top overlay window — the user *sees* the work and keeps their machine. Same
-feeling, none of the fight, and it lets agents run while they carry on working.
+A visible, department-coloured cursor that **moves around the screen and does the work**, with a
+label saying what it is doing ("Meera · reading your pricing sheet").
+
+**Design correction, stated up front: do NOT take over the real Windows cursor.** An agent fighting
+the user for the mouse is infuriating and breaks the instant they touch the trackpad — and the
+owner's rule is that **adris must never shift the user off the software they are working in**. So
+this is a transparent, click-through, always-on-top overlay window: the user *sees* the work happen
+and keeps their machine. It also means several agents can be visible at once, which the real cursor
+could never do.
+
+#### 3a. When the cursor gets stuck, it ASKS — right there, not in the app
+
+The requirement, in the owner's words: the agent is clicking through a real task and hits something
+only the user can answer — *which Google account?* Their X is on one account and their LinkedIn on
+another. Today an agent would guess, and a wrong guess here posts to the wrong account.
+
+So the cursor **holds**, and a small window opens **directly below the cursor** — over whatever app
+the work is happening in, **not** inside the adris window — with the question and the options it can
+see. The user answers, and the cursor carries on.
+
+Why below the cursor and not in the exe: the user's eyes are on the app being worked in. A prompt
+that appears in a different window, possibly behind the one they are looking at, is a prompt that
+gets missed — and a stalled agent that looks like a hung agent.
+
+Design notes for when this is built:
+- It must be a **separate always-on-top Tauri window**, positioned at the cursor. The existing Quick
+  Bar (a second webview sharing localStorage) is the closest thing already in the codebase and is
+  the pattern to copy.
+- Offer **real choices, not a text box**, wherever possible — the accounts actually signed in, read
+  from the browser profile, are a list the user recognises. Falling back to free text is fine.
+- The answer must be **remembered** ("X posts go from the personal account, LinkedIn from the work
+  one") in the shared Krew profile, so the same question is asked once, not every run.
+- A question must **time out into a hold, never into a guess.** If nobody answers, the task waits
+  and says it is waiting — it does not pick one.
+
+### 3b. Everything visible in the chat as it happens
+
+Whatever the cursor is doing must also be legible in the chat — **while** the task runs, not only
+when it finishes. This is the existing `src/lib/agentActivity.ts` rule (never a bare "thinking…";
+name the sheet, the filter, the query, with a live clock) extended to cursor work.
 
 ### 4. Claude Code / Codex bridge ✅ working against the real CLI, 🟡 partial coverage
 
@@ -315,9 +349,32 @@ reads and outreach follow-ups over to the user's own subscription.
 **35 unit assertions**, including that an error envelope carrying `subtype: "success"` — which the
 real 401 does — is never mistaken for an empty answer.
 
-### 5. Multiple tabs / parallel agents — 1–2 weeks
-Several agents working at once, each visible, without them fighting over one browser or one window.
-Builds on 1–3.
+### 5. Several agents working at once — NOT STARTED
+
+Multiple agents on real work simultaneously, each with its own cursor and colour, without fighting
+over one browser window or one Word instance. Builds on 1–3.
+
+The hard parts, none of which are the UI:
+- **One browser, many agents.** The existing agent-browser is a single CDP session on port 9223.
+  Two agents driving it at once would interleave clicks. Needs either a tab per agent with a lock,
+  or a profile per agent.
+- **One Office, many agents.** Word COM is a single application object per process. Two documents at
+  once is fine; two agents editing the *same* document is not.
+- **The user is also using the machine.** Nothing here may steal focus or the clipboard.
+
+#### 5a. Agents must hand work to each other, in the form the user actually wants
+
+The owner's example, and it is the right test: a lead-gen run should not just print a list in the
+chat. If the user wants it **in Excel**, the list goes to Excel — using the spreadsheet software on
+their own machine (item 2 already does this), and only falling back to showing it in the exe if no
+such software exists.
+
+So the rule is: **the deliverable decides the destination, not the agent that produced it.** A
+researcher finishing a list should be able to hand it to the document agent without the user
+re-asking, and the chat should say where it went and offer to open it.
+
+`save_to_brain` / `recall_from_brain` already move facts between agents. What is missing is passing a
+*deliverable* — a table, a draft, a list — with an intended destination attached.
 
 ### 6. Mid-task instructions — small, high value
 Today a running task can't be added to; the user waits for it to finish, then asks again. It should
