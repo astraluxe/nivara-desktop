@@ -15,7 +15,7 @@ cost real time.
 
 ## Where this is right now
 
-**Version in the tree: 1.60.0** — builds clean, not yet produced as an `.exe`. Last released: 1.59.0.
+**Version in the tree: 1.61.0** — builds clean, not yet produced as an `.exe`. Last released: 1.59.0.
 
 1.60.0 carries the fix for the boss denying `create_office_document`, plus the two guards that
 stop it happening again. **If you build nothing else, build this one** — 1.59.0 has the Office
@@ -398,6 +398,30 @@ re-asking, and the chat should say where it went and offer to open it.
 
 `save_to_brain` / `recall_from_brain` already move facts between agents. What is missing is passing a
 *deliverable* — a table, a draft, a list — with an intended destination attached.
+
+### 7. Coder — make it a real editor, and connect it to Krew — PARTLY STARTED
+
+**Done (v1.60.0):**
+- The open folder was a dead label. Once a folder was open there was no way to switch to another or
+  get back to an empty editor — the only route out was restarting the app. It is a button now, with
+  a close beside it.
+- The Explorer's `+` and `▤` were bare text characters at 11–13px with no hit area. A glyph is not
+  an icon: it renders in whatever the font supplies and never lines up with what sits beside it.
+  Drawn icons in 24px targets now.
+
+**Not done — the bigger half:**
+- **Parity with VS Code.** Today: Monaco, a file tree, a terminal, quick-open. Missing: tabs for
+  open files, a command palette, search across files, git status in the tree, a problems panel,
+  breadcrumbs, split view. Embedding VS Code itself is not an option — it is an Electron app, not a
+  component — but `monaco-editor` already carries far more than is currently switched on, and most
+  of the gap is chrome around it rather than the editor.
+- **Krew's plan must reach Coder.** The requirement: *only* when the user asks to code, the plan
+  Krew produced is handed to Coder and the work follows it. Today the two modules do not talk. The
+  seam is the existing plan/work-order structure plus the `nv-navigate` event that slash commands
+  already use to move between modules — so the shape is: Krew produces a plan → the user says code
+  it → navigate to Coder carrying the plan → Coder's AI chat works through its steps.
+  **It must never switch modules on its own.** Being thrown into an editor mid-conversation is
+  exactly the "do not shift the user off what they are working on" rule, applied to adris itself.
 
 ### 6. Mid-task instructions — small, high value
 Today a running task can't be added to; the user waits for it to finish, then asks again. It should

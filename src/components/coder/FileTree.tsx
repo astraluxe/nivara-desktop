@@ -193,6 +193,33 @@ interface Props {
   onOpenFolder: (p: string) => void;
 }
 
+/**
+ * A toolbar icon button with a real target.
+ *
+ * The panel used bare "+" and "▤" characters sized 11-13px. A glyph is not an icon — it renders in
+ * whatever the font supplies, never lines up with what sits beside it, and gives the pointer
+ * nothing to hit. This draws the shape and wraps it in a 24px target, which is the minimum this app
+ * holds itself to everywhere else.
+ */
+function IconBtn({ onClick, title, children }: {
+  onClick: () => void; title: string; children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      className="w-6 h-6 flex items-center justify-center rounded-nv-sm text-nv-faint
+                 hover:text-accent hover:bg-nv-surface2/70 transition-colors duration-fast ease-nv"
+    >
+      <svg viewBox="0 0 24 24" className="w-[15px] h-[15px]" fill="none" stroke="currentColor"
+           strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        {children}
+      </svg>
+    </button>
+  );
+}
+
 export default function FileTree({ projectPath, openFile, onFileOpen, onOpenFolder }: Props) {
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [pending, setPending] = useState<Pending>(null);
@@ -228,16 +255,24 @@ export default function FileTree({ projectPath, openFile, onFileOpen, onOpenFold
         <div className="flex items-center gap-1.5">
           {projectPath && (
             <>
-              <button
+              {/* Drawn icons, not "+" and "▤" as text. Those rendered in whatever glyph the font
+                  happened to carry, at 11-13px, with no hit area of their own — the two things
+                  that made this panel read as unfinished next to any real editor. 24px targets. */}
+              <IconBtn
                 onClick={() => setPending({ kind: 'new', dir: projectPath, isDir: false })}
                 title="New file in this folder"
-                className="text-nv-faint hover:text-accent transition-fast text-[13px] leading-none"
-              >+</button>
-              <button
+              >
+                <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+                <path d="M14 3v5h5" />
+                <path d="M12 12v5M9.5 14.5h5" />
+              </IconBtn>
+              <IconBtn
                 onClick={() => setPending({ kind: 'new', dir: projectPath, isDir: true })}
                 title="New folder"
-                className="text-nv-faint hover:text-accent transition-fast text-[11px] leading-none"
-              >▤</button>
+              >
+                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                <path d="M12 11v5M9.5 13.5h5" />
+              </IconBtn>
             </>
           )}
           <button

@@ -245,9 +245,37 @@ export default function CoderModule() {
     <div className="relative flex flex-col h-full bg-nv-bg overflow-hidden">
       {/* Toolbar */}
       <div className="flex items-center gap-2 px-3 h-9 border-b border-nv-border bg-nv-surface shrink-0 select-none">
-        <span className="text-[10px] text-nv-faint font-mono truncate max-w-[200px]">
-          {projectPath ? projectPath.split(/[/\\]/).pop() : 'No folder'}
-        </span>
+        {/* The folder was a dead label. Once one was open there was no way to switch to another or
+            to get back to an empty editor — the only route out was restarting the app. It is a
+            button now, with the close beside it. */}
+        <button
+          onClick={async () => {
+            const p = await invoke<string | null>('open_folder_dialog');
+            if (p) setProjectPath(p);
+          }}
+          title={projectPath ? `${projectPath}\n\nClick to open a different folder` : 'Open a folder'}
+          className="flex items-center gap-1.5 px-1.5 py-0.5 rounded-nv-sm text-[11px] font-mono
+                     text-nv-muted hover:text-nv-text hover:bg-nv-surface2/70
+                     transition-colors duration-fast ease-nv truncate max-w-[240px]"
+        >
+          <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0 text-nv-faint" fill="none"
+               stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+          </svg>
+          <span className="truncate">{projectPath ? projectPath.split(/[/\\]/).pop() : 'Open a folder'}</span>
+        </button>
+        {projectPath && (
+          <button
+            onClick={() => { setProjectPath(''); setOpenFile(null); }}
+            title="Close this folder"
+            aria-label="Close folder"
+            className="w-5 h-5 flex items-center justify-center rounded-nv-sm text-nv-faint
+                       hover:text-nv-text hover:bg-nv-surface2/70 transition-colors duration-fast ease-nv"
+          >
+            <svg viewBox="0 0 24 24" className="w-3 h-3" fill="none" stroke="currentColor"
+                 strokeWidth="2.2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
+          </button>
+        )}
         {openFile && (
           <>
             <span className="text-nv-border">›</span>
