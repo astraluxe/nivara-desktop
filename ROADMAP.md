@@ -37,7 +37,7 @@ it (see below), and 1.61.0 is the first build where Office work happens *where t
 | — | Node download survives a filtered network | ✅ **done** | mirrored through adris.tech, every attempt named on failure |
 | — | Truly concurrent delegation | 🟡 **needs a UI change** | the bubbles stream into "the last message"; two at once would interleave |
 | 3c | Clicking in software with no API | ❌ **not built** | input synthesis refused by a safety check — UI Automation is the right design |
-| 8 | Browser for non-technical users | 🟡 **mirrored** | fallback + timeout + honest error done; **one zip to upload to adris.tech/dl** |
+| 8 | Browser for non-technical users | ✅ **done** | both runtimes mirrored at tag v0.0.1; adris.tech/dl serves them (HTTP 206 measured) |
 | 9 | Antivirus flags the installer | ❌ **needs a certificate** | parked at the owner's request; one free mitigation applied |
 
 ### The lesson that cost a release
@@ -544,7 +544,7 @@ wins where they disagree — a model given two briefs with no ordering will aver
   **It must never switch modules on its own.** Being thrown into an editor mid-conversation is
   exactly the "do not shift the user off what they are working on" rule, applied to adris itself.
 
-### 8. The browser for non-technical users ✅ MIRRORED — 🟡 one file to upload
+### 8. The browser for non-technical users ✅ DONE
 
 Reported: for some users the agent browser never appears, blamed at the time on "node not
 downloaded". Nothing was missing from the design — `provision_node()` downloads a pinned Node and
@@ -564,10 +564,23 @@ cannot diagnose that, and the app told them nothing.
 - The error **names every URL tried and what each one said**. "Download failed" tells a
   non-technical user nothing they can act on.
 
-**The one remaining step, and it needs the website repo:** upload
-`node-v24.9.0-win-x64.zip` (and `node-v20.18.1-win-x64.zip` for the second provisioner) to whatever
-`www.adris.tech/dl/` serves. Until that file exists the mirror is a dead second attempt — harmless,
-but it only helps once the file is there.
+**The mirror is live and measured.** Both runtimes are attached to a GitHub release tagged
+**`v0.0.1`** — deliberately not an app release, and a tag that never moves, so it never has to be
+re-uploaded when a version ships. The `/dl` edge proxy in the website repo already accepts `.zip`
+and fetches by tag, so nothing there needed changing.
+
+The mirror URLs are pinned with `?v=0.0.1`. **Without the pin they would default to `latest`** — the
+newest *app* release — and would 404 the first time one shipped without the zip attached.
+
+Verified end to end from this machine:
+
+```
+https://www.adris.tech/dl/node-v24.9.0-win-x64.zip?v=0.0.1   HTTP 206, 1,048,576 bytes
+https://www.adris.tech/dl/node-v20.18.1-win-x64.zip?v=0.0.1  HTTP 206,   262,144 bytes
+https://www.adris.tech/dl/../secrets.txt?v=0.0.1             HTTP 404  (traversal refused)
+```
+
+Range requests work, so a resumed download does too.
 
 **Also worth doing:** bundle Node in the installer. ~30 MB, and it removes this problem *and* the
 antivirus signal from downloading an executable at runtime. One decision, two problems.

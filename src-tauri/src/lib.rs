@@ -3775,17 +3775,17 @@ async fn provision_omniroute_node(app: &tauri::AppHandle) -> Result<std::path::P
     #[cfg(target_os = "windows")]
     let (urls, is_zip): (&[&str], bool) = (&[
         "https://nodejs.org/dist/v24.9.0/node-v24.9.0-win-x64.zip",
-        "https://www.adris.tech/dl/node-v24.9.0-win-x64.zip",
+        "https://www.adris.tech/dl/node-v24.9.0-win-x64.zip?v=0.0.1",
     ], true);
     #[cfg(target_os = "macos")]
     let (urls, is_zip): (&[&str], bool) = (&[
         "https://nodejs.org/dist/v24.9.0/node-v24.9.0-darwin-x64.tar.gz",
-        "https://www.adris.tech/dl/node-v24.9.0-darwin-x64.tar.gz",
+        "https://www.adris.tech/dl/node-v24.9.0-darwin-x64.tar.gz?v=0.0.1",
     ], false);
     #[cfg(all(unix, not(target_os = "macos")))]
     let (urls, is_zip): (&[&str], bool) = (&[
         "https://nodejs.org/dist/v24.9.0/node-v24.9.0-linux-x64.tar.gz",
-        "https://www.adris.tech/dl/node-v24.9.0-linux-x64.tar.gz",
+        "https://www.adris.tech/dl/node-v24.9.0-linux-x64.tar.gz?v=0.0.1",
     ], false);
 
     let bytes = download_with_mirrors(urls).await?;
@@ -4327,17 +4327,17 @@ async fn provision_node(app: &tauri::AppHandle) -> Result<std::path::PathBuf, St
     #[cfg(target_os = "windows")]
     let (urls, is_zip): (&[&str], bool) = (&[
         "https://nodejs.org/dist/v20.18.1/node-v20.18.1-win-x64.zip",
-        "https://www.adris.tech/dl/node-v20.18.1-win-x64.zip",
+        "https://www.adris.tech/dl/node-v20.18.1-win-x64.zip?v=0.0.1",
     ], true);
     #[cfg(target_os = "macos")]
     let (urls, is_zip): (&[&str], bool) = (&[
         "https://nodejs.org/dist/v20.18.1/node-v20.18.1-darwin-x64.tar.gz",
-        "https://www.adris.tech/dl/node-v20.18.1-darwin-x64.tar.gz",
+        "https://www.adris.tech/dl/node-v20.18.1-darwin-x64.tar.gz?v=0.0.1",
     ], false);
     #[cfg(all(unix, not(target_os = "macos")))]
     let (urls, is_zip): (&[&str], bool) = (&[
         "https://nodejs.org/dist/v20.18.1/node-v20.18.1-linux-x64.tar.gz",
-        "https://www.adris.tech/dl/node-v20.18.1-linux-x64.tar.gz",
+        "https://www.adris.tech/dl/node-v20.18.1-linux-x64.tar.gz?v=0.0.1",
     ], false);
 
     let bytes = download_with_mirrors(urls).await?;
