@@ -18,6 +18,7 @@ import {
   type AiSourceMode, type AiSourcePref, type ByokProvider, type AiAvailability,
 } from '../lib/aiSource';
 import { CLI_LABEL, type AgentCli } from '../lib/agentCli';
+import BrandLogo from './ui/BrandLogo';
 
 interface Choice {
   id: string;
@@ -28,6 +29,8 @@ interface Choice {
   blurb: string;
   /** What it costs the user, in their terms. This is the thing they actually want to know. */
   cost: string;
+  /** Which real brand mark to draw. People recognise a logo far faster than they read a name. */
+  logo: string;
 }
 
 const PROVIDER_LABEL: Record<ByokProvider, string> = {
@@ -51,6 +54,7 @@ export function buildChoices(avail: AiAvailability | null): Choice[] {
       label: `Your ${CLI_LABEL[cli]}`,
       blurb: 'Thinks with the subscription you already pay for.',
       cost: 'included in your subscription',
+      logo: cli === 'claude_code' ? 'claude' : 'openai',
     });
   }
 
@@ -60,6 +64,7 @@ export function buildChoices(avail: AiAvailability | null): Choice[] {
       label: `Your ${PROVIDER_LABEL[p]} key`,
       blurb: `Runs on your own ${PROVIDER_LABEL[p]} key.`,
       cost: `billed by ${PROVIDER_LABEL[p]}`,
+      logo: p,
     });
   }
 
@@ -68,6 +73,7 @@ export function buildChoices(avail: AiAvailability | null): Choice[] {
     label: 'adris.tech',
     blurb: 'The hosted AI. Nothing to set up.',
     cost: 'pay per use',
+    logo: 'adris',
   });
 
   if ((avail?.localModels.length ?? 0) > 0) {
@@ -76,6 +82,7 @@ export function buildChoices(avail: AiAvailability | null): Choice[] {
       label: 'Local model',
       blurb: 'Runs on this computer. Works with no internet.',
       cost: 'free',
+      logo: 'local',
     });
   }
 
@@ -84,6 +91,7 @@ export function buildChoices(avail: AiAvailability | null): Choice[] {
     label: 'Automatic',
     blurb: 'Your own key if you have one, then adris.tech, then a local model.',
     cost: 'whichever is available',
+    logo: 'auto',
   });
 
   return out;
@@ -154,9 +162,7 @@ export default function AiSourceMenu() {
           ? 'bg-accent/15 border-accent/45 text-accent'
           : 'bg-nv-surface2/60 border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/35'}`}
       >
-        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isFree
-          ? 'bg-accent shadow-[0_0_6px_rgb(124_92_255_/_0.9)]'
-          : 'bg-nv-faint'}`} />
+        <MenuMark id={current?.logo ?? 'auto'} className="w-3 h-3 shrink-0" />
         <span className="max-w-[130px] truncate">{current?.label ?? 'Automatic'}</span>
         <svg viewBox="0 0 24 24" className={`w-3 h-3 shrink-0 transition-transform duration-fast ease-nv ${open ? 'rotate-180' : ''}`}
              fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
@@ -182,13 +188,16 @@ export default function AiSourceMenu() {
                             ${active ? 'bg-accent/[0.13] ring-1 ring-inset ring-accent/25' : 'hover:bg-nv-surface2/70'}`}
               >
                 <span className="flex items-center gap-2">
-                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${active ? 'bg-accent' : 'bg-nv-border'}`} />
+                  {/* Colour ON here: the user is choosing between COMPANIES, and the hue is half of
+                      what makes a logo recognisable. Elsewhere the marks stay monochrome so a list
+                      does not turn into a paint chart. */}
+                  <MenuMark id={c.logo} className="w-4 h-4 shrink-0" colour />
                   <span className={`text-[12px] font-semibold flex-1 truncate ${active ? 'text-accent' : 'text-nv-text'}`}>
                     {c.label}
                   </span>
                   <span className="text-[9px] text-nv-faint shrink-0">{c.cost}</span>
                 </span>
-                <span className="block pl-3.5 text-[10.5px] text-nv-muted leading-snug mt-0.5">{c.blurb}</span>
+                <span className="block pl-6 text-[10.5px] text-nv-muted leading-snug mt-0.5">{c.blurb}</span>
               </button>
             );
           })}
@@ -199,4 +208,32 @@ export default function AiSourceMenu() {
       )}
     </div>
   );
+}
+
+/**
+ * A brand mark, or a drawn one for the two entries that are not a company.
+ *
+ * "Automatic" and "Local model" have no logo to borrow, and inventing one would be worse than
+ * drawing what they actually mean — a choice being made for you, and a machine on your desk.
+ */
+function MenuMark({ id, className, colour = false }: { id: string; className?: string; colour?: boolean }) {
+  if (id === 'auto') {
+    return (
+      <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor"
+           strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" />
+        <circle cx="12" cy="12" r="3.2" />
+      </svg>
+    );
+  }
+  if (id === 'local') {
+    return (
+      <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor"
+           strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="2.5" y="4" width="19" height="12" rx="2" />
+        <path d="M8 20h8M12 16v4" />
+      </svg>
+    );
+  }
+  return <BrandLogo id={id} className={className} colour={colour} />;
 }

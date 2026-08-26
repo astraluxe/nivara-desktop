@@ -101,6 +101,19 @@ use*, *billed by OpenAI*, *free* — because that is the thing they actually wan
 subscription or a local model shows in the accent colour, since it is the state they should be
 pleased to see.
 
+**Real brand marks, not lettered squares.** The logos people actually recognise — Anthropic's
+burst, OpenAI's knot, Gemini's spark, our own chevron — drawn from the paths those companies
+publish. They already existed inside `ConnectApps` and nothing else could reach them, so they moved
+to `components/ui/BrandLogo` and both places share one list.
+
+**Colour is off by default and on in this menu.** In a dense integrations list a row of brand
+colours competes with the app's own accent and with each other; monochrome reads as part of the
+interface. In the AI menu the user is choosing between *companies*, and the hue is half of what
+makes a logo recognisable, so it is turned on there.
+
+`Automatic` and `Local model` get drawn marks instead — they are not companies, and borrowing
+somebody's logo for them would be worse than drawing what they mean.
+
 `AiSourcePicker` still renders wherever it did, but as a **statement rather than a second switch**:
 it says what is in force and points at the title bar. The "which key" chooser is gone — the menu
 lists every connected key as its own entry, so a second chooser was the same competing-control

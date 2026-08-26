@@ -7,6 +7,7 @@ import path from 'path';
 const stub = path.resolve(__dirname, 'harness/tauri-stub.ts');
 const auth = path.resolve(__dirname, 'harness/auth-stub.tsx');
 const evstub = path.resolve(__dirname, 'harness/cursor-stub.ts');
+const availstub = path.resolve(__dirname, 'harness/avail-stub.ts');
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -21,6 +22,8 @@ export default defineConfig({
       // Anchored at both ends: Vite substitutes only the MATCHED substring, so an unanchored
       // pattern leaves the './..' prefix in front of an absolute path.
       { find: /^.*\/contexts\/AuthContext$/, replacement: auth },
+      // aisource-stub: fake availability so every kind of menu row appears in the screenshot.
+      { find: /^.*\/lib\/aiSource$/, replacement: availstub },
     ],
   },
   build: { rollupOptions: { input: { visual: path.resolve(__dirname, 'visual.html'), cursor: path.resolve(__dirname, 'visual-cursor.html') } } },
