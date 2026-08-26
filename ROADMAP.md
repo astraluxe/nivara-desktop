@@ -15,7 +15,7 @@ cost real time.
 
 ## Where this is right now
 
-**Version in the tree: 1.63.0** — builds clean, not yet produced as an `.exe`. Last released: 1.59.0.
+**Version in the tree: 1.64.0** — builds clean, not yet produced as an `.exe`. Last released: 1.59.0.
 
 **1.60.0 and 1.61.0 both matter.** 1.59.0 shipped the Office feature with the boss unable to reach
 it (see below), and 1.61.0 is the first build where Office work happens *where the user can see it*.
@@ -25,7 +25,7 @@ it (see below), and 1.61.0 is the first build where Office work happens *where t
 | — | UI pass | ✅ released 1.58.0 | screenshotted in both themes |
 | 1 | Scan what's installed | ✅ **done** | 182 shortcuts → 45 apps; 61 assertions |
 | 2 | Word / Excel / PowerPoint | ✅ **done, visible** | all three open, write, save, stay on screen; template branding verified |
-| 3 | Agent cursor | ✅ **done** | follows REAL progress — measured streaming live while Word typed; positions land inside the real window and travel downward |
+| 3 | Agent cursor | ✅ **works** 🟡 design being replaced | follows REAL progress, verified live; the black-box bug is fixed in 1.64.0; the visual design is being redone |
 | 5 | Several agents at once | ✅ **done** | 55 assertions: parallel, dependency, chain, failure, cycle, stop |
 | 6 | Mid-task instructions | ✅ **done** | folded in at step boundaries, taken once |
 | — | Copilot: limit + attachments | ✅ **done** | the limit is the user's; a dropped attachment refuses |
@@ -331,6 +331,21 @@ through to the work beneath. A *question* must be clicked, and turning click-thr
 a transparent sheet swallow clicks across the whole screen — so the question is a second small
 window opening just below the cursor. `setIgnoreCursorEvents(true)` is re-applied on every show:
 losing it once would leave an invisible sheet eating the user's clicks everywhere.
+
+#### The black box, and the four layers of transparency (fixed in 1.64.0)
+
+First real run: Word opened and typed correctly, and the cursor appeared **on a black rectangle**
+with the label below it.
+
+`index.css` sets `html, body, #root { background: var(--nv-bg) }` — an opaque near-black, right for
+every normal screen. The overlay windows import that stylesheet for the design tokens and the fonts,
+so `#root` painted a solid rectangle filling the window and the cursor was drawn in its corner.
+
+**A transparent Tauri window is only transparent if all four layers are: the window flag, `html`,
+`body`, and the React root.** Three of those live in a stylesheet written for a different purpose,
+and missing any one gives a black box. `src/overlay.css` now resets them, is imported *after*
+index.css so it wins, and also kills scrollbars — a scrollbar in an overlay is a grey strip sitting
+on the user's desktop.
 
 #### THE PROGRESS IS REAL, AND THAT IS THE WHOLE POINT
 

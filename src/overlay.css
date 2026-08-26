@@ -1,0 +1,30 @@
+/* ─── The overlay windows are HOLES, not pages ────────────────────────────────
+ *
+ * THE BUG THIS EXISTS TO KILL. index.css sets `html, body, #root { background: var(--nv-bg) }` —
+ * an opaque near-black, which is right for every normal screen and catastrophic here. The overlay
+ * windows import that stylesheet for the design tokens and the fonts, so #root painted a solid
+ * black rectangle filling the whole window and the agent's cursor appeared in the corner of it.
+ *
+ * A transparent Tauri window is only transparent if EVERY layer above the compositor is: the
+ * window flag, html, body, and the React root. Missing any one of the four gives a black box, and
+ * three of them live in a stylesheet written for a different purpose.
+ *
+ * Imported AFTER index.css in the overlay entry points, so it wins. */
+html, body, #root {
+  background: transparent !important;
+  /* The window is sized to hold the label; the drawing inside it decides what is visible. Anything
+     that overflows must not produce a scrollbar, which would be a visible grey strip on the
+     user's desktop. */
+  overflow: visible !important;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+/* No scrollbars anywhere in an overlay, for the same reason. */
+::-webkit-scrollbar { width: 0 !important; height: 0 !important; }
+
+/* Nothing in the cursor overlay is clickable — belt and braces alongside the window-level
+   setIgnoreCursorEvents, because a transparent sheet that swallowed clicks would be the worst
+   failure this component could have. The ask window re-enables pointer events on itself. */
+body.nv-overlay-passthrough, body.nv-overlay-passthrough * { pointer-events: none !important; }
