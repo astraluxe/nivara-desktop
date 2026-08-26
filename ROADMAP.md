@@ -634,6 +634,41 @@ manifest to the hosts that are actually reachable. **Release notes are hardcoded
 improvements" in the script — if a release deserves real notes, that is an edit to the script or to
 the release afterwards, not something a bump can express.
 
+### The signing failure, and the Windows rule behind it
+
+A four-minute build of 1.65.0 ended with **"Wrong password for that key"** — after prompting for a
+password inside a script that was never meant to be interactive.
+
+The script set:
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY          = <the key>
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
+```
+
+**On Windows, setting an environment variable to an empty string DELETES it.** There is no such
+thing as a variable that exists with no value. Demonstrated:
+
+```
+$env:NV_DEMO = "something"   ->  exists = True
+$env:NV_DEMO = ""            ->  exists = False
+```
+
+So the key was set and the password variable silently did not exist. Tauri found a key, needed a
+password, could not find one, and fell back to an interactive prompt — where whatever it received
+was wrong. The key's password genuinely **is** empty, which is precisely the one value the
+environment cannot carry.
+
+**Fixed:** the key never goes through the environment. The build runs unsigned and the signature is
+applied afterwards by `tauri signer sign --password ""`, where the empty string is an **argument**
+and survives. Verified against the real key — it produced a valid `.sig` on the first attempt.
+
+An existing `.sig` is deleted before re-signing, because a signature must match the exact `.exe`
+about to be uploaded and a stale one is worse than none.
+
+`-SkipBuild` was added for exactly this situation: the `.exe` is already built and only the signing
+and publishing steps need to run again, without paying for another four-minute compile.
+
 **Why the mirroring exists** (measured on a real Indian ISP, not assumed):
 `objects.githubusercontent.com` and `release-assets.githubusercontent.com` accept a TCP connection
 on 443 and then never complete the TLS handshake — SNI filtering. Every GitHub release file is

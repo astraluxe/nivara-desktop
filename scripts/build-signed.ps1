@@ -1,6 +1,8 @@
 # Build a signed release for auto-update support.
 # Usage (from nivara-desktop folder):
 #   .\scripts\build-signed.ps1
+#   .\scripts\build-signed.ps1 -SkipBuild    # the .exe is already built — just sign and publish
+param([switch]$SkipBuild)
 
 Set-Location "$PSScriptRoot\.."
 
@@ -10,27 +12,54 @@ if (-not (Test-Path $keyFile)) {
     exit 1
 }
 
-# Set signing env vars in the CURRENT session so npm/cargo child processes inherit them.
-$env:TAURI_SIGNING_PRIVATE_KEY          = (Get-Content $keyFile -Raw).Trim()
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
-
+# ── WHY THE SIGNING KEY IS *NOT* PUT IN THE ENVIRONMENT ──────────────────────
+#
+# This used to set TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "" and let
+# `tauri build` sign during the build. It broke on a Windows rule that is easy to miss:
+# SETTING AN ENVIRONMENT VARIABLE TO AN EMPTY STRING DELETES IT. Windows has no concept of a
+# variable that exists with no value.
+#
+# So the key was set and the PASSWORD variable silently did not exist. Tauri found a key, needed a
+# password, could not find one, and fell back to an interactive prompt in the middle of a scripted
+# build -- where whatever it received was wrong, and a four-minute build ended in
+# "Wrong password for that key".
+#
+# The key genuinely has an empty password, which is precisely the one value the environment cannot
+# carry. So it does not go through the environment at all: the build runs unsigned and the
+# signature is applied afterwards by `tauri signer sign --password ""`, where the empty string is an
+# ARGUMENT and survives. Verified against the real key.
 $version = (Get-Content "src-tauri/tauri.conf.json" | ConvertFrom-Json).version
-Write-Host "Building v$version..." -ForegroundColor Cyan
-npm run tauri build
-if ($LASTEXITCODE -ne 0) { Write-Host "Build failed." -ForegroundColor Red; exit 1 }
+
+if ($SkipBuild) {
+    Write-Host "Skipping the build; signing and publishing v$version as it stands." -ForegroundColor Yellow
+} else {
+    Write-Host "Building v$version..." -ForegroundColor Cyan
+    npm run tauri build
+    if ($LASTEXITCODE -ne 0) { Write-Host "Build failed." -ForegroundColor Red; exit 1 }
+}
 
 # Paths
 $bundle = "src-tauri\target\release\bundle\nsis"
 $exe    = "$bundle\adris.tech_${version}_x64-setup.exe"
 $sig    = "$bundle\adris.tech_${version}_x64-setup.exe.sig"
 
+if (-not (Test-Path $exe)) {
+    Write-Host "ERROR: $exe was not produced by the build." -ForegroundColor Red
+    exit 1
+}
+
+# Always signed HERE, never during the build — see the note at the top. Any existing .sig is from a
+# previous attempt at this same version, so it is removed first: a signature must always match the
+# exact .exe that is about to be uploaded, and a stale one would be worse than none.
+Write-Host "Signing the installer..." -ForegroundColor Cyan
+if (Test-Path $sig) { Remove-Item $sig -Force }
+& npx tauri signer sign --private-key-path $keyFile --password "" $exe
 if (-not (Test-Path $sig)) {
-    Write-Host "WARNING: Tauri auto-sign did not produce .sig - attempting manual sign..." -ForegroundColor Yellow
-    & npx tauri signer sign --private-key-path $keyFile --password "" $exe
-    if (-not (Test-Path $sig)) {
-        Write-Host "ERROR: Signing failed. .sig not produced." -ForegroundColor Red
-        exit 1
-    }
+    Write-Host "ERROR: Signing failed - no .sig produced." -ForegroundColor Red
+    Write-Host "  The key's password is empty. If that ever changes, pass it to signer sign as an" -ForegroundColor Yellow
+    Write-Host "  ARGUMENT - never as an environment variable, which on Windows cannot hold an" -ForegroundColor Yellow
+    Write-Host "  empty string and is what broke this in the first place." -ForegroundColor Yellow
+    exit 1
 }
 Write-Host "Signed OK" -ForegroundColor Green
 
