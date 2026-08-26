@@ -659,9 +659,26 @@ password, could not find one, and fell back to an interactive prompt — where w
 was wrong. The key's password genuinely **is** empty, which is precisely the one value the
 environment cannot carry.
 
-**Fixed:** the key never goes through the environment. The build runs unsigned and the signature is
-applied afterwards by `tauri signer sign --password ""`, where the empty string is an **argument**
-and survives. Verified against the real key — it produced a valid `.sig` on the first attempt.
+**Fixed, and it took three goes because there were three separate bugs stacked on each other:**
+
+1. **The environment cannot carry an empty password**, as above. The key no longer goes through the
+   environment at all; the build runs unsigned and signing happens afterwards.
+2. **Not setting the variables is not enough — they must be actively cleared.** A shell that ran the
+   old script still carries `TAURI_SIGNING_PRIVATE_KEY` for the life of that window, and it broke
+   the next run twice over: `tauri build` found a key and prompted again, and then `signer sign`
+   refused with *"--private-key-path cannot be used with --private-key"*, because the leftover
+   variable **is** `--private-key` as far as the CLI is concerned. The script now removes both at
+   the top, so a run no longer depends on what was typed in that window earlier.
+3. **PowerShell 5.1 drops an empty-string argument to a native executable.** `--password ""` passes
+   *nothing*, so the CLI read the `.exe` path as the password and then reported the FILE argument
+   missing. This is why the script's original fallback never worked either — same line, and its
+   failure was hidden behind the earlier error. `--password '""'` passes two literal quote
+   characters, which the CLI parses as an empty string. Both forms were measured against the real
+   key: `'""'` produces a valid `.sig`, `""` does not.
+
+**And a good signature is never thrown away before a replacement exists.** The first attempt at this
+deleted the `.sig`, then failed — destroying a valid signature the build had just produced. It is
+moved aside now and only removed once a new one is on disk.
 
 An existing `.sig` is deleted before re-signing, because a signature must match the exact `.exe`
 about to be uploaded and a stale one is worse than none.

@@ -28,6 +28,20 @@ if (-not (Test-Path $keyFile)) {
 # carry. So it does not go through the environment at all: the build runs unsigned and the
 # signature is applied afterwards by `tauri signer sign --password ""`, where the empty string is an
 # ARGUMENT and survives. Verified against the real key.
+#
+# ── AND THEY MUST BE ACTIVELY CLEARED, NOT MERELY LEFT UNSET ────────────────
+#
+# Not setting them is not enough. A shell that ran the OLD version of this script still carries
+# TAURI_SIGNING_PRIVATE_KEY for the life of that window, and it broke the next run in two separate
+# ways: `tauri build` found a key and prompted for a password again, and then `signer sign` refused
+# with "--private-key-path cannot be used with --private-key", because the leftover variable IS
+# --private-key as far as the CLI is concerned.
+#
+# So the environment is cleaned first, every time, and the run no longer depends on which commands
+# happen to have been typed in this window earlier.
+Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY          -ErrorAction SilentlyContinue
+Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
+
 $version = (Get-Content "src-tauri/tauri.conf.json" | ConvertFrom-Json).version
 
 if ($SkipBuild) {
@@ -48,18 +62,40 @@ if (-not (Test-Path $exe)) {
     exit 1
 }
 
-# Always signed HERE, never during the build — see the note at the top. Any existing .sig is from a
-# previous attempt at this same version, so it is removed first: a signature must always match the
-# exact .exe that is about to be uploaded, and a stale one would be worse than none.
+# Always signed HERE, never during the build — see the note at the top.
+#
+# A GOOD SIGNATURE IS NEVER THROWN AWAY BEFORE A REPLACEMENT EXISTS. The first version of this
+# deleted the existing .sig and then signed; when signing failed it had destroyed a perfectly valid
+# signature the build had just produced, and left the release with nothing. It is moved aside now
+# and only deleted once a new one is on disk.
 Write-Host "Signing the installer..." -ForegroundColor Cyan
-if (Test-Path $sig) { Remove-Item $sig -Force }
-& npx tauri signer sign --private-key-path $keyFile --password "" $exe
+$sigBackup = "$sig.prev"
+if (Test-Path $sig) { Move-Item $sig $sigBackup -Force }
+
+# --password '""' — LITERAL QUOTES, and they are not a typo.
+#
+# PowerShell 5.1 DROPS an empty-string argument when calling a native executable. `--password ""`
+# does not pass an empty password; it passes nothing at all, so the CLI reads the .exe path as the
+# password and then reports the FILE argument missing. That is why the old fallback in this script
+# never worked either — it had the same line, and its failure was hidden behind the earlier error.
+#
+# Passing '""' hands through two literal quote characters, which the CLI parses as an empty string.
+# Measured both forms against the real key: this one produces a valid .sig, `""` does not.
+& npx tauri signer sign --private-key-path $keyFile --password '""' $exe
+
 if (-not (Test-Path $sig)) {
-    Write-Host "ERROR: Signing failed - no .sig produced." -ForegroundColor Red
-    Write-Host "  The key's password is empty. If that ever changes, pass it to signer sign as an" -ForegroundColor Yellow
-    Write-Host "  ARGUMENT - never as an environment variable, which on Windows cannot hold an" -ForegroundColor Yellow
-    Write-Host "  empty string and is what broke this in the first place." -ForegroundColor Yellow
-    exit 1
+    if (Test-Path $sigBackup) {
+        Move-Item $sigBackup $sig -Force
+        Write-Host "Signing failed - kept the signature that already existed." -ForegroundColor Yellow
+    } else {
+        Write-Host "ERROR: Signing failed - no .sig produced." -ForegroundColor Red
+        Write-Host "  The key's password is empty. If that ever changes, pass it to signer sign as an" -ForegroundColor Yellow
+        Write-Host "  ARGUMENT - never as an environment variable, which on Windows cannot hold an" -ForegroundColor Yellow
+        Write-Host "  empty string and is what broke this in the first place." -ForegroundColor Yellow
+        exit 1
+    }
+} else {
+    Remove-Item $sigBackup -Force -ErrorAction SilentlyContinue
 }
 Write-Host "Signed OK" -ForegroundColor Green
 
