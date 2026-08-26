@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { peekPlan, takePlan, clearPlan, planAsBrief, CODER_PLAN_EVENT, type CoderPlan } from '../../lib/coderHandoff';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../../contexts/AuthContext';
 import { getPlanConfig } from '../../lib/planConfig';
@@ -319,6 +320,8 @@ export default function AIChat({
   }, [mode, provider, modelName, baseUrl, localModel]);
   const [messages, setMessages]           = useState<DisplayMessage[]>([]);
   const [input, setInput]                 = useState('');
+  /** A plan handed over from Krew and waiting to be started. */
+  const [handoff, setHandoff]             = useState<CoderPlan | null>(() => { try { return peekPlan(); } catch { return null; } });
   const [busy, setBusy]                   = useState(false);
   // Slash-command menu for the coder chat.
   const [slashOpen, setSlashOpen]         = useState(false);
@@ -438,6 +441,37 @@ export default function AIChat({
     setSessionId(id);
     return id;
   }
+
+  // send() is declared further down; a ref reaches it without reordering a working file.
+  const sendRef = useRef<null | (() => void)>(null);
+
+  // A plan can arrive while Coder is already open — the user says "code it" from Krew and is
+  // brought here — so this listens rather than only reading once on mount.
+  useEffect(() => {
+    const onPlan = () => { try { setHandoff(peekPlan()); } catch { /* ignore */ } };
+    window.addEventListener(CODER_PLAN_EVENT, onPlan);
+    return () => window.removeEventListener(CODER_PLAN_EVENT, onPlan);
+  }, []);
+
+  /**
+   * Start the handed-over plan.
+   *
+   * ONE CLICK, NOT AUTOMATIC. The user asked for the work in Krew, so this is not an unasked
+   * interruption — but arriving in an editor to find an agent already typing is its own kind of
+   * startling, and a plan they can read first is a plan they can correct before it is built. Taking
+   * it clears it, so coming back to Coder later does not re-announce work that is already underway.
+   */
+  function startHandoff() {
+    const p = takePlan();
+    setHandoff(null);
+    if (!p) return;
+    setInput(planAsBrief(p));
+    // Next tick: send() reads `input` from state, which has not committed yet.
+    setTimeout(() => sendRef.current?.(), 0);
+  }
+
+  // Refreshed every render so startHandoff always calls the current closure.
+  sendRef.current = () => { void send(); };
 
   async function send() {
     const text = input.trim();
@@ -763,6 +797,38 @@ export default function AIChat({
                   </span>
                 </button>
               ))}
+            </div>
+          )}
+          {/* THE PLAN KREW HANDED OVER. Shown rather than started, so the user reads it before it
+              is built — a plan you can correct is worth more than one already half-implemented. */}
+          {handoff && (
+            <div className="mb-2 rounded-nv-lg border border-accent/40 bg-accent/[0.07] p-2.5 nv-rise">
+              <div className="flex items-center gap-1.5 mb-1">
+                <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 text-accent shrink-0" fill="none"
+                     stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+                </svg>
+                <span className="text-[11px] font-semibold text-nv-text flex-1 truncate">{handoff.title}</span>
+                <span className="text-[9.5px] text-nv-faint shrink-0">
+                  from Krew · {handoff.steps.length} step{handoff.steps.length === 1 ? '' : 's'}
+                </span>
+              </div>
+              <ol className="text-[10.5px] text-nv-muted leading-snug ml-4 list-decimal space-y-0.5 max-h-24 overflow-y-auto">
+                {handoff.steps.slice(0, 8).map((st, i) => <li key={i}>{st}</li>)}
+                {handoff.steps.length > 8 && <li className="text-nv-faint">…and {handoff.steps.length - 8} more</li>}
+              </ol>
+              <div className="flex gap-1.5 mt-2">
+                <button
+                  onClick={startHandoff}
+                  className="text-[10.5px] px-2.5 py-1 rounded-nv bg-accent text-white hover:bg-accent-dim
+                             transition-colors duration-fast ease-nv font-medium"
+                >Start building it</button>
+                <button
+                  onClick={() => { clearPlan(); setHandoff(null); }}
+                  className="text-[10.5px] px-2.5 py-1 rounded-nv border border-nv-border text-nv-muted
+                             hover:text-nv-text transition-colors duration-fast ease-nv"
+                >Not now</button>
+              </div>
             </div>
           )}
           <textarea

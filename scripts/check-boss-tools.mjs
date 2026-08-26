@@ -71,6 +71,7 @@ const MUST_HOLD = [
   ['create_calendar_event',  'the boss SAID it had scheduled something, and had not'],
   ['read_my_calendar',       'the boss asked who a meeting was with, when the name was in the event title'],
   ['recall_from_brain',      'the boss reported an empty note as saved, because it could not check'],
+  ['send_plan_to_coder',     '"code this" is said to the boss; without the tool it can only describe the handoff'],
 ];
 for (const [name, why] of MUST_HOLD) {
   if (!bossNames.includes(name)) problems.push(`the boss cannot ${name}: ${why}`);

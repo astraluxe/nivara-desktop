@@ -611,6 +611,9 @@ export const BOSS_SYSTEM_TOOL_NAMES = [
   // The user asks the boss for a document in the boss's own chat. Delegating a one-line request to
   // a specialist would be theatre, and without these two the boss denies a capability it has.
   'create_office_document', 'list_installed_apps',
+  // "code this" is said TO the boss, in the boss's chat. Without it the boss can only describe
+  // the handoff it cannot perform — the same failure as create_office_document.
+  'send_plan_to_coder',
 ] as const;
 
 export const SYSTEM_TOOLS: ToolDef[] = [
@@ -626,6 +629,15 @@ export const SYSTEM_TOOLS: ToolDef[] = [
     description: 'Run a shell command on the user\'s machine and return stdout + stderr. Runs silently in the background — no window opens.',
     parameters: {
       command: { type: 'string', description: 'Shell command to execute.', required: true },
+    },
+  },
+  {
+    name: 'send_plan_to_coder',
+    description: "Hand a plan to the Coder module and switch to it, so the work gets built. Call this ONLY when the user has asked to code, build or implement something — never because a plan happens to be about software. Being moved into an editor mid-conversation without asking is exactly the kind of interruption this app does not do. Use the plan already agreed in this conversation; do not invent a new one.",
+    parameters: {
+      title: { type: 'string', description: 'What the whole job is, in one sentence.', required: true },
+      steps: { type: 'array',  description: 'The steps in order, as plain strings. These are what Coder works through.', required: true },
+      notes: { type: 'string', description: 'Anything the build depends on that is not a step — stack, constraints, a file to start from.', required: false },
     },
   },
   {
@@ -3616,6 +3628,30 @@ async function executeToolCore(
     const approved = await onTerminalApprovalNeeded(command);
     if (!approved) return 'User declined to run this command.';
     return await invoke<string>('krew_execute_command', { command });
+  }
+
+  if (toolName === 'send_plan_to_coder') {
+    const { stashPlan } = await import('./coderHandoff');
+    const raw = args.steps;
+    const steps = (Array.isArray(raw) ? raw
+      : typeof raw === 'string' && raw.trim().startsWith('[')
+        ? (() => { try { const p = JSON.parse(raw); return Array.isArray(p) ? p : []; } catch { return []; } })()
+        // A model that ignored the array type and wrote a numbered list instead. Read it rather
+        // than refusing — the user asked for the work, not for a schema lecture.
+        : String(raw ?? '').split(/\r?\n/)).map((x) => String(x).replace(/^\s*\d+[.)]\s*/, '').trim()).filter(Boolean);
+
+    const plan = stashPlan({ title: str(args.title), steps, notes: str(args.notes), from: agentKey });
+    if (!plan) return '[Nothing was handed over — a plan needs a title and at least one step. Do NOT tell the user Coder is building anything.]';
+
+    // The navigation is a SEPARATE act from stashing, and it happens here because the user asked
+    // for it. See coderHandoff.ts: a plan can sit waiting without anyone being moved.
+    try {
+      const { emit } = await import('@tauri-apps/api/event');
+      await emit('nv-navigate', { module: 'coder' });
+    } catch { /* the plan is still waiting even if the switch fails */ }
+
+    return `Handed "${plan.title}" to Coder — ${plan.steps.length} step${plan.steps.length === 1 ? '' : 's'} — and opened it. `
+      + 'Coder is working through it from step 1. Say that plainly; do not restate the plan.';
   }
 
   if (toolName === 'create_office_document') {
