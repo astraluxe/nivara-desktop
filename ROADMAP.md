@@ -15,7 +15,11 @@ cost real time.
 
 ## Where this is right now
 
-**Version in the tree: 1.59.0** — builds clean, not yet produced as an `.exe`. Last released: 1.58.0.
+**Version in the tree: 1.60.0** — builds clean, not yet produced as an `.exe`. Last released: 1.59.0.
+
+1.60.0 carries the fix for the boss denying `create_office_document`, plus the two guards that
+stop it happening again. **If you build nothing else, build this one** — 1.59.0 has the Office
+feature but the boss cannot reach it.
 
 | # | Item | State | Evidence |
 |---|---|---|---|
