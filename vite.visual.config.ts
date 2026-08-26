@@ -6,11 +6,12 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 const stub = path.resolve(__dirname, 'harness/tauri-stub.ts');
 const auth = path.resolve(__dirname, 'harness/auth-stub.tsx');
+const evstub = path.resolve(__dirname, 'harness/cursor-stub.ts');
 export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: [
-      { find: /^@tauri-apps\/api\/event$/, replacement: stub },
+      { find: /^@tauri-apps\/api\/event$/, replacement: evstub },
       { find: /^@tauri-apps\/api\/core$/, replacement: stub },
       { find: /^@tauri-apps\/api\/window$/, replacement: stub },
       { find: /^@tauri-apps\/api\/webviewWindow$/, replacement: stub },
@@ -22,5 +23,5 @@ export default defineConfig({
       { find: /^.*\/contexts\/AuthContext$/, replacement: auth },
     ],
   },
-  build: { rollupOptions: { input: path.resolve(__dirname, 'visual.html') } },
+  build: { rollupOptions: { input: { visual: path.resolve(__dirname, 'visual.html'), cursor: path.resolve(__dirname, 'visual-cursor.html') } } },
 });

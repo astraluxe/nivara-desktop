@@ -71,6 +71,14 @@ export interface DocSpec {
   visible?: boolean;
   /** Milliseconds between blocks when visible, so it reads as typing rather than a paste. */
   typeDelayMs?: number;
+  /**
+   * A file the script writes its real progress to, one JSON line at a time, so the agent cursor can
+   * follow ACTUAL work rather than being animated over an opaque call.
+   *
+   * The alternative was motion invented to look busy while the real work happened invisibly, which
+   * is a lie with a spinner on it.
+   */
+  progressPath?: string;
 }
 
 export interface DocResult {
@@ -145,6 +153,7 @@ export function buildPayload(spec: DocSpec): string {
     // more than one that appeared.
     visible: spec.visible !== false,
     typeDelayMs: Math.max(0, Math.min(400, spec.typeDelayMs ?? 90)),
+    progressPath: spec.progressPath ?? '',
   });
   assertSafePayload(json);
   return json;
@@ -180,6 +189,14 @@ $ErrorActionPreference = 'Stop'
 $spec = $payload | ConvertFrom-Json
 $visible = [bool]$spec.visible
 $pause = [int]$spec.typeDelayMs
+# One JSON line per real step. Appended, never rewritten, so a reader that misses a poll still sees
+# everything that happened rather than only the latest.
+$progressPath = [string]$spec.progressPath
+function Say($phase, $i, $total, $what) {
+  if (-not $progressPath) { return }
+  $line = @{ phase = $phase; i = $i; total = $total; what = "$what" } | ConvertTo-Json -Compress
+  try { Add-Content -Path $progressPath -Value $line -Encoding UTF8 } catch { }
+}
 # Whose processes were already running. Anything in here is the user's and is never touched.
 $theirs = @(Get-Process -Name $procName -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
 $result = @{ ok = $false }
@@ -222,6 +239,7 @@ try {
   if ($visible) { try { $app.Activate() } catch { } }
   # The user's own template, if they named one. Documents.Add(template) is what makes the output
   # genuinely theirs rather than merely a .docx.
+  Say 'opened' 0 $spec.blocks.Count 'Word is open'
   $doc = if ($spec.template -and (Test-Path $spec.template)) { $app.Documents.Add($spec.template) } else { $app.Documents.Add() }
   # Built-in style IDs, not names: names are translated on a localised Office and would throw.
   $STYLE = @{ title = -63; heading = -2; subheading = -3; body = -1; bullet = -180 }
@@ -242,6 +260,7 @@ try {
     $id = $STYLE[[string]$b.style]
     if ($null -eq $id) { $id = -1 }
     $sel.Style = $id
+    Say 'typing' ($spec.blocks.IndexOf($b) + 1) $spec.blocks.Count $b.text
     $sel.TypeText([string]$b.text)
     $sel.TypeParagraph()
     # A beat between blocks so a visible run READS as writing rather than as a paste appearing all
@@ -261,6 +280,7 @@ try {
       $doc.Paragraphs.Item($n).Range.ListFormat.ApplyBulletDefault()
     }
   }
+  Say 'saving' $spec.blocks.Count $spec.blocks.Count $spec.savePath
   $doc.SaveAs2($spec.savePath, 16)
   # Visible: hand the open document to the user and step back. Closing it would be the feature
   # deleting its own output in front of them.
@@ -299,6 +319,7 @@ try {
       $ws.Cells.Item($r, $c).Value2 = [string]$cell
       $c++
     }
+    Say 'row' $r $spec.rows.Count ($row -join ', ')
     # Row by row when visible, so the sheet fills in front of the user instead of appearing.
     if ($visible -and $pause -gt 0) { Start-Sleep -Milliseconds ([Math]::Min($pause, 60)) }
     $r++
@@ -323,6 +344,7 @@ try {
     } catch { }
     $ws.Columns.AutoFit() | Out-Null
   }
+  Say 'saving' $spec.rows.Count $spec.rows.Count $spec.savePath
   $wb.SaveAs($spec.savePath, 51)
   if (-not $visible) {
     $wb.Close($false)
@@ -354,6 +376,7 @@ try {
     $slide = $pres.Slides.Add($i, 2)   # ppLayoutText: a title and a body placeholder
     # Show each slide as it is built, so the deck assembles in front of the user.
     if ($visible) { try { $slide.Select(); $app.ActiveWindow.View.GotoSlide($i) } catch { } }
+    Say 'slide' $i $spec.slides.Count $s.title
     $slide.Shapes.Item(1).TextFrame.TextRange.Text = [string]$s.title
     if ($s.bullets -and $s.bullets.Count -gt 0) {
       # PowerPoint separates paragraphs with CR, not CRLF: a newline here produces empty bullets.
@@ -364,6 +387,7 @@ try {
     if ($visible -and $pause -gt 0) { Start-Sleep -Milliseconds $pause }
     $i++
   }
+  Say 'saving' $spec.slides.Count $spec.slides.Count $spec.savePath
   $pres.SaveAs($spec.savePath, 24)
   if (-not $visible) {
     $pres.Close()

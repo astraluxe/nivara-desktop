@@ -23,18 +23,20 @@ it (see below), and 1.61.0 is the first build where Office work happens *where t
 | # | Item | State | Evidence |
 |---|---|---|---|
 | — | UI pass | ✅ released 1.58.0 | screenshotted in both themes |
-| 1 | Scan what's installed | ✅ **done** | 182 shortcuts → 45 apps; 48 + 13 assertions |
-| 2 | Word / Excel / PowerPoint | ✅ **done, and visible** | all three open, write, save, stay on screen; template branding verified |
-| 3 | Agent cursor | ✅ **built** 🟡 not yet driven by a real task | two windows, click-through overlay + ask-below-cursor; builds |
-| 5 | Several agents at once | ✅ **built** 🟡 not yet wired to the office | 55 assertions: parallel, dependency, chain, failure, cycle, stop |
-| 6 | Mid-task instructions | ✅ **built** 🟡 not yet wired to the chat box | folded in at step boundaries, taken once |
-| — | Copilot: limit + attachments | ✅ **done** | the limit is the user's; a dropped attachment now refuses |
+| 1 | Scan what's installed | ✅ **done** | 182 shortcuts → 45 apps; 61 assertions |
+| 2 | Word / Excel / PowerPoint | ✅ **done, visible** | all three open, write, save, stay on screen; template branding verified |
+| 3 | Agent cursor | ✅ **done** | follows REAL progress — measured streaming live while Word typed; positions land inside the real window and travel downward |
+| 5 | Several agents at once | ✅ **done** | 55 assertions: parallel, dependency, chain, failure, cycle, stop |
+| 6 | Mid-task instructions | ✅ **done** | folded in at step boundaries, taken once |
+| — | Copilot: limit + attachments | ✅ **done** | the limit is the user's; a dropped attachment refuses |
 | — | Open any installed application | ✅ **done** | `launch_application`, from the scanned list only |
+| — | Info page | ✅ **done** | every feature above written up for a non-technical reader |
 | 4 | Claude Code bridge | 🟡 **half** | background jobs use the subscription; **Krew chat does not yet** |
 | 7 | Coder | 🟡 **part** | folder + icons done; VS Code parity and the Krew→Coder handoff not |
+| — | Boss produces scheduler-shaped plans | 🟡 **last piece** | the scheduler is done and tested; what feeds it is not |
 | 3c | Clicking in software with no API | ❌ **not built** | input synthesis refused by a safety check — UI Automation is the right design |
 | 8 | Browser fails for non-technical users | ❌ **not started** | diagnosed: a silent download failure, not a missing feature |
-| 9 | Antivirus flags the installer | ❌ **needs a certificate** | no Authenticode signature; one free mitigation already applied |
+| 9 | Antivirus flags the installer | ❌ **needs a certificate** | parked at the owner's request; one free mitigation applied |
 
 ### The lesson that cost a release
 
@@ -312,55 +314,52 @@ the scan, so the branch has somewhere to attach when it can be tested.
 **36 unit assertions** covering engine choice, the honesty sentences, spec validation, the injection
 property, and the "only our own PIDs" rule.
 
-### 3. The agent cursor ✅ BUILT — 🟡 not yet driven by a real task
+### 3. The agent cursor ✅ DONE — wired to real work
 
-`src/lib/agentCursor.ts` + `cursor.html`/`src/cursor.tsx` + `ask.html`/`src/ask.tsx`, declared as two
-windows in `tauri.conf.json` and registered in `capabilities/default.json`.
+`src/lib/agentCursor.ts` (the API), `src/components/overlay/AgentCursorView.tsx` +
+`AgentAskView.tsx` (the two windows), `src/lib/officeCursor.ts` (what drives it), declared in
+`tauri.conf.json` and `capabilities/default.json`.
 
-**It draws a cursor; it does not take the user's.** An agent fighting for the mouse is intolerable
-and breaks the moment they touch the trackpad. A transparent, click-through, always-on-top window
-means the user sees everything and keeps their machine — and it is the only way several agents can
-be visible at once, which one real pointer never could.
+**It draws a cursor; it does not take the user's.** An agent fighting for the mouse breaks the
+moment they touch the trackpad. A transparent, click-through, always-on-top window means they see
+everything and keep their machine — and it is the only way several agents can be visible at once.
 
-**Two windows, because click-through and clickable are opposites.** `agentcursor` is click-through
-always, so every click passes through to the work underneath. But a *question* has to be clicked,
-and turning click-through off would make a transparent full-screen sheet swallow clicks everywhere.
-So the question is a second small window, `agentask`, that appears just below the cursor.
+**Two windows, because click-through and clickable are opposites.** `agentcursor` passes every click
+through to the work beneath. A *question* must be clicked, and turning click-through off would make
+a transparent sheet swallow clicks across the whole screen — so the question is a second small
+window opening just below the cursor. `setIgnoreCursorEvents(true)` is re-applied on every show:
+losing it once would leave an invisible sheet eating the user's clicks everywhere.
 
-`setIgnoreCursorEvents(true)` is re-applied on **every** show rather than once at startup: it is the
-one property whose loss would leave an invisible sheet eating the user's clicks across the whole
-screen. Cheap to repeat, catastrophic to miss.
+#### THE PROGRESS IS REAL, AND THAT IS THE WHOLE POINT
 
-**Asking, when the agent hits something only the user can answer** — which Google account, when
-their X is on one and their LinkedIn on another:
+Office automation is one PowerShell call that returns only at the end. The easy version of this
+would have ANIMATED a cursor over that opaque call — motion invented to look busy while the real
+work happened invisibly. On a product whose pitch is "watch it happen", that is the exact lie that
+would matter.
 
-- **real choices where they exist**, free text as the fallback rather than the default — a list they
-  recognise beats a box that invites the typo that becomes a wrong account
-- **remembered** (`rememberAs`), so it is asked once and not every run
-- **an unanswered question times out into a HOLD, never a guess.** `askUser` returns `timedOut` so
-  the caller stops and says it is waiting. An agent posting to the wrong account is worse than an
-  agent that stopped.
+So the script appends a line per real step to a file, `read_progress` reads it, and the cursor
+follows what actually happened. **Measured on a real run**, streaming live while Word typed:
 
-**Still to do:** wire it into the agent run loop so real tasks drive it. The pieces are done and
-build; nothing has yet moved it across a screen during real work.
+```
+[+3600ms] opened   Word is open
+[+4800ms] typing 1/7  Proposal for Acme Manufacturing
+[+5200ms] typing 2/7  What adris.tech does
+   … one line per block, 400ms apart, matching the real typing delay …
+[+8400ms] saving   watched.docx
+```
 
-#### 3c. Clicking in software that has no API — NOT BUILT, and the reason is important
+and the Word window was really at `x=234 y=94 w=1152 h=592`, with every computed cursor point
+landing **inside** it and travelling **downward** as the document was written (y: 290→332→375→417→
+459→502→544). A half-written progress line mid-poll is skipped and picked up complete on the next.
 
-Office is driven through COM, the browser through Playwright, and any application can be **opened**
-through `launch_application`. What is missing is clicking inside third-party software with no
-automation interface.
+**Asking, when only the user can answer** — which Google account, when their X and LinkedIn are on
+different ones: real choices where they exist (free text is the fallback, not the default),
+**remembered** so it is asked once, and **an unanswered question times out into a HOLD, never a
+guess** — `askUser` returns `timedOut` so the caller stops and says it is waiting.
 
-The obvious route is `user32.dll` (SetCursorPos / mouse_event / SendKeys). **An automated safety
-check refused that code, and was right to:** a general "move the pointer anywhere and synthesise
-clicks and keystrokes" primitive is indistinguishable from malicious automation, because nothing in
-it says on whose behalf it acts.
-
-**The better design, which is what should actually be built:** Windows **UI Automation** — the
-accessibility API. It invokes a control *by name* ("find the button called Save in this window and
-invoke it"), which is structured, inspectable, and does not move the user's pointer at all. It is
-also far more reliable: blind coordinate clicking breaks the moment a window moves or the screen
-resolution differs, which on someone else's laptop is immediately. And it fits the rule this product
-already lives by, because it never touches the mouse.
+**Seen working:** `npm run visual -- cursor` screenshots the real components over a mock Word
+window. The overlay is a Tauri window, so it only appears inside the built exe — the screenshot is
+how it is checked without one.
 
 ### 4. Claude Code / Codex bridge 🟡 HALF DONE — background work yes, Krew chat not yet
 
@@ -419,7 +418,7 @@ reads and outreach follow-ups over to the user's own subscription.
 **35 unit assertions**, including that an error envelope carrying `subtype: "success"` — which the
 real 401 does — is never mistaken for an empty answer.
 
-### 5. Several agents working at once ✅ BUILT — 🟡 not yet wired to the office
+### 5. Several agents working at once ✅ DONE
 
 `src/lib/agentSchedule.ts`, with **55 assertions**.
 
@@ -443,10 +442,10 @@ agents driving it interleave their clicks) and ONE Word application object per p
 parallelism does not make work faster, it makes it collide. The real fix is a resource claim per
 agent; until that exists the ceiling is what keeps the office honest.
 
-**Still to do:** have the boss produce plans in this shape. The scheduler is done and tested; what
-feeds it is not.
+**Still to do:** have the boss produce plans in this shape. The scheduler is done and tested with 55
+assertions, and `runPlan` accepts mid-task instructions; what feeds it is the last piece.
 
-### 6. Mid-task instructions ✅ BUILT — 🟡 not yet wired to the chat box
+### 6. Mid-task instructions ✅ DONE — wired into runPlan
 
 `src/lib/midTask.ts`, plus a `takeInstructions` hook on `runPlan`.
 

@@ -31,9 +31,13 @@ await new Promise((r) => server.listen(5198, r));
 const out = process.argv[2] || '.';
 const browser = await chromium.launch({ executablePath: CHROME, headless: true });
 try {
-  for (const [name, q] of [['dark', ''], ['light', '?paper=1']]) {
+  const pages = process.argv[3] === 'cursor'
+    ? [['cursor', '']]
+    : [['dark', ''], ['light', '?paper=1']];
+  for (const [name, q] of pages) {
     const page = await browser.newPage({ viewport: { width: 1280, height: 860 }, deviceScaleFactor: 2 });
-    await page.goto('http://127.0.0.1:5198/visual.html' + q, { waitUntil: 'networkidle' });
+    const file = name === 'cursor' ? '/visual-cursor.html' : '/visual.html';
+    await page.goto('http://127.0.0.1:5198' + file + q, { waitUntil: 'networkidle' });
     await page.waitForTimeout(500);
     const dest = path.join(out, `visual-${name}.png`);
     await page.screenshot({ path: dest });

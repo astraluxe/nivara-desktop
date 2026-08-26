@@ -3634,7 +3634,8 @@ async function executeToolCore(
     };
 
     const { getInstalledApps } = await import('./installedApps');
-    const { chooseEngine, engineNote, createDocument } = await import('./officeCom');
+    const { chooseEngine, engineNote } = await import('./officeCom');
+    const { createDocumentWatched } = await import('./officeCursor');
     const scan = await getInstalledApps();
     const engine = chooseEngine(scan?.automation, kind);
 
@@ -3647,7 +3648,17 @@ async function executeToolCore(
     }
 
     const template = str(args.template).trim();
-    const res = await createDocument({
+    // Watched: Office opens where the user can see it, and the agent's cursor follows the REAL
+    // progress of the work — see officeCursor.ts for why that progress is not animated.
+    // The cursor is painted in the agent's own department colour, so with several agents working
+    // at once the user can tell whose pointer is whose at a glance.
+    const { KREW_AGENTS, DEPT_VAR } = await import('./krewAgents');
+    const me = KREW_AGENTS.find((a) => a.key === agentKey);
+    const who = {
+      agent: me?.humanName ?? 'adris',
+      rgb: `var(${DEPT_VAR[me?.category ?? 'Boss'] ?? DEPT_VAR.Boss})`,
+    };
+    const res = await createDocumentWatched({
       kind,
       savePath: str(args.save_path).trim(),
       template: template || undefined,
@@ -3655,10 +3666,11 @@ async function executeToolCore(
       rows: asArray(args.rows) as never,
       sheetName: str(args.sheet_name).trim() || undefined,
       slides: asArray(args.slides) as never,
-    });
+    }, who);
 
     if (!res.ok) return `[The document was NOT created: ${res.error ?? 'unknown error'}. Say so — do not tell the user it was saved.]`;
-    return `Saved ${res.path} (${res.bytes} bytes). ${engineNote('office', kind, !!template)}`;
+    return `Saved ${res.path} (${res.bytes} bytes). ${engineNote('office', kind, !!template)} `
+      + `The user watched it being written and it is open on their screen now.`;
   }
 
   if (toolName === 'list_installed_apps') {

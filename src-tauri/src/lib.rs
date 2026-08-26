@@ -3439,6 +3439,49 @@ async fn office_automation(script: String) -> Result<String, String> {
 //
 // See ROADMAP.md item 3 for the full plan.
 
+/// Read a small text file. Used to follow a long-running script's progress while it runs.
+///
+/// Office automation is one PowerShell call that takes seconds and returns only at the end, so
+/// without this the cursor could only be ANIMATED over it — motion invented to look busy while the
+/// real work happened invisibly. The script writes what it is genuinely doing to a file, this reads
+/// it, and the cursor reflects the actual state. Faked progress is a lie with a spinner on it.
+///
+/// Capped: this exists to read a progress file of a few hundred bytes, not to be a file-read API.
+#[tauri::command]
+async fn read_progress(path: String) -> Result<String, String> {
+    match std::fs::metadata(&path) {
+        Err(_) => Ok(String::new()),            // not written yet — not an error, just "no news"
+        Ok(m) if m.len() > 64 * 1024 => Err("progress file is unexpectedly large".into()),
+        Ok(_) => Ok(std::fs::read_to_string(&path).unwrap_or_default()),
+    }
+}
+
+/// Where a window is on screen, so the drawn cursor can be put over the real thing.
+#[tauri::command]
+async fn window_rect(title_contains: String) -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let needle = title_contains.replace('\'', "''");
+        let script = format!(
+            r#"Add-Type @'
+using System; using System.Runtime.InteropServices;
+public class NvRect {{
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT {{ public int Left, Top, Right, Bottom; }}
+}}
+'@
+$p = Get-Process | Where-Object {{ $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like '*{needle}*' }} | Select-Object -First 1
+if (-not $p) {{ '{{}}' }} else {{
+  $r = New-Object NvRect+RECT
+  [void][NvRect]::GetWindowRect($p.MainWindowHandle, [ref]$r)
+  "{{""x"":$($r.Left),""y"":$($r.Top),""w"":$($r.Right-$r.Left),""h"":$($r.Bottom-$r.Top),""title"":""$($p.MainWindowTitle -replace '"','')""}}"
+}}"#);
+        run_powershell(&script, "{}")
+    }
+    #[cfg(not(target_os = "windows"))]
+    { let _ = title_contains; Ok(String::from("{}")) }
+}
+
 /// Open an application the user actually has, and optionally a file in it.
 ///
 /// This is the third way agents reach real software, alongside Office COM and the browser — and it
@@ -8760,6 +8803,8 @@ pub fn run() {
             krew_execute_command,
             scan_installed_apps,
             office_automation,
+            read_progress,
+            window_rect,
             launch_application,
             agent_screen,
             agent_cli_detect,

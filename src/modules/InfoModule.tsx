@@ -1102,6 +1102,77 @@ export default function InfoModule() {
             the notes for the exact version you are running.
           </P>
 
+          <H3>Work you can watch happen</H3>
+          <P>
+            Ask for a Word proposal, a spreadsheet or a deck and the real Microsoft Office on your own
+            computer opens in front of you, writes it line by line, saves it, and leaves it on screen.
+            Not a file that appears in a folder — the document being written, while you watch.
+          </P>
+          <P>
+            If you have a template of your own, say so and it is used: <K>use my template at
+            C:\Work\proposal.dotx</K>. Your fonts, your colours and your styles come out intact,
+            because it genuinely is Word. When Office is not on the machine the app says so plainly
+            and generates the file instead — it never implies Office was used when it was not.
+          </P>
+          <P>
+            Spreadsheets arrive as something you can work in: a proper header row, frozen panes and
+            filters already on, and reference numbers like <K>00123</K> keeping their zeros instead of
+            being quietly turned into numbers. Decks are 16:9.
+          </P>
+
+          <H3>You can see which agent is doing what</H3>
+          <P>
+            While an agent works on your machine, a small coloured pointer follows the work with a
+            label — <K>Meera · writing "Proposal for Acme" (3/7)</K>. Each agent has its own colour, so
+            when several are working at once you can tell them apart at a glance.
+          </P>
+          <P>
+            It is a drawing, not your mouse. Your pointer stays yours, and nothing steals it
+            mid-sentence.
+          </P>
+          <P>
+            If an agent reaches something only you can answer — which Google account to post from, when
+            your LinkedIn and your X are on different ones — it stops and asks in a small window right
+            below the pointer, over the app it is working in. It offers the accounts it can actually
+            see rather than making you type one, remembers your answer so it only asks once, and if you
+            are not at your desk it waits. It never guesses.
+          </P>
+
+          <H3>Several agents at once, in the right order</H3>
+          <P>
+            When a job needs three specialists and none of them needs the others, all three work at the
+            same time. When one will answer better with what another found, it waits — and is handed
+            that work, rather than starting from nothing.
+          </P>
+          <P>
+            If one step fails, only what genuinely depended on it stops, and it says which step let it
+            down. Everything unrelated carries on. One broken step costs you that step, not the
+            afternoon.
+          </P>
+
+          <H3>Adding to a job that is already running</H3>
+          <P>
+            Remembered something halfway through — <K>also cc my partner</K>, <K>skip the ones in
+            Mumbai</K>? Say it while the work is running. It is folded in at the next step rather than
+            interrupting an agent mid-document, and what you added later wins wherever it disagrees
+            with the original brief.
+          </P>
+
+          <H3>Your own Claude Code subscription, if you have one</H3>
+          <P>
+            If Claude Code is installed, a button appears at the top of the window. Turn it on and the
+            app thinks with your own subscription instead of adris.tech tokens — your budget, your
+            plan. It only appears when it can actually be used.
+          </P>
+
+          <H3>Your daily sending limit is yours</H3>
+          <P>
+            The outreach copilot starts at 40 emails and 20 LinkedIn messages a day, because a new
+            sending domain that mails hundreds on day one gets filtered permanently. That is a starting
+            point, not a rule — the numbers are editable right where the count is shown. It is your
+            mailbox and your list.
+          </P>
+
           <H3>Plans that actually run across your team</H3>
           <P>
             Handing a plan task to three or four specialists used to produce one agent writing a long
