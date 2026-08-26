@@ -44,18 +44,44 @@ Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
 
 $version = (Get-Content "src-tauri/tauri.conf.json" | ConvertFrom-Json).version
 
+$bundle = "src-tauri\target\release\bundle\nsis"
+$exe    = "$bundle\adris.tech_${version}_x64-setup.exe"
+$sig    = "$exe.sig"
+
 if ($SkipBuild) {
     Write-Host "Skipping the build; signing and publishing v$version as it stands." -ForegroundColor Yellow
 } else {
     Write-Host "Building v$version..." -ForegroundColor Cyan
+    if (Test-Path $exe) { Remove-Item $exe -Force }   # so "did it build?" below cannot see a stale one
     npm run tauri build
-    if ($LASTEXITCODE -ne 0) { Write-Host "Build failed." -ForegroundColor Red; exit 1 }
+
+    # ── WHY A NON-ZERO EXIT IS NOT AUTOMATICALLY A FAILED BUILD ──────────────
+    #
+    # tauri.conf.json carries an updater pubkey, so the bundler ALWAYS tries to sign — and with the
+    # private key deliberately kept out of the environment (see above) it stops with:
+    #
+    #     "A public key has been found, but no private key. Make sure to set
+    #      TAURI_SIGNING_PRIVATE_KEY environment variable."
+    #
+    # That happens AFTER the installer has been written. The bundler's own log says so:
+    # "Finished 1 bundle at ...adris.tech_x.y.z_x64-setup.exe". Treating it as a failed build threw
+    # away a perfectly good four-minute compile and stopped the script before the signing step it
+    # was about to perform itself.
+    #
+    # So the question asked here is the honest one: IS THERE AN INSTALLER? A real failure -- a
+    # compile error, a failing guard -- produces no .exe and still stops the script.
+    if ($LASTEXITCODE -ne 0) {
+        if (Test-Path $exe) {
+            Write-Host "  (the bundler could not sign it -- expected; signing happens below)" -ForegroundColor DarkGray
+        } else {
+            Write-Host "Build failed - no installer was produced." -ForegroundColor Red
+            exit 1
+        }
+    }
 }
 
-# Paths
-$bundle = "src-tauri\target\release\bundle\nsis"
-$exe    = "$bundle\adris.tech_${version}_x64-setup.exe"
-$sig    = "$bundle\adris.tech_${version}_x64-setup.exe.sig"
+# Paths are set above the build, because the build needs to know what an installer looks like in
+# order to answer "was one produced?" when the bundler exits non-zero over signing.
 
 if (-not (Test-Path $exe)) {
     Write-Host "ERROR: $exe was not produced by the build." -ForegroundColor Red

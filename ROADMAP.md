@@ -760,6 +760,15 @@ environment cannot carry.
    characters, which the CLI parses as an empty string. Both forms were measured against the real
    key: `'""'` produces a valid `.sig`, `""` does not.
 
+**A fourth one, which the fix for the first three caused.** `tauri.conf.json` carries an updater
+`pubkey`, so the bundler ALWAYS attempts to sign. With the private key deliberately kept out of the
+environment it now stops with *"A public key has been found, but no private key"* — **after** writing
+the installer. Its own log says so: `Finished 1 bundle at …_x64-setup.exe`.
+
+The script treated that non-zero exit as a failed build, threw away a good four-minute compile, and
+stopped before the signing step it was about to perform itself. It now asks the honest question —
+**is there an installer?** A real failure produces none and still stops the run.
+
 **And a good signature is never thrown away before a replacement exists.** The first attempt at this
 deleted the `.sig`, then failed — destroying a valid signature the build had just produced. It is
 moved aside now and only removed once a new one is on disk.
