@@ -7,7 +7,7 @@ import type { Node, Edge } from '@xyflow/react';
 import { krewDb, credentialStore, krewMemoryDb, type KrewMemory } from '../../lib/krewDb';
 import { listMcpServers, mcpToolDefs } from '../../lib/krewMcp';
 import { brain as brainStore, nodeToMarkdown, requestBrainFocus } from '../../lib/knowledgeStore';
-import { SYSTEM_TOOLS, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, LEAD_TOOLS, getAutopilotTools, getWorkspaceTools, buildKrewSystemPrompt, executeTool, needsCompression, resetBrowserRunState, closeAgentBrowserIfActive, setAgentBrowserHold, requestLeadStop, resetLeadStop, isLeadStopRequested, requestToolStop, resetToolStop, KREW_PROFILE_KEY, setBrainSaveFallback, type ToolDef } from '../../lib/krewTools';
+import { SYSTEM_TOOLS, BOSS_SYSTEM_TOOL_NAMES, AUTOMATION_TOOLS, BROWSER_TOOLS, SERVICE_TOOLS, BOSS_TOOLS, RESEARCH_TOOLS, LEAD_TOOLS, getAutopilotTools, getWorkspaceTools, buildKrewSystemPrompt, executeTool, needsCompression, resetBrowserRunState, closeAgentBrowserIfActive, setAgentBrowserHold, requestLeadStop, resetLeadStop, isLeadStopRequested, requestToolStop, resetToolStop, KREW_PROFILE_KEY, setBrainSaveFallback, type ToolDef } from '../../lib/krewTools';
 import { TaskProgress, type TaskPhase } from './TaskProgress';
 import { StatusGlobe } from './StatusGlobe';
 import { runParallelResearch } from '../../lib/researchSources';
@@ -4858,7 +4858,11 @@ const [studioExtracting, setStudioExtracting] = useState(false);
         // read_my_calendar belongs here for the same reason as research_person: "research the person
         // I'm meeting tomorrow" is answered by boss directly, and without a way to READ the calendar
         // it had no option but to ask who the meeting was with — a name sitting in the event title.
-        ...SYSTEM_TOOLS.filter(t => ['save_memory', 'recall_memory', 'forget_memory', 'recall_from_brain', 'create_todo', 'suggest_next_task', 'create_calendar_event', 'read_my_calendar', 'set_user_location'].includes(t.name)),
+        // The list moved to krewTools.ts as BOSS_SYSTEM_TOOL_NAMES so it can be asserted in a test.
+        // It was inline here, and a capability that had been built and verified — making a real Word
+        // document — was still denied to the user, because nobody remembered to add it to a literal
+        // buried 4,800 lines into this file.
+        ...SYSTEM_TOOLS.filter(t => (BOSS_SYSTEM_TOOL_NAMES as readonly string[]).includes(t.name)),
         ...BOSS_TOOLS,
         ...BROWSER_TOOLS,
         // research_person is the one LEAD_TOOL boss keeps. Boss answers plenty of turns itself

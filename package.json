@@ -8,7 +8,7 @@
     "check:colours": "node scripts/check-dept-colours.mjs",
     "check:roster": "node scripts/check-agent-roster.mjs",
     "check:delegation": "node scripts/check-delegation-rule.mjs",
-    "build": "node scripts/check-dept-colours.mjs && node scripts/check-agent-roster.mjs && node scripts/check-delegation-rule.mjs && tsc && vite build",
+    "build": "node scripts/check-dept-colours.mjs && node scripts/check-agent-roster.mjs && node scripts/check-delegation-rule.mjs && node scripts/check-boss-tools.mjs && tsc && vite build",
     "preview": "vite preview",
     "harness:build": "vite build --config vite.harness.config.ts --outDir dist-harness",
     "test:ui": "node harness/run-tests.mjs",
@@ -16,7 +16,8 @@
     "visual": "vite build --config vite.visual.config.ts --outDir dist-visual && node harness/shoot.mjs",
     "tauri": "tauri",
     "bundle-exo": "node scripts/bundle-exo.js",
-    "tauri:build": "npm run bundle-exo && tauri build"
+    "tauri:build": "npm run bundle-exo && tauri build",
+    "check:bosstools": "node scripts/check-boss-tools.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

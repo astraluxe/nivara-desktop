@@ -583,6 +583,36 @@ function nlScheduleToCron(text: string): string {
 
 // ─── System tools (always available) ─────────────────────────────────────────
 
+/**
+ * The system tools the BOSS agent keeps for itself.
+ *
+ * The boss is delegation-first, so most tools live on the specialists. These are the exceptions:
+ * things the user asks the boss directly, in the boss's own conversation, where delegating would be
+ * absurd and — far worse — where a missing tool does not produce an error. It produces a confident
+ * sentence saying the thing was done, or a flat "I can't do that" about a feature that exists.
+ *
+ * THAT IS NOT HYPOTHETICAL. It has now happened four times, and each entry below is a scar:
+ *
+ *   recall_from_brain      boss could not check the Brain, so it guessed, and told the user a note
+ *                          had been saved that was empty.
+ *   create_calendar_event  boss SAID it had put the thing in the calendar. It had not.
+ *   read_my_calendar       boss asked who the meeting was with, when the name was in the event title.
+ *   create_office_document "make me a Word proposal and save it to my Desktop" was answered with
+ *                          "I cannot create or save files directly to your computer" — by a build
+ *                          that could, and had been tested doing it, but never through this list.
+ *
+ * Lives here rather than inline in KrewChat so it can be asserted in a test. It is exported for
+ * exactly that reason; adding a capability the boss must have means adding it here.
+ */
+export const BOSS_SYSTEM_TOOL_NAMES = [
+  'save_memory', 'recall_memory', 'forget_memory', 'recall_from_brain',
+  'create_todo', 'suggest_next_task',
+  'create_calendar_event', 'read_my_calendar', 'set_user_location',
+  // The user asks the boss for a document in the boss's own chat. Delegating a one-line request to
+  // a specialist would be theatre, and without these two the boss denies a capability it has.
+  'create_office_document', 'list_installed_apps',
+] as const;
+
 export const SYSTEM_TOOLS: ToolDef[] = [
   {
     name: 'read_file',
