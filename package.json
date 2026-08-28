@@ -1,14 +1,14 @@
 {
   "name": "nivara-desktop",
   "private": true,
-  "version": "1.69.0",
+  "version": "1.70.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "check:colours": "node scripts/check-dept-colours.mjs",
     "check:roster": "node scripts/check-agent-roster.mjs",
     "check:delegation": "node scripts/check-delegation-rule.mjs",
-    "build": "node scripts/check-dept-colours.mjs && node scripts/check-agent-roster.mjs && node scripts/check-delegation-rule.mjs && node scripts/check-boss-tools.mjs && node scripts/check-ai-source.mjs && node scripts/check-tips.mjs && tsc && vite build",
+    "build": "node scripts/check-dept-colours.mjs && node scripts/check-agent-roster.mjs && node scripts/check-delegation-rule.mjs && node scripts/check-boss-tools.mjs && node scripts/check-ai-source.mjs && node scripts/check-tips.mjs && node scripts/check-classes.mjs && node scripts/check-ai-callers.mjs && node scripts/check-office-graph.mjs && node scripts/check-tool-coverage.mjs && node scripts/check-ui-reachable.mjs && tsc && vite build",
     "preview": "vite preview",
     "harness:build": "vite build --config vite.harness.config.ts --outDir dist-harness",
     "test:ui": "node harness/run-tests.mjs",
@@ -19,7 +19,14 @@
     "tauri:build": "npm run bundle-exo && tauri build",
     "check:bosstools": "node scripts/check-boss-tools.mjs",
     "check:aisource": "node scripts/check-ai-source.mjs",
-    "check:tips": "node scripts/check-tips.mjs"
+    "check:tips": "node scripts/check-tips.mjs",
+    "check:classes": "node scripts/check-classes.mjs",
+    "check:aicallers": "node scripts/check-ai-callers.mjs",
+    "check:officegraph": "node scripts/check-office-graph.mjs",
+    "check:toolcoverage": "node scripts/check-tool-coverage.mjs",
+    "check:uireachable": "node scripts/check-ui-reachable.mjs",
+    "_comment:urls": "check-external-urls hits the real internet, so it is NEVER in the build — run it by hand before a release",
+    "check:urls": "node scripts/check-external-urls.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
@@ -36,12 +43,14 @@
     "pdfjs-dist": "^5.7.284",
     "pptxgenjs": "^3.12.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "three": "^0.180.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.5.0",
     "@types/react": "^18.3.20",
     "@types/react-dom": "^18.3.5",
+    "@types/three": "^0.185.4",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.21",
     "postcss": "^8.5.3",
