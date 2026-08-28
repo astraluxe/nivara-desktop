@@ -1,14 +1,14 @@
 {
   "name": "nivara-desktop",
   "private": true,
-  "version": "1.68.0",
+  "version": "1.69.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "check:colours": "node scripts/check-dept-colours.mjs",
     "check:roster": "node scripts/check-agent-roster.mjs",
     "check:delegation": "node scripts/check-delegation-rule.mjs",
-    "build": "node scripts/check-dept-colours.mjs && node scripts/check-agent-roster.mjs && node scripts/check-delegation-rule.mjs && node scripts/check-boss-tools.mjs && tsc && vite build",
+    "build": "node scripts/check-dept-colours.mjs && node scripts/check-agent-roster.mjs && node scripts/check-delegation-rule.mjs && node scripts/check-boss-tools.mjs && node scripts/check-ai-source.mjs && node scripts/check-tips.mjs && tsc && vite build",
     "preview": "vite preview",
     "harness:build": "vite build --config vite.harness.config.ts --outDir dist-harness",
     "test:ui": "node harness/run-tests.mjs",
@@ -17,7 +17,9 @@
     "tauri": "tauri",
     "bundle-exo": "node scripts/bundle-exo.js",
     "tauri:build": "npm run bundle-exo && tauri build",
-    "check:bosstools": "node scripts/check-boss-tools.mjs"
+    "check:bosstools": "node scripts/check-boss-tools.mjs",
+    "check:aisource": "node scripts/check-ai-source.mjs",
+    "check:tips": "node scripts/check-tips.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
