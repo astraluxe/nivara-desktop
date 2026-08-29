@@ -1,7 +1,7 @@
 {
   "name": "nivara-desktop",
   "private": true,
-  "version": "1.71.0",
+  "version": "1.72.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -25,7 +25,7 @@
     "check:officegraph": "node scripts/check-office-graph.mjs",
     "check:toolcoverage": "node scripts/check-tool-coverage.mjs",
     "check:uireachable": "node scripts/check-ui-reachable.mjs",
-    "_comment:urls": "check-external-urls hits the real internet, so it is NEVER in the build — run it by hand before a release",
+    "_comment:urls": "check-external-urls hits the real internet, so it is NEVER in the build \u2014 run it by hand before a release",
     "check:urls": "node scripts/check-external-urls.mjs"
   },
   "dependencies": {
@@ -43,14 +43,12 @@
     "pdfjs-dist": "^5.7.284",
     "pptxgenjs": "^3.12.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "three": "^0.180.0"
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.5.0",
     "@types/react": "^18.3.20",
     "@types/react-dom": "^18.3.5",
-    "@types/three": "^0.185.4",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.21",
     "postcss": "^8.5.3",
