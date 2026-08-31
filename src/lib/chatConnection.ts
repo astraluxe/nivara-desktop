@@ -35,6 +35,13 @@ export interface ChatConnection {
   localModel?: string;
   /** True when the real source is the user's own Claude Code / Codex subscription. */
   bridge: boolean;
+  /**
+   * Set only when the user's explicit choice could NOT be honoured and something else is answering.
+   *
+   * It carries the mode they actually picked, so the chat can say which one it could not use. An
+   * unset value means what is running is what was chosen.
+   */
+  fellBackFrom?: 'own_key' | 'local';
 }
 
 /**
@@ -68,10 +75,28 @@ export function chatConnectionFor(pref: AiSourcePref, avail: AiAvailability | nu
       // Listed but not installed is still an explicit choice — say so by keeping the bridge shape.
       // The chat reports the failure rather than quietly spending credit; see streamTurn.
       return { ...(ownKey(pref.provider) ?? { mode: 'own_key' as const, bridge: false }), bridge: true };
+    // ── "COULD NOT LOOK" IS NOT "IS NOT THERE" ────────────────────────────────
+    //
+    // Both of these fell back to adris.tech whenever the wanted key or model was missing from
+    // `avail`. But `avail` is null whenever the availability probe FAILED — it needs Tauri and the
+    // network — and the caller passes null on exactly that path. So a dropped connection, or a
+    // probe that had not answered yet, silently moved the user onto the hosted model while the
+    // title bar went on showing "Your NVIDIA key" or "Local model". Their choice, their key, their
+    // machine — and adris.tech answering and spending their allowance, saying nothing.
+    //
+    // When we could not look, honour the stored preference: it was recorded at a moment when the
+    // provider genuinely was there, which is better evidence than a failed probe. Fall back only
+    // when we DID look and it really is gone, and mark it so the chat can say so out loud.
     case 'own_key':
-      return ownKey(pref.provider) ?? { mode: 'nivara', bridge: false };
+      return ownKey(pref.provider)
+        ?? (avail
+          ? { mode: 'nivara', bridge: false, fellBackFrom: 'own_key' }
+          : { mode: 'own_key', provider: pref.provider, model: pref.model, bridge: false });
     case 'local':
-      return localOne(pref.localModel) ?? { mode: 'nivara', bridge: false };
+      return localOne(pref.localModel)
+        ?? (avail
+          ? { mode: 'nivara', bridge: false, fellBackFrom: 'local' }
+          : { mode: 'local', localModel: pref.localModel, bridge: false });
     case 'nivara':
       return { mode: 'nivara', bridge: false };
     default:

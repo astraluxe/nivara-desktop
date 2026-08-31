@@ -69,13 +69,17 @@ console.log('\n=== an explicitly chosen model follows its own key, and only its 
 
 console.log('\n=== a choice that cannot be honoured falls back, it does not break ===');
 {
+  // These carry a `fellBackFrom` marker now, so they are checked field by field rather than by
+  // whole-object equality — the fallback itself is what they are about, and it still happens. The
+  // marker exists because falling back SILENTLY is what let the title bar say "Your NVIDIA key"
+  // while adris.tech answered; see the section at the end of this file.
   eq('own key with no key left → the hosted model, not a dead chat',
     chatConnectionFor({ mode: 'own_key', provider: 'nvidia' }, avail()),
-    { mode: 'nivara', bridge: false });
+    { mode: 'nivara', bridge: false, fellBackFrom: 'own_key' });
 
   eq('local with nothing downloaded → the hosted model',
     chatConnectionFor({ mode: 'local', localModel: 'gone.gguf' }, avail()),
-    { mode: 'nivara', bridge: false });
+    { mode: 'nivara', bridge: false, fellBackFrom: 'local' });
 
   eq('local with a model that was deleted → the one that IS there',
     chatConnectionFor({ mode: 'local', localModel: 'deleted.gguf' }, avail({ localModels: LOCAL })).localModel,
@@ -104,6 +108,49 @@ console.log('\n=== "choose for me" means the same thing here as in resolveAiSour
   eq('and with nothing at all, the hosted model rather than a crash',
     chatConnectionFor({ mode: 'auto' }, avail({ signedIn: false })),
     { mode: 'nivara', bridge: false });
+}
+
+
+console.log('\n=== an explicit choice is not silently swapped ===');
+{
+  // The reported bug: the title bar said "Your NVIDIA key" and adris.tech was answering.
+  //
+  // `avail` is null whenever the availability probe FAILED — it needs Tauri and the network, and
+  // the caller passes null on exactly that path. Treating that as "the key is gone" moved the user
+  // onto the hosted model, spending their adris.tech allowance, in silence.
+  const pref = { mode: 'own_key', provider: 'nvidia', model: 'llama-3.3-70b' };
+  const blind = chatConnectionFor(pref, null);
+  ok('a failed probe does not move them to adris.tech', blind.mode === 'own_key', blind.mode);
+  ok('...and keeps the provider they chose', blind.provider === 'nvidia');
+  ok('...and the model with it', blind.model === 'llama-3.3-70b');
+  ok('...and does not claim a fallback happened', !blind.fellBackFrom);
+
+  // A local model, same reasoning.
+  const localBlind = chatConnectionFor({ mode: 'local', localModel: 'qwen.gguf' }, null);
+  ok('a failed probe keeps the local model too', localBlind.mode === 'local', localBlind.mode);
+  ok('...naming the one they picked', localBlind.localModel === 'qwen.gguf');
+
+  // When we DID look and it is genuinely gone, falling back is right — but it must be admitted.
+  const gone = chatConnectionFor(pref, { byokProviders: [], localModels: [], signedIn: true });
+  ok('a key that is really gone falls back', gone.mode === 'nivara');
+  ok('...and says which choice it could not honour', gone.fellBackFrom === 'own_key', String(gone.fellBackFrom));
+
+  const localGone = chatConnectionFor({ mode: 'local', localModel: 'qwen.gguf' }, { byokProviders: [], localModels: [], signedIn: true });
+  ok('a local model that is really gone falls back', localGone.mode === 'nivara');
+  ok('...and says so', localGone.fellBackFrom === 'local');
+
+  // The happy path must be untouched, and must never claim a fallback.
+  const fine = chatConnectionFor(pref, { byokProviders: ['nvidia'], localModels: [], signedIn: true });
+  ok('an available key is used as chosen', fine.mode === 'own_key' && fine.provider === 'nvidia');
+  ok('...with no fallback marker', !fine.fellBackFrom);
+
+  // Choosing adris.tech deliberately is not a fallback either.
+  const hosted = chatConnectionFor({ mode: 'nivara' }, { byokProviders: ['nvidia'], localModels: [], signedIn: true });
+  ok('choosing adris.tech is not a fallback', hosted.mode === 'nivara' && !hosted.fellBackFrom);
+
+  // 'auto' means "choose for me", so resolving it to anything is never a fallback.
+  const auto = chatConnectionFor({ mode: 'auto' }, { byokProviders: [], localModels: [], signedIn: true });
+  ok('auto resolving to adris.tech is not a fallback', !auto.fellBackFrom);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

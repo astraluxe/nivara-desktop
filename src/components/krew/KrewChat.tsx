@@ -20,6 +20,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { extractTableRows, findLeadHeaderIndex, hasPopulatedLeadTable, mergeLeadTables, parseLeadRows, rowsToMarkdown, leadConnStatusToOutreach, looksLikePersonLead, matchesSeniority, matchesSector, peopleSearchPhrases } from '../../lib/leadTable';
 import { supabase } from '../../lib/supabase';
 import { getPlanConfig } from '../../lib/planConfig';
+import { ensureProperEnding } from '../../lib/deckEnding';
 import { autoSlideCount, parseDeckSpec, slidesNeedingImages, renderDeckHtml, extractDeckSpec, applyDeckEdits, type DeckSpec, type DeckSlide, type DeckPalette, deckToPptxBlob, LAYOUTS_WITH_IMAGE, layoutShowsImage } from '../../lib/deck';
 import { setLastDeck } from '../../lib/deckStore';
 import { CHANNEL_META, listConnections, saveConnection, schedulePost, postNow, type SocialConnection, type SocialChannel, type PostContent } from '../../lib/social';
@@ -3428,6 +3429,30 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
   // until the bus became a map they overwrote each other in one slot — so three agents looked like
   // one flickering between three names. This is the "I have a team" moment, finally visible.
   const [crew, setCrew] = useState<AgentActivity[]>(() => getActivities());
+  // ── WHY THIS IS A MEMO AND NOT A CALL ───────────────────────────────────────
+  //
+  // Reopening a conversation that contained a deck hung the app.
+  //
+  // A saved deck is stored as its rendered HTML with the whole DeckSpec embedded in a <script>
+  // tag, and every picture therefore appears TWICE — once as an <img src="data:…"> and once inside
+  // that JSON. A thirty-slide deck carrying five figures out of a Word document measures 6.7 MB.
+  //
+  // extractDeckSpec was called in the render body, so it handed back a NEW OBJECT every render.
+  // DeckResultBubble memoises its preview on that object, so the memo never hit: renderDeckHtml
+  // rebuilt the 6.7 MB string (27 ms) and, far worse, the iframe's srcDoc changed identity and the
+  // webview re-parsed 6.7 MB of HTML and re-decoded five half-megabyte base64 images — on every
+  // single render of the chat. Which is a hang.
+  //
+  // A freshly built deck never showed this: it is handed the spec object from the message itself,
+  // which is stable. Only a deck read back from history went through this path, which is exactly
+  // when the user saw it — "when i came back to some other chat in the exe it just hung, tht chat
+  // had the ppt".
+  //
+  // Parsed once per distinct content string, and the identity now holds still.
+  const restoredDeckSpec = useMemo(
+    () => (!streaming && isDeckHtml(content) ? extractDeckSpec(content) : null),
+    [content, streaming],
+  );
   useEffect(() => {
     const on = (e: Event) => {
       setLive((e as CustomEvent<AgentActivity | null>).detail ?? null);
@@ -3452,8 +3477,8 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
     // editable bubble (inline text editing, colour editor, PDF). Otherwise fall back to the
     // read-only saved-deck bubble (older decks) — still interactive Present/PDF.
     if (isDeckHtml(content)) {
-      const spec = extractDeckSpec(content);
-      if (spec) return <DeckResultBubble html={content} spec={spec} />;
+      // Parsed above, once — see restoredDeckSpec.
+      if (restoredDeckSpec) return <DeckResultBubble html={content} spec={restoredDeckSpec} />;
       return <SavedDeckBubble html={content} />;
     }
     return <StudioAssetBubble html={content} />;
@@ -4331,7 +4356,32 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
   // choosing "adris.tech", "your NVIDIA key" or "Local model" changed a label in the title bar
   // while the chat carried on answering from whatever `nv-krew-connection` last held. This is the
   // missing writer — see hooks/useAiSourceSync.
-  useAiSourceSync({ setMode, setProvider, setLocalModel, setModelName });
+  // ── RUN ON WHAT THEY CHOSE, OR SAY YOU DID NOT ──────────────────────────────
+  //
+  // The user's words: "when a user had choosen an option on top wht they want the exe to run on
+  // then run on tht only". They had — and adris.tech was answering anyway, because a choice that
+  // could not be resolved fell back to the hosted model without a word, leaving the title bar
+  // reading "Your NVIDIA key" over an answer that came from somewhere else entirely.
+  //
+  // Two halves. chatConnection no longer reads "could not check" as "is not there", so a failed
+  // availability probe or a dropped network keeps the user on their own key. And when the choice
+  // really is gone — key disconnected, model deleted — it is said out loud, once per session,
+  // rather than being discovered later from a surprising bill.
+  const fellBackToldRef = useRef(false);
+  useAiSourceSync({
+    setMode, setProvider, setLocalModel, setModelName,
+    onFellBack: (from) => {
+      if (fellBackToldRef.current) return;
+      fellBackToldRef.current = true;
+      const what = from === 'local' ? 'the local model you picked' : 'your own API key';
+      const how = from === 'local'
+        ? 'Re-download it in Models, or pick a different source from the menu in the title bar.'
+        : 'Reconnect the key in Connect Apps, or pick a different source from the menu in the title bar.';
+      addMsgHere({ role: 'assistant', content:
+        'Heads up: I could not reach ' + what + ', so this chat is running on **adris.tech AI** instead, '
+        + 'which uses your adris.tech allowance. ' + how });
+    },
+  });
 
   // The KEY itself is never stored here — it stays in the credential store, so this remembers the
   // CHOICE only. If the key behind it is gone, the own-key path falls back exactly as it always did.
@@ -5914,7 +5964,13 @@ The prompt must be production-ready — specific enough for a motion designer to
         // one the user watched sit motionless. Report it the same way as the drafting passes.
         const rprog = liveStatus((el, n) => n === 0
           ? `Reviewing the whole deck — ${spec!.slides.length} slides to check · ${el}`
-          : `Polishing — ${n} of ${spec!.slides.length} slides rewritten · ${el}`);
+          // "34 of 30 slides rewritten". The counter reads slide objects out of the stream and the
+          // denominator was the DRAFT's length — but the reviewer is allowed to split a slide that
+          // is carrying too much, so it legitimately emits more than it was handed. The number was
+          // honest and the sentence was not, and it read as a fault in the deck.
+          : n > spec!.slides.length
+            ? `Polishing — ${n} slides rewritten · ${el}`
+            : `Polishing — ${n} of ${spec!.slides.length} slides rewritten · ${el}`);
         let rtext = '';
         try { ({ text: rtext } = await streamTurnWithRetry([{ role: 'user', content: reviewUser }], reviewSys, rprog.onChunk)); }
         finally { rprog.stop(); }
@@ -5962,6 +6018,24 @@ The prompt must be production-ready — specific enough for a motion designer to
           }
         }
       }
+
+      // ── THE DECK HAS TO END, NOT JUST STOP ────────────────────────────────────
+      //
+      // "it never gives the ppt a proper ending the content is fydn but the ending part must be
+      // made proper... and i still feel the ppt wasnt completed."
+      //
+      // Both halves of that are one thing. The prompt asks for a closing slide, and on a long deck
+      // the model is still writing content when it runs out of output budget — so the last thing it
+      // emits is whatever slide it happened to be on. No wording fixes that, because the failure IS
+      // the instruction never being reached.
+      //
+      // Run LAST, after generation, after the continuation loop and after the review pass, because
+      // every one of those can leave the deck mid-thought, and a closing added earlier is one the
+      // reviewer may quietly drop. Adds at most a recap and a closing, only when missing, and both
+      // are built from the deck's own headings — see lib/deckEnding.ts.
+      const ending = ensureProperEnding(spec);
+      spec = ending.spec;
+      if (spec.slides.length > maxSlides + 2) spec.slides = spec.slides.slice(0, maxSlides + 2);
 
       // Apply the user's OPTIONAL colour/template choices from the setup card (before images so
       // the generated-abstract fallback uses the chosen accent). Both stay tweakable live after.
@@ -11305,10 +11379,11 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
           // Same catch as the delegates, at the top of the tree, and once only. What follows a
           // refusal to search is not another try but the honest failure below, which is a better
           // answer than a third round of the same recall.
-          if (!turnToolsRef.current.length && bossRecallRetries < 1 && !stopRef.current
+          if (bossRecallRetries < 1 && !stopRef.current
               && !endsWithQuestion(fullResponse)
-              && (isUngroundedRecall({ request: text, answer: fullResponse, searched: false })
-                  || deniesCapability(fullResponse))) {
+              && (deniesCapability(fullResponse)
+                  || (!turnToolsRef.current.length
+                      && isUngroundedRecall({ request: text, answer: fullResponse, searched: false })))) {
             bossRecallRetries++;
             carried = '';   // recalled text is not part of the answer
             paintWork(`${agentHandle(agent)} answered from memory — sending it back`,
@@ -11793,9 +11868,11 @@ ${task}`);
                   // itself, and the turn goes back with the tool named. Once: a model that will
                   // not search on the second ask will not search on the fifth, and the honest
                   // failure below is a better answer than a third attempt.
-                  if (!anyToolRan && recallRetries < 1 && !stopRef.current
+                  if (recallRetries < 1 && !stopRef.current
                       && !endsWithQuestion(delegateAccum || prosePart)
-                      && isUngroundedRecall({ request: delegateTask, answer: delegateAccum || prosePart, searched: false })) {
+                      && (deniesCapability(delegateAccum || prosePart)
+                          || (!anyToolRan
+                              && isUngroundedRecall({ request: delegateTask, answer: delegateAccum || prosePart, searched: false })))) {
                     recallRetries++;
                     delegateAccum = '';           // recalled text is not part of the deliverable
                     dPaint(statusBlock(Date.now(), `${agentHandle(targetAgent)} answered from memory — sending it back`,
@@ -12501,9 +12578,11 @@ ${wfTask}`);
                     // long note there. A pipeline stage is if anything MORE exposed to it: it is
                     // handed one step of someone else's plan, with no conversation around it to
                     // make the point that the looking-up is the work.
-                    if (!wfAnyTool && wfRecallRetries < 1 && !stopRef.current
+                    if (wfRecallRetries < 1 && !stopRef.current
                         && !endsWithQuestion(wfAccum || prose)
-                        && isUngroundedRecall({ request: wfFullTask, answer: wfAccum || prose, searched: false })) {
+                        && (deniesCapability(wfAccum || prose)
+                            || (!wfAnyTool
+                                && isUngroundedRecall({ request: wfFullTask, answer: wfAccum || prose, searched: false })))) {
                       wfRecallRetries++;
                       wfAccum = '';   // recalled text is not part of the deliverable
                       wfPaint(statusBlock(Date.now(), `${agentHandle(wfAgent)} answered from memory — sending it back`,

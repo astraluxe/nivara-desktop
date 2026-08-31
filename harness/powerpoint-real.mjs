@@ -118,9 +118,34 @@ try {
     let s = '';
     const bytes = new Uint8Array(buf);
     for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    // THE SAME SPEC, THROUGH THE OTHER RENDERER.
+    //
+    // "makesure the ppt designed in chat and when got to power point both are matching as i still
+    // find few minor errors and things a bit here and there not used properly."
+    //
+    // Two renderers of one spec drift, and the last time they did, nine layouts had quietly stopped
+    // carrying their content into PowerPoint. Rendering both here and comparing what each actually
+    // shows is the only way that stays fixed. The chat deck is parsed as real HTML rather than
+    // regexed, so what is compared is what a reader would see.
+    //
+    // Tags become SPACES rather than being dropped. A DOMParser document is never rendered, so
+    // `innerText` is unavailable and `textContent` concatenates adjacent nodes with no separator —
+    // an agenda's "01" and its text came back as one run, and the marker regex then read
+    // "MK-AG1" + "02" + "MK-AG2" as the single token "MK-AG102MK". That looked like a renderer
+    // disagreement and was nothing but the way the text was pulled out.
+    const chatHtml = window.__deck.renderDeckHtml(spec);
+    const chatText = chatHtml
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')   // the embedded spec is not on screen
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ');
+
     // The marker list travels back with the file so the checks below are derived from the very
     // spec that was rendered, rather than a copy of it that could drift.
-    return { b64: btoa(s), markers: [...new Set(JSON.stringify(spec).match(/MK-[A-Z0-9]+/g) || [])] };
+    return {
+      b64: btoa(s),
+      markers: [...new Set(JSON.stringify(spec).match(/MK-[A-Z0-9]+/g) || [])],
+      chatMarkers: [...new Set(chatText.match(/MK-[A-Z0-9]+/g) || [])],
+    };
   }, PNG);
 
   fs.writeFileSync(OUT, Buffer.from(built.b64, 'base64'));
@@ -162,6 +187,21 @@ try {
   ok('...nor adris', !/adris/i.test(propsXml), propsXml.slice(0, 200));
   ok('...and it is authored by the person presenting it', /Amogh M/.test(propsXml));
   ok('the divider is numbered, not stamped "SECTION"', !/>SECTION</.test(slideXml));
+
+  console.log('\n=== the chat deck and the PowerPoint show the same thing ===');
+  //
+  // "makesure the ppt designed in chat and when got to power point both are matching."
+  //
+  // They are two renderers of one spec, and they drift: last time, nine layouts had stopped
+  // carrying their content into PowerPoint while the chat deck showed all of it, which is exactly
+  // why the deck looked right and the file did not.
+  const inChatOnly = built.chatMarkers.filter((m) => !all.includes(m));
+  const inPptOnly = built.markers.filter((m) => all.includes(m) && !built.chatMarkers.includes(m));
+  ok('nothing shows in the chat and goes missing in PowerPoint', inChatOnly.length === 0, inChatOnly.join(', '));
+  ok('nothing appears in PowerPoint that the chat never showed', inPptOnly.length === 0, inPptOnly.join(', '));
+  ok('and both render every layout in the spec',
+    built.chatMarkers.length === built.markers.length && built.markers.every((m) => all.includes(m)),
+    `chat ${built.chatMarkers.length} · pptx ${built.markers.filter((m) => all.includes(m)).length} · spec ${built.markers.length}`);
 
   console.log('\n=== open it in the real PowerPoint ===');
   // Detached, because this is a window a person is meant to look at — not something to wait on.

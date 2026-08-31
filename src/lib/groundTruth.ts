@@ -276,6 +276,27 @@ const CAPABILITY_DENIALS: RegExp[] = [
   /\bas an ai\b[^.]{0,60}\b(cannot|can't|can not|unable|do not have the ability)\b/i,
   /\bI (cannot|can't|can not|am unable to|do not have the ability to)\b[^.]{0,50}\b(create|make|generate|produce|render|record|edit|design|build)\b[^.]{0,40}\b(video|image|graphic|audio|podcast|file|picture|animation)\b/i,
   /\bI (cannot|can't|can not) (directly )?(create|make|produce|generate)\b[^.]{0,30}\b(video|image|audio)/i,
+  // ── "I CANNOT BROWSE THE INTERNET" ─────────────────────────────────────────
+  //
+  // A user asked, three times, for research on a page whose link they had pasted. The third answer
+  // opened: "I cannot browse the live internet or access the specific URL you provided in
+  // real-time. As an AI, my knowledge cutoff prevents me from seeing the current state of
+  // iangroup.vc/portfolio/" — and then produced a long, confident, entirely recalled answer, with
+  // ticket sizes and tables in it.
+  //
+  // Every guard above passed it. The denials listed here were all about MAKING something — a file,
+  // an image, a video — and this is a denial of READING, which is the more damaging of the two for
+  // a research product: what follows it is never an apology, it is unverified recall dressed as
+  // findings. The page returns 200, and our own browser reads all 175 companies off it.
+  // The trailing \b is deliberately absent after the nouns and verbs below: "external websiteS"
+  // and "preventS me from seeing" are the forms these actually arrive in, and a word boundary
+  // after `website` or `prevent` rejects both.
+  /\b(cannot|can't|can not|am unable to|do not have the ability to|don't have the ability to)\b[^.]{0,60}\b(browse|access|visit|open|reach|retrieve|fetch|see)\b[^.]{0,60}\b(internet|web|website|web ?page|url|link|online|live)s?\b/i,
+  /\b(no|without)\s+(real[- ]time|live|direct)\s+(access|browsing|internet|web)\b/i,
+  /\bknowledge\s+cut[- ]?off\b[^.]{0,80}\b(prevent\w*|cannot|can't|unable|limit\w*|not able)/i,
+  /\b(cannot|can't|can not|unable to)\b[^.]{0,40}\b(browse|search)\b[^.]{0,25}\b(internet|web)/i,
+  /\bI (cannot|can't|can not|am unable to)\b[^.]{0,40}\bclick\b[^.]{0,30}\b(link|url)\b/i,
+  /\bI (do not|don't) have\b[^.]{0,40}\b(access|ability)\b[^.]{0,40}\b(internet|web|external|live|real[- ]time)/i,
 ];
 
 export function deniesCapability(text: string): boolean {

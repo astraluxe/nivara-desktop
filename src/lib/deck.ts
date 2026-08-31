@@ -817,6 +817,13 @@ function renderSlideHtml(s: DeckSlide, spec: DeckSpec, i: number, total: number,
             <div>
               ${(editable || s.title) ? `<h2 style="font-size:40px;max-width:520px"${ed('title')}${editable && !s.title ? ' data-ph="Slide title…"' : ''}>${esc(s.title || '')}</h2>` : ''}
               <div class="rule"></div>
+              ${/* THE BODY LINE WAS DROPPED HERE, AND ONLY HERE.
+                    The no-image branch below renders s.body; this one did not, so the moment a
+                    slide carried a picture its intro line vanished from the chat deck — while the
+                    .pptx writer rendered it in both cases. Two renderers of one spec, disagreeing
+                    about what is on a slide, which is exactly what the parity check in
+                    harness/powerpoint-real.mjs now exists to catch. */''}
+              ${s.body ? `<p class="muted" style="font-size:20px;margin-bottom:18px;max-width:520px;line-height:1.5"${ed('body')}>${multi(s.body)}</p>` : ''}
               <ul>${bullets}</ul>
             </div>
             <div class="imgwrap" style="height:470px">${img}</div>

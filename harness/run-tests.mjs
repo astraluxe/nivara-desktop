@@ -65,6 +65,7 @@ const UNITS = [
   ['urlFidelity',   'src/lib/urlFidelity.ts'],
   ['pptxPolish',    'src/lib/pptxPolish.ts'],
   ['deck',          'src/lib/deck.ts'],
+  ['deckEnding',    'src/lib/deckEnding.ts'],
 ];
 
 let failed = 0;
