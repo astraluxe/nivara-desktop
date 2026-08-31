@@ -1,3 +1,4 @@
+import { ALLOWANCE, tierOf } from './entitlement';
 ﻿export type Plan = 'explore' | 'free' | 'solo' | 'builder' | 'business' | 'custom';
 
 export interface PlanConfig {
@@ -175,7 +176,31 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
 };
 
 export function getPlanConfig(plan: string): PlanConfig {
-  return PLAN_CONFIG[plan as Plan] ?? PLAN_CONFIG.free;
+  const legacy = PLAN_CONFIG[plan as Plan] ?? PLAN_CONFIG.free;
+  const sold = ALLOWANCE[tierOf(plan, 'plan')];
+
+  // THE GREATER OF THE TWO, on every figure the pricing page states.
+  //
+  // Higher of promised-and-had, never lower. A customer must never be stopped below the number they
+  // bought from, and must never lose capacity they already had because the plans were renamed. The
+  // qualitative flags (Guard, voice, audit export) stay exactly as they were — this is about
+  // quantities the page puts a number on.
+  //
+  // Infinity is what ALLOWANCE uses for Enterprise; PLAN_CONFIG uses 0 for "unlimited" on tokens,
+  // so that case is kept rather than turned into a literal zero.
+  // null means UNLIMITED here (custom), and 0 is used for unlimited on some rows. Neither may be
+  // turned into a literal number by "taking the bigger" — that would cap a plan that has no cap.
+  const bigger = (a: number | null, b: number): number | null => {
+    if (a === null || a === 0) return a;
+    return Math.max(a, b === Infinity ? a : b);
+  };
+
+  return {
+    ...legacy,
+    monthlyTokens:    bigger(legacy.monthlyTokens, sold.tokens),
+    meshDevices:      Math.max(legacy.meshDevices, sold.meshDevices === Infinity ? legacy.meshDevices : sold.meshDevices),
+    cloudAutomations: Math.max(legacy.cloudAutomations, sold.runs === Infinity ? legacy.cloudAutomations : sold.runs),
+  };
 }
 
 export function charsToTokens(chars: number): number {

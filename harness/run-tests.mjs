@@ -61,6 +61,7 @@ const UNITS = [
   ['entitlement',   'src/lib/entitlement.ts'],
   ['designedDeck',  'src/lib/designedDeck.ts'],
   ['runWrapUp',     'src/lib/runWrapUp.ts'],
+  ['planConfig',    'src/lib/planConfig.ts'],
 ];
 
 let failed = 0;

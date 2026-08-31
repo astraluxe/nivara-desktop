@@ -7916,7 +7916,12 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         .icon(icon).menu(&menu).show_menu_on_left_click(false)
         .tooltip("Vault: Off · adris.tech")
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "quit" => app.exit(0),
+            "quit" => {
+                // The engine is a separate process and does not go with us. Left running it holds
+                // its own file open and the next installer cannot replace it.
+                kill_exo_nodes();
+                app.exit(0)
+            }
             "open" => show_main_window(app),
             "vault_toggle" => {
                 let should_enable = {
@@ -8621,6 +8626,41 @@ struct MeshMachineInfo {
     hostname: String,
     ram_gb:   f32,
     os:       String,
+}
+
+/// Stop every exo-node on this machine.
+///
+/// ── WHY THIS EXISTS ─────────────────────────────────────────────────────────
+///
+/// Installing over an existing adris failed with an abort/retry/ignore box on
+/// `mesh\exo-node.exe`, and retrying did not help — retrying does not release a
+/// file lock.
+///
+/// Mesh starts exo-node as a child process, and nothing ever stopped it. Quitting
+/// runs `app.exit(0)`, which does not kill children, and a `std::process::Child`
+/// does not kill on drop either. So the engine outlived every session, kept its
+/// own file open, and the next installer could not overwrite it.
+///
+/// By NAME rather than by handle, deliberately: the process that is blocking the
+/// installer is usually an orphan from a previous run, whose handle this process
+/// never had. `/T` takes any child it spawned with it.
+///
+/// Failure is ignored. The usual reason is that nothing was running, which is the
+/// good case, and neither quitting nor starting up may fail because a cleanup
+/// step found nothing to clean.
+fn kill_exo_nodes() {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/IM", "exo-node.exe", "/T"])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW — no console flash on quit
+            .output();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = std::process::Command::new("pkill").args(["-f", "exo-node"]).output();
+    }
 }
 
 fn mesh_exe_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
@@ -9649,6 +9689,7 @@ fn vault_relaunch_elevated(app: tauri::AppHandle) -> Result<(), String> {
             ])
             .spawn()
             .map_err(|e| e.to_string())?;
+        kill_exo_nodes();
         app.exit(0);
         Ok(())
     }
@@ -9936,6 +9977,16 @@ pub fn run() {
         ))
         .manage(pty_map)
         .setup(|app| {
+            // SWEEP ANY ORPHANED MESH ENGINE FIRST.
+            //
+            // A crash, a force-quit, or any build before this one leaves exo-node.exe running. It
+            // then holds its own file open, and the next installer stops on an abort/retry/ignore
+            // box that retrying cannot clear. Clearing it at startup means the orphan lives for one
+            // session at most, instead of for ever.
+            //
+            // Safe here: nothing has started a session yet, so there is no engine of ours to kill.
+            kill_exo_nodes();
+
             // If we just relaunched after an update, FORCE the main window open (even if this
             // launch inherited the autostart "--quickbar" flag). Otherwise the user only saw the
             // Quick Bar after updating, not the app. The sentinel is written by install_update.
