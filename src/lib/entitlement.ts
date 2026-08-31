@@ -31,13 +31,22 @@
 import { billingSource } from './usageMeter';
 
 /** The four tiers on the pricing page. */
-export type Tier = 'free' | 'business' | 'growth' | 'enterprise';
+/**
+ * The tiers, smallest first.
+ *
+ * `starter` exists because Business starts at ten seats, and a firm of four or five was being asked
+ * to pay for ten. In a market with cheaper competition that is the plan they never reach — they
+ * price the jump, decide it is not for them, and leave. Half the seats, half the capacity, half the
+ * price, and the same app.
+ */
+export type Tier = 'free' | 'starter' | 'business' | 'growth' | 'enterprise';
 
-export const TIERS: Tier[] = ['free', 'business', 'growth', 'enterprise'];
+export const TIERS: Tier[] = ['free', 'starter', 'business', 'growth', 'enterprise'];
 
 /** What each tier is called, in the customer's words. */
 export const TIER_LABEL: Record<Tier, string> = {
   free: 'Free',
+  starter: 'Starter',
   business: 'Business',
   growth: 'Growth',
   enterprise: 'Enterprise',
@@ -49,6 +58,8 @@ export const TIER_LABEL: Record<Tier, string> = {
  * Six old keys, four new tiers. Nobody's account may silently change what it can do, so the map is
  * chosen to never take anything away: whichever tier is at least as generous as what they had.
  */
+// No legacy plan maps to `starter`: it is new, so nobody can already be on it, and mapping an
+// existing customer down into it would be taking something away.
 const LEGACY: Record<string, Tier> = {
   free: 'free',
   explore: 'free',
@@ -130,6 +141,8 @@ export interface Allowance {
  */
 export const ALLOWANCE: Record<Tier, Allowance> = {
   free:       { tokens:    300_000, images:  10, runs:    3, seats:  2, meshDevices:  1 },
+  // Half of Business, so the step up is a straight doubling and easy to explain.
+  starter:    { tokens:  4_000_000, images:  50, runs:  750, seats:  5, meshDevices: 12 },
   business:   { tokens:  8_000_000, images: 100, runs: 1500, seats: 10, meshDevices: 25 },
   growth:     { tokens: 25_000_000, images: 400, runs: 5000, seats: 25, meshDevices: 50 },
   enterprise: { tokens: Number.POSITIVE_INFINITY, images: Number.POSITIVE_INFINITY,
@@ -148,6 +161,7 @@ export const ALLOWANCE: Record<Tier, Allowance> = {
  */
 export const RENEWS: Record<Tier, 'monthly' | 'once'> = {
   free: 'once',
+  starter: 'monthly',
   business: 'monthly',
   growth: 'monthly',
   enterprise: 'monthly',
@@ -159,12 +173,39 @@ export function isOneTime(tier: Tier): boolean {
 }
 
 /** Does this tier get the security scanner, single sign-on, a shared workspace? */
-export const FEATURES: Record<Tier, { guard: boolean; sso: boolean; workspace: 'none' | 'basic' | 'full' | 'roles' }> = {
-  free:       { guard: false, sso: false, workspace: 'none' },
-  business:   { guard: true,  sso: false, workspace: 'basic' },
-  growth:     { guard: true,  sso: true,  workspace: 'full' },
-  enterprise: { guard: true,  sso: true,  workspace: 'roles' },
+export const FEATURES: Record<Tier, {
+  guard: boolean;
+  /** Enterprise single sign-on. FALSE EVERYWHERE — it is not built. See the note below. */
+  sso: boolean;
+  workspace: 'none' | 'basic' | 'full' | 'roles';
+  /** A direct line to a person, rather than the docs. */
+  prioritySupport: boolean;
+}> = {
+  // sso is false on every tier ON PURPOSE. There is no SAML, no OIDC, no identity provider and no
+  // domain enforcement — only the Google sign-in button every plan already has. The flag is kept so
+  // it can be switched on the day the thing exists, and `covers()` never advertises it while false.
+  free:       { guard: false, sso: false, workspace: 'none',  prioritySupport: false },
+  starter:    { guard: true,  sso: false, workspace: 'basic', prioritySupport: false },
+  business:   { guard: true,  sso: false, workspace: 'basic', prioritySupport: false },
+  growth:     { guard: true,  sso: false, workspace: 'full',  prioritySupport: true },
+  enterprise: { guard: true,  sso: false, workspace: 'roles', prioritySupport: true },
 };
+
+/**
+ * Where a customer on a plan that includes it can actually reach someone.
+ *
+ * Priority support has to be a real address a real person reads, or it is a line on a pricing page
+ * and nothing else. It is deliberately NOT shown to tiers that did not pay for it — an address
+ * everybody can see is not priority support, it is support.
+ */
+export const PRIORITY_SUPPORT_EMAIL = 'founder@adris.tech';
+
+/** The support route for this tier: a person, or the documentation. */
+export function supportRoute(tier: Tier): { email: string | null; label: string } {
+  return FEATURES[tier].prioritySupport
+    ? { email: PRIORITY_SUPPORT_EMAIL, label: 'Priority support — email the founder directly' }
+    : { email: null, label: 'Community support — the guide in Info, and the docs on the website' };
+}
 
 /**
  * Tokens as TASKS.
@@ -316,7 +357,13 @@ export function covers(tier: Tier): string[] {
     `${n(a.seats)} ${a.seats === 1 ? 'seat' : 'seats'}`,
     `${n(a.meshDevices)} Mesh ${a.meshDevices === 1 ? 'device' : 'devices'}`,
     f.guard ? 'Guard security scanner' : 'Guard not included',
-    f.sso ? 'Single sign-on and admin controls' : 'No single sign-on',
+    // Only ever printed when the flag is true, which today it never is — so this line cannot
+    // become a claim by accident when somebody flips a tier.
+    ...(f.sso ? ['Single sign-on and admin controls'] : []),
+    f.workspace === 'none' ? 'No shared workspace'
+      : f.workspace === 'roles' ? 'Team workspace with custom roles'
+      : `Team workspace${f.workspace === 'full' ? ' and admin controls' : ''}`,
+    ...(f.prioritySupport ? [`Priority support — ${PRIORITY_SUPPORT_EMAIL}`] : []),
     'Your own API key or a local model — always free, never counted',
   ];
 }

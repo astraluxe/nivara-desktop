@@ -10,7 +10,7 @@
 
 import {
   tierOf, TIER_LABEL, ALLOWANCE, FEATURES, tasksFrom, remaining, daysToReset,
-  consumesAllowance, usedFrom, entitlementState, stateLabel, boundElsewhere, covers, GRACE_DAYS, isOneTime, RENEWS, tierForAccount,
+  consumesAllowance, usedFrom, entitlementState, stateLabel, boundElsewhere, covers, GRACE_DAYS, isOneTime, RENEWS, tierForAccount, TIERS, supportRoute, PRIORITY_SUPPORT_EMAIL,
 } from './entitlement.js';
 
 let pass = 0, fail = 0;
@@ -36,7 +36,7 @@ console.log('\n=== nobody loses what they already had ===');
   ok('case does not matter', tierOf('Growth') === 'growth');
   // Nobody may end up on a SMALLER allowance than their old plan implied.
   ok('solo → business is not a downgrade in tokens', ALLOWANCE[tierOf('solo')].tokens >= 1_000_000);
-  ok('every tier has a label', Object.keys(TIER_LABEL).length === 4);
+  ok('every tier has a label', Object.keys(TIER_LABEL).length === 5, JSON.stringify(Object.keys(TIER_LABEL)));
 }
 
 console.log('\n=== whoever runs adris is not metered by adris ===');
@@ -134,6 +134,41 @@ console.log('\n=== the reset date ===');
   ok('never negative', daysToReset('2020-01-01T00:00:00Z', now) === 0);
 }
 
+console.log('\n=== a plan for a business of five ===');
+{
+  // Business starts at ten seats, so a firm of four or five was being asked to pay for ten — and in
+  // a market with cheaper competition that is the plan they never reach.
+  ok('Starter is a tier', TIERS.includes('starter'));
+  ok('...for five people', ALLOWANCE.starter.seats === 5, String(ALLOWANCE.starter.seats));
+  ok('...costing less capacity than Business', ALLOWANCE.starter.tokens < ALLOWANCE.business.tokens);
+  ok('...and more than Free', ALLOWANCE.starter.tokens > ALLOWANCE.free.tokens);
+  ok('...renewing monthly, unlike Free', !isOneTime('starter'));
+  ok('...with Guard included', FEATURES.starter.guard === true);
+  ok('...and a shared workspace', FEATURES.starter.workspace !== 'none');
+  // Nobody can already be on it, so no legacy plan may map into it — that would be a downgrade.
+  ok('no existing customer is moved into it',
+    ['free', 'explore', 'solo', 'builder', 'business', 'custom'].every((p) => tierOf(p, 'plan') !== 'starter'));
+  // The ladder must be monotonic, or the page is selling a bigger plan with less in it.
+  const order = ['free', 'starter', 'business', 'growth'];
+  ok('capacity only ever goes up', order.every((t, i) => i === 0 || ALLOWANCE[t].tokens > ALLOWANCE[order[i - 1]].tokens));
+  ok('seats only ever go up', order.every((t, i) => i === 0 || ALLOWANCE[t].seats > ALLOWANCE[order[i - 1]].seats));
+}
+
+console.log('\n=== priority support is a real address, for the people who paid for it ===');
+{
+  // A line on a pricing page is not support. It has to be somewhere a person actually reads.
+  ok('Growth gets the founder', supportRoute('growth').email === PRIORITY_SUPPORT_EMAIL);
+  ok('Enterprise too', supportRoute('enterprise').email === PRIORITY_SUPPORT_EMAIL);
+  // And an address everybody can see is not priority support — it is support.
+  ok('Free does not', supportRoute('free').email === null);
+  ok('Starter does not', supportRoute('starter').email === null);
+  ok('Business does not', supportRoute('business').email === null);
+  ok('...and they are told what they DO get', /docs|guide|community/i.test(supportRoute('free').label), supportRoute('free').label);
+  ok('the address is the real one', PRIORITY_SUPPORT_EMAIL === 'founder@adris.tech');
+  ok('it is listed on the tiers that have it', covers('growth').some((l) => l.includes(PRIORITY_SUPPORT_EMAIL)));
+  ok('...and never on the ones that do not', covers('business').every((l) => !l.includes(PRIORITY_SUPPORT_EMAIL)));
+}
+
 console.log('\n=== Free does not refill ===');
 {
   // The owner decided Free is a ONE-TIME allowance. The app used to promise "resets monthly, not a
@@ -143,7 +178,7 @@ console.log('\n=== Free does not refill ===');
   ok('Business renews', !isOneTime('business'));
   ok('Growth renews', !isOneTime('growth'));
   ok('Enterprise renews', !isOneTime('enterprise'));
-  ok('every tier says which it is', Object.keys(RENEWS).length === 4);
+  ok('every tier says which it is', Object.keys(RENEWS).length === 5, JSON.stringify(RENEWS));
   // And the words follow the fact, so the two cannot drift.
   ok('Free never says "a month"', covers('free').every((l) => !/a month/.test(l)), JSON.stringify(covers('free')));
   ok('...it says what it is instead', covers('free').some((l) => /to start with/.test(l)), JSON.stringify(covers('free')[0]));
@@ -159,7 +194,13 @@ console.log('\n=== what the licence screen says ===');
   ok('free says Guard is not included', covers('free').some((l) => /Guard not included/.test(l)));
   ok('enterprise says fair use, never plain unlimited',
     covers('enterprise').every((l) => !/^Unlimited$/.test(l)) && covers('enterprise').some((l) => /fair use/.test(l)));
-  ok('growth has single sign-on', FEATURES.growth.sso === true);
+  // NOT a feature check — a guard. There is no SAML, no OIDC, no identity provider and no domain
+  // enforcement; what exists is the Google sign-in button every plan already has. Until real SSO is
+  // built, no tier may advertise it, and this fails the moment somebody flips a flag.
+  ok('NO tier claims single sign-on, because it does not exist',
+    Object.values(FEATURES).every((f) => f.sso === false),
+    JSON.stringify(Object.entries(FEATURES).filter(([, f]) => f.sso).map(([t]) => t)));
+  ok('...and covers() never prints it', TIERS.every((t) => covers(t).every((l) => !/single sign-on/i.test(l))));
   ok('business does not', FEATURES.business.sso === false);
   ok('a task is a thousand tokens', tasksFrom(8_000_000) === 8000);
 }

@@ -13,7 +13,7 @@
 
 import { useState } from 'react';
 import { useEntitlement, machineId } from '../lib/useEntitlement';
-import { TIER_LABEL, covers, stateLabel, ALLOWANCE } from '../lib/entitlement';
+import { TIER_LABEL, covers, stateLabel, ALLOWANCE, supportRoute } from '../lib/entitlement';
 
 /** A bar with a number under it. The bar is the glance; the number is the check. */
 function Meter({ label, left, cap, unit }: { label: string; left: number; cap: number; unit: string }) {
@@ -40,6 +40,7 @@ export default function LicencePanel() {
   const [key, setKey] = useState('');
   const [msg, setMsg] = useState<string | null>(null);
   const a = ALLOWANCE[ent.tier];
+  const support = supportRoute(ent.tier);
 
   return (
     <div className="space-y-5">
@@ -124,6 +125,38 @@ export default function LicencePanel() {
             </li>
           ))}
         </ul>
+      </div>
+
+      {/* ── support ─────────────────────────────────────────────────────── */}
+      <div className="rounded-xl border border-nv-border bg-nv-surface p-4">
+        <p className="text-[12px] font-semibold text-nv-text mb-2">Getting help</p>
+        {support.email ? (
+          <>
+            <p className="text-[11.5px] text-nv-muted leading-relaxed">
+              Your plan includes <b className="text-nv-text">priority support</b>. Write directly to{' '}
+              <span className="font-mono text-nv-text">{support.email}</span> — it reaches a person,
+              not a queue.
+            </p>
+            <button
+              onClick={() => {
+                // Their own mail client, pre-addressed, with the plan already in the subject so the
+                // first reply does not have to ask which plan they are on.
+                const subject = encodeURIComponent(`Priority support — ${TIER_LABEL[ent.tier]} plan`);
+                const url = `mailto:${support.email}?subject=${subject}`;
+                import('@tauri-apps/plugin-shell')
+                  .then(({ open }) => open(url))
+                  .catch(() => { window.location.href = url; });
+              }}
+              className="mt-2.5 text-[11.5px] px-3 py-1.5 rounded-nv bg-accent text-white
+                         hover:bg-accent-dim transition-fast"
+            >Email {support.email}</button>
+          </>
+        ) : (
+          <p className="text-[11.5px] text-nv-muted leading-relaxed">
+            {support.label}. Priority support — a direct line to the founder — is included from the{' '}
+            <b className="text-nv-text">Growth</b> plan up.
+          </p>
+        )}
       </div>
 
       {/* ── this machine ────────────────────────────────────────────────── */}

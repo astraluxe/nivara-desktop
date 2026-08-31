@@ -1583,6 +1583,40 @@ run.
 
 ### Where every change lands
 
+### Five tiers, and two claims that were not true
+
+| # | Item | State | Notes |
+|---|---|---|---|
+| **L5c** | A **Starter** tier for a business of five | ✅ **live** | Business starts at ten seats, so a firm of four or five was being asked to pay for ten — and against cheaper competition that is the plan they never reach: they price the jump, decide it is not for them, and leave. **₹4,999/mo, ₹3,249 on a 12-month term** — 5 seats, 4,000 tasks, 50 images, 750 runs, 12 Mesh devices. Half of Business on every axis, so the step up is a straight doubling and easy to explain. **No legacy plan maps into it**: nobody can already be on it, and mapping someone down would take something away |
+| **X14** | **Single sign-on was being sold, and does not exist** | ✅ **claim removed** | Growth and Enterprise both listed it. There is no SAML, no OIDC, no identity provider, no domain enforcement and no provisioning — what exists is the Google sign-in button **every** plan already has, Free included. Selling that as an enterprise control is the kind of claim the first IT department to ask would find out about. Replaced with "Admin controls across every seat", which the team workspace genuinely provides. The `sso` flag stays in FEATURES, **false on every tier**, and `covers()` only prints the line when it is true — so it cannot become a claim by accident. A test asserts no tier claims it |
+| **X15** | Priority support was a line on a page | ✅ **built** | `founder@adris.tech`, surfaced in the app **only** to the tiers that include it, with the plan already in the subject so the first reply does not have to ask which plan they are on. An address everybody can see is not priority support; it is support. The tiers without it are told what they DO get, rather than left to find out there is nobody to write to |
+| **X16** | The billing panel named a plan we no longer sell | ✅ **fixed** | "Manage plan" showed **"Solo · ₹1,499 / month"** from two maps hardcoded for the 2025 plans. The name now comes from the same legacy→tier map as the cards and `src/lib/entitlement.ts`. The **price is gone rather than guessed** — what somebody pays depends on the term they bought, this endpoint does not report it, and telling a customer on ₹6,499 that they pay ₹1,499 is worse than showing no number. If Razorpay returns an amount it is shown; otherwise "as on your invoice" |
+
+### Every claim on the pricing page, against what backs it
+
+Checked line by line, because a pricing page is the one place a wrong claim costs money and trust
+at the same time.
+
+| Claimed | Backed by | Verdict |
+|---|---|---|
+| Every module, in full | The ten modules reachable in the sidebar | ✅ real |
+| Guard security scanner | `GuardModule`, gated on tier | ✅ real |
+| Team workspace | `teams` / `team_members`, `team.html`, `team-dashboard.html` — invite by email, seats, remove | ✅ real, and already built |
+| Admin controls across every seat | Workspace-owner controls in the team dashboard | ✅ real |
+| Priority support | `founder@adris.tech`, surfaced in the app by tier | ✅ built this round |
+| Mesh devices | `MeshModule` + `exo-node.exe`, which is finally published | ✅ real since 1.79.0 |
+| Your own key never counts | `billingSource` — only the `adris` source is ever metered | ✅ enforced in code |
+| Local models, unlimited and free | The Models module and the local runner | ✅ real |
+| ~~Single sign-on~~ | nothing at all | ❌ **removed from the page** |
+| ~~Studio~~ | 1,700 lines that are not routed and cannot be opened | ❌ **never listed** |
+
+**Still not built:** self-serve checkout (L6) and licence issuing (L7).
+
+**And one thing that must be done before checkout opens:** `starter` has **no Razorpay plan key**.
+`razorpay-webhook`’s PAID_PLANS is solo / builder / business, so it would not recognise a Starter
+payment — the charge would go through and grant nothing. The webhook has to learn the new tier
+first, and that is server work nobody can do by guessing.
+
 ### The pricing page, finished — and the dead button in it
 
 | # | Item | State | Notes |
