@@ -1578,18 +1578,26 @@ run.
 
 ### Where every change lands
 
+### Where L1–L10 actually stands — 31 Aug 2026
+
+**Six of the ten are done and in the build.** The four that are not are all downstream of one
+decision nobody but the owner can make: whether adris sells a **licence plus top-ups** (what this
+section was originally written for) or **bundled monthly tiers** (what the pricing draft above
+describes). They are different products. L6 needs that answer before it can be built, and L7, L8
+and L9 sit behind L6.
+
 | # | Where | What has to change | State |
 |---|---|---|---|
-| L1 | **exe** — title bar | The plan badge reads Free/Solo/Builder/Team. Under this model it should show **licence state + balance**, or come out. It currently sits inches from a menu saying "pay per use". | ❌ |
-| L2 | **exe** — new licence screen | Enter a key, see what it covers, see which machine it is bound to. First-run asks for it. | ❌ |
-| L3 | **exe** — metering | Only the `nivara` source may ever meter. Every other source costs adris nothing and must be charged nothing. `chatConnectionFor` already encodes this — the bridge maps to `own_key`, never `nivara`. **Build billing on that same distinction, not a second one.** | ❌ |
-| L4 | **exe** — offline grace | The licence must keep working with no internet for a sensible window. adris runs on machines with bad connections; a licence check that fails closed on a dropped Wi-Fi is a support call. | ❌ |
-| L5 | **website** — pricing page | Replace the tier table: licence price, what pay-per-use costs per unit, what a typical month looks like. **Say the bridge out loud** — "already pay for Claude or ChatGPT? plug it in and our AI costs you nothing." | ❌ |
-| L6 | **website** — checkout | `razorpay-webhook` and the plan grants are written around **subscriptions**. A one-time licence purchase plus a separate top-up is a different shape and needs deciding before it is built. | ❌ |
-| L7 | **website** — licence issuing | Something has to mint a key on purchase, bind it, and let the exe verify it. New table, new edge function. | ❌ |
-| L8 | **website** — balance | If usage is billed, the user needs somewhere to see it and top it up. | ❌ |
-| L9 | **website** — download page | Sell the licence, then hand over the exe. Today it just hands over the exe. | ❌ |
-| L10 | **both** — the plan words | `PLAN_CONFIG`, `PLAN_LABELS`, the upgrade modals and the quota copy all speak subscription. Every one of them is user-visible and every one will read wrong. | ❌ |
+| L1 | **exe** — title bar | The badge showed "Free / Solo / Builder / Team" — names the pricing page does not use — inches from a menu offering pay-per-use, and never said how much was left. It now reads the tier and the **tasks remaining** from `lib/entitlement.ts`, turns amber at four fifths and red at zero, carries the reset date and the offline state in its tooltip, and opens the account screen. | ✅ **done (1.78.0)** |
+| L2 | **exe** — new licence screen | `components/LicencePanel.tsx`, on the account screen. What you are on, what it covers (in tasks, images, runs, seats, Mesh devices), three meters for what is left, the reset date, **which machine this is tied to**, and the entitlement state. The key box is honest that redemption is not switched on yet rather than pretending to accept one — L7 is the server half and is not built. | ✅ **done (1.78.0)** |
+| L3 | **exe** — metering | `consumesAllowance` delegates to `billingSource` rather than inventing a second rule — own key, the Claude/Codex bridge and local models cost us nothing and so consume nothing. **17 assertions**, including that 180,000 own-key tokens cost the customer zero. | ✅ **done (1.78.0)** |
+| L4 | **exe** — offline grace | The last verification is cached and honoured for **14 days**. Inside a day it reads Active; past that, "Active — offline" and the app says plainly that we could not check in and nothing is wrong. Past the window it degrades to "needs checking" and still never locks: own key and local models never needed us. A machine whose clock runs fast is never punished for it. | ✅ **done (1.78.0)** |
+| L5 | **website** — pricing page | The four tiers, the 1/3/6/12-month ladder, the top-up tables and the FAQ are written and **live behind the hold**, so lifting it is deleting one block. The bridge is said out loud. Every allowance also lives in `entitlement.ts`, so the page and the meter cannot disagree. Both states verified in a real browser. | ✅ **built, held (1.78.0)** |
+| L6 | **website** — checkout | Unchanged, and deliberately: `razorpay-webhook` is written around recurring subscriptions, and a term paid upfront is a different shape. **The owner has to choose between the licence+top-up model this section was written for and the bundled-tier model the pricing draft describes** — they are different products and building both is waste. | ❌ **blocked on a decision** |
+| L7 | **website** — licence issuing | Minting a key on purchase, binding it and letting the exe verify it is a new table and a new edge function. The exe half is ready — `entitlement.ts` already models binding and the licence screen already shows it — so this is server work waiting on L6. | ❌ **not built** |
+| L8 | **website** — balance | The allowance is visible in the app (L2), read from the real `token_usage` rows. There is still nowhere on the website to see it or top it up, and top-ups do not exist to be bought. | 🟡 **in the exe, not on the website** |
+| L9 | **website** — download page | The download page still hands over the exe without a plan choice. Small work, but it should follow the page it sells from (L5) coming out of hold. | ❌ **not built** |
+| L10 | **both** — the plan words | One vocabulary, from `entitlement.ts`, in the title bar, the account screen and the Coder bar. **The trap:** `business` means opposite things in the two schemes — the old Team (most generous paid plan) and the new Business (cheapest) — so reading a stored value with the new vocabulary would have silently downgraded every existing Team customer. `tierOf` takes the vocabulary explicitly, and a test says so. | ✅ **done (1.78.0)** |
 
 ### Decisions the owner has to make before any of it is written
 
