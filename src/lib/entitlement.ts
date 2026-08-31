@@ -86,6 +86,28 @@ export function tierOf(
   return 'free';
 }
 
+/**
+ * The tier for a whole account, not just a plan string.
+ *
+ * ── WHY THIS IS NOT JUST tierOf ─────────────────────────────────────────────
+ *
+ * The owner's own account carries `plan: 'solo'` — a plan that no longer exists — and the app
+ * dutifully showed it. `admin_level` unlocked the Head module and nothing else, so the person who
+ * runs adris was being metered against a tier the pricing page does not sell.
+ *
+ * An admin or head account is Enterprise. Not as a perk: they are the ones who have to be able to
+ * reproduce whatever a customer reports, on any tier, without an allowance running out halfway
+ * through. Metering the owner tells us nothing and costs us the ability to debug.
+ */
+export function tierForAccount(
+  account: { plan?: string | null; admin_level?: string | null } | null | undefined,
+): Tier {
+  if (!account) return 'free';
+  const level = String(account.admin_level || '').toLowerCase();
+  if (level === 'head' || level === 'admin') return 'enterprise';
+  return tierOf(account.plan, 'plan');
+}
+
 export interface Allowance {
   /** Monthly AI capacity, in tokens. */
   tokens: number;

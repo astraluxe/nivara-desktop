@@ -10,7 +10,7 @@
 
 import {
   tierOf, TIER_LABEL, ALLOWANCE, FEATURES, tasksFrom, remaining, daysToReset,
-  consumesAllowance, usedFrom, entitlementState, stateLabel, boundElsewhere, covers, GRACE_DAYS, isOneTime, RENEWS,
+  consumesAllowance, usedFrom, entitlementState, stateLabel, boundElsewhere, covers, GRACE_DAYS, isOneTime, RENEWS, tierForAccount,
 } from './entitlement.js';
 
 let pass = 0, fail = 0;
@@ -37,6 +37,21 @@ console.log('\n=== nobody loses what they already had ===');
   // Nobody may end up on a SMALLER allowance than their old plan implied.
   ok('solo → business is not a downgrade in tokens', ALLOWANCE[tierOf('solo')].tokens >= 1_000_000);
   ok('every tier has a label', Object.keys(TIER_LABEL).length === 4);
+}
+
+console.log('\n=== whoever runs adris is not metered by adris ===');
+{
+  // The owner's own account carried plan: "solo" — a plan that no longer exists — and the app
+  // showed it. admin_level unlocked the Head module and granted no entitlement at all.
+  ok('a head account is Enterprise', tierForAccount({ plan: 'solo', admin_level: 'head' }) === 'enterprise');
+  ok('an admin account is Enterprise', tierForAccount({ plan: 'free', admin_level: 'admin' }) === 'enterprise');
+  ok('...whatever the plan column says', tierForAccount({ plan: 'nonsense', admin_level: 'head' }) === 'enterprise');
+  ok('case does not matter', tierForAccount({ plan: 'free', admin_level: 'HEAD' }) === 'enterprise');
+  // And an ordinary customer is still read from their plan, not promoted.
+  ok('a normal account is not promoted', tierForAccount({ plan: 'solo', admin_level: null }) === 'business');
+  ok('...nor by an empty level', tierForAccount({ plan: 'free', admin_level: '' }) === 'free');
+  ok('...nor by an unknown level', tierForAccount({ plan: 'free', admin_level: 'member' }) === 'free');
+  ok('no account at all is free', tierForAccount(null) === 'free');
 }
 
 console.log('\n=== ONLY our own AI is metered ===');

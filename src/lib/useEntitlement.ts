@@ -19,7 +19,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from './supabase';
 import { useAuth } from '../contexts/AuthContext';
 import {
-  tierOf, remaining, usedFrom, daysToReset, entitlementState, boundElsewhere, isOneTime,
+  tierForAccount, remaining, usedFrom, daysToReset, entitlementState, boundElsewhere, isOneTime,
   type Tier, type Used, type Remaining, type EntitlementState,
 } from './entitlement';
 
@@ -85,7 +85,10 @@ export function useEntitlement(): Entitlement {
   // The live plan. AuthContext keeps this current through a realtime subscription, so a payment on
   // the website changes it here without a restart.
   const { profile } = useAuth();
+  // The whole account, not just its plan string: an admin or head account is Enterprise however
+  // its `plan` column happens to read. See tierForAccount.
   const planFromAuth = profile?.plan ?? null;
+  const adminLevel = profile?.admin_level ?? null;
   const cached = readCache();
   const [tier, setTier] = useState<Tier>(cached?.tier ?? 'free');
   const [used, setUsed] = useState<Used>(cached?.used ?? { tokens: 0, images: 0, runs: 0 });
@@ -112,7 +115,7 @@ export function useEntitlement(): Entitlement {
 
         // The stored column is the LEGACY vocabulary — see the note on tierOf about `business`
         // meaning opposite things in the two.
-        const t = tierOf(planFromAuth, 'plan');
+        const t = tierForAccount({ plan: planFromAuth, admin_level: adminLevel });
         const start = (extra as { usage_period_start?: string } | null)?.usage_period_start ?? null;
         const bound = (extra as { licence_machine_id?: string } | null)?.licence_machine_id ?? null;
 
@@ -145,11 +148,11 @@ export function useEntitlement(): Entitlement {
     })();
     return () => { dead = true; };
     // Re-run whenever the plan changes — that is the moment a payment lands.
-  }, [nonce, planFromAuth]);
+  }, [nonce, planFromAuth, adminLevel]);
 
   // The plan is authoritative the moment AuthContext has it; usage catches up a beat later. Showing
   // the OLD tier while the new one is already known is the bug this whole note is about.
-  const liveTier = planFromAuth ? tierOf(planFromAuth, 'plan') : tier;
+  const liveTier = profile ? tierForAccount({ plan: planFromAuth, admin_level: adminLevel }) : tier;
 
   return {
     tier: liveTier, used,
