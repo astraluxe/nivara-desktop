@@ -23,7 +23,7 @@ export interface GuardScanResult {
 }
 
 // ~45k chars ≈ 11k tokens ≈ ~18 pages per chunk. 14 chunks ≈ ~250 pages.
-// Worst case ≈ 14 × ~12k tokens ≈ 168k tokens (~4% of a Solo plan's 4M/month),
+// Worst case ≈ 14 × ~12k tokens ≈ 168k tokens (~2% of the Business tier's 8M/month),
 // so even a maxed-out scan leaves plenty of budget for the rest of the month.
 export const GUARD_CHUNK_CHARS = 45000;
 

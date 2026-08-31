@@ -138,7 +138,7 @@ export default function GuardModule() {
     return (
       <UpgradeWall
         title="Guard keeps an eye on the risky parts"
-        body="Guard reads the documents and systems most likely to cost you money or trust, and tells you in plain language what to fix. It's available on Builder and above."
+        body="Guard reads the documents and systems most likely to cost you money or trust, and tells you in plain language what to fix. It's available on Growth and above."
         points={[
           'Contract scanning — what a contract actually commits you to, and the clauses worth pushing back on.',
           'Threat monitoring — suspicious email and account activity, flagged before it becomes a problem.',
@@ -156,7 +156,7 @@ export default function GuardModule() {
     return (
       <UpgradeWall
         title="You've used this month's Guard checks"
-        body={`Your plan includes ${limit} Guard checks a month — contract scans, phishing checks, compliance runs and vulnerability briefings all draw from the same pool, and it's now empty. It resets at the start of next month, or Builder and above give you unlimited checks.`}
+        body={`Your plan includes ${limit} Guard checks a month — contract scans, phishing checks, compliance runs and vulnerability briefings all draw from the same pool, and it's now empty. It resets at the start of next month, or Growth and above give you unlimited checks.`}
         points={[
           'Or switch Guard to a local model: it runs on your own machine, so those scans are unlimited and do not touch this pool. Settings → where AI runs, or the picker on the Threat Monitor tab.',
           'Using your own API key works the same way — billed to your key, never counted here.',

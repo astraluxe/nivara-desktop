@@ -165,7 +165,7 @@ const MODULE_CARDS: ModuleCard[] = [
       'Paste any contract or legal document and Guard uses AI to flag risky clauses, missing terms, and red flags.',
       'All audit events are stored in a local SQLite database with tamper-evident logs — ready for SOC2 review.',
       'Export audit reports as PDF for compliance or team review.',
-      'Guard requires Builder plan or above for contract scanning.',
+      'Guard requires the Growth plan or above for contract scanning.',
       'Guard works alongside Vault for a full privacy and security stack — enable Vault to add DNS-level blocking.',
     ],
     icon: (

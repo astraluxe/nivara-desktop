@@ -69,16 +69,16 @@ const APP_VERSION = (import.meta.env?.VITE_APP_VERSION as string) || '1.78.0';
 const WHATS_NEW: { version: string; items: string[] } = {
   version: APP_VERSION,
   items: [
-    'Ask for a presentation "in Microsoft PowerPoint" and you get one. Naming your own program used to hand the job to an agent, which answered that it was a text-based AI, could not create .pptx files, and had received no files -- while your document and its five figures sat in the request. The request now goes straight to the builder, which writes a real .pptx and opens it in your PowerPoint.',
-    'The presentation asks where it should go, and defaults to the PowerPoint you already own. Your own program comes first: you know it, your template and fonts live in it, and you can keep editing after adris is closed. The in-chat deck is one click away and is still built either way, so nothing is lost.',
-    'Pictures from your document now survive into PowerPoint. The .pptx writer only drew them on two of the six slide layouts they get placed on, so a figure was visible in the chat deck and silently missing in the file. Every layout that is offered a picture now carries it.',
-    'Answers you can click. When the team asks something -- "PowerPoint or here in the chat?", "shall I add speaker notes?" -- the options appear as buttons under the reply, so you can answer without typing it out.',
-    'Word, Excel and PowerPoint on the right-hand rail actually open now. The button was asking Windows to start a program by a name it does not know, and the error was being thrown away, so clicking did nothing at all.',
-    'Mesh can install its engine. The download had been pointing at a file that was never published -- it returned "not found" for every user since the feature shipped -- and it now comes from a host that is reachable on Indian networks. Pressing Connect also connects, instead of quietly downloading and stopping.',
-    'Your Brain stops filling up with pictures out of your documents. Attaching a report with a dozen diagrams turned the Pictures folder into that report, and attaching the same file again doubled all of it. Only pictures you attach yourself are kept, and the same picture is never stored twice.',
-    'Logos in the menu are visible in both themes. Eleven of them -- OpenAI, GitHub, Notion, X, Vercel, Slack, NVIDIA, Airtable, Shopify and Claude -- were too dark or too pale against one of the two backgrounds, so a logo was a hole where a logo should be.',
-    'Updates moved to the top of Settings, and this panel now shows the version you are actually running. It had been reporting v1.27.1 for fifty-one releases.',
-    'Paste Markdown into a Brain note and it renders as a readable note rather than as its own source.',
+    'A research task that made a few searches and then went quiet now finishes properly. The team is given six steps per turn; a task that spends them all on searching used to run out mid-way and simply stop, with nothing arriving in the chat at all. It is now made to stop searching and write up what it already found — and if even that comes back empty it tells you how many steps ran and that nothing was invented to fill the gap.',
+    'The plan names in the app match the website again. Solo, Builder and Team are gone; the plans are Free, Business, Growth and Enterprise, and every screen that mentioned a plan -- the title bar, the upgrade window, Guard, Automation, the Info manual -- now says the same thing as the pricing page.',
+    'The title bar shows how much you have left, not just which plan you are on. It turns amber when four fifths is gone and red when it is finished, and clicking it opens your account.',
+    'A new screen in Account shows what you are entitled to: tasks, images and automation runs left, when it resets, what your plan covers, and which computer it is tied to. Work you run on your own API key, your Claude or Codex subscription, or a local model is never counted there -- it costs us nothing, so it costs you nothing.',
+    'The free allowance is a one-time 300 tasks rather than a monthly one, and the app says so plainly instead of promising a refill that is not coming.',
+    'Losing your connection no longer makes the app act as though you have no plan. What we last confirmed is remembered for two weeks, it says it is working from that rather than pretending it is fresh, and nothing is ever switched off -- your own key and local models never needed us in the first place.',
+    'Agents design presentations instead of typing them. Asking an agent for a deck used to produce the same title-and-bullets slide over and over; it now builds real layouts -- a title, sections, a whole slide for a single figure, a close -- and opens it in your own PowerPoint.',
+    'Mesh can install its engine. The download had been pointing at a file that was never published, so it failed for every user since the feature shipped, and pressing Connect only downloaded without connecting.',
+    'Your Brain stops filling up with pictures out of your documents, and the same picture is never stored twice.',
+    'Coder looks like a code editor: an activity bar down the side, a collapsible file tree, a status line, and a coloured chip per file type instead of the same grey dot on everything.',
   ]
 };
 

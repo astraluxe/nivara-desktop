@@ -15,8 +15,13 @@ cost real time.
 
 ## Where this is right now
 
-**Version in the tree: 1.78.0** — builds clean (14 checks + tsc + vite). **Last released:
-1.77.0**, published 30 Aug.
+**Version in the tree: 1.79.0** — builds clean (17 checks + tsc + vite), all suites pass.
+**Last released: 1.77.0.**
+
+**The commercial model is settled and the pricing page is live.** Bundled monthly tiers — Free /
+Business / Growth / Enterprise — with a 1/3/6/12-month term switcher, top-ups, a pilot request and
+an enterprise request. Payments are deliberately held: checkout does not exist yet, so no button
+takes a card. Free is a **one-time** allowance, not a monthly one, and no GST is claimed anywhere.
 
 **1.78.0 also carries a round of things that had never worked at all.** Mesh's engine had been
 returning 404 for every user since the feature shipped; eleven brand logos were invisible in one
@@ -1577,6 +1582,27 @@ run.
   monthly subscription for an app they might use twice a week is the thing they cancel.
 
 ### Where every change lands
+
+### What 1.79.0 added
+
+| # | Item | State | Notes |
+|---|---|---|---|
+| **X11** | A run that stops mid-work now says so | ✅ **done (1.79.0)** | Reported: "check this portfolio page and find how much they invested in each" made several searches and **nothing came back to the chat**. The boss loop gets six steps; a research task spends them on searching, the loop condition goes false, and there was nothing between the last tool result and the end of the turn. The empty-turn recovery did not catch it because an earlier "Let me look at their page…" counts as output. It is now made to stop searching and write up what it has — and if that comes back empty too, it says how many steps ran and that nothing was invented. `lib/runWrapUp.ts`, **33 assertions**, and the change is **60 lines added, 0 removed** so nothing on the working path moved |
+| **L5** | The pricing page | ✅ **live (1.79.0)** | Four tiers, the term switcher, top-ups, the pilot and enterprise requests, and a grounded list of what the app does. Payments held. **76 assertions in a browser** |
+| **L1–L4, L10** | Entitlement in the exe | ✅ **done (1.78.0)** | see the table below |
+| **L8** | Balance | 🟡 **exe only** | The allowance panel is in Account; there is still nothing on the website, and top-ups do not exist to be bought |
+| **L6, L7, L9** | Checkout, licence issuing, download page | ❌ **not built** | L6 is no longer blocked on the MODEL — that is decided — but it moves real money and wants the owner's go-ahead before Razorpay is wired to term-upfront billing |
+
+**Two rules this round produced, both learned by breaking something:**
+
+1. **Never read `users.plan` for display outside AuthContext.** Its realtime subscription is what
+   fixed "the payment went through and the exe never updated". A second cached copy rebuilds that
+   bug somewhere new. `check-plan-source.mjs` enforces it, with UpgradeModal and guardWatch
+   allow-listed because their reads ARE the post-payment poll.
+2. **Never use a string as a `String.replace` replacement when it contains `$`.** `$'` means
+   "everything after the match": a patch script truncated itself and spliced a copy of the page in
+   after it, and the browser reported one syntax error a hundred lines from the cause. Use a
+   replacer function.
 
 ### Where L1–L10 actually stands — 31 Aug 2026
 

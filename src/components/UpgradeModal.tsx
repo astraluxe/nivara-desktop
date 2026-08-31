@@ -17,41 +17,36 @@ interface Plan {
 }
 
 const PLANS: Plan[] = [
+  // ── THE KEYS ARE NOT THE LABELS, AND MUST NOT BECOME THEM ─────────────────
+  //
+  // razorpay-webhook's PAID_PLANS is solo / builder / business. Those keys are what the webhook
+  // matches on when it writes `plan` after a payment, so renaming one here would stop the webhook
+  // recognising the plan it had just taken money for. The LABEL is what the buyer reads and must
+  // match the website exactly; the key is plumbing and stays put.
+  //
+  // The allowances line up on purpose: lib/entitlement.ts maps solo → the Business tier and
+  // builder → Growth, so what this card promises is what the app then meters against.
   {
     key:        "solo",
-    label:      "Solo",
-    price:      "₹1,499",
-    paise:      149900,
+    label:      "Business",
+    price:      "₹9,999",
+    paise:      999900,
     sub:        "/ month",
-    tokens:     "~4,000 tasks / month",
-    prevTokens: "~2,000 tasks / month",
-    features:   ["All 8 modules", "4M tokens/mo", "500 cloud automations", "10 Mesh devices"],
+    tokens:     "~8,000 tasks / month",
+    prevTokens: "~300 tasks, one time",
+    features:   ["All 8 modules, in full", "8M tokens/mo", "1,500 cloud automations", "10 seats · 25 Mesh devices", "Guard security scanner"],
     accent:     false,
   },
   {
     key:        "builder",
-    label:      "Builder",
-    price:      "₹4,999",
-    paise:      499900,
-    sub:        "/ month",
-    tokens:     "~16,000 tasks / month",
-    prevTokens: "~8,000 tasks / month",
-    features:   ["Everything in Solo", "16M tokens/mo", "5,000 cloud automations", "25 Mesh devices + relay nodes", "Guard security scanner", "Voice to Code"],
-    accent:     true,
-  },
-  {
-    key:        "business",
-    // Shown as "Team" because that is what pricing.html sells and what a buyer arrives having read.
-    // The KEY stays "business": razorpay-webhook's PAID_PLANS is solo/builder/business, and renaming
-    // it here would simply stop the webhook recognising the plan it just took money for.
-    label:      "Team",
+    label:      "Growth",
     price:      "₹19,999",
     paise:      1999900,
     sub:        "/ month",
-    tokens:     "~50,000 tasks / month",
-    prevTokens: "~30,000 tasks / month",
-    features:   ["Everything in Builder", "50M tokens/mo", "Unlimited automations", "50 Mesh devices", "Guard + Audit export"],
-    accent:     false,
+    tokens:     "~25,000 tasks / month",
+    prevTokens: "~8,000 tasks / month",
+    features:   ["Everything in Business", "25M tokens/mo", "5,000 cloud automations", "25 seats · 50 Mesh devices", "Single sign-on + admin controls", "Priority support"],
+    accent:     true,
   },
   {
     key:      "custom",
@@ -147,6 +142,11 @@ export default function UpgradeModal({ onClose, currentPlan, highlightPlan, reas
   // the card, and Razorpay's server-to-server webhook is the ONLY thing that writes `plan` in the
   // database (the billing columns are protected against client writes). The app just re-reads what
   // the server says. A faked "payment" in a patched exe therefore changes nothing.
+  // CHECKOUT IS NOT OPEN YET.
+  //
+  // The plans are published but self-serve payment is not built (L6/L7), so this opens the pricing
+  // page at the request form rather than at a checkout that is not there. Sending someone to hunt
+  // for a Pay button that does not exist is worse than telling them plainly.
   async function handleSubscribe() {
     if (!session) return;
     setErrMsg(null);
@@ -154,7 +154,7 @@ export default function UpgradeModal({ onClose, currentPlan, highlightPlan, reas
     try {
       const email = session.user.email ?? '';
       // www, not the apex — the apex 307-redirects and drops params/headers on the way.
-      const url = `https://www.adris.tech/pricing.html?plan=${encodeURIComponent(selected)}`
+      const url = `https://www.adris.tech/pricing.html?plan=${encodeURIComponent(selected)}#pilot`
         + (email ? `&email=${encodeURIComponent(email)}` : '')
         + '&from=app';
       const { open } = await import('@tauri-apps/plugin-shell');

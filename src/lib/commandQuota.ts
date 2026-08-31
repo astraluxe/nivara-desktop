@@ -98,7 +98,7 @@ export function exhaustedMessage(cmd: string, cap: number): string {
     '',
     'These are the ones that drive a full browser session on your behalf — **/leads**, **/outreach**, **/scan**, **/enrich**, **/verify**, **/research**. Everything else stays free on your own key: chat, drafting, the Brain, decks, automations, the plan panel and the outreach copilot itself.',
     '',
-    'Upgrade to **Solo** for unlimited runs — or keep using the rest of the app exactly as you are.',
+    'Upgrade to **Business** for unlimited runs — or keep using the rest of the app exactly as you are.',
   ].join('\n');
 }
 

@@ -60,6 +60,7 @@ const UNITS = [
   ['fileIcons',     'src/lib/fileIcons.ts'],
   ['entitlement',   'src/lib/entitlement.ts'],
   ['designedDeck',  'src/lib/designedDeck.ts'],
+  ['runWrapUp',     'src/lib/runWrapUp.ts'],
 ];
 
 let failed = 0;

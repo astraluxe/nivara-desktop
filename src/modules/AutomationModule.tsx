@@ -2896,7 +2896,7 @@ export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: A
           onClose={() => setShowCloudUpgrade(false)}
           currentPlan={profile?.plan ?? 'explore'}
           highlightPlan="solo"
-          reason="Cloud automations run on our servers when your PC is off. Available on Solo plan and above."
+          reason="Cloud automations run on our servers when your PC is off. Available on the Business plan and above."
         />
       )}
     </div>

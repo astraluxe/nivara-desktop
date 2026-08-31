@@ -1079,10 +1079,10 @@ export default function InfoModule() {
           </P>
           <H3>What a "check" costs you</H3>
           <P>
-            On Solo, Guard includes <span className="text-nv-text">50 checks a month</span>, and everything
+            On Business, Guard includes <span className="text-nv-text">50 checks a month</span>, and everything
             Guard does draws from that one pool — a contract scan, a compliance run, a vulnerability
             briefing, or a suspicious email that needed a closer look. When the pool is empty Guard stops
-            until the month resets. Builder and above are unlimited.
+            until the month resets. Growth and above are unlimited.
           </P>
           <P>
             Most of your inbox never touches it. Every message is first judged by rules running on this

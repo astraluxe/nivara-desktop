@@ -41,6 +41,7 @@ import TipStage from './TipStage';
 import { routeDeckRequest, looksLikePresentation, namedApp } from '../../lib/deckRouting';
 import { quickReplies } from '../../lib/quickReplies';
 import { shouldOverrideRefusal, wantsAnArtifact, recoveryNote } from '../../lib/refusalGuard';
+import { needsWrapUp, wrapUpInstruction, ranOutMessage, isAnnouncementOnly } from '../../lib/runWrapUp';
 import { getMonthlyUsage } from '../../lib/tokenTracker';
 import { getImageBudget, unitsForModel } from '../../lib/imageQuota';
 import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining } from '../../lib/tokenTier';
@@ -11056,6 +11057,20 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
       let bossRecallRetries = 0;
       // And one correction when it finishes without doing what the request required at all.
       let bossContractRetries = 0;
+      // ── SO THE RUN CANNOT JUST STOP ──────────────────────────────────────
+      //
+      // Reported: a research task made several searches and then nothing came back to the chat.
+      // That is this loop running out of steps while still calling tools — the condition goes
+      // false, the function falls through to `finally`, and nothing between the last tool result
+      // and the end of the turn says anything to the user.
+      //
+      // The empty-turn recovery does not catch it, because the boss has usually already painted
+      // "Let me look at their portfolio page…" and that counts as output. The delegate loop has
+      // guarded against exactly this for a while; the boss loop never did.
+      //
+      // These two flags are the whole mechanism. Nothing else in the loop changes.
+      let bossToolRan = false;
+      let bossEndedOnTool = false;
       while (steps < MAX_STEPS && !superseded()) {
         steps++;
         // "Thinking… 40%" is a percentage of a step budget, which is not a thing the user has or
@@ -11272,6 +11287,8 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
               continue;
             }
           }
+          // A natural finish: this iteration ended on an answer, not on a tool call.
+          bossEndedOnTool = false;
           // Strip any partial/orphaned tool block before showing to user
           const stripped = fullResponse
             .replace(/<tool_call>[\s\S]*/g, '')
@@ -11355,6 +11372,10 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
           break;
         }
 
+        // This iteration ended on a tool call. If the loop runs out here, the user has been told
+        // nothing — see the note on bossToolRan.
+        bossToolRan = true;
+        bossEndedOnTool = true;
         // Preserve any planning prose Boss wrote before the tool call tag
         const proseBeforeTool = stepText
           .replace(/<tool_call>[\s\S]*/g, '')
@@ -12913,6 +12934,45 @@ ${wfTask}`);
         addMsg({ role: 'assistant', content: '', streaming: true });
       }
 
+      // ── THE RUN STOPPED MID-WORK. SAY SOMETHING. ─────────────────────────
+      //
+      // Only fires when the turn would otherwise end in silence: a tool really ran, the loop
+      // stopped while still working, and everything the user can see is an announcement. A run
+      // that produced a real answer never reaches this, whatever the step count was — the
+      // decision lives in lib/runWrapUp.ts and is tested there without a model.
+      if (!stopRef.current && !superseded() && needsWrapUp({
+        stepsUsed: steps,
+        maxSteps: MAX_STEPS,
+        anyToolRan: bossToolRan,
+        endedOnToolCall: bossEndedOnTool,
+        visibleText: carried,
+      })) {
+        paintWork(`${agentHandle(agent)} ran out of room — writing up what it found`,
+                  'Asking it to stop searching and answer from what the tools already returned.');
+
+        history.push({ role: 'user', content: wrapUpInstruction(text) });
+        let wrapText = '';
+        try {
+          await streamTurnWithRetry(history, systemPrt, (chunk) => {
+            wrapText += chunk;
+            const shown = joinBlocks(carried, stripToolNoise(wrapText));
+            setMessages((prev) => {
+              const c = [...prev]; const l = c[c.length - 1];
+              if (l?.role === 'assistant' && l.streaming) c[c.length - 1] = { ...l, content: shown };
+              return c;
+            });
+          });
+        } catch { /* handled below — a failed wrap-up must not erase the run's real work */ }
+
+        const wrapClean = stripToolNoise(wrapText).trim();
+        // Even the wrap-up can come back empty, and then the turn would end blank again — which is
+        // the entire bug this block exists to close. Say what happened instead.
+        const finalText = wrapClean && !isAnnouncementOnly(wrapClean)
+          ? joinBlocks(carried, wrapClean)
+          : joinBlocks(carried, ranOutMessage((turnToolsRef.current ?? []).map((t) => t.tool), text));
+        finaliseLastMsg(finalText);
+        if (sid) krewDb.saveMessage(sid, 'assistant', finalText).catch(() => {});
+      }
     } catch (e: unknown) {
       const raw = e instanceof Error ? e.message : String(e);
       // The adris.tech upgrade modal is ONLY for adris.tech (managed) quota — never for a user's own
@@ -15279,7 +15339,7 @@ ${msg.content}`),
             <SearchModeMenu mode={searchMode} onChange={setSearchMode} busy={busy} />
             {/* Mic button */}
             <button
-              title={voiceStatus === 'recording' ? 'Stop recording' : voiceStatus === 'transcribing' ? 'Transcribing…' : 'Voice input · Builder+ plan'}
+              title={voiceStatus === 'recording' ? 'Stop recording' : voiceStatus === 'transcribing' ? 'Transcribing…' : 'Voice input · Growth plan and up'}
               onClick={handleMicClick}
               disabled={voiceStatus === 'transcribing'}
               className={`w-[30px] h-[30px] flex items-center justify-center rounded-full transition-fast shrink-0 mb-0.5 ${
@@ -15868,7 +15928,7 @@ ${msg.content}`),
           onClose={() => setShowVoiceUpgrade(false)}
           currentPlan={profile?.plan ?? 'explore'}
           highlightPlan="builder"
-          reason="Voice input in Krew requires Builder plan or higher."
+          reason="Voice input in Krew requires the Growth plan or higher."
         />
       )}
       {showQuotaUpgrade && (

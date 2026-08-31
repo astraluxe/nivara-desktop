@@ -877,7 +877,7 @@ export default function AIChat({
         onClose={() => setShowVoiceUpgrade(false)}
         currentPlan={profile?.plan ?? 'explore'}
         highlightPlan="builder"
-        reason="Voice to Code requires Builder plan or higher."
+        reason="Voice to Code requires the Growth plan or higher."
       />
     )}
     {showQuotaUpgrade && (
