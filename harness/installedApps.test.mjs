@@ -1,6 +1,7 @@
 import {
   normaliseScan, classify, tidyName, findApps, describeScan,
-} from './installedApps.js';
+  officeApp,
+  officeApps,} from './installedApps.js';
 
 let pass = 0, fail = 0;
 const ok = (n, c, x = '') => { if (c) { pass++; console.log('  ok   ' + n); } else { fail++; console.log('  FAIL ' + n + (x ? '\n        ' + x : '')); } };
@@ -143,6 +144,56 @@ ok('junk entries are skipped, not thrown on',
    normaliseScan({ shortcuts: [{}, { name: 'x' }, { target: 'y.exe' }] }, 1).apps.length === 0);
 ok('a blank automation value does not count as support',
    normaliseScan({ automation: { 'Word.Application': '   ' } }, 1).automation.word === false);
+
+
+console.log('\n=== the user own Office, found by its executable ===');
+{
+  // THE BUG. The rail launched these by command name — winword, excel, powerpnt — and
+  // launch_application requires a real path. Every click errored, the caller swallowed it, and
+  // clicking Word did nothing whatsoever.
+  const scan = { scannedAt: 0, automation: { word: true, excel: true, powerpoint: true, outlook: false, libreoffice: false },
+    apps: [
+      { name: 'WordPad', path: 'C:\\Program Files\\Windows NT\\Accessories\\wordpad.exe', kind: 'utility' },
+      { name: 'Word', path: 'C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE', kind: 'office' },
+      { name: 'Excel', path: 'C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE', kind: 'office' },
+      { name: 'PowerPoint', path: 'C:\\Program Files\\Microsoft Office\\root\\Office16\\POWERPNT.EXE', kind: 'office' },
+    ] };
+
+  ok('Word resolves to a real path', /WINWORD\.EXE$/i.test(officeApp(scan, 'word').path));
+  // WordPad contains the word "Word". Launching it instead is worse than launching nothing: the
+  // user asked for Word and got a different program.
+  ok('...and NOT to WordPad', !/wordpad/i.test(officeApp(scan, 'word').path));
+  ok('Excel resolves', /EXCEL\.EXE$/i.test(officeApp(scan, 'excel').path));
+  ok('PowerPoint resolves', /POWERPNT\.EXE$/i.test(officeApp(scan, 'powerpoint').path));
+
+  const all = officeApps(scan);
+  ok('all three are offered', all.length === 3, String(all.length));
+  ok('in a fixed order', all.map((a) => a.which).join() === 'word,excel,powerpoint');
+  ok('each carries a real path', all.every((a) => /\.exe$/i.test(a.app.path)));
+}
+
+console.log('\n=== and nothing is offered that is not there ===');
+{
+  const onlyPad = { scannedAt: 0, automation: { word: true, excel: false, powerpoint: false, outlook: false, libreoffice: false },
+    apps: [{ name: 'WordPad', path: 'C:\\Windows\\write.exe', kind: 'utility' }] };
+  // A rail button that cannot work is worse than no button.
+  ok('WordPad alone does not pass as Word', officeApp(onlyPad, 'word') === null);
+  ok('...so nothing is offered', officeApps(onlyPad).length === 0);
+
+  ok('an empty scan offers nothing', officeApps({ scannedAt: 0, apps: [], automation: {} }).length === 0);
+  ok('no scan at all does not crash', officeApps(null).length === 0);
+  ok('a missing app is null, not undefined', officeApp(null, 'excel') === null);
+
+  // A free Viewer is not the real thing and cannot be driven.
+  const viewer = { scannedAt: 0, automation: {}, apps: [
+    { name: 'Excel Viewer', path: 'C:\\Apps\\xlview.exe', kind: 'office' }] };
+  ok('a Viewer is not offered as Excel', officeApp(viewer, 'excel') === null);
+
+  // A renamed shortcut still works, because the executable is what is matched first.
+  const renamed = { scannedAt: 0, automation: {}, apps: [
+    { name: 'My Documents Thing', path: 'D:\\Office\\WINWORD.EXE', kind: 'office' }] };
+  ok('a renamed shortcut is still found by its exe', !!officeApp(renamed, 'word'));
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

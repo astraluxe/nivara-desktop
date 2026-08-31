@@ -37,3 +37,7 @@ fix_*.cjs
 # (objects/release-assets.githubusercontent.com) is SNI-filtered on some ISPs — measured: same IPs,
 # TCP 443 connects, TLS never completes — which left the updater unable to read its own manifest.
 # raw.githubusercontent.com is reachable on those networks, so the manifest is committed on purpose.
+
+# Screenshots the visual harness writes — build artefacts, not source.
+visual-*.png
+dist-visual/

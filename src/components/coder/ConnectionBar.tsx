@@ -1,4 +1,5 @@
 ﻿import { AI_SETUP_EVENT } from '../../lib/aiSource';
+import { TIER_LABEL, tierOf } from '../../lib/entitlement';
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -32,8 +33,14 @@ interface InstalledModel {
 }
 
 const PLAN_ORDER: Plan[] = ['explore', 'solo', 'builder', 'business', 'custom'];
+/** L10 — one vocabulary. See the note in modules/AccountPanel.tsx. */
 const PLAN_LABELS: Record<Plan, string> = {
-  explore: 'Free', free: 'Free', solo: 'Solo', builder: 'Builder', business: 'Team', custom: 'Custom',
+  explore: TIER_LABEL[tierOf('explore', 'plan')],
+  free:    TIER_LABEL[tierOf('free', 'plan')],
+  solo:    TIER_LABEL[tierOf('solo', 'plan')],
+  builder: TIER_LABEL[tierOf('builder', 'plan')],
+  business: TIER_LABEL[tierOf('business', 'plan')],
+  custom:  TIER_LABEL[tierOf('custom', 'plan')],
 };
 
 

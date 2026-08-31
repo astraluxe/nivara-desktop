@@ -115,12 +115,15 @@ function sessionToken(): string | null {
  * on a different model from the main window whenever the user had more than one key — and could
  * never reach a user-run gateway, since it neither knew about omniroute nor passed an address.
  */
-async function resolveAuth(): Promise<{ mode: string; apiKey: string | null; provider: string | null; modelName: string | null; baseUrl: string | null; localModel: string | null; token: string | null }> {
+async function resolveAuth(): Promise<{ mode: string; apiKey: string | null; provider: string | null; modelName: string | null; baseUrl: string | null; localModel: string | null; token: string | null; cli?: string }> {
   try {
     const { resolveAiSource } = await import('./lib/aiSource');
     const r = await resolveAiSource();
+    // `cli` was dropped here, so the bar could not tell the bridge from anything else and sent
+    // 'agent_cli' to krew_ai_stream, which answers "Unknown mode: agent_cli".
     return { mode: r.mode, apiKey: r.apiKey, provider: r.provider, modelName: r.modelName,
-             baseUrl: r.baseUrl, localModel: r.localModel, token: r.sessionToken ?? sessionToken() };
+             baseUrl: r.baseUrl, localModel: r.localModel, token: r.sessionToken ?? sessionToken(),
+             cli: r.cli };
   } catch { /* fall through to adris AI */ }
   return { mode: 'nivara', apiKey: null, provider: null, modelName: null, baseUrl: null, localModel: null, token: sessionToken() };
 }
@@ -154,6 +157,26 @@ async function send() {
   const done = { cleanup: () => {} };
   try {
     const auth = await resolveAuth();
+
+    // THE BRIDGE. The bar is a second webview with its own send path, so it needed the same
+    // interception every other screen has: krew_ai_stream has never heard of 'agent_cli' and
+    // reports it as an unknown mode rather than falling back. The CLI answers in one piece, so
+    // the streaming plumbing below is skipped rather than faked.
+    if (auth.mode === 'agent_cli' && auth.cli) {
+      const { runAgentCli } = await import('./lib/agentCli');
+      // The CLI takes ONE prompt, not a message array — the same flattening the Krew chat uses.
+      const flat = history.slice(-8)
+        .map((m) => (m.role === 'user' ? `User: ${m.content}` : `Assistant: ${m.content}`))
+        .join('\n\n');
+      const r = await runAgentCli(auth.cli as 'claude_code' | 'codex', flat, { systemPrompt });
+      if (!r.ok) throw new Error(r.error || 'the agent returned nothing');
+      received = r.text;
+      aiEl.innerHTML = renderMd(received);
+      msgsEl.scrollTop = msgsEl.scrollHeight;
+      history.push({ role: 'assistant', content: received });
+      return;
+    }
+
     await new Promise<void>(async (resolve, reject) => {
       const u1 = await listen<{ id: string; text: string }>('krew-chunk', (e) => {
         if (e.payload.id !== callId) return;

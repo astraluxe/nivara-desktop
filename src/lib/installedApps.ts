@@ -325,3 +325,58 @@ export async function getInstalledApps(opts: { force?: boolean } = {}): Promise<
     return loadCachedScan();
   }
 }
+
+// ── The user's own Office, on the rail ───────────────────────────────────────
+
+export type OfficeApp = 'word' | 'excel' | 'powerpoint';
+
+/**
+ * Find the real executable for one of the three Office apps.
+ *
+ * ── WHY THIS EXISTS AT ALL ──────────────────────────────────────────────────
+ *
+ * The rail first tried to launch these by COMMAND NAME — `winword`, `excel`, `powerpnt` — and
+ * `launch_application` requires a real path (`path.is_file()`). So every click returned an error
+ * that the caller then swallowed, and clicking Word did **nothing at all**. Silent failure, no
+ * feedback, no way for the user to tell whether it was broken or simply slow.
+ *
+ * `automation.word` says COM can drive Word; it does NOT give a path. The path comes from the Start
+ * Menu scan, so the two have to be read together.
+ *
+ * ── AND WHY THE MATCHING IS FUSSY ───────────────────────────────────────────
+ *
+ * **WordPad contains the word "Word".** So does "Word Viewer", and "Excel Viewer". A naive
+ * substring match launches the wrong program, which is worse than launching nothing: the user asked
+ * for Word and got a text editor. Each app is matched on its own executable name first — winword.exe,
+ * excel.exe, powerpnt.exe are unambiguous — and only then on a tightly-anchored product name.
+ */
+const OFFICE_EXE: Record<OfficeApp, RegExp> = {
+  // A PATH SEPARATOR then the executable. Anchoring on the separator is what stops "xinword.exe"
+  // or a folder called "excel" from matching; either slash is accepted so the rule is not
+  // Windows-only by accident.
+  word:       /[\\/]winword\.exe$/i,
+  excel:      /[\\/]excel\.exe$/i,
+  powerpoint: /[\\/]powerpnt\.exe$/i,
+};
+const OFFICE_NAME: Record<OfficeApp, RegExp> = {
+  // Anchored, and WordPad / Viewer explicitly refused.
+  word:       /^(microsoft\s+)?word(\s+\d{4})?$/i,
+  excel:      /^(microsoft\s+)?excel(\s+\d{4})?$/i,
+  powerpoint: /^(microsoft\s+)?powerpoint(\s+\d{4})?$/i,
+};
+
+export function officeApp(scan: AppScan | null, which: OfficeApp): InstalledApp | null {
+  if (!scan?.apps?.length) return null;
+  // The executable is the truth. A shortcut can be renamed to anything; winword.exe is winword.exe.
+  const byExe = scan.apps.find((a) => OFFICE_EXE[which].test(a.path));
+  if (byExe) return byExe;
+  // Fall back to an exact product name, which still excludes WordPad and the free Viewers.
+  return scan.apps.find((a) => OFFICE_NAME[which].test(a.name.trim())) ?? null;
+}
+
+/** The three, in a fixed order, with only the ones actually installed. */
+export function officeApps(scan: AppScan | null): Array<{ which: OfficeApp; app: InstalledApp }> {
+  return (['word', 'excel', 'powerpoint'] as OfficeApp[])
+    .map((which) => ({ which, app: officeApp(scan, which) }))
+    .filter((x): x is { which: OfficeApp; app: InstalledApp } => !!x.app);
+}

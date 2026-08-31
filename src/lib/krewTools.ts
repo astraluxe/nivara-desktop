@@ -1,7 +1,7 @@
 ﻿import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { krewMemoryDb } from './krewDb';
-import { setActivity } from './agentActivity';
+import { setActivity, endActivity } from './agentActivity';
 import { activeContextTokens, CHARS_PER_TOKEN } from './contextBudget';
 import { delegationRoster } from './krewAgents';
 import { isMcpTool, executeMcpTool } from './krewMcp';
@@ -3684,6 +3684,38 @@ async function executeToolCore(
     }
 
     const template = str(args.template).trim();
+
+    // ── A DECK AN AGENT MAKES SHOULD BE DESIGNED, NOT TYPED ───────────────────
+    //
+    // The PowerPoint branch below drives Office through COM and adds every slide with the same
+    // ppLayoutText layout: a title box and a bullet box, over and over. That is a typed outline. The
+    // owner's words for it were "not just typing or writing on it but designing it", and they are
+    // right — the in-chat deck builder has been producing real design all along (a palette, varied
+    // layouts, full-bleed figures, stat and quote slides, the user's logo) and agents could not
+    // reach any of it.
+    //
+    // So: with no template of the user's, an agent's PowerPoint is built by the SAME renderer the
+    // chat uses, then opened in their real PowerPoint. With a template, COM still wins — reproducing
+    // someone's own branding is the one thing our renderer cannot do, and it is the entire reason
+    // that path exists.
+    if (kind === 'powerpoint' && !template) {
+      try {
+        const slides = asArray(args.slides) as Array<{ title?: string; bullets?: string[]; body?: string }>;
+        if (slides.length) {
+          const { designPresentation } = await import('./designedDeck');
+          const out = await designPresentation({
+            title: str(args.title).trim() || slides[0]?.title || 'Presentation',
+            slides,
+            savePath: str(args.save_path).trim(),
+          });
+          return out;
+        }
+      } catch (e) {
+        // Fall through to COM rather than fail: a designed deck is better, a typed one is far
+        // better than none, and the user asked for a file.
+        console.warn('designed deck failed, using PowerPoint directly:', e);
+      }
+    }
     // Watched: Office opens where the user can see it, and the agent's cursor follows the REAL
     // progress of the work — see officeCursor.ts for why that progress is not animated.
     // The cursor is painted in the agent's own department colour, so with several agents working
@@ -3831,9 +3863,12 @@ async function executeToolCore(
         }
         if (!res.includes('HUMANCHECK:PENDING')) break;   // crashed or not installed — stop asking
       } catch { break; }
-      finally { setActivity(null); }
+      // ONLY THIS ROW. setActivity(null) clears the ENTIRE bus, which was harmless when the bus
+      // held one thing and is not now: in a parallel run it would wipe every other agent's line
+      // because the search step happened to finish first.
+      finally { endActivity('web_search'); }
     }
-    setActivity(null);
+    endActivity('web_search');
 
     // 5) Still blocked (or the user didn't complete it) — tell the model PLAINLY that
     // search is blocked right now, rather than staying silent about it (silence is what let

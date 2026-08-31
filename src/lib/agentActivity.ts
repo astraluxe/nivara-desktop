@@ -37,7 +37,22 @@ export interface AgentActivity {
   phase: 'thinking' | 'tool' | 'writing' | 'idle';
 }
 
-let current: AgentActivity | null = null;
+// ─── ONE SLOT WAS THE BUG ────────────────────────────────────────────────────
+//
+// This was `let current: AgentActivity | null` — a single slot. Independent agents genuinely do run
+// at the same time (55 assertions cover it, and the delegation code has been doing it for
+// releases), and every one of them calls setActivity. With one slot they overwrite each other, so
+// the screen showed whichever wrote most recently, flickering between three names.
+//
+// Which is why "several agents working for you" — the strongest thing this product does, and the
+// answer to "it doesn't feel like I have a team" — has been invisible. It was not missing. It was
+// being drawn one agent at a time, over and over, in the same box.
+//
+// A map, keyed by agent. `getActivity()` still returns the newest one so every existing caller is
+// unchanged; `getActivities()` returns all of them for the surfaces that want to show a team.
+const live = new Map<string, AgentActivity>();
+/** Insertion order is not update order, so the newest is tracked explicitly. */
+let newestKey: string | null = null;
 
 /**
  * Broadcast what is happening, so every surface that wants to show it can.
@@ -52,8 +67,33 @@ export function setActivity(a: AgentActivity | null): void {
   // Only resumeActivity lifts the silence — clearing it here would let a null write from a dying
   // run re-open the bus for the next straggler behind it.
   if (a && silenced) return;
-  current = a;
-  try { window.dispatchEvent(new CustomEvent(ACTIVITY_EVENT, { detail: a })); } catch { /* no window */ }
+  if (!a) {
+    // Null has always meant "the run is over". It still clears everything, because a caller that
+    // does not know about the map must not be able to leave half a team lit up.
+    live.clear();
+    newestKey = null;
+  } else {
+    // Keyed by agent, so a second agent starting does not erase the first. An agent with no key
+    // falls back to its display name rather than sharing one anonymous slot with every other.
+    const key = a.agentKey || a.agent || 'agent';
+    live.set(key, a);
+    newestKey = key;
+  }
+  broadcast();
+}
+
+/** One agent has finished, while others may still be going. */
+export function endActivity(agentKey: string): void {
+  if (!live.delete(agentKey)) return;
+  if (newestKey === agentKey) newestKey = [...live.keys()].pop() ?? null;
+  broadcast();
+}
+
+function broadcast(): void {
+  // The event still carries the single newest activity, because every existing listener reads
+  // `e.detail` and expects exactly that. Surfaces that want the whole team call getActivities().
+  const detail = newestKey ? live.get(newestKey) ?? null : null;
+  try { window.dispatchEvent(new CustomEvent(ACTIVITY_EVENT, { detail })); } catch { /* no window */ }
 }
 
 let silenced = false;
@@ -61,14 +101,32 @@ let silenced = false;
 /** Stop, and refuse the trailing updates from whatever was already in flight. */
 export function silenceActivity(): void {
   silenced = true;
-  current = null;
+  live.clear();
+  newestKey = null;
   try { window.dispatchEvent(new CustomEvent(ACTIVITY_EVENT, { detail: null })); } catch { /* no window */ }
 }
 
 /** A new run is starting — the bus may speak again. */
 export function resumeActivity(): void { silenced = false; }
 
-export function getActivity(): AgentActivity | null { return current; }
+/** The most recent activity. Unchanged behaviour, for every caller that wants just one. */
+export function getActivity(): AgentActivity | null {
+  return newestKey ? live.get(newestKey) ?? null : null;
+}
+
+/**
+ * Everyone currently working, newest first.
+ *
+ * This is what makes a team visible. Empty when nothing is running, one entry for an ordinary turn,
+ * and several exactly when several agents really are going at once — which is the moment worth
+ * showing and the one the single slot was hiding.
+ */
+export function getActivities(): AgentActivity[] {
+  const all = [...live.values()];
+  const newest = getActivity();
+  if (!newest) return all;
+  return [newest, ...all.filter((a) => a !== newest)];
+}
 
 // ─── Reading a half-written tool call ────────────────────────────────────────
 

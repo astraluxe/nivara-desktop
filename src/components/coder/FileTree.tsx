@@ -1,5 +1,29 @@
 import { useState, useEffect, useCallback } from 'react';
+import { fileIcon, labelInk } from '../../lib/fileIcons';
 import { invoke } from '@tauri-apps/api/core';
+import {
+  normPath, folderHasChanges, KIND_LETTER, KIND_LABEL, KIND_CLASS, type ChangeKind,
+} from '../../lib/gitStatus';
+
+/**
+ * The mark beside a filename saying what happened to it.
+ *
+ * A single letter, in the colours every developer already reads without being taught: A for added,
+ * M for modified, D for deleted. A FOLDER gets a dot rather than a letter — it does not know what
+ * changed inside it, only that something did, which is all it needs to say to get you to open it.
+ * Without the folder dot a change three levels down is invisible until you happen to expand the
+ * right branch, which for files an AGENT chose is most of the time.
+ */
+function GitMark({ kind, folder }: { kind?: ChangeKind; folder?: boolean }) {
+  if (folder) {
+    return <span className="shrink-0 w-3 text-center text-amber-500/70 text-[9px] leading-none" title="Something inside this folder changed">●</span>;
+  }
+  if (!kind || kind === 'none') return null;
+  return (
+    <span className={`shrink-0 w-3 text-center text-[10px] font-mono font-semibold ${KIND_CLASS[kind]}`}
+          title={KIND_LABEL[kind]}>{KIND_LETTER[kind]}</span>
+  );
+}
 
 interface FileEntry { name: string; path: string; is_dir: boolean; }
 
@@ -19,9 +43,46 @@ function parentOf(path: string): string {
   return i > 0 ? path.slice(0, i) : path;
 }
 
-function FileIcon({ isDir, expanded }: { isDir: boolean; expanded?: boolean }) {
-  if (isDir) return <span className="text-nv-faint">{expanded ? '▾' : '▸'}</span>;
-  return <span className="text-nv-faint opacity-40">·</span>;
+/**
+ * What kind of file this is, at a glance.
+ *
+ * Every file used to draw the same grey middle-dot — source, image, lock file, spreadsheet, all
+ * identical. A file tree is SCANNED rather than read, and there was nothing to scan by.
+ *
+ * A two-letter chip in the language's own colour is unambiguous at this size in a way a tiny
+ * pictogram is not: "TS" cannot be mistaken for anything, whereas a small blue shape can. The
+ * colours are the ones people already know from their editor, and the label is knocked out of a
+ * filled chip so it stays readable on both themes — see lib/fileIcons.ts.
+ */
+function FileIcon({ isDir, expanded, name }: { isDir: boolean; expanded?: boolean; name?: string }) {
+  if (isDir) {
+    // A folder reads as a folder, and the chevron still says open or shut.
+    return (
+      <span className="inline-flex items-center gap-[3px] text-nv-faint">
+        <svg viewBox="0 0 24 24" className="w-[13px] h-[13px]" fill="none" stroke="currentColor"
+             strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          {expanded
+            ? <path d="M3 8h5l2 2h11v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            : <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />}
+        </svg>
+      </span>
+    );
+  }
+  const spec = fileIcon(name || '');
+  return (
+    <span
+      title={spec.name}
+      aria-label={spec.name}
+      className="inline-flex items-center justify-center rounded-[3px] font-mono font-bold select-none"
+      style={{
+        background: spec.colour,
+        color: labelInk(spec.colour),
+        width: 16, height: 16,
+        fontSize: spec.label.length > 2 ? 6.5 : 8,
+        lineHeight: 1,
+      }}
+    >{spec.label}</span>
+  );
 }
 
 /** What the tree is being asked to make or change. Held in one place so only one row is ever in
@@ -32,9 +93,11 @@ type Pending =
   | null;
 
 function FileNode({
-  entry, depth, openFile, onFileOpen, pending, setPending, onChanged, refreshKey,
+  entry, depth, openFile, onFileOpen, pending, setPending, onChanged, refreshKey, gitMap,
 }: {
   entry: FileEntry; depth: number; openFile: string | null;
+  /** Normalised path → what happened to it. Empty when the folder is not a git repository. */
+  gitMap: Map<string, ChangeKind>;
   onFileOpen: (p: string) => void;
   pending: Pending; setPending: (p: Pending) => void;
   onChanged: (created?: string) => void;
@@ -100,9 +163,13 @@ function FileNode({
                   : 'text-nv-muted hover:text-nv-text hover:bg-nv-surface2'}`}
             >
               <span className="shrink-0 w-3 text-center">
-                <FileIcon isDir={entry.is_dir} expanded={expanded} />
+                <FileIcon isDir={entry.is_dir} expanded={expanded} name={entry.name} />
               </span>
               <span className="truncate">{entry.name}</span>
+              <GitMark
+                kind={entry.is_dir ? undefined : gitMap.get(normPath(entry.path))}
+                folder={entry.is_dir && folderHasChanges(entry.path, gitMap)}
+              />
             </button>
             {/* Row actions. Hidden until the row is hovered so the tree stays a tree, but always
                 present — there was previously no way at all to make a file. */}
@@ -147,7 +214,8 @@ function FileNode({
 
       {expanded && children.map((c) => (
         <FileNode key={c.path} entry={c} depth={depth + 1} openFile={openFile} onFileOpen={onFileOpen}
-          pending={pending} setPending={setPending} onChanged={onChanged} refreshKey={refreshKey} />
+          pending={pending} setPending={setPending} onChanged={onChanged} refreshKey={refreshKey}
+          gitMap={gitMap} />
       ))}
     </>
   );
@@ -191,6 +259,8 @@ interface Props {
   openFile: string | null;
   onFileOpen: (p: string) => void;
   onOpenFolder: (p: string) => void;
+  /** What git says changed. Supplied by CoderModule, which owns the refresh. */
+  gitMap?: Map<string, ChangeKind>;
 }
 
 /**
@@ -220,7 +290,10 @@ function IconBtn({ onClick, title, children }: {
   );
 }
 
-export default function FileTree({ projectPath, openFile, onFileOpen, onOpenFolder }: Props) {
+export default function FileTree({ projectPath, openFile, onFileOpen, onOpenFolder, gitMap }: Props) {
+  // An empty map is the honest default: not a repository, or git not installed. The tree then draws
+  // no marks at all rather than pretending nothing has changed.
+  const marks = gitMap ?? new Map<string, ChangeKind>();
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [pending, setPending] = useState<Pending>(null);
   const [rootErr, setRootErr] = useState('');
@@ -316,7 +389,8 @@ export default function FileTree({ projectPath, openFile, onFileOpen, onOpenFold
             {rootErr && <div className="text-[10px] text-red-400 px-2 py-0.5">{rootErr}</div>}
             {entries.map((e) => (
               <FileNode key={e.path} entry={e} depth={0} openFile={openFile} onFileOpen={onFileOpen}
-                pending={pending} setPending={setPending} onChanged={onChanged} refreshKey={refreshKey} />
+                pending={pending} setPending={setPending} onChanged={onChanged} refreshKey={refreshKey}
+                gitMap={marks} />
             ))}
           </>
         )}

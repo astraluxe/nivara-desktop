@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import { krewDb, type KrewSession } from '../../lib/krewDb';
-import { AGENT_BY_KEY, deptColor, deptTint } from '../../lib/krewAgents';
+// deptTint went with the agent chip: a tinted pill needed its own line, which is what made every
+// row a box. The department now reads as a single dot in deptColor.
+import { AGENT_BY_KEY, deptColor } from '../../lib/krewAgents';
 
 interface Props {
   activeId: string | null;
@@ -18,6 +20,35 @@ function relTime(epoch: number) {
   if (diff < 3600)  return `${Math.floor(diff / 60)}m ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
   return `${Math.floor(diff / 86400)}d ago`;
+}
+
+/**
+ * The time at the end of a row.
+ *
+ * "5h ago" is the wrong unit for a list that is ALREADY GROUPED into Today / Yesterday / Earlier —
+ * it repeats what the group heading said and still does not tell you when. A clock time does, and
+ * it is what every mail client shows for the same reason.
+ *
+ *   today      14:32     because the group already told you it was today
+ *   this week  Tue       a weekday is easier to place than "3d ago"
+ *   older      12 Aug
+ *
+ * Kept short deliberately: it sits in a fixed column beside the title, and a long string there eats
+ * the name of the chat, which is the thing being scanned for.
+ */
+function shortTime(epoch: number) {
+  const then = new Date(epoch * 1000);
+  const now = new Date();
+  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  // Today AND yesterday get a clock, because both already have a heading saying which day it was —
+  // "Yesterday / Thu" says the same thing twice and still never says when.
+  if (then.getTime() >= midnight - 86_400_000) {
+    // The user's own clock convention — a 24-hour country should not be shown "2:32 pm".
+    return then.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  }
+  const days = (now.getTime() - then.getTime()) / 86_400_000;
+  if (days < 7) return then.toLocaleDateString(undefined, { weekday: 'short' });
+  return then.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
 }
 
 // Pinned chats live in localStorage rather than the sessions table: it needs no migration, and a
@@ -160,7 +191,7 @@ export default function ConversationList({ activeId, onSelect, onNew, onOpenApps
             editingId === s.id ? (
               // Rendered instead of the row, not inside it — an <input> nested in a <button> is
               // invalid and swallows its own clicks.
-              <div key={s.id} className="px-0.5 py-1 mb-1">
+              <div key={s.id} className="h-[27px] flex items-center">
                 <input
                   autoFocus
                   value={draftTitle}
@@ -170,7 +201,7 @@ export default function ConversationList({ activeId, onSelect, onNew, onOpenApps
                     if (e.key === 'Enter') commitRename(s.id);
                     if (e.key === 'Escape') setEditingId(null);
                   }}
-                  className="w-full bg-nv-surface border border-accent/50 rounded-lg px-2 py-1.5 text-[11.5px] font-medium text-nv-text outline-none"
+                  className="w-full h-[23px] bg-nv-surface border border-accent/50 rounded-md px-2 text-[11.5px] font-medium text-nv-text outline-none"
                   placeholder="Name this chat"
                 />
               </div>
@@ -179,49 +210,48 @@ export default function ConversationList({ activeId, onSelect, onNew, onOpenApps
               key={s.id}
               onClick={() => onSelect(s.id, s.agent_key)}
               onDoubleClick={(e) => startRename(e, s)}
+              // The count and the full "3h ago" move to the tooltip. They were a whole second line
+              // of every row, and neither is something anyone scans a list for.
+              title={`${s.message_count} ${s.message_count === 1 ? 'message' : 'messages'} · ${relTime(s.last_active)}`}
               className={`
-                w-full text-left px-2.5 py-2 mb-1 rounded-lg group flex items-start justify-between gap-1.5
-                border transition-fast
-                ${s.id === activeId
-                  ? 'bg-accent/[0.09] border-accent/35'
-                  : 'bg-transparent border-transparent hover:bg-nv-surface hover:border-nv-border/60'}
+                w-full text-left group relative flex items-center gap-2 h-[27px] pl-2 pr-1.5 rounded-md
+                transition-fast
+                ${s.id === activeId ? 'bg-accent/[0.10]' : 'hover:bg-nv-surface'}
               `}
             >
-              <div className="flex-1 min-w-0">
-                <p className={`text-[11.5px] leading-snug truncate ${s.id === activeId ? 'text-nv-text font-semibold' : 'text-nv-text/90 font-medium'}`}>
-                  {/* A pin, drawn as a pin. The square bullet read as a status dot rather than
-                      "this chat is pinned", which is a lot of meaning to hang on a shape nobody
-                      recognises. */}
-                  {pinned.includes(s.id) && (
-                    <svg viewBox="0 0 24 24" width="9" height="9" fill="currentColor"
-                      className="inline-block text-accent mr-1 -mt-px" aria-label="Pinned">
-                      <path d="M14.4 2.6a1 1 0 0 0-1.7.7v5.3L8.5 11a3 3 0 0 0-1.3 2.5v.4a1 1 0 0 0 1 1h3.6v5.3a1 1 0 0 0 2 0v-5.3h3.6a1 1 0 0 0 1-1v-.4A3 3 0 0 0 17 11l-4.2-2.4V3.3a1 1 0 0 0-.3-.7z"/>
-                    </svg>
-                  )}
-                  {s.title || 'New Chat'}
-                </p>
-                <div className="flex items-center gap-1.5 mt-1">
-                  {(() => {
-                    const ag = AGENT_BY_KEY[s.agent_key];
-                    return ag ? (
-                      <span className="text-[8.5px] px-1.5 py-[1px] rounded-full font-medium tracking-wide"
-                            style={{ background: deptTint(ag.category, 0.18), color: deptColor(ag.category) }}>
-                        {ag.humanName}
-                      </span>
-                    ) : null;
-                  })()}
-                  <span className="text-[9.5px] text-nv-faint tabular-nums truncate">
-                    {s.message_count} {s.message_count === 1 ? 'message' : 'messages'} · {relTime(s.last_active)}
-                  </span>
-                </div>
-              </div>
-              <span className="flex items-center gap-1 shrink-0 mt-0.5">
+              {/* WHO, as a dot rather than a chip. The agent still has to be visible — it is the
+                  difference between a chat with the marketer and one with the coder — but a pill
+                  with a name in it needed a line of its own, which is what made every row a box. */}
+              <span
+                className="w-[5px] h-[5px] rounded-full shrink-0"
+                style={{ background: AGENT_BY_KEY[s.agent_key] ? deptColor(AGENT_BY_KEY[s.agent_key].category) : 'var(--nv-faint)' }}
+                aria-hidden="true"
+              />
+
+              <span className={`flex-1 min-w-0 truncate text-[11.5px] leading-none ${
+                s.id === activeId ? 'text-nv-text font-semibold' : 'text-nv-text/85'}`}>
+                {pinned.includes(s.id) && (
+                  <svg viewBox="0 0 24 24" width="9" height="9" fill="currentColor"
+                    className="inline-block text-accent mr-1 -mt-px" aria-label="Pinned">
+                    <path d="M14.4 2.6a1 1 0 0 0-1.7.7v5.3L8.5 11a3 3 0 0 0-1.3 2.5v.4a1 1 0 0 0 1 1h3.6v5.3a1 1 0 0 0 2 0v-5.3h3.6a1 1 0 0 0 1-1v-.4A3 3 0 0 0 17 11l-4.2-2.4V3.3a1 1 0 0 0-.3-.7z"/>
+                  </svg>
+                )}
+                {s.title || 'New Chat'}
+              </span>
+
+              {/* The time sits at the end of the line, and the row's controls take its place on
+                  hover. They occupy the same corner ON PURPOSE: a row that grows a button pushes
+                  the title sideways under the pointer, and the whole list twitches as you move down
+                  it. Nothing here moves — one fades out as the other fades in. */}
+              <span className="text-[9.5px] text-nv-faint tabular-nums shrink-0 transition-fast group-hover:opacity-0">
+                {shortTime(s.last_active)}
+              </span>
+
+              <span className="absolute right-1.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-fast">
                 <button
                   onClick={(e) => togglePin(e, s.id)}
                   title={pinned.includes(s.id) ? 'Unpin' : 'Pin to top'}
-                  className={`transition-fast leading-none ${pinned.includes(s.id)
-                    ? 'text-accent'
-                    : 'opacity-0 group-hover:opacity-100 text-nv-faint hover:text-accent'}`}
+                  className={`leading-none transition-fast ${pinned.includes(s.id) ? 'text-accent' : 'text-nv-faint hover:text-accent'}`}
                 >
                   <svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" className="block">
                     <path d="M14.4 2.6a1 1 0 0 0-1.7.7v5.3L8.5 11a3 3 0 0 0-1.3 2.5v.4a1 1 0 0 0 1 1h3.6v5.3a1 1 0 0 0 2 0v-5.3h3.6a1 1 0 0 0 1-1v-.4A3 3 0 0 0 17 11l-4.2-2.4V3.3a1 1 0 0 0-.3-.7z"/>
@@ -230,12 +260,12 @@ export default function ConversationList({ activeId, onSelect, onNew, onOpenApps
                 <button
                   onClick={(e) => startRename(e, s)}
                   title="Rename (or double-click)"
-                  className="opacity-0 group-hover:opacity-100 text-nv-faint hover:text-nv-text text-[11px] leading-none transition-fast"
+                  className="text-nv-faint hover:text-nv-text text-[11px] leading-none transition-fast"
                 >✎</button>
                 <button
                   onClick={(e) => del(e, s.id)}
                   title="Delete"
-                  className="opacity-0 group-hover:opacity-100 text-nv-faint hover:text-nv-red text-[13px] leading-none transition-fast"
+                  className="text-nv-faint hover:text-nv-red text-[13px] leading-none transition-fast"
                 >×</button>
               </span>
             </button>

@@ -10,7 +10,8 @@ import {
   loadPlan, todayView, planProgress, currentDay, PLAN_EVENT,
 } from '../../lib/planStore';
 import { routeTask } from '../../lib/taskRouting';
-import { ACTIVITY_EVENT, getActivity, type AgentActivity } from '../../lib/agentActivity';
+import { ACTIVITY_EVENT, getActivities, type AgentActivity } from '../../lib/agentActivity';
+
 
 // ─── Stage constants ──────────────────────────────────────────────────────────
 const STAGE_W = 1240, STAGE_H = 860;
@@ -676,12 +677,19 @@ export default function OfficeView({ userId, onSelectAgent, onClose, onOpenAutom
   //
   // The chat already knows: it names the agent and the tool on every step. It now says so on a
   // shared bus, and the floor reads it. One fact, two surfaces, no way for them to disagree.
-  const [live, setLive] = useState<AgentActivity | null>(() => getActivity());
+  // EVERYONE working, not the newest one. This screen read `getActivity()`, the single slot — so
+  // with three agents genuinely running in parallel exactly one desk lit up and the other two looked
+  // idle. That is the opposite of what an office view is for. The chat was fixed for this in 1.69.0
+  // and this surface was missed; both now read the same list.
+  const [crew, setCrew] = useState<AgentActivity[]>(() => getActivities());
   useEffect(() => {
-    const on = (e: Event) => setLive((e as CustomEvent<AgentActivity | null>).detail ?? null);
+    const on = () => setCrew(getActivities());
     window.addEventListener(ACTIVITY_EVENT, on);
     return () => window.removeEventListener(ACTIVITY_EVENT, on);
   }, []);
+  const busy = crew.filter((a) => a.phase !== 'idle');
+  const live = busy[0] ?? null;
+
 
   const dutyKeys = useMemo(() => {
     if (!plan) return [] as string[];
@@ -803,7 +811,14 @@ export default function OfficeView({ userId, onSelectAgent, onClose, onOpenAutom
           style={{ borderBottom: '1px solid var(--nv-border)', background: 'var(--nv-surface2)' }}>
           <span className="mt-1 w-2 h-2 rounded-full shrink-0 animate-pulse" style={{ background: 'var(--nv-accent, #7C5CFF)' }} />
           <div className="min-w-0">
-            <p className="text-[12px] font-medium truncate" style={{ color: 'var(--nv-text)' }}>{live.headline}</p>
+            <p className="text-[12px] font-medium truncate" style={{ color: 'var(--nv-text)' }}>
+              {live.headline}
+              {busy.length > 1 && (
+                <span className="font-normal" style={{ color: 'var(--nv-faint)' }}>
+                  {'  ·  '}and {busy.length - 1} other{busy.length === 2 ? '' : 's'} working
+                </span>
+              )}
+            </p>
             {live.detail && (
               <p className="text-[10.5px] leading-snug" style={{ color: 'var(--nv-faint)' }}>{live.detail}</p>
             )}
@@ -827,7 +842,7 @@ export default function OfficeView({ userId, onSelectAgent, onClose, onOpenAutom
               active={activeDept === la.dept}
               dim={!!activeDept && activeDept !== la.dept}
               onDuty={dutyKeys.includes(la.agent.key)}
-              working={live?.agentKey === la.agent.key}
+              working={busy.some((a) => a.agentKey === la.agent.key)}
               onEnter={() => setHoverDept(la.dept)}
               onLeave={() => setHoverDept(null)}
               onClick={() => setPanel({ dept: la.dept, handle: agentHandle(la.agent) })}

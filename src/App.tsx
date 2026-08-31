@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import {useState, useEffect } from "react";
 import { startGuardWatch, GUARD_ALERT_EVENT, type GuardAlert } from './lib/guardWatch';
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -7,6 +7,9 @@ import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import LoginScreen from "./components/LoginScreen";
 import TitleBar from "./components/TitleBar";
 import Sidebar, { type Module } from "./components/Sidebar";
+import ToolRail from "./components/ToolRail";
+import ToolsModule from "./modules/ToolsModule";
+import { type ToolState } from "./lib/toolShelf";
 import HomeModule from "./modules/HomeModule";
 import AutomationModule from "./modules/AutomationModule";
 import CoderModule from "./modules/CoderModule";
@@ -208,6 +211,12 @@ function AppShell() {
   useEffect(() => {
     import('./lib/skillGraph').then(({ sweepMirroredSkills }) => sweepMirroredSkills()).catch(() => {});
   }, []);
+  // The Shelf. Held here rather than inside ToolsModule because the RAIL needs it on every screen,
+  // and the module is only mounted while you are looking at it.
+  const [toolStates, setToolStates] = useState<Record<string, ToolState>>(() => {
+    try { return JSON.parse(localStorage.getItem('nv-tool-states') || '{}'); } catch { return {}; }
+  });
+  const [toolToOpen, setToolToOpen] = useState<string | null>(null);
   const [meshActive, setMeshActive] = useState(false);
   const [announcement, setAnnouncement] = useState<Announcement | null>(null);
   const [showFirstRun, setShowFirstRun] = useState(false);
@@ -325,6 +334,12 @@ function AppShell() {
         // keeps the module it always had.
         module: e.payload.kind === 'image' ? 'krew_image' : 'krew_direct',
         tokensUsed: e.payload.tokens,
+        // This event only fires on the adris.tech managed-key path, so it is billable by
+        // definition — the one source we can state rather than resolve.
+        source: 'adris',
+        model: null,
+        inputTokens: null,
+        outputTokens: null,
       }).catch(() => {});
     });
     return () => { unlisten.then(f => f()); };
@@ -512,7 +527,10 @@ function AppShell() {
 
   // Global navigation event — lets any part of the app (e.g. Krew slash commands) open a module.
   useEffect(() => {
-    const VALID: Module[] = ["home", "automation", "coder", "krew", "connect", "models", "vault", "guard", "mesh", "brain", "head", "info", "account", "settings"];
+    // Every module a slash command or a link may open. "office" was missing while the room was
+    // being built, so /office silently did nothing — the allowlist is the thing that decides, and
+    // adding a module elsewhere does not add it here.
+    const VALID: Module[] = ["home", "automation", "coder", "krew", "connect", "models", "vault", "guard", "mesh", "brain", "head", "info", "account", "settings", "tools"];
     let un: (() => void) | null = null;
     listen<{ module: string }>("nv-navigate", (e) => {
       const m = e.payload?.module as Module;
@@ -607,7 +625,7 @@ function AppShell() {
       )}
       <div className="flex flex-1 overflow-hidden">
         <Sidebar activeModule={activeModule} onModuleChange={setActiveModule} meshSessionActive={meshActive} />
-        <main className="flex-1 overflow-hidden">
+        <main className="flex-1 overflow-hidden flex flex-col min-w-0">
           {activeModule === "home"       && <HomeModule onNavigate={setActiveModule} onStartTour={() => setShowTour(true)} />}
           {activeModule === "automation" && <AutomationModule canvasFlow={canvasFlow} onCanvasFlowConsumed={() => setCanvasFlow(null)} />}
           {activeModule === "coder"      && <CoderModule />}
@@ -617,6 +635,9 @@ function AppShell() {
           </div>
           {activeModule === "connect" && <ConnectApps />}
           {activeModule === "models"  && <ModelsModule />}
+          {activeModule === "tools"   && (
+            <ToolsModule openId={toolToOpen} onStatesChange={setToolStates} />
+          )}
           {activeModule === "vault"   && <VaultModule />}
           {activeModule === "guard"   && <GuardModule />}
           {activeModule === "mesh"    && <MeshModule onSessionChange={setMeshActive} />}
@@ -641,6 +662,15 @@ function AppShell() {
           {activeModule === "account"  && <AccountPanel />}
           {activeModule === "settings" && <SettingsModule />}
         </main>
+        {/* THE RIGHT RAIL. Outside <main> so it is present on every screen rather than only on the
+            Tools page — a shelf you can only see while standing in front of it is a cupboard.
+            It never expands; the name arrives as a tooltip. See components/ToolRail.tsx. */}
+        <ToolRail
+          states={toolStates}
+          activeId={activeModule === 'tools' ? toolToOpen : null}
+          onOpen={(id) => { setToolToOpen(id); setActiveModule('tools'); }}
+          onBrowse={() => { setToolToOpen(null); setActiveModule('tools'); }}
+        />
       </div>
       {showTour && (
         <TourOverlay

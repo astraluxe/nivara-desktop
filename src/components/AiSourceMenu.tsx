@@ -14,10 +14,11 @@
 
 import { useEffect, useRef, useState } from 'react';
 import {
-  getAiSource, setAiSource, getAiAvailability, AI_SOURCE_EVENT, AI_SETUP_EVENT,
+  getAiSource, setAiSource, getAiAvailability, modelForProvider, AI_SOURCE_EVENT,
   type AiSourceMode, type AiSourcePref, type ByokProvider, type AiAvailability,
 } from '../lib/aiSource';
 import { CLI_LABEL, type AgentCli } from '../lib/agentCli';
+import AiSourceDetail, { detailTitle, type Detail } from './AiSourceDetail';
 import BrandLogo from './ui/BrandLogo';
 
 interface Choice {
@@ -39,8 +40,15 @@ interface Choice {
    * identical when the row is missing.
    */
   unavailable?: string;
-  /** A setup panel to open instead of selecting. See AI_SETUP_EVENT. */
-  setup?: 'own_key' | 'local' | 'omniroute';
+  /**
+   * A second screen behind this row: which local model, which model on this key, what the bridge
+   * is. Opened in the same sheet rather than sent somewhere else — the panels that used to hold
+   * this only existed at the top of Krew and Coder, so from any other screen the menu could offer
+   * "Local model" with no way to see what was behind it.
+   */
+  detail?: Detail;
+  /** True when the row cannot answer anything yet, so opening the detail IS the whole action. */
+  needsSetup?: boolean;
 }
 
 const PROVIDER_LABEL: Record<ByokProvider, string> = {
@@ -55,7 +63,12 @@ const PROVIDER_LABEL: Record<ByokProvider, string> = {
  * choose — the whole point of the bridge is that their existing budget is larger than anything
  * adris could sell them.
  */
-export function buildChoices(avail: AiAvailability | null): Choice[] {
+export function buildChoices(
+  avail: AiAvailability | null,
+  // Needed so a key row can name the model it would actually think with, and only for the provider
+  // the choice was made for.
+  pref?: { provider?: string | null; model?: string | null } | null,
+): Choice[] {
   const out: Choice[] = [];
 
   // BOTH are always listed, installed or not. Someone who pays for Codex needs to see that the app
@@ -65,22 +78,37 @@ export function buildChoices(avail: AiAvailability | null): Choice[] {
     out.push({
       id: `cli:${cli}`, mode: 'agent_cli', cli,
       label: `Your ${CLI_LABEL[cli]}`,
+      // NOT INSTALLED IS NO LONGER A DEAD END, so it must not read like one. The app installs it
+      // now — its own Node, its own folder, no terminal — so the row invites rather than apologises,
+      // and the cost line says what happens next instead of what is missing.
       blurb: have
         ? 'Thinks with the subscription you already pay for.'
-        : `Install ${CLI_LABEL[cli]} and it appears here — then adris runs on your subscription, not on credit.`,
-      cost: have ? 'included in your subscription' : 'not installed',
+        : `Already pay for ${CLI_LABEL[cli]}? adris will set it up for you — no terminal.`,
+      cost: have ? 'included in your subscription' : 'set it up',
       logo: cli === 'claude_code' ? 'claude' : 'openai',
-      unavailable: have ? undefined : `${CLI_LABEL[cli]} is not on this computer.`,
+      // Deliberately NOT `unavailable`: that dims the row to 45% and makes it look unclickable,
+      // which was right when there was nothing to click and is now exactly wrong.
+      detail: { kind: 'cli', cli },
+      needsSetup: !have,
     });
   }
 
   for (const p of avail?.byokProviders ?? []) {
+    // WHICH MODEL, not just whose key. "billed by NVIDIA" answers who pays and not the question the
+    // user actually has — what is it running? One key carries a dozen models and several of them do
+    // not work, so a connected key without a model name is half an answer.
+    const model = modelForProvider(p, pref ?? null);
     out.push({
       id: `key:${p}`, mode: 'own_key', provider: p,
       label: `Your ${PROVIDER_LABEL[p]} key`,
-      blurb: `Runs on your own ${PROVIDER_LABEL[p]} key.`,
+      blurb: model
+        ? `Running ${model} on your own ${PROVIDER_LABEL[p]} key.`
+        : `Runs on your own ${PROVIDER_LABEL[p]} key.`,
       cost: `billed by ${PROVIDER_LABEL[p]}`,
       logo: p,
+      // Which model on that key is a real choice with real consequences — one answers in half a
+      // second and another times out — so it gets a screen instead of being decided silently.
+      detail: { kind: 'key', provider: p },
     });
   }
 
@@ -94,7 +122,8 @@ export function buildChoices(avail: AiAvailability | null): Choice[] {
       blurb: 'NVIDIA and Groq give them away free. Nothing here is charged to you afterwards.',
       cost: 'free to set up',
       logo: 'openai',
-      setup: 'own_key',
+      detail: { kind: 'connect' },
+      needsSetup: true,
     });
   }
 
@@ -111,11 +140,12 @@ export function buildChoices(avail: AiAvailability | null): Choice[] {
     id: 'local', mode: 'local',
     label: 'Local model',
     blurb: haveLocal
-      ? 'Runs on this computer. Works with no internet.'
+      ? `Runs on this computer. Works with no internet. ${avail!.localModels.length} downloaded.`
       : 'Download one and it runs here, offline, with nothing leaving the machine.',
     cost: 'free',
     logo: 'local',
-    setup: haveLocal ? undefined : 'local',
+    detail: { kind: 'local' },
+    needsSetup: !haveLocal,
   });
 
   out.push({
@@ -147,46 +177,66 @@ export default function AiSourceMenu() {
   const [pref, setPref] = useState<AiSourcePref>(getAiSource);
   const [avail, setAvail] = useState<AiAvailability | null>(null);
   const [open, setOpen] = useState(false);
+  /** null = the source list; anything else = the second screen for that source. */
+  const [detail, setDetail] = useState<Detail | null>(null);
   const box = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    getAiAvailability().then(setAvail).catch(() => {});
+    const load = () => { getAiAvailability().then(setAvail).catch(() => {}); };
+    load();
     // Kept in step with anything else that writes the same setting.
     const sync = () => setPref(getAiSource());
     window.addEventListener(AI_SOURCE_EVENT, sync);
-    return () => window.removeEventListener(AI_SOURCE_EVENT, sync);
+    // A key connected (or removed) in Connect Apps changes what this menu can offer. Without this
+    // the row for a key the user just added did not appear until the app was restarted.
+    window.addEventListener('nv-creds-changed', load);
+    return () => {
+      window.removeEventListener(AI_SOURCE_EVENT, sync);
+      window.removeEventListener('nv-creds-changed', load);
+    };
   }, []);
+
+  // Re-read what the machine offers each time the menu is opened, so a model downloaded or a CLI
+  // installed since launch is there — this used to be read once, at mount.
+  useEffect(() => { if (open) getAiAvailability().then(setAvail).catch(() => {}); }, [open]);
 
   useEffect(() => {
     if (!open) return;
-    const away = (e: MouseEvent) => { if (!box.current?.contains(e.target as Node)) setOpen(false); };
-    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    const away = (e: MouseEvent) => { if (!box.current?.contains(e.target as Node)) close(); };
+    // Escape steps BACK one level before closing — a second screen you cannot leave without
+    // losing the menu is the reason people stop opening it.
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') { if (detail) setDetail(null); else close(); } };
     document.addEventListener('mousedown', away);
     document.addEventListener('keydown', esc);
     return () => { document.removeEventListener('mousedown', away); document.removeEventListener('keydown', esc); };
-  }, [open]);
+  }, [open, detail]);
 
-  const choices = buildChoices(avail);
+  function close() { setOpen(false); setDetail(null); }
+
+  const choices = buildChoices(avail, pref);
   const currentId = currentChoiceId(pref, choices);
   const current = choices.find((c) => c.id === currentId) ?? choices[choices.length - 1];
 
   function pick(c: Choice) {
-    // Needs setting up first. Open the panel instead of selecting something that cannot run — a
-    // choice that silently does nothing is worse than one that takes you where you have to go.
-    if (c.setup) {
-      window.dispatchEvent(new CustomEvent(AI_SETUP_EVENT, { detail: { which: c.setup } }));
-      setOpen(false);
-      return;
-    }
-    if (c.unavailable) return;      // listed so it is known to exist, not selectable
+    // NOTHING HERE IS A DEAD END. A row that cannot answer yet — no key, nothing downloaded, a CLI
+    // that is not installed — opens its own screen instead of selecting something that cannot run.
+    // A choice that silently does nothing is worse than one that shows you what is missing.
+    if (c.needsSetup) { setDetail(c.detail ?? null); return; }
 
     const next: AiSourcePref = { mode: c.mode };
     if (c.cli) next.cli = c.cli;
     if (c.provider) next.provider = c.provider;
-    if (c.mode === 'local') next.localModel = avail?.localModels[0]?.filename;
+    // The model belongs to the provider it was chosen for. Switching keys drops it rather than
+    // sending a Groq model id to Gemini.
+    if (c.provider && c.provider === pref.provider) next.model = pref.model;
+    if (c.mode === 'local') next.localModel = pref.localModel ?? avail?.localModels[0]?.filename;
     setPref(next);
     setAiSource(next);      // one write; every module reads this
-    setOpen(false);
+
+    // Selecting is complete on its own — the source is now in force everywhere. Where there is
+    // something further to say (which model, what the bridge means), stay open on that screen
+    // rather than closing and leaving the user to find it.
+    if (c.detail) setDetail(c.detail); else close();
   }
 
   // A subscription or a local model costs nothing extra, so it is worth showing in the accent
@@ -215,7 +265,35 @@ export default function AiSourceMenu() {
 
       {open && (
         <div role="menu"
-             className="absolute right-0 top-[26px] w-[280px] nv-sheet p-1.5 z-50 nv-rise">
+             className="absolute right-0 top-[26px] w-[300px] nv-sheet p-1.5 z-50 nv-rise
+                        max-h-[min(70vh,32rem)] overflow-y-auto overscroll-contain">
+          {detail ? (
+            <>
+              {/* The way back is a whole row, not a 12px arrow. This sheet is 300px wide and the
+                  people it is for do not hunt for chevrons. */}
+              <button
+                onClick={() => setDetail(null)}
+                className="w-full flex items-center gap-1.5 px-2.5 pt-1 pb-2 text-[9.5px] uppercase
+                           tracking-[0.12em] text-nv-faint hover:text-nv-text
+                           transition-colors duration-fast ease-nv"
+              >
+                <svg viewBox="0 0 24 24" className="w-3 h-3 shrink-0" fill="none" stroke="currentColor"
+                     strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M15 18l-6-6 6-6" />
+                </svg>
+                <span className="truncate">{detailTitle(detail)}</span>
+              </button>
+              <AiSourceDetail
+                detail={detail}
+                avail={avail}
+                pref={pref}
+                // Re-read rather than trusting what was just written: the detail screens write the
+                // preference themselves, and this is the one place both levels have to agree.
+                onPick={() => { setPref(getAiSource()); getAiAvailability().then(setAvail).catch(() => {}); }}
+              />
+            </>
+          ) : (
+          <>
           <p className="px-2.5 pt-1 pb-2 text-[9.5px] uppercase tracking-[0.12em] text-nv-faint">
             AI runs on — everywhere in the app
           </p>
@@ -242,6 +320,16 @@ export default function AiSourceMenu() {
                     {c.label}
                   </span>
                   <span className="text-[9px] text-nv-faint shrink-0">{c.cost}</span>
+                  {/* There is more behind this row. Shown on every row that has a second screen,
+                      including the selected one — "already chosen" and "nothing more to see" are
+                      different things. */}
+                  {c.detail && (
+                    <svg viewBox="0 0 24 24" className="w-3 h-3 shrink-0 text-nv-faint" fill="none"
+                         stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"
+                         strokeLinejoin="round" aria-hidden="true">
+                      <path d="M9 18l6-6-6-6" />
+                    </svg>
+                  )}
                 </span>
                 <span className="block pl-6 text-[10.5px] text-nv-muted leading-snug mt-0.5">{c.blurb}</span>
               </button>
@@ -250,6 +338,8 @@ export default function AiSourceMenu() {
           <p className="px-2.5 pt-2 pb-1 text-[9.5px] text-nv-faint leading-snug">
             Krew, Guard, automations and every other module use this one choice.
           </p>
+          </>
+          )}
         </div>
       )}
     </div>

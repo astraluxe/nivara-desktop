@@ -2,6 +2,7 @@ import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } f
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { brain, BRAIN_EVENT, BRAIN_FOCUS_EVENT, takeBrainFocus, nodeToMarkdown, decodeEscapedHtml, type BrainNode, type BrainNodeKind, type BrainData } from '../lib/knowledgeStore';
+import { pasteMode } from '../lib/markdownPaste';
 import SkillsView from '../components/brain/SkillsView';
 import { renderDeckHtml, extractDeckSpec, applyDeckEdits, type DeckSpec, type DeckPalette } from '../lib/deck';
 import { todos, type TodoItem } from '../lib/todoStore';
@@ -1739,6 +1740,30 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
     (t.tBodies[0] || t).appendChild(tr); afterEdit();
   }
 
+  /**
+   * Paste Markdown and get the note, not the source.
+   *
+   * The note editor IS the preview — a contentEditable showing HTML, with no second mode to switch
+   * to. So pasting Markdown put the SOURCE on the page: rows of `| a | b |`, literal `## Heading`,
+   * asterisks around every bold run. The note was stored exactly that way and was unreadable.
+   *
+   * Only plain text that is unmistakably Markdown is converted — see looksLikeMarkdown, which is
+   * deliberately hard to pass. Rich HTML from another app is left to the browser, because it is
+   * already structured and re-parsing it as Markdown would escape its tags into visible text.
+   * Anything else is inserted exactly as typed: silently reformatting someone's prose would be a
+   * far worse bug than the one this fixes.
+   */
+  function onPaste(e: React.ClipboardEvent<HTMLDivElement>) {
+    const html = e.clipboardData.getData('text/html');
+    const plain = e.clipboardData.getData('text/plain');
+    if (pasteMode(html, plain) !== 'markdown') return;   // let the browser do its normal thing
+    e.preventDefault();
+    // mdToHtml is the same renderer every other surface uses, so a pasted note and a saved one
+    // cannot end up looking different.
+    document.execCommand('insertHTML', false, mdToHtml(plain));
+    save();
+  }
+
   function applyFile(name: string, content: string, path?: string) {
     const newTitle = (!title.trim() || title.trim() === 'New note') ? name : title;
     setKind('file'); setTitle(newTitle);
@@ -1916,6 +1941,7 @@ function BrainPanel({ node, allNodes, edges, onClose, onJump }: {
             contentEditable={!largeBody}
             suppressContentEditableWarning
             onBlur={save}
+            onPaste={onPaste}
             data-placeholder="Start writing… use the B / H / • buttons above to format. Anything Krew finds (like a company list) shows here as a clean table."
             className={`flex-1 min-w-0 overflow-auto p-6 empty:before:content-[attr(data-placeholder)] empty:before:text-nv-faint ${NOTE_CLS}`}
             style={{ color: 'var(--nv-text)' }}

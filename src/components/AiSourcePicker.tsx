@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import {
-  getAiSource, setAiSource, getAiAvailability,
+  getAiSource, getAiAvailability, aiSourceLabel, AI_SOURCE_EVENT,
   type AiSourceMode, type AiAvailability,
 } from '../lib/aiSource';
 
@@ -16,11 +16,16 @@ import {
 // currently in force and points at where to change it — so the modules that showed a picker still
 // show the answer, they just no longer offer a second, competing way to set it.
 
+// EVERY MODE THE MENU CAN SET NEEDS A LINE HERE. `agent_cli` was missing, and the lookup below
+// falls back to OPTIONS[0] — so someone running on their own Claude Code subscription was told, on
+// both the Guard and Settings pages, that the source was "Automatic". The one thing this component
+// still does is name what is in force; naming the wrong thing is the whole failure.
 const OPTIONS: { id: AiSourceMode; label: string; blurb: string }[] = [
-  { id: 'auto',    label: 'Automatic',    blurb: 'Use your own key if one is connected, otherwise adris.tech, otherwise a local model.' },
-  { id: 'nivara',  label: 'adris.tech',   blurb: 'The hosted AI. Counts against your monthly allowance.' },
-  { id: 'own_key', label: 'Your own key', blurb: 'Runs on your OpenAI, Gemini or Anthropic key. Billed by them, never against your allowance.' },
-  { id: 'local',   label: 'Local model',  blurb: 'Runs on this machine. Free, works offline, nothing leaves the computer.' },
+  { id: 'auto',      label: 'Choose for me', blurb: 'Use your own key if one is connected, otherwise adris.tech, otherwise a local model.' },
+  { id: 'nivara',    label: 'adris.tech',    blurb: 'The hosted AI, charged per use.' },
+  { id: 'own_key',   label: 'Your own key',  blurb: 'Runs on your OpenAI, Gemini, NVIDIA, Groq or Anthropic key. Billed by them, never against your allowance.' },
+  { id: 'local',     label: 'Local model',   blurb: 'Runs on this machine. Free, works offline, nothing leaves the computer.' },
+  { id: 'agent_cli', label: 'Your Claude Code / Codex', blurb: 'Thinks with the coding subscription you already pay for. Nothing is charged to adris.tech.' },
 ];
 
 export default function AiSourcePicker({ compact = false }: { compact?: boolean }) {
@@ -28,6 +33,16 @@ export default function AiSourcePicker({ compact = false }: { compact?: boolean 
   const [avail, setAvail] = useState<AiAvailability | null>(null);
 
   useEffect(() => { getAiAvailability().then(setAvail).catch(() => {}); }, []);
+
+  // AN INDICATOR THAT DOES NOT UPDATE IS WORSE THAN NO INDICATOR. This read the preference once,
+  // at mount, and never again — so with Guard or Settings already open, changing the source in the
+  // title bar left this panel confidently naming the old one. Its entire remaining job is to say
+  // what is in force.
+  useEffect(() => {
+    const sync = () => setPref(getAiSource());
+    window.addEventListener(AI_SOURCE_EVENT, sync);
+    return () => window.removeEventListener(AI_SOURCE_EVENT, sync);
+  }, []);
 
   // choose/canUse/why lived here when this was a control. They are gone with it: keeping dead
   // setters around a component documented as read-only is how a second switch grows back.
@@ -52,16 +67,16 @@ export default function AiSourcePicker({ compact = false }: { compact?: boolean 
           credit. It now reports what is in force and says where to change it. */}
       <div className="flex items-center gap-2 rounded-nv border border-nv-border bg-nv-bg/60 px-2.5 py-2">
         <span className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
-        <span className="text-[11.5px] text-nv-text font-medium flex-1 truncate">{active.label}</span>
+        <span className="text-[11.5px] text-nv-text font-medium flex-1 truncate">{aiSourceLabel(pref)}</span>
         <span className="text-[10px] text-nv-faint shrink-0">set at the top of the window</span>
       </div>
 
       <p className="text-[11px] text-nv-muted leading-relaxed mt-2">{active.blurb}</p>
 
-      {/* "Your own key" is the cheapest option for most people, but only if they have a key — and
-          the usual reaction is that getting one means a paid account. NVIDIA hand out free API
-          credits, so point straight at it rather than leaving the option greyed out with nothing
-          to do about it. */}
+      {/* THE ONE THING THIS STILL SAYS OUT LOUD. "Use your own key" reads to most people as "pay
+          for an account", and the two providers that hand keys out free are the fact that changes
+          the answer. It is a statement plus two links to those companies — not a control, and not
+          a second way to set anything. */}
       {pref.mode === 'own_key' && (avail?.byokProviders.length ?? 0) === 0 && (
         <div className="mt-2 rounded-lg border border-accent/30 bg-accent/5 px-2.5 py-2">
           <p className="text-[10.5px] text-nv-text font-medium">No key connected yet — get one free</p>
@@ -92,21 +107,19 @@ export default function AiSourcePicker({ compact = false }: { compact?: boolean 
         </div>
       )}
 
-      {/* WHICH key is not offered here: the title-bar menu lists every connected key as its own
-          entry, so a second chooser would be the same competing-control problem in miniature.
-          WHICH LOCAL MODEL is offered, because nothing else offers it — it refines a choice already
-          made rather than making it again. */}
+      {/* NEITHER "which key" NOR "which local model" is offered here any more.
+          The title-bar menu lists every connected key as its own entry and now has a second screen
+          behind Local model listing what is downloaded, with sizes. This dropdown was kept when it
+          was the only place that offered the choice; the moment the menu offered it too, it went
+          back to being what the whole clean-up was about — one setting with two controls, and no
+          way to tell which one you last used. It reports, and points. */}
       {pref.mode === 'local' && (avail?.localModels.length ?? 0) > 0 && (
-        <div className="flex items-center gap-1.5 mt-2 flex-wrap">
-          <span className="text-[10px] text-nv-faint">Model:</span>
-          <select
-            value={pref.localModel ?? avail!.localModels[0].filename}
-            onChange={(e) => { const n = { ...pref, localModel: e.target.value }; setPref(n); setAiSource(n); }}
-            className="text-[10.5px] bg-nv-surface2 border border-nv-border rounded-md px-1.5 py-0.5 text-nv-text outline-none focus:border-accent max-w-[200px]"
-          >
-            {avail!.localModels.map((m) => <option key={m.filename} value={m.filename}>{m.name}</option>)}
-          </select>
-        </div>
+        <p className="text-[10.5px] text-nv-faint mt-2">
+          Running <span className="text-nv-text">
+            {avail!.localModels.find((m) => m.filename === pref.localModel)?.name
+              ?? avail!.localModels[0].name}
+          </span>. Pick a different one from the menu at the top of the window.
+        </p>
       )}
 
       {pref.mode !== 'nivara' && pref.mode !== 'auto' && (

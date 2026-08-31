@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import Icon from '../components/Icon';
 import { invoke } from '@tauri-apps/api/core';
 import FileTree from '../components/coder/FileTree';
@@ -6,6 +6,8 @@ import Editor from '../components/coder/Editor';
 import TerminalPanel, { type TerminalHandle } from '../components/coder/Terminal';
 import AIChat from '../components/coder/AIChat';
 import QuickOpen, { type PaletteMode } from '../components/coder/QuickOpen';
+import DiffView from '../components/coder/DiffView';
+import { statusMap, changeCount, normPath, type GitStatus, type ChangeKind } from '../lib/gitStatus';
 import { useResize } from '../hooks/useResize';
 
 interface FileEntry { name: string; path: string; is_dir: boolean; }
@@ -69,6 +71,29 @@ function samePath(a: string | null, b: string | null): boolean {
   return na === nb || na.endsWith('/' + nb) || nb.endsWith('/' + na);
 }
 
+/** One icon on the activity bar: a real 32px target, titled and labelled. */
+function ActivityButton(
+  { label, active, onClick, children }:
+  { label: string; active?: boolean; onClick: () => void; children: React.ReactNode },
+) {
+  return (
+    <button
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      aria-pressed={!!active}
+      className={`w-8 h-8 rounded-nv-sm flex items-center justify-center transition-colors duration-fast
+                  ${active ? 'bg-accent/15 text-accent ring-1 ring-inset ring-accent/30'
+                           : 'text-nv-faint hover:text-nv-text hover:bg-nv-surface2'}`}
+    >
+      <svg viewBox="0 0 24 24" className="w-[17px] h-[17px]" fill="none" stroke="currentColor"
+           strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        {children}
+      </svg>
+    </button>
+  );
+}
+
 export default function CoderModule() {
   const saved = loadState();
 
@@ -77,6 +102,8 @@ export default function CoderModule() {
   const [fileContent, setFileContent]   = useState('');
   const [chatOpen, setChatOpen]         = useState(true);
   const [terminalOpen, setTerminalOpen] = useState(true);
+  /** The file tree can be put away, the way every editor lets you. */
+  const [treeOpen, setTreeOpen] = useState(true);
   const [dirContext, setDirContext]      = useState('');
   const [fileHistory, setFileHistory]   = useState<{ path: string; content: string }[]>([]);
 
@@ -154,6 +181,30 @@ export default function CoderModule() {
 
   // ── Quick Open / Find in Files ───────────────────────────────────────────────
   const [palette, setPalette] = useState<PaletteMode | null>(null);
+
+  // ── WHAT THE AGENT CHANGED ────────────────────────────────────────────────
+  //
+  // The only question anyone asks after an agent edits four files, and until now it could only be
+  // answered by leaving the app and running git in a terminal.
+  //
+  // Refreshed on opening a folder, on Ctrl+S, and on demand — NOT on a timer. A poll would run git
+  // every few seconds forever on a folder nobody is looking at, and the answer only changes when
+  // something writes a file.
+  const [git, setGit] = useState<GitStatus | null>(null);
+  const [showDiff, setShowDiff] = useState(false);
+  const refreshGit = useCallback(() => {
+    if (!projectPath) { setGit(null); return; }
+    invoke<string>('git_status', { path: projectPath })
+      .then((raw) => setGit(JSON.parse(raw) as GitStatus))
+      // Not a repository and no git are both ANSWERS, handled inside the command. A throw here is
+      // something else, and the tree simply shows no marks rather than an error nobody can act on.
+      .catch(() => setGit(null));
+  }, [projectPath]);
+  useEffect(() => { refreshGit(); }, [refreshGit]);
+  const gitMap = useMemo<Map<string, ChangeKind>>(() => statusMap(git), [git]);
+  // Switching file closes the diff: it belongs to the file it was opened for, and leaving it up
+  // would show one file's changes under another file's name.
+  useEffect(() => { setShowDiff(false); }, [openFile]);
   const [gotoLine, setGotoLine] = useState<number | undefined>(undefined);
 
   useEffect(() => {
@@ -180,6 +231,9 @@ export default function CoderModule() {
     return () => window.removeEventListener('keydown', handler);
   }, [openFile, closeTab]);
   const [savedFlash, setSavedFlash] = useState(false);
+  // A file the editor just wrote is a file whose status just changed. Declared here rather than
+  // with the rest of the git state because savedFlash is defined at this point and not before.
+  useEffect(() => { if (savedFlash) refreshGit(); }, [savedFlash, refreshGit]);
 
   function handleFileChange(content: string) {
     setFileContent(content);
@@ -327,16 +381,40 @@ export default function CoderModule() {
       {/* Main layout */}
       <div className="flex flex-1 overflow-hidden">
 
+        {/* ── THE ACTIVITY BAR ──────────────────────────────────────────────
+            The strip down the left edge that every code editor has. It is most of what makes a
+            screen read as an editor rather than as a file browser with a text box, and it gives the
+            three panels one fixed place to be reached from. Every icon is drawn, titled and
+            labelled — a glyph character in a font we do not control is not an icon. */}
+        <div className="w-11 shrink-0 flex flex-col items-center gap-1 py-2 border-r border-nv-border bg-nv-surface">
+          <ActivityButton label="Files" active={treeOpen} onClick={() => setTreeOpen((v) => !v)}>
+            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+          </ActivityButton>
+          <ActivityButton label="Find a file  (Ctrl+P)" onClick={() => setPalette('files')}>
+            <circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" />
+          </ActivityButton>
+          <ActivityButton label="Search in files  (Ctrl+Shift+F)" onClick={() => setPalette('search')}>
+            <path d="M4 6h16M4 12h10M4 18h7" />
+          </ActivityButton>
+          <ActivityButton label="Terminal  (Ctrl+`)" active={terminalOpen} onClick={() => setTerminalOpen((v) => !v)}>
+            <rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 9l3 3-3 3M13 15h4" />
+          </ActivityButton>
+          <ActivityButton label="Ask about this code" active={chatOpen} onClick={() => setChatOpen((v) => !v)}>
+            <path d="M21 12a8 8 0 0 1-8 8H7l-4 3V12a8 8 0 0 1 8-8h2a8 8 0 0 1 8 8z" />
+          </ActivityButton>
+        </div>
+
         {/* File tree */}
         <div
           className="shrink-0 border-r border-nv-border overflow-hidden flex flex-col bg-nv-surface"
-          style={{ width: fileTree.size }}
+          style={{ width: treeOpen ? fileTree.size : 0, borderRightWidth: treeOpen ? undefined : 0 }}
         >
           <FileTree
             projectPath={projectPath}
             openFile={openFile}
             onFileOpen={setOpenFile}
             onOpenFolder={setProjectPath}
+            gitMap={gitMap}
           />
         </div>
 
@@ -369,17 +447,41 @@ export default function CoderModule() {
                 );
               })}
               {savedFlash && <span className="self-center ml-2 text-[10px] text-emerald-500 shrink-0">✓ saved</span>}
+              <div className="flex-1" />
+              {/* Only offered when there is something to see. A "Changes" button on a file with no
+                  changes is a button that lies about there being changes. */}
+              {openFile && gitMap.has(normPath(openFile)) && (
+                <button
+                  onClick={() => setShowDiff((v) => !v)}
+                  title={showDiff ? 'Back to the file' : 'See what changed in this file'}
+                  className={`self-center mr-2 shrink-0 text-[10px] px-2 py-0.5 rounded-full transition-fast
+                    ${showDiff ? 'bg-accent/15 text-accent' : 'text-nv-faint hover:text-accent hover:bg-nv-surface2'}`}
+                >{showDiff ? 'File' : 'Changes'}</button>
+              )}
+              {git?.ok && changeCount(git) > 0 && (
+                <span className="self-center mr-2 text-[9.5px] text-nv-faint shrink-0"
+                      title={`${changeCount(git)} changed file${changeCount(git) === 1 ? '' : 's'} on ${git.branch}`}>
+                  {git.branch} · {changeCount(git)}
+                </span>
+              )}
             </div>
           )}
-          {/* Editor */}
+          {/* Editor, or the diff for the same file. ONE pane, not two — Coder's editor already
+              shares this window with a tree, a chat and a terminal, and side-by-side would halve
+              what is left of it. The question being answered is "what changed", not "let me merge
+              this by hand", and the file itself is one click away for that. */}
           <div className="flex-1 overflow-hidden min-h-0">
-            <Editor
-              path={openFile}
-              content={fileContent}
-              onChange={handleFileChange}
-              isDark={true}
-              gotoLine={gotoLine}
-            />
+            {showDiff && openFile && projectPath ? (
+              <DiffView projectPath={projectPath} file={openFile} onClose={() => setShowDiff(false)} />
+            ) : (
+              <Editor
+                path={openFile}
+                content={fileContent}
+                onChange={handleFileChange}
+                isDark={true}
+                gotoLine={gotoLine}
+              />
+            )}
           </div>
 
           {/* Drag handle: Editor ↔ Terminal */}
@@ -511,6 +613,23 @@ export default function CoderModule() {
           onOpen={(p, line) => { setOpenFile(p); setGotoLine(line); }}
         />
       )}
+      {/* ── THE STATUS BAR ────────────────────────────────────────────────
+          One line saying where you are: the folder, the open file, and whether the terminal and the
+          assistant are up. It sits at the bottom because it is glanced at, never read. */}
+      <div className="h-6 shrink-0 flex items-center gap-3 px-3 border-t border-nv-border bg-nv-surface
+                      text-[10px] font-mono text-nv-faint select-none">
+        <span className="truncate max-w-[220px]" title={projectPath || 'No folder open'}>
+          {projectPath ? projectPath.split(/[\\/]/).filter(Boolean).slice(-1)[0] : 'No folder open'}
+        </span>
+        {openFile && (
+          <span className="truncate max-w-[260px] text-nv-muted" title={openFile}>
+            {openFile.split(/[\\/]/).filter(Boolean).slice(-1)[0]}
+          </span>
+        )}
+        <span className="flex-1" />
+        <span>{terminalOpen ? 'Terminal' : 'Terminal off'}</span>
+        <span>{chatOpen ? 'Assistant' : 'Assistant off'}</span>
+      </div>
     </div>
   );
 }

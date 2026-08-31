@@ -321,6 +321,569 @@ use serde::Serialize;
 #[derive(Serialize)]
 struct FileEntry { name: String, path: String, is_dir: bool }
 
+// ─── What the agent changed to your project ──────────────────────────────────
+//
+// THE QUESTION CODER EXISTS TO ANSWER. An agent has just edited four files. The only thing anyone
+// wants to know next is *what did it change* — and until now that was unanswerable inside the app.
+// You had to leave, open a terminal, and run git yourself, which is exactly the thing this product
+// is for not making people do.
+//
+// WHY SHELLING OUT TO GIT AND NOT A LIBRARY. A git library would have to be added, kept current,
+// and would still disagree with what the user sees when they run `git status` themselves — which is
+// the answer they will check ours against. The real git is already on the machine of anyone using
+// Coder, and if it is not, saying so plainly is better than a second opinion.
+
+/// The repository root for a path, or None when it is not inside one.
+fn git_root(path: &str) -> Option<String> {
+    let out = git_raw(path, &["rev-parse", "--show-toplevel"])?;
+    let root = out.trim();
+    if root.is_empty() { None } else { Some(root.to_string()) }
+}
+
+/// Run git in a directory and hand back stdout, or None if git could not run at all.
+fn git_raw(dir: &str, args: &[&str]) -> Option<String> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("-C").arg(dir).args(args);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);   // CREATE_NO_WINDOW — no console flash per keystroke
+    }
+    let out = cmd.output().ok()?;
+    if !out.status.success() { return None; }
+    Some(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// Which files have changed, and how.
+///
+/// `--porcelain=v1 -z` on purpose. Without `-z` git QUOTES any path containing a space, a quote or
+/// a non-ASCII character — so "src/my notes.md" comes back wrapped in quotes and a naive parser
+/// either keeps the quotes or drops the file. With `-z` the records are NUL-separated and the paths
+/// are raw. This project has spaces in its own path, so the quoting case is not hypothetical.
+///
+/// Returns paths as ABSOLUTE, because that is what the file tree holds. Git speaks in
+/// repo-relative forward slashes; the tree speaks in absolute Windows paths. Converting here means
+/// exactly one place has to know that, instead of every caller getting it subtly wrong.
+#[tauri::command]
+async fn git_status(path: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        // Git missing entirely is a different answer from "not a repository", and the user can act
+        // on one and not the other, so they are never collapsed together.
+        if git_raw(&path, &["--version"]).is_none() {
+            return Ok(r#"{"ok":false,"reason":"no_git"}"#.to_string());
+        }
+        let Some(root) = git_root(&path) else {
+            return Ok(r#"{"ok":false,"reason":"not_a_repo"}"#.to_string());
+        };
+        let branch = git_raw(&path, &["rev-parse", "--abbrev-ref", "HEAD"])
+            .map(|b| b.trim().to_string())
+            .unwrap_or_default();
+
+        let raw = git_raw(&path, &["status", "--porcelain=v1", "-z"]).unwrap_or_default();
+        let root_fwd = root.replace('\\', "/");
+        let mut files: Vec<serde_json::Value> = Vec::new();
+
+        // Records are NUL-separated: "XY <path>". A rename is followed by a SECOND record holding
+        // the old path, which must be consumed or it is read as a file of its own.
+        let mut it = raw.split('\0').filter(|s| !s.is_empty());
+        while let Some(rec) = it.next() {
+            if rec.len() < 4 { continue; }
+            let bytes = rec.as_bytes();
+            let index = bytes[0] as char;
+            let worktree = bytes[1] as char;
+            let rel = &rec[3..];
+            // R and C carry the previous name in the next record. Take it so the loop does not
+            // report the old path as a separate changed file.
+            let from = if index == 'R' || index == 'C' { it.next().map(str::to_string) } else { None };
+
+            let abs = format!("{}/{}", root_fwd.trim_end_matches('/'), rel);
+            files.push(serde_json::json!({
+                "path": abs,
+                "rel": rel,
+                "index": index.to_string(),
+                "worktree": worktree.to_string(),
+                "from": from,
+            }));
+        }
+
+        Ok(serde_json::json!({
+            "ok": true, "root": root_fwd, "branch": branch, "files": files,
+        }).to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The unified diff for one file — what actually changed in it.
+///
+/// Three cases, and conflating them is how a diff view lies: a tracked file with edits has a normal
+/// diff; a file that is only STAGED has an empty `git diff` and needs `--cached`; and an untracked
+/// file has no diff at all because git has never seen it. The last one returns the file's own
+/// content marked as new, because "no changes" would be the opposite of the truth for a file the
+/// agent just created.
+#[tauri::command]
+async fn git_diff_file(path: String, file: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let Some(root) = git_root(&path) else {
+            return Ok(r#"{"ok":false,"reason":"not_a_repo"}"#.to_string());
+        };
+        // Git wants a path it recognises. Absolute works, but forward slashes are what it emits and
+        // what it matches most reliably across platforms.
+        let f = file.replace('\\', "/");
+
+        for args in [
+            vec!["diff", "--no-color", "--", f.as_str()],
+            vec!["diff", "--no-color", "--cached", "--", f.as_str()],
+        ] {
+            if let Some(d) = git_raw(&root, &args) {
+                if !d.trim().is_empty() {
+                    return Ok(serde_json::json!({ "ok": true, "kind": "diff", "text": d }).to_string());
+                }
+            }
+        }
+
+        // Nothing tracked. If git does not know the file at all it is new, and the honest thing to
+        // show is its contents rather than an empty diff.
+        let known = git_raw(&root, &["ls-files", "--error-unmatch", "--", f.as_str()]).is_some();
+        if !known {
+            let body = std::fs::read_to_string(&file).unwrap_or_default();
+            // A newly generated asset can be enormous; the point is to see what it is, not to load
+            // a megabyte into a diff pane.
+            let clipped = if body.len() > 200_000 { format!("{}\n…[truncated]", &body[..200_000]) } else { body };
+            return Ok(serde_json::json!({ "ok": true, "kind": "new", "text": clipped }).to_string());
+        }
+        Ok(r#"{"ok":true,"kind":"unchanged","text":""}"#.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ─── The Shelf: running a business tool without a terminal ───────────────────
+//
+// See ADRIS-OS/plan.md §12e for where these rules come from. The short version, which does not
+// change because the runtime did: never build from source, never run an install script, only ever
+// run what the project itself published, and stay inside a catalogue until there is a sandbox story.
+//
+// Docker is both the runtime and the sandbox here. Nothing is installed into the user's Windows,
+// the container gets no host folders, and removal is one command.
+
+fn docker(args: &[&str], timeout_secs: u64) -> Option<String> {
+    let mut cmd = std::process::Command::new("docker");
+    cmd.args(args);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);   // CREATE_NO_WINDOW — no console flash
+    }
+    // A hung daemon must not hang the panel. `docker info` against a stopped Desktop can sit for a
+    // long time, and this screen polls it.
+    let child = cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().ok()?;
+    let out = wait_with_timeout(child, timeout_secs)?;
+    if !out.status.success() { return None; }
+    Some(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// std has no timeout on `wait`, and this is the one place a stuck child would freeze a panel.
+fn wait_with_timeout(mut child: std::process::Child, secs: u64) -> Option<std::process::Output> {
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) => {
+                if start.elapsed().as_secs() >= secs {
+                    let _ = child.kill();
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(120));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// Is Docker here, and is it actually up?
+///
+/// TWO DIFFERENT ANSWERS ON PURPOSE. "Not installed" and "installed but not running" need different
+/// things from the user, and collapsing them into "unavailable" leaves somebody who already has
+/// Docker Desktop with no idea they simply need to start it. The machine this was written on is in
+/// exactly that state, which is how the distinction got noticed rather than assumed.
+#[tauri::command]
+async fn docker_state() -> Result<String, String> {
+    tokio::task::spawn_blocking(|| {
+        let version = docker(&["--version"], 10);
+        let installed = version.is_some();
+        // `docker info` only succeeds when the daemon answers, which is the thing worth knowing.
+        let running = installed && docker(&["info", "--format", "{{.ServerVersion}}"], 12).is_some();
+        Ok(serde_json::json!({
+            "installed": installed,
+            "running": running,
+            "version": version.map(|v| v.trim().to_string()).unwrap_or_default(),
+        }).to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Which of our tools already have a container, and what state each is in.
+///
+/// Reports what DOCKER says, not what we last remembered. A container the user stopped from Docker
+/// Desktop, or one that died overnight, has to read as stopped here — a shelf that insists a tool is
+/// running because it started it once is worse than one that says nothing.
+#[tauri::command]
+async fn tool_list() -> Result<String, String> {
+    tokio::task::spawn_blocking(|| {
+        let raw = docker(&[
+            "ps", "-a",
+            "--filter", "name=adris-tool-",
+            "--format", "{{.Names}}\t{{.State}}\t{{.Ports}}",
+        ], 15).unwrap_or_default();
+
+        let mut out: Vec<serde_json::Value> = Vec::new();
+        for line in raw.lines().filter(|l| !l.trim().is_empty()) {
+            let mut parts = line.split('\t');
+            let name = parts.next().unwrap_or("").trim().to_string();
+            let state = parts.next().unwrap_or("").trim().to_string();
+            let ports = parts.next().unwrap_or("").trim().to_string();
+            let id = name.strip_prefix("adris-tool-").unwrap_or(&name).to_string();
+            // "0.0.0.0:21042->3000/tcp" — the host port is the number after the last colon before
+            // the arrow. Parsed rather than remembered so a container started outside adris is
+            // still understood.
+            let host_port = ports.split("->").next()
+                .and_then(|p| p.rsplit(':').next())
+                .and_then(|p| p.trim().parse::<u16>().ok());
+            out.push(serde_json::json!({
+                "id": id, "state": state, "hostPort": host_port,
+            }));
+        }
+        Ok(serde_json::json!({ "ok": true, "containers": out }).to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Pull a catalogue image and start it.
+///
+/// `image` is checked against the catalogue ON THE FRONT END before this is called, and the caller
+/// is the only path — but the container name is built HERE from the id rather than accepted from
+/// the caller, so nothing outside `adris-tool-*` can be created or destroyed through this command
+/// however it is called.
+#[tauri::command]
+async fn tool_install(
+    app: tauri::AppHandle,
+    id: String,
+    image: String,
+    port: u16,
+    host_port: u16,
+    // `env` is only ever the variables the tool ITSELF declared, built on the front end from the
+    // catalogue. Nothing from the user's own environment is forwarded, and nothing a caller
+    // invented — an unknown key here would be a way to reconfigure a container from outside its own
+    // definition. The names are re-checked below regardless, because a guard at the point of the
+    // act is worth more than one at the point of intent.
+    env: Option<Vec<(String, String)>>,
+    // Where this tool keeps its data INSIDE the container. Tools do not agree, and the wrong path
+    // produces a crash loop on "permission denied" rather than an honest failure.
+    data_path: Option<String>,
+) -> Result<String, String> {
+    // A tool id has to be a plain slug: it becomes a container name, and a name is a place where a
+    // stray flag or path separator would change what the command does.
+    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') || id.is_empty() {
+        return Err("that tool id is not usable".into());
+    }
+    let name = format!("adris-tool-{id}");
+
+    tokio::task::spawn_blocking(move || {
+        // Defined inside the blocking task, which owns its captures — a closure declared outside it
+        // would be borrowing `app` and `id` across a 'static boundary.
+        let say = |step: &str, phase: &str| {
+            let _ = app.emit("tool_progress", serde_json::json!({
+                "id": &id, "step": step, "phase": phase,
+            }));
+        };
+        say("Checking Docker…", "pulling");
+        if docker(&["info", "--format", "{{.ServerVersion}}"], 15).is_none() {
+            return Err("Docker is not running. Start Docker Desktop and try again.".to_string());
+        }
+
+        // Already there — start it rather than pulling a second copy.
+        let existing = docker(&["ps", "-a", "--filter", &format!("name=^{name}$"), "--format", "{{.Names}}"], 12)
+            .unwrap_or_default();
+        if existing.trim() == name {
+            say("Starting it up…", "starting");
+            docker(&["start", &name], 60);
+            return Ok(serde_json::json!({ "ok": true, "name": name, "reused": true }).to_string());
+        }
+
+        // The download. Minutes on a first pull, and silent for most of it — the panel shows a
+        // ticking line for the same reason the OmniRoute installer does.
+        say("Downloading — this can take a few minutes the first time…", "pulling");
+        if docker(&["pull", &image], 1800).is_none() {
+            return Err(format!("Could not download {image}. Check the internet connection and that Docker is running."));
+        }
+
+        say("Starting it up…", "starting");
+        let publish = format!("{host_port}:{port}");
+        // NO HOST FOLDERS ARE MOUNTED. The tool gets its own named volume and nothing else — it
+        // cannot see the user's documents, and removing the tool takes its data with it rather
+        // than leaving files behind on a machine nobody is auditing.
+        let inside = data_path.unwrap_or_else(|| "/data".into());
+        // A mount path is a place a stray character changes what is mounted where.
+        let inside = if inside.starts_with('/') && !inside.contains("..") { inside } else { "/data".into() };
+        let volume = format!("adris-tool-{id}-data:{inside}");
+
+        // The model the user chose, handed to the tool that asked for it. See aiWiringFor in
+        // toolShelf.ts for which sources are passed on and which are REFUSED — the adris.tech
+        // session token and the Claude Code subscription are both refused there, before this is
+        // ever called, because neither is ours to hand to somebody else's container.
+        let mut args: Vec<String> = vec![
+            "run".into(), "-d".into(),
+            "--name".into(), name.clone(),
+            "-p".into(), publish.clone(),
+            "-v".into(), volume.clone(),
+            "--restart".into(), "unless-stopped".into(),
+        ];
+        // host.docker.internal is not resolvable by default on Linux; adding it costs nothing on
+        // Windows and is what lets a container reach a local model running on the machine.
+        args.push("--add-host".into());
+        args.push("host.docker.internal:host-gateway".into());
+        for (k, v) in env.unwrap_or_default() {
+            // A variable name is a place a stray character changes what the command means.
+            if k.is_empty() || !k.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_') { continue; }
+            args.push("-e".into());
+            args.push(format!("{k}={v}"));
+        }
+        args.push(image.clone());
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let started = docker(&arg_refs, 120);
+        if started.is_none() {
+            return Err("Docker downloaded it but could not start it. It may need a port that is already in use.".to_string());
+        }
+        Ok(serde_json::json!({ "ok": true, "name": name, "reused": false }).to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Start a tool together with the database it needs.
+///
+/// T1c. `docker run` starts ONE container, and every ERP and CRM a business actually wants needs a
+/// database beside it — so the single-container installer was never going to reach them. This is
+/// that ceiling lifted.
+///
+/// ── THE COMPOSE FILE IS GENERATED, NEVER ACCEPTED ───────────────────────────
+///
+/// `yaml` arrives from `composeFileFor` in toolShelf.ts, which builds it from the catalogue out of
+/// a fixed vocabulary. That matters more here than anywhere else in the Shelf: a compose file names
+/// several images, mounts, ports and networks at once, so accepting one from a caller would be
+/// handing over far more than `docker run` ever could. There is no path by which a model or an
+/// agent can put a compose file in front of this.
+///
+/// It is still written to a directory named from the tool ID, and the ID is still checked, because
+/// a guard at the point of the act is worth more than one at the point of intent.
+#[tauri::command]
+async fn tool_compose_up(app: tauri::AppHandle, id: String, yaml: String) -> Result<String, String> {
+    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') || id.is_empty() {
+        return Err("that tool id is not usable".into());
+    }
+    // A compose file that names no services is a compose file that would silently do nothing.
+    if !yaml.contains("services:") || yaml.len() > 20_000 {
+        return Err("that is not a compose file adris generated".into());
+    }
+
+    tokio::task::spawn_blocking(move || {
+        let say = |step: &str, phase: &str| {
+            let _ = app.emit("tool_progress", serde_json::json!({
+                "id": &id, "step": step, "phase": phase,
+            }));
+        };
+
+        say("Checking Docker…", "pulling");
+        if docker(&["info", "--format", "{{.ServerVersion}}"], 15).is_none() {
+            return Err("Docker is not running. Start Docker Desktop and try again.".to_string());
+        }
+        // Compose ships with Docker Desktop, but an older or CLI-only install may not have it, and
+        // "compose is missing" needs a different sentence from "Docker is missing".
+        if docker(&["compose", "version"], 15).is_none() {
+            return Err("This needs Docker Compose, which usually comes with Docker Desktop. Updating Docker Desktop should fix it.".to_string());
+        }
+
+        let dir = agent_cli_dir(&app).parent().map(|p| p.join("tools")).unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(&id);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+        let file = dir.join("docker-compose.yml");
+        std::fs::write(&file, &yaml).map_err(|e| format!("could not write the compose file: {e}"))?;
+
+        say("Downloading — this one has a database with it, so give it a few minutes…", "pulling");
+        let file_s = file.to_string_lossy().to_string();
+        // `-p` names the project so every container, network and volume it makes is clearly ours and
+        // cannot collide with something the user runs themselves.
+        let project = format!("adris-{id}");
+        if docker(&["compose", "-f", &file_s, "-p", &project, "pull"], 2400).is_none() {
+            return Err("Could not download everything it needs. Check the internet connection.".to_string());
+        }
+
+        say("Starting it up…", "starting");
+        if docker(&["compose", "-f", &file_s, "-p", &project, "up", "-d"], 300).is_none() {
+            return Err("Docker downloaded it but could not start it. A port it wants may already be in use.".to_string());
+        }
+        Ok(serde_json::json!({ "ok": true, "project": project }).to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Stop a compose tool, or remove it and everything it brought with it.
+///
+/// `purge` takes the VOLUMES too, which is the difference between "stopped" and "gone". A removal
+/// that quietly left the customer database on disk would not mean what the word means to the user.
+#[tauri::command]
+async fn tool_compose_down(app: tauri::AppHandle, id: String, purge: bool) -> Result<(), String> {
+    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') || id.is_empty() {
+        return Err("that tool id is not usable".into());
+    }
+    tokio::task::spawn_blocking(move || {
+        let dir = agent_cli_dir(&app).parent().map(|p| p.join("tools")).unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(&id);
+        let file = dir.join("docker-compose.yml").to_string_lossy().to_string();
+        let project = format!("adris-{id}");
+        if purge {
+            docker(&["compose", "-f", &file, "-p", &project, "down", "-v"], 180);
+            let _ = std::fs::remove_dir_all(&dir);
+        } else {
+            docker(&["compose", "-f", &file, "-p", &project, "stop"], 180);
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Is the tool actually answering on its port yet?
+///
+/// THE POINT OF THIS COMMAND. A container that has been created is NOT a working app — §12a records
+/// the exact failure of opening a window at a port nothing is listening on, which looks broken in a
+/// way the user cannot diagnose. `ready` is only ever true because something answered.
+///
+/// A 404 or a redirect counts — the root path being a page is not the question. A **5xx does not**.
+///
+/// THE CORRECTION THAT ONLY A DATABASE-BACKED APP COULD HAVE FORCED. "Any response counts" was
+/// right for n8n, which serves 404 at `/` while working perfectly. It was wrong for Odoo: with its
+/// database still uninitialised it answered **HTTP 500** on every request, and the old rule would
+/// have marked it "Running" and framed a broken page.
+///
+/// So the rule is now the honest one: a 5xx means the server is up and **the application is not
+/// working**, which for a first run usually means it is still building its database. Waiting is
+/// right; declaring it ready is not.
+#[tauri::command]
+async fn tool_ready(host_port: u16) -> Result<bool, String> {
+    let url = format!("http://127.0.0.1:{host_port}/");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(4))
+        .danger_accept_invalid_certs(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+    match client.get(&url).send().await {
+        Ok(r) => Ok(!r.status().is_server_error()),
+        Err(_) => Ok(false),
+    }
+}
+
+/// Will this tool let us put it in a frame?
+///
+/// ── THE BUG THIS EXISTS FOR ─────────────────────────────────────────────────
+///
+/// A user opened n8n from the Shelf and got **"127.0.0.1 refused to connect."** Everything looked
+/// fine from the outside: the container was up, the port was right, and `curl` returned HTTP 200.
+/// The port had nothing to do with it.
+///
+/// That sentence is Chrome's wording for a page that REFUSES TO BE FRAMED, and n8n sends
+/// `X-Frame-Options: SAMEORIGIN` — as do plenty of serious tools, on purpose, because being
+/// embeddable is a clickjacking risk. Reading it as a network error sent an earlier fix chasing
+/// port arithmetic that was already correct.
+///
+/// So we ask the tool first, and respect the answer: anything that says no is opened as a real page
+/// instead of embedded. Stripping the header through a proxy would "work" and would be us
+/// overriding a security decision the tool's authors made deliberately.
+#[tauri::command]
+async fn tool_frameable(host_port: u16) -> Result<bool, String> {
+    let url = format!("http://127.0.0.1:{host_port}/");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(4))
+        .danger_accept_invalid_certs(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+    match client.get(&url).send().await {
+        Ok(r) => {
+            let h = r.headers();
+            // X-Frame-Options: any value other than a permissive one blocks us, since we are a
+            // different origin from the tool.
+            if let Some(v) = h.get("x-frame-options").and_then(|v| v.to_str().ok()) {
+                let v = v.trim().to_ascii_lowercase();
+                if v.contains("deny") || v.contains("sameorigin") { return Ok(false); }
+            }
+            // CSP is the modern spelling of the same rule and takes precedence where both appear.
+            if let Some(v) = h.get("content-security-policy").and_then(|v| v.to_str().ok()) {
+                let v = v.to_ascii_lowercase();
+                if let Some(i) = v.find("frame-ancestors") {
+                    let rule = &v[i..];
+                    let rule = rule.split(';').next().unwrap_or("");
+                    if !rule.contains('*') { return Ok(false); }
+                }
+            }
+            Ok(true)
+        }
+        // Unreachable is not the same as unframeable — say yes and let the readiness poll decide.
+        Err(_) => Ok(true),
+    }
+}
+
+/// The last thing a tool said before it fell over.
+///
+/// Exists because "Keeps stopping" is not actionable on its own. Vikunja crash-looped on
+/// `service.publicurl is required when cors.enable is true` — a single line that says exactly what
+/// is wrong, and which the user would otherwise only see by learning `docker logs`.
+#[tauri::command]
+async fn tool_logs(id: String) -> Result<String, String> {
+    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') || id.is_empty() {
+        return Err("that tool id is not usable".into());
+    }
+    let name = format!("adris-tool-{id}");
+    tokio::task::spawn_blocking(move || {
+        // The tail only. A crash loop writes the same lines over and over, and the newest few are
+        // the whole story.
+        Ok(docker(&["logs", "--tail", "40", &name], 20).unwrap_or_default())
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// Stop a tool without removing it — its data and its settings stay.
+#[tauri::command]
+async fn tool_stop(id: String) -> Result<(), String> {
+    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') || id.is_empty() {
+        return Err("that tool id is not usable".into());
+    }
+    let name = format!("adris-tool-{id}");
+    tokio::task::spawn_blocking(move || { docker(&["stop", &name], 60); Ok(()) })
+        .await.map_err(|e| e.to_string())?
+}
+
+/// Remove a tool completely, INCLUDING its data.
+///
+/// The volume goes too, and the panel says so before this is called. Leaving a named volume behind
+/// would mean "removed" quietly kept the user's customer records on disk, which is the opposite of
+/// what the word means to them.
+#[tauri::command]
+async fn tool_remove(id: String) -> Result<(), String> {
+    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') || id.is_empty() {
+        return Err("that tool id is not usable".into());
+    }
+    let name = format!("adris-tool-{id}");
+    let volume = format!("adris-tool-{id}-data");
+    tokio::task::spawn_blocking(move || {
+        docker(&["rm", "-f", &name], 60);
+        docker(&["volume", "rm", "-f", &volume], 30);
+        Ok(())
+    }).await.map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn list_dir(path: String) -> Result<Vec<FileEntry>, String> {
     use std::fs;
@@ -2286,8 +2849,39 @@ async fn track_token_usage(
     user_id: String,
     module: String,
     tokens_used: i64,
+    // Added for pay-per-use. Optional so every existing caller still compiles, but a row without
+    // them cannot be billed — see lib/usageMeter.ts.
+    source: Option<String>,
+    model: Option<String>,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
 ) -> Result<(), String> {
     if session_token.is_empty() || user_id.is_empty() { return Ok(()); }
+
+    // WHOSE KEY PAID. Only "adris" is billable; own_key, local and bridge are the user's own
+    // capacity and cost us nothing. Every row written before this existed says nothing, and an
+    // unknown row is treated as NOT billable rather than guessed at.
+    let source = source.unwrap_or_else(|| "unknown".into());
+    // THE MODEL WAS HARDCODED HERE. Every row claimed `gemini-3-flash-preview` whatever actually
+    // ran, which made per-model pricing impossible and the data simply untrue.
+    let model = model.unwrap_or_else(|| "unknown".into());
+
+    let mut body = serde_json::json!({
+        "user_id":         user_id,
+        "task_type":       module,
+        "tokens_consumed": tokens_used,
+        "model_used":      model,
+        "model_tier":      "flash-3-direct",
+        "credits_consumed": 0,
+        "source":          source,
+    });
+    // Output tokens cost several times input at every provider, so the split is what makes a row
+    // priceable rather than merely countable. Only sent when actually known.
+    if let (Some(i), Some(o)) = (input_tokens, output_tokens) {
+        body["input_tokens"] = serde_json::json!(i);
+        body["output_tokens"] = serde_json::json!(o);
+    }
+
     let client = reqwest::Client::new();
     let _ = client
         .post(format!("{}/rest/v1/token_usage", supabase_url))
@@ -2295,14 +2889,7 @@ async fn track_token_usage(
         .header("Authorization", format!("Bearer {}", session_token))
         .header("Content-Type", "application/json")
         .header("Prefer", "return=minimal")
-        .json(&serde_json::json!({
-            "user_id":         user_id,
-            "task_type":       module,
-            "tokens_consumed": tokens_used,
-            "model_used":      "gemini-3-flash-preview",
-            "model_tier":      "flash-3-direct",
-            "credits_consumed": 0,
-        }))
+        .json(&body)
         .send()
         .await;
     Ok(())
@@ -3545,7 +4132,7 @@ $p = [System.Windows.Forms.Cursor]::Position
 // node_modules/@anthropic-ai/claude-code/bin/claude.exe, so that is what gets spawned: directly,
 // with the prompt as one argument, at any length.
 #[tauri::command]
-async fn agent_cli_detect() -> Result<String, String> {
+async fn agent_cli_detect(app: tauri::AppHandle) -> Result<String, String> {
     fn first_existing(paths: Vec<std::path::PathBuf>) -> Option<String> {
         paths.into_iter().find(|p| p.exists()).map(|p| p.to_string_lossy().to_string())
     }
@@ -3555,6 +4142,11 @@ async fn agent_cli_detect() -> Result<String, String> {
     let exe = if cfg!(windows) { ".exe" } else { "" };
 
     let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    // OUR OWN FOLDER FIRST. A copy this app installed for the user is the one it should use — it
+    // provisioned the Node it runs under, so it is the copy known to work. Without this root the
+    // installer would put a CLI on disk that detection could never see, and the menu would go on
+    // saying "not installed" immediately after installing it.
+    roots.push(agent_cli_dir(&app).join("node_modules"));
     for base in [appdata.as_str(), localapp.as_str(), home.as_str()] {
         if base.is_empty() { continue; }
         roots.push(std::path::Path::new(base).join("npm").join("node_modules"));
@@ -3567,11 +4159,29 @@ async fn agent_cli_detect() -> Result<String, String> {
             .map(|r| r.join("@anthropic-ai").join("claude-code").join("bin").join(format!("claude{exe}")))
             .collect(),
     );
+    // ── CODEX SHIPS NO NATIVE BINARY IN ITS OWN bin ──────────────────────────
+    //
+    // MEASURED after actually installing it (@openai/codex 0.150.1): the package's own bin holds a
+    // single codex.js, and the real native binary arrives through an OPTIONAL PLATFORM DEPENDENCY
+    // at @openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe.
+    //
+    // The previous list looked only under the package's own bin, so a correctly installed Codex was
+    // INVISIBLE — the menu would have gone on saying "not installed" immediately after installing
+    // it, with nothing to say why. It is the exact class of fault that only appears when you install
+    // the thing rather than read about it.
+    //
+    // The native binary is preferred, and the .js is a last resort: a .js cannot be spawned directly
+    // on Windows, because CreateProcess does not consult PATHEXT — the same reason claude.exe is
+    // resolved rather than the `claude` shim.
+    let arch_dir = if cfg!(target_arch = "aarch64") { "aarch64-pc-windows-msvc" } else { "x86_64-pc-windows-msvc" };
+    let plat_pkg = if cfg!(target_arch = "aarch64") { "codex-win32-arm64" } else { "codex-win32-x64" };
     let codex = first_existing(
         roots.iter()
             .flat_map(|r| [
+                r.join("@openai").join(plat_pkg).join("vendor").join(arch_dir).join("bin").join(format!("codex{exe}")),
                 r.join("@openai").join("codex").join("bin").join(format!("codex{exe}")),
                 r.join("codex").join("bin").join(format!("codex{exe}")),
+                r.join("@openai").join("codex").join("bin").join("codex.js"),
             ])
             .collect::<Vec<_>>(),
     );
@@ -3581,6 +4191,561 @@ async fn agent_cli_detect() -> Result<String, String> {
         "{{\"claude_code\":\"{}\",\"codex\":\"{}\"}}",
         esc(&claude), esc(&codex)
     ))
+}
+
+
+// ─── Setting the bridge up FOR the user ──────────────────────────────────────
+//
+// THE PROBLEM THIS SOLVES. The bridge is the best thing in the app for anyone who already pays for
+// Claude Code or Codex — their subscription is larger than anything we could resell them. And until
+// now the instruction was "npm install -g @anthropic-ai/claude-code", which for the people this
+// product is actually for is three impossible steps: know what a terminal is, have Node, and know
+// what to do when npm prints a permissions error.
+//
+// So the app does it. Same shape as the OmniRoute installer, and for the same reason: press one
+// button, watch it, done. Nothing lands system-wide and the user never opens a terminal.
+//
+// WHY NOT `npm install -g`. A global install needs a writable npm prefix and often Administrator,
+// and on a locked-down work machine it fails in a way nobody here can read. Installing into our own
+// app-data folder always works, is removable by deleting one directory, and cannot disturb whatever
+// Node the user's employer put on the machine. `agent_cli_detect` looks here too.
+
+fn agent_cli_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
+    app.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).join("agent-cli")
+}
+
+/// npm package name and the folder + binary it unpacks to, per bridge.
+fn agent_cli_package(which: &str) -> Result<(&'static str, &'static str), String> {
+    match which {
+        "claude_code" => Ok(("@anthropic-ai/claude-code", "claude")),
+        "codex" => Ok(("@openai/codex", "codex")),
+        _ => Err(format!("unknown bridge: {which}")),
+    }
+}
+
+/// Where the executable ends up inside our own folder once npm has run.
+fn agent_cli_installed_path(app: &tauri::AppHandle, which: &str) -> Option<std::path::PathBuf> {
+    let (module, bin) = agent_cli_package(which).ok()?;
+    let exe_suffix = if cfg!(windows) { ".exe" } else { "" };
+    let root = agent_cli_dir(app).join("node_modules");
+
+    // Codex's real binary comes through an optional platform package, not its own bin — measured on
+    // 0.150.1. Checked first, because the .js fallback below cannot be spawned directly on Windows.
+    if which == "codex" {
+        let arch_dir = if cfg!(target_arch = "aarch64") { "aarch64-pc-windows-msvc" } else { "x86_64-pc-windows-msvc" };
+        let plat_pkg = if cfg!(target_arch = "aarch64") { "codex-win32-arm64" } else { "codex-win32-x64" };
+        let native = root.join("@openai").join(plat_pkg).join("vendor").join(arch_dir).join("bin").join(format!("codex{exe_suffix}"));
+        if native.is_file() { return Some(native); }
+    }
+
+    let mut base = root;
+    for part in module.split('/') { base = base.join(part); }
+    let base = base.join("bin");
+    for candidate in [
+        base.join(format!("{bin}{exe_suffix}")),
+        // Some releases ship no native launcher; the entry point is still runnable by node.
+        base.join(format!("{bin}.js")),
+    ] {
+        if candidate.is_file() { return Some(candidate); }
+    }
+    None
+}
+
+/// Install Claude Code or Codex into our own folder, using our own Node.
+///
+/// Progress is emitted on `agent_cli_progress` so the panel can show a moving bar — an npm install
+/// of this size says nothing for minutes, and a bar that does not move reads as a hang.
+#[tauri::command]
+async fn agent_cli_install(app: tauri::AppHandle, which: String) -> Result<String, String> {
+    let say = |step: &str, pct: u8| {
+        let _ = app.emit("agent_cli_progress", serde_json::json!({
+            "which": which.clone(), "step": step, "pct": pct,
+        }));
+    };
+    let (package, _) = agent_cli_package(&which)?;
+
+    if let Some(p) = agent_cli_installed_path(&app, &which) {
+        say("Already installed", 100);
+        return Ok(p.to_string_lossy().to_string());
+    }
+
+    say("Setting up the runtime it needs…", 5);
+    // The same pinned Node the rest of the app provisions. Both CLIs need Node 18 or newer; this is
+    // 20 LTS. The user never installs Node, never sees it, and nothing goes on their PATH.
+    provision_node(&app).await
+        .map_err(|e| format!("The runtime it needs could not be set up: {e}"))?;
+    let node_dir = get_node_dir(&app);
+    #[cfg(target_os = "windows")]
+    let npm = node_dir.join("npm.cmd");
+    #[cfg(not(target_os = "windows"))]
+    let npm = node_dir.join("bin").join("npm");
+    if !npm.is_file() {
+        return Err("The runtime was set up but npm was not where expected.".into());
+    }
+
+    let dir = agent_cli_dir(&app);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    let pkg = dir.join("package.json");
+    if !pkg.is_file() {
+        std::fs::write(&pkg, "{\"name\":\"adris-agent-cli-host\",\"private\":true,\"version\":\"1.0.0\"}")
+            .map_err(|e| format!("could not write package.json: {e}"))?;
+    }
+
+    say("Downloading — a few minutes the first time…", 20);
+    // A ticking counter, for exactly the reason written on the OmniRoute installer: npm is silent
+    // for minutes and a frozen line is indistinguishable from a crash.
+    let ticking = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    {
+        let app2 = app.clone();
+        let which2 = which.clone();
+        let ticking2 = ticking.clone();
+        tokio::spawn(async move {
+            let mut secs = 0u32;
+            while ticking2.load(std::sync::atomic::Ordering::Relaxed) {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                secs += 2;
+                let _ = app2.emit("agent_cli_progress", serde_json::json!({
+                    "which": which2,
+                    "step": format!("Downloading… {}m {:02}s — this is normal", secs / 60, secs % 60),
+                    "pct": 20u8 + (secs.min(240) as u8 / 4).min(70),
+                }));
+            }
+        });
+    }
+
+    let mut cmd = std::process::Command::new(&npm);
+    cmd.current_dir(&dir)
+        .args(["install", package, "--no-audit", "--no-fund", "--loglevel=error"]);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW — no console flash
+    }
+    let out = tokio::task::spawn_blocking(move || cmd.output())
+        .await.map_err(|e| e.to_string())?
+        .map_err(|e| format!("The installer could not be started: {e}"))?;
+    ticking.store(false, std::sync::atomic::Ordering::Relaxed);
+
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(format!(
+            "The install did not finish. It said:\n{}",
+            err.lines().rev().take(6).collect::<Vec<_>>().join("\n")
+        ));
+    }
+    let Some(p) = agent_cli_installed_path(&app, &which) else {
+        return Err("The install reported success but the program is not where expected.".into());
+    };
+    say("Installed", 100);
+    Ok(p.to_string_lossy().to_string())
+}
+
+/// Remove a bridge this app installed. Only ever touches our own folder.
+#[tauri::command]
+async fn agent_cli_uninstall(app: tauri::AppHandle, which: String) -> Result<(), String> {
+    let (module, _) = agent_cli_package(&which)?;
+    let mut dir = agent_cli_dir(&app).join("node_modules");
+    for part in module.split('/') { dir = dir.join(part); }
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("could not remove {}: {e}", dir.display()))?;
+    }
+    Ok(())
+}
+
+/// Is the user actually SIGNED IN, and to what.
+///
+/// THIS IS THE QUESTION THAT DECIDES WHETHER THE BRIDGE IS WORTH ANYTHING. An installed CLI that is
+/// not signed in fails on the first message with an error nobody here can read. Worse, a CLI signed
+/// in with an API KEY rather than a subscription silently bills per token — the exact opposite of
+/// the reason to use the bridge, and invisible unless something asks.
+///
+/// `claude auth status --json` answers both, and its output is returned raw so the panel can name
+/// who is signed in and on which plan rather than just saying "ok".
+#[tauri::command]
+async fn agent_cli_auth_status(exe: String, which: String) -> Result<String, String> {
+    let args: Vec<&str> = match which.as_str() {
+        "claude_code" => vec!["auth", "status", "--json"],
+        // Codex prints text here rather than JSON; the front end reads it as text.
+        "codex" => vec!["login", "status"],
+        _ => return Err(format!("unknown bridge: {which}")),
+    };
+    let mut cmd = tokio::process::Command::new(&exe);
+    cmd.args(&args);
+    // The same auth-stripping as every other spawn. An inherited ANTHROPIC_API_KEY would make this
+    // report "signed in" about a key instead of about the subscription — measured, and the whole
+    // reason STRIPPED_ENV exists.
+    for key in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
+                "OPENAI_API_KEY", "OPENAI_BASE_URL", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID",
+                "CLAUDE_CODE_ENTRYPOINT"] {
+        cmd.env_remove(key);
+    }
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000);
+
+    let out = match tokio::time::timeout(std::time::Duration::from_secs(45), cmd.output()).await {
+        Err(_) => return Err("the sign-in check did not answer in time".into()),
+        Ok(r) => r.map_err(|e| format!("could not start {exe}: {e}"))?,
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !stdout.is_empty() { return Ok(stdout); }
+    // NOT BEING SIGNED IN IS AN ANSWER, NOT A FAILURE. The panel has to tell the two apart so it can
+    // offer the sign-in button instead of an error the user cannot act on.
+    Ok(String::from_utf8_lossy(&out.stderr).trim().to_string())
+}
+
+/// What the CLI's own credential file says — the second, independent check.
+///
+/// WHY THIS EXISTS ALONGSIDE `agent_cli_auth_status`. Asking the CLI is asking a program to describe
+/// itself; reading the file it wrote is evidence. On the money question — subscription or metered
+/// API key — one source is not enough, because getting it wrong costs the user real money
+/// (see anthropics/claude-code#43333: `claude -p` reported billing as API usage despite an OAuth
+/// login, with one user reporting $1,800+ in two days).
+///
+/// Measured on a real machine, `~/.claude/.credentials.json` holds:
+///     claudeAiOauth: { accessToken, refreshToken, expiresAt, refreshTokenExpiresAt,
+///                      scopes[], subscriptionType: "pro", rateLimitTier }
+/// The key being named `claudeAiOauth` and carrying `subscriptionType` is itself the signal.
+///
+/// ── THE SECURITY PROPERTY THIS COMMAND IS BUILT AROUND ──────────────────────
+///
+/// It returns a FIXED set of non-secret fields and physically cannot return the token. Not "does
+/// not currently" — cannot: nothing here reads `accessToken` or `refreshToken` into the output, so
+/// no future caller, bug or log line can leak them through it.
+///
+/// That is deliberate and it is a rule, not a preference. Anthropic's terms restrict Pro/Max
+/// subscription tokens to official clients; adris spawns the official CLI precisely so it never
+/// holds the token. Several community projects lift the token out of this file and call the API
+/// directly — that design would put the user's account at risk and is off-limits here.
+#[tauri::command]
+async fn agent_cli_credentials(which: String) -> Result<String, String> {
+    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
+    if home.is_empty() { return Ok("{\"found\":false,\"reason\":\"no home directory\"}".into()); }
+    let home = std::path::Path::new(&home);
+
+    let path = match which.as_str() {
+        "claude_code" => home.join(".claude").join(".credentials.json"),
+        "codex" => home.join(".codex").join("auth.json"),
+        _ => return Err(format!("unknown bridge: {which}")),
+    };
+    if !path.is_file() {
+        return Ok("{\"found\":false,\"reason\":\"no credential file\"}".into());
+    }
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(r) => r,
+        // Unreadable is NOT "signed out" — on a locked-down machine this can be a permissions
+        // problem, and reporting it as signed-out would send the user round a sign-in loop that
+        // cannot fix it.
+        Err(e) => return Ok(format!("{{\"found\":false,\"reason\":\"unreadable: {}\"}}",
+                                    e.to_string().replace('"', "'"))),
+    };
+    let v: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return Ok("{\"found\":false,\"reason\":\"unparseable\"}".into()),
+    };
+
+    // Only these fields are ever copied out. `accessToken` and `refreshToken` are never touched.
+    let mut out = serde_json::json!({ "found": true });
+    let mut note = |k: &str, val: serde_json::Value| { out[k] = val; };
+
+    if which == "claude_code" {
+        // The OAuth block is the subscription one; its very presence is most of the answer.
+        if let Some(o) = v.get("claudeAiOauth") {
+            note("oauth", serde_json::Value::Bool(true));
+            if let Some(s) = o.get("subscriptionType") { note("subscriptionType", s.clone()); }
+            if let Some(s) = o.get("expiresAt") { note("expiresAt", s.clone()); }
+            if let Some(s) = o.get("refreshTokenExpiresAt") { note("refreshTokenExpiresAt", s.clone()); }
+            if let Some(s) = o.get("rateLimitTier") { note("rateLimitTier", s.clone()); }
+            if let Some(serde_json::Value::Array(a)) = o.get("scopes") {
+                note("scopeCount", serde_json::json!(a.len()));
+            }
+        } else {
+            note("oauth", serde_json::Value::Bool(false));
+        }
+    } else {
+        // ── CODEX: WRITTEN FROM DOCUMENTATION, NOT MEASURED ──────────────────
+        // `codex login` writes access and refresh tokens to ~/.codex/auth.json, but the exact key
+        // names have not been confirmed on a real install (Codex is not on the machine this was
+        // written on). So it reports what it recognises and says so, rather than asserting a shape
+        // it has never seen. A wrong guess presented confidently is worse than "unknown".
+        note("verified", serde_json::Value::Bool(false));
+        let has = |k: &str| v.get(k).is_some();
+        note("oauth", serde_json::Value::Bool(
+            has("tokens") || has("id_token") || has("access_token") || has("refresh_token")));
+        if let Some(s) = v.get("OPENAI_API_KEY") {
+            // Present and non-null means the metered path — the one case worth being sure about.
+            note("apiKeyPresent", serde_json::Value::Bool(!s.is_null()));
+        }
+        for k in ["account_id", "plan", "plan_type", "subscriptionType"] {
+            if let Some(s) = v.get(k) { note("subscriptionType", s.clone()); break; }
+        }
+    }
+    Ok(out.to_string())
+}
+
+/// How much of the subscription has actually been used, read off this machine.
+///
+/// WHY THIS MATTERS TO THE USER. Someone on a ₹400 Codex or ₹2,000 Claude plan is choosing to route
+/// adris through a budget they can feel. "Am I near my limit?" is then a real question with a real
+/// consequence, and until now the app could not answer it at all — the user had to leave and go
+/// looking on a website.
+///
+/// WHERE THE NUMBERS COME FROM. Claude Code writes a JSONL transcript per session under
+/// ~/.claude/projects/**, and every assistant turn carries a `message.usage` block with the four
+/// token counts, the model, and a timestamp. So this is not an API call, needs no network, and works
+/// offline: it is the user's own machine reporting on itself.
+///
+/// ── WHAT IT DELIBERATELY DOES NOT READ ──────────────────────────────────────
+///
+/// Those transcripts are the user's actual conversations. This function copies out exactly six
+/// things per line — timestamp, model, four token counts — plus an id used only to avoid
+/// double-counting. `message.content` is never touched, never parsed, never returned. The output is
+/// AGGREGATED to hourly buckets before it leaves Rust, so there is no per-message record to leak
+/// even by accident.
+///
+/// That is the HARD RULE applied to reading, not just to sending: adris does not handle the user's
+/// content, including their content about work adris did.
+///
+/// ── WHY IT IS NOT SLOW ──────────────────────────────────────────────────────
+///
+/// Measured on this machine: 30 files, 127 MB. Parsing all of that on every panel open would be
+/// unusable. Two things prevent it — files whose mtime predates the window are skipped without being
+/// opened at all, and the rest are streamed a line at a time rather than read into memory.
+#[tauri::command]
+async fn agent_cli_usage(which: String, since_ms: i64) -> Result<String, String> {
+    if which != "claude_code" {
+        // HONEST ABOUT THE GAP. Codex keeps its history in SQLite under ~/.codex, and its schema has
+        // not been read on a real signed-in install. Guessing a table name and reporting confident
+        // zeroes would be worse than saying so — a usage figure the user trusts and that is wrong is
+        // the one outcome this whole feature must avoid.
+        return Ok(r#"{"ok":false,"reason":"not_supported","detail":"Usage for Codex is not read yet."}"#.into());
+    }
+
+    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
+    if home.is_empty() { return Ok(r#"{"ok":false,"reason":"no_home"}"#.into()); }
+    let root = std::path::Path::new(&home).join(".claude").join("projects");
+    if !root.is_dir() {
+        return Ok(r#"{"ok":false,"reason":"no_history","detail":"No sessions on this computer yet."}"#.into());
+    }
+
+    tokio::task::spawn_blocking(move || {
+        use std::collections::{HashMap, HashSet};
+        use std::io::BufRead;
+
+        // Every transcript that could hold a turn inside the window. A file last written before the
+        // window began cannot contain one, so it is never opened.
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        let mut stack = vec![root];
+        while let Some(dir) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() { stack.push(p); continue; }
+                if p.extension().and_then(|s| s.to_str()) != Some("jsonl") { continue; }
+                let recent = e.metadata().ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as i64 >= since_ms)
+                    .unwrap_or(true);   // unreadable mtime — read it rather than lose data
+                if recent { files.push(p); }
+            }
+        }
+
+        #[derive(Default, Clone, Copy)]
+        struct Cell { input: u64, output: u64, cache_read: u64, cache_write: u64, calls: u64 }
+        let mut hours: HashMap<i64, Cell> = HashMap::new();
+        let mut models: HashMap<String, Cell> = HashMap::new();
+        // The same assistant turn appears in more than one transcript when a session is resumed, so
+        // counting lines would inflate the total. The request id is what makes a turn unique.
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut scanned = 0u64;
+
+        for path in &files {
+            let Ok(fh) = std::fs::File::open(path) else { continue };
+            for line in std::io::BufReader::new(fh).lines().map_while(Result::ok) {
+                if line.is_empty() { continue; }
+                // A cheap reject before paying for a JSON parse. Most lines are user turns, tool
+                // results and metadata, and none of those carry usage.
+                if !line.contains("\"usage\"") { continue; }
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+                let Some(msg) = v.get("message") else { continue };
+                let Some(u) = msg.get("usage") else { continue };
+
+                let Some(ts) = v.get("timestamp").and_then(|t| t.as_str()) else { continue };
+                let Ok(when) = chrono::DateTime::parse_from_rfc3339(ts) else { continue };
+                let when_ms = when.timestamp_millis();
+                if when_ms < since_ms { continue; }
+
+                let id = v.get("requestId").and_then(|r| r.as_str())
+                    .or_else(|| msg.get("id").and_then(|r| r.as_str()))
+                    .unwrap_or("");
+                if !id.is_empty() && !seen.insert(id.to_string()) { continue; }
+
+                let n = |k: &str| u.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+                let cell = Cell {
+                    input: n("input_tokens"),
+                    output: n("output_tokens"),
+                    cache_read: n("cache_read_input_tokens"),
+                    cache_write: n("cache_creation_input_tokens"),
+                    calls: 1,
+                };
+                scanned += 1;
+
+                let bucket = when_ms - when_ms.rem_euclid(3_600_000);   // to the hour
+                let h = hours.entry(bucket).or_default();
+                h.input += cell.input; h.output += cell.output;
+                h.cache_read += cell.cache_read; h.cache_write += cell.cache_write; h.calls += 1;
+
+                // `<synthetic>` is Claude Code's own placeholder for a turn no model produced. It
+                // showed up in the real data with 2,000 output tokens across six turns and would
+                // have been listed to the user as if it were a model they had chosen.
+                let model = msg.get("model").and_then(|m| m.as_str()).unwrap_or("unknown");
+                if model.starts_with('<') { continue; }
+                let m = models.entry(model.to_string()).or_default();
+                m.input += cell.input; m.output += cell.output;
+                m.cache_read += cell.cache_read; m.cache_write += cell.cache_write; m.calls += 1;
+            }
+        }
+
+        let mut buckets: Vec<serde_json::Value> = hours.into_iter()
+            .map(|(h, c)| serde_json::json!({
+                "h": h, "in": c.input, "out": c.output,
+                "cr": c.cache_read, "cw": c.cache_write, "n": c.calls,
+            }))
+            .collect();
+        buckets.sort_by_key(|b| b["h"].as_i64().unwrap_or(0));
+
+        let models: serde_json::Map<String, serde_json::Value> = models.into_iter()
+            .map(|(k, c)| (k, serde_json::json!({
+                "in": c.input, "out": c.output, "cr": c.cache_read, "cw": c.cache_write, "n": c.calls,
+            })))
+            .collect();
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "since": since_ms,
+            "files": files.len(),
+            "turns": scanned,
+            "buckets": buckets,
+            "models": models,
+        }).to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Sign the user OUT of the CLI itself.
+///
+/// ── THIS IS NOT "STOP USING IT IN ADRIS", AND THE DIFFERENCE MATTERS ────────
+///
+/// There are two things a person can mean by "disconnect", and they are not close:
+///
+///   1. Stop adris using it — a preference, reversible in a click, and it changes nothing outside
+///      adris. That is handled entirely on the front end by moving the AI source.
+///   2. Sign out of Claude Code / Codex — which removes the credential the CLI keeps for itself,
+///      on this whole computer. Their terminal session stops working too.
+///
+/// Almost everybody means (1). Doing (2) when they meant (1) breaks a tool they use elsewhere and
+/// they would have no reason to connect adris with breaking it. So this command exists, and the
+/// panel makes the user choose the second one explicitly, with what it affects said plainly.
+#[tauri::command]
+async fn agent_cli_logout(exe: String, which: String) -> Result<String, String> {
+    let args: Vec<&str> = match which.as_str() {
+        "claude_code" => vec!["auth", "logout"],
+        "codex" => vec!["logout"],
+        _ => return Err(format!("unknown bridge: {which}")),
+    };
+    let mut cmd = tokio::process::Command::new(&exe);
+    cmd.args(&args);
+    for key in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
+                "OPENAI_API_KEY", "OPENAI_BASE_URL", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID",
+                "CLAUDE_CODE_ENTRYPOINT"] {
+        cmd.env_remove(key);
+    }
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000);
+
+    let out = match tokio::time::timeout(std::time::Duration::from_secs(45), cmd.output()).await {
+        Err(_) => return Err("signing out did not finish in time".into()),
+        Ok(r) => r.map_err(|e| format!("could not start {exe}: {e}"))?,
+    };
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    Ok(if text.is_empty() { err } else { text })
+}
+
+/// Open the CLI's own sign-in, in a window the user can see.
+///
+/// WHY A VISIBLE CONSOLE, when every other spawn in this file hides one. Signing in is a
+/// conversation: the CLI prints a code, opens a browser, and waits for the user to come back. Run
+/// with CREATE_NO_WINDOW that conversation happens where nobody can see it and the app simply
+/// appears to do nothing. This is the one place a console is the right answer — so the panel warns
+/// the user first, because an unexplained black window is alarming to exactly the person this
+/// feature exists for.
+#[tauri::command]
+async fn agent_cli_login(exe: String, which: String) -> Result<(), String> {
+    // ── ASK FOR THE SUBSCRIPTION EXPLICITLY ──────────────────────────────────
+    //
+    // `claude auth login` offers, in its own words:
+    //     --claudeai   Use Claude subscription (default)
+    //     --console    Use Anthropic Console (API usage billing) instead
+    //
+    // The flag we want IS the default today. It is passed anyway, because "the default" is a thing
+    // that changes between versions and this is the one setting the product cannot afford to be
+    // wrong about: the entire reason a user connects their own subscription is to NOT be billed per
+    // token. `--console` must never appear here.
+    //
+    // Codex splits the same way. VERIFIED on the real CLI (0.150.1): `codex login` with no flag is
+    // the ChatGPT sign-in that bills the plan, and the metered path is `codex login --with-api-key`
+    // — NOT `--api-key`, which is what the documentation had suggested. Only the former is used,
+    // and the flag that is never passed is now named correctly.
+    let args: Vec<&str> = match which.as_str() {
+        "claude_code" => vec!["auth", "login", "--claudeai"],
+        "codex" => vec!["login"],
+        _ => return Err(format!("unknown bridge: {which}")),
+    };
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.args(&args);
+    for key in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
+                "OPENAI_API_KEY", "OPENAI_BASE_URL", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID",
+                "CLAUDE_CODE_ENTRYPOINT"] {
+        cmd.env_remove(key);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x00000010); // CREATE_NEW_CONSOLE — the user has to be able to see this one
+    }
+    cmd.spawn().map_err(|e| format!("Sign-in could not be started: {e}"))?;
+    Ok(())
+}
+
+/// Put a long argument in a FILE instead of on the command line.
+///
+/// ── THE BUG THIS EXISTS FOR ─────────────────────────────────────────────────
+///
+/// Asking the boss anything through the Claude bridge died with
+/// **"could not start claude.exe: The filename or extension is too long. (os error 206)"**.
+///
+/// Nothing was wrong with the filename. Windows caps an entire command line at **32,767
+/// characters**, and error 206 is what `CreateProcess` returns when you exceed it — measured on
+/// this machine, the cliff sits between 32,000 and 33,000. The boss system prompt alone is
+/// **60,440 characters**, and it was being passed as `--append-system-prompt <the whole thing>`.
+/// So the largest and most important agent in the product could never be reached over the bridge,
+/// and the error named a file as the culprit.
+///
+/// `claude --append-system-prompt-file <path>` takes the same text off the command line entirely.
+/// Verified against the real CLI (2.1.251): an unknown flag prints usage, this one runs.
+fn write_temp_prompt(tag: &str, text: &str) -> Result<std::path::PathBuf, String> {
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "adris-{tag}-{}.txt",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::write(&path, text).map_err(|e| format!("could not stage the system prompt: {e}"))?;
+    Ok(path)
 }
 
 /// Run an agent CLI and hand back stdout.
@@ -3597,9 +4762,25 @@ async fn agent_cli_run(
     cwd: Option<String>,
     clear_env: Vec<String>,
     timeout_secs: Option<u64>,
+    // Kept OFF the command line — see write_temp_prompt. Windows caps argv at 32,767 characters and
+    // the boss prompt alone is 60,440.
+    system_prompt: Option<String>,
+    stdin_text: Option<String>,
 ) -> Result<String, String> {
+    let mut args = args;
+    let staged = match system_prompt.as_deref().filter(|p| !p.is_empty()) {
+        Some(text) => {
+            let path = write_temp_prompt("sys", text)?;
+            args.push("--append-system-prompt-file".into());
+            args.push(path.to_string_lossy().to_string());
+            Some(path)
+        }
+        None => None,
+    };
+
     let mut cmd = tokio::process::Command::new(&exe);
     cmd.args(&args);
+    if stdin_text.is_some() { cmd.stdin(std::process::Stdio::piped()); }
     if let Some(dir) = cwd.as_deref().filter(|d| !d.is_empty()) { cmd.current_dir(dir); }
     for key in &clear_env { cmd.env_remove(key); }
     // tokio's Command exposes creation_flags itself on Windows, so unlike the std::process callers
@@ -3608,12 +4789,25 @@ async fn agent_cli_run(
     cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW — no console flash when an agent is asked something
 
     let secs = timeout_secs.unwrap_or(300).clamp(10, 1800);
-    let fut = cmd.output();
-    let out = match tokio::time::timeout(std::time::Duration::from_secs(secs), fut).await {
-        // A hung agent must not hang the app forever behind a spinner that never resolves.
-        Err(_) => return Err(format!("the agent did not answer within {secs}s")),
-        Ok(r) => r.map_err(|e| format!("could not start {exe}: {e}"))?,
+    let out = {
+        use tokio::io::AsyncWriteExt;
+        let mut child = cmd.spawn().map_err(|e| format!("could not start {exe}: {e}"))?;
+        if let (Some(text), Some(mut sin)) = (stdin_text.as_deref(), child.stdin.take()) {
+            // The prompt goes down stdin rather than into argv, for the same 32,767-character
+            // reason. Verified against the real CLI: `claude -p` with piped input answers normally.
+            let owned = text.to_string();
+            tokio::spawn(async move { let _ = sin.write_all(owned.as_bytes()).await; });
+        }
+        let fut = child.wait_with_output();
+        match tokio::time::timeout(std::time::Duration::from_secs(secs), fut).await {
+            // A hung agent must not hang the app forever behind a spinner that never resolves.
+            Err(_) => { if let Some(p) = &staged { let _ = std::fs::remove_file(p); }
+                        return Err(format!("the agent did not answer within {secs}s")); }
+            Ok(r) => r.map_err(|e| format!("could not start {exe}: {e}"))?,
+        }
     };
+    // The staged prompt is the user's own text; it does not linger in the temp directory.
+    if let Some(p) = &staged { let _ = std::fs::remove_file(p); }
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if stdout.is_empty() {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -3641,14 +4835,30 @@ async fn agent_cli_stream(
     cwd: Option<String>,
     clear_env: Vec<String>,
     timeout_secs: Option<u64>,
+    // Same reason as agent_cli_run: Windows caps the whole command line at 32,767 characters, and
+    // the boss system prompt is 60,440 on its own.
+    system_prompt: Option<String>,
+    stdin_text: Option<String>,
 ) -> Result<(), String> {
     use tauri::Emitter;
-    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let mut args = args;
+    let staged = match system_prompt.as_deref().filter(|p| !p.is_empty()) {
+        Some(text) => {
+            let path = write_temp_prompt("sys", text)?;
+            args.push("--append-system-prompt-file".into());
+            args.push(path.to_string_lossy().to_string());
+            Some(path)
+        }
+        None => None,
+    };
 
     let mut cmd = tokio::process::Command::new(&exe);
     cmd.args(&args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    if stdin_text.is_some() { cmd.stdin(std::process::Stdio::piped()); }
     if let Some(dir) = cwd.as_deref().filter(|d| !d.is_empty()) { cmd.current_dir(dir); }
     // The same auth-stripping as agent_cli_run, and for the same reason: an inherited
     // ANTHROPIC_API_KEY silently bills a key instead of the subscription the user pays for.
@@ -3656,7 +4866,14 @@ async fn agent_cli_stream(
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
 
-    let mut child = cmd.spawn().map_err(|e| format!("could not start {exe}: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        if let Some(p) = &staged { let _ = std::fs::remove_file(p); }
+        format!("could not start {exe}: {e}")
+    })?;
+    if let (Some(text), Some(mut sin)) = (stdin_text.as_deref(), child.stdin.take()) {
+        let owned = text.to_string();
+        tokio::spawn(async move { let _ = sin.write_all(owned.as_bytes()).await; });
+    }
     let stdout = child.stdout.take().ok_or("no stdout from the agent")?;
     let mut lines = BufReader::new(stdout).lines();
 
@@ -7447,12 +8664,24 @@ async fn mesh_download_extension(app: tauri::AppHandle) -> Result<(), String> {
     macro_emit("Fetching Mesh engine…", 5);
 
     // URL is hidden from frontend — only lives in compiled binary
+    // ── WHY NOT github.com ─────────────────────────────────────────────────
+    //
+    // Two separate faults met here, and Mesh could not work for anybody.
+    //
+    // First, `exo-node.exe` was never uploaded to a release at all: this URL returned 302 → 404
+    // for every user since the feature shipped, so the engine could never install, and Start and
+    // Join could only ever fail. It is uploaded by scripts/build-signed.ps1 now.
+    //
+    // Second, even once published, GitHub's release-asset host is unreachable on the ISP this is
+    // built for — it accepts the connection and never completes TLS, the same fault that broke the
+    // updater. Everything downloadable goes through www.adris.tech/dl/, which proxies the release
+    // asset server-side. See reference: the /dl proxy in the website repo.
     let url = if cfg!(target_os = "windows") {
-        "https://github.com/astraluxe/nivara-desktop/releases/latest/download/exo-node.exe"
+        "https://www.adris.tech/dl/exo-node.exe"
     } else if cfg!(target_arch = "aarch64") {
-        "https://github.com/astraluxe/nivara-desktop/releases/latest/download/exo-node-linux-arm64"
+        "https://www.adris.tech/dl/exo-node-linux-arm64"
     } else {
-        "https://github.com/astraluxe/nivara-desktop/releases/latest/download/exo-node-linux-x64"
+        "https://www.adris.tech/dl/exo-node-linux-x64"
     };
 
     let client = reqwest::Client::builder()
@@ -8873,6 +10102,18 @@ pub fn run() {
             pty_kill,
             // File system
             list_dir,
+            docker_state,
+            tool_list,
+            tool_install,
+            tool_compose_up,
+            tool_compose_down,
+            tool_ready,
+            tool_frameable,
+            tool_logs,
+            tool_stop,
+            tool_remove,
+            git_status,
+            git_diff_file,
             read_file,
             write_file,
             create_path,
@@ -8942,6 +10183,13 @@ pub fn run() {
             launch_application,
             agent_screen,
             agent_cli_detect,
+            agent_cli_install,
+            agent_cli_uninstall,
+            agent_cli_auth_status,
+            agent_cli_credentials,
+            agent_cli_usage,
+            agent_cli_login,
+            agent_cli_logout,
             agent_cli_run,
             agent_cli_stream,
             setup_agent_browser,

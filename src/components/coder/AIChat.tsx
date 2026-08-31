@@ -8,6 +8,7 @@ import { streamAI, type ConnectionMode, type Provider, type AiMessage } from '..
 import { chatDb, type ChatSession, type ChatMessage } from '../../lib/chatDb';
 import { getMonthlyUsage } from '../../lib/tokenTracker';
 import ConnectionBar from './ConnectionBar';
+import { useAiSourceSync } from '../../hooks/useAiSourceSync';
 import PromptLibrary from './PromptLibrary';
 import { getActiveSkillsForCoder } from '../../lib/skills';
 
@@ -313,6 +314,10 @@ export default function AIChat({
   const [modelName, setModelName]     = useState(savedConn.modelName ?? 'gpt-4o');
   const [baseUrl, setBaseUrl]         = useState(savedConn.baseUrl ?? '');
   const [localModel, setLocalModel]   = useState(savedConn.localModel ?? 'llama3');
+  // ONE CONTROL, AND THIS IS WHERE IT LANDS. The title-bar menu writes `nv-ai-source`; this puts
+  // that choice into the state every call below is written against, on mount and on every change.
+  // Without it the menu governed the Claude Code / Codex branch and nothing else.
+  useAiSourceSync({ setMode, setProvider, setLocalModel, setModelName });
   // Remembered across restarts, exactly as the Krew chat does it.
   useEffect(() => {
     try { localStorage.setItem(CODER_CONN_KEY, JSON.stringify({ mode, provider, modelName, baseUrl, localModel })); }

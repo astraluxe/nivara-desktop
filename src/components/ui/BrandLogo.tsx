@@ -24,11 +24,23 @@ const BRAND_HEX: Record<string, string> = {
   instagram: '#E4405F', vercel: '#000000', brave: '#FB542B',
 };
 
+
+/** The marks with a per-theme value in index.css — see the note in the component. */
+const THEMED = new Set(['openai', 'claude', 'anthropic', 'nvidia', 'notion', 'slack', 'github', 'airtable', 'twitter', 'shopify', 'vercel']);
+
 export default function BrandLogo(
   { id, className = 'w-5 h-5', colour = false }: { id: string; className?: string; colour?: boolean },
 ) {
+  // THEME-SAFE BRAND COLOUR.
+  //
+  // The hues below are the brands' own, and eleven of them failed the 3:1 contrast floor on one of
+  // our two backgrounds — OpenAI, GitHub, Notion, X, Vercel and Slack were invisible in the dark
+  // menu, and NVIDIA, Airtable, Shopify and Claude washed out on paper. Those eleven are drawn
+  // from a CSS variable that carries a per-theme value, so the mark repaints the moment the theme
+  // is toggled. The rest pass in both themes and keep their exact brand hex.
+  const themed = THEMED.has(id) ? `var(--brand-${id})` : undefined;
   const base = {
-    fill: colour ? (BRAND_HEX[id] ?? 'currentColor') : 'currentColor',
+    fill: colour ? (themed ?? BRAND_HEX[id] ?? 'currentColor') : 'currentColor',
     className, 'aria-hidden': true,
   };
   switch (id) {
@@ -38,12 +50,20 @@ export default function BrandLogo(
       return <svg {...base} viewBox="0 0 24 24"><path d="M22.282 9.821a5.985 5.985 0 0 0-.516-4.91 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a5.985 5.985 0 0 0-3.998 2.9 6.046 6.046 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.051 6.051 0 0 0 6.515 2.9A5.985 5.985 0 0 0 13.26 24a6.056 6.056 0 0 0 5.772-4.206 5.99 5.99 0 0 0 3.997-2.9 6.056 6.056 0 0 0-.747-7.073zM13.26 22.43a4.476 4.476 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.795.795 0 0 0 .392-.681v-6.737l2.02 1.168a.071.071 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494zM3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.771.771 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646zM2.34 7.896a4.485 4.485 0 0 1 2.366-1.973V11.6a.766.766 0 0 0 .388.676l5.815 3.355-2.02 1.168a.076.076 0 0 1-.071 0L4.83 14.18A4.485 4.485 0 0 1 2.34 7.896zm16.597 3.855l-5.833-3.387 2.02-1.168a.076.076 0 0 1 .071 0l4.003 2.309a4.485 4.485 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.385-.681zm2.01-3.023l-.141-.085-4.774-2.782a.776.776 0 0 0-.785 0L9.409 9.23V6.897a.066.066 0 0 1 .028-.061l4.003-2.309a4.476 4.476 0 0 1 6.937 4.144zm-12.64 4.135l-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.476 4.476 0 0 1 7.339-3.44l-.141.085L8.97 5.49a.798.798 0 0 0-.396.681zm1.097-2.365l2.602-1.5 2.607 1.496v2.999l-2.597 1.5-2.607-1.5z"/></svg>;
     case 'claude':
     case 'anthropic':
-      // Anthropic's burst. The previous path here was a chevron shape and was simply not their
-      // logo — the owner spotted it immediately. This is the mark Anthropic publishes: a radial
-      // asterisk of tapered spokes.
+      // THE REAL MARK, TRACED FROM THE FILE THE OWNER SUPPLIED.
+      //
+      // Wrong twice before this. First a chevron, which was not Anthropic's logo at all. Then the
+      // wordmark "A" — a genuine Anthropic asset, but the wrong one: what people recognise in a
+      // 16px row is the burst, and the roadmap had already been written claiming this WAS the
+      // burst while the code drew the letter.
+      //
+      // So it is not drawn from memory. The owner supplied the PNG and this outline was traced
+      // from its alpha channel, then checked by rasterising the result back and comparing it to
+      // the original pixel for pixel — 96.9% overlap. Approximating by eye is how the first two
+      // got here; if this ever needs redoing, trace the asset again rather than adjusting it.
       return (
         <svg {...base} viewBox="0 0 24 24">
-          <path d="M13.827 3.52h3.603L24 20.48h-3.603l-6.57-16.96zm-7.258 0h3.767L16.906 20.48h-3.674l-1.343-3.461H5.017l-1.344 3.46H0L6.57 3.522zm4.132 10.343L8.453 7.633 6.205 13.863h4.496z"/>
+          <path d="M21.07 11.61L20.59 11.70L24.00 11.76L20.45 11.73L17.39 12.41L22.76 13.30L23.54 13.82L23.98 14.44L23.88 14.93L22.70 15.53L15.89 13.90L15.74 13.91L15.73 14.01L21.33 19.23L21.46 19.80L21.19 20.20L21.09 20.25L20.77 20.19L18.64 18.59L15.84 16.20L15.69 16.19L15.69 16.34L18.47 20.52L18.59 21.60L18.44 21.95L17.82 22.17L17.17 22.05L15.44 19.60L13.21 16.02L13.07 16.18L12.41 23.35L12.09 23.72L11.38 24.00L10.76 23.54L10.44 22.80L11.75 15.33L8.13 20.25L6.46 22.03L6.01 22.22L5.31 21.85L5.44 21.07L10.18 14.63L4.14 18.55L3.00 18.71L2.51 18.25L2.56 17.53L2.86 17.21L4.64 15.99L9.43 13.28L9.50 13.07L9.41 12.94L1.06 12.60L0.52 12.47L0.01 11.75L0.05 11.42L0.52 11.12L9.37 11.48L2.44 6.75L1.99 6.21L1.83 5.22L2.44 4.53L3.56 4.61L9.25 8.90L9.39 8.81L8.08 6.36L5.75 2.32L5.56 1.55L5.54 1.13L6.27 0.13L6.69 0.00L7.68 0.13L8.08 0.47L9.72 4.13L11.74 8.07L12.07 9.15L12.22 9.14L12.91 1.73L13.31 0.81L14.04 0.36L14.62 0.63L15.08 1.30L14.73 3.65L13.82 8.46L14.01 8.46L14.28 8.19L16.88 4.86L18.45 3.14L19.02 2.69L20.08 2.71L20.81 3.81L20.49 4.95L17.27 9.16L16.48 10.54L16.55 10.63L16.66 10.63L19.81 9.97L23.01 9.43L23.83 9.85L23.90 10.20L23.59 11.00Z"/>
         </svg>
       );
     case 'brave':

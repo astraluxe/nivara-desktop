@@ -808,6 +808,18 @@ function renderSlideHtml(s: DeckSlide, spec: DeckSpec, i: number, total: number,
   }
 }
 
+/**
+ * The layouts that render a picture. Anything else sets `imageData` on a slide nobody draws it on,
+ * so the picture vanishes silently — the failure that made figures from an attached document go
+ * missing. Both renderers below honour this list, and the placer only targets these.
+ */
+export const LAYOUTS_WITH_IMAGE = ['title', 'section', 'image-full', 'closing', 'bullets'] as const;
+
+/** Can this slide show a picture at all? */
+export function layoutShowsImage(layout: string): boolean {
+  return (LAYOUTS_WITH_IMAGE as readonly string[]).includes(layout);
+}
+
 // ── PPTX (editable PowerPoint) ───────────────────────────────────────────────
 // Renders the same DeckSpec into a real .pptx via pptxgenjs (dynamically imported).
 // Returns a Blob the caller downloads. Colours must be 6-digit hex WITHOUT '#'.
@@ -831,6 +843,23 @@ export async function deckToPptxBlob(spec: DeckSpec): Promise<Blob> {
     const slide = pptx.addSlide();
     const isSurface = s.layout === 'section' || s.layout === 'closing';
     slide.background = { color: hx(isSurface ? p.surface : p.bg) };
+
+    // A FULL-BLEED PICTURE on the sparse layouts, the way the chat deck does it. Without this the
+    // .pptx drew imageData on 'image-full' and 'bullets' only — so a photo the user attached, or a
+    // figure lifted out of their document, was on the slide in chat and gone in PowerPoint.
+    //
+    // Drawn FIRST, so the brand bar, the logo and the text all sit on top of it. pptx has no
+    // gradient fill through this API, so the readability scrim the HTML gets from a gradient is two
+    // overlapping rectangles: solid where the words are, fading out across the middle.
+    if (s.imageData && (s.layout === 'title' || s.layout === 'section' || s.layout === 'closing')) {
+      const base = hx(isSurface ? p.surface : p.bg);
+      try {
+        slide.addImage({ data: s.imageData, x: 0, y: 0, w: W, h: H, sizing: { type: 'cover', w: W, h: H } });
+        slide.addShape('rect', { x: 0, y: 0, w: W * 0.52, h: H, fill: { color: base, transparency: 8 }, line: { type: 'none' } });
+        slide.addShape('rect', { x: W * 0.52, y: 0, w: W * 0.22, h: H, fill: { color: base, transparency: 55 }, line: { type: 'none' } });
+      } catch { /* a picture that will not encode must not cost the user the slide */ }
+    }
+
     // brand bar
     slide.addShape('rect', { x: 0, y: 0, w: 0.14, h: H, fill: { color: hx(p.accent) } });
     // brand logo (top-right corner) if the user supplied one

@@ -1,7 +1,10 @@
 import {
   buildClaudeArgs, parseClaudeJson, STRIPPED_ENV, availableClis, CLI_LABEL,
   buildClaudeStreamArgs, parseStreamLine,
-} from './agentCli.js';
+  argvLength,
+  ARGV_LIMIT,
+  usableCliCache,
+  CLI_CACHE_TTL_MS,} from './agentCli.js';
 
 let pass = 0, fail = 0;
 const ok = (n, c, x = '') => { if (c) { pass++; console.log('  ok   ' + n); } else { fail++; console.log('  FAIL ' + n + (x ? '\n        ' + x : '')); } };
@@ -22,22 +25,28 @@ ok('a parent session identity is not inherited', STRIPPED_ENV.includes('CLAUDE_C
 console.log('\n=== the command line ===');
 {
   const a = buildClaudeArgs('hello');
-  eq('non-interactive print mode', a.slice(0, 2), ['-p', 'hello']);
+  // `-p` with NO inline prompt: the CLI reads it from stdin. These three assertions used to check
+  // the opposite — that the prompt was argv[1] — which is precisely what made a long one fatal.
+  eq('non-interactive print mode', a[0], '-p');
+  ok('the prompt is NOT on the command line', !a.includes('hello'));
   ok('structured output is requested', a.includes('--output-format') && a.includes('json'));
   ok('no model is forced when none is asked for', !a.includes('--model'));
   ok('no session is resumed when none is given', !a.includes('--resume'));
 
-  // The prompt is ONE argument, so it is never split, quoted or truncated. This is what lets the
-  // .exe be spawned directly instead of through cmd.exe and its 8191-character limit.
+  // A 20,000-character prompt used to be one enormous argument. Together with a 60,440-character
+  // system prompt that is over twice the Windows limit, which is how a valid question became
+  // "The filename or extension is too long."
   const long = 'x'.repeat(20000);
   const big = buildClaudeArgs(long);
-  eq('a very long prompt stays a single argument', big[1].length, 20000);
-  eq('...and is not split across arguments', big.filter((s) => s.startsWith('xxx')).length, 1);
+  eq('a very long prompt never reaches argv', big.filter((s) => s.startsWith('xxx')).length, 0);
+  ok('...so the command line stays short whatever is asked', argvLength(big) < 200);
 
   const b = buildClaudeArgs('hi', { model: 'sonnet', sessionId: 'abc-123', systemPrompt: 'be brief' });
   ok('a model is passed through', b[b.indexOf('--model') + 1] === 'sonnet');
   ok('a session is resumed', b[b.indexOf('--resume') + 1] === 'abc-123');
-  ok('an extra system prompt is appended', b[b.indexOf('--append-system-prompt') + 1] === 'be brief');
+  // Rust stages it to a file and appends --append-system-prompt-file; it never comes through here.
+  ok('the system prompt is NOT appended as an argument', !b.includes('--append-system-prompt'));
+  ok('...and its text is nowhere in argv', !b.includes('be brief'));
 }
 
 console.log('\n=== the CLI gets no tools of its own by default ===');
@@ -151,11 +160,82 @@ console.log('\n=== the streaming command line ===');
   ok('asks for stream-json', a.includes('stream-json'));
   ok('asks for partial messages, or the "stream" is one lump at the end',
      a.includes('--include-partial-messages'));
-  ok('the prompt is still a single argument', a[1] === 'hello');
+  ok('the prompt is not on the command line here either', !a.includes('hello'));
   const b = buildClaudeStreamArgs('hi', { sessionId: 'abc', model: 'sonnet' });
   eq('a session is resumed', b[b.indexOf('--resume') + 1], 'abc');
   eq('the model is passed', b[b.indexOf('--model') + 1], 'sonnet');
   eq('and it still gets no tools of its own', b[b.indexOf('--allowedTools') + 1], '');
+}
+
+
+console.log('\n=== nothing enormous may go back onto the command line ===');
+{
+  // THE BUG. Asking the boss anything over the Claude bridge died with
+  // "could not start claude.exe: The filename or extension is too long. (os error 206)".
+  //
+  // Nothing was wrong with the filename. Windows caps a whole command line at 32,767 characters —
+  // measured on a real machine the cliff sits between 32,000 and 33,000 — and the boss system
+  // prompt is 60,440 characters, passed as `--append-system-prompt <the whole thing>`. So the
+  // largest agent in the product was unreachable, behind an error that named a file.
+  //
+  // The system prompt now goes to a FILE and the prompt goes down STDIN, both staged by Rust.
+  const huge = 'S'.repeat(60440);      // the real boss prompt length
+  const longPrompt = 'P'.repeat(40000); // and a user who pastes a lot
+
+  for (const build of [buildClaudeArgs, buildClaudeStreamArgs]) {
+    const args = build(longPrompt, { systemPrompt: huge, model: 'sonnet', allowedTools: [] });
+    const joined = args.join(' ');
+
+    ok(`${build.name}: the system prompt is not in argv`, !joined.includes(huge.slice(0, 200)));
+    ok(`${build.name}: the user prompt is not in argv`, !joined.includes(longPrompt.slice(0, 200)));
+    ok(`${build.name}: the command line stays under the Windows limit`,
+      argvLength(args) < ARGV_LIMIT, `${argvLength(args)} chars`);
+    // It must still be a -p run, or the CLI waits for an interactive session that never comes.
+    ok(`${build.name}: still asks for a printed answer`, args.includes('-p'));
+    ok(`${build.name}: still passes the model`, args.includes('sonnet'));
+  }
+
+  // The old shape, so the regression is described rather than merely absent.
+  const oldStyle = ['-p', longPrompt, '--append-system-prompt', huge];
+  ok('the shape that used to be built WOULD have blown the limit',
+    argvLength(oldStyle) > 32767, `${argvLength(oldStyle)} chars`);
+
+  ok('argvLength counts quoting overhead', argvLength(['ab', 'cd']) > 4);
+  ok('an empty command line is zero', argvLength([]) === 0);
+}
+
+
+console.log('\n=== "not installed" is never remembered ===');
+{
+  // THE BUG. The first launch, before the user had Claude Code, cached `{claude_code: ''}` — and
+  // the cache never expired. After that the menu said "set it up" forever: installing Claude Code
+  // changed nothing, signing in changed nothing, and the app was answering from a cache of the
+  // user's past. An absent tool is precisely the thing they are about to go and add.
+  const now = 1_700_000_000_000;
+  const found = JSON.stringify({ claude_code: 'C:/x/claude.exe', codex: '', at: now });
+
+  ok('a real detection is remembered', !!usableCliCache(found, now));
+  ok('...and its path comes back', usableCliCache(found, now).claude_code.endsWith('claude.exe'));
+
+  ok('an empty detection is NEVER remembered',
+    usableCliCache(JSON.stringify({ claude_code: '', codex: '', at: now }), now) === null);
+  ok('...not even a fresh one', 
+    usableCliCache(JSON.stringify({ claude_code: '', codex: '', at: now }), now + 1000) === null);
+
+  // A CLI can be uninstalled, so even a good answer goes stale.
+  ok('a stale positive is re-checked',
+    usableCliCache(found, now + CLI_CACHE_TTL_MS + 1) === null);
+  ok('...but not before it needs to be',
+    !!usableCliCache(found, now + CLI_CACHE_TTL_MS - 1000));
+
+  // Anything written by the version that could cache absence is not trusted.
+  ok('the old untimestamped shape is re-checked once',
+    usableCliCache(JSON.stringify({ claude_code: 'C:/x/claude.exe', codex: '' }), now) === null);
+
+  ok('nothing stored is nothing believed', usableCliCache(null, now) === null);
+  ok('rubbish does not crash it', usableCliCache('{{{', now) === null);
+  ok('a codex-only machine is remembered too',
+    !!usableCliCache(JSON.stringify({ claude_code: '', codex: 'C:/x/codex.exe', at: now }), now));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

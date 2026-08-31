@@ -1,11 +1,62 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useEntitlement } from '../lib/useEntitlement';
+import { TIER_LABEL } from '../lib/entitlement';
 import { useAuth } from "../contexts/AuthContext";
 import AiSourceMenu from "./AiSourceMenu";
 
-const PLAN_LABEL: Record<string, string> = {
-  free: "Free", explore: "Free", solo: "Solo",
-  builder: "Builder", business: "Team", custom: "Custom",
-};
+/**
+ * THE BADGE USED TO SAY THE WRONG THING, IN TWO WAYS AT ONCE.
+ *
+ * It read "Free / Solo / Builder / Team" — names the pricing page does not use — and it sat inches
+ * from a menu offering pay-per-use, so the two halves of the title bar described different
+ * products. It also said only WHICH plan, never how much of it was left, which on a metered product
+ * is the one number anybody actually wants.
+ *
+ * Now: the tier, and the tasks remaining, from the single loader every other screen reads. The
+ * names come from lib/entitlement.ts so the app and the website cannot drift apart.
+ */
+function PlanBadge({ onOpen }: { onOpen: () => void }) {
+  const ent = useEntitlement();
+  if (ent.loading) return null;
+
+  const left = ent.left;
+  const tasks = left.unlimited ? null : left.tasksLeft;
+  // Amber once four fifths are gone, red once nothing is left. A meter that only turns red at zero
+  // gives no warning at all.
+  const tone = left.anyExhausted ? 'exhausted' : left.spent >= 0.8 ? 'low' : 'ok';
+  const colour =
+    tone === 'exhausted' ? 'bg-nv-red/10 border-nv-red/30 text-nv-red'
+    : tone === 'low'      ? 'bg-amber-500/10 border-amber-500/30 text-amber-600'
+    : 'bg-accent/10 border-accent/25 text-accent/90';
+
+  const title = [
+    `${TIER_LABEL[ent.tier]} plan`,
+    left.unlimited ? 'Unlimited (fair use)' : `${left.tasksLeft.toLocaleString('en-IN')} AI tasks left this month`,
+    `Resets in ${ent.resetsInDays} day${ent.resetsInDays === 1 ? '' : 's'}`,
+    ent.state === 'grace' ? 'Last checked a while ago — you are offline, nothing is wrong' : '',
+    'Your own key and local models are never counted',
+  ].filter(Boolean).join(' · ');
+
+  return (
+    <button
+      onClick={onOpen}
+      title={title}
+      className={`text-[10px] font-mono px-2 py-[3px] rounded-full uppercase tracking-[0.14em]
+                  border transition-fast hover:brightness-110 ${colour}`}
+    >
+      {TIER_LABEL[ent.tier]}
+      {tasks !== null && <span className="normal-case tracking-normal opacity-80"> · {compact(tasks)} left</span>}
+      {ent.state === 'grace' && <span className="opacity-60" title="offline"> ·</span>}
+    </button>
+  );
+}
+
+/** 12,400 → "12.4k". A badge has room for a number, not for a paragraph. */
+function compact(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'm';
+  if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, '') + 'k';
+  return String(n);
+}
 
 const MODULES: Record<string, string> = {
   coder:    "Coder · dev terminal",
@@ -52,12 +103,7 @@ export default function TitleBar({ activeModule }: { activeModule: string }) {
       {/* Right — the bridge, plan badge, window controls */}
       <div className="flex items-center gap-3 pr-2">
         <AiSourceMenu />
-        {profile && (
-          <span className="text-[10px] font-mono px-2 py-[3px] rounded-full uppercase tracking-[0.14em]
-                           bg-accent/10 border border-accent/25 text-accent/90 pointer-events-none">
-            {PLAN_LABEL[profile.plan ?? 'free'] ?? profile.plan}
-          </span>
-        )}
+        {profile && <PlanBadge onOpen={() => window.dispatchEvent(new CustomEvent('nv-navigate', { detail: 'account' }))} />}
 
         <div className="flex items-center gap-0.5">
           <WinBtn

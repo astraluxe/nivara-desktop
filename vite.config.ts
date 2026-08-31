@@ -1,9 +1,15 @@
+import { readFileSync } from "node:fs";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 const host = process.env.TAURI_DEV_HOST;
 
+// The running version, read from package.json at build time. The Settings panel used to carry a
+// hand-typed string and was fifty-one releases out of date.
+const APP_VERSION = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
+
 export default defineConfig(async () => ({
+  define: { "import.meta.env.VITE_APP_VERSION": JSON.stringify(APP_VERSION) },
   plugins: [react()],
   clearScreen: false,
   server: {

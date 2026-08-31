@@ -56,30 +56,30 @@ function saveSettings(s: NvSettings) {
 
 // Short, human-readable "what changed" notes for the current version — shown in About below.
 // Add a new entry here on future releases; keep only the last few so this doesn't grow forever.
+/**
+ * The running version, from package.json via Vite.
+ *
+ * WHATS_NEW.version was typed by hand and read **1.27.1** while the app was on 1.78.0 — fifty-one
+ * releases adrift, telling every user the wrong thing on a panel whose whole job is to say what
+ * changed. It is derived now, and scripts/check-whats-new.mjs fails the build if the notes below
+ * were not updated for the current release.
+ */
+const APP_VERSION = (import.meta.env?.VITE_APP_VERSION as string) || '1.78.0';
+
 const WHATS_NEW: { version: string; items: string[] } = {
-  version: '1.27.1',
+  version: APP_VERSION,
   items: [
-    'A plan task handed to your team now really is split across them. Approving a work order for three or four specialists produced, twice, one agent writing a long document about all of the work and doing none of it. The routing decision has been taken away from the model entirely: the pipeline is worked out from your own order and run, so nobody gets a vote on whether to honour the division of labour you just approved.',
-    'It also works on an order written as prose. The split used to need a numbered step list, and a real order often has none -- the whole brief arrives as one paragraph -- so three approved agents quietly became one. A brief like that is still a list, just punctuated as sentences, and it is now read as one. Quoted material is kept whole, so the one-liner you asked for is never cut in half.',
-    'Each specialist gets one unbroken stretch of the work, in the order the work actually runs. Before, a writer could be handed step 1, step 5 and step 7 and then run first -- holding two steps that cannot start until the outreach and the install have happened. Her answer was "both are blocked on other specialists", she was right, and nothing ever came back to her.',
-    'The example message you put in a work order no longer decides who does the job. "Write 3 sentences naming the pain (\'...open to a 15-min call?\')" was being routed to the automation agent, on the words "15-min call", because that reads like scheduling. It is not scheduling; it is a sentence somebody has to write.',
-    'One silent step no longer wipes the work of everyone before it. Each stage is handed the previous stage\'s output, and that was taken literally -- so when one specialist returned nothing, the next opened with nothing, concluded it had no data, and wrote a report about the absence while three agents\' work sat one slot further back. A step that returns nothing at all is also asked again now, and is allowed to answer "I could not do this, and here is why" rather than being pushed into inventing something.',
-    'When a task names something to be saved -- "save the filtered sheet as ICP-Validation-Pool" -- the app saves it, rather than asking an agent to remember. An agent reported exactly that save as done without ever making it, which is worse than saving nothing: you stop looking for a note that does not exist. It only fires when your order asked for a named save, never overwrites something already saved under that name, and if no step produced real content it says so instead of leaving you an empty note.',
-    'The handover sheet warns you when nobody you have ticked can actually do part of the job -- "nobody ticked can really do: smoke-test the install" -- and names who could. It cannot add a specialist you did not approve, so the only place that is fixable is before you send it.',
-    'Settings -> Files lets you give adris.tech one folder on this computer. Everything the agents made used to live inside the app or in a chat message, so "make me a poster" and "now put that poster on Instagram" were two jobs with you carrying the file between them. Now they save what they make or download -- a generated poster, a video, an exported PDF, a spreadsheet -- and tell you where it went.',
-    'It is that folder and nothing else. Every write is checked against the folder you chose and refused if it points anywhere outside it, and switching the setting off removes the file tools completely rather than leaving them there to be talked into something. It is off until you turn it on.',
-    'The path is remembered in the Brain at the same time, which is the half that matters later: a chat next week can find that poster by name and attach, upload or post it without you going to look for it. It also reads the real folder, so files you put there yourself are findable too.',
-    'The Brain has a Links folder that fills itself. When an agent makes or verifies a web page -- a Notion doc, a sheet, a board -- the address is filed by site, so the next chat reopens it instead of quietly building a second one. Both folders de-duplicate, so the same page or file saved twice updates one entry.',
-    'Email now attaches the file by itself, the way LinkedIn already did. This was backwards: the attachment is usually the entire point of the email. The message and the file are prepared in the Gmail window you are already signed in to, and you press Send. Tested against real Gmail with a real send before shipping -- which is how a bug that would have reported every successful attach as a failure, and attached the same file three times over, was found.',
-    'The outreach copilot shows what is about to go out before anything opens -- subject, message, and the attachment by name, with buttons to check the file or take it off. Previously you only saw the message once Gmail had opened, and the attachment not at all.',
-    'If the document you need does not exist, the copilot writes it. It could already tell that a file was wanted and could then only search files that happened to exist -- when nothing matched, you were told to go and make one. Now one button produces a one-pager, a pilot programme or a proposal as a real PDF, written for that person at the stage the conversation actually reached, and attaches it.',
-    'It only uses facts you actually have. No invented price, headcount, logo or case study, and it tells you in one line what it had to leave out so you can fill that in first. A draft that comes back full of "[insert price]" or "TBD" is refused rather than attached -- a document made of placeholders is the failure that looks like success, and it would have gone out over your name.',
-    'Any agent can now prepare an email with a file on it, not just the copilot: "write them a proposal and email it" is one instruction. Nothing is ever sent automatically -- you always press Send. And because Gmail keeps the tab open afterwards and only greys the Send button, the app now tells you what to look for so a sent email does not look like a failed one.',
-    'The council can be asked your own question about your plan. "Is this the right plan?" is a good default and the wrong tool when you have a specific worry -- is 30 days realistic, should this be per seat or per company. Ask it directly and the panel answers that, against your plan, and says which days would change.',
-    'The council also answers from your real situation now, and knew far less about this app than it should have. Its picture of what you could do stopped at a couple of modules -- no browser automation, no connected apps, no document generation, no deck maker -- so it kept suggesting you build or buy things you already own, or do by hand what an agent does in one call. It is now told to use what is really in your Brain, to count the days genuinely left, never to invent a conversion rate or a market size, and to disagree where the plan is wrong.',
-    'The Info page has a section on the Files folder and a "where to start, depending on what you do" guide -- selling, freelancing, running a shop, content, study, software. The app has never assumed everyone is a startup founder and the guide should not either.',
-    'When an agent writes to your computer you can see exactly what it is doing: "Saving launch-poster.png into your posters folder" rather than a tool name. Specialists and pipeline steps now use the same plain wording the main chat does.',
-  ],
+    'Ask for a presentation "in Microsoft PowerPoint" and you get one. Naming your own program used to hand the job to an agent, which answered that it was a text-based AI, could not create .pptx files, and had received no files -- while your document and its five figures sat in the request. The request now goes straight to the builder, which writes a real .pptx and opens it in your PowerPoint.',
+    'The presentation asks where it should go, and defaults to the PowerPoint you already own. Your own program comes first: you know it, your template and fonts live in it, and you can keep editing after adris is closed. The in-chat deck is one click away and is still built either way, so nothing is lost.',
+    'Pictures from your document now survive into PowerPoint. The .pptx writer only drew them on two of the six slide layouts they get placed on, so a figure was visible in the chat deck and silently missing in the file. Every layout that is offered a picture now carries it.',
+    'Answers you can click. When the team asks something -- "PowerPoint or here in the chat?", "shall I add speaker notes?" -- the options appear as buttons under the reply, so you can answer without typing it out.',
+    'Word, Excel and PowerPoint on the right-hand rail actually open now. The button was asking Windows to start a program by a name it does not know, and the error was being thrown away, so clicking did nothing at all.',
+    'Mesh can install its engine. The download had been pointing at a file that was never published -- it returned "not found" for every user since the feature shipped -- and it now comes from a host that is reachable on Indian networks. Pressing Connect also connects, instead of quietly downloading and stopping.',
+    'Your Brain stops filling up with pictures out of your documents. Attaching a report with a dozen diagrams turned the Pictures folder into that report, and attaching the same file again doubled all of it. Only pictures you attach yourself are kept, and the same picture is never stored twice.',
+    'Logos in the menu are visible in both themes. Eleven of them -- OpenAI, GitHub, Notion, X, Vercel, Slack, NVIDIA, Airtable, Shopify and Claude -- were too dark or too pale against one of the two backgrounds, so a logo was a hole where a logo should be.',
+    'Updates moved to the top of Settings, and this panel now shows the version you are actually running. It had been reporting v1.27.1 for fifty-one releases.',
+    'Paste Markdown into a Brain note and it renders as a readable note rather than as its own source.',
+  ]
 };
 
 function Toggle({ on, onChange, label, desc }: { on: boolean; onChange: (v: boolean) => void; label: string; desc?: string }) {
@@ -421,6 +421,79 @@ export default function SettingsModule() {
         </div>
 
         {/* Automation */}
+        {/* ── UPDATES, FIRST ──────────────────────────────────────────────────
+            This lived at the very bottom of Settings, under About, below eleven other panels. It
+            is the one thing in here a user comes looking for, and the one thing that has to be
+            found quickly when a release fixes what they just hit. It is now the first panel. */}
+        <Section title="Updates" wide>
+          <div className="flex items-baseline justify-between gap-3 mb-3">
+            <p className="text-[11px] text-nv-muted">
+              You are running <span className="text-nv-text font-mono">v{APP_VERSION}</span>.
+            </p>
+            <button
+              onClick={() => setShowWhatsNew(true)}
+              className="text-[10px] px-2.5 py-1 rounded-lg border border-accent/50 text-accent hover:bg-accent/10 transition-fast shrink-0"
+            >What's new</button>
+          </div>
+          <div className="pt-3 border-t border-nv-border/60">
+            {updateStatus === 'available' && (
+              <div className="mb-3 p-3 rounded-lg bg-accent/10 border border-accent/30">
+                <p className="text-[11px] text-accent font-medium">Update available — v{updateInfo.version}{updateInfo.current ? <span className="text-nv-muted font-normal"> (you're on v{updateInfo.current})</span> : null}</p>
+                {updateInfo.body && <p className="text-[10px] text-nv-muted mt-1 leading-relaxed">{updateInfo.body}</p>}
+                {updateInfo.propagating && !updateErr && (
+                  <p className="text-[10px] text-nv-muted mt-1 leading-relaxed">Just published — if Install says it's not ready yet, give it a minute and try again.</p>
+                )}
+                {updateErr && (
+                  <p className="text-[10px] text-nv-red mt-1.5 leading-relaxed">{updateErr}</p>
+                )}
+              </div>
+            )}
+            {updateStatus === 'latest' && (
+              <p className="text-[11px] text-nv-green mb-3">You're on the latest version{updateInfo.current ? ` (v${updateInfo.current})` : ''}.</p>
+            )}
+            {updateStatus === 'error' && (
+              <div className="mb-3">
+                {/* The specific diagnosis when we have one — "check your connection" is only
+                    honest when the connection is actually the problem. */}
+                <p className="text-[11px] text-nv-red leading-relaxed">
+                  {updateErr || 'Could not check for updates. Check your connection.'}
+                </p>
+                {updateErr && (
+                  <button
+                    onClick={() => { import('@tauri-apps/plugin-shell').then(({ open }) => open('https://www.adris.tech/download.html')).catch(() => window.open('https://www.adris.tech/download.html', '_blank')); }}
+                    className="mt-1.5 text-[10px] px-2.5 py-1 rounded-lg border border-accent/50 text-accent hover:bg-accent/10 transition-fast"
+                  >Open the download page</button>
+                )}
+              </div>
+            )}
+            {updateStatus === 'installing' && (
+              <div className="mb-3">
+                <p className="text-[11px] text-nv-muted">{updatePct > 0 ? `Downloading update — ${updatePct}%` : 'Starting download…'} The app will restart automatically when done.</p>
+                <div className="mt-1.5 h-1.5 rounded-full bg-nv-surface2 overflow-hidden">
+                  <div className="h-full bg-accent transition-all" style={{ width: `${updatePct}%` }} />
+                </div>
+              </div>
+            )}
+            <div className="flex gap-2">
+              <button
+                onClick={checkUpdate}
+                disabled={updateStatus === 'checking' || updateStatus === 'installing'}
+                className="text-[10px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:border-accent hover:text-accent transition-fast disabled:opacity-40"
+              >
+                {updateStatus === 'checking' ? 'Checking…' : 'Check for updates'}
+              </button>
+              {updateStatus === 'available' && (
+                <button
+                  onClick={installUpdate}
+                  className="text-[10px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent/90 transition-fast"
+                >
+                  Install &amp; restart
+                </button>
+              )}
+            </div>
+          </div>
+        </Section>
+
         <Section title="Automation" wide>
           <Toggle
             on={settings.automationAutoRun}
@@ -869,64 +942,6 @@ export default function SettingsModule() {
             </div>
           </div>
 
-          {/* Update checker */}
-          <div className="pt-3 border-t border-nv-border/60">
-            {updateStatus === 'available' && (
-              <div className="mb-3 p-3 rounded-lg bg-accent/10 border border-accent/30">
-                <p className="text-[11px] text-accent font-medium">Update available — v{updateInfo.version}{updateInfo.current ? <span className="text-nv-muted font-normal"> (you're on v{updateInfo.current})</span> : null}</p>
-                {updateInfo.body && <p className="text-[10px] text-nv-muted mt-1 leading-relaxed">{updateInfo.body}</p>}
-                {updateInfo.propagating && !updateErr && (
-                  <p className="text-[10px] text-nv-muted mt-1 leading-relaxed">Just published — if Install says it's not ready yet, give it a minute and try again.</p>
-                )}
-                {updateErr && (
-                  <p className="text-[10px] text-nv-red mt-1.5 leading-relaxed">{updateErr}</p>
-                )}
-              </div>
-            )}
-            {updateStatus === 'latest' && (
-              <p className="text-[11px] text-nv-green mb-3">You're on the latest version{updateInfo.current ? ` (v${updateInfo.current})` : ''}.</p>
-            )}
-            {updateStatus === 'error' && (
-              <div className="mb-3">
-                {/* The specific diagnosis when we have one — "check your connection" is only
-                    honest when the connection is actually the problem. */}
-                <p className="text-[11px] text-nv-red leading-relaxed">
-                  {updateErr || 'Could not check for updates. Check your connection.'}
-                </p>
-                {updateErr && (
-                  <button
-                    onClick={() => { import('@tauri-apps/plugin-shell').then(({ open }) => open('https://www.adris.tech/download.html')).catch(() => window.open('https://www.adris.tech/download.html', '_blank')); }}
-                    className="mt-1.5 text-[10px] px-2.5 py-1 rounded-lg border border-accent/50 text-accent hover:bg-accent/10 transition-fast"
-                  >Open the download page</button>
-                )}
-              </div>
-            )}
-            {updateStatus === 'installing' && (
-              <div className="mb-3">
-                <p className="text-[11px] text-nv-muted">{updatePct > 0 ? `Downloading update — ${updatePct}%` : 'Starting download…'} The app will restart automatically when done.</p>
-                <div className="mt-1.5 h-1.5 rounded-full bg-nv-surface2 overflow-hidden">
-                  <div className="h-full bg-accent transition-all" style={{ width: `${updatePct}%` }} />
-                </div>
-              </div>
-            )}
-            <div className="flex gap-2">
-              <button
-                onClick={checkUpdate}
-                disabled={updateStatus === 'checking' || updateStatus === 'installing'}
-                className="text-[10px] px-3 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:border-accent hover:text-accent transition-fast disabled:opacity-40"
-              >
-                {updateStatus === 'checking' ? 'Checking…' : 'Check for updates'}
-              </button>
-              {updateStatus === 'available' && (
-                <button
-                  onClick={installUpdate}
-                  className="text-[10px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent/90 transition-fast"
-                >
-                  Install &amp; restart
-                </button>
-              )}
-            </div>
-          </div>
         </Section>
       </div>
     </div>

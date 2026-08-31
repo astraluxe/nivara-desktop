@@ -2,6 +2,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { credentialStore } from './krewDb';
 import { supabase } from './supabase';
 import { detectClis, availableClis, type AgentCli } from './agentCli';
+// The pure preference-to-chat-state mapping lives apart so it can be unit-tested in node — see
+// chatConnection.ts. Re-exported here because this is where every caller already looks.
+import { chatConnectionFor, type ChatConnection } from './chatConnection';
+export { chatConnectionFor };
+export type { ChatConnection };
 
 // ─── Where AI runs ────────────────────────────────────────────────────────────
 // Krew always had a connection bar, but everything else — Guard, Automations, Studio, Coder's
@@ -24,6 +29,15 @@ export interface AiSourcePref {
   provider?: ByokProvider;   // which BYOK key to use when mode is own_key
   localModel?: string;       // which downloaded model to use when mode is local
   cli?: AgentCli;            // which agent CLI to think with when mode is agent_cli
+  /**
+   * Which model on that key, when the user has picked one themselves.
+   *
+   * Only ever set by an explicit choice in the menu's model list — never guessed. Blank means
+   * "whatever the key was connected with", which is the scanned-best model and the right default.
+   * It belongs to `provider`: changing provider clears it, so a Groq model id can never be sent
+   * to Gemini.
+   */
+  model?: string;
 }
 
 const KEY = 'nv-ai-source';
@@ -57,10 +71,52 @@ const BYOK_MODEL: Record<ByokProvider, string> = {
   omniroute: '',
 };
 
+/**
+ * The choice an existing user already made with the pill row, carried over once.
+ *
+ * WHY THIS IS NOT OPTIONAL. Until 1.68.0 the Krew chat kept its own mode in `nv-krew-connection`,
+ * and the pills were how people set it. Someone who deliberately chose adris.tech there — and never
+ * opened the title-bar menu, because it did not govern the chat — still has `nv-ai-source` at its
+ * `auto` default. Wiring the menu up without this would read that default, resolve it to "your own
+ * key" and move them off the source they picked, silently, on first launch after an update.
+ *
+ * Which would be the same bug in the opposite direction: a choice the user made, overridden by the
+ * app without telling them. Their setting wins; `auto` only applies to someone who never set one.
+ */
+function legacyChatChoice(): AiSourcePref | null {
+  try {
+    // One key, not two: Coder's constant is named CODER_CONN_KEY but its value is the same
+    // 'nv-krew-connection', so the two screens have always shared one stored choice.
+    const v = JSON.parse(localStorage.getItem('nv-krew-connection') || 'null');
+    const mode = v?.mode;
+    if (mode !== 'nivara' && mode !== 'own_key' && mode !== 'local') return null;
+    const out: AiSourcePref = { mode };
+    if (mode === 'own_key' && v.provider) out.provider = v.provider as ByokProvider;
+    if (mode === 'local' && v.localModel) out.localModel = v.localModel;
+    return out;
+  } catch { return null; }   // unparseable — treat as absent
+}
+
 export function getAiSource(): AiSourcePref {
   try {
-    const raw = JSON.parse(localStorage.getItem(KEY) ?? '{}');
-    return { mode: (raw.mode as AiSourceMode) ?? 'auto', provider: raw.provider, localModel: raw.localModel };
+    const stored = localStorage.getItem(KEY);
+    // Never set. Honour whatever the old pill row was left on before falling back to 'auto'.
+    if (!stored) return legacyChatChoice() ?? { mode: 'auto' };
+    const raw = JSON.parse(stored);
+    // EVERY FIELD THAT WAS WRITTEN HAS TO COME BACK.
+    //
+    // `cli` was silently dropped here. setAiSource stored it, this read threw it away, and the
+    // bridge then fell back to `avail.clis[0]` — so a user with both installed who deliberately
+    // chose Codex was put back on Claude Code the moment the app reloaded, with the menu still
+    // showing Codex because currentChoiceId matches on mode when the exact match fails. A stored
+    // preference that cannot survive a restart is not a preference.
+    return {
+      mode: (raw.mode as AiSourceMode) ?? 'auto',
+      provider: raw.provider,
+      localModel: raw.localModel,
+      cli: raw.cli,
+      model: raw.model,
+    };
   } catch { return { mode: 'auto' }; }
 }
 
@@ -71,12 +127,30 @@ export function setAiSource(pref: AiSourcePref): void {
 
 export interface AiAvailability {
   byokProviders: ByokProvider[];   // keys the user has actually connected
-  localModels: { name: string; filename: string }[];
+  /** Downloaded and ready to run. `sizeGb` is carried so the menu can say how big each one is —
+   *  the only number that tells a non-technical user which of their models is the capable one. */
+  localModels: { name: string; filename: string; sizeGb: number }[];
   signedIn: boolean;
   clis: AgentCli[];                // agent CLIs actually installed on this machine
 }
 
 /** What the user can actually pick right now — used to disable options rather than fail later. */
+/**
+ * Which model a given key would actually think with.
+ *
+ * The menu row used to say only "billed by NVIDIA", which answers who pays and not the question the
+ * user actually has — *what is it running?* One key can carry a dozen models, several of which do
+ * not work (the catalogue lies; see the model scan), so "connected" without a model name is half an
+ * answer.
+ *
+ * An explicit choice wins, and only for the provider it was made for — a model picked on the NVIDIA
+ * key must not be shown against a Groq key.
+ */
+export function modelForProvider(provider: string, pref: { provider?: string | null; model?: string | null } | null): string | null {
+  const chosen = pref && pref.provider === provider ? (pref.model || '') : '';
+  return chosen || BYOK_MODEL[provider as keyof typeof BYOK_MODEL] || null;
+}
+
 export async function getAiAvailability(): Promise<AiAvailability> {
   const byokProviders: ByokProvider[] = [];
   try {
@@ -88,10 +162,10 @@ export async function getAiAvailability(): Promise<AiAvailability> {
     }
   } catch { /* none */ }
 
-  let localModels: { name: string; filename: string }[] = [];
+  let localModels: { name: string; filename: string; sizeGb: number }[] = [];
   try {
-    const installed = await invoke<{ name: string; filename: string }[]>('models_list_installed');
-    localModels = (installed ?? []).map((m) => ({ name: m.name, filename: m.filename }));
+    const installed = await invoke<{ name: string; filename: string; size_gb?: number }[]>('models_list_installed');
+    localModels = (installed ?? []).map((m) => ({ name: m.name, filename: m.filename, sizeGb: m.size_gb ?? 0 }));
   } catch { /* engine not installed */ }
 
   let signedIn = false;
@@ -138,7 +212,13 @@ export async function resolveAiSource(): Promise<ResolvedAiSource> {
     if (!key) return null;
     // A user-run gateway carries its own address, stored beside the key.
     const baseUrl = provider === 'omniroute' ? (d?.base_url || null) : null;
-    return { mode: 'own_key', apiKey: key, provider, modelName: BYOK_MODEL[provider] || null,
+    // AN EXPLICIT CHOICE WINS, INCLUDING HERE. The BYOK defaults below are picked for background
+    // work — cheap and fast — which is right when nobody has said otherwise. Once the user has gone
+    // into the menu and named a model on this key, ignoring it in Guard and the automations while
+    // honouring it in the chat would be the same one-setting-two-answers problem in a new place.
+    // Only for the provider it was chosen FOR: a fallback to another key must not carry it over.
+    const chosen = provider === pref.provider ? (pref.model || '') : '';
+    return { mode: 'own_key', apiKey: key, provider, modelName: chosen || BYOK_MODEL[provider] || null,
              baseUrl, localModel: null, sessionToken: null };
   };
 
@@ -214,4 +294,75 @@ export function aiSourceLabel(pref: AiSourcePref): string {
     case 'nivara':  return 'adris.tech AI';
     default:        return 'Automatic';
   }
+}
+
+/**
+ * Keep a component's connection state in step with the one setting.
+ *
+ * Returns a cleanup function. Fires once on mount and again on every change to `nv-ai-source`, so a
+ * choice made in the title bar reaches the chat on the very next message rather than the next
+ * remount — which is what "one control, everywhere" has to mean to be worth anything.
+ */
+export function onChatConnectionChange(apply: (c: ChatConnection) => void): () => void {
+  let alive = true;
+  const push = () => {
+    getAiAvailability()
+      .then((avail) => { if (alive) apply(chatConnectionFor(getAiSource(), avail)); })
+      // Availability needs Tauri and the network; without it, honour the plain preference rather
+      // than leaving the chat on a stale mode.
+      .catch(() => { if (alive) apply(chatConnectionFor(getAiSource(), null)); });
+  };
+  push();
+  window.addEventListener(AI_SOURCE_EVENT, push);
+  // A key connected in Connect Apps changes what 'auto' and 'own_key' resolve to.
+  window.addEventListener('nv-creds-changed', push);
+  return () => {
+    alive = false;
+    window.removeEventListener(AI_SOURCE_EVENT, push);
+    window.removeEventListener('nv-creds-changed', push);
+  };
+}
+
+// ─── The bridge, for every caller that talks to krew_ai_stream ───────────────
+//
+// THE TRAP THIS CLOSES. `krew_ai_stream` is the Rust command almost every screen uses, and its
+// match on `mode` ends `_ => emit_error("Unknown mode: {mode}")`. It has never heard of
+// 'agent_cli'. So a caller that resolves the source correctly and then hands the result straight to
+// it does not fall back or degrade — it shows the user **"Unknown mode: agent_cli"**.
+//
+// `callAiOnce` in automationRunner had the branch, so Guard scans, automations and the outreach
+// copilot were fine. Five other places did not: the Creator screen, the Research screen, the
+// Automation module's own runner, Studio, and the Quick Bar. Choosing "Your Claude Code" — the
+// option the whole product strategy rests on — broke all five, and nothing said so.
+//
+// One helper rather than five copies, because five copies is how the sixth caller gets written
+// without one.
+
+/**
+ * Answer through the user's own Claude Code / Codex when that is what they chose.
+ *
+ * Returns `null` when the bridge is NOT the chosen source, which means "carry on with
+ * krew_ai_stream" — so the call site reads as two lines and cannot forget the case.
+ *
+ * The CLI replies in one piece rather than streaming, so `onChunk` is called once with the whole
+ * answer. That keeps a caller's own accumulate-and-render loop working unchanged instead of asking
+ * every one of them to special-case it.
+ */
+export async function bridgeAnswer(
+  src: ResolvedAiSource,
+  messages: { role: string; content: string }[],
+  systemPrompt: string,
+  onChunk?: (t: string) => void,
+): Promise<string | null> {
+  if (src.mode !== 'agent_cli' || !src.cli) return null;
+  const { runAgentCli } = await import('./agentCli');
+  // The CLI takes ONE prompt, not a message array — the same flattening the Krew chat uses, so a
+  // conversation reads to it the way it reads to any other model.
+  const prompt = messages.length === 1
+    ? messages[0].content
+    : messages.map((m) => (m.role === 'user' ? `User: ${m.content}` : `Assistant: ${m.content}`)).join('\n\n');
+  const r = await runAgentCli(src.cli, prompt, { systemPrompt: systemPrompt || undefined });
+  if (!r.ok) throw new Error(r.error || 'the agent returned nothing');
+  onChunk?.(r.text);
+  return r.text;
 }

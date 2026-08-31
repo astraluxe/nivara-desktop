@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import ConversationList from '../components/krew/ConversationList';
 import KrewChat from '../components/krew/KrewChat';
 import ConnectApps from '../components/krew/ConnectApps';
@@ -23,6 +23,21 @@ export default function KrewModule({ onViewOnCanvas, onOpenAutomations }: KrewMo
   const [sessionId,    setSessionId]    = useState<string | null>(null);
   const [agent,        setAgent]        = useState<KrewAgent>(DEFAULT_AGENT);
   const [view,         setView]         = useState<View>('chat');
+
+  // ── Opening a tab from somewhere else ──────────────────────────────────────
+  //
+  // `/office` used to navigate to a MODULE of that name. There is no such module any more: the
+  // office is a tab of this one, and having a second sidebar entry also called "Office" meant the
+  // owner clicked the one they already had and quite reasonably asked where the room had gone.
+  // Anything in the app can now ask for a tab by name instead.
+  useEffect(() => {
+    const on = (e: Event) => {
+      const want = (e as CustomEvent<{ view?: string }>).detail?.view;
+      if (want === 'chat' || want === 'office' || want === 'research') setView(want);
+    };
+    window.addEventListener('nv-krew-view', on);
+    return () => window.removeEventListener('nv-krew-view', on);
+  }, []);
   const [refreshToken, setRefreshToken] = useState(0);
   const [researchQuery, setResearchQuery] = useState('');
   // Bumped on every "new chat" click so KrewChat resets even when the session is ALREADY null

@@ -52,6 +52,8 @@ export interface BrainNode {
   x: number; y: number;  // graph position
   createdAt: number;
   updatedAt: number;
+  /** For image nodes: an identity for the bytes, so the same picture is never stored twice. */
+  hash?: string;
 }
 export interface BrainEdge { id: string; source: string; target: string; label?: string }
 export interface BrainData { nodes: BrainNode[]; edges: BrainEdge[] }
@@ -342,7 +344,7 @@ export const brain = {
    *  "title (2)", "title (3)"... instead. For auto-captured content (Guard scans, Coder
    *  explanations, saved emails) where each new one is its own distinct record, not a
    *  continuation of the last thing that happened to get the same title. */
-  addUniqueNode(n: { title: string; body?: string; kind?: BrainNodeKind; filePath?: string; url?: string }): BrainNode {
+  addUniqueNode(n: { title: string; body?: string; kind?: BrainNodeKind; filePath?: string; url?: string; hash?: string }): BrainNode {
     const d = read();
     let title = n.title;
     if (d.nodes.some((x) => normTitle(x.title) === normTitle(title))) {
@@ -488,13 +490,31 @@ export const brain = {
     return this.addNode({ title: PICTURES_HUB, kind: 'list', body: 'Your saved pictures — logos and images you can drop into presentations and notes.' });
   },
 
-  /** Save a picture as an image node (its bytes live on disk at filePath) and link it into
-   *  the Pictures folder. Never overwrites a same-named picture — keeps "name (2)" etc. */
-  addPicture(p: { name: string; filePath: string; body?: string }): BrainNode {
+  /**
+   * Save a picture into the Pictures folder — once.
+   *
+   * This used to lean on `addUniqueNode`, which does the OPPOSITE of dedupe: on a title clash it
+   * keeps both and renames the newcomer "figure 1 (2)". So attaching the same document a second
+   * time doubled every figure in the folder, which is exactly what a user reported.
+   *
+   * `hash` is an identity for the BYTES (see lib/pictureSave.ts). Filenames cannot do this job —
+   * two unrelated figures are both "image1.png", and the same logo arrives under a different name
+   * every time. When the bytes are already here, the existing node is returned and nothing is added.
+   */
+  addPicture(p: { name: string; filePath: string; body?: string; hash?: string }): BrainNode {
     const hub = this.ensurePicturesHub();
-    const node = this.addUniqueNode({ title: p.name, kind: 'image', filePath: p.filePath, body: p.body ?? '' });
+    if (p.hash) {
+      const existing = read().nodes.find((n) => n.kind === 'image' && n.hash === p.hash);
+      if (existing) return existing;      // same picture, already saved
+    }
+    const node = this.addUniqueNode({ title: p.name, kind: 'image', filePath: p.filePath, body: p.body ?? '', hash: p.hash });
     this.link(hub.id, node.id, 'picture');
     return node;
+  },
+
+  /** Every picture's content hash, so a caller can decide before writing anything to disk. */
+  pictureHashes(): string[] {
+    return read().nodes.filter((n) => n.kind === 'image' && n.hash).map((n) => n.hash as string);
   },
 
   /** All saved pictures (image nodes), newest first. */

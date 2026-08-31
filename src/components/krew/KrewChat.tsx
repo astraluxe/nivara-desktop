@@ -11,7 +11,7 @@ import { SYSTEM_TOOLS, BOSS_SYSTEM_TOOL_NAMES, AUTOMATION_TOOLS, BROWSER_TOOLS, 
 import { TaskProgress, type TaskPhase } from './TaskProgress';
 import { StatusGlobe } from './StatusGlobe';
 import { runParallelResearch } from '../../lib/researchSources';
-import { agentHandle, agentInitials, deptColor, deptTint, deptStyle, AGENT_BY_KEY, KREW_AGENTS, type KrewAgent } from '../../lib/krewAgents';
+import { agentHandle, agentInitials, deptColor, deptTint, deptStyle, AGENT_BY_KEY, KREW_AGENTS, type KrewAgent, type KrewCategory } from '../../lib/krewAgents';
 import { rescuePrintedCalls, normaliseToolCall, findToolCallJson } from '../../lib/toolCallRescue';
 import { repairToolJson, extractToolFields } from '../../lib/toolJson';
 import { planFromWorkOrder, saveTargetFromOrder, isWorkOrder, type Delegation } from '../../lib/workOrder';
@@ -20,7 +20,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { extractTableRows, findLeadHeaderIndex, hasPopulatedLeadTable, mergeLeadTables, parseLeadRows, rowsToMarkdown, leadConnStatusToOutreach, looksLikePersonLead, matchesSeniority, matchesSector, peopleSearchPhrases } from '../../lib/leadTable';
 import { supabase } from '../../lib/supabase';
 import { getPlanConfig } from '../../lib/planConfig';
-import { parseDeckSpec, slidesNeedingImages, renderDeckHtml, extractDeckSpec, applyDeckEdits, type DeckSpec, type DeckSlide, type DeckPalette } from '../../lib/deck';
+import { parseDeckSpec, slidesNeedingImages, renderDeckHtml, extractDeckSpec, applyDeckEdits, type DeckSpec, type DeckSlide, type DeckPalette, deckToPptxBlob, LAYOUTS_WITH_IMAGE, layoutShowsImage } from '../../lib/deck';
 import { setLastDeck } from '../../lib/deckStore';
 import { CHANNEL_META, listConnections, saveConnection, schedulePost, postNow, type SocialConnection, type SocialChannel, type PostContent } from '../../lib/social';
 import UpgradeModal from '../UpgradeModal';
@@ -34,12 +34,19 @@ import { normaliseScore, scoreValue, decisionBias, recordDecision, decisionStyle
 import { slugLooksLikeName, hasWrittenMessage } from '../../lib/outreachConnections';
 import { auditPromises, cleanOutboundMessage, stripOngoingWorkClaims, type PromiseIssue } from '../../lib/verify';
 import ConnectionBar from '../coder/ConnectionBar';
+import { useAiSourceSync } from '../../hooks/useAiSourceSync';
+import SearchModeMenu from './SearchModeMenu';
+import TipBar from './TipBar';
+import TipStage from './TipStage';
+import { routeDeckRequest, looksLikePresentation, namedApp } from '../../lib/deckRouting';
+import { quickReplies } from '../../lib/quickReplies';
+import { shouldOverrideRefusal, wantsAnArtifact, recoveryNote } from '../../lib/refusalGuard';
 import { getMonthlyUsage } from '../../lib/tokenTracker';
 import { getImageBudget, unitsForModel } from '../../lib/imageQuota';
 import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining } from '../../lib/tokenTier';
 import { getActiveSkillsContext, SKILLS_REGISTRY, isSkillInstalled, installSkill, type SkillRegistryEntry } from '../../lib/skills';
 import { builtInSkillsBlock, learnSkill } from '../../lib/skillGraph';
-import { describeIntent, toolReceipt, stripToolNoise, setActivity, silenceActivity, resumeActivity, runLogFence, liveFrame, ACTIVITY_EVENT, getActivity, type AgentActivity } from '../../lib/agentActivity';
+import { describeIntent, toolReceipt, stripToolNoise, setActivity, silenceActivity, resumeActivity, runLogFence, liveFrame, ACTIVITY_EVENT, getActivity, getActivities, type AgentActivity } from '../../lib/agentActivity';
 import { trimRunHistory } from '../../lib/runHistory';
 import { dropUngroundedRows, repairAnswer, isUngroundedRecall, deniesCapability } from '../../lib/groundTruth';
 import { requiredToolsFor, contractDirective, clarifyDirective, unmetRequirements, correctionFor, carriesData, endsWithQuestion } from '../../lib/taskContract';
@@ -95,7 +102,7 @@ async function freshSessionToken(fallback: string | null): Promise<string | null
 //  • 'prompt' → drops a ready phrasing into the input (the user reviews and sends; it routes
 //    through the normal Krew flow / deterministic short-circuits).
 //  • 'nav'    → opens another module of the exe (via the global nv-navigate event App listens to).
-type SlashCmd = { cmd: string; label: string; desc: string; run: 'prompt' | 'nav' | 'research' | 'agents' | 'outreach' | 'continue' | 'scan' | 'verifylinks' | 'refine' | 'toggleSetting' | 'leads' | 'council' | 'plan' | 'studio'; value: string };
+type SlashCmd = { cmd: string; label: string; desc: string; run: 'prompt' | 'nav' | 'research' | 'agents' | 'outreach' | 'continue' | 'scan' | 'verifylinks' | 'refine' | 'toggleSetting' | 'leads' | 'council' | 'plan' | 'studio' | 'krewview'; value: string };
 const SLASH_COMMANDS: SlashCmd[] = [
   // ── Actions that run in the chat ─────────────────────────────────────────
   { cmd: 'verify',   label: 'Verify LinkedIn',   desc: 'Open & check every LinkedIn in your lead list',   run: 'prompt', value: 'Go to <file name> and verify each and every LinkedIn — open and check each one, and fill it in properly if it exists.' },
@@ -142,6 +149,8 @@ const SLASH_COMMANDS: SlashCmd[] = [
   { cmd: 'guard',      label: 'Open Guard',         desc: 'Compliance & threat scan',           run: 'nav', value: 'guard' },
   { cmd: 'connect',    label: 'Connect apps',       desc: 'Link Gmail, LinkedIn, Notion, etc.', run: 'nav', value: 'connect' },
   { cmd: 'mcp',        label: 'Connect MCP server', desc: 'Add any MCP server by URL & use its tools', run: 'nav', value: 'connect' },
+  { cmd: 'office',     label: 'See your team',      desc: 'The office floor, and the room with whoever is working at their desk', run: 'krewview', value: 'office' },
+  { cmd: 'shelf',      label: 'The Shelf',          desc: 'Free software your agents can run for you', run: 'nav', value: 'tools' },
   { cmd: 'models',     label: 'Models',             desc: 'Local & cloud AI models',            run: 'nav', value: 'models' },
   { cmd: 'settings',   label: 'Settings',           desc: 'App preferences',                    run: 'nav', value: 'settings' },
 ];
@@ -288,6 +297,9 @@ function detectSkill(text: string): SkillRegistryEntry | null {
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+/** A file attached to a chat message: text content, or an image carried as base64. */
+type ChatFile = { name: string; content: string; isImage?: boolean; mimeType?: string; fromBrain?: boolean; fromDoc?: boolean };
 
 interface DisplayMsg {
   /**
@@ -483,44 +495,12 @@ function looksLikeScheduleIntent(text: string): boolean {
   // "post it", "publish this", "post now" — the verb phrase carries its own object.
   return /\b(post|publish|schedule|share)\s+(it|this|these|them|now)\b/.test(t);
 }
-
-// The marks of a real slide-by-slide brief. These only show up when someone is genuinely
-// asking for a presentation — an email that mentions "the ppt" in passing has none of them,
-// which is what makes them safe to trust over the message/research veto below.
-function deckBriefSignals(t: string): number {
-  let n = 0;
-  const numbered = (t.match(/\bslide\s*#?\s*\d{1,2}\s*[:.–-]/g) || []).length;
-  if (numbered >= 2) n += 2; else if (numbered === 1) n += 1;   // "Slide 1: …" through "Slide 15: …"
-  if (/\bslide count\b|\b\d{1,2}\s*(?:-|–|to)\s*\d{1,2}\s+slides?\b|\b\d{1,2}\s+slides?\b/.test(t)) n++;
-  if (/\b(title slide|agenda slide|closing slide|speaker notes?|slide deck|deck outline|presentation outline|slide[- ]by[- ]slide)\b/.test(t)) n++;
-  return n;
-}
-
-// Detect a "make me a presentation / PPT" request so we can offer the deck setup card.
-function looksLikePresentation(text: string): boolean {
-  const t = text.toLowerCase();
-  // "email me the deck", "attach the ppt" — about SENDING a deck that already exists, which is
-  // not a request to build one. Kept separate so it can't satisfy the explicit-make test below.
-  const sendExisting = /\b(e-?mail|send|attach|forward|share)\b[^.]{0,24}\b(deck|presentation|slides?|ppt|pptx)\b/.test(t);
-  // Does the user EXPLICITLY ask to MAKE a deck (make/create/build … a deck/ppt/slides/presentation)?
-  const makeDeckExplicit = !sendExisting &&
-    /\b(make|create|build|design|generate|prepare|produce|put together|need|want|draft|turn (this|it) into)\b[^.]{0,28}\b(deck|presentation|slides?|ppt|pptx|pitch\s?deck|keynote|power\s?point)\b/.test(t);
-  // A FULL slide-by-slide brief is the ask, full stop — however many times its bullets happen
-  // to say "email" (as in "integrates with email and calendar") or "message" (as in "Core
-  // message:"). Those incidental mentions were tripping the veto below and sending a detailed
-  // fifteen-slide PowerPoint brief off to the scheduler instead of the deck maker.
-  if (deckBriefSignals(t) >= 2) return true;
-  // Is the PRIMARY ask really a written message / email / outreach / research?
-  const wantsMessageOrResearch = /\b(message|messages|email|e-?mail|linkedin|outreach|dm|whatsapp|cold\s*(mail|email)|reply|caption|research|analy[sz]e|summar|strategy|go[- ]to[- ]market|gtm)\b/.test(t);
-  // If they want a message/research and did NOT explicitly ask to MAKE a deck, then a "ppt/deck"
-  // mention is just an ATTACHMENT ("attach the ppt") — do NOT hijack into the deck maker.
-  if (wantsMessageOrResearch && !makeDeckExplicit) return false;
-
-  if (/\b(power\s?point|\.pptx|\bppt\b|pitch\s?deck|slide\s?deck|slidedeck|keynote)\b/.test(t)) return true;
-  if (/\b(presentation|slides?|deck)\b/.test(t) &&
-      /\b(make|create|build|generate|design|prepare|produce|put together|need|want|draft|do|turn (this|it) into)\b/.test(t)) return true;
-  return false;
-}
+// deckBriefSignals and looksLikePresentation used to live here. They were a SHORTCUT that ran
+// before the boss saw the message, and one of their rules was "the text contains ppt, therefore
+// it is a deck request" — so "give me a script to follow to present the ppt" put the deck BUILDER
+// on screen instead of writing the script, and "use Microsoft PowerPoint" never reached the boss
+// that could have driven the real PowerPoint. They now live in lib/deckRouting.ts, where they are
+// asserted against the exact sentences that were reported. See routeDeckRequest.
 
 // ─── In-chat deck editing helpers ─────────────────────────────────────────────
 // A user's own picture to drop into the deck: a logo (shown on every slide) or a photo
@@ -609,11 +589,19 @@ function applyUserImagesToSpec(spec: DeckSpec, imgs: DeckImage[], text: string):
     let idx = -1;
     if (im.slide && im.slide >= 1 && im.slide <= spec.slides.length) idx = im.slide - 1;
     else if (ti < targets.length) { const tval = targets[ti++]; if (tval >= 1 && tval <= spec.slides.length) idx = tval - 1; }
+    // An explicit "put this on slide 4" is obeyed even when that slide's layout cannot draw a
+    // picture — the user asked for it there. But it must not vanish in silence: a layout that has
+    // no image slot gets turned into one that has, keeping the slide's own words.
+    if (idx >= 0 && !layoutShowsImage(spec.slides[idx].layout)) spec.slides[idx].layout = 'bullets';
     if (idx >= 0) { spec.slides[idx].imageData = im.dataUri; delete spec.slides[idx].imagePrompt; used.add(idx); placed++; }
     else unplaced.push(im);
   }
   if (unplaced.length) {
-    const friendlyLayouts = ['title', 'section', 'image-full', 'closing', 'two-column', 'bullets'];
+    // WHICH SLIDES CAN ACTUALLY SHOW A PICTURE. This used to include 'two-column', where neither
+    // renderer draws one — the two cards fill the frame — so a figure sent to such a slide was set
+    // on the spec and then quietly dropped. The list now lives with the renderers (deck.ts), so it
+    // cannot drift away from what they really draw.
+    const friendlyLayouts = LAYOUTS_WITH_IMAGE as readonly string[];
     const slots = spec.slides.map((_, i) => i).filter((i) => !used.has(i) && !spec.slides[i].imageData);
     const friendly = slots.filter((i) => friendlyLayouts.includes(spec.slides[i].layout));
     const order = friendly.length ? friendly : slots;
@@ -1356,6 +1344,9 @@ function DelegationBubble({ agentKey, content, streaming }: { agentKey: string; 
   // An unknown key (an agent removed since the chat was saved) falls back to Boss purple
   // rather than to grey: a colourless box among coloured ones reads as broken.
   const d = deptStyle(agent?.category);
+  // F3.2 — the avatar breathes while this agent is actually working. Same bus the waiting box and
+  // the Office floor read, so the three can never disagree about who is busy.
+  const working = useWorkingKeys().has(agentKey);
   return (
     <div className="my-3">
       {/* "called by boss" label */}
@@ -1367,8 +1358,8 @@ function DelegationBubble({ agentKey, content, streaming }: { agentKey: string; 
       </div>
       <div className="rounded-xl border overflow-hidden" style={{ borderColor: d.border, background: d.tint }}>
         <div className="flex items-center gap-2 px-3 pt-2.5 pb-1.5">
-          <div className="w-7 h-7 rounded-md flex items-center justify-center text-[10px] font-bold shrink-0"
-               style={{ background: d.chip, color: d.color }}>
+          <div className={`w-7 h-7 rounded-md flex items-center justify-center text-[10px] font-bold shrink-0 ${working ? 'nv-working' : ''}`}
+               style={{ background: d.chip, color: d.color, ...workVar(agent?.category) }}>
             {agent ? agentInitials(agent) : agentKey.slice(0, 2).toUpperCase()}
           </div>
           <div className="flex flex-col min-w-0">
@@ -1666,6 +1657,32 @@ function PostCard({ content }: { content: string }) {
 //   Headline the user reads first
 //   Optional detail line
 //   ```
+/**
+ * Which agents are working right now, as a set of keys.
+ *
+ * F3.2 — the avatar of a busy agent breathes. It reads the same activity bus as the waiting box and
+ * the Office floor, so the three can never disagree about who is working, and it costs one listener
+ * for the whole screen rather than one per avatar.
+ */
+function useWorkingKeys(): Set<string> {
+  const [keys, setKeys] = useState<Set<string>>(() => new Set(getActivities().map((a) => a.agentKey)));
+  useEffect(() => {
+    const on = () => setKeys(new Set(getActivities().map((a) => a.agentKey)));
+    window.addEventListener(ACTIVITY_EVENT, on);
+    return () => window.removeEventListener(ACTIVITY_EVENT, on);
+  }, []);
+  return keys;
+}
+
+/** The department colour as bare RGB channels, which is what the CSS variable wants. */
+function workVar(category?: KrewCategory | null): React.CSSProperties {
+  // deptColor returns "rgb(var(--nv-dept-x))". The animation needs the VARIABLE NAME alone so it can
+  // apply its own alpha — passing the whole rgb() through would produce "rgb(rgb(...) / .42)",
+  // which is not a colour and silently paints nothing.
+  const name = deptColor(category).match(/--[a-z-]+/)?.[0] ?? '--nv-dept-boss';
+  return { ['--nv-work' as string]: `var(${name})` };
+}
+
 function StatusBlock({ startedAt, headline, detail, tone }: {
   startedAt: number; headline: string; detail?: string; tone: 'work' | 'halt' | 'wait';
 }) {
@@ -1772,18 +1789,36 @@ const SLOW_TOOLS = new Set(['web_search','browser_navigate','browser_open','brow
  * Only looks at the TAIL of the answer, and only when it actually ends on a question, so the
  * numbered steps inside a plan are never mistaken for a menu.
  */
-function trailingOptions(text: string): string[] {
-  const tail = (text || '').slice(-900);
-  if (!/\?\s*$|pick one|which one|want me to|shall i|should i/i.test(tail)) return [];
-  const out: string[] = [];
-  for (const line of tail.split('\n')) {
-    const m = line.trim().match(/^(?:\*\*)?(\d)[.)]\s*\**\s*(.{6,120}?)\s*\**\s*$/);
-    if (m) {
-      const label = m[2].replace(/\*\*/g, '').replace(/\s*[—-]\s*`[^`]+`\s*$/, '').replace(/\?$/, '').trim();
-      if (label && !/^day\b/i.test(label)) out.push(label);
-    }
-  }
-  return out.length >= 2 && out.length <= 5 ? out : [];
+/**
+ * The buttons under an answer, so a question can be answered with one click.
+ *
+ * This used to be `trailingOptions`: it required two to five NUMBERED lines inside the last 900
+ * characters, so the shapes people actually get — "PowerPoint or here in the chat?", "shall I add
+ * speaker notes?", `say "extend the deck"` — produced no buttons at all and the answer had to be
+ * retyped. For the person this is built for, that is where the work stops.
+ *
+ * The extraction now lives in lib/quickReplies.ts with its own assertions, including the cases
+ * where nothing must appear — a button under every message is furniture nobody reads.
+ */
+function QuickReplyBar({ text, busy, onPick }: { text: string; busy: boolean; onPick: (send: string) => void }) {
+  const replies = useMemo(() => quickReplies(text), [text]);
+  if (replies.length === 0) return null;
+  return (
+    <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+      <span className="text-[9.5px] text-nv-faint">Reply:</span>
+      {replies.map((r, i) => (
+        <button
+          key={i}
+          disabled={busy}
+          onClick={() => onPick(r.send)}
+          // The button is short; the tooltip carries what will actually be sent, so a shortened
+          // label can never send something the user did not expect.
+          title={r.send}
+          className="text-[10px] px-2 py-1 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-fast disabled:opacity-40 max-w-[240px] truncate"
+        >{r.label}</button>
+      ))}
+    </div>
+  );
 }
 
 /** Data rows in a tool result, so the model can be told the size of what it is NOT being shown. */
@@ -1982,15 +2017,47 @@ function validImageData(d?: string): boolean {
   return !!d && /^data:image\/(png|jpe?g|webp|gif);base64,/i.test(d) && d.length > 512;
 }
 
-function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled }: {
+export function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled, preferOwnApp }: {
   unlockedAdvanced: boolean;
   onGenerate: (cfg: DeckConfig) => void;
   onCancel: () => void;
   disabled?: boolean;
+  /** The user named Microsoft PowerPoint themselves, so open on it rather than asking again. */
+  preferOwnApp?: boolean;
 }) {
-  // The deck is always built here in the chat (live, editable, present + export PDF). The
-  // PowerPoint/.pptx export was removed for now — everything stays in our own chat deck.
-  const format: 'html' = 'html';
+  // ── WHERE DOES THE DECK GO? ──────────────────────────────────────────────
+  //
+  // This was hardcoded to the in-chat deck, so someone who said "use Microsoft PowerPoint" — and
+  // someone who simply owns PowerPoint and would rather work in it — was never asked. They got the
+  // chat deck and no way to say otherwise.
+  //
+  // The choice only appears when PowerPoint is ACTUALLY on the machine. Offering a destination that
+  // cannot work is worse than not offering it: the user picks it, waits, and gets an error.
+  const [ppt, setPpt] = useState<{ path: string } | null>(null);
+  const [format, setFormat] = useState<'html' | 'pptx'>('html');
+  useEffect(() => {
+    let dead = false;
+    import('../../lib/installedApps')
+      .then((m) => m.getInstalledApps().then((scan) => m.officeApp(scan, 'powerpoint')))
+      .then((app) => {
+        if (dead || !app) return;
+        setPpt({ path: app.path });
+        // ── THE USER'S OWN APPLICATION COMES FIRST ──────────────────────────
+        // The rule for this product is that an installed application wins over anything we render
+        // ourselves: it is what the business already knows, already has fonts and templates in,
+        // and can keep editing after we are gone. Our in-chat deck is the fallback for when there
+        // is no PowerPoint, not the default in spite of one.
+        //
+        // So the card opens on PowerPoint whenever PowerPoint is really there. The chat deck is
+        // one click away and gets built regardless, so nothing is lost by defaulting this way.
+        setFormat('pptx');
+      })
+      .catch(() => { /* no scan — the choice stays hidden and the chat deck is used */ });
+    return () => { dead = true; };
+  }, []);
+  // Naming the application out loud is a stronger signal still, and it holds even while the scan
+  // is in flight — so a slow scan cannot quietly downgrade what they asked for.
+  useEffect(() => { if (preferOwnApp) setFormat('pptx'); }, [preferOwnApp]);
   const [mode, setMode]         = useState<'basic' | 'advanced'>('basic');
   const [imgModel, setImgModel] = useState<'gemini-2.5-flash-image' | 'gemini-3-pro-image-preview'>('gemini-2.5-flash-image');
   const [slides, setSlides]     = useState(12);
@@ -2020,7 +2087,8 @@ function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled }: {
     return (
       <div className="my-3 rounded-xl border border-nv-border bg-nv-surface px-3 py-2.5">
         <p className="text-[11px] text-nv-muted">
-          Building a <span className="text-accent font-semibold">{mode}</span> deck <span className="text-accent font-semibold">here in chat</span>…
+          Building a <span className="text-accent font-semibold">{mode}</span> deck{' '}
+          <span className="text-accent font-semibold">{format === 'pptx' ? 'in PowerPoint' : 'here in chat'}</span>…
         </p>
       </div>
     );
@@ -2033,6 +2101,20 @@ function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled }: {
         <p className="text-[10px] text-nv-faint mt-0.5">Attach your logo or pictures with the message and I'll place them in the deck. Tweak it after with "put my logo on slide 1", "make it blue"…</p>
       </div>
       <div className="p-3 space-y-3">
+        {ppt && (
+          <div>
+            <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1.5">Where should it go?</p>
+            <div className="flex gap-2">
+              <Opt active={format === 'html'} onClick={() => setFormat('html')}
+                   title="Here in the chat" sub="Live, editable, present or export as PDF" />
+              <Opt active={format === 'pptx'} onClick={() => setFormat('pptx')}
+                   title="Microsoft PowerPoint" sub="A real .pptx, opened in your own PowerPoint" />
+            </div>
+            <p className="text-[9.5px] text-nv-faint mt-1.5">
+              Either way, <b className="text-nv-text">the pictures from your document and anything you attached go into the slides.</b>
+            </p>
+          </div>
+        )}
         <div>
           <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1.5">Detail level</p>
           <div className="flex gap-2">
@@ -3327,8 +3409,15 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
   // What the run is doing right now — the same feed the Office floor reads, so the waiting box and
   // the office desk can never disagree about what is happening.
   const [live, setLive] = useState<AgentActivity | null>(() => getActivity());
+  // EVERYONE working, not just the newest. Independent agents really do run at the same time, and
+  // until the bus became a map they overwrote each other in one slot — so three agents looked like
+  // one flickering between three names. This is the "I have a team" moment, finally visible.
+  const [crew, setCrew] = useState<AgentActivity[]>(() => getActivities());
   useEffect(() => {
-    const on = (e: Event) => setLive((e as CustomEvent<AgentActivity | null>).detail ?? null);
+    const on = (e: Event) => {
+      setLive((e as CustomEvent<AgentActivity | null>).detail ?? null);
+      setCrew(getActivities());
+    };
     window.addEventListener(ACTIVITY_EVENT, on);
     return () => window.removeEventListener(ACTIVITY_EVENT, on);
   }, []);
@@ -3474,9 +3563,29 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
           than a generic line that is true of every turn ever run. Falls back to something honest
           and vague only in the first moment, before there is anything specific to report. */}
       {streaming && !content && (
-        <StatusBlock startedAt={bubbleStartedAt} tone="work"
-          headline={live?.headline || 'Working on it'}
-          detail={live?.detail || 'Reading the request and choosing what to do first.'} />
+        <>
+          <StatusBlock startedAt={bubbleStartedAt} tone="work"
+            headline={live?.headline || 'Working on it'}
+            detail={live?.detail || 'Reading the request and choosing what to do first.'} />
+          {/* THE REST OF THE TEAM. Only drawn when there genuinely is one — a single agent is the
+              ordinary case and does not need a list of itself. Each row is a real agent doing real
+              work, read from the same bus the box above reads. */}
+          {crew.length > 1 && (
+            <div className="ml-2 mt-1.5 flex flex-col gap-1">
+              {crew.slice(1).map((a) => (
+                <div key={a.agentKey || a.agent} className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full shrink-0 animate-pulse"
+                        style={{ background: deptColor(AGENT_BY_KEY[a.agentKey]?.category) }} />
+                  <span className="text-[10.5px] font-semibold shrink-0"
+                        style={{ color: deptColor(AGENT_BY_KEY[a.agentKey]?.category) }}>
+                    {a.agent}
+                  </span>
+                  <span className="text-[10.5px] text-nv-muted truncate">{a.headline}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
       {streaming && content && <span className="inline-block w-1.5 h-3.5 bg-accent animate-pulse ml-0.5 rounded-sm" />}
       {!streaming && extractVideoUrls(content).map(url => (
@@ -3774,6 +3883,7 @@ function answerish(msg: DisplayMsg): boolean {
 }
 
 function MessageRow({ msg, agent }: { msg: DisplayMsg; agent: KrewAgent }) {
+  const busyKeys = useWorkingKeys();
   if (msg.role === 'tool_call') return <ToolCallBubble name={msg.toolName ?? 'tool'} args={msg.content} />;
   if (msg.role === 'tool_result' && msg.toolName === 'web_search') return <SearchResultBubble content={msg.content} />;
   if (msg.role === 'tool_result') return <ToolResultBubble name={msg.toolName ?? 'tool'} content={msg.content} />;
@@ -3829,10 +3939,11 @@ function MessageRow({ msg, agent }: { msg: DisplayMsg; agent: KrewAgent }) {
   return (
     <div className="my-3">
       <div className="flex items-center gap-2 mb-1.5">
-        <div className="w-6 h-6 rounded-nv-sm flex items-center justify-center text-[9px] font-bold shrink-0"
+        <div className={`w-6 h-6 rounded-nv-sm flex items-center justify-center text-[9px] font-bold shrink-0 ${busyKeys.has(agent.key) ? 'nv-working' : ''}`}
              style={{
                background: deptTint(agent.category, 0.16),
                color: deptColor(agent.category),
+               ...workVar(agent.category),
                boxShadow: `inset 0 0 0 1px ${deptTint(agent.category, 0.35)}`,
              }}>
           {agentInitials(agent)}
@@ -3958,51 +4069,6 @@ function browserActionLabel(tool: string, args: Record<string, unknown>): string
 
 // ─── Starter prompts per category ────────────────────────────────────────────
 
-const STARTER_PROMPTS: Record<string, string[]> = {
-  boss:             ['What should I focus on this week?', 'Give me a strategy for growing my product', 'Prioritise my backlog into a 2-week sprint'],
-  caption_writer:   ['Write 5 Instagram captions for my new product launch', 'Give me caption variations — professional and casual', 'Write a thread for Twitter about AI trends'],
-  blog_writer:      ['Write a 600-word blog post about remote work productivity', 'Give me an SEO outline for "best project management tools"', 'Rewrite this intro to be more engaging'],
-  seo_writer:       ['Research top keywords for "AI productivity app"', 'Write a meta description for my landing page', 'Audit my blog post for SEO improvements'],
-  video_script:     ['Script a 60-second YouTube short on morning routines', 'Write a product explainer video script', 'Give me a hook for a video about focus techniques'],
-  newsletter:       ['Draft a weekly newsletter about my SaaS launch', 'Write a subject line + preview text for high open rates', 'Structure a newsletter template for a developer audience'],
-  repurpose:        ['Turn this blog post into 5 LinkedIn posts', 'Repurpose this YouTube transcript into an email', 'Break down this webinar into a Twitter thread'],
-  campaign:         ['Plan a 30-day Instagram campaign for my app launch', 'Create a content calendar for Q3', 'Give me a viral post idea for my niche'],
-  ads:              ['Write 3 Facebook ad variations for my SaaS', 'Create a Google ad headline + description for "project management app"', 'A/B test copy for my landing page CTA'],
-  seo_researcher:   ['Find low-competition keywords for my blog', 'Analyse competitor content strategy for a productivity app', 'What SEO opportunities am I missing?'],
-  community:        ['Draft a welcome message for my Discord community', 'Write a community update post for Slack', 'Plan a community engagement campaign'],
-  email_marketer:   ['Write a cold outreach email for SaaS founders', 'Create a 5-email drip sequence for trial users', 'What subject line will get the most opens?'],
-  lead_gen:         ['Build a list of target companies in the EdTech space', 'Write a LinkedIn outreach message for startup CTOs', 'Give me 10 ICP questions to qualify leads faster'],
-  crm_manager:      ['Write a follow-up sequence for deals stuck in negotiation', 'Summarise this deal history and suggest next steps', 'Draft a re-engagement email for churned customers'],
-  sales_coach:      ['Role-play a sales call where the prospect says "too expensive"', 'Give me objection-handling scripts for 5 common pushbacks', 'Evaluate this sales pitch and suggest improvements'],
-  support_agent:    ['Draft a reply to an angry customer about a billing issue', 'Write a canned response for "how do I reset my password?"', 'How should I handle a customer asking for a refund?'],
-  onboarding:       ['Create a 3-step onboarding email sequence', 'Write the first onboarding message a new user sees', 'Design a 7-day activation checklist for a SaaS app'],
-  faq_builder:      ['Build an FAQ for a project management SaaS', 'Answer these 5 common questions as friendly support docs', 'Write a troubleshooting guide for login issues'],
-  refund_handler:   ['Write a professional refund denial with empathy', 'Draft a refund approval email that keeps the customer happy', 'How do I handle a chargeback dispute?'],
-  escalation:       ['Write an internal escalation report for a critical outage', 'Draft a customer-facing status update during an incident', 'Create an escalation protocol for Tier-2 issues'],
-  review_responder: ['Reply to a 1-star review professionally', 'Write a thank-you reply to a 5-star review', 'How should I respond to a review that mentions a competitor?'],
-  ux_writer:        ['Write microcopy for an empty state screen', 'Draft onboarding tooltip text for a dashboard', 'Rewrite these error messages to be more helpful'],
-  design_doc:       ['Create a design spec for a mobile checkout flow', 'Write a design brief for a rebrand project', 'Document the UX decisions for our new onboarding screen'],
-  data_analyst:     ['Analyse this sales data and give me 3 insights', 'What trends should I watch in this dataset?', 'Write a SQL query to find top customers by revenue'],
-  report_builder:   ['Create a weekly KPI report template', 'Summarise this data into an executive summary', 'Build a dashboard spec for our growth metrics'],
-  ab_tester:        ['Design an A/B test for my pricing page', 'What should I test first — CTA color or copy?', 'Analyse these A/B test results and recommend next steps'],
-  market_research:  ['Summarise market trends in the B2B SaaS space', 'Who are the top 5 competitors to a productivity app?', 'What do users say about tools like Notion vs Linear?'],
-  data_cleaner:     ['Write a Python script to deduplicate this CSV', 'How do I clean messy date formats in pandas?', 'Find and fix nulls in this dataset'],
-  code_reviewer:    ['Review this PR and find bugs', 'What are the code quality issues in this function?', 'Suggest refactors for this messy component'],
-  bug_hunter:       ['Help me debug this error: undefined is not a function', 'Why is my API returning 500 on this endpoint?', 'Trace this memory leak in my Node.js app'],
-  devops:           ['Write a GitHub Actions CI/CD pipeline for a React app', 'Dockerfile for a Node.js + PostgreSQL app', 'Set up auto-deploy to Vercel on push to main'],
-  docs_writer:      ['Write README documentation for this API endpoint', 'Create a developer quickstart guide', 'Document these TypeScript types with JSDoc'],
-  test_engineer:    ['Write unit tests for this function using Vitest', 'Create E2E test cases for the login flow', 'What edge cases am I missing in my test suite?'],
-  api_designer:     ['Design a REST API for a task management app', 'Write an OpenAPI spec for these 5 endpoints', 'Review my API design for consistency issues'],
-  roadmap_builder:  ['Build a 90-day product roadmap for a B2B SaaS', 'Prioritise these 10 features using RICE scoring', 'Write a roadmap summary for a board update'],
-  user_researcher:  ['Write 10 user interview questions for a productivity app', 'Analyse these interview notes for common themes', 'Create a user persona from this research data'],
-  sprint_planner:   ['Break down this epic into sprint-sized tickets', 'Plan a 2-week sprint for a 4-person team', 'Write acceptance criteria for this user story'],
-  prrd_writer:      ['Write a PRD for a notification settings feature', 'Draft user stories for a new billing page', 'Create a feature spec with success metrics'],
-  stakeholder:      ['Draft a product update email for non-technical stakeholders', "Summarise last sprint's achievements in 5 bullets", 'Write an exec briefing on our Q2 feature launches'],
-  launch_manager:   ['Create a product launch checklist', 'Write a launch announcement for Product Hunt', 'Plan a go-to-market strategy for a B2B feature'],
-  retrospective:    ['Facilitate a retrospective for a failed sprint', 'Summarise these retro notes into action items', 'Create a retrospective template for my team'],
-  okr_manager:      ['Write OKRs for a product team for Q3', 'Evaluate if these OKRs are measurable and achievable', 'Map our roadmap goals to OKR key results'],
-};
-
 // ─── Automation proposal extraction ─────────────────────────────────────────
 
 function extractProposal(content: string): { cleanContent: string; proposal: AutomationProposal | null } {
@@ -4017,13 +4083,10 @@ function extractProposal(content: string): { cleanContent: string; proposal: Aut
   }
 }
 
-function getStarterPrompts(agent: KrewAgent): string[] {
-  return STARTER_PROMPTS[agent.key] ?? [
-    `What can ${agent.humanName} help me with?`,
-    'Give me your best suggestion for my current work',
-    'Show me what you can do',
-  ];
-}
+// STARTER_PROMPTS and getStarterPrompts lived here. They fed three buttons in the middle of an
+// empty chat — the same three every time, which is furniture rather than help. The centre now
+// shows a rotating tip drawn from 152 of them; see TipStage.
+
 
 // A proactive one-click nudge (suggest_next_task) — never auto-runs anything, only pre-fills the
 // input so the user gets a final look/edit before it goes, matching the /scan and /outreach
@@ -4245,6 +4308,16 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
   const [baseUrl,    setBaseUrl]    = useState(savedConn.baseUrl ?? '');
   const [localModel, setLocalModel] = useState(savedConn.localModel ?? 'llama3');
 
+  // ONE CONTROL, AND THIS IS WHERE IT LANDS.
+  //
+  // The pill row above this chat used to be the only thing that ever wrote `mode`. Removing it in
+  // favour of the title-bar menu removed the writer and left the reader: the menu reached the
+  // Claude Code / Codex branch (streamTurn reads the preference directly) and NOTHING else, so
+  // choosing "adris.tech", "your NVIDIA key" or "Local model" changed a label in the title bar
+  // while the chat carried on answering from whatever `nv-krew-connection` last held. This is the
+  // missing writer — see hooks/useAiSourceSync.
+  useAiSourceSync({ setMode, setProvider, setLocalModel, setModelName });
+
   // The KEY itself is never stored here — it stays in the credential store, so this remembers the
   // CHOICE only. If the key behind it is gone, the own-key path falls back exactly as it always did.
   useEffect(() => {
@@ -4335,7 +4408,10 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     } catch { /* keep the original input if refine fails */ }
     finally { setRefining(false); } // usage is tracked live by the App-level nivara-tokens listener
   }
-  const [attachedFiles, setAttachedFiles] = useState<{ name: string; content: string; isImage?: boolean; mimeType?: string; fromBrain?: boolean }[]>([]);
+  // `fromDoc` marks a picture LIFTED OUT of an attached document rather than attached by hand. It
+  // is available to the deck maker and deliberately kept OUT of the vision payload: a figure is
+  // worth placing on a slide and is not worth paying to have the model look at.
+  const [attachedFiles, setAttachedFiles] = useState<{ name: string; content: string; isImage?: boolean; mimeType?: string; fromBrain?: boolean; fromDoc?: boolean }[]>([]);
   const [taskPhases,    setTaskPhases]    = useState<TaskPhase[]>([]);
   /** Set while the composer is pointed at the council rather than the boss — see the chip above it. */
   const [councilTalk,   setCouncilTalk]   = useState<{ question: string } | null>(null);
@@ -4415,6 +4491,8 @@ const [studioExtracting, setStudioExtracting] = useState(false);
   const deckRequestRef     = useRef<string>('');   // context for the pending deck request
   const deckTextRef        = useRef<string>('');   // the user's raw request text (for slide/pic references)
   const deckImagesRef      = useRef<DeckImage[]>([]); // pictures the user attached with the deck request
+  /** Did the user name Microsoft PowerPoint themselves? Decides the card's opening destination. */
+  const deckWantsOwnAppRef = useRef(false);
   const lastDeckSpecRef    = useRef<DeckSpec | null>(null); // the deck currently in the thread, for in-chat edits
   const messagesRef        = useRef<DisplayMsg[]>([]); // live mirror of `messages` for async post-turn checks
   /** The council card currently being written, and the conversation it belongs to — see
@@ -6067,6 +6145,58 @@ The prompt must be production-ready — specific enough for a motion designer to
       if (sid) krewDb.saveMessage(sid, 'assistant', html).catch(() => {});
       // If Advanced images didn't come through, tell the user why (was silently swallowed).
       if (imgNote) { addMsg({ role: 'assistant', content: imgNote }); if (sid) krewDb.saveMessage(sid, 'assistant', imgNote).catch(() => {}); }
+      // ── "I want this in PowerPoint" ────────────────────────────────────────
+      //
+      // The chat deck above is built either way, on purpose: it is the record, it is what
+      // follow-up edits ("make it blue", "put my logo on slide 1") act on, and it means a
+      // PowerPoint that will not open still leaves the user holding their deck.
+      //
+      // On top of that, when they asked for PowerPoint, write a REAL .pptx from the very same
+      // spec and open it in their own PowerPoint. Same spec means the pictures pulled out of
+      // their document — already placed on slides by applyUserImagesToSpec — travel with it;
+      // deckToPptxBlob puts every slide's imageData into the file.
+      if (cfg.format === 'pptx') {
+        setStatus('Writing the PowerPoint file…');
+        try {
+          const blob = await deckToPptxBlob(spec);
+          const b64 = await new Promise<string>((res, rej) => {
+            const r = new FileReader();
+            r.onload = () => res(String(r.result).split(',')[1] || '');
+            r.onerror = () => rej(new Error('could not read the generated file'));
+            r.readAsDataURL(blob);
+          });
+          const slug = (spec.title || 'presentation').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'presentation';
+          const file = await invoke<string>('save_to_downloads', { filename: slug + '.pptx', dataBase64: b64 });
+
+          // Open it in the user's own PowerPoint. If PowerPoint is not there after all, the file
+          // still exists and is worth telling them about — never fail silently, which is exactly
+          // how the rail's Word button came to do nothing at all.
+          const apps = await import('../../lib/installedApps');
+          const ppApp = apps.officeApp(await apps.getInstalledApps(), 'powerpoint');
+          let opened = false;
+          // Keep the REASON, not just the fact. "PowerPoint wouldn't start" tells the user nothing
+          // they can act on; the launcher's own message names the file it could not find.
+          let why = '';
+          if (ppApp) {
+            try { await invoke('launch_application', { exe: ppApp.path, file }); opened = true; }
+            catch (le) { why = String(le).replace(/^Error:\s*/, ''); }
+          }
+          const where = '`' + file + '`';
+          const note = opened
+            ? 'Opened it in PowerPoint. The file is saved at ' + where + ' — every picture from your document is on its slide, and you can edit it there like any other deck.'
+            : 'I built the PowerPoint file and saved it at ' + where + ' — open it from your Downloads folder. '
+              + (ppApp ? 'PowerPoint is on this computer but wouldn\'t start from here' + (why ? ' (' + why + ')' : '') + '.'
+                       : "I couldn't find PowerPoint on this computer.")
+              + " The deck above is the same presentation if you'd rather stay here.";
+          addMsg({ role: 'assistant', content: note });
+          if (sid) krewDb.saveMessage(sid, 'assistant', note).catch(() => {});
+        } catch (e) {
+          const note = "I couldn't write the PowerPoint file (" + String(e).replace(/^Error:\s*/, '')
+            + "). Your deck above is complete — you can present it, or export it as a PDF from the deck's own menu.";
+          addMsg({ role: 'assistant', content: note });
+          if (sid) krewDb.saveMessage(sid, 'assistant', note).catch(() => {});
+        }
+      }
       // If the model's JSON was cut off (hit the output limit), the deck may be short a few
       // slides — say so plainly rather than pretending the short deck is complete.
       if (wasTruncated && spec.slides.length < 8) {
@@ -9721,6 +9851,13 @@ _${plan.advice}_` : ''}`;
     setSlashOpen(false);
     setSlashIdx(0);
     if (c.run === 'nav') { emit('nv-navigate', { module: c.value }).catch(() => {}); setInput(''); return; }
+    // A tab of THIS module rather than another module — a plain DOM event, because the chat is a
+    // child of the thing that owns the tabs and cannot reach up to it.
+    if (c.run === 'krewview') {
+      window.dispatchEvent(new CustomEvent('nv-krew-view', { detail: { view: c.value } }));
+      setInput('');
+      return;
+    }
 
     // THE TRIAL GATE. Only the heavy commands are counted — each drives a full browser session on
     // the user's behalf, which is the product doing work rather than answering a question. Checked
@@ -9893,6 +10030,45 @@ _${plan.advice}_` : ''}`;
 
   // `override` lets a card submit a turn directly. Setting the input box and then calling send()
   // cannot work — the state update has not landed yet, so send() would read the previous value.
+  /**
+   * Load everything the deck builder needs, then the caller shows the setup card.
+   *
+   * Pulled out of `send` because the refusal guard needs the very same preparation: when a model
+   * answers "I cannot create .pptx files" to a request that came with a document attached, the
+   * recovery is to build the deck, and it must be built from exactly the same material.
+   */
+  function prepareDeckBuild(o: {
+    ask: string;
+    docs: ChatFile[];
+    focused?: ChatFile | null;
+    images: ChatFile[];
+    ownApp: boolean;
+  }) {
+    // Decks need the WHOLE source document — the normal 8K chat cap truncated a long PRODUCT.MD so
+    // the deck only covered its first section. Send the full file(s).
+    const CAP = 90000;
+    const doc = (f: ChatFile) => `[Reference document: ${f.name}]\n\`\`\`\n${f.content.slice(0, CAP)}\n\`\`\`\n\n`;
+    const focusBlock = o.focused ? doc(o.focused) : '';
+    const fileBlock = o.docs.map(doc).join('');
+    // The user's request FIRST, then the reference material. Whether that material is an outline to
+    // follow or just background is decided later by the "Follow my outline exactly" checkbox, so the
+    // framing here stays neutral.
+    deckRequestRef.current = `=== USER'S REQUEST / NOTES ===\n${o.ask}\n\n${focusBlock}${fileBlock}`;
+    deckTextRef.current = o.ask;   // the raw ask — read for slide numbers and picture names
+    // Hand-attached pictures FIRST, then figures lifted out of the document. Order matters:
+    // applyUserImagesToSpec places them in sequence, and a picture the user chose to attach should
+    // land before one we found for them.
+    const hand = o.images.filter((f) => !f.fromDoc);
+    const fromDoc = o.images.filter((f) => f.fromDoc);
+    deckImagesRef.current = [...hand, ...fromDoc].map((f) => ({
+      name: f.name,
+      dataUri: `data:${f.mimeType ?? 'image/png'};base64,${f.content}`,
+      isLogo: /\blogo\b/i.test(f.name) || (/\blogo\b/i.test(o.ask) && o.images.length === 1),
+    }));
+    setBraveNudge(false);          // never nag about Brave Search while building a presentation
+    deckWantsOwnAppRef.current = o.ownApp;
+  }
+
   async function send(override?: string, opts?: { skipShortcuts?: boolean }) {
     const skipShortcuts = opts?.skipShortcuts === true;
     const text = (override ?? input).trim();
@@ -10340,13 +10516,25 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     // so a logo/photo the user drops in chat is saved with a proper name and reusable in decks.
     if (imageFiles.length > 0) {
       const lcText = (text || '').toLowerCase();
-      const toSave = imageFiles.filter((f) => !f.fromBrain);
+      // ── WHAT BELONGS IN THE PICTURES FOLDER ────────────────────────────────
+      //
+      // Everything used to be saved here, including the figures WE lifted out of the user's
+      // document. A single report with a dozen diagrams turned their picture library into that
+      // report, and attaching the same file again doubled the lot — reported, twice.
+      //
+      // Only pictures the user chose to attach are kept, and only once: planPictureSaves drops
+      // document figures, anything already in the Brain, and any repeat of bytes already stored.
+      // The figures still reach the deck — that is what they were extracted for.
+      const { planPictureSaves, pictureHash } = await import('../../lib/pictureSave');
+      const { brain: brainStore } = await import('../../lib/knowledgeStore');
+      const { save: toSave } = planPictureSaves(imageFiles, brainStore.pictureHashes());
       for (const f of toSave) {
         const ext = (f.mimeType?.split('/')[1] || 'png').replace('jpeg', 'jpg').replace('svg+xml', 'svg');
         const base = (f.name || '').replace(/\.[a-z0-9]+$/i, '').trim();
         const name = (/\blogo\b/.test(lcText) && toSave.length === 1) ? (base || 'Logo') : (base || 'Picture');
+        const hash = pictureHash(f.content);
         invoke<string>('brain_store_image', { name, dataBase64: f.content, ext })
-          .then((path) => import('../../lib/knowledgeStore').then(({ brain }) => { brain.addPicture({ name, filePath: path, body: 'Picture added from chat.' }); }))
+          .then((path) => brainStore.addPicture({ name, filePath: path, body: 'Picture added from chat.', hash }))
           .catch(() => {});
       }
     }
@@ -10360,7 +10548,11 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
           return `[File: ${f.name}]\n\`\`\`\n${body}\n\`\`\`\n\n`;
         }).join('')
       : '';
-    const imageBlock = imageFiles.map(f => `[IMAGE:${f.mimeType ?? 'image/png'}:${f.content}]`).join('\n');
+    // Only what the user attached THEMSELVES. Figures pulled out of their document are for the
+    // deck, not for the model to look at — a twelve-figure report would otherwise quietly multiply
+    // the cost of every message that mentions it. See `fromDoc`.
+    const imageBlock = imageFiles.filter((f) => !f.fromDoc)
+      .map(f => `[IMAGE:${f.mimeType ?? 'image/png'}:${f.content}]`).join('\n');
     // Focus mode: keep the conversation scoped to the chosen Brain file + its connected
     // notes, every turn. The content already includes the "Connected in Brain" section.
     // Generous cap so a focused Brain file (often a filtered list to act on) arrives whole.
@@ -10404,33 +10596,47 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
       if (sid) krewDb.saveMessage(sid, 'assistant', note).catch(() => {});
     }
 
+    // ── THE USER NAMED THEIR OWN APPLICATION ─────────────────────────────────
+    //
+    // "use Microsoft PowerPoint", "open Word and write it up". Their installed Office is the answer,
+    // not our in-chat renderer — and only the boss can drive it, through `office_automation`. The
+    // deck short-circuit below used to fire first on the word "powerpoint", so the boss never saw
+    // the request and the tool that does exactly this was never reached.
+    //
+    // The message goes through untouched with one line added, because the instruction is the user's
+    // and it should be carried out rather than interpreted.
+    const deckRoute = text ? routeDeckRequest(text) : 'boss';
+    const ownAppDirective = deckRoute === 'office'
+      ? '\n\n## THE USER NAMED AN APPLICATION ON THEIR OWN COMPUTER\n'
+        + 'They asked for this to be done in Microsoft Office (Word / Excel / PowerPoint). Use the '
+        + '`create_office_document` tool, which drives the copy of Office installed on this machine, so their '
+        + 'own template, fonts and styles come out right. Call `list_installed_apps` first if you do '
+        + 'not know whether Office is there. Do NOT offer the in-chat deck builder instead — they have '
+        + 'already told you which program they want. If Office turns out not to be installed, SAY SO '
+        + 'plainly and then offer the in-chat deck as the alternative.'
+      : '';
+
     // ── PRESENTATION / PPT SHORT-CIRCUIT ──────────────────────────────────────
     // "make me a ppt / pitch deck / slides" → show the deck setup card (format +
     // basic/advanced + image quality) instead of running the boss. The card drives
     // generation via runDeckGeneration once the user confirms their options.
-    if (text && looksLikePresentation(text)) {
-      // Decks need the WHOLE source document — the normal 8K chat cap truncated a long
-      // PRODUCT.MD so the deck only covered its first section. Send the full file(s).
-      const DECK_FILE_CAP = 90000; // send the whole source doc to Slade — a truncated doc = a deck missing context
-      const deckFileBlock = nonImageFiles.map(f => `[Reference document: ${f.name}]\n\`\`\`\n${f.content.slice(0, DECK_FILE_CAP)}\n\`\`\`\n\n`).join('');
-      const deckFocusBlock = focusedFile ? `[Reference document: ${focusedFile.name}]\n\`\`\`\n${focusedFile.content.slice(0, DECK_FILE_CAP)}\n\`\`\`\n\n` : '';
-      // Put the user's request FIRST, then the reference document(s). Whether the request is a
-      // strict plan-to-follow or just reference material is decided at generation time by the
-      // "Follow my outline exactly" checkbox (cfg.strictPlan) — so keep the framing NEUTRAL here.
-      deckRequestRef.current = `=== USER'S REQUEST / NOTES ===\n${text}\n\n${deckFocusBlock}${deckFileBlock}`;
-      deckTextRef.current = text; // the raw ask — used to read slide numbers / picture names (not the doc)
-      // Pictures the user attached WITH the deck request → use them in the deck (logo on every
-      // slide, or a photo on the slides they name). A name containing "logo" (or a lone image
-      deckTextRef.current = text; // the raw ask — used to read slide numbers / picture names (not the doc)
-      // Pictures the user attached WITH the deck request → use them in the deck (logo on every
-      // slide, or a photo on the slides they name). A name containing "logo" (or a lone image
-      // when the ask says "logo") is treated as the brand logo.
-      deckImagesRef.current = imageFiles.map((f) => ({
-        name: f.name,
-        dataUri: `data:${f.mimeType ?? 'image/png'};base64,${f.content}`,
-        isLogo: /\blogo\b/i.test(f.name) || (/\blogo\b/i.test(text) && imageFiles.length === 1),
-      }));
-      setBraveNudge(false); // never nag about Brave Search while building a presentation
+    //
+    // `routeDeckRequest` is deliberately conservative: anything that is not unambiguously "build me
+    // a deck" returns 'boss' and this branch is skipped. Asking ABOUT a deck — a script, notes, a
+    // summary — reaches the boss like any other question.
+    // NAMING POWERPOINT USED TO MAKE THINGS WORSE, NOT BETTER.
+    //
+    // 'office' sent the request to the boss with an instruction to drive Office through a tool. A
+    // user attached a document and five figures, asked for "the proper ppt in microsoft power
+    // point", and got: a `list_installed_apps` call, an empty model response, and then — "I cannot
+    // create or send a .pptx file directly, I am a text-based AI … no files were received". Every
+    // word of that was false, and the work never happened.
+    //
+    // The deck builder is DETERMINISTIC: it reads the whole document, places the figures, renders
+    // the slides and writes a real .pptx. It cannot decide it would rather not. So both routes come
+    // here now, and naming PowerPoint only changes WHERE the finished deck goes.
+    if (text && (deckRoute === 'build' || (deckRoute === 'office' && namedApp(text) === 'powerpoint'))) {
+      prepareDeckBuild({ ask: text, docs: nonImageFiles, focused: focusedFile, images: imageFiles, ownApp: deckRoute === 'office' });
       addMsg({ role: 'deck_setup', content: text });
       setBusy(false);
       return;
@@ -10706,7 +10912,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     const contract = requiredToolsFor(text);
     const systemPrt  = assembleSystemPrompt(
       [agent.systemPrompt, '\n\n', buildKrewSystemPrompt(tools), bossPostfix, workingRules,
-       searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective,
+       searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective, ownAppDirective,
        contractDirective(contract), clarifyDirective(text)],
       // The two things that make a turn a CONTINUATION rather than a fresh start: what this
       // agent was last working in, and what this user actually chooses when offered options.
@@ -11106,6 +11312,39 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
           const honest = stripped2.trim() || (delegatedAgents.size
             ? `That is everything this run produced — nothing is still running in the background. ${ranNames[1] ?? 'The specialist'}'s answer is above; send it again if you want another pass.`
             : displayResponse);
+          // ── A REFUSAL IS NOT AN ANSWER ────────────────────────────────────────
+          //
+          // A user attached a document and five figures, asked for a PowerPoint, and was told:
+          // "I cannot create or send a .pptx file directly — I am a text-based AI … no files were
+          // received in this chat", followed by a request to paste the document back in. Every
+          // clause of that was false: this app writes real .pptx files, and the document and its
+          // figures were sitting in the request.
+          //
+          // This is the model describing a generic chatbot rather than this product, and no
+          // wording in the prompt reliably stops it. What can be made reliable is that it never
+          // stands as the final answer. If the user asked for a file and the reply denies being
+          // able to make one, the reply is dropped and the deterministic builder runs — the same
+          // builder that was always going to do the work, which cannot decide it would rather not.
+          const hadFiles = nonImageFiles.length > 0 || imageFiles.length > 0 || !!focusedFile;
+          if (shouldOverrideRefusal({ reply: honest, hadFiles, wantedArtifact: wantsAnArtifact(text) })) {
+            const asked = looksLikePresentation(text) || /\b(ppt|pptx|powerpoint|deck|slides?|presentation)\b/i.test(text);
+            if (asked) {
+              finaliseLastMsg(recoveryNote('deck'));
+              if (sid) krewDb.saveMessage(sid, 'assistant', recoveryNote('deck')).catch(() => {});
+              // Built from exactly the material the model claimed it never received.
+              prepareDeckBuild({ ask: text, docs: nonImageFiles, focused: focusedFile, images: imageFiles, ownApp: true });
+              addMsg({ role: 'deck_setup', content: text });
+              setBusy(false);
+              return;
+            }
+            // A document or a spreadsheet: there is no deterministic builder to fall back to here,
+            // so say plainly what is true rather than passing on a refusal we know to be wrong.
+            const kind = /\b(spreadsheet|excel|xlsx|sheet)\b/i.test(text) ? 'sheet' : 'document';
+            const line = recoveryNote(kind) + ` Say "${kind === 'sheet' ? 'build the spreadsheet' : 'write the document'}" and I'll produce the file.`;
+            finaliseLastMsg(line);
+            if (sid) krewDb.saveMessage(sid, 'assistant', line).catch(() => {});
+            break;
+          }
           finaliseLastMsg(honest);
           // Save what the user actually SAW. Saving fullResponse here put the false "still working
           // on it" line back on screen every time the conversation was reopened.
@@ -11285,7 +11524,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
               const pipelineRule = PIPELINE_RULE;
               const delegateSystem = assembleSystemPrompt(
                 [targetAgent.systemPrompt, '\n\n', buildKrewSystemPrompt(delegateTools), pipelineRule,
-                 searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective,
+                 searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective, ownAppDirective,
                  // The requirement belongs to the JOB, not to whoever is holding it. Handing work
                  // to a specialist must not be a way out of it — and the delegate is the one with
                  // the tools, so if anything it binds harder here than on the boss.
@@ -11800,7 +12039,7 @@ ${task}`);
                   const m = ln.match(/^\s*\|\s*\**\s*([^|*]+?)\s*\**\s*\|/);
                   if (m) {
                     const v = m[1].trim();
-                    if (v && !/^[-:\s]+$/.test(v) && !/^(name|company|sector|city|website|linkedin|column)\b/i.test(v)) names.push(v);
+                    if (v && !/^[\s:-]+$/.test(v) && !/^(name|company|sector|city|website|linkedin|column)\b/i.test(v)) names.push(v);
                   }
                 }
                 const dataLine = names.length
@@ -12057,7 +12296,7 @@ Everything you need for follow-ups is in that answer above; read it there rather
                 const wfSys = assembleSystemPrompt(
                   [wfAgent.systemPrompt, '\n\n', buildKrewSystemPrompt(wfTools),
                    PIPELINE_RULE,
-                   searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective,
+                   searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective, ownAppDirective,
                    // Same as the single-delegate path: the stage inherits what the job requires.
                    contractDirective(requiredToolsFor(`${text}\n${wfTask}`))],
                   [identityCtx, locationBlockAuto, userBlock, connectedAppsBlock, mcpSummary,
@@ -14194,7 +14433,7 @@ ${wfTask}`);
         {/* Active tools strip */}
         {agent.key === 'boss' ? (
           <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-nv-border overflow-x-auto shrink-0">
-            <span className="text-[9px] px-1.5 py-0.5 rounded bg-nv-surface2 text-nv-muted font-mono shrink-0">43 agents</span>
+            <span className="text-[9px] px-1.5 py-0.5 rounded bg-nv-surface2 text-nv-muted font-mono shrink-0">{KREW_AGENTS.length} agents</span>
             <span className="text-[9px] px-1.5 py-0.5 rounded bg-nv-surface2 text-nv-faint font-mono shrink-0">persistent memory</span>
             {Object.keys(creds).filter(k => !['gemini','openai','claude','brave'].includes(k)).map(service => (
               <span key={service} className="text-[9px] px-1.5 py-0.5 rounded bg-accent/10 text-accent font-mono shrink-0">{service}</span>
@@ -14208,23 +14447,31 @@ ${wfTask}`);
           </div>
         )}
 
-        {/* Connect Apps nudge — shown when no service tools are active (not for boss — it delegates) */}
-        {agent.key !== 'boss' && activeTools.filter((t) => !['read_file','execute_terminal','web_search','save_memory','recall_memory','forget_memory','delegate_to_agent'].includes(t.name)).length === 0 && onOpenConnectApps && (
-          <div className="flex items-center gap-2 px-3 py-1.5 border-b border-nv-border bg-nv-surface shrink-0">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" className="text-nv-faint shrink-0">
-              <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.4"/>
-              <path d="M8 5v3.5l2 1.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-            <p className="text-[10px] text-nv-faint flex-1">
-              No apps connected. Link Gmail, GitHub, Notion &amp; more for real actions.
-            </p>
-            <button
-              onClick={onOpenConnectApps}
-              className="text-[10px] text-accent hover:underline shrink-0 font-mono"
-            >
-              Connect →
-            </button>
-          </div>
+        {/* ── A TIP, NOT A NAG ────────────────────────────────────────────────
+            This was one fixed line — "No apps connected. Link Gmail, GitHub, Notion & more" —
+            shown identically forever, telling the user off for not having set something up. The
+            blank chat is the best teaching surface in the product and it was spending it on that.
+
+            It now rotates 152 specific, true things, and skips anything the user already has: with
+            nine apps connected you are never told to connect apps, which was the whole problem
+            with the sentence it replaces. See lib/krewTips.ts and scripts/check-tips.mjs, which
+            fails the build if any tip names a command or module that does not exist. */}
+        {/* Shown for the boss TOO. It used to be `agent.key !== 'boss'`, which meant the 152 tips
+            never appeared on the screen almost everyone actually looks at — the boss is the default
+            agent, so the blank main chat showed the tools strip and nothing else. */}
+        {/* Only once the conversation has started. While the chat is empty the big centre tip is
+            showing, and two tips on one screen is noise. */}
+        {messages.length > 0 && (
+          <TipBar
+            // Model keys are not "apps" — counting them would suppress the connect-an-app tips for
+            // someone whose only credential is a free NVIDIA key.
+            appsConnected={Object.keys(creds).filter((k) => !['gemini','openai','claude','brave','nvidia','groq'].includes(k)).length}
+            onRunCommand={(cmd) => {
+              const c = SLASH_COMMANDS.find((x) => x.cmd === cmd);
+              if (c) runSlash(c);
+            }}
+            onOpenModule={(m) => { emit('nv-navigate', { module: m }).catch(() => {}); }}
+          />
         )}
 
         {/* Reconnecting — network dropped mid-task, auto-retrying, nothing lost.
@@ -14372,34 +14619,24 @@ ${wfTask}`);
           className="flex-1 overflow-y-auto px-4 py-4 relative"
           style={{ pointerEvents: 'auto' }}
         >
+          {/* ── AN EMPTY CHAT IS THE BEST TEACHING SURFACE IN THE PRODUCT ─────
+              It used to hold the agent's avatar, its name, its one-line description, an "N apps
+              connected" count, and three starter prompts. The name and role are already in the
+              header directly above; the count is a number with nothing to do; and the three prompts
+              were the same three every time, which makes them furniture after the first day.
+
+              It now shows one of 152 specific, true things the product can do, changing every three
+              seconds — and pausing the moment the pointer or the keyboard is on it, so a sentence is
+              never taken away mid-read. */}
           {messages.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full gap-3 select-none">
-              <div className="w-12 h-12 rounded-xl flex items-center justify-center text-[14px] font-bold"
-                   style={{ background: deptTint(agent.category, 0.18), color: deptColor(agent.category) }}>
-                {agentInitials(agent)}
-              </div>
-              <div className="text-center">
-                <p className="text-nv-text text-[13px] font-semibold">{agentHandle(agent)}</p>
-                <p className="text-nv-faint text-[11px] mt-1 max-w-[260px] leading-relaxed">
-                  {agent.description}
-                </p>
-                {activeTools.length > 3 && (
-                  <p className="text-nv-faint text-[10px] mt-1 font-mono">
-                    {activeTools.length - 3} app{activeTools.length - 3 > 1 ? 's' : ''} connected
-                  </p>
-                )}
-              </div>
-              <div className="flex flex-col gap-1.5 w-full max-w-[280px] mt-1">
-                {getStarterPrompts(agent).map((ex) => (
-                  <button
-                    key={ex}
-                    onClick={() => setInput(ex)}
-                    className="text-left text-[11px] px-3 py-2 rounded-lg border border-nv-border
-                      text-nv-muted hover:border-accent hover:text-accent transition-fast"
-                  >{ex}</button>
-                ))}
-              </div>
-            </div>
+            <TipStage
+              appsConnected={Object.keys(creds).filter((k) => !['gemini','openai','claude','brave','nvidia','groq'].includes(k)).length}
+              onRunCommand={(cmd) => {
+                const c = SLASH_COMMANDS.find((x) => x.cmd === cmd);
+                if (c) runSlash(c);
+              }}
+              onOpenModule={(m) => { emit('nv-navigate', { module: m }).catch(() => {}); }}
+            />
           ) : (
             <>
               {messages.map((msg, i) =>
@@ -14773,6 +15010,7 @@ ${dev.text}`;
                 <DeckSetupCard
                   key={i}
                   disabled={busy}
+                  preferOwnApp={deckWantsOwnAppRef.current}
                   unlockedAdvanced={planCfg.advancedDeck || (provider === 'gemini' && !!apiKey.trim())}
                   onCancel={() => setMessages((prev) => prev.filter((m) => m !== msg))}
                   onGenerate={(cfg) => runDeckGeneration(cfg)}
@@ -14810,19 +15048,12 @@ ${dev.text}`;
                   {/* ANSWER THE AGENT WITHOUT RETYPING IT. When an answer ends by offering
                       numbered options, each becomes a button that sends that choice straight back
                       to the same agent, so the work continues instead of stalling on a question. */}
-                  {answerish(msg) && trailingOptions(msg.content).length > 0 && (
-                    <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
-                      <span className="text-[9.5px] text-nv-faint">Reply:</span>
-                      {trailingOptions(msg.content).map((opt, oi) => (
-                        <button
-                          key={oi}
-                          disabled={busy}
-                          onClick={() => void send(opt, { skipShortcuts: true })}
-                          title={opt}
-                          className="text-[10px] px-2 py-1 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-fast disabled:opacity-40 max-w-[240px] truncate"
-                        >{opt}</button>
-                      ))}
-                    </div>
+                  {answerish(msg) && (
+                    <QuickReplyBar
+                      text={msg.content}
+                      busy={busy}
+                      onPick={(t) => void send(t, { skipShortcuts: true })}
+                    />
                   )}
                   {/* ONLY UNDER A REAL PLAN. This is gated on three separate dated steps, so it
                       does not appear under ordinary answers — a button that shows up everywhere is
@@ -15030,48 +15261,33 @@ ${msg.content}`),
               ))}
             </div>
           )}
-          {/* Search-mode toggle — Fast (headless, cheap) vs Advanced (opens the real
-              browser the user can watch, verifies every LinkedIn, drops what it can't confirm). */}
-          <div className="flex items-center gap-2 mb-1.5">
-            <div className={`inline-flex rounded-lg border border-nv-border/70 overflow-hidden text-[10px] font-medium h-[26px] ${busy ? 'opacity-50' : ''}`}
-                 title={busy ? "Can't switch modes while a task is running — stop it first." : undefined}>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => { if (!busy) setSearchMode('fast'); }}
-                title="Fast — quick & cheap. Uses headless search, fewer tokens, no browser window."
-                className={`px-2.5 flex items-center gap-1.5 transition-fast ${busy ? 'cursor-not-allowed' : ''} ${searchMode === 'fast' ? 'bg-accent text-white' : 'text-nv-faint hover:text-nv-text hover:bg-nv-surface2'}`}
-              >
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L3 14h7l-1 8 10-12h-7z"/></svg>
-                Fast
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => { if (!busy) setSearchMode('advanced'); }}
-                title="Advanced — slower & costs more tokens, but opens the real browser you can watch, verifies each LinkedIn, and drops links it can't confirm."
-                className={`px-2.5 flex items-center gap-1.5 transition-fast ${busy ? 'cursor-not-allowed' : ''} ${searchMode === 'advanced' ? 'bg-accent text-white' : 'text-nv-faint hover:text-nv-text hover:bg-nv-surface2'}`}
-              >
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
-                Advanced
-              </button>
-            </div>
-            <span className="text-[9px] text-nv-faint hidden sm:inline">
-              {busy ? 'mode locked while running — stop to change' : searchMode === 'advanced' ? 'opens the browser & verifies each result — slower, more tokens' : 'quick & cheap — switch to Advanced to verify & watch the browser'}
-            </span>
-          </div>
-          <div className="flex gap-2 items-end relative">
+          {/* ── ONE SURFACE, NOT SIX BOXES ────────────────────────────────────
+              This row used to be six separately-bordered controls sitting beside each other — mic,
+              attach, Brain, the text field, expand, Research — so the most-used part of the product
+              read as a strip of loose components rather than one thing you type into.
+
+              It is now a single composer surface that owns the border and the focus halo (via
+              `nv-field`'s :focus-within, which is why the class moved up here from the textarea).
+              The controls inside are borderless and only reveal a soft tint on hover, so they read
+              as floating ON the surface instead of being boxed beside it. Nothing about the DOM
+              order, the handlers or the state changed — this is the frame, not the wiring. */}
+          <div className="nv-field flex gap-1 items-end relative bg-nv-bg border border-nv-border
+                          rounded-nv px-1.5 py-1.5 shadow-e1">
+            {/* How it searches — the same pill-and-sheet as the title-bar source menu, because it
+                is the same kind of decision. It sits INSIDE the composer now rather than in its own
+                box above it, so the corner carries one surface instead of two. */}
+            <SearchModeMenu mode={searchMode} onChange={setSearchMode} busy={busy} />
             {/* Mic button */}
             <button
               title={voiceStatus === 'recording' ? 'Stop recording' : voiceStatus === 'transcribing' ? 'Transcribing…' : 'Voice input · Builder+ plan'}
               onClick={handleMicClick}
               disabled={voiceStatus === 'transcribing'}
-              className={`w-[30px] h-[30px] flex items-center justify-center rounded-lg border transition-fast shrink-0 mb-0.5 ${
+              className={`w-[30px] h-[30px] flex items-center justify-center rounded-full transition-fast shrink-0 mb-0.5 ${
                 voiceStatus === 'recording'
-                  ? 'border-red-500/60 bg-red-500/10 text-red-400 animate-pulse'
+                  ? 'bg-red-500/15 text-red-400 animate-pulse'
                   : voiceStatus === 'transcribing'
-                  ? 'border-nv-border/70 opacity-50 text-nv-faint cursor-not-allowed'
-                  : 'border-nv-border/70 text-nv-faint hover:text-accent hover:border-accent/50 hover:bg-nv-surface2'
+                  ? 'opacity-50 text-nv-faint cursor-not-allowed'
+                  : 'text-nv-faint hover:text-accent hover:bg-nv-surface2'
               }`}
             >
               {voiceStatus === 'recording' ? (
@@ -15088,7 +15304,7 @@ ${msg.content}`),
             <input
               type="file"
               multiple
-              accept=".txt,.md,.csv,.json,.ts,.tsx,.js,.jsx,.py,.rs,.go,.java,.html,.css,.xml,.yaml,.yml,.toml,.sh,.sql,.log,.pdf,.png,.jpg,.jpeg,.webp,.gif,.svg,image/*"
+              accept=".txt,.md,.csv,.json,.ts,.tsx,.js,.jsx,.py,.rs,.go,.java,.html,.css,.xml,.yaml,.yml,.toml,.sh,.sql,.log,.pdf,.docx,.pptx,.xlsx,.doc,.ppt,.xls,.png,.jpg,.jpeg,.webp,.gif,.svg,image/*"
               style={{ display: 'none' }}
               id="krew-file-attach"
               onChange={(e) => {
@@ -15142,7 +15358,28 @@ ${msg.content}`),
                       }
                       const extracted = pageTexts.join('\n\n').trim();
                       if (extracted) {
-                        results[i] = [{ name: file.name, content: extracted }];
+                        // ── THE PICTURES IN THE DOCUMENT, NOT JUST ITS WORDS ──────────────
+                        //
+                        // A deck built from a paper that HAS diagrams, containing none of them, is
+                        // missing the part the reader needed. A PDF has no folder of images to raid —
+                        // they are content-stream objects — so the page drawing operators are walked
+                        // and each painted image is redrawn to a canvas. Junk (bullets, rules, the
+                        // header logo repeated on every page) is filtered out by tidy().
+                        //
+                        // Failure here must never cost the user the TEXT, which is the main event, so
+                        // it is caught and the document goes on without its figures.
+                        let figures: { name: string; content: string; isImage: boolean; mimeType: string; fromDoc: boolean }[] = [];
+                        try {
+                          const { extractPdfImages, tidy } = await import("../../lib/docImages");
+                          figures = tidy(await extractPdfImages(pdf, file.name)).map((im, n) => ({
+                            name: file.name + " — figure " + (n + 1),
+                            content: im.dataUri.split(",")[1] ?? "",
+                            isImage: true,
+                            mimeType: "image/png",
+                            fromDoc: true,
+                          })).filter((f) => f.content);
+                        } catch { /* the words are what matter; the figures are a bonus */ }
+                        results[i] = [{ name: file.name, content: extracted }, ...figures];
                       } else {
                         // Scanned/image PDF — render each page as JPEG for Gemini vision
                         const pages: { name: string; content: string; isImage: boolean; mimeType: string }[] = [];
@@ -15168,6 +15405,37 @@ ${msg.content}`),
                       results[i] = [{ name: file.name, content: '[Could not read PDF]' }];
                       if (--pending === 0) flush();
                     });
+                  } else if (/\.(docx|pptx|xlsx|doc|ppt|xls)$/i.test(file.name)) {
+                    // ── WORD, POWERPOINT AND EXCEL ────────────────────────────────────
+                    //
+                    // All three modern formats are ZIPS of XML, which is why one reader covers them and why
+                    // their pictures come out whole. A .docx used to fall through to readAsText below, which
+                    // on a zip returns mojibake — so every Word file the user attached arrived as nonsense the
+                    // model then tried to reason about. Nobody reported it, because the reply is merely bad
+                    // rather than obviously broken.
+                    //
+                    // The old binary .doc/.ppt/.xls are answered with a sentence telling the user to save as
+                    // the modern format, which is four clicks, rather than a silent failure.
+                    file.arrayBuffer().then(async (buf) => {
+                      const { readOfficeDoc } = await import('../../lib/officeDocs');
+                      const { tidy } = await import('../../lib/docImages');
+                      const doc = await readOfficeDoc(new Uint8Array(buf), file.name);
+                      const figures = tidy(doc.images).map((im, n) => ({
+                        name: file.name + ' — figure ' + (n + 1),
+                        content: im.dataUri.split(',')[1] ?? '',
+                        isImage: true,
+                        mimeType: im.dataUri.slice(5, im.dataUri.indexOf(';')),
+                        fromDoc: true,
+                      })).filter((f) => f.content);
+                      results[i] = [
+                        { name: file.name, content: doc.text || doc.problem || '[This file had no readable text]' },
+                        ...figures,
+                      ];
+                      if (--pending === 0) flush();
+                    }).catch(() => {
+                      results[i] = [{ name: file.name, content: '[Could not read ' + file.name + ']' }];
+                      if (--pending === 0) flush();
+                    });
                   } else {
                     const reader = new FileReader();
                     reader.onload = (ev) => {
@@ -15184,8 +15452,8 @@ ${msg.content}`),
               type="button"
               onClick={() => document.getElementById('krew-file-attach')?.click()}
               title="Attach a file from your computer"
-              className="w-[30px] h-[30px] flex items-center justify-center rounded-lg border border-nv-border/70
-                text-nv-faint hover:text-nv-text hover:border-accent/50 hover:bg-nv-surface2 transition-fast shrink-0 mb-0.5"
+              className="w-[30px] h-[30px] flex items-center justify-center rounded-full
+                text-nv-faint hover:text-accent hover:bg-nv-surface2 transition-fast shrink-0 mb-0.5"
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
@@ -15197,7 +15465,7 @@ ${msg.content}`),
                 type="button"
                 onClick={() => setShowBrainPick((v) => !v)}
                 title="Attach a saved item from your Brain"
-                className={`w-[30px] h-[30px] flex items-center justify-center rounded-lg border transition-fast ${showBrainPick ? 'text-accent border-accent/50 bg-accent/12 shadow-[0_0_0_1px_rgba(124,92,255,.12)]' : 'border-nv-border/70 text-nv-faint hover:text-nv-text hover:border-accent/50 hover:bg-nv-surface2'}`}
+                className={`w-[30px] h-[30px] flex items-center justify-center rounded-full transition-fast ${showBrainPick ? 'text-accent bg-accent/15' : 'text-nv-faint hover:text-accent hover:bg-nv-surface2'}`}
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M12 5a2.5 2.5 0 0 0-5 0 2.4 2.4 0 0 0-2 4 2.4 2.4 0 0 0 .5 4A2.4 2.4 0 0 0 7.5 17 2.3 2.3 0 0 0 12 17V5z"/>
@@ -15517,8 +15785,8 @@ ${msg.content}`),
               /* The composer is the most-used control in the product and was the smallest text on
                  the screen at 12px — under the app's own 13px body size. It now matches, gains
                  breathing room, and shows a real focus halo rather than a 1px border change. */
-              className="nv-field flex-1 bg-nv-bg border border-nv-border rounded-nv px-3 py-2
-                text-[13px] leading-[1.55] text-nv-text outline-none
+              className="flex-1 bg-transparent border-0 px-2 py-1.5
+                text-[13px] leading-[1.55] text-nv-text outline-none focus:ring-0
                 resize-none placeholder:text-nv-faint"
             />
             {/* Expand / collapse the message box — handy for reading a long or refined prompt */}
@@ -15526,7 +15794,7 @@ ${msg.content}`),
               <button
                 onClick={() => setInputExpanded((v) => !v)}
                 title={inputExpanded ? 'Collapse the message box' : 'Expand the message box'}
-                className="flex items-center text-[10px] px-2 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40 transition-fast shrink-0 self-start"
+                className="flex items-center text-[10px] px-2 py-1.5 rounded-full text-nv-faint hover:text-accent hover:bg-nv-surface2 transition-fast shrink-0 self-start"
               >
                 {inputExpanded ? (
                   <svg viewBox="0 0 24 24" className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>
@@ -15539,7 +15807,7 @@ ${msg.content}`),
               <button
                 onClick={() => onOpenResearch(input.trim())}
                 title="Open in Research tab"
-                className="flex items-center gap-1 text-[10px] px-2 py-1.5 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40 transition-fast shrink-0 font-mono"
+                className="flex items-center gap-1 text-[10px] px-2 py-1.5 rounded-full text-nv-faint hover:text-accent hover:bg-nv-surface2 transition-fast shrink-0 font-mono"
               >
                 <svg viewBox="0 0 10 10" fill="none" className="w-2.5 h-2.5">
                   <circle cx="4.2" cy="4.2" r="2.8" stroke="currentColor" strokeWidth="1.2"/>

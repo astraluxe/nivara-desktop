@@ -188,21 +188,80 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "Uploading assets to $tag..." -ForegroundColor Cyan
 
+# ─── ONE AT A TIME, AND THE MANIFEST LAST ────────────────────────────────────
+#
+# `gh release upload` given four files uploads them CONCURRENTLY. On 1.77.0 two 25 MB installers
+# going up at once came back "HTTP 400: Bad Request" while the small .sig and latest.json went up
+# fine — so the release was published carrying a MANIFEST BUT NO INSTALLER. The updater read that
+# manifest, correctly announced 1.77.0, and then could not download anything. The owner saw
+# "the update failed" with no way to tell that the release itself was half empty.
+#
+# Sequential uploads with a retry fix the 400. Uploading latest.json LAST means a half-finished
+# release cannot advertise itself: if an installer fails, there is no manifest pointing at it and
+# every client simply stays on the version it has.
+
 $fixedExe = "$bundle\adris-setup.exe"
 Copy-Item $exe $fixedExe
 
-& $gh release upload $tag $exe $sig latest.json $fixedExe --repo astraluxe/nivara-desktop --clobber
+function Send-Asset($path) {
+    foreach ($attempt in 1..3) {
+        & $gh release upload $tag $path --repo astraluxe/nivara-desktop --clobber
+        if ($LASTEXITCODE -eq 0) { return $true }
+        Write-Host "  upload of $(Split-Path $path -Leaf) failed (attempt $attempt of 3), retrying..." -ForegroundColor Yellow
+        Start-Sleep -Seconds 4
+    }
+    return $false
+}
+
+$uploadOk = $true
+# The installers first, the manifest only once they are all really up there.
+# THE MESH ENGINE SHIPS TOO.
+#
+# `exo-node.exe` is built by the same cargo run and was never uploaded, so the app's download URL
+# 404'd for every user since Mesh shipped and the engine could never install. It is small (~370 KB)
+# and Mesh is dead without it.
+$exoNode = Join-Path (Split-Path $exe -Parent) "..\..\exo-node.exe"
+$exoNode = [System.IO.Path]::GetFullPath($exoNode)
+$assets = @($exe, $sig, $fixedExe)
+if (Test-Path $exoNode) { $assets += $exoNode }
+else { Write-Host "  WARNING: exo-node.exe not found -- Mesh will not be able to install its engine." -ForegroundColor Yellow }
+
+foreach ($asset in $assets) {
+    if (-not (Send-Asset $asset)) { $uploadOk = $false; break }
+}
+if ($uploadOk) { $uploadOk = Send-Asset "latest.json" }
 
 Remove-Item $fixedExe -ErrorAction SilentlyContinue
 
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Upload failed. Upload these manually to the $tag release:" -ForegroundColor Yellow
+# VERIFY, do not assume. The exit code told us an upload failed and the release was still left
+# live and broken, so ask GitHub what is actually on the release before calling this a success.
+if ($uploadOk) {
+    $onRelease = & $gh release view $tag --repo astraluxe/nivara-desktop --json assets --jq ".assets[].name"
+    foreach ($want in @((Split-Path $exe -Leaf), (Split-Path $sig -Leaf), "adris-setup.exe", "exo-node.exe", "latest.json")) {
+        if ($onRelease -notcontains $want) {
+            Write-Host "  MISSING from the release: $want" -ForegroundColor Red
+            $uploadOk = $false
+        }
+    }
+}
+
+if (-not $uploadOk) {
+    Write-Host "Upload failed. The release is INCOMPLETE -- upload these manually to ${tag}:" -ForegroundColor Yellow
     Write-Host "  $exe"
     Write-Host "  $sig"
-    Write-Host "  latest.json"
-    Write-Host "  (also re-run to upload adris-setup.exe for the download page)"
+    Write-Host "  the same .exe again, renamed adris-setup.exe (the download page uses that name)"
+    Write-Host "  latest.json  -- LAST, and only after the installers are up" -ForegroundColor Yellow
+    Write-Host "  gh release upload $tag <file> --repo astraluxe/nivara-desktop --clobber"
+    Write-Host ""
+    # THE PART THAT IS EASY TO MISS. The mirroring step below never runs when we exit here, so
+    # www.adris.tech keeps serving the PREVIOUS version and nobody is offered this one -- the
+    # release looks published on GitHub while every app in the world still sees the old number.
+    Write-Host "  latest.json was NOT mirrored to www.adris.tech, so NOBODY has been offered v$version." -ForegroundColor Yellow
+    Write-Host "  That endpoint is the only one reachable on a filtered ISP -- re-run this script once the assets are up." -ForegroundColor Yellow
     exit 1
 }
+
+Write-Host "All four assets verified on the release." -ForegroundColor Green
 
 # -- Mirror latest.json where blocked networks can still reach it ------------------------------
 #

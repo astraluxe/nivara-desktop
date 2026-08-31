@@ -160,12 +160,14 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
 
   // ── Download extension ───────────────────────────────────────────────────────
 
-  async function downloadExtension() {
+  /** Returns whether the engine is now installed, so the caller can carry straight on. */
+  async function downloadExtension(): Promise<boolean> {
     setDownloading(true);
     setDlStep("Preparing…");
     setDlPct(0);
     setErr(null);
 
+    let ok = false;
     const unlisten = await listen<{ step: string; pct: number }>("mesh_download_progress", ev => {
       setDlStep(ev.payload.step);
       setDlPct(ev.payload.pct);
@@ -174,12 +176,14 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
     try {
       await invoke("mesh_download_extension");
       setExtensionReady(true);
+      ok = true;
     } catch (e: any) {
       setErr(e?.toString() ?? "Download failed. Check your internet connection.");
     } finally {
       unlisten();
       setDownloading(false);
     }
+    return ok;
   }
 
   // ── Notify parent (App.tsx → Sidebar) about session state ──────────────────
@@ -259,9 +263,13 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
   // ── Session actions ─────────────────────────────────────────────────────────
 
   async function startSession() {
-    if (!machineInfo) return;
-    if (!extensionReady) { await downloadExtension(); return; }
+    // Same two dead ends as joinSession — see the note there.
+    if (!machineInfo) { setErr("Still reading this computer's details — try again in a second."); return; }
     setErr(null);
+    if (!extensionReady) {
+      const installed = await downloadExtension();
+      if (!installed) return;
+    }
     const code = generateRoomCode();
     isCentralRef.current = true;
     setSessionState("joining");
@@ -280,9 +288,22 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
 
   async function joinSession() {
     const code = roomCodeInput.trim().toUpperCase();
-    if (!machineInfo || !code) return;
-    if (!extensionReady) { await downloadExtension(); return; }
+    // TWO SILENT DEAD ENDS USED TO LIVE HERE, and between them Mesh looked broken.
+    //
+    // `if (!machineInfo || !code) return` meant pressing Join with the machine probe still running
+    // did NOTHING AT ALL — no message, no spinner, nothing to react to.
+    //
+    // `if (!extensionReady) { await downloadExtension(); return }` meant the first press downloaded
+    // the engine and then stopped. The user watched a progress bar, saw no connection, and had to
+    // guess that pressing Join a second time was the answer. Since the engine download was itself
+    // 404ing, that second press failed too.
+    if (!code) { setErr("Enter the room code from the other computer first."); return; }
+    if (!machineInfo) { setErr("Still reading this computer's details — try again in a second."); return; }
     setErr(null);
+    if (!extensionReady) {
+      const installed = await downloadExtension();
+      if (!installed) return;                // downloadExtension has already said why
+    }
     setJoining(true);
     isCentralRef.current = false;
     setSessionState("joining");

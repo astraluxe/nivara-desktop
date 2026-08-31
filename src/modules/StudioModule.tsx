@@ -1,6 +1,6 @@
 ﻿import { useState, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { resolveAiSource } from '../lib/aiSource';
+import { resolveAiSource, bridgeAnswer } from '../lib/aiSource';
 import Caret from '../components/ui/Caret';
 import { listen } from '@tauri-apps/api/event';
 import { useAuth } from '../contexts/AuthContext';
@@ -1746,7 +1746,15 @@ export default function StudioModule({ initialRequest, onRequestConsumed }: Stud
     const callId = String(++callIdRef.current);
     let full = '';
     const done = { cleanup: () => {} };
-    const { mode, apiKey, provider, modelName: mName, baseUrl: bUrl, localModel: lModel } = await resolveMode();
+    const conn = await resolveMode();
+
+    // THE BRIDGE, BEFORE krew_ai_stream. Its match on `mode` ends `_ => "Unknown mode: {mode}"`,
+    // so 'agent_cli' is an error rather than a fallback. Studio resolved the source correctly and
+    // then handed it straight over, so picking "Your Claude Code" broke every generator here.
+    const bridged = await bridgeAnswer(conn, [{ role: 'user', content: userMessage }], systemPrompt, onChunk);
+    if (bridged !== null) return bridged;
+
+    const { mode, apiKey, provider, modelName: mName, baseUrl: bUrl, localModel: lModel } = conn;
 
     return new Promise<string>(async (resolve, reject) => {
       const u1 = await listen<{ id: string; text: string }>('krew-chunk', (e) => {
@@ -1880,10 +1888,22 @@ The prompt must be specific enough for a motion designer to execute without ques
             done.cleanup(); reject(new Error(e.payload.error));
           });
           done.cleanup = () => { u1(); u2(); u3(); };
-          const { mode, apiKey, provider, modelName: mName, baseUrl: bUrl, localModel: lModel } = await resolveMode();
+          const conn = await resolveMode();
+          // Hoisted so the bridge and krew_ai_stream are provably sent the SAME prompt — two copies
+          // of a message literal is how they quietly drift apart.
+          const msgs = [{ role: 'user', content: `Brand content:\n\n${contextFile.content.slice(0, 20000)}` }];
+          // THE BRIDGE — see the note on streamAI above. 'agent_cli' is an error to
+          // krew_ai_stream, not a fallback.
+          try {
+            const bridged = await bridgeAnswer(conn, msgs, sysPrompt);
+            // `full` is what this promise resolves with, so a bridged answer has to land in it —
+            // resolving the untouched variable would hand the caller an empty string.
+            if (bridged !== null) { done.cleanup(); full = bridged; resolve(full); return; }
+          } catch (e) { done.cleanup(); reject(e); return; }
+          const { mode, apiKey, provider, modelName: mName, baseUrl: bUrl, localModel: lModel } = conn;
           invoke('krew_ai_stream', {
             callId, mode, systemPrompt: sysPrompt,
-            messages: [{ role: 'user', content: `Brand content:\n\n${contextFile.content.slice(0, 20000)}` }],
+            messages: msgs,
             apiKey, provider, localModel: lModel ?? null, modelName: mName ?? null, baseUrl: bUrl ?? null,
             sessionToken: session?.access_token ?? null,
           }).catch((e: unknown) => { done.cleanup(); reject(e); });
@@ -1926,10 +1946,19 @@ The prompt must be specific enough for a motion designer to execute without ques
             done.cleanup(); reject(new Error(e.payload.error));
           });
           done.cleanup = () => { u1(); u2(); u3(); };
-          const { mode, apiKey, provider, modelName: mName, baseUrl: bUrl, localModel: lModel } = await resolveMode();
+          const conn = await resolveMode();
+          // Hoisted so the bridge and krew_ai_stream are provably sent the SAME prompt.
+          const msgs = [{ role: 'user', content: `Review this marketing video scene code:\n\`\`\`js\n${codeSnippet}\n\`\`\`` }];
+          // THE BRIDGE — see the note on streamAI above. 'agent_cli' is an error to
+          // krew_ai_stream, not a fallback.
+          try {
+            const bridged = await bridgeAnswer(conn, msgs, agent.prompt);
+            if (bridged !== null) { done.cleanup(); full = bridged; resolve(); return; }
+          } catch (e) { done.cleanup(); reject(e); return; }
+          const { mode, apiKey, provider, modelName: mName, baseUrl: bUrl, localModel: lModel } = conn;
           invoke('krew_ai_stream', {
             callId, mode, systemPrompt: agent.prompt,
-            messages: [{ role: 'user', content: `Review this marketing video scene code:\n\`\`\`js\n${codeSnippet}\n\`\`\`` }],
+            messages: msgs,
             apiKey, provider, localModel: lModel ?? null, modelName: mName ?? null, baseUrl: bUrl ?? null,
             sessionToken: session?.access_token ?? null,
           }).catch((e: unknown) => { done.cleanup(); reject(e); });

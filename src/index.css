@@ -478,3 +478,65 @@ p, li, td, th, pre, code, blockquote, h1, h2, h3, h4, h5, h6, .font-serif, .font
   .nv-globe-spin { animation: none; }
   .nv-globe-dot  { animation: none; opacity: 0.7; }
 }
+
+/* ── An agent that is working ────────────────────────────────────────────────
+   A slow halo on the avatar of whoever is busy. This is F3.2: the room should feel alive while
+   work happens, without anything moving that would pull the eye off text being read beside it.
+
+   WHAT IT IS NOT. Not a spinner, not bouncing dots, and not fast. Two and a half seconds per
+   breath is slow enough to read as "alive" from the corner of the eye and too slow to compete with
+   a sentence. It also costs nothing: box-shadow and opacity are composited, so several agents can
+   breathe at once beside a local model using the CPU.
+
+   The colour comes from --nv-work, set inline per agent, so an avatar carries its own department
+   colour rather than a single accent for everybody. */
+@keyframes nv-working {
+  0%, 100% { box-shadow: 0 0 0 0 rgb(var(--nv-work) / 0.42); }
+  50%      { box-shadow: 0 0 0 4px rgb(var(--nv-work) / 0); }
+}
+.nv-working { animation: nv-working 2.5s cubic-bezier(.4, 0, .6, 1) infinite; }
+
+/* Honoured completely: the halo stops, the avatar keeps its resting ring, and nothing else about
+   the layout changes. A user who asks for less motion gets less motion, not a broken screen. */
+@media (prefers-reduced-motion: reduce) {
+  .nv-working { animation: none; box-shadow: 0 0 0 2px rgb(var(--nv-work) / 0.32); }
+}
+
+/* ── Brand marks that vanish against one of the two backgrounds ──────────────
+   Measured, not guessed: of the brand hues used by BrandLogo, eleven fell below the 3:1 floor
+   for a graphical object on one theme or the other. Six read as a HOLE in the dark menu where a
+   logo should be; five washed out on paper.
+
+   OpenAI, GitHub, Notion, X and Vercel are monochrome brands — their own dark asset is WHITE, so
+   that is what they get, rather than the mid-grey a bare 3:1 test would settle for. The coloured
+   marks keep their hue and are nudged to a comfortable 4.5:1.
+
+   CSS variables rather than component logic, so a mark repaints the instant the theme is toggled
+   with no re-render and nothing to keep in sync. scripts/check-brand-contrast.mjs fails the build
+   if any mark drops below the floor again. */
+:root {
+  --brand-openai: #ffffff;
+  --brand-claude: #D97757;
+  --brand-anthropic: #D97757;
+  --brand-nvidia: #76B900;
+  --brand-notion: #ffffff;
+  --brand-slack: #927393;
+  --brand-github: #ffffff;
+  --brand-airtable: #18BFFF;
+  --brand-twitter: #ffffff;
+  --brand-shopify: #7AB55C;
+  --brand-vercel: #ffffff;
+}
+:root.paper {
+  --brand-openai: #000000;
+  --brand-claude: #a55a42;
+  --brand-anthropic: #a55a42;
+  --brand-nvidia: #4e7a00;
+  --brand-notion: #000000;
+  --brand-slack: #4A154B;
+  --brand-github: #181717;
+  --brand-airtable: #0f769e;
+  --brand-twitter: #000000;
+  --brand-shopify: #537b3f;
+  --brand-vercel: #000000;
+}

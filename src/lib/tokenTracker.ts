@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import { supabase } from './supabase';
 import { charsToTokens } from './planConfig';
+import { resolveAiSource } from './aiSource';
+import { billingSource } from './usageMeter';
 
 export type TokenModule = 'coder' | 'krew' | 'automation' | 'guard' | 'studio';
 
@@ -14,11 +16,43 @@ async function getSupabaseCreds() {
   };
 }
 
-/** Fire-and-forget. Never throws — token tracking must not crash the chat. */
-export async function trackTokenUsage(module: TokenModule, charsUsed: number): Promise<void> {
+/**
+ * Fire-and-forget. Never throws — token tracking must not crash the chat.
+ *
+ * ── WHY IT NOW RECORDS THE SOURCE ──────────────────────────────────────────
+ *
+ * Under pay-per-use this row becomes a line on an invoice, and the one thing it never said was
+ * WHOSE KEY PAID. A user thinking on their own Claude subscription, their own API key, or a local
+ * model costs adris nothing, and billing them per token would charge for something we never bought
+ * — while the bridge is sold on exactly the opposite promise.
+ *
+ * Resolving the source costs one cached call and is worth it: a row without it cannot be billed at
+ * all, because `usageMeter` treats unknown as not-billable rather than guessing.
+ *
+ * NOTE ON ACCURACY: `charsToTokens` is an ESTIMATE from character count, not a figure the provider
+ * reported. That is honest for a quota bar and is not good enough for an invoice — see the note in
+ * usageMeter.ts. Pass real counts through `meta` wherever the provider gives them.
+ */
+export async function trackTokenUsage(
+  module: TokenModule,
+  charsUsed: number,
+  meta?: { model?: string; inputTokens?: number; outputTokens?: number },
+): Promise<void> {
   try {
     const creds = await getSupabaseCreds();
     if (!creds.userId || !creds.sessionToken) return;
+
+    let source = 'unknown';
+    let model = meta?.model;
+    try {
+      const ai = await resolveAiSource();
+      source = billingSource(ai.mode);
+      model = model ?? ai.modelName ?? ai.localModel ?? undefined;
+    } catch {
+      // An unresolvable source stays 'unknown', which is treated as NOT billable. Failing closed
+      // costs us a little revenue; failing open would charge someone for our not knowing.
+    }
+
     await invoke('track_token_usage', {
       supabaseUrl:     creds.supabaseUrl,
       supabaseAnonKey: creds.supabaseAnonKey,
@@ -26,6 +60,10 @@ export async function trackTokenUsage(module: TokenModule, charsUsed: number): P
       userId:          creds.userId,
       module,
       tokensUsed:      charsToTokens(charsUsed),
+      source,
+      model:           model ?? null,
+      inputTokens:     meta?.inputTokens ?? null,
+      outputTokens:    meta?.outputTokens ?? null,
     });
   } catch {
     // intentionally silent

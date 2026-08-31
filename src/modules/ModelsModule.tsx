@@ -163,6 +163,19 @@ const DESKTOP_MODELS: RegistryModel[] = [
   { id:'qwen25-coder-7b-q4', name:'Qwen 2.5 Coder 7B', creator:'Alibaba', params:'7B', quantization:'Q4_K_M', size_gb:4.3, ram_min_gb:6, ram_recommended_gb:8, context_length:131072, best_for:['coding'], benchmark_humaneval:88, license:'Apache 2.0', gated:false, cpu_only:true, description:'Top coder at 7B — beats models 2× its size. 128K context.' },
   { id:'mistral-7b-q4', name:'Mistral 7B', creator:'Mistral AI', params:'7B', quantization:'Q4_K_M', size_gb:4.4, ram_min_gb:6, ram_recommended_gb:8, context_length:32768, best_for:['chat','writing','coding'], benchmark_mmlu:62, license:'Apache 2.0', gated:false, cpu_only:true, description:'Best quality-to-size at 7B. Great all-rounder for writing and chat.' },
   { id:'sarvam1-7b-q4', name:'Sarvam-1 7B', creator:'Sarvam AI', params:'7.3B', quantization:'Q4_K_M', size_gb:4.6, ram_min_gb:6, ram_recommended_gb:8, context_length:4096, best_for:['chat','indic'], license:'Apache 2.0', gated:false, description:'India-first model. Best Indic support — Hindi, Tamil, Telugu, Kannada, Bengali and more.' },
+  // ── HERMES: the one to spawn a sub-agent on ───────────────────────────────
+  //
+  // WHY THIS ONE IS LISTED SEPARATELY. A spawned sub-agent's whole job is to call a tool and return
+  // structured output, and that is precisely where small local models fail — they answer in prose
+  // when JSON was asked for, and the run dies on a parse. Hermes is tuned for exactly that, which
+  // makes it worth more here than a bigger model that cannot hold a format.
+  //
+  // MEASURED, NEVER TRUSTED. It is listed, not recommended: a catalogue is a claim, and this one
+  // has not been run on this machine. The app already PROBES a model rather than believing its
+  // description (see the BYOK scan and modelHealth) — Hermes goes through the same gate as
+  // everything else, and nothing should say it is good at tool-calling here until a probe says so.
+  { id:'hermes3-8b-q4', name:'Hermes 3 8B', creator:'Nous Research', params:'8B', quantization:'Q4_K_M', size_gb:4.9, ram_min_gb:6, ram_recommended_gb:8, context_length:131072, best_for:['reasoning','coding','chat'], benchmark_mmlu:72, license:'Llama 3.1', gated:false, cpu_only:true, description:'Tuned for tool-calling and structured answers — the reason to pick it for background agents rather than chat.' },
+  { id:'hermes3-70b-q4', name:'Hermes 3 70B', creator:'Nous Research', params:'70B', quantization:'Q4_K_M', size_gb:42.5, ram_min_gb:48, ram_recommended_gb:64, context_length:131072, best_for:['reasoning','coding'], benchmark_mmlu:80, license:'Llama 3.1', gated:false, description:'The larger Hermes. Same tool-calling strength, needs a workstation.' },
   { id:'llama31-8b-q4', name:'Llama 3.1 8B', creator:'Meta', params:'8B', quantization:'Q4_K_M', size_gb:4.9, ram_min_gb:6, ram_recommended_gb:8, context_length:131072, best_for:['chat','writing','reasoning'], benchmark_mmlu:73, license:'Llama 3.1', gated:false, cpu_only:true, description:'Meta flagship small model. 128K context, 8-language support.' },
   { id:'deepseek-coder-6b-q4', name:'DeepSeek Coder 6.7B', creator:'DeepSeek', params:'6.7B', quantization:'Q4_K_M', size_gb:3.9, ram_min_gb:6, ram_recommended_gb:8, context_length:16384, best_for:['coding'], benchmark_humaneval:74, license:'DeepSeek', gated:false, cpu_only:true, description:'Code-specialised. Excellent Python, JavaScript, TypeScript generation.' },
   // 2–6 GB RAM

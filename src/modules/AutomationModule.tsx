@@ -1,7 +1,7 @@
 ﻿import { useState, useEffect, useCallback, useRef } from 'react';
 import Icon, { type IconName } from '../components/Icon';
 import { invoke } from '@tauri-apps/api/core';
-import { resolveAiSource } from '../lib/aiSource';
+import { resolveAiSource, bridgeAnswer } from '../lib/aiSource';
 import { useAuth } from '../contexts/AuthContext';
 import { getPlanConfig } from '../lib/planConfig';
 import UpgradeModal from '../components/UpgradeModal';
@@ -252,6 +252,15 @@ async function callAI(
       // whole job is deciding this. A user on OmniRoute or their own key got a local model they
       // may not even have downloaded.
       const src = await resolveAiSource();
+
+      // THE BRIDGE. krew_ai_stream's match on `mode` ends `_ => "Unknown mode: {mode}"`, so
+      // handing it 'agent_cli' shows the user an error rather than falling back. Choosing
+      // "Your Claude Code" in the title bar used to break this screen outright.
+      try {
+        const bridged = await bridgeAnswer(src, [{ role: 'user', content: userMessage }], systemPrompt);
+        if (bridged !== null) { cleanup(); resolve(bridged); return; }
+      } catch (e) { cleanup(); reject(e); return; }
+
       invoke('krew_ai_stream', {
         callId, mode: src.mode, systemPrompt,
         messages: [{ role: 'user', content: userMessage }],

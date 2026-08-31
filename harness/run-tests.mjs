@@ -43,6 +43,23 @@ const UNITS = [
   ['officeCom',     'src/lib/officeCom.ts'],
   ['agentCli',      'src/lib/agentCli.ts'],
   ['agentSchedule', 'src/lib/agentSchedule.ts'],
+  ['chatConnection','src/lib/chatConnection.ts'],
+  ['agentCliSetup', 'src/lib/agentCli.ts'],
+  ['krewTips',      'src/lib/krewTips.ts'],
+  ['agentActivity', 'src/lib/agentActivity.ts'],
+  ['gitStatus',     'src/lib/gitStatus.ts'],
+  ['toolShelf',     'src/lib/toolShelf.ts'],
+  ['usageMeter',    'src/lib/usageMeter.ts'],
+  ['deckRouting',   'src/lib/deckRouting.ts'],
+  ['docImages',     'src/lib/docImages.ts'],
+  ['officeDocs',    'src/lib/officeDocs.ts'],
+  ['markdownPaste', 'src/lib/markdownPaste.ts'],
+  ['refusalGuard',  'src/lib/refusalGuard.ts'],
+  ['quickReplies',  'src/lib/quickReplies.ts'],
+  ['pictureSave',   'src/lib/pictureSave.ts'],
+  ['fileIcons',     'src/lib/fileIcons.ts'],
+  ['entitlement',   'src/lib/entitlement.ts'],
+  ['designedDeck',  'src/lib/designedDeck.ts'],
 ];
 
 let failed = 0;
@@ -84,9 +101,40 @@ if (!process.argv.includes('--unit')) {
 
   // Setting the mailbox up is the step a non-technical person actually has to do, so it gets its
   // own pass — including the mistake the first real user made.
+  console.log('\n### Pasting Markdown into a real Brain note');
+  try { execFileSync(process.execPath, [path.join(here, 'brain-paste.mjs')], { stdio: 'inherit' }); }
+  catch { failed++; }
+
+  console.log('\n### A real .docx, read by the shipped code');
+  try { execFileSync(process.execPath, [path.join(here, 'docx-real.mjs')], { stdio: 'inherit' }); }
+  catch { failed++; }
+
   console.log('\n### Mailbox setup, in a real browser');
   try { execFileSync(process.execPath, [path.join(here, 'drive-smtp.mjs')], { stdio: 'inherit' }); }
   catch { failed++; }
+
+  // Two buttons that looked alive and did nothing. Both were found by the user, not by us, so both
+  // are now driven against the shipped components rather than argued about.
+  console.log('\n### The rail opens the user\'s own Word, Excel and PowerPoint');
+  try { execFileSync(process.execPath, [path.join(here, 'rail-office.mjs')], { stdio: 'inherit' }); }
+  catch { failed++; }
+
+  console.log('\n### The deck asks where it should go');
+  try { execFileSync(process.execPath, [path.join(here, 'deck-destination.mjs')], { stdio: 'inherit' }); }
+  catch { failed++; }
+
+  console.log('\n### A real .pptx, opened and searched for the pictures');
+  try { execFileSync(process.execPath, [path.join(here, 'deck-images.mjs')], { stdio: 'inherit' }); }
+  catch { failed++; }
+
+  console.log('\n### Coder reads as a code editor');
+  try { execFileSync(process.execPath, [path.join(here, 'coder-shell.mjs')], { stdio: 'inherit' }); }
+  catch { failed++; }
+
+  console.log('\n### A real .pptx, opened in the real PowerPoint');
+  try { execFileSync(process.execPath, [path.join(here, 'powerpoint-real.mjs')], { stdio: 'inherit' }); }
+  catch { failed++; }
+
 }
 
 console.log(failed ? `\n${failed} suite(s) FAILED` : '\nall suites passed');

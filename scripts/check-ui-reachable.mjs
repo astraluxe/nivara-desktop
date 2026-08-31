@@ -53,6 +53,38 @@ if (!exempted) {
   console.log('  PROVIDER AUTO-CORRECT HAS NO EXEMPTION: omniroute/custom will snap back before setup finishes');
 }
 
-const bad = unreachable.length + phantom.length + unguarded.length + (exempted ? 0 : 1);
-console.log(`\n${bad === 0 ? 'ALL PROVIDERS REACHABLE' : bad + ' PROBLEMS'}`);
+// ── AND EVERY MODULE MUST BE OPENABLE ────────────────────────────────────────
+//
+// The same shape of bug, one level up. The office room was written, wired into App.tsx, given a
+// `Module` id and rendered correctly — and there was NO WAY TO OPEN IT. No sidebar button, and not
+// in the `nv-navigate` allowlist either, so `/office` would have done nothing too. A whole screen,
+// finished and invisible, with nothing failing anywhere.
+//
+// A module counts as reachable if it is in the sidebar list, in the navigate allowlist, or opened
+// by its own dedicated control (the home button, the settings and account buttons at the foot of
+// the sidebar, the Shelf rail). Anything else is a screen nobody can get to.
+const side = fs.readFileSync(root + 'src/components/Sidebar.tsx', 'utf8');
+const app = fs.readFileSync(root + 'src/App.tsx', 'utf8');
+
+const modules = [...side.match(/export type Module =([^;]+);/)[1].matchAll(/"([a-z]+)"/g)].map(m => m[1]);
+const inNav = [...side.matchAll(/id:\s*"([a-z]+)"/g)].map(m => m[1]);
+const validSrc = app.slice(app.indexOf('const VALID: Module[]'));
+const inNavigate = [...validSrc.slice(0, validSrc.indexOf('];')).matchAll(/"([a-z]+)"/g)].map(m => m[1]);
+// Opened by a control of its own rather than by a list.
+const ownButton = [...app.matchAll(/setActiveModule\(['"]([a-z]+)['"]\)/g)].map(m => m[1])
+  .concat([...side.matchAll(/onModuleChange\(["']([a-z]+)["']\)/g)].map(m => m[1]));
+
+const reachable = new Set([...inNav, ...inNavigate, ...ownButton]);
+const orphans = modules.filter(m => !reachable.has(m));
+
+console.log(`
+  modules defined     : ${modules.length}`);
+console.log(`  reachable           : ${modules.length - orphans.length}`);
+if (orphans.length) {
+  console.log(`  DEFINED BUT UNOPENABLE: ${orphans.join(', ')}`);
+  console.log('      Add it to MODULES in Sidebar.tsx, or to VALID in App.tsx, or give it a button.');
+}
+
+const bad = unreachable.length + phantom.length + unguarded.length + (exempted ? 0 : 1) + orphans.length;
+console.log(`\n${bad === 0 ? 'ALL PROVIDERS AND MODULES REACHABLE' : bad + ' PROBLEMS'}`);
 process.exit(bad ? 1 : 0);

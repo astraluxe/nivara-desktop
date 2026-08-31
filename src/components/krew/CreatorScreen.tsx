@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { resolveAiSource } from '../../lib/aiSource';
+import { resolveAiSource, bridgeAnswer } from '../../lib/aiSource';
 import { listen } from '@tauri-apps/api/event';
 import { useAuth } from '../../contexts/AuthContext';
 import { credentialStore } from '../../lib/krewDb';
@@ -141,6 +141,14 @@ export default function CreatorScreen() {
     // ONE CHOICE, HONOURED EVERYWHERE. This used to walk a hardcoded provider list and take the
     // first credential it found, ignoring the app-wide AI Source picker entirely. See aiSource.ts.
     const conn = await resolveAiSource();
+
+    // THE BRIDGE, BEFORE ANYTHING TOUCHES krew_ai_stream. That command's match on `mode` ends
+    // `_ => "Unknown mode: {mode}"`, so handing it 'agent_cli' does not fall back — it shows the
+    // user an error. This screen resolved the source correctly and then did exactly that, so
+    // choosing "Your Claude Code" in the title bar broke it outright.
+    const bridged = await bridgeAnswer(conn, messages, systemPrompt, onChunk);
+    if (bridged !== null) return bridged;
+
     const mode = conn.mode as string;
     const apiKey = conn.apiKey;
     const provider = conn.provider;

@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import FeedbackModal from "./FeedbackModal";
 
-export type Module = "home" | "automation" | "coder" | "krew" | "connect" | "models" | "vault" | "guard" | "mesh" | "brain" | "head" | "info" | "account" | "settings";
+export type Module = "home" | "automation" | "coder" | "krew" | "connect" | "models" | "vault" | "guard" | "mesh" | "brain" | "head" | "info" | "account" | "settings" | "tools";
 
 interface Props {
   activeModule: Module;

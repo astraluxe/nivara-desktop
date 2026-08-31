@@ -3,16 +3,25 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useAuth } from "../contexts/AuthContext";
 import { getMonthlyUsage } from "../lib/tokenTracker";
+import UsagePanel from "../components/UsagePanel";
+import LicencePanel from "../components/LicencePanel";
+import { TIER_LABEL, tierOf } from "../lib/entitlement";
 import { supabase } from "../lib/supabase";
 
-const PLAN_LABEL: Record<string, string> = {
-  free:     "Free",
-  explore:  "Explore",
-  solo:     "Solo",
-  builder:  "Builder",
-  business: "Team",
-  custom:   "Custom",
-};
+/**
+ * L10 — THE PLAN WORDS.
+ *
+ * Every one of these strings is user-visible, and every one of them read wrong the moment the
+ * pricing changed: "Solo", "Builder", "Team" are names the website no longer uses. They are derived
+ * now from lib/entitlement.ts, which is also what the app meters against, so a customer cannot be
+ * shown one plan and charged as another.
+ *
+ * The stored column is the LEGACY vocabulary — `business` there means the old Team, not the new
+ * Business tier. tierOf is told which it is reading.
+ */
+const PLAN_LABEL: Record<string, string> = new Proxy({}, {
+  get: (_t, key: string) => TIER_LABEL[tierOf(key, 'plan')],
+}) as Record<string, string>;
 
 const PLAN_COLOR: Record<string, string> = {
   free:     "text-nv-muted  bg-nv-surface2",
@@ -230,6 +239,17 @@ export default function AccountPanel() {
         >
           Sign out
         </button>
+
+        {/* ── USAGE, IN DETAIL ───────────────────────────────────────────
+            The bar above this shows one number against a plan limit, which is the right amount of
+            detail for a quota. Pay-per-use turns that number into a bill, and a bill has to be
+            checkable: what was billable, what the user's own key covered, which days, which parts
+            of the app. */}
+        {/* WHAT YOU HAVE, BEFORE WHAT YOU SPENT.
+            The usage panel below answers "where did it go"; this answers "what have I got and how
+            much is left", which is the question people arrive with. */}
+        <LicencePanel />
+        <UsagePanel periodStart={(profile as { usage_period_start?: string } | null)?.usage_period_start ?? null} />
 
         {/* Connection diagnostic */}
         <div className="border border-nv-border rounded-xl overflow-hidden">
