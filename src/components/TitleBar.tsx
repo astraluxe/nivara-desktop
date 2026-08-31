@@ -32,7 +32,7 @@ function PlanBadge({ onOpen }: { onOpen: () => void }) {
   const title = [
     `${TIER_LABEL[ent.tier]} plan`,
     left.unlimited ? 'Unlimited (fair use)' : `${left.tasksLeft.toLocaleString('en-IN')} AI tasks left this month`,
-    `Resets in ${ent.resetsInDays} day${ent.resetsInDays === 1 ? '' : 's'}`,
+    ent.oneTime ? 'A one-time allowance — it does not refill' : `Resets in ${ent.resetsInDays} day${ent.resetsInDays === 1 ? '' : 's'}`,
     ent.state === 'grace' ? 'Last checked a while ago — you are offline, nothing is wrong' : '',
     'Your own key and local models are never counted',
   ].filter(Boolean).join(' · ');

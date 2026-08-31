@@ -17,8 +17,9 @@
 
 import { useEffect, useState } from 'react';
 import { supabase } from './supabase';
+import { useAuth } from '../contexts/AuthContext';
 import {
-  tierOf, remaining, usedFrom, daysToReset, entitlementState, boundElsewhere,
+  tierOf, remaining, usedFrom, daysToReset, entitlementState, boundElsewhere, isOneTime,
   type Tier, type Used, type Remaining, type EntitlementState,
 } from './entitlement';
 
@@ -29,6 +30,8 @@ export interface Entitlement {
   used: Used;
   left: Remaining;
   resetsInDays: number;
+  /** True when this allowance never comes back — do not promise a reset. */
+  oneTime: boolean;
   /** Fresh, remembered-while-offline, or too old to trust. */
   state: EntitlementState;
   /** True while the first load is still in flight and there was no cache. */
@@ -79,6 +82,10 @@ export function machineId(): string {
 }
 
 export function useEntitlement(): Entitlement {
+  // The live plan. AuthContext keeps this current through a realtime subscription, so a payment on
+  // the website changes it here without a restart.
+  const { profile } = useAuth();
+  const planFromAuth = profile?.plan ?? null;
   const cached = readCache();
   const [tier, setTier] = useState<Tier>(cached?.tier ?? 'free');
   const [used, setUsed] = useState<Used>(cached?.used ?? { tokens: 0, images: 0, runs: 0 });
@@ -95,24 +102,34 @@ export function useEntitlement(): Entitlement {
         const { data: { session } } = await supabase.auth.getSession();
         if (!session?.user) { if (!dead) setLoading(false); return; }
 
-        const { data: profile } = await supabase
+        // The plan comes from AuthContext (see the note above) — not re-queried here. Only the two
+        // columns nothing else reads are fetched.
+        const { data: extra } = await supabase
           .from('users')
-          .select('plan, usage_period_start, licence_machine_id')
+          .select('usage_period_start, licence_machine_id')
           .eq('id', session.user.id)
           .single();
 
         // The stored column is the LEGACY vocabulary — see the note on tierOf about `business`
         // meaning opposite things in the two.
-        const t = tierOf((profile as { plan?: string } | null)?.plan, 'plan');
-        const start = (profile as { usage_period_start?: string } | null)?.usage_period_start ?? null;
-        const bound = (profile as { licence_machine_id?: string } | null)?.licence_machine_id ?? null;
+        const t = tierOf(planFromAuth, 'plan');
+        const start = (extra as { usage_period_start?: string } | null)?.usage_period_start ?? null;
+        const bound = (extra as { licence_machine_id?: string } | null)?.licence_machine_id ?? null;
 
-        const from = start ?? new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
-        const { data: rows } = await supabase
+        // A ONE-TIME ALLOWANCE IS COUNTED OVER ALL TIME.
+        //
+        // Free does not refill (see RENEWS), so counting only this month's rows would silently hand
+        // the user a fresh 300,000 tokens on the first of every month — which is precisely the
+        // promise the owner decided NOT to make. Paid tiers still count from the period start.
+        let q = supabase
           .from('token_usage')
           .select('tokens_consumed, task_type, source')
-          .eq('user_id', session.user.id)
-          .gte('created_at', from);
+          .eq('user_id', session.user.id);
+        if (!isOneTime(t)) {
+          const from = start ?? new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+          q = q.gte('created_at', from);
+        }
+        const { data: rows } = await q;
 
         const u = usedFrom(rows ?? []);
         if (dead) return;
@@ -127,12 +144,18 @@ export function useEntitlement(): Entitlement {
       }
     })();
     return () => { dead = true; };
-  }, [nonce]);
+    // Re-run whenever the plan changes — that is the moment a payment lands.
+  }, [nonce, planFromAuth]);
+
+  // The plan is authoritative the moment AuthContext has it; usage catches up a beat later. Showing
+  // the OLD tier while the new one is already known is the bug this whole note is about.
+  const liveTier = planFromAuth ? tierOf(planFromAuth, 'plan') : tier;
 
   return {
-    tier, used,
-    left: remaining(tier, used),
+    tier: liveTier, used,
+    left: remaining(liveTier, used),
     resetsInDays: daysToReset(periodStart),
+    oneTime: isOneTime(liveTier),
     state: entitlementState({ verifiedAt, machineId: boundTo }),
     loading,
     wrongMachine: boundElsewhere({ verifiedAt, machineId: boundTo }, machineId()),

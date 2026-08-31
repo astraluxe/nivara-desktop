@@ -115,6 +115,27 @@ export const ALLOWANCE: Record<Tier, Allowance> = {
                 meshDevices: Number.POSITIVE_INFINITY },
 };
 
+/**
+ * Does the allowance come back every month, or is it all you ever get?
+ *
+ * The owner's decision, and it changes what the app is allowed to say: **Free is a one-time
+ * allowance, not a monthly one.** Free used to promise 300,000 tokens "every month, resets monthly,
+ * not a one-time trial" — the opposite of what is now true. Telling somebody their allowance will
+ * refill when it will not is the kind of small lie that ends a trial badly, so this lives next to
+ * the numbers rather than in the copy, where the two could drift apart.
+ */
+export const RENEWS: Record<Tier, 'monthly' | 'once'> = {
+  free: 'once',
+  business: 'monthly',
+  growth: 'monthly',
+  enterprise: 'monthly',
+};
+
+/** True when this tier's allowance never comes back. */
+export function isOneTime(tier: Tier): boolean {
+  return RENEWS[tier] === 'once';
+}
+
 /** Does this tier get the security scanner, single sign-on, a shared workspace? */
 export const FEATURES: Record<Tier, { guard: boolean; sso: boolean; workspace: 'none' | 'basic' | 'full' | 'roles' }> = {
   free:       { guard: false, sso: false, workspace: 'none' },
@@ -263,10 +284,13 @@ export function covers(tier: Tier): string[] {
   const a = ALLOWANCE[tier];
   const f = FEATURES[tier];
   const n = (x: number) => (x === Number.POSITIVE_INFINITY ? 'Unlimited (fair use)' : x.toLocaleString('en-IN'));
+  // "a month" is a promise. On Free the allowance never comes back, so the words must not say it
+  // does — see RENEWS.
+  const per = isOneTime(tier) ? 'to start with' : 'a month';
   return [
-    `${a.tokens === Number.POSITIVE_INFINITY ? 'Unlimited' : tasksFrom(a.tokens).toLocaleString('en-IN')} AI tasks a month`,
-    `${n(a.images)} AI images a month`,
-    `${n(a.runs)} cloud automation runs a month`,
+    `${a.tokens === Number.POSITIVE_INFINITY ? 'Unlimited' : tasksFrom(a.tokens).toLocaleString('en-IN')} AI tasks ${per}`,
+    `${n(a.images)} AI images ${per}`,
+    `${n(a.runs)} cloud automation runs ${per}`,
     `${n(a.seats)} ${a.seats === 1 ? 'seat' : 'seats'}`,
     `${n(a.meshDevices)} Mesh ${a.meshDevices === 1 ? 'device' : 'devices'}`,
     f.guard ? 'Guard security scanner' : 'Guard not included',

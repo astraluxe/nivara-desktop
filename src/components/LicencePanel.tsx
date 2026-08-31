@@ -85,9 +85,12 @@ export default function LicencePanel() {
       {/* ── how much is left ────────────────────────────────────────────── */}
       <div className="rounded-xl border border-nv-border bg-nv-surface p-4 space-y-4">
         <div className="flex items-baseline justify-between">
-          <p className="text-[12px] font-semibold text-nv-text">This month</p>
+          <p className="text-[12px] font-semibold text-nv-text">{ent.oneTime ? 'Your free allowance' : 'This month'}</p>
+          {/* NEVER PROMISE A REFILL THAT IS NOT COMING. Free is a one-time allowance. */}
           <p className="text-[10.5px] text-nv-faint font-mono">
-            resets in {ent.resetsInDays} day{ent.resetsInDays === 1 ? '' : 's'}
+            {ent.oneTime
+              ? 'one-time allowance'
+              : `resets in ${ent.resetsInDays} day${ent.resetsInDays === 1 ? '' : 's'}`}
           </p>
         </div>
 

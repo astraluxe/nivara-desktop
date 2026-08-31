@@ -216,6 +216,8 @@ const fmt = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(2)}M` : n
 
 export default function HeadModule() {
   const [rows, setRows]         = useState<FeedbackRow[]>([]);
+  /** Pilot and enterprise requests from the website. */
+  const [requests, setRequests] = useState<Array<Record<string, unknown>>>([]);
   const [filter, setFilter]     = useState<'all' | 'suggestion' | 'error'>('all');
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState<string | null>(null);
@@ -231,13 +233,22 @@ export default function HeadModule() {
   async function load() {
     setLoading(true);
     setError(null);
-    const [{ data, error: err }, usage, platform] = await Promise.all([
+    const [{ data, error: err }, usage, platform, reqs] = await Promise.all([
       supabase.from('feedback').select('*').order('created_at', { ascending: false }),
       getMonthlyUsage(),
       loadPlatformStats(),
+      // WHERE "TALK TO US" ACTUALLY ENDS UP.
+      //
+      // enterprise.html has been writing pilot and enterprise requests to this table, and NOTHING
+      // read it — not this dashboard, not the admin page. A business that filled that form in was
+      // asking a room with nobody in it. The pricing page's pilot form writes here too, so this is
+      // now the single inbox for both.
+      supabase.from('enterprise_requests').select('*').order('created_at', { ascending: false }).limit(50),
     ]);
     if (err) setError(err.message);
     else setRows(data ?? []);
+    // A missing table must not blank the whole dashboard — the rest of it is still useful.
+    setRequests(reqs?.data ?? []);
     setTokenUsed(usage);
     setStats(platform);
     setLoading(false);
@@ -277,6 +288,46 @@ export default function HeadModule() {
           }
         </button>
       </div>
+
+      {/* ── PILOT AND ENTERPRISE REQUESTS ─────────────────────────────────────
+          These arrive from the pricing page and from enterprise.html. Until this panel existed
+          nothing in the product read that table, so every request sat unseen. Newest first, with
+          everything needed to pick up the phone: who they are, where they work, how to reach them,
+          and what they asked for. */}
+      {requests.length > 0 && (
+        <div className="shrink-0 border-b border-nv-border">
+          <div className="flex items-center gap-2 px-4 py-2.5">
+            <span className="text-[11px] font-semibold text-nv-text">Pilot &amp; enterprise requests</span>
+            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-accent/10 text-accent border border-accent/25">
+              {requests.length}
+            </span>
+          </div>
+          <div className="max-h-[220px] overflow-auto px-4 pb-3 space-y-2">
+            {requests.map((r, i) => (
+              <div key={String(r.id ?? i)} className="rounded-lg border border-nv-border bg-nv-surface p-3">
+                <div className="flex items-baseline justify-between gap-3">
+                  <p className="text-[12px] font-semibold text-nv-text truncate">
+                    {String(r.company_name ?? 'Unknown company')}
+                  </p>
+                  <p className="text-[10px] font-mono text-nv-faint shrink-0">
+                    {r.created_at ? new Date(String(r.created_at)).toLocaleDateString() : ''}
+                  </p>
+                </div>
+                <p className="text-[11px] text-nv-muted mt-0.5">
+                  {String(r.contact_name ?? '—')}
+                  {r.contact_email ? <> · <span className="font-mono">{String(r.contact_email)}</span></> : null}
+                  {r.seats_needed ? <> · {String(r.seats_needed)} seats</> : null}
+                </p>
+                {r.requirements ? (
+                  <p className="text-[10.5px] text-nv-faint mt-1.5 whitespace-pre-wrap leading-relaxed">
+                    {String(r.requirements)}
+                  </p>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Platform overview — COLLAPSIBLE, and closed automatically while Pilot is open.
           The stats block is tall (users, revenue, top users, nearing-limit lists), and it sits

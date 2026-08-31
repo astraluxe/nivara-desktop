@@ -10,7 +10,7 @@
 
 import {
   tierOf, TIER_LABEL, ALLOWANCE, FEATURES, tasksFrom, remaining, daysToReset,
-  consumesAllowance, usedFrom, entitlementState, stateLabel, boundElsewhere, covers, GRACE_DAYS,
+  consumesAllowance, usedFrom, entitlementState, stateLabel, boundElsewhere, covers, GRACE_DAYS, isOneTime, RENEWS,
 } from './entitlement.js';
 
 let pass = 0, fail = 0;
@@ -119,6 +119,21 @@ console.log('\n=== the reset date ===');
   ok('never negative', daysToReset('2020-01-01T00:00:00Z', now) === 0);
 }
 
+console.log('\n=== Free does not refill ===');
+{
+  // The owner decided Free is a ONE-TIME allowance. The app used to promise "resets monthly, not a
+  // one-time trial" — the exact opposite — and telling somebody their allowance will come back when
+  // it will not is how a trial ends badly.
+  ok('Free is one-time', isOneTime('free'));
+  ok('Business renews', !isOneTime('business'));
+  ok('Growth renews', !isOneTime('growth'));
+  ok('Enterprise renews', !isOneTime('enterprise'));
+  ok('every tier says which it is', Object.keys(RENEWS).length === 4);
+  // And the words follow the fact, so the two cannot drift.
+  ok('Free never says "a month"', covers('free').every((l) => !/a month/.test(l)), JSON.stringify(covers('free')));
+  ok('...it says what it is instead', covers('free').some((l) => /to start with/.test(l)), JSON.stringify(covers('free')[0]));
+  ok('a paid tier still says a month', covers('growth').some((l) => /a month/.test(l)));
+}
 console.log('\n=== what the licence screen says ===');
 {
   const c = covers('business');

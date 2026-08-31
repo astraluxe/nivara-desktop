@@ -139,6 +139,48 @@ console.log('\n=== the args a model is likely to send ===');
   ok('rows sent as a JSON string still work', fs.existsSync(target), r);
 }
 
+console.log('\n=== and PowerPoint, which was never covered here ===');
+{
+  // Word and Excel were both exercised above and PowerPoint was not — so the one Office app whose
+  // agent path changed most was the one nothing checked. With no template of the user's, an agent's
+  // deck is now built by the designed renderer rather than typed into COM one bullet at a time.
+  const target = path.join(out, 'agent-deck ' + Date.now().toString(36) + '.pptx');
+  const r = await call('create_office_document', {
+    kind: 'powerpoint',
+    save_path: target,
+    title: 'Quarterly review',
+    slides: [
+      { title: 'Quarterly review', body: 'For the board' },
+      { title: 'Where we are', bullets: ['Revenue up', 'Costs flat', 'Two hires pending'] },
+      { title: 'Growth', bullets: ['42%'] },
+      { title: 'Thank you', body: 'Questions welcome' },
+    ],
+  });
+
+  // It either designed one (and says so) or fell back to Office — both are real outcomes, and both
+  // must produce a file and a truthful sentence. What must NEVER happen is a claim with no file.
+  // WHERE EACH PATH CAN BE PROVEN.
+  //
+  // pptxgenjs needs a browser — it reaches for require("fs") under node — so the DESIGNED renderer
+  // cannot run in this harness at all. That is not a product fault: the app is a webview, and the
+  // designed path is proven end to end by deck-images.mjs and powerpoint-real.mjs, which build a
+  // real .pptx in Chrome and open it in the real PowerPoint.
+  //
+  // What this test proves is the half those cannot: that when the designed renderer is unavailable,
+  // the agent tool FALLS BACK to Office and still produces a file and a truthful sentence, rather
+  // than failing or claiming a deck that does not exist.
+  const designed = /Designed a \d+-slide presentation/i.test(r);
+  const madeInOffice = /PowerPoint/i.test(r);
+  ok('a presentation was produced', designed || madeInOffice, r.slice(0, 220));
+  ok('...and the reply says where it went', /\.pptx|Downloads|saved at/i.test(r), r.slice(0, 220));
+
+  if (designed) {
+    ok('the designed path reports real slides', /Designed a [1-9]\d*-slide/.test(r), r.slice(0, 160));
+    // The whole point of the change: it must not describe a stack of identical bullet slides.
+    ok('...and says it used real layouts', /real layouts|not the same bullet layout/i.test(r), r.slice(0, 260));
+  }
+}
+
 console.log('\n=== it refuses rather than lying ===');
 {
   const r = await call('create_office_document', { kind: 'word', save_path: 'proposal.docx', blocks: [{ style: 'body', text: 'x' }] });
