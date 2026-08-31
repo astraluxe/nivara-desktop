@@ -14,6 +14,26 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+/**
+ * Delete a file if the machine will let us.
+ *
+ * Word and PowerPoint hold a lock on a document they have open — which is exactly what this test
+ * asked them to do — so unlink throws EBUSY and takes the whole run down with it, after every
+ * assertion has already passed. Tidying up is not what is being tested, so it may not fail the test.
+ */
+function removeIfPossible(p) {
+  try { fs.unlinkSync(p); return true; }
+  catch (e) {
+    if (e && (e.code === 'EBUSY' || e.code === 'EPERM')) {
+      console.log('   note  ' + p.split(/[\\/]/).pop() + ' is still open in Office — left on disk');
+      return false;
+    }
+    if (e && e.code === 'ENOENT') return true;
+    throw e;
+  }
+}
+
+
 const run = promisify(execFile);
 const out = path.join(process.env.TEMP, 'adris-com-test');
 fs.mkdirSync(out, { recursive: true });
@@ -82,8 +102,11 @@ console.log('\n=== what is installed, through the tool ===');
 
 console.log('\n=== the exact thing the user asked for ===');
 {
-  const target = path.join(out, 'Acme Proposal.docx');
-  if (fs.existsSync(target)) fs.unlinkSync(target);
+  // A UNIQUE NAME EACH RUN. Word keeps a document it created OPEN — that is the feature — and it
+  // then refuses to overwrite that file, so a second run failed on a lock left by the first and
+  // reported it as a product bug. A test may not depend on the machine being tidy.
+  const target = path.join(out, 'Acme Proposal ' + Date.now().toString(36) + '.docx');
+  if (fs.existsSync(target)) removeIfPossible(target);
   const r = await call('create_office_document', {
     kind: 'word',
     save_path: target,
@@ -107,7 +130,7 @@ console.log('\n=== the args a model is likely to send ===');
   // Models hand arrays back as JSON strings about as often as arrays. Both must work, because the
   // user cannot see the difference and did not cause it.
   const target = path.join(out, 'json-args.xlsx');
-  if (fs.existsSync(target)) fs.unlinkSync(target);
+  if (fs.existsSync(target)) removeIfPossible(target);
   const r = await call('create_office_document', {
     kind: 'excel',
     save_path: target,
