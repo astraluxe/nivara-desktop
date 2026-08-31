@@ -31,6 +31,28 @@ export interface DeckSlide {
   notes?:       string;   // speaker notes (exported to pptx notes)
 }
 
+/**
+ * How many slides this material actually wants, when the user does not want to pick.
+ *
+ * The setup card made everyone choose a number between 4 and 24 before anything was built. Someone
+ * handing over a document has no idea whether it is a nine-slide document or a twenty-slide one -
+ * that is the thing they came here to be told. This is the answer for the "Auto" choice.
+ *
+ * Driven by how much source material there is, adjusted for how much text goes on each slide: the
+ * "detailed" setting puts more on every slide and so needs fewer of them, "light" the reverse. The
+ * three fixed slides (cover, agenda, closing) are added on top of the content slides, and the whole
+ * thing is clamped to the range the rest of the pipeline can actually deliver.
+ */
+export function autoSlideCount(sourceChars: number, density: 'light' | 'balanced' | 'detailed' = 'balanced'): number {
+  const chars = Math.max(0, Math.floor(Number(sourceChars) || 0));
+  // With nothing attached there is only the user's sentence to go on, and a ten-slide deck is the
+  // shape most people mean by "make me a presentation".
+  if (chars < 400) return 10;
+  const perSlide = density === 'light' ? 450 : density === 'detailed' ? 900 : 650;
+  const content = Math.round(chars / perSlide);
+  return Math.max(6, Math.min(30, content + 3));
+}
+
 export interface DeckPalette { bg: string; surface: string; text: string; muted: string; accent: string }
 export interface DeckFont    { heading: string; body: string }
 
@@ -821,114 +843,21 @@ export function layoutShowsImage(layout: string): boolean {
 }
 
 // ── PPTX (editable PowerPoint) ───────────────────────────────────────────────
-// Renders the same DeckSpec into a real .pptx via pptxgenjs (dynamically imported).
-// Returns a Blob the caller downloads. Colours must be 6-digit hex WITHOUT '#'.
-const hx = (c: string) => (c || '#000000').replace('#', '').slice(0, 6).padStart(6, '0');
+// The .pptx renderer moved to lib/deckPptx.ts.
+//
+// It had drifted a long way from the HTML deck directly above: the spec defines seventeen layouts,
+// the HTML renders all seventeen, and the PowerPoint writer had a case for eight. The other nine
+// fell through to the bullets branch, which reads title/body/bullets and nothing else — so a chart
+// slide arrived with no numbers, a pricing slide with no plans, a timeline with no milestones.
+// Measured across a deck using every layout: 35% of the content never reached the file.
+//
+// Two renderers of the same spec need to be readable side by side to stay in step, and at this
+// length they were not. deckToPptxBlob stays exported here because that is what callers import.
+export type { PptxAuthor } from './deckPptx';
 
-export async function deckToPptxBlob(spec: DeckSpec): Promise<Blob> {
-  const mod: any = await import('pptxgenjs');
-  const PptxGenJS = mod.default || mod;
-  const pptx = new PptxGenJS();
-  pptx.defineLayout({ name: 'W', width: 13.333, height: 7.5 });
-  pptx.layout = 'W';
-  pptx.author = 'adris.tech';
-  pptx.title = spec.title;
-
-  const p = spec.palette;
-  const headFont = spec.font.heading;
-  const bodyFont = spec.font.body;
-  const W = 13.333, H = 7.5;
-
-  for (const s of spec.slides) {
-    const slide = pptx.addSlide();
-    const isSurface = s.layout === 'section' || s.layout === 'closing';
-    slide.background = { color: hx(isSurface ? p.surface : p.bg) };
-
-    // A FULL-BLEED PICTURE on the sparse layouts, the way the chat deck does it. Without this the
-    // .pptx drew imageData on 'image-full' and 'bullets' only — so a photo the user attached, or a
-    // figure lifted out of their document, was on the slide in chat and gone in PowerPoint.
-    //
-    // Drawn FIRST, so the brand bar, the logo and the text all sit on top of it. pptx has no
-    // gradient fill through this API, so the readability scrim the HTML gets from a gradient is two
-    // overlapping rectangles: solid where the words are, fading out across the middle.
-    if (s.imageData && (s.layout === 'title' || s.layout === 'section' || s.layout === 'closing')) {
-      const base = hx(isSurface ? p.surface : p.bg);
-      try {
-        slide.addImage({ data: s.imageData, x: 0, y: 0, w: W, h: H, sizing: { type: 'cover', w: W, h: H } });
-        slide.addShape('rect', { x: 0, y: 0, w: W * 0.52, h: H, fill: { color: base, transparency: 8 }, line: { type: 'none' } });
-        slide.addShape('rect', { x: W * 0.52, y: 0, w: W * 0.22, h: H, fill: { color: base, transparency: 55 }, line: { type: 'none' } });
-      } catch { /* a picture that will not encode must not cost the user the slide */ }
-    }
-
-    // brand bar
-    slide.addShape('rect', { x: 0, y: 0, w: 0.14, h: H, fill: { color: hx(p.accent) } });
-    // brand logo (top-right corner) if the user supplied one
-    if (spec.logo) { try { slide.addImage({ data: spec.logo, x: W - 1.9, y: 0.3, w: 1.5, h: 0.62, sizing: { type: 'contain', w: 1.5, h: 0.62 } }); } catch { /* skip a bad logo */ } }
-    if (s.notes) slide.addNotes(s.notes);
-
-    const titleOpt = { fontFace: headFont, color: hx(p.text), bold: true } as any;
-    const bodyOpt  = { fontFace: bodyFont, color: hx(p.text) } as any;
-    const muteOpt  = { fontFace: bodyFont, color: hx(p.muted) } as any;
-
-    switch (s.layout) {
-      case 'title':
-        if (s.subtitle) slide.addText(s.subtitle.toUpperCase(), { x: 0.9, y: 2.2, w: 11, h: 0.5, fontSize: 14, charSpacing: 3, color: hx(p.accent), fontFace: bodyFont, bold: true });
-        slide.addText(s.title || spec.title, { ...titleOpt, x: 0.9, y: 2.7, w: 11.5, h: 2, fontSize: 48, align: 'left' });
-        if (s.body) slide.addText(s.body, { ...muteOpt, x: 0.9, y: 4.7, w: 10.5, h: 1.5, fontSize: 20 });
-        break;
-      case 'section':
-        slide.addText(`SECTION`, { x: 0.9, y: 2.6, w: 8, h: 0.5, fontSize: 14, charSpacing: 3, color: hx(p.accent), fontFace: bodyFont, bold: true });
-        slide.addText(s.title || '', { ...titleOpt, x: 0.9, y: 3.1, w: 11, h: 1.6, fontSize: 40 });
-        if (s.subtitle) slide.addText(s.subtitle, { ...muteOpt, x: 0.9, y: 4.7, w: 10, h: 1, fontSize: 20 });
-        break;
-      case 'quote':
-        slide.addText('“', { x: 0.7, y: 1.0, w: 3, h: 2, fontSize: 130, color: hx(p.accent), fontFace: headFont, bold: true });
-        slide.addText(s.quote || s.title || '', { ...titleOpt, bold: false, x: 1.2, y: 2.7, w: 11, h: 2.5, fontSize: 30, italic: true });
-        if (s.attribution) slide.addText(`— ${s.attribution}`, { x: 1.2, y: 5.4, w: 10, h: 0.6, fontSize: 18, color: hx(p.accent), fontFace: bodyFont, bold: true });
-        break;
-      case 'stat':
-        if (s.title) slide.addText(s.title.toUpperCase(), { x: 0.9, y: 2.0, w: 11, h: 0.5, fontSize: 14, charSpacing: 3, color: hx(p.accent), fontFace: bodyFont, bold: true });
-        slide.addText(s.stat || '', { ...titleOpt, x: 0.9, y: 2.4, w: 11.5, h: 2.4, fontSize: 130, color: hx(p.accent) });
-        if (s.statLabel) slide.addText(s.statLabel, { ...muteOpt, x: 0.9, y: 5.0, w: 10.5, h: 1.2, fontSize: 22 });
-        break;
-      case 'two-column': {
-        if (s.title) slide.addText(s.title, { ...titleOpt, x: 0.9, y: 0.7, w: 11.5, h: 1, fontSize: 30 });
-        const cols = s.columns || [];
-        const cw = 5.6;
-        cols.slice(0, 2).forEach((c, ci) => {
-          const cx = 0.9 + ci * (cw + 0.5);
-          slide.addShape('roundRect', { x: cx, y: 2.0, w: cw, h: 4.6, fill: { color: hx(p.surface) }, rectRadius: 0.12, line: { type: 'none' } });
-          slide.addText(c.heading, { x: cx + 0.4, y: 2.3, w: cw - 0.8, h: 0.6, fontSize: 20, bold: true, color: hx(p.accent), fontFace: headFont });
-          slide.addText((c.bullets || []).map((b) => ({ text: b, options: { bullet: true } })), { ...bodyOpt, x: cx + 0.4, y: 3.0, w: cw - 0.8, h: 3.4, fontSize: 16, lineSpacingMultiple: 1.3 });
-        });
-        break;
-      }
-      case 'image-full':
-        if (s.imageData) slide.addImage({ data: s.imageData, x: 0, y: 0, w: W, h: H, sizing: { type: 'cover', w: W, h: H } });
-        if (s.title) slide.addText(s.title, { x: 0.9, y: 6.2, w: 11, h: 1, fontSize: 30, bold: true, color: 'FFFFFF', fontFace: headFont });
-        break;
-      case 'closing':
-        slide.addText(s.title || 'Thank you', { ...titleOpt, x: 0.9, y: 2.6, w: 11.5, h: 1.6, fontSize: 44 });
-        if (s.body) slide.addText(s.body, { ...muteOpt, x: 0.9, y: 4.3, w: 10.5, h: 1.2, fontSize: 22 });
-        if (s.subtitle) slide.addText(s.subtitle, { x: 0.9, y: 5.5, w: 10, h: 0.8, fontSize: 20, bold: true, color: hx(p.accent), fontFace: bodyFont });
-        break;
-      case 'bullets':
-      default: {
-        const hasImg = !!s.imageData;
-        const txtW = hasImg ? 6.8 : 11.5;
-        if (s.title) slide.addText(s.title, { ...titleOpt, x: 0.9, y: 0.8, w: txtW, h: 1.1, fontSize: 32 });
-        if (s.body) slide.addText(s.body, { ...muteOpt, x: 0.9, y: 1.9, w: txtW, h: 1, fontSize: 18 });
-        if (s.bullets && s.bullets.length)
-          slide.addText(s.bullets.map((b) => ({ text: b, options: { bullet: { characterCode: '2022' } } })),
-            { ...bodyOpt, x: 0.9, y: s.body ? 2.9 : 2.1, w: txtW, h: 4, fontSize: 20, lineSpacingMultiple: 1.35 });
-        if (hasImg) slide.addImage({ data: s.imageData!, x: 8.1, y: 1.6, w: 4.4, h: 4.4, rounding: true, sizing: { type: 'cover', w: 4.4, h: 4.4 } });
-        break;
-      }
-    }
-  }
-
-  const out = await pptx.write({ outputType: 'blob' });
-  return out as Blob;
+export async function deckToPptxBlob(spec: DeckSpec, who: { name?: string; company?: string } = {}): Promise<Blob> {
+  const { renderPptx } = await import('./deckPptx');
+  return renderPptx(spec, who);
 }
 
 // ── PDF (shareable, e.g. attached to an email) ───────────────────────────────

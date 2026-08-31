@@ -63,6 +63,8 @@ const UNITS = [
   ['runWrapUp',     'src/lib/runWrapUp.ts'],
   ['planConfig',    'src/lib/planConfig.ts'],
   ['urlFidelity',   'src/lib/urlFidelity.ts'],
+  ['pptxPolish',    'src/lib/pptxPolish.ts'],
+  ['deck',          'src/lib/deck.ts'],
 ];
 
 let failed = 0;

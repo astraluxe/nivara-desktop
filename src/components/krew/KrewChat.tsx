@@ -20,7 +20,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { extractTableRows, findLeadHeaderIndex, hasPopulatedLeadTable, mergeLeadTables, parseLeadRows, rowsToMarkdown, leadConnStatusToOutreach, looksLikePersonLead, matchesSeniority, matchesSector, peopleSearchPhrases } from '../../lib/leadTable';
 import { supabase } from '../../lib/supabase';
 import { getPlanConfig } from '../../lib/planConfig';
-import { parseDeckSpec, slidesNeedingImages, renderDeckHtml, extractDeckSpec, applyDeckEdits, type DeckSpec, type DeckSlide, type DeckPalette, deckToPptxBlob, LAYOUTS_WITH_IMAGE, layoutShowsImage } from '../../lib/deck';
+import { autoSlideCount, parseDeckSpec, slidesNeedingImages, renderDeckHtml, extractDeckSpec, applyDeckEdits, type DeckSpec, type DeckSlide, type DeckPalette, deckToPptxBlob, LAYOUTS_WITH_IMAGE, layoutShowsImage } from '../../lib/deck';
 import { setLastDeck } from '../../lib/deckStore';
 import { CHANNEL_META, listConnections, saveConnection, schedulePost, postNow, type SocialConnection, type SocialChannel, type PostContent } from '../../lib/social';
 import UpgradeModal from '../UpgradeModal';
@@ -1952,7 +1952,10 @@ export interface DeckConfig {
   format:     'html' | 'pptx';
   mode:       'basic' | 'advanced';
   imageModel: 'gemini-2.5-flash-image' | 'gemini-3-pro-image-preview';
-  slideCount: number;               // target number of slides (the user picks it)
+  // Target number of slides. ZERO means "you decide": the user is handing over a document and
+  // does not know whether it is a nine-slide document or a twenty-slide one, which is the thing
+  // they came here to be told. See autoSlideCount in lib/deck.ts.
+  slideCount: number;
   audience?:  string;               // optional "who's this for" to sharpen the content
   accent?:    string;               // optional accent colour the user picked (else auto)
   template?:  string;               // optional visual template the user picked (else auto)
@@ -2063,6 +2066,7 @@ export function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled
   const [mode, setMode]         = useState<'basic' | 'advanced'>('basic');
   const [imgModel, setImgModel] = useState<'gemini-2.5-flash-image' | 'gemini-3-pro-image-preview'>('gemini-2.5-flash-image');
   const [slides, setSlides]     = useState(12);
+  const [autoSlides, setAutoSlides] = useState(true);   // 0 = let it decide from the content
   const [density, setDensity]   = useState<'light' | 'balanced' | 'detailed'>('balanced');
   const [strictPlan, setStrictPlan] = useState(false); // off = design a better deck from the brief
   const [audience, setAudience] = useState('');
@@ -2145,26 +2149,35 @@ export function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled
         )}
         <div>
           <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1.5">How many slides?</p>
-          <div className="flex items-center gap-2">
-            <button disabled={disabled} onClick={() => setSlides((s) => Math.max(4, s - 1))}
+          {/* AUTO, AND IT IS THE DEFAULT.
+              The card used to demand a number between 4 and 24 before anything could be built.
+              Someone handing over a document has no idea which number is right — working that out
+              from the content is the job they came here for. */}
+          <button disabled={disabled} onClick={() => setAutoSlides(true)}
+            className={`w-full text-left px-2.5 py-2 rounded-lg border transition-fast mb-1.5 ${autoSlides ? 'border-accent bg-accent/10 text-nv-text' : 'border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40'}`}>
+            <p className="text-[11px] font-semibold">Decide for me</p>
+            <p className="text-[9px] text-nv-faint leading-snug font-mono mt-0.5">Reads your notes and files, then picks the right length</p>
+          </button>
+          <div className={`flex items-center gap-2 ${autoSlides ? 'opacity-45' : ''}`}>
+            <button disabled={disabled} onClick={() => { setAutoSlides(false); setSlides((s) => Math.max(4, s - 1)); }}
               className="w-8 h-8 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40 text-[15px] disabled:opacity-40">−</button>
             <div className="flex-1 text-center rounded-lg border border-nv-border py-1.5">
-              <span className="text-[15px] font-bold text-nv-text tabular-nums">{slides}</span>
-              <span className="text-[9.5px] text-nv-faint ml-1">slides</span>
+              <span className="text-[15px] font-bold text-nv-text tabular-nums">{autoSlides ? 'Auto' : slides}</span>
+              {!autoSlides && <span className="text-[9.5px] text-nv-faint ml-1">slides</span>}
             </div>
-            <button disabled={disabled} onClick={() => setSlides((s) => Math.min(24, s + 1))}
+            <button disabled={disabled} onClick={() => { setAutoSlides(false); setSlides((s) => Math.min(40, s + 1)); }}
               className="w-8 h-8 rounded-lg border border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/40 text-[15px] disabled:opacity-40">+</button>
           </div>
           <div className="flex gap-1.5 mt-1.5">
-            {[8, 10, 12, 15].map((n) => (
-              <button key={n} disabled={disabled} onClick={() => setSlides(n)}
-                className={`flex-1 text-[10px] py-1 rounded-md border transition-fast ${slides === n ? 'border-accent bg-accent/10 text-nv-text' : 'border-nv-border text-nv-faint hover:text-nv-text'}`}>{n}</button>
+            {[8, 10, 12, 15, 20].map((n) => (
+              <button key={n} disabled={disabled} onClick={() => { setAutoSlides(false); setSlides(n); }}
+                className={`flex-1 text-[10px] py-1 rounded-md border transition-fast ${!autoSlides && slides === n ? 'border-accent bg-accent/10 text-nv-text' : 'border-nv-border text-nv-faint hover:text-nv-text'}`}>{n}</button>
             ))}
           </div>
           {/* Strict vs. flexible — off (default): treat the ask + files as reference and design the
               best deck, adjusting the count if it helps. On: follow the outline + count exactly. */}
           <label className="flex items-start gap-2 mt-2 cursor-pointer">
-            <input type="checkbox" checked={strictPlan} disabled={disabled} onChange={(e) => setStrictPlan(e.target.checked)} className="mt-0.5 accent-accent" />
+            <input type="checkbox" checked={strictPlan} disabled={disabled} onChange={(e) => { setStrictPlan(e.target.checked); if (e.target.checked) setAutoSlides(false); }} className="mt-0.5 accent-accent" />
             <span className="text-[10px] text-nv-muted leading-snug">Follow my outline & slide count <span className="font-semibold">exactly</span>
               <span className="block text-[9px] text-nv-faint">{strictPlan ? 'On — I\'ll match your slides one-for-one.' : 'Off — I\'ll use your notes + files as reference and design the best deck, adding slides if it improves the result.'}</span>
             </span>
@@ -2227,7 +2240,7 @@ export function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled
         <button onClick={onCancel} disabled={disabled} className="text-[11px] text-nv-faint hover:text-nv-text transition-fast font-mono">Cancel</button>
         <button
           disabled={disabled}
-          onClick={() => { setDone(true); onGenerate({ format, mode, imageModel: imgModel, slideCount: slides, density, strictPlan, audience: audience.trim() || undefined, accent: accent || undefined, template: template || undefined }); }}
+          onClick={() => { setDone(true); onGenerate({ format, mode, imageModel: imgModel, slideCount: autoSlides ? 0 : slides, density, strictPlan, audience: audience.trim() || undefined, accent: accent || undefined, template: template || undefined }); }}
           className="text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-semibold disabled:opacity-50"
         >Generate deck →</button>
       </div>
@@ -5731,7 +5744,15 @@ The prompt must be production-ready — specific enough for a motion designer to
       const strict = !!cfg.strictPlan;
       let planCount = 0;
       { const re = /\bslide\s*#?\s*(\d{1,2})\b/gi; let m: RegExpExecArray | null; while ((m = re.exec(requestCtx))) planCount = Math.max(planCount, parseInt(m[1], 10)); }
-      const suggested = strict && planCount >= 4 ? planCount : Math.round(cfg.slideCount || 12);
+      // slideCount === 0 is the card's "Decide for me". Read the length from the material itself
+      // rather than falling back to a number the user never chose — autoSlideCount, tested in
+      // harness/deck.test.mjs, weighs the source against how much text goes on each slide.
+      const autoCount = !strict && !cfg.slideCount;
+      const suggested = strict && planCount >= 4
+        ? planCount
+        : autoCount
+          ? autoSlideCount(requestCtx.length, cfg.density ?? 'balanced')
+          : Math.round(cfg.slideCount || 12);
       const target = Math.max(4, Math.min(30, suggested));
       const maxSlides = strict ? target : Math.min(30, target + 5); // flexible may run a little over
       // ASK A SMALL MODEL FOR LESS, THEN ASK AGAIN.
@@ -5773,7 +5794,9 @@ The prompt must be production-ready — specific enough for a motion designer to
         : '';
       const flowDirective = `\n\n## ORDER THE SLIDES AS ONE LOGICAL STORY\nSequence the slides so the argument FLOWS and anyone can follow it — each slide builds on the one before. A strong sales-deck arc: (1) Title/cover → (2) optional Agenda → (3) the Problem/pain → (4) the Solution overview → (5–8) how it works / the modules or features, ONE idea per slide → (9–11) proof: stats, ROI, comparison, pricing → (12) trust / privacy → (final) Call to Action, and a Sources slide if the brief lists references. Do NOT jump between unrelated topics or scatter the numbers across random slides. Group related points together; put the payoff (ROI/pricing) after the value has been shown, and the CTA last.`;
       const sys = AGENT_BY_KEY['deck_maker'].systemPrompt + modeDirective + planDirective + countDirective + fileDirective + contentDirective + coverageDirective + chartDirective + layoutsDirective + slideRoleDirective + flowDirective + densityDirective + designDirective + audienceDirective + dateBlock;
-      setStatus(`Slade is structuring your ${target} slides…`);
+      setStatus(autoCount
+        ? `Slade read your material and is building about ${target} slides…`
+        : `Slade is structuring your ${target} slides…`);
       // Generate + parse. Retry once if the JSON is broken OR fewer than the requested slides
       // came back. We keep whatever parsed as a fallback so a short retry never loses the first.
       let spec: DeckSpec | null = null;
@@ -5874,6 +5897,7 @@ The prompt must be production-ready — specific enough for a motion designer to
       // real content from the source, fixes layout choices, and keeps to the plan. Runs on the
       // text-only spec (images are added afterwards). Best-effort: a bad/failed review is ignored.
       setStatus('Reviewing & polishing the deck…');
+      let reviewNote: { from: number; to: number } | null = null;
       try {
         const draftJson = JSON.stringify({ ...spec, slides: spec.slides.map((s) => ({ ...s, imageData: undefined, imagePrompt: undefined })) });
         const reviewPlanRule = strict
@@ -5895,11 +5919,15 @@ The prompt must be production-ready — specific enough for a motion designer to
         try { ({ text: rtext } = await streamTurnWithRetry([{ role: 'user', content: reviewUser }], reviewSys, rprog.onChunk)); }
         finally { rprog.stop(); }
         const reviewed = parseDeckSpec(rtext);
-        if (reviewed && reviewed.slides.length >= Math.max(4, spec.slides.length - 3)) {
+        // Remember what the draft had, so a reviewer that merges or splits slides can be reported
+        // rather than silently believed.
+        const draftCount = spec.slides.length;
+        if (reviewed && reviewed.slides.length >= Math.max(4, draftCount - 3)) {
           reviewed.palette = spec.palette; reviewed.font = spec.font; reviewed.template = spec.template;
           if (!reviewed.title) reviewed.title = spec.title;
           reviewed.slides = dedupeDeckSlides(reviewed.slides);
           if (reviewed.slides.length > maxSlides) reviewed.slides = reviewed.slides.slice(0, maxSlides);
+          if (reviewed.slides.length !== draftCount) reviewNote = { from: draftCount, to: reviewed.slides.length };
           spec = reviewed;
         }
       } catch { /* keep the draft if review fails */ }
@@ -6147,6 +6175,28 @@ The prompt must be production-ready — specific enough for a motion designer to
       if (sid) krewDb.saveMessage(sid, 'assistant', html).catch(() => {});
       // If Advanced images didn't come through, tell the user why (was silently swallowed).
       if (imgNote) { addMsg({ role: 'assistant', content: imgNote }); if (sid) krewDb.saveMessage(sid, 'assistant', imgNote).catch(() => {}); }
+
+      // ── THE COUNT THEY WERE TOLD IS THE COUNT THEY GOT ──────────────────────
+      //
+      // The chat said 31 slides and the deck had 29. Nothing lied on purpose: the number announced
+      // while it worked was the TARGET, and the review pass above is allowed to merge or split
+      // slides when that makes a better deck. Both of those are right. Announcing the first number
+      // and then shipping the second, saying nothing, is what left the user counting slides to
+      // check whether something had gone missing.
+      //
+      // So when the finished deck is not the length that was promised, say so in one line, and say
+      // why when the reviewer is the reason.
+      if (spec.slides.length !== target) {
+        const n = spec.slides.length;
+        const why = reviewNote && reviewNote.to !== reviewNote.from
+          ? (reviewNote.to < reviewNote.from
+              ? ` - the review pass merged ${reviewNote.from - reviewNote.to} that were saying the same thing.`
+              : ` - the review pass split ${reviewNote.to - reviewNote.from} that were carrying too much.`)
+          : (n < target ? ' - the material did not support more without padding it.' : ' - the material needed the extra room.');
+        const line = `This came out at ${n} slides rather than the ${target} I aimed for${why} Say "make it ${target}" if you want it stretched or trimmed to match.`;
+        addMsg({ role: 'assistant', content: line });
+        if (sid) krewDb.saveMessage(sid, 'assistant', line).catch(() => {});
+      }
       // ── "I want this in PowerPoint" ────────────────────────────────────────
       //
       // The chat deck above is built either way, on purpose: it is the record, it is what
@@ -6160,7 +6210,12 @@ The prompt must be production-ready — specific enough for a motion designer to
       if (cfg.format === 'pptx') {
         setStatus('Writing the PowerPoint file…');
         try {
-          const blob = await deckToPptxBlob(spec);
+          // WHOSE FILE THIS IS. The author and subject show in File → Info, and they used to read
+          // "adris.tech" and "PptxGenJS Presentation" on a deck the user was about to present as
+          // their own work. See lib/pptxPolish.ts.
+          const pptxName = (user?.user_metadata?.full_name as string | undefined)
+                        || (user?.user_metadata?.name as string | undefined) || '';
+          const blob = await deckToPptxBlob(spec, { name: pptxName });
           const b64 = await new Promise<string>((res, rej) => {
             const r = new FileReader();
             r.onload = () => res(String(r.result).split(',')[1] || '');
@@ -6184,8 +6239,9 @@ The prompt must be production-ready — specific enough for a motion designer to
             catch (le) { why = String(le).replace(/^Error:\s*/, ''); }
           }
           const where = '`' + file + '`';
+          const built = spec.slides.length + (spec.slides.length === 1 ? ' slide' : ' slides');
           const note = opened
-            ? 'Opened it in PowerPoint. The file is saved at ' + where + ' — every picture from your document is on its slide, and you can edit it there like any other deck.'
+            ? 'Opened it in PowerPoint — ' + built + ', saved at ' + where + '. Every picture from your document is on its slide, and you can edit it there like any other deck.'
             : 'I built the PowerPoint file and saved it at ' + where + ' — open it from your Downloads folder. '
               + (ppApp ? 'PowerPoint is on this computer but wouldn\'t start from here' + (why ? ' (' + why + ')' : '') + '.'
                        : "I couldn't find PowerPoint on this computer.")

@@ -77,38 +77,91 @@ try {
   await page.waitForFunction(() => window.__deck, null, { timeout: 20000 });
 
   console.log('\n=== build it through the shipped renderer ===');
-  const b64 = await page.evaluate(async (png) => {
-    // A deck that uses every layout the placer can target, each carrying a picture, so the file
-    // PowerPoint opens is the most demanding one we ever produce rather than a trivial one.
+  const built = await page.evaluate(async (png) => {
+    // EVERY layout in the DeckSlide union, each field carrying a findable marker.
+    //
+    // This used to be the eight layouts the .pptx writer happened to support — so the nine it had
+    // no case for were never exercised here, and their content was dropped silently for months.
+    // A test that only runs what already works cannot find what does not.
+    //
+    // The markers are checked against the unzipped file below, so a slide that arrives as an empty
+    // shell now fails the run instead of passing it.
     const spec = {
       title: 'Blood supply of the periodontium',
       font: { heading: 'Georgia', body: 'Arial' },
       palette: { bg: '#ffffff', surface: '#f4f4f5', text: '#111111', muted: '#666666', accent: '#7c3aed' },
       logo: png,
       slides: [
-        { layout: 'title',      title: 'Blood supply of the periodontium', subtitle: 'Seminar 5', imageData: png },
-        { layout: 'section',    title: 'The three sources', imageData: png },
-        { layout: 'bullets',    title: 'Gingival vessels', bullets: ['Supraperiosteal arterioles', 'Vessels of the periodontal ligament', 'Arterioles from the alveolar crest'], imageData: png },
-        { layout: 'image-full', title: 'Figure 1 — arterial supply', imageData: png },
-        { layout: 'two-column', title: 'Nerve supply', columns: [{ heading: 'Maxillary', bullets: ['Superior alveolar'] }, { heading: 'Mandibular', bullets: ['Inferior alveolar'] }] },
-        { layout: 'quote',      quote: 'The periodontium is richly vascularised.', attribution: 'Carranza' },
-        { layout: 'stat',       stat: '3', statLabel: 'sources of supply' },
-        { layout: 'closing',    title: 'Thank you', body: 'Questions welcome', imageData: png },
+        { layout: 'title',      title: 'MK-TITLE', subtitle: 'MK-TITLESUB', body: 'MK-TITLEBODY', imageData: png },
+        { layout: 'agenda',     title: 'MK-AGENDA', bullets: ['MK-AG1', 'MK-AG2', 'MK-AG3'] },
+        { layout: 'section',    title: 'MK-SECTION', subtitle: 'MK-SECTIONSUB', imageData: png },
+        { layout: 'bullets',    title: 'MK-BULLETS', body: 'MK-BULLETSBODY', bullets: ['MK-B1', 'MK-B2', 'MK-B3'], imageData: png },
+        { layout: 'chart',      title: 'MK-CHART', chartUnit: 'MK-UNIT', chartData: [{ label: 'MK-CHARTLBL', value: 250000 }, { label: 'MK-CHARTLBB', value: 19999 }] },
+        { layout: 'comparison', title: 'MK-COMPARE', columns: [{ heading: 'MK-CMPHA', bullets: ['MK-CMPBA'] }, { heading: 'MK-CMPHB', bullets: ['MK-CMPBB'] }] },
+        { layout: 'cards',      title: 'MK-CARDS', cards: [{ heading: 'MK-CARDHA', body: 'MK-CARDBA' }, { heading: 'MK-CARDHB', body: 'MK-CARDBB' }] },
+        { layout: 'process',    title: 'MK-PROCESS', cards: [{ heading: 'MK-PROCH', body: 'MK-PROCBODY' }] },
+        { layout: 'timeline',   title: 'MK-TIMELINE', timeline: [{ label: 'MK-TLLBL', text: 'MK-TLTEXT' }] },
+        { layout: 'pricing',    title: 'MK-PRICING', plans: [{ name: 'MK-PLAN', price: 'MK-PRICE', bullets: ['MK-PLANB'], highlight: true }] },
+        { layout: 'team',       title: 'MK-TEAM', people: [{ name: 'MK-PERSON', role: 'MK-ROLE' }] },
+        { layout: 'logos',      title: 'MK-LOGOS', logos: ['MK-LOGOA', 'MK-LOGOB'] },
+        { layout: 'two-column', title: 'MK-TWOCOL', columns: [{ heading: 'MK-COLHA', bullets: ['MK-COLBA'] }, { heading: 'MK-COLHB', bullets: ['MK-COLBB'] }] },
+        { layout: 'quote',      quote: 'MK-QUOTE', attribution: 'MK-ATTRIB' },
+        { layout: 'stat',       title: 'MK-STATTITLE', stat: 'MK-STAT', statLabel: 'MK-STATLABEL' },
+        { layout: 'image-full', title: 'MK-IMGFULL', imageData: png },
+        // The long dash the user asked us to stop shipping, plus a numeric range that must survive
+        // the rule that removes it.
+        { layout: 'closing',    title: 'MK-CLOSING — thank you', body: 'MK-CLOSINGBODY 2020–2024', subtitle: 'MK-CLOSINGSUB' },
       ],
     };
-    const blob = await window.__deck.deckToPptxBlob(spec);
+    const blob = await window.__deck.deckToPptxBlob(spec, { name: 'Amogh M' });
     const buf = await blob.arrayBuffer();
     let s = '';
     const bytes = new Uint8Array(buf);
     for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    return btoa(s);
+    // The marker list travels back with the file so the checks below are derived from the very
+    // spec that was rendered, rather than a copy of it that could drift.
+    return { b64: btoa(s), markers: [...new Set(JSON.stringify(spec).match(/MK-[A-Z0-9]+/g) || [])] };
   }, PNG);
 
-  fs.writeFileSync(OUT, Buffer.from(b64, 'base64'));
+  fs.writeFileSync(OUT, Buffer.from(built.b64, 'base64'));
   const size = fs.statSync(OUT).size;
   ok('a file was written', size > 10_000, `${size} bytes`);
   ok('it starts with the zip magic (a .pptx is a zip)',
     fs.readFileSync(OUT).subarray(0, 2).toString('hex') === '504b', fs.readFileSync(OUT).subarray(0, 4).toString('hex'));
+
+  console.log('\n=== what actually survived the trip ===');
+  //
+  // The slide COUNT was always right, which is exactly why this went unseen for so long: seventeen
+  // slides arrived and nine of them were empty shells carrying only their title. Measured on the
+  // deck above before the fix: 19 of 54 pieces of content, 35%, never reached the file.
+  //
+  // Chart series live in ppt/charts/chart1.xml rather than in the slide, so both are read.
+  const JSZip = require(path.resolve(HERE, '..', 'node_modules', 'jszip'));
+  const zip = await JSZip.loadAsync(fs.readFileSync(OUT));
+  let slideXml = '', chartXml = '', propsXml = '';
+  for (const name of Object.keys(zip.files)) {
+    if (/^ppt[/]slides[/]slide[0-9]+[.]xml$/.test(name))  slideXml += await zip.files[name].async('string');
+    else if (/^ppt[/]charts[/].*[.]xml$/.test(name))      chartXml += await zip.files[name].async('string');
+    else if (/^docProps[/]/.test(name))                   propsXml += await zip.files[name].async('string');
+  }
+  const all = slideXml + chartXml;
+  const lost = built.markers.filter((m) => !all.includes(m));
+  ok('every piece of content reached the file', lost.length === 0,
+    `${lost.length} of ${built.markers.length} lost: ${lost.join(', ')}`);
+  ok('...across all seventeen layouts', (slideXml.match(/<p:sld /g) || []).length === 17,
+    `${(slideXml.match(/<p:sld /g) || []).length} slides`);
+  ok('the chart is a real PowerPoint chart, not a picture of one', /barChart/.test(chartXml));
+
+  // The long dash the user asked us to stop using — including the one the writer put in itself, in
+  // front of every quote's attribution.
+  ok('no em dash anywhere in the file', !all.includes('—'), `${(all.match(/—/g) || []).length} found`);
+  ok('...but a numeric range kept its tight form', all.includes('2020-2024'));
+
+  // Two clicks from the slide, in File → Info. Both of these used to announce the generator.
+  ok('the file does not name the library that built it', !/pptxgen/i.test(propsXml));
+  ok('...nor adris', !/adris/i.test(propsXml), propsXml.slice(0, 200));
+  ok('...and it is authored by the person presenting it', /Amogh M/.test(propsXml));
+  ok('the divider is numbered, not stamped "SECTION"', !/>SECTION</.test(slideXml));
 
   console.log('\n=== open it in the real PowerPoint ===');
   // Detached, because this is a window a person is meant to look at — not something to wait on.
