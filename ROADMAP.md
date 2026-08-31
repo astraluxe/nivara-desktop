@@ -1583,6 +1583,26 @@ run.
 
 ### Where every change lands
 
+### The pricing page, finished — and the dead button in it
+
+| # | Item | State | Notes |
+|---|---|---|---|
+| **L5b** | Term switcher, and the page opens on the annual plan | ✅ **live** | 1/3/6/12 months above the cards, changing the number the buyer is actually reading rather than leaving them to work it out from a table further down. **The page opens on 12 months** — the plan being recommended — and the annual figures are in the MARKUP too, so with JavaScript off the page does not contradict its own control. Every figure asserted against the plan; totals round the monthly price first and then multiply, because that is how a customer checks it (multiplying the unrounded figure gave ₹47,995 where the plan says ₹47,994) |
+| **L8b** | "Manage plan" for a customer who has already paid | ✅ **live** | `markCurrentPlan` and `openSubPanel` existed and had gone dead when the 2025 cards were buried — so somebody who had paid came back to a page still inviting them to buy. **Nothing new was built:** the same function finds the new card, marks it, and "Manage plan" opens the same subscription panel (renewal date read from Razorpay, and cancelling). Workspace owners get `/team-dashboard`, where seats and email invitations already live |
+| **X12** | The dead Manage plan button | ✅ **fixed** | It did nothing. The panel is appended to `<body>` at click time and **the rule that buries the 2025 page hid it with `!important`**, which beats the inline `display:flex` that opens it — so the click ran, the panel was built, the request went out, and nothing appeared. My own rule, and the same dead-control failure this file keeps recording. The rule now has a `[data-overlay]` hook rather than a list of ids, and the pay-tester banner — equally invisible, nobody had noticed — declares it too. **Negative-tested** |
+| **X13** | The owner was being metered on a plan that no longer exists | ✅ **fixed (1.79.0)** | `admin_level` unlocked the Head module and granted no entitlement, so the account carrying `plan: 'solo'` was shown and metered as such. `tierForAccount()` reads the whole account: **head and admin are Enterprise** — not a perk, but because they are the ones who must reproduce any customer report on any tier without an allowance running out. An ordinary account is never promoted, and half the assertions are on that |
+
+**What the pricing page now shows a business, in order:** the four tiers with a term switcher · the
+bridge ("already paying for Claude or ChatGPT? plug it in") · what the app actually does, grounded in
+the ten modules that are reachable in the shipped exe · the four questions asked before price (data,
+overspend, what it runs on, how to leave) · the ladder · top-ups · the pilot request · the enterprise
+request · the FAQ. **Studio is deliberately absent** — it exists in the source, is not routed, and a
+pricing page is the last place to advertise something nobody can open.
+
+**Still not built, and still only this:** self-serve checkout (L6) and licence issuing (L7). The model
+is decided, so they are no longer blocked on a decision — they are blocked on the owner saying go,
+because they move real money.
+
 ### What 1.79.0 added
 
 | # | Item | State | Notes |
