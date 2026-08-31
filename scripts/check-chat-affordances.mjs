@@ -41,15 +41,26 @@ const must = [
 const missing = must.filter(([, needle]) => !src.includes(needle));
 
 // The guard has to run BEFORE the answer is committed, or it guards nothing.
+//
+// The commit used to read `finaliseLastMsg(honest)`. It now shows `answered`, which is `honest`
+// plus the wrong-site note from lib/urlFidelity.ts — so the anchor moved. Both halves are checked
+// rather than just the call: that `answered` is still built FROM `honest` (otherwise the refusal
+// guard, the ongoing-work stripper and the empty-answer fallbacks above it would all be bypassed
+// by whatever replaced it), and that the guard still runs first.
 const iGuard = src.indexOf('shouldOverrideRefusal({');
-const iShow = src.indexOf('finaliseLastMsg(honest);');
-const ordered = iGuard > 0 && iShow > 0 && iGuard < iShow;
+const iShow = src.indexOf('finaliseLastMsg(answered);');
+const derived = src.includes('const answered = honest + fidelityNote(');
+const ordered = iGuard > 0 && iShow > 0 && iGuard < iShow && derived;
 
 if (missing.length || !ordered) {
   console.error('\nChat wiring that users depend on has gone missing:\n');
   for (const [what] of missing) console.error(`  MISSING: ${what}`);
   if (!ordered) {
-    console.error('  ORDER:   shouldOverrideRefusal must run BEFORE finaliseLastMsg(honest),');
+    if (!derived) {
+      console.error('  ANSWER:  the text shown must still be built from `honest` —');
+      console.error('           expected `const answered = honest + fidelityNote(...)`.');
+    }
+    console.error('  ORDER:   shouldOverrideRefusal must run BEFORE finaliseLastMsg(answered),');
     console.error('           otherwise the refusal is already on screen when it is checked.');
   }
   console.error('\n  See lib/quickReplies.ts and lib/refusalGuard.ts for what these are for.\n');

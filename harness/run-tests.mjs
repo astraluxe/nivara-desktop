@@ -62,6 +62,7 @@ const UNITS = [
   ['designedDeck',  'src/lib/designedDeck.ts'],
   ['runWrapUp',     'src/lib/runWrapUp.ts'],
   ['planConfig',    'src/lib/planConfig.ts'],
+  ['urlFidelity',   'src/lib/urlFidelity.ts'],
 ];
 
 let failed = 0;

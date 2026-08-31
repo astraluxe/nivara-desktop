@@ -42,6 +42,7 @@ import { routeDeckRequest, looksLikePresentation, namedApp } from '../../lib/dec
 import { quickReplies } from '../../lib/quickReplies';
 import { shouldOverrideRefusal, wantsAnArtifact, recoveryNote } from '../../lib/refusalGuard';
 import { needsWrapUp, wrapUpInstruction, ranOutMessage, isAnnouncementOnly } from '../../lib/runWrapUp';
+import { linksIn, urlDirective, fidelityNote } from '../../lib/urlFidelity';
 import { getMonthlyUsage } from '../../lib/tokenTracker';
 import { getImageBudget, unitsForModel } from '../../lib/imageQuota';
 import { computeTokenTier, tokenTierDirective, tokenTierBanner, tasksRemaining } from '../../lib/tokenTier';
@@ -10914,7 +10915,7 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     const systemPrt  = assembleSystemPrompt(
       [agent.systemPrompt, '\n\n', buildKrewSystemPrompt(tools), bossPostfix, workingRules,
        searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective, ownAppDirective,
-       contractDirective(contract), clarifyDirective(text)],
+       contractDirective(contract), clarifyDirective(text), urlDirective(linksIn(text))],
       // The two things that make a turn a CONTINUATION rather than a fresh start: what this
       // agent was last working in, and what this user actually chooses when offered options.
       [identityCtx, locationBlock, (agent.key === 'boss' ? '' : userBlock), connectedAppsBlock, mcpSummary,
@@ -11362,10 +11363,13 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
             if (sid) krewDb.saveMessage(sid, 'assistant', line).catch(() => {});
             break;
           }
-          finaliseLastMsg(honest);
+          // If they gave a link and this answer blames a DIFFERENT site for failing, say so.
+          // Silent on every other answer — see lib/urlFidelity.ts.
+          const answered = honest + fidelityNote(text, honest);
+          finaliseLastMsg(answered);
           // Save what the user actually SAW. Saving fullResponse here put the false "still working
           // on it" line back on screen every time the conversation was reopened.
-          if (sid) krewDb.saveMessage(sid, 'assistant', honest).catch(() => {});
+          if (sid) krewDb.saveMessage(sid, 'assistant', answered).catch(() => {});
           history.push({ role: 'assistant', content: fullResponse });
           // If this final answer contains outreach drafts, save them to the Brain too.
           autoSaveDraftsToBrain(displayResponse, attachedTitlesRef.current.length ? attachedTitlesRef.current : [lastAttachedTitleRef.current], text);
@@ -12970,8 +12974,9 @@ ${wfTask}`);
         const finalText = wrapClean && !isAnnouncementOnly(wrapClean)
           ? joinBlocks(carried, wrapClean)
           : joinBlocks(carried, ranOutMessage((turnToolsRef.current ?? []).map((t) => t.tool), text));
-        finaliseLastMsg(finalText);
-        if (sid) krewDb.saveMessage(sid, 'assistant', finalText).catch(() => {});
+        const wrapAnswered = finalText + fidelityNote(text, finalText);
+        finaliseLastMsg(wrapAnswered);
+        if (sid) krewDb.saveMessage(sid, 'assistant', wrapAnswered).catch(() => {});
       }
     } catch (e: unknown) {
       const raw = e instanceof Error ? e.message : String(e);

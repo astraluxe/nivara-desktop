@@ -69,14 +69,8 @@ const APP_VERSION = (import.meta.env?.VITE_APP_VERSION as string) || '1.78.0';
 const WHATS_NEW: { version: string; items: string[] } = {
   version: APP_VERSION,
   items: [
-    "Installing an update no longer stops with an abort-retry-ignore box. The Mesh engine runs as its own program and nothing ever shut it down -- quitting adris left it running, it kept its own file open, and the next installer could not replace it. Retrying did not help, because retrying does not release a file lock. It is now stopped when you quit, swept away at startup if a crash left one behind, and the installer stops it as well, so it cannot block an update even once.",
-    "A plan for a business of five. Business starts at ten seats, which is a lot to buy when there are four of you. Starter is 5 seats, 4,000 tasks a month, 50 AI images and 750 automation runs -- half of Business, at half the price.",
-    "What the pricing page promises is what the app now enforces. The limits inside the app had drifted below the ones being sold: somebody paying for Business was capped at 4 million tokens, 10 Mesh devices and 500 automation runs, when the page said 8 million, 25 and 1,500. You are never held below what you bought -- and never below what your old plan already gave you, so nothing is taken away either.",
-    "Single sign-on has been removed from the plans. It was listed on two of them and it is not built: there is no company identity provider and no SAML, only the Google sign-in button every plan already has. It goes back on the page when it exists.",
-    "Priority support is a real address. On Growth and above, Account shows a direct line to the founder with your plan already in the subject, so the first reply does not have to ask which plan you are on.",
-    "Your account screen shows what you are entitled to -- tasks, images and automation runs left, when they reset, what your plan covers, and which computer it is tied to. Work you run on your own API key, your Claude or Codex subscription, or a local model is never counted there.",
-    "A research task that goes quiet now finishes properly. A run that spent all its steps searching used to stop with nothing arriving in the chat at all; it is now made to write up what it already found, and if it genuinely has nothing it says so rather than leaving you looking at silence.",
-    "Whoever runs adris is no longer metered by adris. An owner account was being shown, and limited by, a plan that no longer exists.",
+    "Research now answers about the link you gave it. Asked to research a portfolio page, it followed a link in that page's own navigation to a different company's site, failed to read THAT site, and reported the failure as though it were your page -- \"it blocked the browser and didn't load\". Your page was never blocked; it opens fine and the app read all 175 companies on it. Following links is still allowed and often necessary, but the answer now has to say which page each finding came from, and it can no longer blame a site you never mentioned. If it does anyway, a line underneath tells you which site actually failed.",
+    "A page that opens is never described as a page that failed. \"The page loaded and does not publish that figure\" is a real answer, and it is now the one you get instead of a false report that the page would not load.",
   ]
 };
 
