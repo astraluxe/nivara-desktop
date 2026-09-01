@@ -206,3 +206,26 @@ export function getPlanConfig(plan: string): PlanConfig {
 export function charsToTokens(chars: number): number {
   return Math.ceil(chars / 4);
 }
+
+/**
+ * The plan a real ACCOUNT is entitled to, admin level included.
+ *
+ * `getPlanConfig` takes a plan string and knows nothing about who is holding it. Every screen that
+ * shows the user their plan goes through `tierForAccount`, which promotes head and admin accounts
+ * to enterprise — so the owner is DISPLAYED as Enterprise everywhere and was ENFORCED as whatever
+ * their row happens to say. Theirs says `solo`, and solo has no voice input: clicking the
+ * microphone in their own product opened an upgrade page.
+ *
+ * One entitlement, read the same way by what is shown and what is allowed.
+ */
+export function planConfigFor(
+  account: { plan?: string | null; admin_level?: string | null } | null | undefined,
+): PlanConfig {
+  const level = String(account?.admin_level || '').toLowerCase();
+  if (level === 'head' || level === 'admin') {
+    // Everything on, and no cap that could stop the person who runs it.
+    const base = getPlanConfig('business');
+    return { ...base, voiceToCode: true, monthlyTokens: 0 };
+  }
+  return getPlanConfig(account?.plan ?? 'explore');
+}

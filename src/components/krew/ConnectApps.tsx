@@ -6,7 +6,7 @@ import ServiceSetupModal from './ServiceSetupModal';
 import { peekServiceRequest, requestServiceSetup, clearServiceRequest } from '../../lib/connectAppsRequest';
 import { listMcpServers, connectMcpServer, removeMcpServer, refreshMcpServer, type McpServer } from '../../lib/krewMcp';
 import { useAuth } from '../../contexts/AuthContext';
-import { getPlanConfig } from '../../lib/planConfig';
+import { planConfigFor } from '../../lib/planConfig';
 
 interface ServiceDef {
   id:     string;
@@ -401,7 +401,7 @@ const MCP_PRESETS: McpPreset[] = [
 
 function McpSection() {
   const { profile } = useAuth();
-  const cap = getPlanConfig(profile?.plan ?? 'explore').mcpConnections;
+  const cap = planConfigFor(profile).mcpConnections;
 
   const [servers,    setServers]    = useState<McpServer[]>([]);
   const [showForm,   setShowForm]   = useState(false);

@@ -3,7 +3,7 @@ import Icon, { type IconName } from '../components/Icon';
 import { invoke } from '@tauri-apps/api/core';
 import { resolveAiSource, bridgeAnswer } from '../lib/aiSource';
 import { useAuth } from '../contexts/AuthContext';
-import { getPlanConfig } from '../lib/planConfig';
+import { planConfigFor } from '../lib/planConfig';
 import UpgradeModal from '../components/UpgradeModal';
 import type { Node, Edge } from '@xyflow/react';
 import FlowCanvas, { type FlowCanvasHandle } from '../components/automation/FlowCanvas';
@@ -2416,7 +2416,7 @@ interface AutomationModuleProps {
 
 export default function AutomationModule({ canvasFlow, onCanvasFlowConsumed }: AutomationModuleProps = {}) {
   const { user, profile } = useAuth();
-  const planCfg = getPlanConfig(profile?.plan ?? 'explore');
+  const planCfg = planConfigFor(profile);
   const [showCloudUpgrade, setShowCloudUpgrade] = useState(false);
   const [tab, setTab] = useState<'canvas' | 'automations' | 'templates' | 'logs'>('canvas');
   const chatH = useResize({ initial: 220, min: 120, max: 560, direction: 'vertical', invert: true, storageKey: 'nv-auto-chat-h' });

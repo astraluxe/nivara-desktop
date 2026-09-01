@@ -13,7 +13,7 @@
 // them. Never less than the page — and never less than they already had, because a rename must not
 // take anything away.
 
-import { getPlanConfig } from './planConfig.js';
+import { getPlanConfig, planConfigFor } from './planConfig.js';
 // entitlement.js is the bundle the entitlement suite writes into the same folder, and that suite
 // is listed BEFORE this one in run-tests.mjs. If it is ever moved after, this import fails loudly
 // rather than silently testing nothing.
@@ -81,6 +81,27 @@ console.log('\n=== the numbers the page prints are the ones enforced ===');
   ok('a Business customer gets the 8M they paid for', business.monthlyTokens >= 8_000_000, String(business.monthlyTokens));
   ok('...and 25 Mesh devices, not 10', business.meshDevices >= 25, String(business.meshDevices));
   ok('...and 1,500 runs, not 500', business.cloudAutomations >= 1500, String(business.cloudAutomations));
+}
+
+
+console.log('\n=== the person who runs it is not gated out of it ===');
+{
+  // The owner's row says plan 'solo', which has no voice input — so clicking the microphone in
+  // their own product opened an upgrade page. Every screen that DISPLAYS their plan promotes head
+  // and admin to enterprise; the gate did not, so what was shown and what was allowed disagreed.
+  const head = planConfigFor({ plan: 'solo', admin_level: 'head' });
+  ok('the head gets voice input', head.voiceToCode === true);
+  ok('...and is not capped on tokens', head.monthlyTokens === 0 || head.monthlyTokens === null, String(head.monthlyTokens));
+  ok('an admin too', planConfigFor({ plan: 'free', admin_level: 'admin' }).voiceToCode === true);
+  ok('case does not matter', planConfigFor({ plan: 'free', admin_level: 'HEAD' }).voiceToCode === true);
+
+  // And an ORDINARY account is untouched — this must not become a way to hand the product away.
+  ok('a solo account is unchanged', planConfigFor({ plan: 'solo' }).voiceToCode === getPlanConfig('solo').voiceToCode);
+  ok('a free account is unchanged', planConfigFor({ plan: 'free' }).voiceToCode === false);
+  ok('an empty admin_level grants nothing', planConfigFor({ plan: 'free', admin_level: '' }).voiceToCode === false);
+  ok('a made-up admin_level grants nothing', planConfigFor({ plan: 'free', admin_level: 'owner' }).voiceToCode === false);
+  ok('null is the explore plan, not a promotion', planConfigFor(null).voiceToCode === getPlanConfig('explore').voiceToCode);
+  ok('undefined likewise', planConfigFor(undefined).label === getPlanConfig('explore').label);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -69,6 +69,7 @@ const UNITS = [
   ['choiceReply',   'src/lib/choiceReply.ts'],
   ['inlineFigures', 'src/lib/inlineFigures.ts'],
   ['studyBrief',    'src/lib/studyBrief.ts'],
+  ['modelFallback', 'src/lib/modelFallback.ts'],
   ['aiSourceMenu',  'src/components/AiSourceMenu.tsx'],
 ];
 

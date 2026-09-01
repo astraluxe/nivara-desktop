@@ -1,3 +1,4 @@
+import UpgradeModal from '../src/components/UpgradeModal';
 import { createRoot } from 'react-dom/client';
 import { useState } from 'react';
 import '../src/index.css';
@@ -252,7 +253,9 @@ function App() {
           <div className="h-[260px] border-b border-nv-border">
             <DiffView projectPath="C:/repo" file="C:/repo/src/lib/agentActivity.ts" onClose={() => {}} />
           </div>
-          {new URLSearchParams(location.search).get('brain')
+          {new URLSearchParams(location.search).get('upgrade')
+            ? <UpgradeModal onClose={() => {}} currentPlan="free" />
+            : new URLSearchParams(location.search).get('brain')
             ? <BrainModule />
             : new URLSearchParams(location.search).get('tip')
             ? <div className="flex-1 min-h-0"><TipStage appsConnected={3} onRunCommand={() => {}} onOpenModule={() => {}} /></div>

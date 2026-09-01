@@ -19,7 +19,7 @@ import { routeTask } from '../../lib/taskRouting';
 import { useAuth } from '../../contexts/AuthContext';
 import { extractTableRows, findLeadHeaderIndex, hasPopulatedLeadTable, mergeLeadTables, parseLeadRows, rowsToMarkdown, leadConnStatusToOutreach, looksLikePersonLead, matchesSeniority, matchesSector, peopleSearchPhrases } from '../../lib/leadTable';
 import { supabase } from '../../lib/supabase';
-import { getPlanConfig } from '../../lib/planConfig';
+import { planConfigFor } from '../../lib/planConfig';
 import { ensureProperEnding } from '../../lib/deckEnding';
 import { autoSlideCount, parseDeckSpec, slidesNeedingImages, renderDeckHtml, extractDeckSpec, applyDeckEdits, type DeckSpec, type DeckSlide, type DeckPalette, deckToPptxBlob, LAYOUTS_WITH_IMAGE, layoutShowsImage } from '../../lib/deck';
 import { setLastDeck } from '../../lib/deckStore';
@@ -4239,7 +4239,7 @@ function NextTaskCard({ suggestion, onAccept, onDismiss }: { suggestion: string;
 
 export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCreated, onOpenConnectApps, onBrowseAgents, onViewOnCanvas, onOpenStudio, onOpenResearch, fromOffice, onFromOfficeDone }: Props) {
   const { user, session, profile } = useAuth();
-  const planCfg = getPlanConfig(profile?.plan ?? 'explore');
+  const planCfg = planConfigFor(profile);
   type VoiceStatus = 'idle' | 'recording' | 'transcribing' | 'error';
   const [voiceStatus,       setVoiceStatus]       = useState<VoiceStatus>('idle');
   const [voiceErr,          setVoiceErr]           = useState<string | null>(null);
@@ -4627,6 +4627,13 @@ const [studioExtracting, setStudioExtracting] = useState(false);
   const freshSessionRef    = useRef<string | null>(null);
   const deckRequestRef     = useRef<string>('');   // context for the pending deck request
   const deckTextRef        = useRef<string>('');   // the user's raw request text (for slide/pic references)
+  // THE LAST TURN'S REAL REQUEST — the one with every attached file's content in it, not the short
+  // line shown on screen. The empty-turn recovery rebuilds its prompt from the DISPLAY message,
+  // which lists attachments as "[[file]] name.pptx" and nothing more; stripping those lines left
+  // the model the sentence "make me notes from all the ppt" with no ppt attached. It answered,
+  // correctly, "since you did not attach the PPT files... I cannot generate the specific content",
+  // and wrote a blank template instead. The files were never sent.
+  const lastApiTextRef     = useRef<string>('');
   const deckImagesRef      = useRef<DeckImage[]>([]); // pictures the user attached with the deck request
   /** Did the user name Microsoft PowerPoint themselves? Decides the card's opening destination. */
   const deckWantsOwnAppRef = useRef(false);
@@ -5177,7 +5184,10 @@ const [studioExtracting, setStudioExtracting] = useState(false);
    * user saw "Vikram could not answer this time — hasn't started answering after 78s" on a council
    * that was supposed to allow five minutes.
    */
-  type TurnOpts = { minFirstTokenMs?: number };
+  // `model` overrides the chat's chosen model for ONE call. Used by the empty-turn recovery to try
+  // a larger model on the same key without touching component state — a setState here would not be
+  // visible to the call being made from the same tick, and the user would get the same model twice.
+  type TurnOpts = { minFirstTokenMs?: number; model?: string };
 
   async function streamTurn(
     msgs: { role: string; content: string }[],
@@ -5234,7 +5244,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     // Resolve the API key + provider for own_key mode.
     let effectiveKey       = apiKey;
     let effectiveProvider  = provider;
-    let effectiveModelName = modelName;
+    let effectiveModelName = opts.model || modelName;
     let effectiveBaseUrl   = baseUrl;
     if (mode === 'own_key') {
       // No one-off key typed → use a CONNECTED provider. Prefer the one the user SELECTED in the
@@ -5259,7 +5269,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
           if (src[svc]?.api_key) {
             effectiveKey       = src[svc].api_key;
             effectiveProvider  = svc as Provider;
-            effectiveModelName = (svc === provider && modelName) ? modelName : (src[svc].model || '');
+            if (!opts.model) effectiveModelName = (svc === provider && modelName) ? modelName : (src[svc].model || '');
             effectiveBaseUrl   = '';
             break;
           }
@@ -5274,7 +5284,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
           if (d?.api_key) {
             effectiveKey       = d.api_key;
             effectiveProvider  = svc as Provider;
-            effectiveModelName = (svc === provider && modelName) ? modelName : (d.model || '');
+            if (!opts.model) effectiveModelName = (svc === provider && modelName) ? modelName : (d.model || '');
             effectiveBaseUrl   = '';
             break;
           }
@@ -10777,6 +10787,9 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
       ? `[FOCUSED FILE: ${focusedFile.name}]\nYou are working WITH this file from the user's Brain and the notes connected to it. Stay scoped to this file and its connected notes — answer, edit, and expand around THIS, do not wander to unrelated topics and do NOT create a duplicate of it (use edit_brain to change it in place). When the user says "this file"/"it", they mean this:\n\`\`\`\n${focusedFile.content.slice(0, FOCUS_CAP)}\n\`\`\`\n\n`
       : '';
     const apiText = focusBlock + fileBlock + (imageBlock ? imageBlock + '\n' : '') + text;
+    // Remembered for the empty-turn recovery, which must not retry with the attachments stripped
+    // out of the request — see lastApiTextRef.
+    lastApiTextRef.current = apiText;
 
     // Chat bubble shows typed text + file/image name chips (not raw content).
     // The focused Brain file is listed too, so the user can SEE it's part of this
@@ -14316,6 +14329,18 @@ ${wfTask}`);
   // if that ALSO comes back empty do we surface a message + a one-click "Switch to adris.tech AI"
   // option, so the user's own (free) key is tried first and adris.tech tokens are spent only as a
   // last resort.
+  /**
+   * The prompt for a tool-free retry. Named because the bigger-model attempt below uses the same
+   * one, and two copies of a paragraph like this drift apart.
+   */
+  function directSysFor(didWork: boolean): string {
+    return didWork
+      // It already searched and read things this turn; it simply never wrote the answer. Say so, or
+      // it will apologise for being unable to do what it has just done.
+      ? "You are a knowledgeable expert assistant. You ALREADY looked things up for this request in the user's own notes and tools during this turn — you simply never wrote the final answer. Write it now, in full, using what you found and what you know. Do NOT say you are unable to access their files or tools, do NOT apologise, and do NOT ask to start over. Do NOT use any tools, do NOT delegate, do NOT output tool calls, JSON, or <tool_call> tags — just write the complete answer as text, following any format they asked for."
+      : "You are a knowledgeable expert assistant. Write a complete, well-structured answer to the user's request below, following any format they asked for. The request may have the full text of the user's own attached files pasted into it — that IS the material, so use it and never say it was not provided. Answer directly — do NOT use any tools, do NOT delegate, do NOT output tool calls, JSON, or <tool_call> tags. Just write the full answer as text.";
+  }
+
   async function recoverEmptyTurn(sid: string | null) {
     const msgs = messagesRef.current;
     const lastUserIdx = msgs.map((m) => m.role).lastIndexOf('user');
@@ -14339,9 +14364,22 @@ ${wfTask}`);
     const didWork = after.some((m) => m.role === 'tool_result' || m.role === 'tool_call');
     // From here: a genuinely EMPTY turn — the model produced no text and ran nothing. This is the
     // "free model got lost in the tools and went silent" case a plain retry fixes.
-    const userReq = (msgs[lastUserIdx]?.content || '')
+    const displayReq = (msgs[lastUserIdx]?.content || '')
       .split('\n').filter((l) => !/^(\[\[(file|image|ref)\]\]|📎|🖼|🔗)\s/.test(l.trim())).join('\n').trim();
-    if (!userReq) return;
+    if (!displayReq) return;
+    // ── THE RETRY GETS WHAT THE FIRST ATTEMPT GOT ────────────────────────────
+    //
+    // This used to send `displayReq`: the on-screen message with its "[[file]] deck.pptx" lines
+    // stripped out. For an attachment-driven request that is the entire task minus all of its
+    // material — so the model was asked to write revision notes on four lecture decks it had never
+    // been given, and replied "since you did not attach the PPT files... I cannot generate the
+    // specific content for your specific slides", then wrote a generic template. That was the
+    // correct answer to the wrong question, and useless to the user, who had attached them.
+    //
+    // lastApiTextRef holds what actually went to the model the first time, attachments and all.
+    // The guard is belt and braces: only use it when it really is this same request.
+    const fullReq = lastApiTextRef.current;
+    const userReq = fullReq && fullReq.includes(displayReq.slice(0, 60)) ? fullReq : displayReq;
 
     // ── If it's a big multi-section writing task on a free/own key, generate it in PARTS so the
     //    per-minute limit is never exceeded (the real fix for Groq's 12k TPM 413s). ──
@@ -14353,11 +14391,7 @@ ${wfTask}`);
     try {
       setAgentStep('Writing the answer…');
       addMsg({ role: 'assistant', content: '', streaming: true });
-      const directSys = didWork
-        // It already searched and read things this turn; it simply never wrote the answer. Say so,
-        // or it will apologise for being unable to do what it just did.
-        ? "You are a knowledgeable expert assistant. You ALREADY looked things up for this request in the user's own notes and tools during this turn — you simply never wrote the final answer. Write it now, in full, using what you found and what you know. Do NOT say you are unable to access their files or tools, do NOT apologise, and do NOT ask to start over. Do NOT use any tools, do NOT delegate, do NOT output tool calls, JSON, or <tool_call> tags — just write the complete answer as text, following any format they asked for."
-        : "You are a knowledgeable expert assistant. Write a complete, well-structured answer to the user's request below, following any format they asked for. Answer directly — do NOT use any tools, do NOT delegate, do NOT output tool calls, JSON, or <tool_call> tags. Just write the full answer as text.";
+      const directSys = directSysFor(didWork);
       const { text } = await streamTurnWithRetry(
         [{ role: 'user', content: userReq }],
         directSys,
@@ -14381,6 +14415,55 @@ ${wfTask}`);
       setAgentStep(null);
     }
 
+    // ── STILL NOTHING? TRY A BIGGER MODEL ON THE SAME KEY, RATHER THAN GIVING UP ──
+    //
+    // The user, after switching by hand and having it work first time: "makesure instead of giving
+    // tht message change the model for nvidia if on one high model and some other model does
+    // respond then change to tht one... but to a high model or higher b parameter model".
+    //
+    // Everything needed was already here — modelHealth probes every model on the key and records
+    // which ones actually answer — except the step of reaching for the next one. An empty return on
+    // a long, document-heavy request is usually capacity, so the retry goes UP; see
+    // lib/modelFallback.ts. One switch only: a chain of retries across a key is the user's evening.
+    if (mode === 'own_key' && provider) {
+      try {
+        const { loadScan, rankScan } = await import('../../lib/modelHealth');
+        const { nextModel, switchNote } = await import('../../lib/modelFallback');
+        const rows = rankScan(loadScan(provider as never, apiKey || ''))
+          .map((r) => ({ id: r.id, window: r.window }));
+        const pick = nextModel(modelName, rows);
+        if (pick) {
+          setAgentStep(`Trying ${pick.id}…`);
+          addMsg({ role: 'assistant', content: '', streaming: true });
+          const { text: bigText } = await streamTurnWithRetry(
+            [{ role: 'user', content: userReq }],
+            directSysFor(didWork),
+            (chunk) => setMessages((prev) => {
+              const c = [...prev];
+              if (c.length && c[c.length - 1].streaming) c[c.length - 1] = { ...c[c.length - 1], content: c[c.length - 1].content + chunk };
+              return c;
+            }),
+            { model: pick.id },
+          );
+          const bigClean = (bigText || '').replace(/<tool_call>[\s\S]*/g, '').replace(/<tool_code>[\s\S]*/g, '').trim();
+          if (bigClean) {
+            finaliseLastMsg(bigClean);
+            if (sid) krewDb.saveMessage(sid, 'assistant', bigClean).catch(() => {});
+            // "change to tht one" — the chat STAYS on the model that worked, so the next message
+            // does not repeat the failure.
+            setModelName(pick.id);
+            const note = switchNote(modelName, pick.id, pick.bigger);
+            addMsg({ role: 'assistant', content: note });
+            if (sid) krewDb.saveMessage(sid, 'assistant', note).catch(() => {});
+            setAgentStep(null);
+            return;
+          }
+          setMessages((prev) => { const c = [...prev]; if (c.length && c[c.length - 1].streaming && !c[c.length - 1].content.trim()) c.pop(); return c; });
+        }
+      } catch { /* the honest message below is the fallback for the fallback */ }
+      finally { setAgentStep(null); }
+    }
+
     // ── Still nothing → honest message + Continue (same model) and, on a free/own key or local,
     //    a one-click Switch-to-adris.tech retry. ──
     const weak = mode === 'own_key' || mode === 'local';
@@ -14389,8 +14472,11 @@ ${wfTask}`);
       : "I stopped before I had anything to show you — nothing was saved or sent. Use Continue below to pick this up again.";
     addMsg({ role: 'assistant', content: stopped, streaming: false });
     if (sid) krewDb.saveMessage(sid, 'assistant', stopped).catch(() => {});
-    addMsg({ role: 'next_task', content: '', nextTask: { suggestion: 'Continue where it stopped', prompt: userReq } });
-    if (weak) addMsg({ role: 'next_task', content: '', nextTask: { suggestion: 'Switch to adris.tech AI & retry', prompt: userReq, useNivara: true } });
+    // The BUTTON sends the readable request, not the megabytes of attached file text `userReq` may
+    // now hold — a next_task prompt is re-sent as a visible chat message, and pasting four decks'
+    // worth of extracted text into the thread would be its own kind of broken.
+    addMsg({ role: 'next_task', content: '', nextTask: { suggestion: 'Continue where it stopped', prompt: displayReq } });
+    if (weak) addMsg({ role: 'next_task', content: '', nextTask: { suggestion: 'Switch to adris.tech AI & retry', prompt: displayReq, useNivara: true } });
   }
 
   function finaliseLastMsg(rawContent: string) {

@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { getPlanConfig } from "../lib/planConfig";
+import { ALLOWANCE, PRICE, TIER_LABEL, rupees, type Tier } from "../lib/entitlement";
 import { useAuth } from "../contexts/AuthContext";
 import { supabase } from "../lib/supabase";
 
@@ -16,49 +17,73 @@ interface Plan {
   accent:     boolean;
 }
 
+// ── ONE SET OF NUMBERS, SHARED WITH THE PRICING PAGE ────────────────────────
+//
+// This list used to carry its own prices, and they had drifted a long way: Business at ₹9,999 and
+// Growth at ₹19,999, while adris.tech/pricing sold them at ₹6,499 and ₹12,999 — and Starter, the
+// five-seat tier that exists precisely for the firms this window is shown to, was missing
+// altogether. Payments are locked so nobody was charged the wrong amount, but a customer reading
+// one price in the product and another on the site cannot tell which is real.
+//
+// It also advertised "Single sign-on + admin controls". There is no SAML, no OIDC and no identity
+// provider; that claim was removed from the website for exactly that reason, and selling it here
+// instead is the same untruth in a smaller window.
+//
+// So the figures come from lib/entitlement.ts, which is what the pricing page is generated from.
+//
+// THE KEYS ARE NOT THE LABELS. razorpay-webhook's PAID_PLANS is solo / builder / business — those
+// are what the webhook matches on when it writes `plan` after a payment, so renaming one would stop
+// it recognising the plan it had just taken money for. The label is what the buyer reads; the key
+// is plumbing and stays put.
+const tokensLine = (t: Tier) => `~${Math.round(ALLOWANCE[t].tokens / 1000).toLocaleString('en-IN')}k tokens / month`;
+const seatsLine  = (t: Tier) => `${ALLOWANCE[t].seats} seats · ${ALLOWANCE[t].meshDevices} Mesh devices`;
+const runsLine   = (t: Tier) => `${ALLOWANCE[t].runs.toLocaleString('en-IN')} cloud automations`;
+
 const PLANS: Plan[] = [
-  // ── THE KEYS ARE NOT THE LABELS, AND MUST NOT BECOME THEM ─────────────────
-  //
-  // razorpay-webhook's PAID_PLANS is solo / builder / business. Those keys are what the webhook
-  // matches on when it writes `plan` after a payment, so renaming one here would stop the webhook
-  // recognising the plan it had just taken money for. The LABEL is what the buyer reads and must
-  // match the website exactly; the key is plumbing and stays put.
-  //
-  // The allowances line up on purpose: lib/entitlement.ts maps solo → the Business tier and
-  // builder → Growth, so what this card promises is what the app then meters against.
   {
-    key:        "solo",
-    label:      "Business",
-    price:      "₹9,999",
-    paise:      999900,
+    key:        "starter",
+    label:      TIER_LABEL.starter,
+    price:      rupees(PRICE.starter!.monthly),
+    paise:      PRICE.starter!.monthly * 100,
     sub:        "/ month",
-    tokens:     "~8,000 tasks / month",
-    prevTokens: "~300 tasks, one time",
-    features:   ["All 8 modules, in full", "8M tokens/mo", "1,500 cloud automations", "10 seats · 25 Mesh devices", "Guard security scanner"],
+    tokens:     "~4,000 tasks / month",
+    features:   ["All 8 modules, in full", tokensLine('starter'), runsLine('starter'), seatsLine('starter'), "Guard security scanner"],
     accent:     false,
   },
   {
-    key:        "builder",
-    label:      "Growth",
-    price:      "₹19,999",
-    paise:      1999900,
+    key:        "solo",
+    label:      TIER_LABEL.business,
+    price:      rupees(PRICE.business!.monthly),
+    paise:      PRICE.business!.monthly * 100,
     sub:        "/ month",
-    tokens:     "~25,000 tasks / month",
-    prevTokens: "~8,000 tasks / month",
-    features:   ["Everything in Business", "25M tokens/mo", "5,000 cloud automations", "25 seats · 50 Mesh devices", "Single sign-on + admin controls", "Priority support"],
+    tokens:     "~8,000 tasks / month",
+    prevTokens: "~300 tasks, one time",
+    features:   ["Everything in Starter", tokensLine('business'), runsLine('business'), seatsLine('business'), "Team workspace"],
     accent:     true,
   },
   {
+    key:        "builder",
+    label:      TIER_LABEL.growth,
+    price:      rupees(PRICE.growth!.monthly),
+    paise:      PRICE.growth!.monthly * 100,
+    sub:        "/ month",
+    tokens:     "~25,000 tasks / month",
+    prevTokens: "~8,000 tasks / month",
+    features:   ["Everything in Business", tokensLine('growth'), runsLine('growth'), seatsLine('growth'), "Priority support, direct to the founder"],
+    accent:     false,
+  },
+  {
     key:      "custom",
-    label:    "Custom",
+    label:    TIER_LABEL.enterprise,
     price:    "Contact us",
     paise:    0,
     sub:      "",
-    tokens:   "Unlimited tokens",
-    features: ["Everything in Business", "Dedicated infra", "Custom integrations", "SLA & priority support"],
+    tokens:   "Fair-use, uncapped",
+    features: ["Everything in Growth", "Dedicated infrastructure", "Custom integrations", "SLA"],
     accent:   false,
   },
 ];
+
 
 interface Props {
   onClose:       () => void;

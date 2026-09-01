@@ -367,3 +367,45 @@ export function covers(tier: Tier): string[] {
     'Your own API key or a local model — always free, never counted',
   ];
 }
+
+// ── WHAT EACH TIER COSTS ─────────────────────────────────────────────────────
+//
+// The upgrade window inside the app had its own copy of the prices, and they had drifted: it was
+// offering Business at ₹9,999 and Growth at ₹19,999 while adris.tech/pricing sold them at ₹6,499
+// and ₹12,999, and it did not know Starter existed at all. Payments are locked, so nobody was
+// charged the wrong amount — but a customer reading one number in the product and another on the
+// site has no way to know which is real.
+//
+// Monthly is the list price. Annual is the per-month figure when a year is paid up front, which is
+// how the page presents it and how the buyer compares them.
+export interface TierPrice { monthly: number; annual: number }
+
+export const PRICE: Record<Tier, TierPrice | null> = {
+  free:       { monthly: 0, annual: 0 },
+  starter:    { monthly:  6_499, annual:  3_249 },
+  business:   { monthly: 12_999, annual:  6_499 },
+  growth:     { monthly: 19_999, annual: 12_999 },
+  enterprise: null,   // "Contact us" — there is no list price to show.
+};
+
+/** "₹6,499", in the Indian grouping the whole product uses. */
+export function rupees(n: number): string {
+  return '₹' + n.toLocaleString('en-IN');
+}
+
+/**
+ * A token allowance a person can read. "4M", not "4,000k".
+ *
+ * The upgrade window rendered `Math.round(tokens / 1000)` with a "k" after it, so eight million
+ * tokens came out as "~8,000k tokens / month" — a number nobody can size at a glance, and one that
+ * reads as smaller than it is.
+ */
+export function tokensLabel(t: Tier): string {
+  const n = ALLOWANCE[t].tokens;
+  if (!Number.isFinite(n)) return 'Uncapped, fair use';
+  if (n >= 1_000_000) {
+    const m = n / 1_000_000;
+    return `${Number.isInteger(m) ? m : m.toFixed(1)}M tokens a month`;
+  }
+  return `${Math.round(n / 1000)}k tokens${RENEWS[t] === 'once' ? ', one time' : ' a month'}`;
+}

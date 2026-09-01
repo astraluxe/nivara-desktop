@@ -6,7 +6,7 @@ import ContractScanner  from '../components/guard/ContractScanner';
 import VulnBriefing     from '../components/guard/VulnBriefing';
 import ComplianceChecker from '../components/guard/ComplianceChecker';
 import { useAuth } from '../contexts/AuthContext';
-import { getPlanConfig } from '../lib/planConfig';
+import { planConfigFor } from '../lib/planConfig';
 
 // ── Guard usage tracking ──────────────────────────────────────────────────────
 // ONE pool for everything Guard does. A phishing scan, a contract review, a compliance run and a
@@ -103,7 +103,7 @@ export default function GuardModule() {
   const [tab, setTab] = useState<Tab>('dashboard');
   const [used, setUsed] = useState(getGuardUses);
   const { profile } = useAuth();
-  const planCfg = getPlanConfig(profile?.plan ?? 'free');
+  const planCfg = planConfigFor(profile);
   const limit = planCfg.guardChecks;
 
   // Guard already routes every scan through callAutomationAI -> resolveAiSource, so it has always

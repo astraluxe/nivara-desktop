@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { peekPlan, takePlan, clearPlan, planAsBrief, CODER_PLAN_EVENT, type CoderPlan } from '../../lib/coderHandoff';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '../../contexts/AuthContext';
-import { getPlanConfig } from '../../lib/planConfig';
+import { planConfigFor } from '../../lib/planConfig';
 import UpgradeModal from '../UpgradeModal';
 import { streamAI, type ConnectionMode, type Provider, type AiMessage } from '../../lib/ai';
 import { chatDb, type ChatSession, type ChatMessage } from '../../lib/chatDb';
@@ -349,7 +349,7 @@ export default function AIChat({
 
   // Plan / voice gate
   const { profile, session } = useAuth();
-  const planCfg      = getPlanConfig(profile?.plan ?? 'explore');
+  const planCfg      = planConfigFor(profile);
   const [showVoiceUpgrade, setShowVoiceUpgrade] = useState(false);
 
   useEffect(() => {
