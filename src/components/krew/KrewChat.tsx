@@ -34,6 +34,7 @@ import { noteActiveModel, bulkPlan } from '../../lib/contextBudget';
 import { normaliseScore, scoreValue, decisionBias, recordDecision, decisionStyleNote, workingFileNote, setWorkingFile, extractChoices, EFFORT_LABEL, IMPACT_LABEL, type ChoiceSet, type ChoiceItem } from '../../lib/agentBrain';
 import { replyForChoice } from '../../lib/choiceReply';
 import { splitFigureBlocks, figureDirective } from '../../lib/inlineFigures';
+import { studyDirective } from '../../lib/studyBrief';
 import { slugLooksLikeName, hasWrittenMessage } from '../../lib/outreachConnections';
 import { auditPromises, cleanOutboundMessage, stripOngoingWorkClaims, type PromiseIssue } from '../../lib/verify';
 import ConnectionBar from '../coder/ConnectionBar';
@@ -11133,7 +11134,12 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
        // told to "sketch the 4-layer architecture diagram" — a diagram sitting in one of those very
        // files, which the chat never showed. Only when pictures really are attached, so an ordinary
        // message carries none of this. See lib/inlineFigures.ts.
-       figureDirective(imageFiles.map((f) => f.name))],
+       figureDirective(imageFiles.map((f) => f.name)),
+       // REVISION NOTES HAVE TO BE REVISABLE FROM. A student attached four lecture decks and asked
+       // to have "everything" explained for a 50-mark paper; the question bank was excellent and
+       // the recap was a contents page. Only fires when material is actually attached AND they are
+       // clearly studying it — an ordinary question about a spreadsheet must not get a lecture.
+       studyDirective(text, currentFiles.length > 0)],
       // The two things that make a turn a CONTINUATION rather than a fresh start: what this
       // agent was last working in, and what this user actually chooses when offered options.
       [identityCtx, locationBlock, (agent.key === 'boss' ? '' : userBlock), connectedAppsBlock, mcpSummary,

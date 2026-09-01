@@ -103,6 +103,25 @@ export interface WatchedDoc extends DocResult {
  * progress file, the overlay missing — the document is still made. It is never allowed to break the
  * task it exists to describe.
  */
+// ── THE CURSOR IS OFF ────────────────────────────────────────────────────────
+//
+// The owner, watching it drive Word: "remove the cursor it is not working properly as required so
+// for now remove it".
+//
+// It is switched off rather than deleted, because the idea is right and only the execution is not:
+// work happening on your own machine should be something you WATCH, and every other way of saying
+// so is a spinner. What it needs before it comes back is for the pointer to land where the work is
+// actually happening at the moment it happens — which means the window rectangle and the progress
+// line agreeing, on a screen whose scaling and multi-monitor layout we do not currently read.
+//
+// With it off, `createDocumentWatched` is a plain `createDocument`: the same document, made the same
+// way, opened in the same Word. Nothing about the file changes. The progress file is not requested
+// either, since nothing reads it — that was scaffolding for the overlay, and writing a .jsonl beside
+// someone's proposal for no reason is litter.
+//
+// To bring it back: set this to true. Everything below is intact.
+const CURSOR_ENABLED = false;
+
 export async function createDocumentWatched(
   spec: DocSpec,
   who: { agent: string; rgb: string },
@@ -110,7 +129,15 @@ export async function createDocumentWatched(
 ): Promise<WatchedDoc> {
   const pollMs = opts.pollMs ?? 140;
   const progressPath = `${spec.savePath}.progress.jsonl`;
-  const full: DocSpec = { ...spec, visible: spec.visible !== false, progressPath };
+  // No overlay means nothing reads the progress file, so it is not asked for. See CURSOR_ENABLED.
+  const full: DocSpec = CURSOR_ENABLED
+    ? { ...spec, visible: spec.visible !== false, progressPath }
+    : { ...spec, visible: spec.visible !== false };
+
+  if (!CURSOR_ENABLED) {
+    const res = await createDocument(full);
+    return { ...res, steps: 0 };
+  }
 
   let stop = false;
   let seen = 0;

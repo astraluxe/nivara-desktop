@@ -154,6 +154,21 @@ Legend: **Pass** · **Fail** (describe what happened) · **Odd** (works, but wro
 | 8.10 | An ordinary answer with no attachments | No stray image frames, no change to how text renders | |
 ---
 
+## 9. Documents, figures and study notes — new in 1.86.0
+
+| # | Test | What should happen | Result |
+|---|------|--------------------|--------|
+| 9.1 | Attach slides/a report with diagrams, ask for notes in a Word document | The document opens in Word with the **figures placed in it**, each with a caption | |
+| 9.2 | Open that .docx and check the pictures | Real images sized to the page, not stretched off the edge | |
+| 9.3 | Any document containing rupee amounts | **₹ renders correctly** — never `â‚¹` or similar. Same for long dashes and curly quotes | |
+| 9.4 | Attach several files that each have a "figure 3" | The right figure, or none. **Never the wrong one** | |
+| 9.5 | Ask it to explain attached material for an exam | The recap **explains each concept**, not just names it. You should be able to revise without opening the original | |
+| 9.6 | Ask an ordinary question about an attached spreadsheet | A normal answer. **Not** a lecture — the study behaviour must not fire here | |
+| 9.7 | Watch while a Word document is written | No pointer moving around the screen. It was switched off in 1.86.0 | |
+| 9.8 | The document itself | Made exactly as before, just without the pointer | |
+
+---
+
 ## How to report a failure
 
 One line is enough, but these four things make it fixable:

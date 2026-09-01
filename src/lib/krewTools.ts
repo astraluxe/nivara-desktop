@@ -647,7 +647,7 @@ export const SYSTEM_TOOLS: ToolDef[] = [
       kind:      { type: 'string', description: '"word", "excel" or "powerpoint".', required: true },
       save_path: { type: 'string', description: 'Full Windows path to write, ending .docx, .xlsx or .pptx — e.g. C:\\Users\\name\\Documents\\proposal.docx', required: true },
       template:  { type: 'string', description: "Optional full path to the user's own template (.dotx/.xltx/.potx). This is the whole point of using this tool — ask for it if they mention having one.", required: false },
-      blocks:    { type: 'array',  description: 'WORD only. The document, in order, each an object: {"style":"title|heading|subheading|body|bullet","text":"..."}.', required: false },
+      blocks:    { type: 'array',  description: 'WORD only. The document, in order, each an object: {"style":"title|heading|subheading|body|bullet","text":"..."}. To PLACE A PICTURE the user attached, use {"style":"figure","figure":"figure 3","text":"caption saying what to look at"} — "figure" names one of their attached figures (the number, or its full title when several files each have a figure 3). Use it where the picture carries the meaning: a diagram you are explaining, a chart whose numbers you are quoting. Never decoration, and never all of them.', required: false },
       rows:      { type: 'array',  description: 'EXCEL only. An array of arrays of cell values, first row treated as the header, e.g. [["Company","Amount"],["Acme","45000"]].', required: false },
       sheet_name:{ type: 'string', description: 'EXCEL only. Name for the sheet tab.', required: false },
       slides:    { type: 'array',  description: 'POWERPOINT only. Each an object: {"title":"...","bullets":["...","..."]}.', required: false },
@@ -3730,7 +3730,26 @@ async function executeToolCore(
       kind,
       savePath: str(args.save_path).trim(),
       template: template || undefined,
-      blocks: asArray(args.blocks) as never,
+      // A FIGURE BLOCK NAMES A PICTURE; IT HAS TO BECOME A PATH.
+      //
+      // The model writes {"style":"figure","figure":"figure 3"} because that is what it saw in the
+      // attachment list. Word needs a file on disk. Attached pictures were already stored when they
+      // came in, so the reference is resolved against those — and matchPicture refuses to guess:
+      // with four decks attached there are four "figure 3"s, and the wrong diagram under a caption
+      // is worse than none. An unresolved figure keeps its caption and drops the picture.
+      blocks: await (async () => {
+        const raw = asArray(args.blocks) as Array<Record<string, unknown>>;
+        if (!raw.some((b) => String(b?.style ?? '') === 'figure')) return raw as never;
+        const { brain } = await import('./knowledgeStore');
+        const { matchPicture } = await import('./inlineFigures');
+        const pics = brain.listPictures().map((n) => ({ id: n.id, title: n.title, filePath: n.filePath }));
+        return raw.map((b) => {
+          if (String(b?.style ?? '') !== 'figure') return b;
+          const ref = String(b.figure ?? b.path ?? b.text ?? '').trim();
+          const hit = matchPicture(ref, pics);
+          return { style: 'figure', text: String(b.text ?? ''), path: hit?.filePath ?? '' };
+        }) as never;
+      })(),
       rows: asArray(args.rows) as never,
       sheetName: str(args.sheet_name).trim() || undefined,
       slides: asArray(args.slides) as never,

@@ -68,6 +68,7 @@ const UNITS = [
   ['deckEnding',    'src/lib/deckEnding.ts'],
   ['choiceReply',   'src/lib/choiceReply.ts'],
   ['inlineFigures', 'src/lib/inlineFigures.ts'],
+  ['studyBrief',    'src/lib/studyBrief.ts'],
   ['aiSourceMenu',  'src/components/AiSourceMenu.tsx'],
 ];
 
@@ -100,6 +101,14 @@ if (!process.argv.includes('--unit')) {
   // verified as a module and as a script, shipped, and STILL told the user "I cannot create or save
   // files" — nothing had ever exercised executeTool(name, args) → a file on disk. It skips cleanly
   // off Windows or without Office.
+  // A picture INSIDE a real .docx, and the encoding around it. A study guide built from four
+  // lecture decks came back carrying none of their diagrams — Word had no way to hold one, because
+  // a block was a style and a string. Also pins ₹ and the em dash, which is where a wrong
+  // PowerShell invocation quietly turns money into mojibake.
+  console.log('\n### A figure inside a real Word document');
+  try { execFileSync(process.execPath, [path.join(here, 'word-figure.mjs')], { stdio: 'inherit' }); }
+  catch { failed++; }
+
   console.log('\n### Making a real document, through the agent tool');
   try { execFileSync(process.execPath, [path.join(here, 'officeDispatch.mjs')], { stdio: 'inherit' }); }
   catch { failed++; }

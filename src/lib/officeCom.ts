@@ -41,8 +41,19 @@ export type DocKind = 'word' | 'excel' | 'powerpoint';
 export type Engine = 'office' | 'builtin';
 
 export interface WordBlock {
-  style: 'title' | 'heading' | 'subheading' | 'body' | 'bullet';
+  /**
+   * `figure` places a PICTURE the user already has, from `path`. Everything else is typed text.
+   *
+   * A study guide built from four lecture decks, containing none of their diagrams, is missing the
+   * part the reader needed — the owner's report was simply "it didnt put any img. or anything
+   * anywhere". Word could not hold one: a block was a style and a string, so there was nothing for
+   * a picture to be.
+   */
+  style: 'title' | 'heading' | 'subheading' | 'body' | 'bullet' | 'figure';
+  /** The text, or for a figure its caption (may be empty). */
   text: string;
+  /** `figure` only: an absolute path to a picture already on disk. */
+  path?: string;
 }
 
 export interface DocSpec {
@@ -257,6 +268,42 @@ try {
   $sel = $app.Selection
   $sel.EndKey(6) | Out-Null   # wdStory — start at the end of whatever the template already has
   foreach ($b in $spec.blocks) {
+    # A FIGURE IS PLACED, NOT TYPED.
+    #
+    # AddPicture is given the paragraph's own range so the image lands where the writing has got to,
+    # rather than wherever the insertion point happened to be. A picture that will not load must not
+    # cost the document the rest of its content, so the failure is swallowed and the caption still
+    # prints -- the sentence around it then still reads.
+    if ([string]$b.style -eq 'figure') {
+      $ok = $false
+      if ($b.path -and (Test-Path -LiteralPath $b.path)) {
+        try {
+          Say 'typing' ($spec.blocks.IndexOf($b) + 1) $spec.blocks.Count 'placing a figure'
+          $sel.Style = -1
+          $shape = $doc.InlineShapes.AddPicture($b.path, $false, $true, $sel.Range)
+          # Keep it inside the text column whatever the original pixel size.
+          $maxW = $doc.PageSetup.PageWidth - $doc.PageSetup.LeftMargin - $doc.PageSetup.RightMargin
+          if ($shape.Width -gt $maxW) {
+            $scale = $maxW / $shape.Width
+            $shape.Width = $maxW
+            $shape.Height = $shape.Height * $scale
+          }
+          $sel.EndKey(6) | Out-Null
+          $sel.TypeParagraph()
+          $ok = $true
+        } catch { $ok = $false }
+      }
+      if ([string]$b.text) {
+        $sel.Style = -3
+        $sel.TypeText([string]$b.text)
+        $sel.TypeParagraph()
+      }
+      if ($visible -and $pause -gt 0) {
+        try { $app.ScreenRefresh() } catch { }
+        Start-Sleep -Milliseconds $pause
+      }
+      continue
+    }
     $id = $STYLE[[string]$b.style]
     if ($null -eq $id) { $id = -1 }
     $sel.Style = $id
