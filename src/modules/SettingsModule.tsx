@@ -69,8 +69,8 @@ const APP_VERSION = (import.meta.env?.VITE_APP_VERSION as string) || '1.78.0';
 const WHATS_NEW: { version: string; items: string[] } = {
   version: APP_VERSION,
   items: [
-    "One fault can no longer freeze the whole app. Deep in the core, every lock used a pattern where a single unexpected error anywhere poisons that lock permanently -- and after that, everything which touches it fails too, for the rest of the session. That is a chat which opens blank, nothing responding to clicks, and no way out but restarting. All 106 of them now recover, so a one-off fault costs one operation instead of your session, and a check on every build stops the pattern coming back.",
-    "A presentation that cannot be saved now tells you so. The save was silent about failing, so a deck that did not store was discovered later as an empty conversation -- long after anything could be done about it. You are now told while the deck is still on screen and can still be downloaded. Being straight about this: the freeze itself could not be reproduced here, so this is the fault that produces exactly those symptoms rather than a confirmed sighting of the one you hit.",
+    "Picking one of the offered options now actually replies. When an agent ends by offering you two to four things to do next, that card says \"Tap one, then confirm - it is sent as your reply\". It was not being sent. The text was saved and then drawn back inside the card as though the agent had said it -- so you picked \"explain this in more detail\", saw your own request reflected at you, and no answer ever came. It is sent for real now, and the reply arrives in the conversation like any other.",
+    "An options block the model did not finish writing no longer spills onto the screen. If it ran out of room mid-block, the raw code was left at the end of your answer -- a wall of punctuation and quotes where the options should have been. The half-written block is removed and your answer is left clean.",
   ]
 };
 

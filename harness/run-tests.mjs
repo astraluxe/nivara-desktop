@@ -66,6 +66,7 @@ const UNITS = [
   ['pptxPolish',    'src/lib/pptxPolish.ts'],
   ['deck',          'src/lib/deck.ts'],
   ['deckEnding',    'src/lib/deckEnding.ts'],
+  ['choiceReply',   'src/lib/choiceReply.ts'],
 ];
 
 let failed = 0;

@@ -31,7 +31,8 @@ import { type ConnectionMode, type Provider } from '../../lib/ai';
 import { isDeadModelError, isSilenceError, isUserChosen, probeTimedOut, repairDeadModel, blockModel, scanModelsIfStale, measuredMsFor } from '../../lib/modelHealth';
 import Caret from '../ui/Caret';
 import { noteActiveModel, bulkPlan } from '../../lib/contextBudget';
-import { normaliseScore, scoreValue, decisionBias, recordDecision, decisionStyleNote, workingFileNote, setWorkingFile, extractChoices, EFFORT_LABEL, IMPACT_LABEL, type ChoiceSet } from '../../lib/agentBrain';
+import { normaliseScore, scoreValue, decisionBias, recordDecision, decisionStyleNote, workingFileNote, setWorkingFile, extractChoices, EFFORT_LABEL, IMPACT_LABEL, type ChoiceSet, type ChoiceItem } from '../../lib/agentBrain';
+import { replyForChoice } from '../../lib/choiceReply';
 import { slugLooksLikeName, hasWrittenMessage } from '../../lib/outreachConnections';
 import { auditPromises, cleanOutboundMessage, stripOngoingWorkClaims, type PromiseIssue } from '../../lib/verify';
 import ConnectionBar from '../coder/ConnectionBar';
@@ -3664,7 +3665,7 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
   );
 }
 
-function ChoicePicker({ choiceSet, onSelect, disabled, storageKey, agentKey }: { choiceSet: ChoiceSet; onSelect: (content: string) => void; disabled?: boolean; storageKey?: string; agentKey?: string }) {
+function ChoicePicker({ choiceSet, onSelect, disabled, storageKey, agentKey }: { choiceSet: ChoiceSet; onSelect: (content: string, choice: ChoiceItem) => void; disabled?: boolean; storageKey?: string; agentKey?: string }) {
   const savedPick                 = storageKey ? localStorage.getItem(storageKey) : null;
   const [picked, setPicked]       = useState<string | null>(savedPick);
   const [confirmed, setConfirmed] = useState(!!savedPick);
@@ -3702,9 +3703,15 @@ function ChoicePicker({ choiceSet, onSelect, disabled, storageKey, agentKey }: {
             className="text-[10px] text-nv-faint hover:text-nv-text transition-fast font-mono"
           >{copied ? '✓ Copied' : 'Copy'}</button>
         </div>
-        <div className="px-4 py-3">
-          <AssistantBubble content={content} />
-        </div>
+        {/* WHAT THIS PANEL USED TO BE.
+            It rendered `choice.content` here as an AssistantBubble — but content is the USER'S
+            message ("What gets sent as if the user had typed it, in their voice"), so the card
+            showed the user their own request styled as the agent's reply, and nothing was ever
+            sent. Picking an option looked like it did something and did not: "i do click on an
+            option but nth came after tht".
+            The choice is sent for real now, so the answer arrives in the thread below like any
+            other. This stays as a receipt of what was picked — the Copy button above still has the
+            text for anyone who wants it. */}
       </div>
     );
   }
@@ -3787,7 +3794,9 @@ function ChoicePicker({ choiceSet, onSelect, disabled, storageKey, agentKey }: {
                   })),
                 });
               }
-              onSelect(content);
+              // The choice travels with the text, so the caller can tell a pre-written answer from
+              // an offer that still has to be written by the agent. See lib/choiceReply.ts.
+              if (chosen) onSelect(content, chosen);
             }}
             className="text-[11px] px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent-dim transition-fast font-semibold"
           >Send this →</button>
@@ -14875,9 +14884,23 @@ ${wfTask}`);
                   disabled={busy}
                   storageKey={sidRef.current ? `nv-choice:${sidRef.current}:${i}` : undefined}
                   agentKey={agent.key}
-                  onSelect={(content) => {
-                    // Content renders inside the card itself — only persist to DB
-                    if (sidRef.current) krewDb.saveMessage(sidRef.current, 'assistant', content).catch(() => {});
+                  onSelect={(_content, choice) => {
+                    // ── THE CARD SAYS "it is sent as your reply". NOW IT IS. ──────────────
+                    //
+                    // This used to write the choice to the database and let the card render the
+                    // same text back inside itself, styled as an assistant answer. Two things went
+                    // wrong with that. The user's own words were echoed at them as though the agent
+                    // had said them — and when the model had not pre-written that option's text,
+                    // which is the normal case for a "want me to go deeper?" offer, the card
+                    // rendered an EMPTY bubble. A card that promises a reply, takes a click, and
+                    // does nothing: "i do click on an option but nth came after tht".
+                    //
+                    // ChoiceItem.content has always been documented as "What gets sent as if the
+                    // user had typed it". It is sent now. replyForChoice guarantees it is never
+                    // empty, because send('') returns silently and is the dead end itself.
+                    // skipShortcuts: this is an explicit instruction the user chose, not a phrase
+                    // to be pattern-matched against the deterministic routes.
+                    void send(replyForChoice(choice, msg.choices), { skipShortcuts: true });
                   }}
                 />
               ) : msg.role === 'avail_confirm' && msg.avail ? (

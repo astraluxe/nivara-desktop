@@ -223,7 +223,15 @@ export interface ChoiceSet {
 
 export function extractChoices(content: string): { cleanContent: string; choices: ChoiceSet | null } {
   const match = content.match(/CHOICES_BLOCK:\s*([\s\S]*?)\s*END_CHOICES/);
-  if (!match) return { cleanContent: content, choices: null };
+  if (!match) {
+    // NO END MARKER MEANS THE MODEL WAS CUT OFF MID-BLOCK — and the raw JSON was then left in the
+    // text and shown to the user, who got a wall of `{"title":"What next?","choices":[{"id":"a"…`
+    // hanging off the end of their answer. The block is machinery whether or not it is complete, so
+    // it never belongs on screen. The options are lost either way; the mess does not have to be.
+    const open = content.search(/\n*CHOICES_BLOCK:/);
+    if (open >= 0) return { cleanContent: content.slice(0, open).trimEnd(), choices: null };
+    return { cleanContent: content, choices: null };
+  }
   // The block is machinery either way: whether we can read it or not, it never belongs on screen as
   // raw JSON. The live stream already hides it (stripToolNoise), so leaving it in on a parse failure
   // meant the text CHANGED at the end of the turn -- clean prose while streaming, then a wall of

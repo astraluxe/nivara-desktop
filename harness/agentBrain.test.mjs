@@ -77,5 +77,33 @@ eq('an out-of-range effort is clamped', sc.choices?.choices[0].effort, 5);
 eq('an out-of-range confidence is clamped', sc.choices?.choices[0].confidence, 100);
 eq('an unscored option stays unscored', sc.choices?.choices[1].effort, undefined);
 
+
+console.log('\n=== a choices block the model never finished ===');
+{
+  // No END_CHOICES means the model ran out mid-block. The raw JSON used to be left in the text and
+  // shown to the user — a wall of {"title":"What next?","choices":[{"id":"a"... hanging off the end
+  // of their answer. The options are lost either way; the mess does not have to be.
+  const prose = 'Here are your notes.\n\nAll done.';
+  const cut = prose + '\n\nCHOICES_BLOCK:\n{"title":"What next?","choices":[{"id":"a","label":"Go deep';
+  const r = extractChoices(cut);
+  ok('no machinery is left on screen', !r.cleanContent.includes('CHOICES_BLOCK'), r.cleanContent.slice(-60));
+  ok('...nor its JSON', !r.cleanContent.includes('{"title"'), r.cleanContent.slice(-60));
+  ok('the answer itself is kept', r.cleanContent.trim() === prose, JSON.stringify(r.cleanContent));
+  ok('and no card is offered from a half-written block', r.choices === null);
+
+  // Text with no block at all must come back completely untouched.
+  const plain = extractChoices('Just an ordinary answer.');
+  ok('an ordinary answer is untouched', plain.cleanContent === 'Just an ordinary answer.' && plain.choices === null);
+
+  // A complete block with two usable options still produces a card.
+  const good = prose + '\n\nCHOICES_BLOCK:\n' + JSON.stringify({ title: 'What next?', choices: [
+    { id: 'a', label: 'Go deeper on SDN', preview: 'p', content: 'Explain SDN vs Orchestration in more detail.' },
+    { id: 'b', label: 'More questions', preview: 'p', content: 'Give me ten more likely exam questions.' },
+  ] }) + '\nEND_CHOICES';
+  const g = extractChoices(good);
+  ok('a complete block still makes a card', g.choices && g.choices.choices.length === 2, JSON.stringify(g.choices));
+  ok('...with the prose left clean', g.cleanContent.trim() === prose, JSON.stringify(g.cleanContent));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
