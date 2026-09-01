@@ -117,7 +117,7 @@ fn start_oauth_server(app: tauri::AppHandle) -> Result<(), String> {
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
-    *OAUTH_CODE.lock().unwrap() = None;
+    *OAUTH_CODE.lock().unwrap_or_else(|e| e.into_inner()) = None;
 
     // Bind synchronously — port must be ready BEFORE the caller opens the browser.
     // Binding inside the spawned thread causes a race: the OAuth redirect can arrive
@@ -177,7 +177,7 @@ fn start_oauth_server(app: tauri::AppHandle) -> Result<(), String> {
                 if let Some(sep) = req.find("\r\n\r\n") {
                     let body = req[sep + 4..].trim().to_string();
                     if !body.is_empty() {
-                        *OAUTH_CODE.lock().unwrap() = Some(body.clone());
+                        *OAUTH_CODE.lock().unwrap_or_else(|e| e.into_inner()) = Some(body.clone());
                         let _ = app_handle.emit("oauth_complete", body);
                     }
                 }
@@ -195,7 +195,7 @@ fn start_oauth_server(app: tauri::AppHandle) -> Result<(), String> {
                                     r#"{{"code":"{}","access_token":null,"refresh_token":null}}"#,
                                     code.replace('"', "\\\"")
                                 );
-                                *OAUTH_CODE.lock().unwrap() = Some(payload.clone());
+                                *OAUTH_CODE.lock().unwrap_or_else(|e| e.into_inner()) = Some(payload.clone());
                                 let _ = app_handle.emit("oauth_complete", payload);
                             }
                             break;
@@ -218,7 +218,7 @@ fn start_oauth_server(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn poll_oauth_code() -> Option<String> {
-    OAUTH_CODE.lock().unwrap().take()
+    OAUTH_CODE.lock().unwrap_or_else(|e| e.into_inner()).take()
 }
 
 // ─── PTY ─────────────────────────────────────────────────────────────────────
@@ -285,21 +285,21 @@ fn pty_spawn(
         }
     });
 
-    state.lock().unwrap().insert(id, PtySession { writer, child, pair });
+    state.lock().unwrap_or_else(|e| e.into_inner()).insert(id, PtySession { writer, child, pair });
     Ok(id)
 }
 
 #[tauri::command]
 fn pty_write(state: tauri::State<PtyMap>, id: u32, data: String) -> Result<(), String> {
     use std::io::Write;
-    let mut map = state.lock().unwrap();
+    let mut map = state.lock().unwrap_or_else(|e| e.into_inner());
     let sess = map.get_mut(&id).ok_or("PTY not found")?;
     sess.writer.write_all(data.as_bytes()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn pty_resize(state: tauri::State<PtyMap>, id: u32, cols: u16, rows: u16) -> Result<(), String> {
-    let map = state.lock().unwrap();
+    let map = state.lock().unwrap_or_else(|e| e.into_inner());
     let sess = map.get(&id).ok_or("PTY not found")?;
     sess.pair.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| e.to_string())
@@ -307,7 +307,7 @@ fn pty_resize(state: tauri::State<PtyMap>, id: u32, cols: u16, rows: u16) -> Res
 
 #[tauri::command]
 fn pty_kill(state: tauri::State<PtyMap>, id: u32) -> Result<(), String> {
-    let mut map = state.lock().unwrap();
+    let mut map = state.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(mut sess) = map.remove(&id) {
         let _ = sess.child.kill();
     }
@@ -1937,7 +1937,7 @@ async fn ai_stream(
             // Fast path: use session key for direct Gemini call (no Edge Function overhead)
             let sk_arc = {
                 let st = app.state::<SessionKeyState>();
-                let g = st.0.lock().unwrap();
+                let g = st.0.lock().unwrap_or_else(|e| e.into_inner());
                 g.as_ref().and_then(|a| {
                     let now_ms = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -2119,7 +2119,7 @@ fn db_new_session(
 ) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
     let t  = now_secs();
-    db.0.lock().unwrap().execute(
+    db.0.lock().unwrap_or_else(|e| e.into_inner()).execute(
         "INSERT INTO sessions (id,project,mode,model,created_at,last_active) VALUES (?1,?2,?3,?4,?5,?5)",
         params![id, project_path, mode, model, t],
     ).map_err(|e| e.to_string())?;
@@ -2134,7 +2134,7 @@ fn db_save_message(
     content: String,
     tokens: i64,
 ) -> Result<(), String> {
-    let conn = db.0.lock().unwrap();
+    let conn = db.0.lock().unwrap_or_else(|e| e.into_inner());
     let t = now_secs();
     conn.execute(
         "INSERT INTO messages (session_id,role,content,tokens,created_at) VALUES (?1,?2,?3,?4,?5)",
@@ -2149,7 +2149,7 @@ fn db_save_message(
 
 #[tauri::command]
 fn db_get_sessions(db: tauri::State<DbConn>, project_path: String) -> Result<Vec<SessionRow>, String> {
-    let conn = db.0.lock().unwrap();
+    let conn = db.0.lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = conn.prepare(
         "SELECT s.id,s.project,s.mode,s.model,s.title,s.created_at,s.last_active,
                 COUNT(m.id) as cnt
@@ -2166,7 +2166,7 @@ fn db_get_sessions(db: tauri::State<DbConn>, project_path: String) -> Result<Vec
 
 #[tauri::command]
 fn db_get_messages(db: tauri::State<DbConn>, session_id: String) -> Result<Vec<MessageRow>, String> {
-    let conn = db.0.lock().unwrap();
+    let conn = db.0.lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = conn.prepare(
         "SELECT id,session_id,role,content,tokens,created_at FROM messages WHERE session_id=?1 ORDER BY id"
     ).map_err(|e| e.to_string())?;
@@ -2179,14 +2179,14 @@ fn db_get_messages(db: tauri::State<DbConn>, session_id: String) -> Result<Vec<M
 
 #[tauri::command]
 fn db_delete_session(db: tauri::State<DbConn>, session_id: String) -> Result<(), String> {
-    db.0.lock().unwrap()
+    db.0.lock().unwrap_or_else(|e| e.into_inner())
         .execute("DELETE FROM sessions WHERE id=?1", params![session_id])
         .map(|_| ()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn db_delete_all(db: tauri::State<DbConn>, project_path: String) -> Result<(), String> {
-    db.0.lock().unwrap()
+    db.0.lock().unwrap_or_else(|e| e.into_inner())
         .execute("DELETE FROM sessions WHERE project=?1", params![project_path])
         .map(|_| ()).map_err(|e| e.to_string())
 }
@@ -2524,7 +2524,7 @@ async fn models_check_engine() -> bool {
 
 #[tauri::command]
 async fn models_stop_engine(state: tauri::State<'_, LlamaEngineProcess>) -> Result<(), String> {
-    let old_child = { let mut g = state.0.lock().unwrap(); g.take() };
+    let old_child = { let mut g = state.0.lock().unwrap_or_else(|e| e.into_inner()); g.take() };
     if let Some(mut child) = old_child { let _ = child.kill().await; }
     Ok(())
 }
@@ -2564,7 +2564,7 @@ async fn start_local_engine(
     };
 
     // Stop any currently running server — take child OUT of mutex before awaiting
-    let old_child = { let mut g = state.0.lock().unwrap(); g.take() };
+    let old_child = { let mut g = state.0.lock().unwrap_or_else(|e| e.into_inner()); g.take() };
     if let Some(mut child) = old_child { let _ = child.kill().await; }
     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
 
@@ -2580,7 +2580,7 @@ async fn start_local_engine(
     #[cfg(windows)] { ec.creation_flags(0x0800_0000); } // no flashing console for the engine
     let child = ec.spawn().map_err(|e| format!("Could not start engine: {e}"))?;
 
-    { let mut g = state.0.lock().unwrap(); *g = Some(child); }
+    { let mut g = state.0.lock().unwrap_or_else(|e| e.into_inner()); *g = Some(child); }
 
     // Wait for the server to become ready. A big model is SLOW to cold-load: a 14B Q4 (~8.5 GB)
     // was measured at 27–43 s on this hardware, and a cold disk cache or a bigger model is slower
@@ -2824,7 +2824,7 @@ fn db_get_recent_sessions(
     db: tauri::State<DbConn>,
     limit: i64,
 ) -> Result<Vec<SessionRow>, String> {
-    let conn = db.0.lock().unwrap();
+    let conn = db.0.lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = conn.prepare(
         "SELECT s.id, s.project, s.mode, s.model, s.title, s.created_at, s.last_active,
                 COUNT(m.id) as cnt
@@ -3015,7 +3015,7 @@ async fn fetch_session_key(
     let expires_at = json["expires_at"].as_i64().unwrap_or(0);
     let plain = sk_decrypt(enc, nonce, &user_id).ok_or_else(|| "Decryption failed".to_string())?;
     if !plain.starts_with("AIza") { return Err("Key validation failed".to_string()); }
-    *state.0.lock().unwrap() = Some(Arc::new(SessionKeyInner {
+    *state.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(SessionKeyInner {
         key:           ObfuscatedKey::new(&plain),
         plan:          plan.clone(),
         remaining:     std::sync::atomic::AtomicI64::new(remaining),
@@ -3090,7 +3090,7 @@ async fn krew_generate_image(
         // The server already recorded the spend; this only keeps the in-app meter live so the
         // usage bar moves while the deck is being built.
         let charged = (body["units"].as_f64().unwrap_or(1.0) * 12_000.0) as i64;
-        if let Some(sk) = state.0.lock().unwrap().as_ref() {
+        if let Some(sk) = state.0.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             sk.remaining.fetch_sub(charged, std::sync::atomic::Ordering::Relaxed);
         }
         let _ = app.emit("nivara-tokens", serde_json::json!({
@@ -3284,7 +3284,7 @@ async fn sync_token_usage_direct(
 ) -> Result<(), String> {
     use std::sync::atomic::Ordering;
     let (user_id, pending) = {
-        let g = state.0.lock().unwrap();
+        let g = state.0.lock().unwrap_or_else(|e| e.into_inner());
         match g.as_ref() {
             None => return Ok(()),
             Some(sk) => {
@@ -3347,6 +3347,23 @@ fn days_in_month(year: u32, month: u32) -> u32 {
 
 // ─── Krew SQLite DB ───────────────────────────────────────────────────────────
 
+// ── WHY EVERY LOCK IN THIS FILE RECOVERS FROM POISONING ──────────────────────
+//
+// `mutex.lock().unwrap()` — which this file used in 106 places — panics for good once the mutex is
+// POISONED, and a mutex is poisoned the moment any thread panics while holding it. Once. Ever.
+//
+// The consequence is out of all proportion to the cause. One panic inside one command, on one
+// unlucky row, and every later call that touches the same lock panics too: the conversation cannot
+// be read, so the chat opens BLANK, and nothing that touches the database responds, so nothing is
+// clickable. It stays that way until the app is restarted, because nothing ever clears the poison.
+//
+// The user's report: "i went to tht chat where the slide deck was built and it was blank and the
+// exe hung there... nth was clickable after tht... like i clicked but nth happened."
+//
+// `unwrap_or_else(|e| e.into_inner())` takes the guard anyway. For a SQLite connection that is the
+// right call: a panic in our Rust code does not corrupt the connection, an interrupted statement is
+// something SQLite already handles, and a transient fault should cost one operation rather than the
+// rest of the session. Whatever the original panic was, it must not be able to brick the app.
 struct KrewDbConn(Mutex<Connection>);
 
 fn init_krew_db(app: &tauri::App) -> rusqlite::Result<Connection> {
@@ -3417,7 +3434,7 @@ fn db_krew_new_session(
 ) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
     let t  = now_secs();
-    db.0.lock().unwrap().execute(
+    db.0.lock().unwrap_or_else(|e| e.into_inner()).execute(
         "INSERT INTO krew_sessions (id,title,mode,model,agent_key,created_at,last_active) VALUES (?1,?2,?3,?4,?5,?6,?6)",
         params![id, title, mode, model, agent_key, t],
     ).map_err(|e| e.to_string())?;
@@ -3426,7 +3443,7 @@ fn db_krew_new_session(
 
 #[tauri::command]
 fn db_krew_get_sessions(db: tauri::State<KrewDbConn>) -> Result<Vec<KrewSessionRow>, String> {
-    let conn = db.0.lock().unwrap();
+    let conn = db.0.lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = conn.prepare(
         "SELECT s.id, s.title, s.mode, s.model, s.agent_key, s.created_at, s.last_active, COUNT(m.id) as cnt
          FROM krew_sessions s LEFT JOIN krew_messages m ON m.session_id=s.id
@@ -3446,7 +3463,7 @@ fn db_krew_update_title(
     session_id: String,
     title: String,
 ) -> Result<(), String> {
-    db.0.lock().unwrap()
+    db.0.lock().unwrap_or_else(|e| e.into_inner())
         .execute("UPDATE krew_sessions SET title=?1 WHERE id=?2", params![title, session_id])
         .map(|_| ()).map_err(|e| e.to_string())
 }
@@ -3459,7 +3476,7 @@ fn db_krew_save_message(
     content: String,
     tool_name: Option<String>,
 ) -> Result<(), String> {
-    let conn = db.0.lock().unwrap();
+    let conn = db.0.lock().unwrap_or_else(|e| e.into_inner());
     let t = now_secs();
     conn.execute(
         "INSERT INTO krew_messages (session_id,role,content,tool_name,created_at) VALUES (?1,?2,?3,?4,?5)",
@@ -3477,7 +3494,7 @@ fn db_krew_get_messages(
     db: tauri::State<KrewDbConn>,
     session_id: String,
 ) -> Result<Vec<KrewMessageRow>, String> {
-    let conn = db.0.lock().unwrap();
+    let conn = db.0.lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = conn.prepare(
         "SELECT id,session_id,role,content,tool_name,created_at FROM krew_messages WHERE session_id=?1 ORDER BY id"
     ).map_err(|e| e.to_string())?;
@@ -3490,7 +3507,7 @@ fn db_krew_get_messages(
 
 #[tauri::command]
 fn db_krew_delete_session(db: tauri::State<KrewDbConn>, session_id: String) -> Result<(), String> {
-    db.0.lock().unwrap()
+    db.0.lock().unwrap_or_else(|e| e.into_inner())
         .execute("DELETE FROM krew_sessions WHERE id=?1", params![session_id])
         .map(|_| ()).map_err(|e| e.to_string())
 }
@@ -3502,7 +3519,7 @@ fn db_krew_save_summary(
     summary: String,
     covers_up_to: i64,
 ) -> Result<(), String> {
-    db.0.lock().unwrap().execute(
+    db.0.lock().unwrap_or_else(|e| e.into_inner()).execute(
         "INSERT OR REPLACE INTO krew_summaries (session_id,summary,covers_up_to) VALUES (?1,?2,?3)",
         params![session_id, summary, covers_up_to],
     ).map(|_| ()).map_err(|e| e.to_string())
@@ -3516,7 +3533,7 @@ fn db_krew_get_summary(
     db: tauri::State<KrewDbConn>,
     session_id: String,
 ) -> Result<Option<KrewSummaryRow>, String> {
-    let conn = db.0.lock().unwrap();
+    let conn = db.0.lock().unwrap_or_else(|e| e.into_inner());
     let result = conn.query_row(
         "SELECT summary, covers_up_to FROM krew_summaries WHERE session_id=?1",
         params![session_id],
@@ -3543,7 +3560,7 @@ fn db_krew_save_memory(
 ) -> Result<(), String> {
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
-    db.0.lock().unwrap().execute(
+    db.0.lock().unwrap_or_else(|e| e.into_inner()).execute(
         "INSERT INTO krew_memory (agent_key,key,value,created_at) VALUES (?1,?2,?3,?4)
          ON CONFLICT(agent_key,key) DO UPDATE SET value=excluded.value, created_at=excluded.created_at",
         params![agent_key, key, value, ts],
@@ -3555,7 +3572,7 @@ fn db_krew_get_memories(
     db: tauri::State<KrewDbConn>,
     agent_key: String,
 ) -> Result<Vec<KrewMemoryRow>, String> {
-    let conn = db.0.lock().unwrap();
+    let conn = db.0.lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = conn.prepare(
         "SELECT id,agent_key,key,value,created_at FROM krew_memory WHERE agent_key=?1 ORDER BY created_at ASC"
     ).map_err(|e| e.to_string())?;
@@ -3572,7 +3589,7 @@ fn db_krew_delete_memory(
     agent_key: String,
     key: String,
 ) -> Result<(), String> {
-    db.0.lock().unwrap()
+    db.0.lock().unwrap_or_else(|e| e.into_inner())
         .execute("DELETE FROM krew_memory WHERE agent_key=?1 AND key=?2", params![agent_key, key])
         .map(|_| ()).map_err(|e| e.to_string())
 }
@@ -3592,7 +3609,7 @@ fn store_credential(
         let _ = entry.set_password(&data);
     }
     // Mirror in SQLite so list_credentials works and as warm fallback
-    let _ = db.0.lock().unwrap().execute(
+    let _ = db.0.lock().unwrap_or_else(|e| e.into_inner()).execute(
         "INSERT OR REPLACE INTO credentials (service,data) VALUES (?1,?2)",
         params![service, data],
     );
@@ -3611,7 +3628,7 @@ fn get_credential(
         }
     }
     // Fallback: SQLite (pre-v1.0 credentials) — auto-migrate to keychain
-    let conn = db.0.lock().unwrap();
+    let conn = db.0.lock().unwrap_or_else(|e| e.into_inner());
     let result = conn.query_row(
         "SELECT data FROM credentials WHERE service=?1",
         params![service],
@@ -3634,14 +3651,14 @@ fn delete_credential(db: tauri::State<KrewDbConn>, service: String) -> Result<()
     if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &service) {
         let _ = entry.delete_credential();
     }
-    db.0.lock().unwrap()
+    db.0.lock().unwrap_or_else(|e| e.into_inner())
         .execute("DELETE FROM credentials WHERE service=?1", params![service])
         .map(|_| ()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn list_credentials(db: tauri::State<KrewDbConn>) -> Result<Vec<String>, String> {
-    let conn = db.0.lock().unwrap();
+    let conn = db.0.lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = conn.prepare("SELECT service FROM credentials ORDER BY service")
         .map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))
@@ -7246,13 +7263,13 @@ static GOOGLE_AUTH_CODE: Mutex<Option<String>> = Mutex::new(None);
 
 #[tauri::command]
 fn start_google_oauth_server() -> Result<(), String> {
-    *GOOGLE_AUTH_CODE.lock().unwrap() = None;
+    *GOOGLE_AUTH_CODE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     std::thread::spawn(|| {
         use std::io::{Read, Write};
         use std::net::TcpListener;
         let listener = match TcpListener::bind("127.0.0.1:54322") {
             Ok(l) => l,
-            Err(e) => { *GOOGLE_AUTH_CODE.lock().unwrap() = Some(format!("{{\"error\":\"{}\"}}", e)); return; }
+            Err(e) => { *GOOGLE_AUTH_CODE.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("{{\"error\":\"{}\"}}", e)); return; }
         };
         listener.set_nonblocking(false).ok();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
@@ -7270,7 +7287,7 @@ fn start_google_oauth_server() -> Result<(), String> {
                 if let Some(qs) = path.split('?').nth(1) {
                     for param in qs.split('&') {
                         if let Some(code) = param.strip_prefix("code=") {
-                            *GOOGLE_AUTH_CODE.lock().unwrap() = Some(format!("{{\"code\":\"{}\"}}", code));
+                            *GOOGLE_AUTH_CODE.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("{{\"code\":\"{}\"}}", code));
                             let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 81\r\n\r\n<html><body><p>Connected to adris.tech. You can close this tab.</p></body></html>");
                             return;
                         }
@@ -7287,7 +7304,7 @@ fn start_google_oauth_server() -> Result<(), String> {
 
 #[tauri::command]
 fn poll_google_auth_code() -> Option<String> {
-    GOOGLE_AUTH_CODE.lock().unwrap().take()
+    GOOGLE_AUTH_CODE.lock().unwrap_or_else(|e| e.into_inner()).take()
 }
 
 #[tauri::command]
@@ -7339,13 +7356,13 @@ static LINKEDIN_AUTH_CODE: Mutex<Option<String>> = Mutex::new(None);
 
 #[tauri::command]
 fn start_linkedin_oauth_server() -> Result<(), String> {
-    *LINKEDIN_AUTH_CODE.lock().unwrap() = None;
+    *LINKEDIN_AUTH_CODE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     std::thread::spawn(|| {
         use std::io::{Read, Write};
         use std::net::TcpListener;
         let listener = match TcpListener::bind("127.0.0.1:54323") {
             Ok(l) => l,
-            Err(e) => { *LINKEDIN_AUTH_CODE.lock().unwrap() = Some(format!("{{\"error\":\"{}\"}}", e)); return; }
+            Err(e) => { *LINKEDIN_AUTH_CODE.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("{{\"error\":\"{}\"}}", e)); return; }
         };
         listener.set_nonblocking(false).ok();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
@@ -7362,7 +7379,7 @@ fn start_linkedin_oauth_server() -> Result<(), String> {
                 if let Some(qs) = path.split('?').nth(1) {
                     for param in qs.split('&') {
                         if let Some(code) = param.strip_prefix("code=") {
-                            *LINKEDIN_AUTH_CODE.lock().unwrap() = Some(format!("{{\"code\":\"{}\"}}", code));
+                            *LINKEDIN_AUTH_CODE.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("{{\"code\":\"{}\"}}", code));
                             let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 90\r\n\r\n<html><body><p>LinkedIn connected to adris.tech. You can close this tab.</p></body></html>");
                             return;
                         }
@@ -7379,7 +7396,7 @@ fn start_linkedin_oauth_server() -> Result<(), String> {
 
 #[tauri::command]
 fn poll_linkedin_auth_code() -> Option<String> {
-    LINKEDIN_AUTH_CODE.lock().unwrap().take()
+    LINKEDIN_AUTH_CODE.lock().unwrap_or_else(|e| e.into_inner()).take()
 }
 
 #[tauri::command]
@@ -7410,13 +7427,13 @@ static NOTION_AUTH_CODE: Mutex<Option<String>> = Mutex::new(None);
 
 #[tauri::command]
 fn start_notion_oauth_server() -> Result<(), String> {
-    *NOTION_AUTH_CODE.lock().unwrap() = None;
+    *NOTION_AUTH_CODE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     std::thread::spawn(|| {
         use std::io::{Read, Write};
         use std::net::TcpListener;
         let listener = match TcpListener::bind("127.0.0.1:54324") {
             Ok(l) => l,
-            Err(e) => { *NOTION_AUTH_CODE.lock().unwrap() = Some(format!("{{\"error\":\"{}\"}}", e)); return; }
+            Err(e) => { *NOTION_AUTH_CODE.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("{{\"error\":\"{}\"}}", e)); return; }
         };
         listener.set_nonblocking(false).ok();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
@@ -7433,7 +7450,7 @@ fn start_notion_oauth_server() -> Result<(), String> {
                 if let Some(qs) = path.split('?').nth(1) {
                     for param in qs.split('&') {
                         if let Some(code) = param.strip_prefix("code=") {
-                            *NOTION_AUTH_CODE.lock().unwrap() = Some(format!("{{\"code\":\"{}\"}}", code));
+                            *NOTION_AUTH_CODE.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("{{\"code\":\"{}\"}}", code));
                             let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 81\r\n\r\n<html><body><p>Connected to adris.tech. You can close this tab.</p></body></html>");
                             return;
                         }
@@ -7450,7 +7467,7 @@ fn start_notion_oauth_server() -> Result<(), String> {
 
 #[tauri::command]
 fn poll_notion_auth_code() -> Option<String> {
-    NOTION_AUTH_CODE.lock().unwrap().take()
+    NOTION_AUTH_CODE.lock().unwrap_or_else(|e| e.into_inner()).take()
 }
 
 #[tauri::command]
@@ -7750,7 +7767,7 @@ async fn krew_ai_stream(
             // Fast path: use session key for direct Gemini call (no Edge Function overhead)
             let sk_arc = {
                 let st = app.state::<SessionKeyState>();
-                let g = st.0.lock().unwrap();
+                let g = st.0.lock().unwrap_or_else(|e| e.into_inner());
                 g.as_ref().and_then(|a| {
                     let now_ms = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -7926,14 +7943,14 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
             "vault_toggle" => {
                 let should_enable = {
                     let vs = app.state::<VaultState>();
-                    let val = !*vs.enabled.lock().unwrap();
+                    let val = !*vs.enabled.lock().unwrap_or_else(|e| e.into_inner());
                     val
                 };
                 let app2 = app.clone();
                 std::thread::spawn(move || {
                     let vs = app2.state::<VaultState>();
                     if should_enable {
-                        let requested = vs.mode.lock().unwrap().clone();
+                        let requested = vs.mode.lock().unwrap_or_else(|e| e.into_inner()).clone();
                         // Use the SAME safe enable as the UI — pre-checks DNS reachability and
                         // never strands the machine offline (the disconnect bug).
                         match safe_vault_enable(&app2, &vs, &requested) {
@@ -7951,12 +7968,12 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
                         }
                     } else {
                         let (adapter, mode) = {
-                            let a = vs.adapter.lock().unwrap().clone().unwrap_or_else(get_active_adapter);
-                            let m = vs.mode.lock().unwrap().clone();
+                            let a = vs.adapter.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(get_active_adapter);
+                            let m = vs.mode.lock().unwrap_or_else(|e| e.into_inner()).clone();
                             (a, m)
                         };
                         if revert_dns(&adapter).is_ok() {
-                            *vs.enabled.lock().unwrap() = false;
+                            *vs.enabled.lock().unwrap_or_else(|e| e.into_inner()) = false;
                             save_vault_state(&app2, false, &mode, &adapter);
                             update_tray_vault(&app2, false, &mode);
                             let _ = app2.emit("vault_state_changed", serde_json::json!({
@@ -8221,11 +8238,11 @@ async fn automation_start_trigger(
     trigger_config: String,
 ) -> Result<(), String> {
     // Cancel any existing trigger for this id
-    if let Some(old) = trigger_state.0.lock().unwrap().remove(&automation_id) {
+    if let Some(old) = trigger_state.0.lock().unwrap_or_else(|e| e.into_inner()).remove(&automation_id) {
         old.store(false, Ordering::Relaxed);
     }
     let flag = Arc::new(AtomicBool::new(true));
-    trigger_state.0.lock().unwrap().insert(automation_id.clone(), flag.clone());
+    trigger_state.0.lock().unwrap_or_else(|e| e.into_inner()).insert(automation_id.clone(), flag.clone());
     spawn_trigger(&app, automation_id, trigger_type, trigger_config, flag).await;
     Ok(())
 }
@@ -8235,7 +8252,7 @@ fn automation_stop_trigger(
     trigger_state: tauri::State<'_, TriggerState>,
     automation_id: String,
 ) -> Result<(), String> {
-    if let Some(flag) = trigger_state.0.lock().unwrap().remove(&automation_id) {
+    if let Some(flag) = trigger_state.0.lock().unwrap_or_else(|e| e.into_inner()).remove(&automation_id) {
         flag.store(false, Ordering::Relaxed);
     }
     Ok(())
@@ -8280,7 +8297,7 @@ fn guard_log_event(
     description: String,
     metadata: Option<String>,
 ) -> Result<String, String> {
-    let conn = db.0.lock().unwrap();
+    let conn = db.0.lock().unwrap_or_else(|e| e.into_inner());
     let id = uuid::Uuid::new_v4().to_string();
     let ts = chrono::Utc::now().to_rfc3339();
     let prev: String = conn
@@ -8300,7 +8317,7 @@ fn guard_get_events(
     db: tauri::State<'_, GuardDbConn>,
     limit: i64,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let conn = db.0.lock().unwrap();
+    let conn = db.0.lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = conn.prepare(
         "SELECT id,event_type,severity,description,metadata,hash,created_at
          FROM guard_events ORDER BY created_at DESC LIMIT ?1"
@@ -8321,7 +8338,7 @@ fn guard_get_events(
 
 #[tauri::command]
 fn guard_get_stats(db: tauri::State<'_, GuardDbConn>) -> Result<serde_json::Value, String> {
-    let conn = db.0.lock().unwrap();
+    let conn = db.0.lock().unwrap_or_else(|e| e.into_inner());
     let q = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap_or(0) };
     Ok(serde_json::json!({
         "total":             q("SELECT COUNT(*) FROM guard_events"),
@@ -8338,7 +8355,7 @@ fn guard_delete_event(
     db: tauri::State<'_, GuardDbConn>,
     id: String,
 ) -> Result<(), String> {
-    let conn = db.0.lock().unwrap();
+    let conn = db.0.lock().unwrap_or_else(|e| e.into_inner());
     conn.execute("DELETE FROM guard_events WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -8348,7 +8365,7 @@ fn guard_delete_event(
 fn guard_clear_events(
     db: tauri::State<'_, GuardDbConn>,
 ) -> Result<(), String> {
-    let conn = db.0.lock().unwrap();
+    let conn = db.0.lock().unwrap_or_else(|e| e.into_inner());
     conn.execute("DELETE FROM guard_events", [])
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -8423,7 +8440,7 @@ fn automation_list(
     db: tauri::State<AutomationDbConn>,
     user_id: String,
 ) -> Result<Vec<AutomationRow>, String> {
-    let conn = db.0.lock().unwrap();
+    let conn = db.0.lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = conn.prepare(
         "SELECT id,user_id,name,trigger_type,trigger_config,steps,enabled,cloud_enabled,run_count,last_run_at,created_at
          FROM automations WHERE user_id=?1 ORDER BY created_at DESC"
@@ -8458,7 +8475,7 @@ fn automation_create(
 ) -> Result<(), String> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
-    db.0.lock().unwrap()
+    db.0.lock().unwrap_or_else(|e| e.into_inner())
         .execute(
             "INSERT INTO automations (id,user_id,name,trigger_type,trigger_config,steps,enabled,cloud_enabled,run_count,created_at)
              VALUES (?1,?2,?3,?4,?5,?6,1,0,0,?7)",
@@ -8476,7 +8493,7 @@ fn automation_update(
     trigger_config: String,
     steps: String,
 ) -> Result<(), String> {
-    db.0.lock().unwrap()
+    db.0.lock().unwrap_or_else(|e| e.into_inner())
         .execute(
             "UPDATE automations SET name=?1,trigger_type=?2,trigger_config=?3,steps=?4 WHERE id=?5",
             params![name, trigger_type, trigger_config, steps, id],
@@ -8494,7 +8511,7 @@ async fn automation_toggle(
 ) -> Result<(), String> {
     // Get trigger info before updating
     let (trigger_type, trigger_config) = {
-        let conn = db.0.lock().unwrap();
+        let conn = db.0.lock().unwrap_or_else(|e| e.into_inner());
         conn.query_row(
             "SELECT trigger_type, trigger_config FROM automations WHERE id=?1",
             params![id],
@@ -8503,20 +8520,20 @@ async fn automation_toggle(
     };
 
     // Update DB
-    db.0.lock().unwrap()
+    db.0.lock().unwrap_or_else(|e| e.into_inner())
         .execute("UPDATE automations SET enabled=?1 WHERE id=?2", params![enabled as i64, id])
         .map_err(|e| e.to_string())?;
 
     // Start or stop the background trigger
     if enabled {
-        if let Some(old) = trigger_state.0.lock().unwrap().remove(&id) {
+        if let Some(old) = trigger_state.0.lock().unwrap_or_else(|e| e.into_inner()).remove(&id) {
             old.store(false, Ordering::Relaxed);
         }
         let flag = Arc::new(AtomicBool::new(true));
-        trigger_state.0.lock().unwrap().insert(id.clone(), flag.clone());
+        trigger_state.0.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), flag.clone());
         spawn_trigger(&app, id, trigger_type, trigger_config, flag).await;
     } else {
-        if let Some(flag) = trigger_state.0.lock().unwrap().remove(&id) {
+        if let Some(flag) = trigger_state.0.lock().unwrap_or_else(|e| e.into_inner()).remove(&id) {
             flag.store(false, Ordering::Relaxed);
         }
     }
@@ -8530,7 +8547,7 @@ fn automation_cloud_toggle(
     id: String,
     cloud_enabled: bool,
 ) -> Result<(), String> {
-    db.0.lock().unwrap()
+    db.0.lock().unwrap_or_else(|e| e.into_inner())
         .execute(
             "UPDATE automations SET cloud_enabled=?1 WHERE id=?2",
             params![cloud_enabled as i64, id],
@@ -8545,10 +8562,10 @@ fn automation_delete(
     id: String,
 ) -> Result<(), String> {
     // Stop the running trigger first
-    if let Some(flag) = trigger_state.0.lock().unwrap().remove(&id) {
+    if let Some(flag) = trigger_state.0.lock().unwrap_or_else(|e| e.into_inner()).remove(&id) {
         flag.store(false, Ordering::Relaxed);
     }
-    let conn = db.0.lock().unwrap();
+    let conn = db.0.lock().unwrap_or_else(|e| e.into_inner());
     conn.execute("DELETE FROM automation_runs WHERE automation_id=?1", params![id])
         .map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM automations WHERE id=?1", params![id])
@@ -8568,7 +8585,7 @@ fn automation_log_run(
 ) -> Result<(), String> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
-    let conn = db.0.lock().unwrap();
+    let conn = db.0.lock().unwrap_or_else(|e| e.into_inner());
     conn.execute(
         "INSERT OR REPLACE INTO automation_runs (id,automation_id,user_id,triggered_at,completed_at,tokens_used,status,output_summary,error)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
@@ -8586,7 +8603,7 @@ fn automation_get_logs(
     automation_id: Option<String>,
     limit: i64,
 ) -> Result<Vec<AutomationRunRow>, String> {
-    let conn = db.0.lock().unwrap();
+    let conn = db.0.lock().unwrap_or_else(|e| e.into_inner());
     let rows: Vec<AutomationRunRow> = if let Some(aid) = automation_id {
         let mut stmt = conn.prepare(
             "SELECT id,automation_id,triggered_at,completed_at,tokens_used,status,output_summary,error
@@ -8785,7 +8802,7 @@ fn mesh_start_exo(
     state:      tauri::State<'_, MeshExoProcess>,
     node_count: u32,
 ) -> Result<(), String> {
-    let mut lock = state.0.lock().unwrap();
+    let mut lock = state.0.lock().unwrap_or_else(|e| e.into_inner());
     if lock.is_some() { return Ok(()); }
 
     let exo_path = mesh_exe_path(&app)
@@ -8802,7 +8819,7 @@ fn mesh_start_exo(
 
 #[tauri::command]
 fn mesh_stop_exo(state: tauri::State<'_, MeshExoProcess>) -> Result<(), String> {
-    let mut lock = state.0.lock().unwrap();
+    let mut lock = state.0.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(mut child) = lock.take() {
         let _ = child.kill();
         let _ = child.wait();
@@ -8812,7 +8829,7 @@ fn mesh_stop_exo(state: tauri::State<'_, MeshExoProcess>) -> Result<(), String> 
 
 #[tauri::command]
 fn mesh_exo_running(state: tauri::State<'_, MeshExoProcess>) -> bool {
-    let mut lock = state.0.lock().unwrap();
+    let mut lock = state.0.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref mut child) = *lock {
         match child.try_wait() {
             Ok(None) => return true,
@@ -9055,7 +9072,7 @@ fn voice_start_recording(state: tauri::State<'_, VoiceState>) -> Result<(), Stri
     if state.recording.load(Ordering::Relaxed) {
         return Ok(());
     }
-    *state.samples.lock().unwrap() = Vec::new();
+    *state.samples.lock().unwrap_or_else(|e| e.into_inner()) = Vec::new();
     state.recording.store(true, Ordering::Relaxed);
 
     let recording = state.recording.clone();
@@ -9075,7 +9092,7 @@ fn voice_start_recording(state: tauri::State<'_, VoiceState>) -> Result<(), Stri
             Err(_) => { recording.store(false, Ordering::Relaxed); return; }
         };
 
-        *rate_out.lock().unwrap() = config.sample_rate().0;
+        *rate_out.lock().unwrap_or_else(|e| e.into_inner()) = config.sample_rate().0;
         let channels = config.channels() as usize;
         let sfmt     = config.sample_format();
 
@@ -9089,7 +9106,7 @@ fn voice_start_recording(state: tauri::State<'_, VoiceState>) -> Result<(), Stri
                 &config.clone().into(),
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
                     if !rec.load(Ordering::Relaxed) { return; }
-                    let mut lock = buf.lock().unwrap();
+                    let mut lock = buf.lock().unwrap_or_else(|e| e.into_inner());
                     for frame in data.chunks(ch.max(1)) {
                         let s: f32 = frame.iter().copied().sum::<f32>() / ch as f32;
                         lock.push(s);
@@ -9107,7 +9124,7 @@ fn voice_start_recording(state: tauri::State<'_, VoiceState>) -> Result<(), Stri
                 &config.clone().into(),
                 move |data: &[i16], _: &cpal::InputCallbackInfo| {
                     if !rec.load(Ordering::Relaxed) { return; }
-                    let mut lock = buf.lock().unwrap();
+                    let mut lock = buf.lock().unwrap_or_else(|e| e.into_inner());
                     for frame in data.chunks(ch.max(1)) {
                         let s: f32 = frame.iter().map(|&x| x as f32 / 32768.0).sum::<f32>() / ch as f32;
                         lock.push(s);
@@ -9125,7 +9142,7 @@ fn voice_start_recording(state: tauri::State<'_, VoiceState>) -> Result<(), Stri
                 &config.clone().into(),
                 move |data: &[u16], _: &cpal::InputCallbackInfo| {
                     if !rec.load(Ordering::Relaxed) { return; }
-                    let mut lock = buf.lock().unwrap();
+                    let mut lock = buf.lock().unwrap_or_else(|e| e.into_inner());
                     for frame in data.chunks(ch.max(1)) {
                         let s: f32 = frame.iter().map(|&x| (x as f32 / 32768.0) - 1.0).sum::<f32>() / ch as f32;
                         lock.push(s);
@@ -9170,8 +9187,8 @@ async fn voice_stop_and_transcribe(
     // Give the recording thread ~150 ms to drain its final callback
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-    let samples: Vec<f32> = state.samples.lock().unwrap().clone();
-    let src_rate = *state.rate.lock().unwrap();
+    let samples: Vec<f32> = state.samples.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let src_rate = *state.rate.lock().unwrap_or_else(|e| e.into_inner());
 
     if samples.is_empty() {
         return Err("No audio recorded. Check your microphone is connected.".to_string());
@@ -9517,7 +9534,7 @@ fn capitalize_first(s: &str) -> String {
 fn update_tray_vault(app: &tauri::AppHandle, enabled: bool, mode: &str) {
     // Update toggle item text
     if let Some(ts) = app.try_state::<TrayState>() {
-        if let Some(item) = ts.vault_toggle.lock().unwrap().as_ref() {
+        if let Some(item) = ts.vault_toggle.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             let text = if enabled { "Disable Vault DNS" } else { "Enable Vault DNS" };
             let _ = item.set_text(text);
         }
@@ -9599,9 +9616,9 @@ fn safe_vault_enable(
         Err(e) => return Err(e),
     };
 
-    *vault_state.enabled.lock().unwrap() = true;
-    *vault_state.mode.lock().unwrap()    = active_mode.clone();
-    *vault_state.adapter.lock().unwrap() = Some(adapter.clone());
+    *vault_state.enabled.lock().unwrap_or_else(|e| e.into_inner()) = true;
+    *vault_state.mode.lock().unwrap_or_else(|e| e.into_inner())    = active_mode.clone();
+    *vault_state.adapter.lock().unwrap_or_else(|e| e.into_inner()) = Some(adapter.clone());
     save_vault_state(app, true, &active_mode, &adapter);
     update_tray_vault(app, true, &active_mode);
     Ok(VaultEnableResult { adapter, active_mode, failover_used })
@@ -9622,8 +9639,8 @@ fn vault_disable(
     vault_state: tauri::State<'_, VaultState>,
 ) -> Result<(), String> {
     let (adapter, mode) = {
-        let a = vault_state.adapter.lock().unwrap().clone().unwrap_or_else(get_active_adapter);
-        let m = vault_state.mode.lock().unwrap().clone();
+        let a = vault_state.adapter.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(get_active_adapter);
+        let m = vault_state.mode.lock().unwrap_or_else(|e| e.into_inner()).clone();
         (a, m)
     };
     match revert_dns(&adapter) {
@@ -9638,7 +9655,7 @@ fn vault_disable(
         }
         Err(e) => return Err(e),
     }
-    *vault_state.enabled.lock().unwrap() = false;
+    *vault_state.enabled.lock().unwrap_or_else(|e| e.into_inner()) = false;
     save_vault_state(&app, false, &mode, &adapter);
     update_tray_vault(&app, false, &mode);
     Ok(())
@@ -9647,9 +9664,9 @@ fn vault_disable(
 #[tauri::command]
 fn vault_status(vault_state: tauri::State<'_, VaultState>) -> VaultStatusResult {
     VaultStatusResult {
-        enabled: *vault_state.enabled.lock().unwrap(),
-        mode:    vault_state.mode.lock().unwrap().clone(),
-        adapter: vault_state.adapter.lock().unwrap().clone(),
+        enabled: *vault_state.enabled.lock().unwrap_or_else(|e| e.into_inner()),
+        mode:    vault_state.mode.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        adapter: vault_state.adapter.lock().unwrap_or_else(|e| e.into_inner()).clone(),
     }
 }
 
@@ -10037,7 +10054,7 @@ pub fn run() {
 
                 let enabled: Vec<(String, String, String)> = {
                     let auto_db = app_handle.state::<AutomationDbConn>();
-                    let conn = auto_db.0.lock().unwrap();
+                    let conn = auto_db.0.lock().unwrap_or_else(|e| e.into_inner());
                     let mut stmt = match conn.prepare(
                         "SELECT id, trigger_type, trigger_config FROM automations WHERE enabled=1"
                     ) {
@@ -10057,7 +10074,7 @@ pub fn run() {
                 let trigger_state = app_handle.state::<TriggerState>();
                 for (id, trigger_type, trigger_config) in enabled {
                     let flag = Arc::new(AtomicBool::new(true));
-                    trigger_state.0.lock().unwrap().insert(id.clone(), flag.clone());
+                    trigger_state.0.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), flag.clone());
                     spawn_trigger(&app_handle, id, trigger_type, trigger_config, flag).await;
                 }
             });
@@ -10068,7 +10085,7 @@ pub fn run() {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 if let Some((was_enabled, mode, saved_adapter)) = load_vault_state(&vault_app) {
                     let vs = vault_app.state::<VaultState>();
-                    *vs.mode.lock().unwrap() = mode.clone();
+                    *vs.mode.lock().unwrap_or_else(|e| e.into_inner()) = mode.clone();
                     if was_enabled {
                         // Try saved adapter first, then detected, then common fallbacks
                         let detected = get_active_adapter();
@@ -10087,9 +10104,9 @@ pub fn run() {
                             Some((active_mode, primary, secondary)) => {
                                 match apply_dns_with_fallback(&candidates, primary, secondary) {
                                     Ok(adapter) => {
-                                        *vs.enabled.lock().unwrap() = true;
-                                        *vs.mode.lock().unwrap()    = active_mode.clone();
-                                        *vs.adapter.lock().unwrap() = Some(adapter.clone());
+                                        *vs.enabled.lock().unwrap_or_else(|e| e.into_inner()) = true;
+                                        *vs.mode.lock().unwrap_or_else(|e| e.into_inner())    = active_mode.clone();
+                                        *vs.adapter.lock().unwrap_or_else(|e| e.into_inner()) = Some(adapter.clone());
                                         save_vault_state(&vault_app, true, &active_mode, &adapter);
                                         update_tray_vault(&vault_app, true, &active_mode);
                                     }
@@ -10098,9 +10115,9 @@ pub fn run() {
                                             && write_dns_config_for_task(&vault_app, true, &saved_adapter, primary, secondary).is_ok()
                                             && trigger_vault_task().is_ok()
                                         {
-                                            *vs.enabled.lock().unwrap() = true;
-                                            *vs.mode.lock().unwrap()    = active_mode.clone();
-                                            *vs.adapter.lock().unwrap() = Some(saved_adapter.clone());
+                                            *vs.enabled.lock().unwrap_or_else(|e| e.into_inner()) = true;
+                                            *vs.mode.lock().unwrap_or_else(|e| e.into_inner())    = active_mode.clone();
+                                            *vs.adapter.lock().unwrap_or_else(|e| e.into_inner()) = Some(saved_adapter.clone());
                                             save_vault_state(&vault_app, true, &active_mode, &saved_adapter);
                                             update_tray_vault(&vault_app, true, &active_mode);
                                         } else if !vault_task_exists() {
@@ -10114,7 +10131,7 @@ pub fn run() {
                                 // No private DNS reachable here — ensure DHCP (working resolution)
                                 // and leave Vault OFF so the user is never stranded.
                                 let _ = revert_dns(&detected);
-                                *vs.enabled.lock().unwrap() = false;
+                                *vs.enabled.lock().unwrap_or_else(|e| e.into_inner()) = false;
                                 save_vault_state(&vault_app, false, &mode, &detected);
                                 update_tray_vault(&vault_app, false, &mode);
                             }

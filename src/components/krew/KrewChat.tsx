@@ -6246,7 +6246,19 @@ The prompt must be production-ready — specific enough for a motion designer to
         return c;
       });
       // Persist the HTML as an assistant message so the deck reloads as a preview later.
-      if (sid) krewDb.saveMessage(sid, 'assistant', html).catch(() => {});
+      //
+      // AND SAY SO IF IT DOES NOT. This was `.catch(() => {})`, like the eighty other saves in this
+      // file — which is defensible for a one-line answer the user can read on screen, and is not
+      // defensible for a deck. A deck is minutes of work, several megabytes, and the only copy;
+      // when the write fails the user finds out by opening the conversation later and seeing
+      // nothing ("the past chat didnt save ig... it was blank"). By then the deck is gone and there
+      // is nothing to be done about it. Told now, while it is still on screen, they can download it.
+      if (sid) krewDb.saveMessage(sid, 'assistant', html).catch((e) => {
+        const why = String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, '');
+        const line = 'Your deck is above and finished, but I could not store it in this conversation'
+          + (why ? ' (' + why + ')' : '') + '. **Download it now** — it will not be here when you come back.';
+        addMsg({ role: 'assistant', content: line });
+      });
       // If Advanced images didn't come through, tell the user why (was silently swallowed).
       if (imgNote) { addMsg({ role: 'assistant', content: imgNote }); if (sid) krewDb.saveMessage(sid, 'assistant', imgNote).catch(() => {}); }
 

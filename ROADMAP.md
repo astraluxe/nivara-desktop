@@ -2844,3 +2844,54 @@ The fix is entirely in what is said:
 Covered by 11 new assertions in `harness/outreachSender.test.mjs`, built on the user's real
 numbers — 150 contacts, a cap of 40, three genuinely broken. All 114 unit assertions and all four
 browser suites pass.
+
+---
+
+## Presentations, honesty, and one fault that bricked the app — 1.81.0 → 1.84.0 ✅ SHIPPED
+
+Four releases from one run of user reports. Each defect below was **measured before it was
+touched**, and three of my own theories were disproved that way — which is the point of measuring.
+
+### What the numbers were
+
+| Claim | How it was measured | Result |
+|---|---|---|
+| ".pptx content is missing" | Built a deck using every layout with a marker in every field, unzipped the file, counted markers | **19 of 54 lost — 35%.** Now 0 |
+| "chat said 31 slides, file had 29" | Read the review pass | The announced number was the *target*; the reviewer may merge duplicate slides. Both fine, saying nothing was not |
+| "the deck chat hung" | Timed the parse (8 ms), the 6.7 MB iframe srcdoc (253 ms, no dropped frames), the IPC payload (23 ms) | **All three theories wrong.** Not reproduced — see below |
+| "the link returns 404" | `curl -sIL` | **200.** The 404 came from elsewhere in the run; still unexplained |
+| "I cannot browse the internet" | Ran the real answer through every existing guard | Passed all of them. 5 of 6 typical phrasings were missed |
+
+### The defects, and where the fix lives
+
+| # | Defect | Fix |
+|---|---|---|
+| 1 | **17 layouts in the spec, 8 in the .pptx writer.** The other 9 fell through to the bullets branch, which reads only `title`/`body`/`bullets` — so chart, pricing, timeline, team, logos, cards, process, comparison and agenda slides arrived as empty shells. The slide *count* was right, which is why it read as a design problem | `lib/deckPptx.ts` — a renderer in its own right, so the two can be read side by side. Native `<c:barChart>` for charts |
+| 2 | **Every font size was a constant.** 48pt in a 2-inch box whatever the title said. `fit: 'shrink'` does not save it — PowerPoint recomputes that factor only on *edit* | `lib/pptxPolish.ts` `fitSize()` — measured before writing |
+| 3 | **The file announced its own machinery.** `PptxGenJS Presentation` as subject, `adris.tech` as author, on every deck ever exported. Plus a hard-coded em dash before every attribution, and the literal word SECTION on dividers | `docProps()`, `plainDashes()`, `sectionKicker()` |
+| 4 | **The deck stopped instead of ending.** The closing-slide instruction is never reached when output budget runs out mid-deck. No prompt fixes a prompt not being read | `lib/deckEnding.ts`, run last — after generation, continuation *and* review |
+| 5 | **The two renderers disagreed.** The parity check found it immediately: a bullets slide with a picture kept its `body` in PowerPoint and dropped it in chat — the mirror of #1, in the other direction | `harness/powerpoint-real.mjs` renders both and compares, all 17 layouts |
+| 6 | **A browsing denial stood as an answer.** `CAPABILITY_DENIALS` only covered refusals to *make* things; this is a refusal to *read*, which is worse — what follows is recall dressed as findings. And all three guards were gated on "no tool ran", which is off at exactly the wrong moment | `lib/groundTruth.ts` + the three guards in `KrewChat` |
+| 7 | **The chosen AI source was ignored.** `chatConnectionFor` fell back to `nivara` when the key was absent from `avail` — but `avail` is `null` when the *probe fails*, and it needs the network. "Could not look" was being read as "is not there" | `lib/chatConnection.ts`, plus `fellBackFrom` so a real fallback is announced |
+| 8 | **One panic bricked the app.** `mutex.lock().unwrap()`, in 106 places. A mutex is poisoned the moment any thread panics while holding it, and every later lock then panics too — for the rest of the session. Blank chat, nothing clickable, only a restart clears it | All 106 recover the guard; `scripts/check-lock-poison.mjs` in the build |
+| 9 | **A deck that failed to save said nothing.** One of 80 `.catch(() => {})` saves. Defensible for a one-line answer; not for several megabytes of work with no other copy | The deck saves report, while it is still downloadable |
+
+### Honest status
+
+**The freeze is not proven fixed.** I could not reproduce it: the parse, the iframe and the IPC
+were all measured and all fast. Defect 8 is a real mechanism that produces exactly those symptoms —
+blank chat, nothing clickable, until restart — and it is fixed, but I did not catch it in the act.
+The deck is still persisted as ~6.7 MB with every image stored **twice** (once inline, once in the
+embedded spec). That is objectively wasteful and worth changing; it was left alone this round
+because measurement did *not* support it as the cause, and rewriting how chats persist on a hunch is
+how working things get broken.
+
+### Standing rules this round earned
+
+- **A test that only exercises what already works cannot find what does not.** `powerpoint-real.mjs`
+  passed through all of defect 1 because it used the 8 layouts the writer supported.
+- **"Could not check" is never "is not there."** Defect 7 in one line.
+- **A panic must cost one operation, not the session.** Defect 8.
+- **Measure before fixing, and say so when the measurement kills your theory.** Three died here.
+
+---

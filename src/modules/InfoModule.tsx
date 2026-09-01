@@ -76,7 +76,7 @@ const DEPT_START: Record<Dept, { do: string; how: string }[]> = {
   ],
   coding: [
     { do: 'Work on a real project, not a chat about one', how: 'Open Coder and open your folder. Agents read the real files, run the build and the tests, and apply changes in place.' },
-    { do: 'Run it entirely on your own machine', how: 'Open Models, pull a local model, and switch the connection bar to Local. Nothing leaves the laptop — which is the point for client code.' },
+    { do: 'Run it entirely on your own machine', how: 'Open Models, pull a local model, then pick Local model from the menu in the title bar. Nothing leaves the laptop — which is the point for client code.' },
     { do: 'Give the agents your own tools', how: 'Type /mcp and add any MCP server by URL. Its tools appear alongside the built-in ones, namespaced so nothing collides.' },
   ],
   ops: [
@@ -359,16 +359,27 @@ export default function InfoModule() {
             Sign in once with your adris.tech account. Your plan sets how much hosted AI you can use each
             month and which models you can download. Everything else works the same on every plan.
           </P>
-          <H3>The connection bar</H3>
-          <P>At the top of Krew is a bar that decides which brain answers you. It has three modes:</P>
+          <H3>Choosing what the app runs on</H3>
+          <P>
+            One menu in the <span className="text-nv-text">title bar</span>, at the top of the window, decides
+            which AI answers you — and it governs the <span className="text-nv-text">whole app</span>: chat,
+            agents, automations, Coder, Studio and the Quick Bar all follow it. Click it and pick:
+          </P>
           <ul className="list-disc pl-5 mb-3">
-            <Li><span className="text-nv-text">adris.tech</span> — the hosted AI. Nothing to set up; counts against your monthly usage.</Li>
-            <Li><span className="text-nv-text">Own key</span> — your own OpenAI, Gemini or Anthropic key. Billed by them, unlimited by us.</Li>
-            <Li><span className="text-nv-text">Local</span> — a model running on your own hardware. Free, fully offline, as fast as your machine allows.</Li>
+            <Li><span className="text-nv-text">Your Claude Code / Your Codex</span> — the AI subscription you already
+              pay for. adris installs the tool for you; no API key and no second AI bill.</Li>
+            <Li><span className="text-nv-text">Your own key</span> — OpenAI, Anthropic, Gemini, Groq, NVIDIA, Mistral,
+              Perplexity, Together, DeepSeek or a custom endpoint. Billed by them, unlimited by us.</Li>
+            <Li><span className="text-nv-text">adris.tech</span> — the hosted AI. Nothing to set up; counts against
+              your monthly allowance.</Li>
+            <Li><span className="text-nv-text">Local model</span> — running on your own hardware. Free, fully offline,
+              as fast as your machine allows.</Li>
+            <Li><span className="text-nv-text">Choose for me</span> — takes the cheapest you have, in that order.</Li>
           </ul>
           <Note>
-            If you ever see “monthly limit reached”, switch the bar to Own key or Local and carry on
-            working. You do not have to upgrade to keep using the app.
+            If you ever see “monthly limit reached”, open that menu and pick your own key, your Claude Code
+            or Codex subscription, or a local model, and carry on working. You do not have to upgrade to keep
+            using the app.
           </Note>
 
           <H3>Where to start, depending on what you do</H3>
@@ -951,7 +962,7 @@ export default function InfoModule() {
             card, no paid account — and run on their own fast hardware, so answers come back in seconds and use
             <span className="text-nv-text"> none of your adris.tech allowance</span>. Connect one in
             <span className="text-nv-text"> Connect Apps → NVIDIA / Groq</span>, or press
-            <span className="text-nv-text"> Own Key</span> in the chat connection bar and hit “Get NVIDIA/Groq
+            <span className="text-nv-text"> your own key</span> from the menu in the title bar and hit “Get NVIDIA/Groq
             key” — it opens the sign-up and the setup guide. You can also just ask Krew to “connect NVIDIA” and
             it opens the wizard for you. Once connected, pick <span className="text-nv-text">Own Key</span> as
             where AI runs and it uses that free cloud model.
@@ -1366,7 +1377,7 @@ export default function InfoModule() {
           <QA q="What uses up my monthly tokens?">
             Only the hosted adris.tech AI. Running your own API key or a local model costs you nothing
             from the allowance, and neither is ever blocked when the allowance runs out — so when you see
-            "limit reached", switching the connection bar to Own key or Local genuinely keeps you working.
+            "limit reached", switching to your own key or a local model from the title bar genuinely keeps you working.
           </QA>
           <QA q="Why does the number differ between screens?">
             It shouldn't any more. Free and Explore allowances are counted for the lifetime of the account;
@@ -1421,7 +1432,7 @@ export default function InfoModule() {
           <H3>The AI stops mid-task</H3>
           <P>
             If your connection drops, adris.tech reconnects and carries on by itself. If you have run out of
-            monthly usage, switch the connection bar to Own key or Local and keep working.
+            monthly usage, switch to your own key or a local model from the title-bar menu and keep working.
           </P>
 
           </Sec>

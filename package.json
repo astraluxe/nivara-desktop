@@ -1,14 +1,14 @@
 {
   "name": "nivara-desktop",
   "private": true,
-  "version": "1.83.0",
+  "version": "1.84.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "check:colours": "node scripts/check-dept-colours.mjs",
     "check:roster": "node scripts/check-agent-roster.mjs",
     "check:delegation": "node scripts/check-delegation-rule.mjs",
-    "build": "node scripts/check-dept-colours.mjs && node scripts/check-agent-roster.mjs && node scripts/check-delegation-rule.mjs && node scripts/check-boss-tools.mjs && node scripts/check-ai-source.mjs && node scripts/check-tips.mjs && node scripts/check-classes.mjs && node scripts/check-ai-callers.mjs && node scripts/check-office-graph.mjs && node scripts/check-tool-coverage.mjs && node scripts/check-ui-reachable.mjs && node scripts/check-app-launch.mjs && node scripts/check-source-chars.mjs && node scripts/check-chat-affordances.mjs && node scripts/check-brand-contrast.mjs && node scripts/check-plan-source.mjs && tsc && vite build",
+    "build": "node scripts/check-dept-colours.mjs && node scripts/check-agent-roster.mjs && node scripts/check-delegation-rule.mjs && node scripts/check-boss-tools.mjs && node scripts/check-ai-source.mjs && node scripts/check-tips.mjs && node scripts/check-classes.mjs && node scripts/check-ai-callers.mjs && node scripts/check-office-graph.mjs && node scripts/check-tool-coverage.mjs && node scripts/check-ui-reachable.mjs && node scripts/check-app-launch.mjs && node scripts/check-source-chars.mjs && node scripts/check-chat-affordances.mjs && node scripts/check-brand-contrast.mjs && node scripts/check-info-truth.mjs && node scripts/check-lock-poison.mjs && node scripts/check-plan-source.mjs && tsc && vite build",
     "preview": "vite preview",
     "harness:build": "vite build --config vite.harness.config.ts --outDir dist-harness",
     "test:ui": "node harness/run-tests.mjs",
