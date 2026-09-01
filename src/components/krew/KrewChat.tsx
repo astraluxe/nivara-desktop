@@ -33,6 +33,7 @@ import Caret from '../ui/Caret';
 import { noteActiveModel, bulkPlan } from '../../lib/contextBudget';
 import { normaliseScore, scoreValue, decisionBias, recordDecision, decisionStyleNote, workingFileNote, setWorkingFile, extractChoices, EFFORT_LABEL, IMPACT_LABEL, type ChoiceSet, type ChoiceItem } from '../../lib/agentBrain';
 import { replyForChoice } from '../../lib/choiceReply';
+import { splitFigureBlocks, figureDirective } from '../../lib/inlineFigures';
 import { slugLooksLikeName, hasWrittenMessage } from '../../lib/outreachConnections';
 import { auditPromises, cleanOutboundMessage, stripOngoingWorkClaims, type PromiseIssue } from '../../lib/verify';
 import ConnectionBar from '../coder/ConnectionBar';
@@ -3415,6 +3416,67 @@ function deriveQuickTitle(content: string): string {
   return `Saved from Krew — ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`;
 }
 
+/**
+ * A figure from the user's own files, placed in the answer.
+ *
+ * The agent writes `![what it shows](figure:figure 3)` on its own line; this resolves that against
+ * the pictures the app already stored when the files were attached, and draws it. Nothing renders
+ * when the reference is ambiguous or unknown — with four decks attached there are four "figure 3"s,
+ * and a confidently wrong diagram under a sentence is worse than none, because the reader has no
+ * reason to doubt it. See lib/inlineFigures.ts.
+ */
+function InlineFigure({ caption, refText }: { caption: string; refText: string }) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [missing, setMissing] = useState(false);
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      try {
+        const { brain } = await import('../../lib/knowledgeStore');
+        const { matchPicture } = await import('../../lib/inlineFigures');
+        const hit = matchPicture(refText, brain.listPictures().map((n) => ({ id: n.id, title: n.title, filePath: n.filePath })));
+        if (!hit?.filePath) { if (!dead) setMissing(true); return; }
+        const b64 = await invoke<string>('read_file_base64', { path: hit.filePath });
+        const ext = (hit.filePath.split('.').pop() || 'png').toLowerCase();
+        const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+          : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif'
+          : ext === 'svg' ? 'image/svg+xml' : 'image/png';
+        if (!dead) setSrc(`data:${mime};base64,${b64}`);
+      } catch { if (!dead) setMissing(true); }
+    })();
+    return () => { dead = true; };
+  }, [refText]);
+
+  // A figure that cannot be found leaves the caption as a plain line rather than a broken frame —
+  // the sentence around it still reads, which is what matters.
+  if (missing) {
+    return caption ? <p className="text-[12px] text-nv-faint italic my-1.5">{caption}</p> : null;
+  }
+  return (
+    <figure className="my-3">
+      <div className="rounded-lg border border-nv-border bg-nv-bg overflow-hidden flex items-center justify-center" style={{ minHeight: src ? undefined : 96 }}>
+        {src
+          ? <img src={src} alt={caption} className="max-w-full h-auto" style={{ maxHeight: 420 }} />
+          : <span className="text-[11px] text-nv-faint py-6">Loading the figure…</span>}
+      </div>
+      {caption && <figcaption className="text-[11px] text-nv-muted mt-1.5 leading-snug">{caption}</figcaption>}
+    </figure>
+  );
+}
+
+/** Prose, with any figure standing on its own line drawn where it was written. */
+function ProseWithFigures({ text }: { text: string }) {
+  const blocks = useMemo(() => splitFigureBlocks(text), [text]);
+  if (blocks.length === 1 && blocks[0].kind === 'text') return <div className="mb-1">{renderMarkdown(text)}</div>;
+  return (
+    <>
+      {blocks.map((b, i) => b.kind === 'figure'
+        ? <InlineFigure key={i} caption={b.caption} refText={b.ref} />
+        : <div key={i} className="mb-1">{renderMarkdown(b.text)}</div>)}
+    </>
+  );
+}
+
 function AssistantBubble({ content, streaming }: { content: string; streaming?: boolean }) {
   const [copied, setCopied] = useState(false);
   const [savedToBrain, setSavedToBrain] = useState(false);
@@ -3580,14 +3642,14 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
         // Split prose around email blocks (Subject: lines)
         const sections = splitEmailSections(part);
         if (sections.length === 1 && sections[0].type === 'prose') {
-          return <div key={i} className="mb-1">{renderMarkdown(part)}</div>;
+          return <ProseWithFigures key={i} text={part} />;
         }
         return (
           <div key={i}>
             {sections.map((sec, j) =>
               sec.type === 'email'
                 ? <EmailCard key={j} content={sec.content} />
-                : <div key={j} className="mb-1">{renderMarkdown(sec.content)}</div>
+                : <ProseWithFigures key={j} text={sec.content} />
             )}
           </div>
         );
@@ -11066,7 +11128,12 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     const systemPrt  = assembleSystemPrompt(
       [agent.systemPrompt, '\n\n', buildKrewSystemPrompt(tools), bossPostfix, workingRules,
        searchModeDirective, draftFormatDirective, verifyDirective, tableSkillDirective, ownAppDirective,
-       contractDirective(contract), clarifyDirective(text), urlDirective(linksIn(text))],
+       contractDirective(contract), clarifyDirective(text), urlDirective(linksIn(text)),
+       // THE FIGURE THE ANSWER IS ABOUT, ON SCREEN. A student attached four lecture decks and was
+       // told to "sketch the 4-layer architecture diagram" — a diagram sitting in one of those very
+       // files, which the chat never showed. Only when pictures really are attached, so an ordinary
+       // message carries none of this. See lib/inlineFigures.ts.
+       figureDirective(imageFiles.map((f) => f.name))],
       // The two things that make a turn a CONTINUATION rather than a fresh start: what this
       // agent was last working in, and what this user actually chooses when offered options.
       [identityCtx, locationBlock, (agent.key === 'boss' ? '' : userBlock), connectedAppsBlock, mcpSummary,

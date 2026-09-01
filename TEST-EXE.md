@@ -1,6 +1,6 @@
 # TEST-EXE — what to check in the built app
 
-The build already proves a lot on its own: **32 unit suites (1,400+ assertions)**, **19 build
+The build already proves a lot on its own: **35 unit suites (1,500+ assertions)**, **19 build
 checks**, and browser suites that drive the real panels, real Office and real PowerPoint. None of
 that can prove the app is *good to use* — that needs a person, on a real machine, with real work.
 
@@ -135,6 +135,23 @@ Legend: **Pass** · **Fail** (describe what happened) · **Odd** (works, but wro
 | 7.4 | Website → Manage plan | Opens the panel | |
 | 7.5 | Anything the page claims that the app does not do | **Write it down** | |
 
+
+---
+
+## 8. Options, the title bar, and figures — new in 1.85.0
+
+| # | Test | What should happen | Result |
+|---|------|--------------------|--------|
+| 8.1 | Ask something that makes an agent offer you options at the end | A card appears with two to four choices | |
+| 8.2 | Tap one and confirm | **A real answer arrives in the conversation.** Not your own words echoed inside the card, not nothing | |
+| 8.3 | Look at what was sent | Your message appears in the thread as if you had typed it | |
+| 8.4 | If an answer ever ends in brackets and quotes | Should not happen — a half-written options block is now stripped. If you see one, copy it out | |
+| 8.5 | Launch the app and look at the title bar **immediately** | Names the source you actually chose. Never "Connect your own key" when you have one connected | |
+| 8.6 | The title bar on your own key | Shows the key **and** the model beside it (e.g. "Your NVIDIA key · llama-3.3-70b-instruct") | |
+| 8.7 | Compare the title bar with what actually answers | Always the same. If they differ, say which was which | |
+| 8.8 | Attach a document with diagrams, ask about one | The diagram is **shown in the reply**, with a caption saying what to look at | |
+| 8.9 | Attach several documents that each have a "figure 3", then ask | It either shows the right one or shows none. **Never the wrong diagram** — that is the failure to report | |
+| 8.10 | An ordinary answer with no attachments | No stray image frames, no change to how text renders | |
 ---
 
 ## How to report a failure

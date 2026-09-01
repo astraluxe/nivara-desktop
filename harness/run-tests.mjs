@@ -67,12 +67,21 @@ const UNITS = [
   ['deck',          'src/lib/deck.ts'],
   ['deckEnding',    'src/lib/deckEnding.ts'],
   ['choiceReply',   'src/lib/choiceReply.ts'],
+  ['inlineFigures', 'src/lib/inlineFigures.ts'],
+  ['aiSourceMenu',  'src/components/AiSourceMenu.tsx'],
 ];
 
 let failed = 0;
 for (const [name, src] of UNITS) {
   // Each test imports `./<name>.js`, so the bundle is written next to a copy of the test.
-  execFileSync(esbuild, [path.join(root, src), '--bundle', '--format=esm', `--outfile=${path.join(tmp, name + '.js')}`],
+  // The env define lets a .tsx COMPONENT be bundled and its pure exports tested in node. Without
+  // it anything that reaches supabase.ts dies on `import.meta.env` at import time, which put every
+  // decision living inside a component permanently out of reach of a unit test — including the one
+  // that decides what the title bar says it is running on.
+  execFileSync(esbuild, [path.join(root, src), '--bundle', '--format=esm',
+    '--jsx=automatic',
+    '--define:import.meta.env=__NV_ENV__', `--inject:${path.join(here, 'env-shim.js')}`,
+    `--outfile=${path.join(tmp, name + '.js')}`],
     binOpts({ stdio: 'ignore' }));
   fs.copyFileSync(path.join(here, `${name}.test.mjs`), path.join(tmp, `${name}.test.mjs`));
   console.log(`\n### ${name}`);

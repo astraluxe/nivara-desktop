@@ -173,6 +173,61 @@ export function currentChoiceId(pref: AiSourcePref, choices: Choice[]): string {
   return choices.find((c) => c.mode === pref.mode)?.id ?? 'auto';
 }
 
+/** What the collapsed pill in the title bar says: the source, and what it is thinking with. */
+export interface SourcePill { label: string; detail: string; logo: string }
+
+/**
+ * The pill has to name what is ACTUALLY running.
+ *
+ * Two ways it did not. `getAiAvailability()` needs Tauri, a CLI probe and a session check, so
+ * `avail` is null for the first stretch after launch — and with no key rows built yet,
+ * currentChoiceId fell through to the "Connect your own key" row. Someone who had connected a key
+ * months ago was told, on every launch, that they had not. The same fallback can land on a row of
+ * an unrelated kind, which is how a machine running on an NVIDIA key came to be labelled Codex.
+ *
+ * So: when the exact row is there, use it. When it is not and we simply have not looked yet, trust
+ * the stored preference — it was written at a moment when the thing did exist, which is better
+ * evidence than a probe that has not answered. Only when we HAVE looked and it is genuinely gone
+ * does the fallback row stand, because then it is true.
+ *
+ * The detail line carries the model, because "Your NVIDIA key" answers whose key and not the
+ * question the user has, which is what it is thinking with.
+ */
+export function pillFor(pref: AiSourcePref, avail: AiAvailability | null, choices: Choice[]): SourcePill {
+  const exact = choices.find((c) =>
+    c.mode === pref.mode
+    && (c.cli ?? null) === (pref.cli ?? null)
+    && (c.provider ?? null) === (pref.provider ?? null));
+
+  if (exact) {
+    const model = exact.mode === 'own_key' && exact.provider ? modelForProvider(exact.provider, pref) : '';
+    const local = exact.mode === 'local' ? String(pref.localModel ?? '').replace(/\.gguf$/i, '') : '';
+    return { label: exact.label, detail: model || local || '', logo: exact.logo };
+  }
+
+  // Not found, and we have not finished looking: say what they chose, not what we cannot see yet.
+  if (!avail) {
+    if (pref.mode === 'own_key' && pref.provider) {
+      return {
+        label: `Your ${PROVIDER_LABEL[pref.provider as ByokProvider] ?? pref.provider} key`,
+        detail: String(pref.model ?? ''),
+        logo: String(pref.provider),
+      };
+    }
+    if (pref.mode === 'local') {
+      return { label: 'Local model', detail: String(pref.localModel ?? '').replace(/\.gguf$/i, ''), logo: 'local' };
+    }
+    if (pref.mode === 'agent_cli' && pref.cli) {
+      return { label: `Your ${CLI_LABEL[pref.cli]}`, detail: 'subscription', logo: pref.cli === 'codex' ? 'codex' : 'claude_code' };
+    }
+    if (pref.mode === 'nivara') return { label: 'adris.tech', detail: '', logo: 'nivara' };
+  }
+
+  // We looked, and what they picked is not there. The fallback row is then the honest answer.
+  const fallback = choices.find((c) => c.mode === pref.mode) ?? choices[choices.length - 1];
+  return { label: fallback?.label ?? 'Automatic', detail: '', logo: fallback?.logo ?? 'auto' };
+}
+
 export default function AiSourceMenu() {
   const [pref, setPref] = useState<AiSourcePref>(getAiSource);
   const [avail, setAvail] = useState<AiAvailability | null>(null);
@@ -216,6 +271,10 @@ export default function AiSourceMenu() {
   const choices = buildChoices(avail, pref);
   const currentId = currentChoiceId(pref, choices);
   const current = choices.find((c) => c.id === currentId) ?? choices[choices.length - 1];
+  // What the pill SAYS is worked out separately from which row is highlighted, because the two
+  // answer different questions: the row is "what did you pick", the pill is "what is running".
+  // They diverge while availability is still loading — see pillFor.
+  const pill = pillFor(pref, avail, choices);
 
   function pick(c: Choice) {
     // NOTHING HERE IS A DEAD END. A row that cannot answer yet — no key, nothing downloaded, a CLI
@@ -247,7 +306,7 @@ export default function AiSourceMenu() {
     <div ref={box} className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        title={`AI runs on: ${current?.label} (${current?.cost}). This applies everywhere in the app.`}
+        title={`AI runs on: ${pill.label}${pill.detail ? ` · ${pill.detail}` : ''} (${current?.cost}). This applies everywhere in the app.`}
         aria-haspopup="menu"
         aria-expanded={open}
         className={`flex items-center gap-1.5 h-[22px] pl-2 pr-1.5 rounded-full border text-[10px] font-medium
@@ -255,8 +314,15 @@ export default function AiSourceMenu() {
           ? 'bg-accent/15 border-accent/45 text-accent'
           : 'bg-nv-surface2/60 border-nv-border text-nv-muted hover:text-nv-text hover:border-accent/35'}`}
       >
-        <MenuMark id={current?.logo ?? 'auto'} className="w-3 h-3 shrink-0" />
-        <span className="max-w-[130px] truncate">{current?.label ?? 'Automatic'}</span>
+        <MenuMark id={pill.logo} className="w-3 h-3 shrink-0" />
+        <span className="max-w-[130px] truncate">{pill.label}</span>
+        {/* WHICH MODEL, beside whose key — "Your NVIDIA key" answers who pays and not what it is
+            thinking with, and one key carries a dozen models. Muted and separated by a dot, the
+            same shape the menu rows use for their own right-hand note. Hidden on a narrow window
+            so the pill never pushes the window controls. */}
+        {pill.detail && (
+          <span className="hidden lg:inline max-w-[150px] truncate opacity-60">· {pill.detail}</span>
+        )}
         <svg viewBox="0 0 24 24" className={`w-3 h-3 shrink-0 transition-transform duration-fast ease-nv ${open ? 'rotate-180' : ''}`}
              fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
           <path d="M6 9l6 6 6-6" />
