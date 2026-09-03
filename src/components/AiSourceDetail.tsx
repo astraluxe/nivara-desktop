@@ -20,7 +20,6 @@ import {
   setAiSource, AI_SETUP_EVENT, type AiSourcePref, type ByokProvider, type AiAvailability,
 } from '../lib/aiSource';
 import { fetchRankedModels, PROVIDERS, type Provider, type RankedModel } from '../lib/ai';
-import { contextWindowFor } from '../lib/contextBudget';
 import { credentialStore } from '../lib/krewDb';
 import {
   CLI_LABEL, detectClis, installCli, uninstallCli, cliAuthStatus, cliLogin, cliLogout, daysUntilExpiry,
@@ -220,6 +219,31 @@ function KeyDetail({ provider, pref, onPick }: {
     return () => { dead = true; };
   }, [provider, pref.model, pref.provider]);
 
+  // ── TESTING THEM, RATHER THAN GUESSING ──────────────────────────────────
+  //
+  // The list showed a name and a context window, and a measured time only for models a background
+  // scan had happened to reach. Everything else looked equally fine. The user's words: "IT JUST
+  // SHOWS WORKING OR GETS CONNECTED LIKE SHOWS THE NAME BUT DOESNT TELL IF CONNECTION IS FAILED AND
+  // GIVE A BUTTON TO RE SCAN TO SEE WHICH MODELS ARE WORKING RATHER THAN MAKING A GUESS ALWAYS".
+  //
+  // They are right: picking a model from this screen was a guess, and the one they picked returned
+  // nothing the night before an exam. Every row now says which of three states it is in — answered,
+  // did not answer, or never tested — and the button measures the lot.
+  const [scanning, setScanning] = useState<{ done: number; total: number } | null>(null);
+
+  async function rescan() {
+    const cred = await credentialStore.get(provider).catch(() => null);
+    const key = cred?.api_key as string | undefined;
+    if (!key) return;
+    setScanning({ done: 0, total: 0 });
+    try {
+      const { scanModels } = await import('../lib/modelHealth');
+      const fresh = await scanModels(provider as Provider, key, (done, total) => setScanning({ done, total }));
+      setScan(fresh);
+    } catch { /* the rows keep whatever they last knew */ }
+    finally { setScanning(null); }
+  }
+
   async function choose(id: string) {
     setAiSource({ mode: 'own_key', provider, model: id });
     setCurrent(id);
@@ -262,12 +286,27 @@ function KeyDetail({ provider, pref, onPick }: {
   }
 
   const row = (id: string) => scan?.rows.find((r) => r.id === id);
-  const win = (t: number) => (t >= 1_000_000 ? `${Math.round(t / 1_000_000)}M` : `${Math.round(t / 1000)}k`);
   const TIER_LABEL: Record<string, string> = { smart: 'Best for complex work', fast: 'Fast', other: 'Other' };
   const groups: RankedModel['tier'][] = ['smart', 'fast', 'other'];
 
   return (
     <>
+      {/* MEASURE THEM, DO NOT GUESS. A provider's catalogue lists what the company hosts; only a
+          real call tells you what this key can use today, and free tiers change under you. */}
+      <div className="px-2.5 pt-2 pb-1 flex items-center justify-between gap-2">
+        <span className="text-[9.5px] text-nv-faint">
+          {scanning
+            ? `Testing ${scanning.done} of ${scanning.total || '…'}`
+            : scan
+              ? `${scan.rows.filter((r) => r.ok).length} of ${scan.rows.length} answered`
+              : 'None tested yet'}
+        </span>
+        <button
+          onClick={() => void rescan()}
+          disabled={!!scanning}
+          className="text-[10px] px-2 py-1 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-fast disabled:opacity-40 shrink-0"
+        >{scanning ? 'Testing…' : scan ? 'Test again' : 'Test all models'}</button>
+      </div>
       {groups.map((tier) => {
         const inTier = (list ?? []).filter((m) => m.tier === tier);
         if (!inTier.length) return null;
@@ -283,12 +322,18 @@ function KeyDetail({ provider, pref, onPick }: {
                   onClick={() => void choose(m.id)}
                   title={m.id.split('/').pop() ?? m.id}
                   right={
-                    <span className="text-[9.5px] text-nv-faint shrink-0">
-                      {/* Measured, when it has been. "didn't answer" is shown rather than hidden:
-                          a model that was rate-limited for one busy minute is still worth trying,
-                          and silently dropping it leaves someone who knows they have access to it
-                          convinced the app cannot see it. */}
-                      {r ? (r.ok ? `${(r.ms / 1000).toFixed(1)}s` : "didn't answer") : win(contextWindowFor(m.id))}
+                    <span className="text-[9.5px] shrink-0 tabular-nums">
+                      {/* THREE STATES, NEVER TWO.
+                          A model that answered, one that did not, and one nobody has tried are
+                          three different things, and this used to show a context window for the
+                          third — a real number that reads like a verdict and is not one. Picking
+                          from that list was a guess, and the guess returned nothing the night
+                          before an exam. "Not tested" says so, and the button above measures. */}
+                      {r
+                        ? (r.ok
+                            ? <span className="text-nv-green">{(r.ms / 1000).toFixed(1)}s</span>
+                            : <span style={{ color: '#f87171' }}>no answer</span>)
+                        : <span className="text-nv-faint">not tested</span>}
                     </span>
                   }
                 />

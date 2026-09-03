@@ -427,6 +427,15 @@ export interface ToolState {
   /** Progress line from the pull, shown verbatim — docker's own words are clearer than ours. */
   step?: string;
   error?: string;
+  /**
+   * The tail of the container's own log, kept when a start fails.
+   *
+   * A failure used to be one guessed sentence — "It may need longer, or the port may be in use" —
+   * with nothing behind it. The log is where the actual reason is (a database that would not
+   * migrate, a port already taken, a missing environment variable), and it is Docker's own words
+   * rather than ours.
+   */
+  log?: string;
 }
 
 /**

@@ -25,6 +25,10 @@
   --nv-surface2-rgb: 26 26 34;
   --nv-border-rgb:   44 44 56;
   --nv-text-rgb:     242 242 248;
+  /* EMPHASIS, a step beyond body text. The chat sets its body to medium weight, so **bold** needed
+     somewhere further to go than 600 — weight alone stops registering once the baseline moves up.
+     On a near-black background "stronger" means brighter, not darker: pure white against 242. */
+  --nv-text-strong-rgb: 255 255 255;
   /* Body copy. Lifted slightly so long passages stay comfortable on the near-black background. */
   --nv-muted-rgb:    176 176 186;
   /* Tertiary text. The old #6b6b6b measured 3.7:1 against --nv-bg — below the 4.5:1 needed for
@@ -88,6 +92,8 @@
   --nv-surface2-rgb: 234 234 240;
   --nv-border-rgb:   216 216 226;
   --nv-text-rgb:     9 9 11;
+  /* On paper the same idea runs the other way: emphasis is DARKER than the body, not lighter. */
+  --nv-text-strong-rgb: 0 0 0;
   --nv-muted-rgb:    63 63 70;
   /* faint darkened from #a1a1aa → #6b6b74: the old value was ~2.3:1 on white (unreadable);
      this is ~5:1 which passes WCAG AA for secondary/label text on the white desktop background. */
@@ -125,6 +131,7 @@
   --nv-surface2: rgb(var(--nv-surface2-rgb));
   --nv-border:   rgb(var(--nv-border-rgb));
   --nv-text:     rgb(var(--nv-text-rgb));
+  --nv-text-strong: rgb(var(--nv-text-strong-rgb));
   --nv-muted:    rgb(var(--nv-muted-rgb));
   --nv-faint:    rgb(var(--nv-faint-rgb));
   --nv-ok:       rgb(var(--nv-ok-rgb));

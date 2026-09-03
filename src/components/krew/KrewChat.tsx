@@ -816,7 +816,9 @@ function renderInlineParts(text: string): React.ReactNode[] {
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) result.push(text.slice(last, m.index));
     if (m[1] !== undefined) {
-      result.push(<strong key={m.index} className="font-semibold text-nv-text">{m[1]}</strong>);
+      // Bolder AND brighter than the body around it — weight alone stops registering once the
+      // body is medium, which is the whole reason this pairs with the change above.
+      result.push(<strong key={m.index} className="font-bold" style={{ color: 'var(--nv-text-strong)' }}>{m[1]}</strong>);
     } else if (m[2] !== undefined) {
       result.push(<em key={m.index}>{m[2]}</em>);
     } else if (m[3] !== undefined && m[4] !== undefined) {
@@ -3564,7 +3566,16 @@ function AssistantBubble({ content, streaming }: { content: string; streaming?: 
     // an app whose every other surface is Space Grotesk. The serif made the chat look like a
     // different application, and it set figures and single-line answers noticeably worse.
     // Size and line-height are unchanged, so nothing reflows; only the family moves.
-    <div className="font-sans text-[13.5px] leading-[1.72] text-nv-text my-2 group">
+    // ── TWO WEIGHTS, CLEARLY APART ────────────────────────────────────────────
+    //
+    // The owner asked for the chat to read bolder, "and the more important thing on text if any
+    // shall be more bold and darker than the bold being used in the chat". That only works as a
+    // PAIR: setting everything to bold would leave emphasis with nowhere to go, and a wall of 700
+    // is harder to read than the 400 it replaced, not easier.
+    //
+    // So the body sits at medium and **emphasis** moves up to bold — two steps apart, which is
+    // enough to see at a glance without the page shouting.
+    <div className="font-sans text-[13.5px] font-medium leading-[1.72] text-nv-text my-2 group">
       {parts.map((part, i) => {
         if (part.startsWith('```')) {
           const m    = part.match(/^```(\w*)\n?([\s\S]*?)```$/);
@@ -4023,7 +4034,7 @@ function MessageRow({ msg, agent }: { msg: DisplayMsg; agent: KrewAgent }) {
       <div className="flex flex-col items-end my-2">
         <div className="max-w-[80%] bg-accent/[0.13] border border-accent/25 shadow-e1
                         rounded-nv-xl rounded-tr-nv-sm px-3.5 py-2.5">
-          {bodyText && <p className="text-[13px] leading-[1.6] text-nv-text whitespace-pre-wrap select-text" style={{ userSelect: 'text' }}>{bodyText}</p>}
+          {bodyText && <p className="text-[13px] font-medium leading-[1.6] text-nv-text whitespace-pre-wrap select-text" style={{ userSelect: 'text' }}>{bodyText}</p>}
           {fileChips.length > 0 && (
             <div className={`flex flex-wrap gap-1.5 ${bodyText ? 'mt-1.5' : ''}`}>
               {fileChips.map((f, i) => (
@@ -14428,9 +14439,25 @@ ${wfTask}`);
     if (mode === 'own_key' && provider) {
       try {
         const { loadScan, rankScan } = await import('../../lib/modelHealth');
+        const { fetchRankedModels } = await import('../../lib/ai');
+        const { contextWindowFor } = await import('../../lib/contextBudget');
         const { nextModel, switchNote } = await import('../../lib/modelFallback');
-        const rows = rankScan(loadScan(provider as never, apiKey || ''))
+        // MEASURED FIRST, BUT NEVER ONLY MEASURED.
+        //
+        // This read the saved scan and stopped there — and a scan only exists once one has
+        // actually run for this key. On a key that had never been scanned the list came back
+        // empty, nextModel returned null, and the whole fallback did nothing at all: the user got
+        // the "try again or switch models" message this code was written to replace. Which is
+        // exactly what happened to them, the night before an exam.
+        //
+        // So when nothing has been measured, ask the key what it can call. An unmeasured candidate
+        // is a worse bet than a measured one and a far better bet than giving up.
+        let rows = rankScan(loadScan(provider as never, apiKey || ''))
           .map((r) => ({ id: r.id, window: r.window }));
+        if (!rows.length) {
+          const live = await fetchRankedModels(provider as never, apiKey || '').catch(() => []);
+          rows = live.map((m: { id: string }) => ({ id: m.id, window: contextWindowFor(m.id) }));
+        }
         const pick = nextModel(modelName, rows);
         if (pick) {
           setAgentStep(`Trying ${pick.id}…`);

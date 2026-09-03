@@ -847,10 +847,78 @@ async fn tool_logs(id: String) -> Result<String, String> {
         return Err("that tool id is not usable".into());
     }
     let name = format!("adris-tool-{id}");
+    let project = format!("adris-{id}");
     tokio::task::spawn_blocking(move || {
         // The tail only. A crash loop writes the same lines over and over, and the newest few are
         // the whole story.
-        Ok(docker(&["logs", "--tail", "40", &name], 20).unwrap_or_default())
+        //
+        // BOTH SHAPES. This asked only for `adris-tool-<id>`, which is right for a single-container
+        // tool and matches nothing for a COMPOSE one — those run under the project `adris-<id>`
+        // with containers named `adris-<id>-<service>-1`. EspoCRM is a compose tool (it needs MySQL
+        // beside it), so its logs came back empty through unwrap_or_default() and the user was told
+        // only that it "did not start answering", with no way for anyone to find out why.
+        let single = docker(&["logs", "--tail", "40", &name], 20).unwrap_or_default();
+        if !single.trim().is_empty() { return Ok(single); }
+        Ok(docker(&["compose", "-p", &project, "logs", "--tail", "40"], 25).unwrap_or_default())
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// What Docker actually says about a tool, rather than what we guess.
+///
+/// ── THE BUG THIS EXISTS FOR ─────────────────────────────────────────────────
+///
+/// EspoCRM was installed from the Shelf and, three minutes later, the panel said: "It did not start
+/// answering. It may need longer, or the port may be in use." Both halves of that were a guess, and
+/// there was no way for the user — or for us — to find out which, if either, was true.
+///
+/// Worse, the one thing that could have answered it was broken. `tool_logs` reads the container
+/// `adris-tool-<id>`, which is right for a single-container tool and WRONG for a compose one: those
+/// run under the project `adris-<id>` with containers named `adris-<id>-<service>-1`. EspoCRM is a
+/// compose tool — it needs MySQL beside it — so `docker logs adris-tool-espocrm` matched nothing,
+/// returned empty through `unwrap_or_default()`, and the failure was undiagnosable by design.
+///
+/// This asks both shapes, and reports the container's real state alongside the tail of its log. A
+/// container that is still installing its database says so; one that exited says why.
+#[tauri::command]
+async fn tool_status(id: String) -> Result<String, String> {
+    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') || id.is_empty() {
+        return Err("that tool id is not usable".into());
+    }
+    tokio::task::spawn_blocking(move || {
+        let single = format!("adris-tool-{id}");
+        let project = format!("adris-{id}");
+
+        // A single-container tool first, since that is most of the catalogue.
+        let state = docker(&["inspect", "-f", "{{.State.Status}}", &single], 15)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let (state, logs, kind) = if let Some(st) = state {
+            let l = docker(&["logs", "--tail", "40", &single], 20).unwrap_or_default();
+            (st, l, "container")
+        } else {
+            // A compose stack. `ps` names every container in the project; the state of the whole
+            // thing is the worst state among them, and the logs are the project's, interleaved.
+            let ps = docker(&["compose", "-p", &project, "ps", "--format", "{{.Name}} {{.State}}"], 20)
+                .unwrap_or_default();
+            let st = if ps.trim().is_empty() {
+                "not created".to_string()
+            } else if ps.lines().any(|l| l.contains("exited") || l.contains("dead")) {
+                "exited".to_string()
+            } else if ps.lines().any(|l| l.contains("restarting")) {
+                "restarting".to_string()
+            } else {
+                "running".to_string()
+            };
+            let l = docker(&["compose", "-p", &project, "logs", "--tail", "40"], 25).unwrap_or_default();
+            (st, l, "compose")
+        };
+
+        Ok(serde_json::json!({
+            "state": state,
+            "kind":  kind,
+            "logs":  logs.chars().rev().take(4000).collect::<String>().chars().rev().collect::<String>(),
+        }).to_string())
     }).await.map_err(|e| e.to_string())?
 }
 
@@ -10178,6 +10246,7 @@ pub fn run() {
             tool_ready,
             tool_frameable,
             tool_logs,
+            tool_status,
             tool_stop,
             tool_remove,
             git_status,

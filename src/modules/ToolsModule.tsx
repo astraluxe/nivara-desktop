@@ -143,8 +143,30 @@ export default function ToolsModule({ openId, onStatesChange }: {
         } catch { /* not up yet */ }
         // Some of these genuinely take minutes on a first run — Invoice Ninja builds a database.
         // Ninety tries at two seconds is three minutes before it is called a failure.
+        // ── ASK DOCKER, DO NOT GUESS ────────────────────────────────────────
+        //
+        // This said "It may need longer, or the port may be in use" — two guesses, and no way for
+        // the user or for us to tell which. Docker knows: the container is running and slow, or it
+        // exited, or it never got created. Saying which turns a dead end into something a person
+        // can act on, and the log tail behind "Show the log" names the actual error.
         if (tries > 90) {
-          patch(s.id, { phase: 'failed', error: 'It did not start answering. It may need longer, or the port may be in use.' });
+          let why = 'It did not start answering.';
+          try {
+            const raw = await invoke<string>('tool_status', { id: s.id });
+            const st = JSON.parse(raw) as { state: string; logs: string };
+            why = st.state === 'running'
+              ? 'It is running but still not answering. Some of these build a database on first run and need longer.'
+              : st.state === 'restarting'
+                ? 'It keeps restarting, so something inside it is failing. The log says why.'
+                : st.state === 'exited'
+                  ? 'It started and then stopped. The log says why.'
+                  : st.state === 'not created'
+                    ? 'Docker never created it. Check that Docker Desktop is running.'
+                    : `Docker reports it as "${st.state}".`;
+            patch(s.id, { phase: 'failed', error: why, log: st.logs || undefined });
+          } catch {
+            patch(s.id, { phase: 'failed', error: why + ' Docker could not be asked what happened.' });
+          }
           polling.current.delete(s.id);
           return;
         }
@@ -472,6 +494,21 @@ function ToolDetail({ tool, state, wiring, onInstall, onStop, onRemove }: {
         <div className="mt-4 rounded-nv border border-red-500/35 bg-red-500/5 px-3 py-2">
           <p className="text-[11px] text-nv-text font-medium">It did not start</p>
           <p className="text-[10.5px] text-nv-muted mt-0.5">{state?.error}</p>
+          {/* THE REASON, IN DOCKER'S OWN WORDS.
+              The panel used to end at the sentence above, and that sentence was a guess. The log is
+              where the actual reason lives — a database that would not migrate, a port already
+              taken, a missing variable — and until now it was unreachable for a compose tool at
+              all, because the app looked for a container name those never have. */}
+          {state?.log && (
+            <details className="mt-1.5">
+              <summary className="text-[10px] text-nv-faint cursor-pointer hover:text-nv-muted select-none">
+                Show the log
+              </summary>
+              <pre className="mt-1 max-h-56 overflow-auto text-[9.5px] leading-relaxed font-mono text-nv-muted whitespace-pre-wrap break-words">
+                {state.log}
+              </pre>
+            </details>
+          )}
         </div>
       )}
 

@@ -62,7 +62,7 @@ export const SKILL_GRAPH: SkillDef[] = [
     tools: ['web_search', 'fetch_open_data', 'scrape_structured', 'youtube_transcript', 'read_rss', 'research_companies'],
     triggers: /\b(research|find out|look up|search|latest|news|compare|market|competitors?|who is|what is happening|sources?|report on)\b/i,
     needs: ['browser'],
-    guide: 'Research: search first, answer second — never from memory alone for anything current. Cite what you actually opened. If a search returns nothing usable, say so rather than filling the gap from training data.',
+    guide: 'Research: search first, answer second — never from memory alone for anything current. Cite what you actually opened. If a search returns nothing usable, say so rather than filling the gap from training data. If the user gave you a URL, report on THAT page — if you follow a link from it, say where you ended up; never blame a failure on a site they never named.',
   },
   {
     id: 'person-research',
@@ -165,6 +165,16 @@ export const SKILL_GRAPH: SkillDef[] = [
     guide: 'Working hours are a recurring fact, not a calendar event — save them ONCE with set_availability and every later scheduling decision is settled. Before you put any time on the table, call get_availability and offer what it returns. If nothing is saved, ask ("when are you usually free?") rather than proposing a slot: a time the user cannot make costs them the meeting, and blocking out every weekday by hand is the chore they came here to avoid.',
   },
   {
+    id: 'study',
+    name: 'Exam and revision notes',
+    area: 'knowledge',
+    blurb: 'Turns attached course material into notes and a question bank someone can actually revise from.',
+    tools: [],
+    triggers: /\b(exam|revis(e|ion)|study|question bank|past paper|quiz|viva|syllabus|marks?\b.*question|explain (this|these|everything))\b/i,
+    needs: ['brain'],
+    guide: 'Exam notes: "quick" means tight, not thin — a recap of headings with no explanation under them is a contents page, not something to revise from. Cover the whole source, keep every number and definition it gave, and explain what each term IS, not just name it. Never say "refer to the slides" — that is the one thing they came here to avoid.',
+  },
+  {
     id: 'planning',
     name: 'Turning a plan into work',
     area: 'work',
@@ -182,7 +192,7 @@ export const SKILL_GRAPH: SkillDef[] = [
     tools: ['generate_document'],
     triggers: /\b(pdf|docx?|word document|excel|xlsx|spreadsheet|report|invoice|proposal|brief|write (me )?a doc|export (it )?(to|as))\b/i,
     needs: [],
-    guide: 'Documents: generate_document writes a real file to disk and returns its path. Say where it saved. Never describe a document you have not actually generated.',
+    guide: 'Documents: generate_document writes a real file to disk and returns its path. Say where it saved. Never describe a document you have not actually generated. If the user attached figures and one matters to a point you are making, place it with ![caption](figure:figure 3) — never just tell them to go and look at the file.',
   },
   {
     id: 'decks',
@@ -192,7 +202,7 @@ export const SKILL_GRAPH: SkillDef[] = [
     tools: [],
     triggers: /\b(deck|slides?|presentation|pitch deck|powerpoint|ppt|keynote)\b/i,
     needs: ['images'],
-    guide: 'Decks: one idea per slide, a real headline rather than a label, and no slide that exists only to say "Agenda". Use the user\'s own pictures and logo from the Brain in preference to a generated image.',
+    guide: 'Decks: one idea per slide, a real headline rather than a label, and no slide that exists only to say "Agenda". Use the user\'s own pictures and logo from the Brain in preference to a generated image. Always end on a real closing slide — a deck that just stops mid-topic is not finished.',
   },
   {
     id: 'images',
@@ -203,6 +213,16 @@ export const SKILL_GRAPH: SkillDef[] = [
     triggers: /\b(image|picture|illustration|graphic|banner|logo|thumbnail|generate (an?|some) (image|pic)|visual)\b/i,
     needs: ['brain'],
     guide: 'Images: generated pictures are saved to the Brain\'s Pictures folder so they can be reused in decks and posts. Say what was generated and where it went.',
+  },
+  {
+    id: 'figures',
+    name: 'Showing a picture from their files',
+    area: 'make',
+    blurb: 'Places a figure from an attached document directly in the answer, not just a document.',
+    tools: [],
+    triggers: /\b(diagram|figure|chart|screenshot|show me the|what does (it|this|that) look like|architecture|label(led)? diagram)\b/i,
+    needs: ['brain'],
+    guide: 'Figures: when a picture the user attached IS the point — a diagram being explained, a chart whose numbers you are quoting — place it on its own line as ![caption](figure:figure 3), using the number or file title exactly as it was given. Only when it matters, never as decoration, and never when you are not sure which one is meant.',
   },
   {
     id: 'social',
