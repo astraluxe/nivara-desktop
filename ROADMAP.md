@@ -15,8 +15,39 @@ cost real time.
 
 ## Where this is right now
 
-**Version in the tree: 1.79.0** — builds clean (17 checks + tsc + vite), all suites pass.
-**Last released: 1.77.0.**
+**Version in the tree: 1.88.0** — builds clean (20 checks + tsc + vite), all 37 suites pass.
+**Last released: 1.88.0 — live**, manifest and installer both verified serving the full file.
+
+### What is actually left, checked against the source on 3 Sep 2026 — and why
+
+Everything else in this file that still reads ❌ or 📋 falls into exactly one of these four buckets.
+None of them are "not done yet by accident" — each is left for a specific, stated reason:
+
+1. **Moves real money, blocked on the owner.** Self-serve checkout (L6), licence issuing (L7), the
+   download page selling a plan (L9), and everything under "top-ups" and "seats/workspace" in the
+   pay-per-use audit table. The model is decided (bundled tiers); what remains needs the owner's
+   go-ahead because it touches Razorpay and a live customer's card. Building this without being
+   asked would be exactly the kind of outward-facing, hard-to-reverse change that needs a yes
+   first, not a guess. **One thing worth flagging before that yes is given:** `razorpay-webhook`'s
+   `PAID_PLANS` is still `solo / builder / business` — it has never been taught the `starter` tier.
+   Checkout stays closed either way (`CHECKOUT_ALLOWLIST` gates it, independent of this), so nothing
+   is live-broken today, but the webhook needs that fix **before** L6 opens, or a Starter payment
+   would be taken and grant nothing.
+2. **Needs a design pass this session cannot do.** F2, the 56 agent faces — an inline-SVG system,
+   legible at 24px, ~40KB total, in Claude Design or an equivalent tool. Attempting it as code
+   without that pass would ship something worse than the coloured circles it replaces, which is the
+   same mistake the isometric team room made twice (R1, removed both times).
+3. **Superseded by a later decision — corrected in this pass, not built.** The "website has to
+   change too" pay-per-use section and the "wrong names" plan-limits row both described problems a
+   later, shipped decision already fixed. Both are now marked superseded/corrected above with what
+   actually replaced them, so a future session does not build against a stale premise.
+4. **Genuinely done, and the roadmap had not caught up.** F4 (Hermes, catalogued and probed) and F5
+   (parallel agents, 66 assertions and a real DAG scheduler) — see their sections above for what was
+   re-verified and what still wants one live look from a human, which is the one thing no amount of
+   testing here can stand in for.
+
+**Nothing in this pass touched Razorpay, the webhook, checkout, or any schema.** That is deliberate,
+given the standing instruction to keep payments locked and every L6/L7 note above saying the same.
 
 **The commercial model is settled and the pricing page is live.** Bundled monthly tiers — Free /
 Business / Growth / Enterprise — with a 1/3/6/12-month term switcher, top-ups, a pilot request and
@@ -831,27 +862,42 @@ What it should be, in order of value:
 
 </details>
 
-### F4 — Hermes as a downloadable worker ❌ NOT STARTED
+### F4 — Hermes as a downloadable worker ✅ DONE — the roadmap was stale, not the code
 
-**Request:** offer Hermes for download, and use it for spawned sub-agents when it is there.
+**Checked against the source rather than assumed.** Both sizes are in the Models catalogue —
+`hermes3-8b-q4` and `hermes3-70b-q4` in `ModelsModule.tsx` — with real measured fields (size, RAM,
+context window, MMLU) and the description that earns its place: *"Tuned for tool-calling and
+structured answers — the reason to pick it for background agents rather than chat."* It goes
+through the same probe-not-trust gate as every other model; nothing claims it works until it has
+answered.
 
-Hermes is tuned for **tool-calling and structured output**, which is exactly what a spawned
-sub-agent does - and it is the weakness of most small local models (see the measured note on
-`llama-3.3-70b` timing out where the lightning model answered in 0.5s). A local model that can be
-trusted to return clean JSON is worth more here than a bigger one that cannot.
+There is a **Bulk Runner** agent (`key: 'bulk_runner', humanName: 'Hermes'`) whose whole discipline
+is "the four hundredth row comes back in exactly the same shape as the first" — the persona this
+section originally asked for.
 
-- Add it to the Models catalogue with a **real, measured** size and a truthful description.
-- **Do not claim it works until it has been run.** The standing lesson: model catalogues lie, so
-  models are **PROBED, not trusted**.
-- Wire it as the preferred local model for sub-agent spawning **when installed**, never as a
-  requirement.
+**One clause did not survive the architecture, and should not be re-attempted:** "wire it as the
+preferred model for spawned sub-agents." That assumed a per-task model choice, and 1.66.0's **one
+choice, in the title bar** replaced that idea on purpose — there is no separate spawn-time model in
+a single-AI-source app, local mode means the whole chat runs on whichever local model the user
+picked. Building a second, spawn-time override would reopen exactly the "two controls for one
+value" bug that release fixed.
 
-### F5 — Several agents at once 🟡 BUILT, NEVER WATCHED
+### F5 — Several agents at once 🟡 STILL NEEDS AN EYE ON IT, not a rebuild
 
-`plan_workflow` and parallel delegation carry **55 assertions** at the logic level. What has never
-been done is the thing the roadmap's own rule demands: **the user types one request that needs three
-agents, and watches three agents do it.** Until that has been seen, this is a 🟡 whatever the test
-count says.
+Re-checked against the source rather than re-claimed. `agentSchedule.ts` runs a real DAG scheduler —
+independent stages go in the same wave, `Promise.allSettled` runs the wave together, and it is
+capped at **`DEFAULT_MAX_PARALLEL = 3`** on purpose: more than that collides, because there is one
+agent browser and one Word application object. **66 assertions**, up from 55, and the activity bus
+F3.3 fixed (a `Map`, not one slot) is what makes several of them visible on screen at once rather
+than flickering between names.
+
+**What this file cannot verify for itself: that it is honestly a wave, not a lucky race.** That
+needs a human eye on the running exe, which is exactly what the roadmap's own rule asks for and
+what nobody but the user can actually do. **The check, to run once:** ask for something that needs
+two specialists at once — *"find 10 CFOs in Bengaluru and draft a LinkedIn message for them"* is
+research + outreach — and watch the Office floor or the activity strip. Two names lit at once,
+each with its own live detail line, is the wave; one name at a time is the fallback path, and is
+worth reporting if seen.
 
 It feeds straight into F3.3 - this is the feature that best delivers "I have a team", and the reason
 it does not land today is that it is invisible rather than absent.
@@ -1937,7 +1983,7 @@ it. "Connected" means the pieces on either side actually call each other, not th
 | **Monthly period** | `users.usage_period_start` | ✅ read | — | ✅ | ✅ **connected.** Both the token and image counters honour it |
 | **Image allowance** | `lib/imageQuota.ts`, `IMAGE_QUOTA_EXHAUSTED` | ✅ counts + refuses | ❌ | ✅ | 🟡 **counts, does not sell.** The server can refuse an image and the deck falls back to stock photos honestly — but there is no top-up and no per-tier number |
 | **Automation runs** | `planConfig.cloudAutomations` | ⚠️ limit only | ❌ | ❌ | ❌ **not counted.** A per-plan NUMBER exists; nothing anywhere increments a counter against it |
-| **Plan limits** | `lib/planConfig.ts` | ✅ enforced | ❌ | ✅ plan on user | 🟡 **wrong names.** Real, enforced limits (tokens, Mesh devices, Guard, decks) — but the plans are `free / explore / solo / builder / business / custom`, **not** Free / Business / Growth / Enterprise |
+| **Plan limits** | `lib/planConfig.ts` | ✅ enforced | ❌ | ✅ plan on user | ✅ **corrected — this row was stale.** L10 already translates the stored vocabulary to the sold one everywhere it is DISPLAYED (`tierOf`, done 1.78.0); `users.plan` keeping the old keys (`free / explore / solo / builder / business / custom`) is intentional, not a bug — see L10 and `chatConnection.ts`. The real gap this row should have named: `getPlanConfig(plan)` took a plan **string** and knew nothing about who held it, so an admin/head account (`plan: 'solo'`) was shown Enterprise everywhere and **enforced as solo** — `planConfigFor(account)` closes that, an ordinary account is untouched, **10 assertions** |
 | **Taking money** | `razorpay-webhook` (v16) | — | 🟡 checkout exists | ✅ signed, audited | 🟡 **subscription-shaped.** Hardened (signature verification, `payment_events`, expiry cron) but written for recurring subscriptions, not a 3/6/12-month term paid upfront |
 | **Top-ups** | — | ❌ | ❌ | ❌ | ❌ **nothing.** No ledger, no purchase, no auto-top-up, no admin cap |
 | **Seats / workspace** | — | ❌ | ❌ | ❌ | ❌ **nothing.** There is no workspace model at all; every limit today is per USER |
@@ -2643,7 +2689,28 @@ touch the user's data.
 
 ---
 
-## The website has to change too — NOT STARTED
+## The website has to change too — ⚠️ SUPERSEDED, kept only for the history
+
+**Everything below describes a decision that was later reversed.** This section argued for
+replacing the pricing page with pure pay-per-use. The owner's actual, later decision — written up
+in "Pricing — the bundled licence model" and "What adris SELLS — licence + pay-per-use" further
+down — is **bundled monthly tiers** (Free / Starter / Business / Growth / Enterprise), with
+pay-per-use kept as the fallback for someone who would rather not commit to a tier. That is what is
+live today, tested, and what L1–L10 tracks. Do not build against this section.
+
+**Both concrete complaints it raised are already fixed, by the later work:**
+
+- *"Only the adris.tech row should ever meter"* — done. `billingSource` / L3, **17 assertions**: an
+  own key, the CLI bridge and a local model all cost the customer nothing and consume nothing.
+- *"The plan badge reads Free/Solo/Builder/Team and has to mean something or come out"* — done. L1
+  (1.78.0): the badge reads the real tier and the tasks remaining from `lib/entitlement.ts`.
+
+Left in place, struck through in spirit rather than deleted, because the original reasoning is still
+correct about the thing that has NOT changed since: **the website and the exe must ship the pricing
+model together**, and whichever model is current, a half-migrated pricing page is worse than an old
+one.
+
+<details><summary>The original section, for the reasoning that led here</summary>
 
 **adris.tech is pay-per-use now.** The site still sells subscription tiers, and the exe already says
 "pay per use" in the AI menu, so the two now contradict each other in front of the same user.
@@ -2682,6 +2749,8 @@ Two things follow, and neither is built yet:
   or come out. It is the most visible contradiction of the two.
 
 **Still deferred at the owner's instruction.** Nothing in 1.68.0 meters, prices, or charges.
+
+</details>
 
 ---
 
