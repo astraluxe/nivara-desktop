@@ -1,5 +1,11 @@
 # adris.tech desktop — roadmap
 
+> **2 Oct 2026 — adris.tech is free (v1.89.0).** The hosted adris plan, every paid tier, checkout,
+> token allowances, top-ups, Mesh passes and cloud runs are retired. Where this file talks about
+> any of those, it is history. The current state is in `NIVARA/records/` — start with
+> `records/README.md` and `records/03-going-free-oct-2026.md`.
+
+
 Everything planned for the `.exe`, why, and what state it's in. This is the file to read before
 starting work and to update when finishing any.
 
