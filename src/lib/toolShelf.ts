@@ -559,9 +559,8 @@ export function aiWiringFor(tool: ToolApp, src: AiForTool | null): AiWiring {
   if (src.mode === 'nivara') {
     return {
       ok: false,
-      reason: 'adris.tech AI cannot be shared with another program.',
-      suggest: 'Point this tool at your own key or a local model — switch in the menu at the top of the window. '
-             + 'Everything else in adris keeps using adris.tech.',
+      reason: 'No AI is connected yet.',
+      suggest: 'Connect your own key or a local model from the menu at the top of the window, then point this tool at it.',
     };
   }
   if (src.mode === 'agent_cli') {

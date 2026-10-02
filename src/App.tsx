@@ -306,13 +306,8 @@ function AppShell() {
     return () => window.removeEventListener(ONBOARDING_REOPEN_EVENT, on);
   }, []);
 
-  // Fetch session key for direct Gemini calls (adris.tech AI fast path)
-  useEffect(() => {
-    if (!session) return;
-    const token = session.access_token;
-    if (!token) return;
-    invoke('fetch_session_key', { sessionToken: token }).catch(() => {/* silent — falls back to krew-stream */});
-  }, [session]);
+  // (The managed adris.tech key used to be fetched here. The hosted plan is retired — Oct 2026 —
+  // so there is no key to fetch; the app thinks only with what the user connects.)
 
   // Log tokens immediately after every direct Gemini message — no batching delay
   useEffect(() => {

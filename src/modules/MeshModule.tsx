@@ -5,8 +5,6 @@ import { supabase } from "../lib/supabase";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import { useAuth } from "../contexts/AuthContext";
 import { getPlanConfig } from "../lib/planConfig";
-import UpgradeModal from "../components/UpgradeModal";
-import MeshBuyModal from "../components/MeshBuyModal";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -104,9 +102,6 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
   const [devices, setDevices]                 = useState<Device[]>([]);
   const [machineInfo, setMachineInfo]         = useState<MachineInfo | null>(null);
   const [tier]                                = useState<string>(localStorage.getItem(TIER_KEY) ?? "free");
-  const [showUpgrade, setShowUpgrade]         = useState(false);
-  const [upgradeReason, setUpgradeReason]     = useState<string>("");
-  const [upgradePlan, setUpgradePlan]         = useState<string>("builder");
   const [exoRunning, setExoRunning]           = useState(false);
   const [err, setErr]                         = useState<string | null>(null);
   const [joining, setJoining]                 = useState(false);
@@ -114,16 +109,9 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
   const [downloading, setDownloading]         = useState(false);
   const [dlStep, setDlStep]                   = useState("Preparing…");
   const [dlPct, setDlPct]                     = useState(0);
-  const [showBuy, setShowBuy]                 = useState(false);
   // Purchased Mesh pass (bought standalone) — overrides the plan's device limit while active.
   // Held in a ref so the limit checks always read the current value without a re-render.
   const purchasedRef = useRef(0);
-
-  function showUpgradeFor(reason: string, plan: string) {
-    setUpgradeReason(reason);
-    setUpgradePlan(plan);
-    setShowUpgrade(true);
-  }
 
   const channelRef   = useRef<RealtimeChannel | null>(null);
   const isCentralRef = useRef(false);
@@ -563,44 +551,6 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
           </div>
         )}
 
-        {/* Tier / pricing */}
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <SectionLabel>Mesh tier</SectionLabel>
-            <button onClick={() => setShowUpgrade(true)} className="text-[10px] font-mono text-accent hover:underline">
-              Upgrade →
-            </button>
-          </div>
-          <div className="rounded-xl border overflow-hidden" style={{ borderColor: "var(--nv-rule)" }}>
-            {TIERS.map((t, i) => {
-              const active = t.key === tier;
-              return (
-                <div key={t.key}
-                  className="flex items-center gap-4 px-4 py-3 border-b last:border-b-0 cursor-pointer"
-                  style={{
-                    borderColor: "var(--nv-rule)",
-                    background: active ? "rgba(124,92,255,0.06)" : i % 2 === 0 ? "var(--nv-surface)" : "transparent",
-                    borderLeft: active ? "2px solid var(--accent)" : "2px solid transparent",
-                  }}
-                  onClick={() => { if (t.key !== "free") setShowUpgrade(true); }}
-                >
-                  <div className="w-16 shrink-0">
-                    <div className="font-semibold text-[12px]" style={{ color: active ? "var(--accent)" : "var(--nv-ink)" }}>{t.label}</div>
-                    <div className="font-mono text-[9px] text-nv-muted">{t.sub}</div>
-                  </div>
-                  <div className="font-bold text-[15px] w-14 shrink-0" style={{ color: "var(--nv-ink)", letterSpacing: "-0.02em" }}>{t.price}</div>
-                  <div className="flex-1 font-mono text-[10px] text-nv-muted">Up to {t.maxDevices} devices</div>
-                  {t.key === "free" && <span className="font-mono text-[9px] px-2 py-0.5 rounded shrink-0" style={{ background: "rgba(16,185,129,0.12)", color: "#10B981" }}>FREE</span>}
-                  {t.key === "monthly" && <span className="font-mono text-[9px] px-2 py-0.5 rounded shrink-0" style={{ background: "rgba(124,92,255,0.12)", color: "var(--accent)" }}>BEST VALUE</span>}
-                </div>
-              );
-            })}
-          </div>
-          <p className="text-[10px] mt-2 text-nv-faint">
-            Extra devices: ₹2/hr · ₹6/day · ₹18/wk · ₹40/mo per device beyond base.
-          </p>
-        </div>
-
         {/* Models table */}
         <div>
           <SectionLabel>What you can run with Mesh</SectionLabel>
@@ -630,20 +580,8 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
           </div>
         </div>
 
-        {/* Buy a Mesh pass directly — no plan upgrade required */}
-        <div>
-          <SectionLabel>Get more devices</SectionLabel>
-          <div className="rounded-xl border p-4 flex items-center justify-between gap-4 flex-wrap" style={{ borderColor: "var(--nv-rule)", background: "var(--nv-surface)" }}>
-            <div className="min-w-0">
-              <div className="font-semibold text-[12px] text-nv-text">Buy a Mesh pass — no plan upgrade needed</div>
-              <div className="text-[11px] text-nv-muted mt-0.5 leading-relaxed">Pay for just the devices you need, by the hour / day / week / month. Same-network meshing stays free — this only lifts your device limit. Or upgrade your plan for everything else.</div>
-            </div>
-            <div className="flex gap-2 shrink-0">
-              <button onClick={() => setShowBuy(true)} className="px-4 py-2 rounded-lg text-[12px] font-semibold transition-opacity hover:opacity-85" style={{ background: "#7C5CFF", color: "#fff" }}>Buy Mesh pass</button>
-              <button onClick={() => showUpgradeFor("Upgrade your plan for more devices, tokens, and features across adris.tech.", "builder")} className="px-4 py-2 rounded-lg text-[12px] font-semibold border transition-fast hover:border-nv-text" style={{ borderColor: "var(--nv-rule)", color: "var(--nv-text)" }}>See plans</button>
-            </div>
-          </div>
-        </div>
+        {/* (The Mesh pass purchase lived here. adris.tech is free — Oct 2026 — and every account
+            gets the full device limit, so there is nothing to buy.) */}
 
         {/* Relay nodes — paid inter-mesh connections */}
         <div>
@@ -705,21 +643,6 @@ export default function MeshModule({ onSessionChange }: MeshModuleProps) {
         <div className="h-4" />
       </div>
 
-      {showUpgrade && (
-        <UpgradeModal
-          onClose={() => setShowUpgrade(false)}
-          currentPlan={userPlan}
-          highlightPlan={upgradePlan}
-          reason={upgradeReason}
-        />
-      )}
-
-      {showBuy && (
-        <MeshBuyModal
-          onClose={() => setShowBuy(false)}
-          onPurchased={(d) => { purchasedRef.current = Math.max(purchasedRef.current, d); }}
-        />
-      )}
     </div>
   );
 }

@@ -21,8 +21,9 @@ import {
 // both the Guard and Settings pages, that the source was "Automatic". The one thing this component
 // still does is name what is in force; naming the wrong thing is the whole failure.
 const OPTIONS: { id: AiSourceMode; label: string; blurb: string }[] = [
-  { id: 'auto',      label: 'Choose for me', blurb: 'Use your own key if one is connected, otherwise adris.tech, otherwise a local model.' },
-  { id: 'nivara',    label: 'adris.tech',    blurb: 'The hosted AI, charged per use.' },
+  { id: 'auto',      label: 'Choose for me', blurb: 'Use your own key if one is connected, otherwise a local model.' },
+  // Never selectable — the hosted plan is retired. Kept so a not-connected state is named honestly.
+  { id: 'nivara',    label: 'No AI connected', blurb: 'Connect NVIDIA or Groq (free keys), your Claude Code / Codex, your own key, or a local model from the menu at the top.' },
   { id: 'own_key',   label: 'Your own key',  blurb: 'Runs on your OpenAI, Gemini, NVIDIA, Groq or Anthropic key. Billed by them, never against your allowance.' },
   { id: 'local',     label: 'Local model',   blurb: 'Runs on this machine. Free, works offline, nothing leaves the computer.' },
   { id: 'agent_cli', label: 'Your Claude Code / Codex', blurb: 'Thinks with the coding subscription you already pay for. Nothing is charged to adris.tech.' },
@@ -122,17 +123,13 @@ export default function AiSourcePicker({ compact = false }: { compact?: boolean 
         </p>
       )}
 
-      {pref.mode !== 'nivara' && pref.mode !== 'auto' && (
-        <p className="text-[10.5px] text-nv-faint mt-2">This choice uses none of your monthly allowance.</p>
-      )}
-
-      {/* Gentle, positive heads-up: the free NVIDIA/Groq keys are great for everyday speed, but the
-          hosted adris.tech AI is tuned for the heavy lifting. Framed as guidance, not a warning. */}
+      {/* Gentle, positive heads-up: the free NVIDIA/Groq keys are great for everyday speed; the
+          user's own Claude Code / Codex is the strongest option for heavy work. */}
       {pref.mode === 'own_key' && (pref.provider === 'nvidia' || pref.provider === 'groq') && (
         <p className="text-[10.5px] text-nv-faint mt-2 leading-relaxed">
           <span className="text-accent">Tip:</span> {pref.provider === 'nvidia' ? 'NVIDIA' : 'Groq'} is free and
           fast — perfect for everyday drafting and quick tasks. For heavier work (long outreach, research,
-          detailed documents), switching to <b className="text-nv-text">adris.tech AI</b> gives noticeably
+          detailed documents), your own <b className="text-nv-text">Claude Code or Codex</b> gives noticeably
           stronger results. Both stay one click away.
         </p>
       )}

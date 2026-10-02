@@ -885,7 +885,7 @@ export default function AIChat({
         onClose={() => setShowQuotaUpgrade(false)}
         currentPlan={profile?.plan ?? 'explore'}
         highlightPlan="solo"
-        reason="You've used all your AI tasks for this period. Upgrade to continue."
+        reason="adris.tech is free — connect an AI to continue."
       />
     )}
     </>

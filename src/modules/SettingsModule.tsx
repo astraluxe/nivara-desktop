@@ -69,11 +69,12 @@ const APP_VERSION = (import.meta.env?.VITE_APP_VERSION as string) || '1.78.0';
 const WHATS_NEW: { version: string; items: string[] } = {
   version: APP_VERSION,
   items: [
-    "The automatic model switch now actually switches. It only worked if this key had been background-scanned before, which most keys never have been -- so on a fresh key it did nothing at all and you were still shown the give-up message. It now asks the key directly when nothing has been measured yet.",
-    "The models-on-this-key screen tells you what actually works, not what might. Every model used to show a context window whether it had ever answered or not, which read as a promise it was not making. Each one now says answered, did not answer, or not tested -- and a button tests every model on the key in one pass rather than you finding out by picking wrong the night before an exam.",
-    "Chat text reads more clearly. The message you type and the answer you get are a touch bolder, and anything genuinely important inside an answer is bolder and stronger still -- so real emphasis stands out instead of blending into text that was already heavy everywhere.",
-    "A Shelf tool that fails to start now says why, in Docker's own words, instead of guessing. EspoCRM and every other tool that needs a database beside it -- MySQL, Postgres -- were reporting no log at all when they failed, because the app was looking for a container name those tools never have. It now asks Docker directly: still starting, exited, restarting, or never created, with the real log behind a disclosure.",
-    "The app's own map of what it can do now includes showing a figure from your files inside an answer, and writing exam notes that are actually worth revising from -- both visible in the Brain's Skills view, and both now reach every specialist the boss hands work to, not only the boss itself.",
+    "adris.tech is now free. There are no plans to buy and nothing is metered -- every module, every local model, Guard, voice input, Advanced decks and the power commands are unlocked for everyone.",
+    "adris now thinks only with the AI you connect: a free NVIDIA or Groq key, your own Claude Code or Codex, your own Gemini / OpenAI / Anthropic key, OmniRoute, or a model running on this computer. Pick it from the AI menu at the top of the window. The hosted adris.tech AI option has been retired.",
+    "If nothing is connected yet, the chat says so plainly and shows you how to connect one in about two minutes, instead of failing with a confusing error.",
+    "AI pictures on slides use your own image key (NVIDIA FLUX or Gemini). Without one, decks still build with stock photography.",
+    "Cloud automation runs are retired -- automations keep running on this PC as before.",
+    "Want a custom adris or an agentic AI office built for your business? Account -> Request a custom build.",
   ]
 };
 

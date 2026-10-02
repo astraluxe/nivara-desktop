@@ -89,7 +89,8 @@ function legacyChatChoice(): AiSourcePref | null {
     // 'nv-krew-connection', so the two screens have always shared one stored choice.
     const v = JSON.parse(localStorage.getItem('nv-krew-connection') || 'null');
     const mode = v?.mode;
-    if (mode !== 'nivara' && mode !== 'own_key' && mode !== 'local') return null;
+    // 'nivara' (the retired hosted plan) is deliberately NOT carried over — see resolveAiSource.
+    if (mode !== 'own_key' && mode !== 'local') return null;
     const out: AiSourcePref = { mode };
     if (mode === 'own_key' && v.provider) out.provider = v.provider as ByokProvider;
     if (mode === 'local' && v.localModel) out.localModel = v.localModel;
@@ -110,8 +111,10 @@ export function getAiSource(): AiSourcePref {
     // chose Codex was put back on Claude Code the moment the app reloaded, with the menu still
     // showing Codex because currentChoiceId matches on mode when the exact match fails. A stored
     // preference that cannot survive a restart is not a preference.
+    // A choice of the retired adris.tech plan reads back as 'auto': the user's own connections.
+    const mode = (raw.mode as AiSourceMode) ?? 'auto';
     return {
-      mode: (raw.mode as AiSourceMode) ?? 'auto',
+      mode: mode === 'nivara' ? 'auto' : mode,
       provider: raw.provider,
       localModel: raw.localModel,
       cli: raw.cli,
@@ -222,23 +225,12 @@ export async function resolveAiSource(): Promise<ResolvedAiSource> {
              baseUrl, localModel: null, sessionToken: null };
   };
 
-  const nivara = async (): Promise<ResolvedAiSource | null> => {
-    try {
-      const { data } = await supabase.auth.getSession();
-      const s = data.session;
-      if (!s?.access_token) return null;
-      // Refresh a near-expiry JWT before handing it over. Callers like the outreach copilot run a
-      // long browser pass (reading a LinkedIn thread) BEFORE the AI call, which can leave the token
-      // expired by the time it's used → the edge function 401s and the whole call throws ("Couldn't
-      // analyse the reply"). Refreshing here fixes that for every caller of resolveAiSource.
-      let token = s.access_token;
-      const expMs = (s.expires_at ?? 0) * 1000;
-      if (expMs && expMs - Date.now() < 90_000) {
-        try { const { data: r } = await supabase.auth.refreshSession(); token = r.session?.access_token ?? token; } catch { /* keep the existing token */ }
-      }
-      return { mode: 'nivara', apiKey: null, provider: null, modelName: null, baseUrl: null, localModel: null, sessionToken: token };
-    } catch { return null; }
-  };
+  // THE HOSTED adris.tech PLAN IS RETIRED (Oct 2026). There is no adris.tech key: being signed in
+  // no longer makes anything available, so this never resolves. It is kept as a function only so
+  // the fallback chains below read the same as before. The final not-connected sentinel at the
+  // bottom carries no session token, and the Rust side answers it with "connect an AI" without
+  // contacting any server — so nothing in the app can spend on an adris.tech key.
+  const nivara = async (): Promise<ResolvedAiSource | null> => null;
 
   const local = (want?: string): ResolvedAiSource | null => {
     // Use what the user actually downloaded. This used to be hardcoded to 'llama3', so local mode
@@ -280,7 +272,8 @@ export async function resolveAiSource(): Promise<ResolvedAiSource> {
     if (fb) return { ...fb, fellBackFrom: 'nivara' };
   }
 
-  // 'auto' — and the last resort for every branch above.
+  // 'auto' — and the last resort for every branch above. Nothing connected → the sentinel, which
+  // every caller turns into "connect an AI", never a hosted call.
   return (await byok()) ?? (await nivara()) ?? local()
     ?? { mode: 'nivara', apiKey: null, provider: null, modelName: null, baseUrl: null, localModel: null, sessionToken: null };
 }
@@ -291,7 +284,7 @@ export function aiSourceLabel(pref: AiSourcePref): string {
     case 'own_key': return pref.provider ? `Your ${pref.provider} key` : 'Your own key';
     case 'local':   return pref.localModel ? 'Local model' : 'Local model';
     case 'agent_cli': return pref.cli === 'codex' ? 'Your Codex' : 'Your Claude Code';
-    case 'nivara':  return 'adris.tech AI';
+    case 'nivara':  return 'No AI connected';
     default:        return 'Automatic';
   }
 }

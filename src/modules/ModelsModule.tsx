@@ -745,7 +745,9 @@ function GatedModal({ info, onCancel, onConfirm }: {
 export default function ModelsModule() {
   const { profile } = useAuth();
   const plan = profile?.plan ?? 'explore';
-  const isFreePlan = FREE_PLANS.has(plan);
+  // adris.tech is free (Oct 2026): every local model, and importing your own .gguf, is open to
+  // everyone. Local models run on the user's machine and cost adris.tech nothing.
+  const isFreePlan = false && FREE_PLANS.has(plan);
   const [showUpgrade, setShowUpgrade] = useState(false);
   const [tab, setTab] = useState<'hub' | 'mymodels' | 'compare' | 'lora'>('hub');
   const [registry, setRegistry] = useState<RegistryModel[]>([]);

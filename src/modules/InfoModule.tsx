@@ -61,7 +61,7 @@ const DEPT_START: Record<Dept, { do: string; how: string }[]> = {
   ],
   student: [
     { do: 'Turn a term\'s reading into a revision pack — free', how: 'Attach your PDFs and lecture notes, then type /studio and pick NotebookLM. It builds a study guide, an FAQ and a mind map from YOUR sources, plus a podcast-style audio overview you can listen to on the way in.' },
-    { do: 'Run the whole app without paying for anything', how: 'Open Models and download a local model — it then runs on your own laptop with no account and no limit. Or connect a free NVIDIA or Groq key under Own key. Both leave your adris.tech allowance untouched.' },
+    { do: 'Run the whole app without paying for anything', how: 'Open Models and download a local model — it then runs on your own laptop with no account and no limit. Or connect a free NVIDIA or Groq key under Own key. adris.tech itself is free, with nothing metered.' },
     { do: 'Stop losing what you read last month', how: 'Everything you save goes to the Brain, and every agent can recall it. Write the essay from your own saved sources instead of a blank page — ask for a draft "using what I saved about X".' },
   ],
   sales: [
@@ -588,9 +588,8 @@ export default function InfoModule() {
             held; hover to read them and press <K>forget</K> to clear them.
           </P>
           <Note>
-            A council is five to nine full-length answers for one question. On adris.tech AI you will be told what
-            it costs before it runs, and offered the quick version. On your own key or a local model it just runs —
-            that capacity is yours.
+            A council is five to nine full-length answers for one question. It runs on the AI you connected —
+            your key, your Claude Code / Codex, or a local model — so that capacity is yours.
           </Note>
           </Sec>
 
@@ -960,7 +959,7 @@ export default function InfoModule() {
             local model can take a while to load and answer. NVIDIA (<K>build.nvidia.com/models</K>) and Groq
             (<K>console.groq.com</K>) both hand out <span className="text-nv-text">free</span> API keys — no
             card, no paid account — and run on their own fast hardware, so answers come back in seconds and use
-            <span className="text-nv-text"> none of your adris.tech allowance</span>. Connect one in
+            <span className="text-nv-text"> nothing from adris.tech</span> (which is free anyway). Connect one in
             <span className="text-nv-text"> Connect Apps → NVIDIA / Groq</span>, or press
             <span className="text-nv-text"> your own key</span> from the menu in the title bar and hit “Get NVIDIA/Groq
             key” — it opens the sign-up and the setup guide. You can also just ask Krew to “connect NVIDIA” and
@@ -1001,8 +1000,8 @@ export default function InfoModule() {
           <P>
             Ask for a presentation in plain words and you get a real slide deck back. Edit it in place —
             click any text to change it, recolour it, add or remove slides — and export it as a PDF. Your
-            own pictures and logo can be placed on slides, and on paid plans slides can carry
-            AI-generated imagery. Studio also makes videos, screen recordings and banners.
+            own pictures and logo can be placed on slides, and with your own image key (NVIDIA FLUX or Gemini)
+            slides can carry AI-generated imagery. Studio also makes videos, screen recordings and banners.
           </P>
           <Example title="Making a deck">
             <span className="text-nv-text">“Make a 10-slide investor deck from PRODUCT.md, use our brand colours,
@@ -1251,8 +1250,7 @@ export default function InfoModule() {
             so it never gets cut off by the model’s per-minute limit — no dropped words or half-answers. And
             deck pictures can generate on your <span className="text-nv-text">free NVIDIA key</span> (FLUX)
             instead of a paid image model, so making decks can cost you nothing — with an automatic fallback
-            so a deck always gets its visuals. Connecting a free NVIDIA key keeps your adris.tech allowance
-            for the heavy lifting.
+            so a deck always gets its visuals.
           </P>
 
           <H3>Reading and replying to LinkedIn messages</H3>
@@ -1373,16 +1371,16 @@ export default function InfoModule() {
             attaching nothing. Paste the relevant part into the description box instead.
           </QA>
 
-          <H3>Your allowance</H3>
-          <QA q="What uses up my monthly tokens?">
-            Only the hosted adris.tech AI. Running your own API key or a local model costs you nothing
-            from the allowance, and neither is ever blocked when the allowance runs out — so when you see
-            "limit reached", switching to your own key or a local model from the title bar genuinely keeps you working.
+          <H3>Pricing</H3>
+          <QA q="Do I have to pay for adris.tech?">
+            No. adris.tech is free, with every module unlocked and nothing metered. It thinks with the AI you
+            connect — a free NVIDIA or Groq key, your Claude Code or Codex, your own key, or a local model — and
+            any cost there is between you and that provider. If you hit a provider's limit, pick another AI from
+            the menu in the title bar.
           </QA>
-          <QA q="Why does the number differ between screens?">
-            It shouldn't any more. Free and Explore allowances are counted for the lifetime of the account;
-            paid plans are counted per calendar month. Every screen now uses the rule that matches your
-            plan.
+          <QA q="Can I get a custom adris for my business?">
+            Yes — custom adris setups and agentic AI offices, built around how your team works. Go to
+            <span className="text-nv-text"> Account › Request a custom build</span>, or visit adris.tech/contact.
           </QA>
 
           <H3>Windows and panels</H3>

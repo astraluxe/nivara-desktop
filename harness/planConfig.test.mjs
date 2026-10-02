@@ -1,108 +1,53 @@
-// ─── The app must honour what the page sold ──────────────────────────────────
+// ─── adris.tech is free: one entitlement, for everyone ───────────────────────
 //
-// The pricing page states numbers. `lib/entitlement.ts` is where those numbers live and what the
-// page and the account screen read. `lib/planConfig.ts` is what actually STOPS someone. The two had
-// drifted, in the direction that costs a customer:
+// Until Oct 2026 this suite held the app to what the pricing page SOLD each tier. The hosted plan is
+// retired: there is no adris.tech key, so nothing a user does costs adris.tech anything, and there is
+// nothing to ration or sell. `lib/planConfig.ts` now hands every account the same FREE_FOR_ALL
+// entitlement.
 //
-//   plan `solo`, sold as Business:  8,000,000 tokens · 25 Mesh devices · 1,500 runs
-//   enforced as:                    4,000,000 tokens · 10 Mesh devices ·   500 runs
-//
-// Somebody paying for Business would have been cut off at half the capacity they bought.
-//
-// The rule: enforce the GREATER of what they were promised and what their old plan already gave
-// them. Never less than the page — and never less than they already had, because a rename must not
-// take anything away.
+// What this suite protects now:
+//   1. Every account — whatever its old `plan` column or admin level says — gets the SAME config.
+//   2. Nothing in it can stop someone: no token cap, no Guard / deck / voice / scheduling lock,
+//      no power-command trial, no Advanced-search quota, no local-model lock.
+//   3. The one thing that would only ever have run on OUR money stays off: cloud automation runs
+//      (the Edge Function that ran them used adris.tech's key). Automations still run on the PC.
 
-import { getPlanConfig, planConfigFor } from './planConfig.js';
-// entitlement.js is the bundle the entitlement suite writes into the same folder, and that suite
-// is listed BEFORE this one in run-tests.mjs. If it is ever moved after, this import fails loudly
-// rather than silently testing nothing.
-import { ALLOWANCE, tierOf, TIER_LABEL } from './entitlement.js';
+import { getPlanConfig, planConfigFor, FREE_FOR_ALL } from './planConfig.js';
 
 let pass = 0, fail = 0;
 const ok = (n, c, x = '') => { if (c) { pass++; console.log('  ok   ' + n); } else { fail++; console.log('  FAIL ' + n + (x ? '\n        ' + x : '')); } };
 
-const PLANS = ['free', 'explore', 'solo', 'builder', 'business', 'custom'];
+const PLANS = ['free', 'explore', 'solo', 'builder', 'business', 'custom', 'starter', 'made-up', ''];
 
-console.log('\n=== nobody is stopped below what the page sold them ===');
+console.log('\n=== every account gets the same entitlement ===');
 for (const plan of PLANS) {
-  const cfg = getPlanConfig(plan);
-  const tier = tierOf(plan, 'plan');
-  const sold = ALLOWANCE[tier];
-  const label = `${plan} (sold as ${TIER_LABEL[tier]})`;
-
-  // null / 0 mean unlimited in this config and must stay that way.
-  const unlimitedTokens = cfg.monthlyTokens === null || cfg.monthlyTokens === 0;
-  ok(`${label}: tokens`,
-    unlimitedTokens || sold.tokens === Infinity || cfg.monthlyTokens >= sold.tokens,
-    `enforced ${cfg.monthlyTokens} < sold ${sold.tokens}`);
-
-  ok(`${label}: Mesh devices`,
-    sold.meshDevices === Infinity || cfg.meshDevices >= sold.meshDevices,
-    `enforced ${cfg.meshDevices} < sold ${sold.meshDevices}`);
-
-  ok(`${label}: automation runs`,
-    sold.runs === Infinity || cfg.cloudAutomations >= sold.runs,
-    `enforced ${cfg.cloudAutomations} < sold ${sold.runs}`);
+  ok(`plan "${plan}" → FREE_FOR_ALL`, getPlanConfig(plan) === FREE_FOR_ALL);
 }
+ok('an account with no plan', planConfigFor(null) === FREE_FOR_ALL);
+ok('undefined likewise', planConfigFor(undefined) === FREE_FOR_ALL);
+ok('a free account', planConfigFor({ plan: 'free' }) === FREE_FOR_ALL);
+ok('an old paid account', planConfigFor({ plan: 'business' }) === FREE_FOR_ALL);
+ok('a head account', planConfigFor({ plan: 'solo', admin_level: 'head' }) === FREE_FOR_ALL);
 
-console.log('\n=== and nobody loses what they already had ===');
-{
-  // The old Team plan gave 50,000,000 tokens; Growth advertises 25,000,000. Renaming the plans must
-  // not quietly halve an existing customer.
-  const team = getPlanConfig('business');
-  ok('the old Team keeps its 50M tokens', team.monthlyTokens >= 50_000_000, String(team.monthlyTokens));
-  ok('...and its 50 Mesh devices', team.meshDevices >= 50, String(team.meshDevices));
-  const builder = getPlanConfig('builder');
-  ok('the old Builder keeps its 16M tokens', builder.monthlyTokens >= 16_000_000, String(builder.monthlyTokens));
-}
+console.log('\n=== nothing in it can stop someone ===');
+const c = FREE_FOR_ALL;
+ok('no token cap (null = unlimited — every reader checks !== null)', c.monthlyTokens === null, String(c.monthlyTokens));
+ok('Guard is on', c.guardAccess === true);
+ok('Guard checks are unlimited', c.guardChecks === null);
+ok('contract scanning is on', c.contractScanning === true);
+ok('audit export is on', c.auditExport === true);
+ok('voice input is on', c.voiceToCode === true);
+ok('Advanced decks are on', c.advancedDeck === true);
+ok('social scheduling is on', c.socialScheduling === true);
+ok('power commands are unlimited', c.powerCommands === null);
+ok('Advanced searches are unlimited', c.advancedSearches === null);
+ok('AI images are not capped (only the user\'s own key can make one)', c.imageUnits === null);
+ok('Mesh can be created and joined', c.canCreateMesh && c.canJoinMesh);
+ok('a full Mesh device limit', c.meshDevices >= 50);
+ok('plenty of app connections', c.mcpConnections >= 100);
 
-console.log('\n=== unlimited stays unlimited ===');
-{
-  // `custom` has monthlyTokens: null, meaning no cap. Taking "the bigger of" a null would put a
-  // number on a plan that has none.
-  const custom = getPlanConfig('custom');
-  ok('custom has no token cap', custom.monthlyTokens === null || custom.monthlyTokens === 0, String(custom.monthlyTokens));
-}
-
-console.log('\n=== the qualitative flags are untouched ===');
-{
-  // This change is about quantities the page puts a number on. Guard, voice and audit export are
-  // decided elsewhere and must not move.
-  ok('free still has no Guard', getPlanConfig('free').guardAccess === false);
-  ok('solo still has Guard', getPlanConfig('solo').guardAccess === true);
-  ok('an unknown plan falls back to free', getPlanConfig('nonsense').monthlyTokens === getPlanConfig('free').monthlyTokens);
-}
-
-console.log('\n=== the numbers the page prints are the ones enforced ===');
-{
-  // The specific case that was wrong.
-  const business = getPlanConfig('solo');
-  ok('a Business customer gets the 8M they paid for', business.monthlyTokens >= 8_000_000, String(business.monthlyTokens));
-  ok('...and 25 Mesh devices, not 10', business.meshDevices >= 25, String(business.meshDevices));
-  ok('...and 1,500 runs, not 500', business.cloudAutomations >= 1500, String(business.cloudAutomations));
-}
-
-
-console.log('\n=== the person who runs it is not gated out of it ===');
-{
-  // The owner's row says plan 'solo', which has no voice input — so clicking the microphone in
-  // their own product opened an upgrade page. Every screen that DISPLAYS their plan promotes head
-  // and admin to enterprise; the gate did not, so what was shown and what was allowed disagreed.
-  const head = planConfigFor({ plan: 'solo', admin_level: 'head' });
-  ok('the head gets voice input', head.voiceToCode === true);
-  ok('...and is not capped on tokens', head.monthlyTokens === 0 || head.monthlyTokens === null, String(head.monthlyTokens));
-  ok('an admin too', planConfigFor({ plan: 'free', admin_level: 'admin' }).voiceToCode === true);
-  ok('case does not matter', planConfigFor({ plan: 'free', admin_level: 'HEAD' }).voiceToCode === true);
-
-  // And an ORDINARY account is untouched — this must not become a way to hand the product away.
-  ok('a solo account is unchanged', planConfigFor({ plan: 'solo' }).voiceToCode === getPlanConfig('solo').voiceToCode);
-  ok('a free account is unchanged', planConfigFor({ plan: 'free' }).voiceToCode === false);
-  ok('an empty admin_level grants nothing', planConfigFor({ plan: 'free', admin_level: '' }).voiceToCode === false);
-  ok('a made-up admin_level grants nothing', planConfigFor({ plan: 'free', admin_level: 'owner' }).voiceToCode === false);
-  ok('null is the explore plan, not a promotion', planConfigFor(null).voiceToCode === getPlanConfig('explore').voiceToCode);
-  ok('undefined likewise', planConfigFor(undefined).label === getPlanConfig('explore').label);
-}
+console.log('\n=== what only ever ran on our money stays off ===');
+ok('cloud automation runs are off (they used adris.tech\'s key)', c.cloudAutomations === 0);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -40,7 +40,10 @@ console.log('\n=== while we have not finished looking ===');
   ok('...and Claude Code stays Claude Code', /claude/i.test(cc.label), cc.label);
   ok('a bridge is never mislabelled as the other one', !/codex/i.test(cc.label), cc.label);
 
-  ok('adris.tech stays adris.tech', /adris/i.test(pill({ mode: 'nivara' }, null).label));
+  // The hosted adris.tech plan is retired (Oct 2026). A stored 'nivara' must never be presented
+  // as if a hosted model were running — it means nothing is connected.
+  ok('a stored adris.tech choice reads "Connect an AI", never adris.tech',
+    pill({ mode: 'nivara' }, null).label === 'Connect an AI', pill({ mode: 'nivara' }, null).label);
 }
 
 console.log('\n=== once we have looked ===');
@@ -64,7 +67,7 @@ console.log('\n=== the pill never lies about the kind of source ===');
     [{ mode: 'own_key', provider: 'groq', model: 'llama-3.3-70b' }, /groq/i],
     [{ mode: 'own_key', provider: 'gemini', model: 'gemini-3-flash' }, /gemini/i],
     [{ mode: 'agent_cli', cli: 'codex' }, /codex/i],
-    [{ mode: 'nivara' }, /adris/i],
+    [{ mode: 'nivara' }, /^(connect an ai|choose for me)$/i],
   ];
   for (const [pref, want] of cases) {
     for (const avail of [null, availWith({ byokProviders: [pref.provider].filter(Boolean), clis: [pref.cli].filter(Boolean) })]) {
@@ -72,6 +75,19 @@ console.log('\n=== the pill never lies about the kind of source ===');
       ok(`${pref.mode}${pref.provider ? '/' + pref.provider : ''}${pref.cli ? '/' + pref.cli : ''} (avail ${avail ? 'known' : 'unknown'}) reads right`,
         want.test(p.label), p.label);
     }
+  }
+}
+
+console.log('\n=== the retired hosted plan is never offered ===');
+{
+  for (const avail of [null, availWith(), availWith({ byokProviders: ['nvidia'], clis: ['codex'] })]) {
+    const choices = buildChoices(avail, { mode: 'auto' });
+    ok(`no menu row selects the hosted plan (avail ${avail ? 'known' : 'unknown'})`, !choices.some((c) => c.mode === 'nivara'),
+      choices.map((c) => c.id).join(','));
+    ok('...and no row is labelled adris.tech', !choices.some((c) => /adris\.tech/i.test(c.label)),
+      choices.map((c) => c.label).join(','));
+    ok('...and none offers a hosted / pay-per-use model', !choices.some((c) => /hosted|pay per use/i.test(c.blurb + ' ' + (c.cost ?? ''))),
+      choices.map((c) => c.blurb).join(' | '));
   }
 }
 

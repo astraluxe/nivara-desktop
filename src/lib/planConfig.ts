@@ -1,4 +1,3 @@
-import { ALLOWANCE, tierOf } from './entitlement';
 ﻿export type Plan = 'explore' | 'free' | 'solo' | 'builder' | 'business' | 'custom';
 
 export interface PlanConfig {
@@ -175,32 +174,42 @@ export const PLAN_CONFIG: Record<Plan, PlanConfig> = {
   },
 };
 
-export function getPlanConfig(plan: string): PlanConfig {
-  const legacy = PLAN_CONFIG[plan as Plan] ?? PLAN_CONFIG.free;
-  const sold = ALLOWANCE[tierOf(plan, 'plan')];
+// ─── adris.tech IS FREE (Oct 2026) ───────────────────────────────────────────
+//
+// The hosted plan is retired: there is no adris.tech key, so nothing a user does in the app costs
+// adris.tech anything — every answer runs on the user's own key, their Claude Code / Codex, or a
+// local model. With no cost there is nothing to ration, so every account gets the same entitlement:
+// everything on, no caps.
+//
+// Two numbers stay at zero because they would only ever have run on OUR money, and that path is
+// switched off on the server too: cloud automation runs (the Edge Function that ran them used our
+// Gemini key) — automations still run on the user's PC. AI images are uncapped because the only
+// way left to make one is the user's own image key.
+//
+// PLAN_CONFIG above is kept as history and for code that still names a tier; nothing gates on it.
+export const FREE_FOR_ALL: PlanConfig = {
+  monthlyTokens:       null,    // null = unlimited — every reader checks `!== null` before capping
+  label:               'Free',
+  mcpConnections:      999,
+  researchParallelism: 40,
+  canCreateMesh:       true,
+  canJoinMesh:         true,
+  meshDevices:         50,
+  guardAccess:         true,
+  guardChecks:         null,
+  contractScanning:    true,
+  auditExport:         true,
+  voiceToCode:         true,
+  cloudAutomations:    0,       // retired — ran on our key. Automations run on the user's PC.
+  advancedSearches:    null,
+  powerCommands:       null,
+  advancedDeck:        true,
+  socialScheduling:    true,
+  imageUnits:          null,    // only the user's own image key can make one now
+};
 
-  // THE GREATER OF THE TWO, on every figure the pricing page states.
-  //
-  // Higher of promised-and-had, never lower. A customer must never be stopped below the number they
-  // bought from, and must never lose capacity they already had because the plans were renamed. The
-  // qualitative flags (Guard, voice, audit export) stay exactly as they were — this is about
-  // quantities the page puts a number on.
-  //
-  // Infinity is what ALLOWANCE uses for Enterprise; PLAN_CONFIG uses 0 for "unlimited" on tokens,
-  // so that case is kept rather than turned into a literal zero.
-  // null means UNLIMITED here (custom), and 0 is used for unlimited on some rows. Neither may be
-  // turned into a literal number by "taking the bigger" — that would cap a plan that has no cap.
-  const bigger = (a: number | null, b: number): number | null => {
-    if (a === null || a === 0) return a;
-    return Math.max(a, b === Infinity ? a : b);
-  };
-
-  return {
-    ...legacy,
-    monthlyTokens:    bigger(legacy.monthlyTokens, sold.tokens),
-    meshDevices:      Math.max(legacy.meshDevices, sold.meshDevices === Infinity ? legacy.meshDevices : sold.meshDevices),
-    cloudAutomations: Math.max(legacy.cloudAutomations, sold.runs === Infinity ? legacy.cloudAutomations : sold.runs),
-  };
+export function getPlanConfig(_plan: string): PlanConfig {
+  return FREE_FOR_ALL;
 }
 
 export function charsToTokens(chars: number): number {
@@ -219,13 +228,8 @@ export function charsToTokens(chars: number): number {
  * One entitlement, read the same way by what is shown and what is allowed.
  */
 export function planConfigFor(
-  account: { plan?: string | null; admin_level?: string | null } | null | undefined,
+  _account: { plan?: string | null; admin_level?: string | null } | null | undefined,
 ): PlanConfig {
-  const level = String(account?.admin_level || '').toLowerCase();
-  if (level === 'head' || level === 'admin') {
-    // Everything on, and no cap that could stop the person who runs it.
-    const base = getPlanConfig('business');
-    return { ...base, voiceToCode: true, monthlyTokens: 0 };
-  }
-  return getPlanConfig(account?.plan ?? 'explore');
+  // One entitlement for everyone — see FREE_FOR_ALL.
+  return FREE_FOR_ALL;
 }

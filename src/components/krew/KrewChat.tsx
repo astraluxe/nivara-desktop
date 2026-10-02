@@ -2131,7 +2131,7 @@ export function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled
           <p className="text-[10px] font-semibold text-nv-faint uppercase tracking-wide mb-1.5">Detail level</p>
           <div className="flex gap-2">
             <Opt active={mode === 'basic'} onClick={() => setMode('basic')} title="Basic" sub="Clean designed slides · fast" />
-            <Opt active={mode === 'advanced'} lock={!unlockedAdvanced} onClick={() => setMode('advanced')} title="Advanced" sub={unlockedAdvanced ? 'Images on every key slide · richer' : 'Adds images · needs a Gemini key or a paid plan'} />
+            <Opt active={mode === 'advanced'} lock={!unlockedAdvanced} onClick={() => setMode('advanced')} title="Advanced" sub={unlockedAdvanced ? 'Images on every key slide · richer' : 'Adds images · needs your own image key'} />
           </div>
           {/* BE EXACT ABOUT WHAT UNLOCKS THIS. "own key" read as "any own key", so someone on a
               free NVIDIA key expected images and got a locked button with no explanation. Only
@@ -2140,7 +2140,7 @@ export function DeckSetupCard({ unlockedAdvanced, onGenerate, onCancel, disabled
           {!unlockedAdvanced && (
             <p className="text-[9.5px] text-nv-faint mt-1.5">
               <b className="text-nv-text">Basic builds the full deck</b> — every slide, written and laid out — and works on any key, including a free NVIDIA one.
-              Advanced only adds AI <i>images</i>, which need a <b className="text-nv-text">Gemini</b> key specifically (Connect Apps → Gemini) or a paid plan. An NVIDIA or Groq key can&apos;t make images.
+              Advanced only adds AI <i>images</i>, which need your own image key: <b className="text-nv-text">Gemini</b> (Connect Apps → Gemini) or an NVIDIA key for FLUX images.
             </p>
           )}
         </div>
@@ -4461,8 +4461,8 @@ export default function KrewChat({ sessionId, newChatNonce, agent, onSessionCrea
         ? 'Re-download it in Models, or pick a different source from the menu in the title bar.'
         : 'Reconnect the key in Connect Apps, or pick a different source from the menu in the title bar.';
       addMsgHere({ role: 'assistant', content:
-        'Heads up: I could not reach ' + what + ', so this chat is running on **adris.tech AI** instead, '
-        + 'which uses your adris.tech allowance. ' + how });
+        'Heads up: I could not reach ' + what + ', so this chat is using your other connected AI instead '
+        + '(or none, if nothing else is connected). ' + how });
     },
   });
 
@@ -5147,6 +5147,10 @@ const [studioExtracting, setStudioExtracting] = useState(false);
 
   function sanitiseError(raw: unknown): string {
     const msg = raw instanceof Error ? raw.message : String(raw);
+    // Nothing is connected (the hosted plan is retired). The Rust side's message already says what
+    // to do, and it contains the word "connect" — so it must be passed through BEFORE the network
+    // check below turns it into a misleading "check your internet connection".
+    if (/no ai is connected/i.test(msg)) return msg;
     // Stream dropped mid-response (distinct from "never connected")
     if (/stream interrupted/i.test(msg))
       return 'Response was interrupted mid-stream. Please try again.';
@@ -5173,12 +5177,12 @@ const [studioExtracting, setStudioExtracting] = useState(false);
     if (/429|rate.?limit|quota/i.test(msg)) {
       // Check if it's our own token-limit message from krew-stream (passes through unmodified)
       if (/monthly.*token|reached.*monthly|upgrade.*plan|adris\.tech\/pricing/i.test(msg)) return msg;
-      return 'AI rate limit reached. Switch to Own Key mode in the connection bar, or upgrade your plan at adris.tech/pricing.';
+      return 'AI rate limit reached on this provider. Wait a minute, or pick another AI from the menu at the top (another key, your Claude Code / Codex, or a local model).';
     }
     if (/500|502|503|504|server.?error|internal.?error/i.test(msg))
       return 'The AI service is temporarily unavailable. Please try again shortly.';
     if (/is not found for API version|not supported for generateContent|"code": ?404|model.*not found/i.test(msg))
-      return 'adris.tech AI is temporarily unavailable. Please try again in a moment, or switch to Own Key mode.';
+      return 'The AI service is temporarily unavailable. Please try again in a moment, or pick another AI from the menu at the top.';
     // Strip any URL or API key that leaked through
     return msg.replace(/https?:\/\/[^\s)]+/g, '[service]').replace(/key=[A-Za-z0-9_-]{20,}/g, 'key=[hidden]');
   }
@@ -5302,7 +5306,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
         }
       }
       if (!effectiveKey) {
-        throw new Error('No API key is connected for "your own key" mode. Open Connect Apps and add a key (NVIDIA and Groq are free), or switch the chat to adris.tech AI.');
+        throw new Error('No API key is connected for "your own key" mode. Open Connect Apps and add a key (NVIDIA and Groq are free), or pick your Claude Code / Codex or a local model from the AI menu.');
       }
       // SAFETY NET — route by the KEY's OWN prefix. An nvapi-/gsk_/sk-ant-/AIza key is unambiguous,
       // so it can NEVER be sent to the wrong endpoint because a dropdown was left on another provider
@@ -5582,7 +5586,7 @@ const [studioExtracting, setStudioExtracting] = useState(false);
             }
           }
           setReconnecting(null);
-          throw new Error(`Your ${prov || 'AI'} model${deadModel ? ` (${deadModel})` : ''} has been retired by the provider and no replacement could be reached. Open Connect Apps → ${prov || 'your provider'} and pick a model, or switch to adris.tech AI.`);
+          throw new Error(`Your ${prov || 'AI'} model${deadModel ? ` (${deadModel})` : ''} has been retired by the provider and no replacement could be reached. Open Connect Apps → ${prov || 'your provider'} and pick a model, or pick another AI from the menu at the top.`);
         }
         // Auth/JWT expiry (e.g. the token lapsed during a long browser pass): force ONE refresh and
         // retry the same turn before giving up. streamTurn re-reads the (now refreshed) token, so
@@ -5641,8 +5645,8 @@ const [studioExtracting, setStudioExtracting] = useState(false);
             continue;
           }
           throw new Error(isOverloaded
-            ? `${provider || 'Your AI provider'} stayed overloaded through six retries (about a minute and a half of waiting). That is their service being busy — not your key, your quota or your setup. Try again shortly, switch to a different model, or use adris.tech AI for this one.`
-            : `${provider || 'Your AI provider'} kept rate-limiting this key (free tiers allow only a few requests a minute). Wait a minute and try again, or switch the chat to adris.tech AI for this task.`);
+            ? `${provider || 'Your AI provider'} stayed overloaded through six retries (about a minute and a half of waiting). That is their service being busy — not your key, your quota or your setup. Try again shortly, or switch to a different model or AI from the menu at the top.`
+            : `${provider || 'Your AI provider'} kept rate-limiting this key (free tiers allow only a few requests a minute). Wait a minute and try again, or pick another AI from the menu at the top for this task.`);
         }
         // Order matters: the stall message itself contains the word "connection", so it has to be
         // recognised BEFORE the network patterns or it classifies as a drop and gets the banner again.
@@ -5652,7 +5656,10 @@ const [studioExtracting, setStudioExtracting] = useState(false);
         // into "couldn't reach the AI to plan this". It is a stall like any other: wait, try once
         // more, and only then tell the user.
         const isStall = /response stopped|stopped responding|hasn't started answering/i.test(msg);
-        const isNetworkDrop = !isStall && /sending request|connect(ion)?|network|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|failed to fetch|stream interrupted/i.test(msg);
+        // "No AI is connected" also contains "connect" — it is a setup state, not a dropped
+        // connection, so it must never be retried or bannered as "Reconnecting".
+        const notConnected = /no ai is connected/i.test(msg);
+        const isNetworkDrop = !isStall && !notConnected && /sending request|connect(ion)?|network|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|failed to fetch|stream interrupted/i.test(msg);
         const budget = isNetworkDrop ? MAX_ATTEMPTS : 2;
         if ((!isNetworkDrop && !isStall) || stopRef.current || attempt >= budget) { setReconnecting(null); throw e; }
         // Only claim to be reconnecting when the connection is actually the suspect.
@@ -5790,13 +5797,6 @@ The prompt must be production-ready — specific enough for a motion designer to
     resumeActivity();   // clearing Stop restarts work — the activity bus speaks again
     resetToolStop();   // a new run: tools are allowed again
     const sid = sidRef.current;
-    // Make sure the managed AI key is loaded BEFORE we stream — otherwise the whole deck runs
-    // on the edge fallback, which (a) can't generate images (the "blue empty box") and (b)
-    // doesn't emit nivara-tokens, so nothing gets counted against the plan (the "% never
-    // moves" bug). Refreshing it here routes the deck through the fast path that does both.
-    if (mode === 'nivara' && session?.access_token) {
-      try { await invoke('fetch_session_key', { sessionToken: await freshSessionToken(session.access_token) }); } catch { /* falls back to edge + stock/abstract images */ }
-    }
     addMsg({ role: 'delegation', toolName: 'deck_maker', content: 'Designing your deck…', streaming: true });
     // Only ever draw into the conversation this deck belongs to. Same reasoning as the ownership
     // gate on the chat helpers: the work continues if the user wanders off, the drawing does not.
@@ -6186,18 +6186,8 @@ The prompt must be production-ready — specific enough for a motion designer to
         });
         const need = slidesNeedingImages(spec);
         const imgKey = (provider === 'gemini' && apiKey.trim()) ? apiKey.trim() : null;
-        // Images need a real Gemini key: the user's own, OR the managed session key. The
-        // managed key is fetched once at app-start (App.tsx) but that call fails silently on a
-        // network blip — leaving "No image key available" even for a plan that IS entitled. So
-        // if we're about to rely on the managed key, re-fetch it right now (best-effort) before
-        // the image loop, so a stale/failed startup fetch doesn't cost the user their images.
-        if (!imgKey && need.length > 0 && session?.access_token) {
-          setStatus('Preparing image generation…');
-          try {
-            const tok = await freshSessionToken(session.access_token);
-            await invoke('fetch_session_key', { sessionToken: tok });
-          } catch { /* if this fails too, the loop below reports it clearly */ }
-        }
+        // Images need the user's OWN key (NVIDIA FLUX or Gemini). There is no managed adris.tech
+        // key any more — without one, the loop below falls back to stock photography.
         // Try image models in order until one works, then reuse it. Each candidate carries its OWN
         // key. FREE FIRST: if the user has an NVIDIA key connected, generate on NVIDIA's FLUX (free
         // on their key — zero adris.tech tokens), then fall back to Gemini. Gemini ids verified live;
@@ -8408,7 +8398,7 @@ PREFER people and companies that appear above: they are known to exist. You may 
         // Say what to actually DO. "Your model didn't return any usable rows" told the user their
         // model was at fault and left them to guess the remedy.
         const none = (mode === 'own_key' || mode === 'local')
-          ? `I couldn't get a usable list out of ${mode === 'local' ? 'your local model' : 'your own key'} for that, even asking it the simplest way.\n\nWhat usually fixes it:\n- **Pick a sector** on the card (e.g. logistics, fintech) — an open-ended "anyone" brief is the hardest kind to answer.\n- **Ask for fewer** — try 10 rather than 25.\n- ${mode === 'local' ? '**Try a larger local model** — smaller ones often cannot hold a table format.' : '**Try a different model** on your key — some are much better at structured lists than others.'}\n- Or switch to adris.tech AI for this one search.\n\nNothing was saved, and nothing was spent on browsing.`
+          ? `I couldn't get a usable list out of ${mode === 'local' ? 'your local model' : 'your own key'} for that, even asking it the simplest way.\n\nWhat usually fixes it:\n- **Pick a sector** on the card (e.g. logistics, fintech) — an open-ended "anyone" brief is the hardest kind to answer.\n- **Ask for fewer** — try 10 rather than 25.\n- ${mode === 'local' ? '**Try a larger local model** — smaller ones often cannot hold a table format.' : '**Try a different model** on your key — some are much better at structured lists than others.'}\n- Or pick a stronger AI from the menu at the top (your Claude Code / Codex) for this one search.\n\nNothing was saved, and nothing was spent on browsing.`
           : 'I couldn\'t put a list together for that. Try widening it — fewer filters, or a bigger city.';
         if (mine()) setMessages((prev) => { const c = [...prev]; if (c[c.length - 1]?.streaming) c[c.length - 1] = { ...c[c.length - 1], content: none, streaming: false }; return c; });
         setBusy(false); return;
@@ -10694,8 +10684,10 @@ ANY message the user will SEND — a WhatsApp/DM/SMS text, a meeting confirmatio
     if (mode === 'nivara' && !creds.nvidia?.api_key && localStorage.getItem('nv-nvidia-nudge-off') !== '1') {
       const n = (parseInt(localStorage.getItem('nv-nvidia-nudge-count') || '0', 10) || 0) + 1;
       try { localStorage.setItem('nv-nvidia-nudge-count', String(n)); } catch { /* ignore */ }
-      // Nudge on the 2nd adris.tech message, then every 6th, so it's noticeable but not naggy.
-      if (n === 2 || n % 6 === 0) setNvidiaNudge(true);
+      // 'nivara' now means NOTHING is connected (the hosted plan is retired), so this is the way
+      // forward rather than an upsell — shown on every such turn until dismissed.
+      void n;
+      setNvidiaNudge(true);
     }
     // Pre-warm Chrome in Advanced mode so the FIRST browser open isn't a ~10s cold start — BUT
     // only when the task actually looks like it will browse. A pure content/drafting task (write
@@ -14491,11 +14483,12 @@ ${wfTask}`);
       finally { setAgentStep(null); }
     }
 
-    // ── Still nothing → honest message + Continue (same model) and, on a free/own key or local,
-    //    a one-click Switch-to-adris.tech retry. ──
+    // ── Still nothing → honest message + Continue (same model). There is no hosted model to
+    //    switch to any more (the adris.tech plan is retired), so the advice names the user's own
+    //    stronger options instead. ──
     const weak = mode === 'own_key' || mode === 'local';
     const stopped = weak
-      ? "That one didn't come back complete on your current model, even after a direct retry — nothing was saved or sent. Try Continue to run it again on your key, or use “Switch to adris.tech AI” below for this heavier one."
+      ? "That one didn't come back complete on your current model, even after a direct retry — nothing was saved or sent. Try Continue to run it again, or pick a stronger AI from the menu at the top (your Claude Code / Codex, or a bigger model on your key) for this heavier one."
       : "I stopped before I had anything to show you — nothing was saved or sent. Use Continue below to pick this up again.";
     addMsg({ role: 'assistant', content: stopped, streaming: false });
     if (sid) krewDb.saveMessage(sid, 'assistant', stopped).catch(() => {});
@@ -14503,7 +14496,6 @@ ${wfTask}`);
     // now hold — a next_task prompt is re-sent as a visible chat message, and pasting four decks'
     // worth of extracted text into the thread would be its own kind of broken.
     addMsg({ role: 'next_task', content: '', nextTask: { suggestion: 'Continue where it stopped', prompt: displayReq } });
-    if (weak) addMsg({ role: 'next_task', content: '', nextTask: { suggestion: 'Switch to adris.tech AI & retry', prompt: displayReq, useNivara: true } });
   }
 
   function finaliseLastMsg(rawContent: string) {
@@ -14925,8 +14917,8 @@ ${wfTask}`);
               <path d="M13 2 3 14h7l-1 8 10-12h-7z"/>
             </svg>
             <div className="flex-1 min-w-0">
-              <p className="text-[11px] font-bold text-emerald-500 leading-tight">Connect a free NVIDIA key — stop spending your adris.tech tokens on chat</p>
-              <p className="text-[10px] text-nv-faint mt-0.5 leading-relaxed">You're chatting on your adris.tech allowance. Add a <b className="text-nv-text">free</b> NVIDIA API key (build.nvidia.com — no card) and Krew runs your chats on it at <b className="text-nv-text">zero cost</b>, saving your adris.tech tokens for the heavy lifting — decks, images and big tasks. Takes ~2 minutes.</p>
+              <p className="text-[11px] font-bold text-emerald-500 leading-tight">Connect an AI to start — a free NVIDIA key takes ~2 minutes</p>
+              <p className="text-[10px] text-nv-faint mt-0.5 leading-relaxed">adris.tech is free and runs on the AI you connect. Add a <b className="text-nv-text">free</b> NVIDIA API key (build.nvidia.com — no card), or pick your Claude Code / Codex, another key, or a local model from the AI menu at the top.</p>
             </div>
             <button
               onClick={() => { setNvidiaNudge(false); onOpenConnectApps?.(); }}
@@ -15452,7 +15444,8 @@ ${dev.text}`;
                   onAccept={() => {
                     // "Switch to adris.tech AI & retry" cards flip the source to adris.tech first, so
                     // the re-run uses managed AI. Everything else just pre-fills for review.
-                    if (msg.nextTask!.useNivara) setMode('nivara');
+                    // useNivara (switch to the hosted plan) is retired — old saved chats may still
+                    // carry it, and it is deliberately ignored.
                     setInput(msg.nextTask!.prompt);
                     setMessages((prev) => prev.filter((m) => m !== msg));
                     setTimeout(() => { const el = inputRef.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0);
@@ -16297,7 +16290,7 @@ ${msg.content}`),
           onClose={() => setShowQuotaUpgrade(false)}
           currentPlan={profile?.plan ?? 'explore'}
           highlightPlan="solo"
-          reason="You've used all your AI tasks for this period. Upgrade to keep going."
+          reason="adris.tech is free — connect an AI to keep going."
         />
       )}
       {planOpen && (

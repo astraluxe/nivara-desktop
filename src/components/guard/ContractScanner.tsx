@@ -116,7 +116,7 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
       if (!alive) return;
       setAiMode(r.mode);
       setAiLabel(
-        r.mode === 'nivara' ? 'adris.tech AI'
+        r.mode === 'nivara' ? 'No AI connected'
         : r.mode === 'local' ? `Local · ${r.localModel || 'model'}`
         : `${r.provider || 'own key'} · ${(r.modelName || 'model').split('/').pop()}`,
       );
@@ -453,9 +453,9 @@ export default function ContractScanner({ onScanRun }: { onScanRun?: () => void 
                     Free keys cap how much you can send per minute, so most of that was waiting rather than reading.
                   </p>
                   <p className="text-[10.5px] text-nv-muted leading-relaxed mt-1">
-                    The same scan on <b>adris.tech AI</b> usually finishes in seconds. If document scanning is
-                    something you do often, switching the source in Settings is the single biggest speed-up —
-                    everything else can stay on your own key.
+                    The same scan on your own <b>Claude Code / Codex</b> or a paid key usually finishes much faster.
+                    If document scanning is something you do often, switching the AI in the menu at the top is the
+                    single biggest speed-up.
                   </p>
                 </div>
               )}

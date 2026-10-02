@@ -1991,7 +1991,9 @@ function AutomationCard({ automation, onToggle, onCloudToggle, onEdit, onDelete,
           <svg viewBox="0 0 12 12" fill="none" className="w-3 h-3"><path d="M8.5 1.5l2 2-7 7H1.5v-2l7-7z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/></svg>
           Edit in Canvas
         </button>
-        {!isCanvas && (
+        {/* Cloud runs are retired (Oct 2026) — they ran on adris.tech's AI key. Automations run on
+            this PC. The button only remains to switch OFF one that was turned on before. */}
+        {!isCanvas && automation.cloud_enabled && (
           <button onClick={onCloudToggle}
             title={automation.cloud_enabled ? 'Disable cloud run (PC-off)' : 'Enable cloud run when PC is off'}
             className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-mono transition-fast ${automation.cloud_enabled ? 'text-sky-400 bg-sky-500/10 hover:bg-sky-500/20' : 'text-nv-faint hover:text-sky-400 hover:bg-sky-500/10'}`}>
@@ -2105,7 +2107,7 @@ function AIChatBar({ canvasRef, automations = [], selectedAutomation: initialSel
     setDiscussMsgs(newMsgs);
     setLoading(true);
     setError('');
-    setStatusMsg('adris.tech AI is thinking…');
+    setStatusMsg('Thinking…');
     try {
       const history = newMsgs.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n');
       const systemPrompt = buildDiscussionPrompt(automations, selectedAutomation, connectedServices);

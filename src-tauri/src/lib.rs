@@ -1997,127 +1997,13 @@ async fn ai_stream(
         }
 
         "nivara" => {
-            let token = session_token.unwrap_or_default();
-            if token.is_empty() {
-                emit_error("Sign in to adris.tech to use adris.tech AI.".to_string());
-                return Ok(());
-            }
-            // Fast path: use session key for direct Gemini call (no Edge Function overhead)
-            let sk_arc = {
-                let st = app.state::<SessionKeyState>();
-                let g = st.0.lock().unwrap_or_else(|e| e.into_inner());
-                g.as_ref().and_then(|a| {
-                    let now_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default().as_millis() as i64;
-                    if a.expires_at > now_ms && a.remaining.load(std::sync::atomic::Ordering::Relaxed) > 0 {
-                        Some(a.clone())
-                    } else { None }
-                })
-            };
-            if let Some(sk) = sk_arc {
-                let gkey = sk.key.get();
-                let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:streamGenerateContent?key={}&alt=sse", gkey);
-                let contents: Vec<serde_json::Value> = messages.iter().map(|m| serde_json::json!({
-                    "role": if m.role == "assistant" { "model" } else { "user" },
-                    "parts": [{ "text": m.content }]
-                })).collect();
-                let body = serde_json::json!({ "contents": contents, "generationConfig": { "maxOutputTokens": 32768 } });
-                let client = reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(120))
-                    .build().unwrap_or_else(|_| reqwest::Client::new());
-                let resp = client.post(&url).json(&body).send().await
-                    .map_err(|e| { let s = e.to_string(); emit_error(s.clone()); s })?;
-                if !resp.status().is_success() {
-                    let st = resp.status(); let eb = resp.text().await.unwrap_or_default();
-                    emit_error(format!("{} — {}", st, eb.chars().take(300).collect::<String>()));
-                    return Ok(());
-                }
-                let mut chars = 0i64;
-                let mut stream = resp.bytes_stream();
-                // Buffer bytes across TCP chunks and only parse COMPLETE lines (ending in \n).
-                // Without this, a single SSE `data: {…}` event split across two network reads
-                // was parsed as two broken halves and DROPPED — silently corrupting long
-                // outputs (e.g. a full slide deck came back as mangled/invalid JSON).
-                let mut buf: Vec<u8> = Vec::new();
-                'outer_ai: while let Some(chunk) = stream.next().await {
-                    let bytes = chunk.map_err(|e| { let s = format!("Stream interrupted: {}", e); emit_error(s.clone()); s })?;
-                    buf.extend_from_slice(&bytes);
-                    while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
-                        let mut line_bytes: Vec<u8> = buf.drain(..=pos).collect();
-                        line_bytes.pop(); // drop '\n'
-                        if line_bytes.last() == Some(&b'\r') { line_bytes.pop(); }
-                        let line = String::from_utf8_lossy(&line_bytes);
-                        if let Some(data) = line.strip_prefix("data: ") {
-                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
-                                if let Some(parts) = v["candidates"][0]["content"]["parts"].as_array() {
-                                    for part in parts {
-                                        if part["thought"].as_bool() == Some(true) { continue; }
-                                        if let Some(t) = part["text"].as_str() {
-                                            if !t.is_empty() { chars += t.len() as i64; emit_chunk(t.to_string()); }
-                                        }
-                                    }
-                                }
-                                let fin = v["candidates"][0]["finishReason"].as_str().unwrap_or("");
-                                if fin == "STOP" || fin == "MAX_TOKENS" {
-                                    let toks = (chars / 4).max(1);
-                                    sk.remaining.fetch_sub(toks, std::sync::atomic::Ordering::Relaxed);
-                                    let _ = app.emit("nivara-tokens", serde_json::json!({ "tokens": toks }));
-                                    emit_done(); return Ok(());
-                                }
-                                if v["candidates"][0]["finishReason"].is_string() { break 'outer_ai; }
-                            }
-                        }
-                    }
-                }
-                let toks = (chars / 4).max(1);
-                sk.remaining.fetch_sub(toks, std::sync::atomic::Ordering::Relaxed);
-                let _ = app.emit("nivara-tokens", serde_json::json!({ "tokens": toks }));
-                emit_done();
-            } else {
-                // Fallback: route via krew-stream Edge Function
-                let fn_url = "https://xkkqcqsacgdrfwbwdqsp.supabase.co/functions/v1/krew-stream";
-                let mut all_msgs: Vec<serde_json::Value> = Vec::new();
-                for m in &messages { all_msgs.push(serde_json::json!({"role": m.role, "content": m.content})); }
-                let body = serde_json::json!({ "messages": all_msgs, "systemPrompt": "" });
-                let client = reqwest::Client::builder()
-                    .http1_only()
-                    .timeout(std::time::Duration::from_secs(120))
-                    .build().unwrap_or_else(|_| reqwest::Client::new());
-                let resp = client
-                    .post(fn_url)
-                    .header("Authorization", format!("Bearer {}", token))
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .json(&body).send().await
-                    .map_err(|e| { let s = e.to_string(); emit_error(s.clone()); s })?;
-                if !resp.status().is_success() {
-                    let status = resp.status();
-                    let body_text = resp.text().await.unwrap_or_default();
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body_text) {
-                        if let Some(e) = v["error"].as_str() { emit_error(e.to_string()); return Ok(()); }
-                    }
-                    emit_error(format!("{} — {}", status, body_text.chars().take(300).collect::<String>()));
-                    return Ok(());
-                }
-                let mut sse_buf: Vec<u8> = Vec::new();
-                let mut stream = resp.bytes_stream();
-                while let Some(chunk) = stream.next().await {
-                    let bytes = chunk.map_err(|e| { let s = format!("Stream interrupted: {}", e); emit_error(s.clone()); s })?;
-                    for line in sse_take_lines(&mut sse_buf, &bytes) {
-                        let line = line.as_str();
-                        if let Some(data) = line.strip_prefix("data: ") {
-                            if data == "[DONE]" { emit_done(); return Ok(()); }
-                            if data == "[TRUNCATED]" { continue; }
-                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
-                                if let Some(t) = v["text"].as_str() {
-                                    if !t.is_empty() { emit_chunk(t.to_string()); }
-                                }
-                            }
-                        }
-                    }
-                }
-                emit_done();
-            }
+            // THE HOSTED adris.tech PLAN IS RETIRED (Oct 2026). This arm used to fetch the managed
+            // Gemini key or stream through the krew-stream Edge Function. Both are gone: the app is
+            // free and only ever thinks with what the user connected. 'nivara' now only means
+            // "nothing is connected", answered here without contacting any server.
+            let _ = &session_token;
+            emit_error(NO_AI_CONNECTED.to_string());
+            return Ok(());
         }
 
         _ => emit_error(format!("Unknown mode: {}", mode)),
@@ -2987,116 +2873,40 @@ async fn get_token_usage_this_month(
     Ok(sum)
 }
 
-// ─── Session key (adris.tech AI direct-call path) ─────────────────────────────
-
-const CLIENT_PEPPER: &str = "nv-adris-2026-k7X9mP3q";
-
-struct ObfuscatedKey { data: Vec<u8>, salt: Vec<u8> }
-impl ObfuscatedKey {
-    fn new(plain: &str) -> Self {
-        let bytes = plain.as_bytes();
-        let t = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().subsec_nanos();
-        let pid = std::process::id();
-        let len = bytes.len().max(32);
-        let mut salt = vec![0u8; len];
-        for (i, b) in salt.iter_mut().enumerate() {
-            *b = (t.wrapping_add(pid).wrapping_add(i as u32 * 7).wrapping_mul(0x6B) ^ 0xA5) as u8;
-        }
-        let data: Vec<u8> = bytes.iter().enumerate().map(|(i, b)| b ^ salt[i % len]).collect();
-        Self { data, salt }
-    }
-    fn get(&self) -> String {
-        let plain: Vec<u8> = self.data.iter().enumerate()
-            .map(|(i, b)| b ^ self.salt[i % self.salt.len()]).collect();
-        String::from_utf8(plain).unwrap_or_default()
-    }
-}
-
+// ─── Session key (RETIRED) ────────────────────────────────────────────────────
+//
+// This held the managed adris.tech Gemini key, downloaded and decrypted for 24h. The hosted plan
+// is retired (Oct 2026): the key, its decryption and the pepper are deleted, and the state below is
+// never filled — it stays only because commands registered with Tauri still take it as a parameter.
+#[allow(dead_code)]
 struct SessionKeyInner {
-    key:           ObfuscatedKey,
-    plan:          String,
-    remaining:     std::sync::atomic::AtomicI64,
     pending_usage: std::sync::atomic::AtomicI64,
-    expires_at:    i64,
     user_id:       String,
 }
 
 struct SessionKeyState(Mutex<Option<Arc<SessionKeyInner>>>);
 impl SessionKeyState { fn new() -> Self { Self(Mutex::new(None)) } }
 
-fn sk_xor_mask(user_id: &str, nonce: &str) -> [u8; 32] {
-    use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-    type H = Hmac<Sha256>;
-    let mut mac = H::new_from_slice(CLIENT_PEPPER.as_bytes()).expect("HMAC any key");
-    mac.update(format!("{}:{}", user_id, nonce).as_bytes());
-    mac.finalize().into_bytes().into()
-}
-
-fn sk_decrypt(enc_hex: &str, nonce: &str, user_id: &str) -> Option<String> {
-    let mask = sk_xor_mask(user_id, nonce);
-    let enc: Vec<u8> = (0..enc_hex.len()).step_by(2)
-        .filter_map(|i| u8::from_str_radix(&enc_hex[i..i+2], 16).ok())
-        .collect();
-    String::from_utf8(enc.iter().enumerate().map(|(i, b)| b ^ mask[i % 32]).collect()).ok()
-}
-
-fn sk_decode_sub(token: &str) -> Option<String> {
-    use base64::{Engine as _, engine::general_purpose};
-    let parts: Vec<&str> = token.splitn(3, '.').collect();
-    if parts.len() < 2 { return None; }
-    let p = parts[1];
-    let padded = format!("{}{}", p, "=".repeat((4 - p.len() % 4) % 4));
-    let decoded = general_purpose::URL_SAFE.decode(&padded)
-        .or_else(|_| general_purpose::URL_SAFE_NO_PAD.decode(p)).ok()?;
-    serde_json::from_slice::<serde_json::Value>(&decoded).ok()
-        .and_then(|v| v["sub"].as_str().map(|s| s.to_string()))
-}
-
 #[tauri::command]
 async fn fetch_session_key(
     state: tauri::State<'_, SessionKeyState>,
     session_token: String,
 ) -> Result<serde_json::Value, String> {
-    if session_token.is_empty() { return Err("No session token".to_string()); }
-    let user_id = sk_decode_sub(&session_token).ok_or_else(|| "Invalid JWT".to_string())?;
-    let client = reqwest::Client::builder()
-        .http1_only()
-        .timeout(std::time::Duration::from_secs(15))
-        .build().unwrap_or_else(|_| reqwest::Client::new());
-    let resp = client
-        .post("https://xkkqcqsacgdrfwbwdqsp.supabase.co/functions/v1/get-session-key")
-        .header("Authorization", format!("Bearer {}", session_token))
-        .header("Content-Type", "application/json")
-        .body("{}").send().await
-        .map_err(|e| format!("Network error: {}", e))?;
-    let status = resp.status();
-    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    if !status.is_success() {
-        return Err(json["error"].as_str().unwrap_or("Key fetch failed").to_string());
-    }
-    let enc        = json["enc"].as_str().ok_or("missing enc")?;
-    let nonce      = json["nonce"].as_str().ok_or("missing nonce")?;
-    let plan       = json["plan"].as_str().unwrap_or("free").to_string();
-    let remaining  = json["remaining"].as_i64().unwrap_or(100_000);
-    let expires_at = json["expires_at"].as_i64().unwrap_or(0);
-    let plain = sk_decrypt(enc, nonce, &user_id).ok_or_else(|| "Decryption failed".to_string())?;
-    if !plain.starts_with("AIza") { return Err("Key validation failed".to_string()); }
-    *state.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(SessionKeyInner {
-        key:           ObfuscatedKey::new(&plain),
-        plan:          plan.clone(),
-        remaining:     std::sync::atomic::AtomicI64::new(remaining),
-        pending_usage: std::sync::atomic::AtomicI64::new(0),
-        expires_at,
-        user_id,
-    }));
-    Ok(serde_json::json!({ "ok": true, "plan": plan, "remaining": remaining }))
+    // RETIRED (Oct 2026). This used to download the managed adris.tech Gemini key for 24h. There is
+    // no hosted plan any more, the get-session-key Edge Function is switched off, and this never
+    // contacts it — so no build of the app from here on can hold an adris.tech key.
+    *state.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    let _ = session_token;
+    Err(NO_AI_CONNECTED.to_string())
 }
+
+/// What every path that once used the hosted adris.tech plan now says. The app is free and thinks
+/// only with what the user connects.
+pub const NO_AI_CONNECTED: &str = "No AI is connected. adris.tech is free and uses your own AI: connect a free NVIDIA or Groq key, your Claude Code or Codex, your own Gemini / OpenAI / Anthropic key, or a local model from the AI menu at the top of the window.";
 
 // Generate one image with a Gemini image model ("Nano Banana" = gemini-2.5-flash-image,
 // "Nano Banana Pro" = gemini-3-pro-image-preview). Uses the caller's own Gemini key when
-// `api_key` is provided (BYO — their cost); otherwise the managed adris.tech session key.
+// `api_key` is provided (BYO — their cost). There is no managed adris.tech key any more.
 // Returns a data: URI. Used by the Advanced deck maker to put real images on slides.
 /// Marker the frontend matches on to tell "you're out of image allowance" apart from a real
 /// failure — the first is a nudge, the second is an error.
@@ -3105,7 +2915,7 @@ pub const IMAGE_QUOTA_MARKER: &str = "IMAGE_QUOTA_EXHAUSTED";
 #[tauri::command]
 async fn krew_generate_image(
     app: tauri::AppHandle,
-    state: tauri::State<'_, SessionKeyState>,
+    _state: tauri::State<'_, SessionKeyState>,
     prompt: String,
     model: Option<String>,
     api_key: Option<String>,
@@ -3114,57 +2924,15 @@ async fn krew_generate_image(
     let model = model.unwrap_or_else(|| "gemini-2.5-flash-image".to_string());
     let byo = api_key.filter(|k| !k.trim().is_empty());
 
-    // ── Images on OUR key go through the server ────────────────────────────────────────────────
+    // ── NO IMAGES ON AN adris.tech KEY ANY MORE ────────────────────────────────────────────────
     //
-    // The app holds the real Gemini key for 24h, so a per-plan cap enforced here could simply be
-    // patched out — and images are the one thing expensive enough for that to matter (one image
-    // costs what ~78,000 metered text tokens cost). The `generate-image` Edge Function holds the
-    // key, checks the plan's remaining image budget against the database, and writes the usage row
-    // itself, so none of it can be skipped.
-    //
-    // The user's OWN keys (NVIDIA FLUX, their own Gemini key) never come here: they cost us
-    // nothing, stay direct, and so stay as fast as they were.
+    // The hosted plan is retired (Oct 2026): there is no adris.tech key and the generate-image
+    // Edge Function is switched off. Without the user's own image key this returns the quota
+    // marker, which the deck loop already treats as "use stock photography" — so decks still
+    // build, they just do not spend anyone's money on AI pictures.
     if byo.is_none() {
-        let token = session_token.unwrap_or_default();
-        if token.trim().is_empty() {
-            return Err("Sign in to adris.tech to generate images, or add your own image key.".to_string());
-        }
-        let url = "https://xkkqcqsacgdrfwbwdqsp.supabase.co/functions/v1/generate-image";
-        let client = reqwest::Client::builder()
-            .http1_only()
-            .timeout(std::time::Duration::from_secs(120))
-            .build().unwrap_or_else(|_| reqwest::Client::new());
-        let resp = client.post(url)
-            .header("Authorization", format!("Bearer {}", token))
-            .header("Content-Type", "application/json")
-            .json(&serde_json::json!({ "prompt": prompt, "model": model }))
-            .send().await
-            .map_err(|e| format!("Image request failed: {}", e))?;
-        let status = resp.status();
-        let body: serde_json::Value = resp.json().await
-            .map_err(|e| format!("Image response unreadable: {}", e))?;
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            // Out of allowance, not broken. The deck loop turns this into the free-key nudge and
-            // falls back to stock photography rather than failing the deck.
-            let msg = body["message"].as_str().unwrap_or("Image allowance used up.");
-            return Err(format!("{}: {}", IMAGE_QUOTA_MARKER, msg));
-        }
-        if !status.is_success() {
-            let msg = body["error"].as_str().unwrap_or("Image generation failed.");
-            return Err(msg.to_string());
-        }
-        let data = body["image"].as_str()
-            .ok_or_else(|| "No image returned.".to_string())?;
-        // The server already recorded the spend; this only keeps the in-app meter live so the
-        // usage bar moves while the deck is being built.
-        let charged = (body["units"].as_f64().unwrap_or(1.0) * 12_000.0) as i64;
-        if let Some(sk) = state.0.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-            sk.remaining.fetch_sub(charged, std::sync::atomic::Ordering::Relaxed);
-        }
-        let _ = app.emit("nivara-tokens", serde_json::json!({
-            "tokens": charged, "kind": "image", "counted": true,
-        }));
-        return Ok(data.to_string());
+        let _ = (&app, &session_token);
+        return Err(format!("{}: AI pictures need your own image key (NVIDIA FLUX is free, or a Gemini key). Using stock photos instead.", IMAGE_QUOTA_MARKER));
     }
 
     // From here down: the user's OWN key only.
@@ -7826,155 +7594,13 @@ async fn krew_ai_stream(
             }
         }
         "nivara" => {
-            let token = session_token.unwrap_or_default();
-            if token.is_empty() {
-                emit_error("Sign in to adris.tech to use adris.tech AI.".to_string());
-                return Ok(());
-            }
-            let emit_truncated = { let app = app.clone(); let cid = call_id.clone(); move || { let _ = app.emit("krew-truncated", serde_json::json!({ "id": cid })); } };
-            // Fast path: use session key for direct Gemini call (no Edge Function overhead)
-            let sk_arc = {
-                let st = app.state::<SessionKeyState>();
-                let g = st.0.lock().unwrap_or_else(|e| e.into_inner());
-                g.as_ref().and_then(|a| {
-                    let now_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default().as_millis() as i64;
-                    if a.expires_at > now_ms && a.remaining.load(std::sync::atomic::Ordering::Relaxed) > 0 {
-                        Some(a.clone())
-                    } else { None }
-                })
-            };
-            if let Some(sk) = sk_arc {
-                let gkey = sk.key.get();
-                let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:streamGenerateContent?key={}&alt=sse", gkey);
-                let contents: Vec<serde_json::Value> = messages.iter().map(|m| serde_json::json!({
-                    "role": if m.role == "assistant" { "model" } else { "user" },
-                    "parts": parse_gemini_parts(&m.content)
-                })).collect();
-                // stopSequences halt generation the instant a tool call closes, so the model
-                // cannot keep going and HALLUCINATE the tool's result (the bug that produced
-                // fake leads and a browser that "ran" without ever opening). The agent loop
-                // then executes the real tool and feeds back the real result.
-                let mut body = serde_json::json!({ "contents": contents, "generationConfig": { "maxOutputTokens": 32768, "stopSequences": ["</tool_call>", "</tool_code>"] } });
-                if !sys.is_empty() { body["systemInstruction"] = serde_json::json!({"parts":[{"text": sys}]}); }
-                let client = reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(120))
-                    .build().unwrap_or_else(|_| reqwest::Client::new());
-                let resp = client.post(&url).json(&body).send().await
-                    .map_err(|e| { let s = e.to_string(); emit_error(s.clone()); s })?;
-                if !resp.status().is_success() {
-                    let st = resp.status(); let eb = resp.text().await.unwrap_or_default();
-                    emit_error(format!("{} — {}", st, eb.chars().take(300).collect::<String>()));
-                    return Ok(());
-                }
-                let mut chars = 0i64;
-                let mut api_total_tokens: Option<i64> = None; // usageMetadata.totalTokenCount (input + output)
-                let mut stream = resp.bytes_stream();
-                let mut sse_buf: Vec<u8> = Vec::new();
-                'outer_krew: while let Some(chunk) = stream.next().await {
-                    // A network hiccup mid-stream must NOT discard the partial answer or drop
-                    // the token count on the floor. If a chunk errors, mark the reply truncated,
-                    // bill exactly what was used so far (below), and end the turn CLEANLY — the
-                    // user sees a coherent (if shorter) reply instead of a frozen/garbled one
-                    // that still cost tokens with nothing to show for it.
-                    let bytes = match chunk {
-                        Ok(b) => b,
-                        Err(_) => { emit_truncated(); break 'outer_krew; }
-                    };
-                    for line in sse_take_lines(&mut sse_buf, &bytes) {
-                        let line = line.as_str();
-                        if let Some(data) = line.strip_prefix("data: ") {
-                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
-                                // Capture accurate total token count (input + output) from Gemini metadata
-                                if let Some(t) = v["usageMetadata"]["totalTokenCount"].as_i64() {
-                                    api_total_tokens = Some(t);
-                                }
-                                if let Some(parts) = v["candidates"][0]["content"]["parts"].as_array() {
-                                    for part in parts {
-                                        if part["thought"].as_bool() == Some(true) { continue; }
-                                        if let Some(t) = part["text"].as_str() {
-                                            if !t.is_empty() { chars += t.len() as i64; emit_chunk(t.to_string()); }
-                                        }
-                                    }
-                                }
-                                let fin = v["candidates"][0]["finishReason"].as_str().unwrap_or("");
-                                if fin == "MAX_TOKENS" { emit_truncated(); }
-                                if fin == "STOP" || fin == "MAX_TOKENS" {
-                                    let toks = api_total_tokens.unwrap_or_else(|| (chars / 4).max(1));
-                                    sk.pending_usage.fetch_add(toks, std::sync::atomic::Ordering::Relaxed);
-                                    sk.remaining.fetch_sub(toks, std::sync::atomic::Ordering::Relaxed);
-                                    let _ = app.emit("nivara-tokens", serde_json::json!({ "tokens": toks }));
-                                    emit_done(); return Ok(());
-                                }
-                                if v["candidates"][0]["finishReason"].is_string() { break 'outer_krew; }
-                            }
-                        }
-                    }
-                }
-                let toks = api_total_tokens.unwrap_or_else(|| (chars / 4).max(1));
-                sk.pending_usage.fetch_add(toks, std::sync::atomic::Ordering::Relaxed);
-                sk.remaining.fetch_sub(toks, std::sync::atomic::Ordering::Relaxed);
-                let _ = app.emit("nivara-tokens", serde_json::json!({ "tokens": toks }));
-                emit_done();
-            } else {
-                // Fallback: route via krew-stream Edge Function
-                let fn_url = "https://xkkqcqsacgdrfwbwdqsp.supabase.co/functions/v1/krew-stream";
-                let body = serde_json::json!({ "messages": messages, "systemPrompt": sys, "stopSequences": ["</tool_call>", "</tool_code>"] });
-                // HTTP/1.1 only — avoids HTTP/2 ALPN negotiation issues on some Windows TLS configs
-                let client = reqwest::Client::builder()
-                    .http1_only()
-                    .timeout(std::time::Duration::from_secs(120))
-                    .build().unwrap_or_else(|_| reqwest::Client::new());
-                let resp = client
-                    .post(fn_url)
-                    .header("Authorization", format!("Bearer {}", token))
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .json(&body).send().await
-                    .map_err(|e| { let s = e.to_string(); emit_error(s.clone()); s })?;
-                if !resp.status().is_success() {
-                    let status = resp.status();
-                    let body_text = resp.text().await.unwrap_or_default();
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body_text) {
-                        // krew-stream returns {"error":"..."}, Supabase gateway returns {"message":"..."}
-                        let err_msg = v["error"].as_str()
-                            .or_else(|| v["message"].as_str())
-                            .or_else(|| v["msg"].as_str());
-                        if let Some(e) = err_msg { emit_error(e.to_string()); return Ok(()); }
-                    }
-                    emit_error(format!("{} — {}", status, body_text.chars().take(300).collect::<String>()));
-                    return Ok(());
-                }
-                // Estimate input tokens up-front (prompt + system) so edge-fallback usage is
-                // counted too — the fast path uses exact usageMetadata, but the krew-stream SSE
-                // only sends text chunks, so we approximate (~4 chars/token). Emitting
-                // nivara-tokens lets the app's usage listener record it (the "% never moves" fix
-                // when the managed key can't load and everything runs on this fallback).
-                let input_chars: i64 = sys.len() as i64
-                    + messages.iter().map(|m| m.content.len() as i64).sum::<i64>();
-                let mut out_chars = 0i64;
-                let bill = { let app = app.clone(); move |extra: i64| {
-                    let toks = ((input_chars + extra) / 4).max(1);
-                    let _ = app.emit("nivara-tokens", serde_json::json!({ "tokens": toks }));
-                }};
-                let mut sse_buf: Vec<u8> = Vec::new();
-                let mut stream = resp.bytes_stream();
-                while let Some(chunk) = stream.next().await {
-                    let bytes = chunk.map_err(|e| { let s = format!("Stream interrupted: {}", e); emit_error(s.clone()); s })?;
-                    for line in sse_take_lines(&mut sse_buf, &bytes) {
-                        let line = line.as_str();
-                        if let Some(data) = line.strip_prefix("data: ") {
-                            if data == "[DONE]" { bill(out_chars); emit_done(); return Ok(()); }
-                            if data == "[TRUNCATED]" { emit_truncated(); continue; }
-                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
-                                if let Some(t) = v["text"].as_str() { if !t.is_empty() { out_chars += t.len() as i64; emit_chunk(t.to_string()); } }
-                            }
-                        }
-                    }
-                }
-                bill(out_chars);
-                emit_done();
-            }
+            // THE HOSTED adris.tech PLAN IS RETIRED (Oct 2026). This arm used to fetch the managed
+            // Gemini key or stream through the krew-stream Edge Function. Both are gone: the app is
+            // free and only ever thinks with what the user connected. 'nivara' now only means
+            // "nothing is connected", answered here without contacting any server.
+            let _ = &session_token;
+            emit_error(NO_AI_CONNECTED.to_string());
+            return Ok(());
         }
         _ => emit_error(format!("Unknown mode: {}", mode)),
     }

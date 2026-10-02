@@ -1248,7 +1248,7 @@ export async function planReply(opts: {
         ? 'Drafted a reply, though the AI didn\'t format it cleanly — read it carefully before sending.'
         : raw.trim()
           ? 'The AI replied but not in a form I could use, twice. Press "Scan their reply" again, or write this one yourself.'
-          : 'The AI returned nothing at all — that usually means the model is unavailable or your allowance is used up. Try switching the chat between adris.tech AI and your own key, then scan again.',
+          : 'The AI returned nothing at all — that usually means the model is unavailable or your allowance is used up. Try another AI from the menu at the top (another key, your Claude Code / Codex, or a local model), then scan again.',
       draftReply: cleanOutboundMessage(salvaged),
       attachSuggested: false,
       degraded: true,

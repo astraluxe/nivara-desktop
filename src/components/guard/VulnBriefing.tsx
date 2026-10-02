@@ -237,7 +237,7 @@ export default function VulnBriefing() {
             <div className="text-center max-w-xs">
               <p className="text-sm font-medium text-nv-text mb-2">Dependency Vulnerability Scanner</p>
               <p className="text-xs text-nv-faint leading-relaxed">
-                Connect GitHub and select a repo. adris.tech AI reads your dependency file and checks for known CVEs — no API key or NVD account needed.
+                Connect GitHub and select a repo. Your connected AI reads your dependency file and checks for known CVEs — no NVD account needed.
               </p>
             </div>
             <div className="flex gap-2 flex-wrap justify-center">

@@ -98,16 +98,7 @@ function addBubble(cls: 'user' | 'ai', html: string): HTMLElement {
   return el;
 }
 
-// ── Auth + creds (same resolution order as the app: BYOK first, else adris AI) ─
-function sessionToken(): string | null {
-  try {
-    const raw = localStorage.getItem('sb-xkkqcqsacgdrfwbwdqsp-auth-token');
-    if (!raw) return null;
-    const s = JSON.parse(raw);
-    return s?.access_token ?? null;
-  } catch { return null; }
-}
-
+// ── Auth + creds (same resolution order as the app) ─
 /**
  * The same connection the rest of the app is on.
  *
@@ -122,10 +113,12 @@ async function resolveAuth(): Promise<{ mode: string; apiKey: string | null; pro
     // `cli` was dropped here, so the bar could not tell the bridge from anything else and sent
     // 'agent_cli' to krew_ai_stream, which answers "Unknown mode: agent_cli".
     return { mode: r.mode, apiKey: r.apiKey, provider: r.provider, modelName: r.modelName,
-             baseUrl: r.baseUrl, localModel: r.localModel, token: r.sessionToken ?? sessionToken(),
+             // No adris.tech session token is ever forwarded: the hosted plan is retired, and the
+             // not-connected sentinel is answered locally with "connect an AI".
+             baseUrl: r.baseUrl, localModel: r.localModel, token: null,
              cli: r.cli };
-  } catch { /* fall through to adris AI */ }
-  return { mode: 'nivara', apiKey: null, provider: null, modelName: null, baseUrl: null, localModel: null, token: sessionToken() };
+  } catch { /* fall through to the not-connected sentinel */ }
+  return { mode: 'nivara', apiKey: null, provider: null, modelName: null, baseUrl: null, localModel: null, token: null };
 }
 
 // ── Send ─────────────────────────────────────────────────────────────────────

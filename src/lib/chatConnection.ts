@@ -87,23 +87,28 @@ export function chatConnectionFor(pref: AiSourcePref, avail: AiAvailability | nu
     // When we could not look, honour the stored preference: it was recorded at a moment when the
     // provider genuinely was there, which is better evidence than a failed probe. Fall back only
     // when we DID look and it really is gone, and mark it so the chat can say so out loud.
+    // ── THE HOSTED adris.tech PLAN IS RETIRED (Oct 2026) ─────────────────────
+    //
+    // There is no adris.tech key any more: the app is free and every answer comes from something
+    // the user connected — their NVIDIA / Groq / Gemini / OpenAI / Claude key, their own Claude
+    // Code or Codex, OmniRoute, or a local model. 'nivara' survives ONLY as the "nothing is
+    // connected" sentinel: nothing selects it, and every path that reaches it (here, aiSource.ts
+    // and the Rust side) answers "connect an AI" without contacting any adris.tech server.
+    // So a missing key or model falls back to the user's OTHER connections, never to a hosted one.
     case 'own_key':
       return ownKey(pref.provider)
         ?? (avail
-          ? { mode: 'nivara', bridge: false, fellBackFrom: 'own_key' }
+          ? { ...(localOne() ?? { mode: 'nivara' as const, bridge: false }), fellBackFrom: 'own_key' as const }
           : { mode: 'own_key', provider: pref.provider, model: pref.model, bridge: false });
     case 'local':
       return localOne(pref.localModel)
         ?? (avail
-          ? { mode: 'nivara', bridge: false, fellBackFrom: 'local' }
+          ? { ...(ownKey() ?? { mode: 'nivara' as const, bridge: false }), fellBackFrom: 'local' as const }
           : { mode: 'local', localModel: pref.localModel, bridge: false });
-    case 'nivara':
-      return { mode: 'nivara', bridge: false };
     default:
-      // 'auto' — the same order resolveAiSource uses, so the two can never disagree about what
-      // "choose for me" means: your own key, then adris.tech, then whatever is on the machine.
-      return ownKey() ?? (avail?.signedIn ? { mode: 'nivara', bridge: false } : null)
-        ?? localOne() ?? { mode: 'nivara', bridge: false };
+      // 'auto' — and a stored 'nivara' from before the plan was retired. Same order resolveAiSource
+      // uses: your own key, then whatever is on the machine, then the not-connected sentinel.
+      return ownKey() ?? localOne() ?? { mode: 'nivara', bridge: false };
   }
 }
 

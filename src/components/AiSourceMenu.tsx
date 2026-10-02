@@ -127,13 +127,8 @@ export function buildChoices(
     });
   }
 
-  out.push({
-    id: 'nivara', mode: 'nivara',
-    label: 'adris.tech',
-    blurb: 'The hosted AI. Nothing to set up.',
-    cost: 'pay per use',
-    logo: 'adris',
-  });
+  // No 'adris.tech' row: the hosted plan is retired (Oct 2026). The app is free and thinks only
+  // with what the user connects — a key, their Claude Code / Codex, or a local model.
 
   const haveLocal = (avail?.localModels.length ?? 0) > 0;
   out.push({
@@ -153,7 +148,7 @@ export function buildChoices(
     label: 'Choose for me',
     // "Automatic" told the user nothing -- the owner's own reaction was "idk what that is". This
     // says what it will actually do, in the order it will do it.
-    blurb: 'Picks whichever of the above you have, cheapest first: your subscription, then your own key, then adris.tech.',
+    blurb: 'Picks whichever of the above you have: your own key first, then a local model.',
     cost: 'varies',
     logo: 'auto',
   });
@@ -220,13 +215,16 @@ export function pillFor(pref: AiSourcePref, avail: AiAvailability | null, choice
     if (pref.mode === 'agent_cli' && pref.cli) {
       return { label: `Your ${CLI_LABEL[pref.cli]}`, detail: 'subscription', logo: pref.cli === 'codex' ? 'codex' : 'claude_code' };
     }
-    if (pref.mode === 'nivara') return { label: 'adris.tech', detail: '', logo: 'nivara' };
+    if (pref.mode === 'nivara') return { label: 'Connect an AI', detail: '', logo: 'auto' };
   }
 
   // We looked, and what they picked is not there. The fallback row is then the honest answer.
   const fallback = choices.find((c) => c.mode === pref.mode) ?? choices[choices.length - 1];
   return { label: fallback?.label ?? 'Automatic', detail: '', logo: fallback?.logo ?? 'auto' };
 }
+
+/** Fired on window to open the AI source menu from any screen. */
+export const OPEN_AI_MENU_EVENT = 'nv-open-ai-menu';
 
 export default function AiSourceMenu() {
   const [pref, setPref] = useState<AiSourcePref>(getAiSource);
@@ -245,9 +243,14 @@ export default function AiSourceMenu() {
     // A key connected (or removed) in Connect Apps changes what this menu can offer. Without this
     // the row for a key the user just added did not appear until the app was restarted.
     window.addEventListener('nv-creds-changed', load);
+    // "Connect an AI" from anywhere in the app (e.g. the free-plan window) opens this menu, which
+    // lives in the title bar and so is always mounted.
+    const openMenu = () => { setDetail(null); setOpen(true); };
+    window.addEventListener(OPEN_AI_MENU_EVENT, openMenu);
     return () => {
       window.removeEventListener(AI_SOURCE_EVENT, sync);
       window.removeEventListener('nv-creds-changed', load);
+      window.removeEventListener(OPEN_AI_MENU_EVENT, openMenu);
     };
   }, []);
 
