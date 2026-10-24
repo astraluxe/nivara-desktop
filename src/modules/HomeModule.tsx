@@ -335,8 +335,16 @@ export default function HomeModule({ onNavigate, onStartTour }: Props) {
                       <span className="text-nv-muted text-[10px] font-normal ml-1">remaining</span>
                     </p>
                   )}
-                  <ProgressBar pct={tasksLeft === null ? 5 : taskPct} color={taskPct > 85 ? 'bg-nv-red' : 'bg-accent'} />
-                  <p className="text-[9px] text-nv-muted mt-1.5">{planMeta.label}</p>
+                  {/* 24 Oct 2026: adris.tech is free and runs on the user's own AI, so nothing is counted - the old
+                      "50 tasks lifetime" line under "Unlimited" came from the retired price table above */}
+                  {tasksLeft === null ? (
+                    <p className="text-[9px] text-nv-muted">Runs on your own AI key or a local model - never counted.</p>
+                  ) : (
+                    <>
+                      <ProgressBar pct={taskPct} color={taskPct > 85 ? 'bg-nv-red' : 'bg-accent'} />
+                      <p className="text-[9px] text-nv-muted mt-1.5">{planMeta.label}</p>
+                    </>
+                  )}
                 </>
               );
             })()}
