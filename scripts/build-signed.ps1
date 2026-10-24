@@ -125,6 +125,23 @@ if (-not (Test-Path $sig)) {
 }
 Write-Host "Signed OK" -ForegroundColor Green
 
+# -- Windows Defender gate (24 Oct 2026) -------------------------------------------------------------
+# v1.90.0 was released and Defender's machine-learning heuristic called its installer
+# "Trojan:Win32/Bearfoos.B!ml": every Windows user clicked Install, the app closed, Defender deleted the
+# installer, and they were still on the old version with the prompt back. 1.89.0 scanned clean - the
+# verdict flips on small changes. So the installer is scanned here, BEFORE anything is published.
+$mp = "$env:ProgramFiles\Windows Defender\MpCmdRun.exe"
+if (Test-Path $mp) {
+    $scan = & $mp -Scan -ScanType 3 -File (Resolve-Path $exe).Path -DisableRemediation 2>&1 | Out-String
+    if ($scan -match "found no threats") {
+        Write-Host "Windows Defender: clean" -ForegroundColor Green
+    } else {
+        Write-Host "Windows Defender FLAGS this installer - NOT publishing. Rebuild (bump the patch version) and run again." -ForegroundColor Red
+        Write-Host $scan
+        exit 1
+    }
+}
+
 # Generate latest.json
 $sigText = (Get-Content $sig -Raw).Trim()
 $latest = [ordered]@{
@@ -283,19 +300,24 @@ git commit -m "chore(release): latest.json for v$version" --only latest.json 2>$
 if ($LASTEXITCODE -eq 0) { git push 2>$null | Out-Null }
 Write-Host "  raw.githubusercontent.com: committed" -ForegroundColor DarkGray
 
-# 2. www.adris.tech -- the website repo is the parent folder and auto-deploys from master.
-$siteRoot = Split-Path (Get-Location).Path -Parent
-if (Test-Path (Join-Path $siteRoot "vercel.json")) {
-    Copy-Item "latest.json" (Join-Path $siteRoot "latest.json") -Force
-    Push-Location $siteRoot
-    git add latest.json 2>$null
-    git commit -m "chore: update manifest for adris.tech v$version" --only latest.json 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { git push 2>$null | Out-Null; Write-Host "  www.adris.tech: pushed (Vercel will deploy it)" -ForegroundColor DarkGray }
-    else { Write-Host "  www.adris.tech: unchanged" -ForegroundColor DarkGray }
-    Pop-Location
-} else {
-    Write-Host "  www.adris.tech: website repo not found next door -- skipped" -ForegroundColor Yellow
+# 2. www.adris.tech -- written straight into the website repo on GitHub (Vercel deploys master).
+#
+# 24 Oct 2026: this used to commit from the parent folder, a local copy of the website that had fallen 29 commits
+# behind. The push was rejected, the script still printed "pushed", and www.adris.tech -- the FIRST endpoint the app
+# asks -- kept offering the old version, so nobody was offered v1.90.0. Now the file goes through the GitHub API (no
+# local copy to go stale) and the script waits until the live site actually serves the new version.
+$siteRepo = "astraluxe/nivara-website"
+$sha = (& $gh api "repos/$siteRepo/contents/latest.json" --jq .sha 2>$null)
+$b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path (Get-Location).Path "latest.json")))
+& $gh api -X PUT "repos/$siteRepo/contents/latest.json" -f message="chore: update manifest for adris.tech v$version" `
+    -f content=$b64 -f sha=$sha -f branch=master --silent 2>$null
+$live = ""
+for ($i = 0; $i -lt 24 -and $live -ne $version; $i++) {
+    Start-Sleep -Seconds 10
+    try { $live = (Invoke-RestMethod "https://www.adris.tech/latest.json?t=$(Get-Random)" -TimeoutSec 15).version } catch {}
 }
+if ($live -eq $version) { Write-Host "  www.adris.tech: serving v$version" -ForegroundColor DarkGray }
+else { Write-Host "  www.adris.tech: STILL SERVING v$live -- the app will not offer v$version until this is fixed" -ForegroundColor Red }
 
 Write-Host ""
 Write-Host "Done! v$version is live with auto-update support." -ForegroundColor Green
