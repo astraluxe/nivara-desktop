@@ -431,9 +431,9 @@ function AppShell() {
   // foreground (opened from the quick bar / corner badge / tray while it was already
   // running in the background). A check only at boot misses updates released while
   // the app sat autostarted for days — the user opens the window and sees nothing.
+  // 24 Oct 2026: it no longer waits for a session. When the cloud's sign-in was down, nobody could sign in, so nobody
+  // was ever offered the build that fixed it - the check now runs on the login screen too.
   useEffect(() => {
-    if (!session) return;
-
     function showUpdateBanner(version: string) {
       const dismissed = JSON.parse(localStorage.getItem(DISMISSED_KEY) ?? '[]') as string[];
       if (dismissed.includes(`update-${version}`)) return;
@@ -494,7 +494,7 @@ function AppShell() {
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onFocus);
     };
-  }, [session]);
+  }, []);
 
   // Global automation trigger listener — active regardless of which module is open
   useEffect(() => {
@@ -552,10 +552,38 @@ function AppShell() {
     return () => { unlisten?.(); };
   }, [session]);
 
+  const announcementModal = announcement ? (
+        <AnnouncementModal
+          ann={announcement}
+          onClose={() => {
+            // If it's an update announcement and user clicked "Got it", just dismiss
+            // If cta_label is "Install & restart", clicking the CTA button runs install
+            if (announcement.type === 'update' && announcement.cta_url === undefined) {
+              // Install update flow — CTA button handled separately; dismiss just hides modal
+            }
+            const dismissed = JSON.parse(localStorage.getItem(DISMISSED_KEY) ?? '[]') as string[];
+            if (!dismissed.includes(announcement.id)) {
+              localStorage.setItem(DISMISSED_KEY, JSON.stringify([...dismissed, announcement.id]));
+            }
+            // "Later" quiets THIS version for 24h — it stops re-appearing on every launch/focus,
+            // but the next release still announces itself the moment it lands.
+            if (announcement.type === 'update') {
+              const v = announcement.id.replace(/^update-/, '');
+              localStorage.setItem(UPDATE_SNOOZE_KEY, JSON.stringify({ version: v, until: Date.now() + UPDATE_SNOOZE_MS }));
+            }
+            setAnnouncement(null);
+          }}
+        />
+  ) : null;
+
   if (loading) return <AppSkeleton />;
 
   if (!session) {
-    return <LoginScreen />;
+    // only the update offer shows here - announcements are for signed-in users
+    return <>
+      <LoginScreen />
+      {announcement?.type === 'update' && announcementModal}
+    </>;
   }
 
   return (
@@ -678,29 +706,7 @@ function AppShell() {
         setShowFirstRun(false);
         if (!isTourDone(session.user.id)) setShowTour(true);
       }} />}
-      {announcement && (
-        <AnnouncementModal
-          ann={announcement}
-          onClose={() => {
-            // If it's an update announcement and user clicked "Got it", just dismiss
-            // If cta_label is "Install & restart", clicking the CTA button runs install
-            if (announcement.type === 'update' && announcement.cta_url === undefined) {
-              // Install update flow — CTA button handled separately; dismiss just hides modal
-            }
-            const dismissed = JSON.parse(localStorage.getItem(DISMISSED_KEY) ?? '[]') as string[];
-            if (!dismissed.includes(announcement.id)) {
-              localStorage.setItem(DISMISSED_KEY, JSON.stringify([...dismissed, announcement.id]));
-            }
-            // "Later" quiets THIS version for 24h — it stops re-appearing on every launch/focus,
-            // but the next release still announces itself the moment it lands.
-            if (announcement.type === 'update') {
-              const v = announcement.id.replace(/^update-/, '');
-              localStorage.setItem(UPDATE_SNOOZE_KEY, JSON.stringify({ version: v, until: Date.now() + UPDATE_SNOOZE_MS }));
-            }
-            setAnnouncement(null);
-          }}
-        />
-      )}
+      {announcementModal}
     </div>
   );
 }

@@ -33,6 +33,21 @@ async function loadProfile(userId: string, email: string): Promise<UserProfile> 
   return { id: userId, email, plan: "explore" };
 }
 
+// The session supabase-js keeps on disk. When the cloud is unreachable (24 Oct 2026: the Supabase database froze for
+// ~40 minutes and every launch fell back to the login screen) getSession() cannot refresh an expired token and returns
+// nothing - but the saved login is still here. A real sign-out or a revoked token deletes it, so using it only while
+// the cloud is unreachable never lets in someone who was signed out. supabase-js keeps retrying the refresh and fires
+// TOKEN_REFRESHED once the cloud is back.
+function storedSession(): Session | null {
+  try {
+    const ref = new URL(import.meta.env.VITE_SUPABASE_URL as string).hostname.split(".")[0];
+    const s = JSON.parse(localStorage.getItem(`sb-${ref}-auth-token`) ?? "null");
+    return s?.access_token && s?.user?.id ? (s as Session) : null;
+  } catch {
+    return null;
+  }
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
@@ -40,10 +55,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const emergency = setTimeout(() => setLoading(false), 5000);
+    const emergency = setTimeout(() => {
+      // the cloud did not answer in 5 s - open with the saved login instead of the login screen
+      const saved = storedSession();
+      if (saved) { setSession(saved); setUser(saved.user); }
+      setLoading(false);
+    }, 5000);
 
     supabase.auth.getSession()
-      .then(async ({ data: { session } }) => {
+      .then(async ({ data: { session: fresh }, error }) => {
+        const session = fresh ?? (error ? storedSession() : null);
         setSession(session);
         setUser(session?.user ?? null);
         if (session?.user) {
@@ -55,7 +76,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
         }
       })
-      .catch(() => {/* network error — proceed with no session */})
+      .catch(() => {
+        // network error — open with the saved login if there is one
+        const saved = storedSession();
+        if (saved) { setSession(saved); setUser(saved.user); }
+      })
       .finally(() => { clearTimeout(emergency); setLoading(false); });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(

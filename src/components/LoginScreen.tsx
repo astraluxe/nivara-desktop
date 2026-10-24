@@ -13,6 +13,20 @@ type OAuthPayload = {
   error?: string | null;
 };
 
+async function signInServerUp(): Promise<boolean> {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 8000);
+  try {
+    const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+    const r = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/auth/v1/health`, { headers: { apikey: key }, signal: ctl.signal });
+    return r.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 export default function LoginScreen() {
   const { refreshSession } = useAuth();
   const [error, setError] = useState("");
@@ -33,6 +47,14 @@ export default function LoginScreen() {
     setCopied(false);
     setGoogleLoading(true);
     cancelRef.current = null;
+
+    // 24 Oct 2026: when the cloud's sign-in server hung, the browser sat on "loading" for minutes and the app said
+    // "timed out" after 3. Ask the server first (8 s) and say plainly that it is on our side.
+    if (!(await signInServerUp())) {
+      setError("adris.tech sign-in is temporarily unavailable on our side. It usually comes back within a few minutes - please try again shortly.");
+      setGoogleLoading(false);
+      return;
+    }
 
     try {
       const { data, error } = await supabase.auth.signInWithOAuth({
